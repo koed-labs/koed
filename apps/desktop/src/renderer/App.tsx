@@ -31,7 +31,7 @@ import type {
   PersonalMemoryInspectorEvent,
   PersonalMemoryRoute
 } from "./views/personal/index.js";
-import { SharesStatusView } from "./views/personal/index.js";
+import { SharesStatusView } from "./views/personal/SharesStatusView.js";
 import { PersonalAskView } from "./views/personal/PersonalAskView.js";
 import { PersonalNotesView } from "./views/personal/PersonalNotesView.js";
 import {
@@ -54,7 +54,12 @@ import {
 import { DesktopStatusStore } from "./services/desktop-commands.js";
 import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
-import type { ManagedConversationRealtimeUpdate } from "./state/managed-conversation-runtime.js";
+import { useManagedConversationLifecycle } from "./state/use-managed-conversation-lifecycle.js";
+import {
+  appendManagedConversationUpdate,
+  type ManagedConversationUpdateEnvelope,
+  type ManagedConversationRealtimeUpdate
+} from "./state/managed-conversation-runtime.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
@@ -68,7 +73,8 @@ import {
 } from "./shell/AppShell.js";
 import {
   PersonalContextNavigation,
-  TeamContextNavigation
+  TeamContextNavigation,
+  type PersonalConversationRecent
 } from "./shell/ContextNavigation.js";
 import { InboxView } from "./views/inbox/index.js";
 import {
@@ -91,7 +97,7 @@ const CollaborationModalLayer = lazy(async () => {
 });
 
 const PersonalMemoryWorkspace = lazy(async () => {
-  const module = await import("./views/personal/index.js");
+  const module = await import("./views/personal/PersonalMemoryViews.js");
   return { default: module.PersonalMemoryWorkspace };
 });
 const PersonalMemorySharesView = lazy(async () => {
@@ -108,6 +114,7 @@ const fallbackCollaborationClient = (): CollaborationRendererClient =>
   });
 
 const PERSONAL_ASK_RECENTS_CACHE_LIMIT = 500;
+const PERSONAL_CONVERSATION_RECENTS_CACHE_LIMIT = 500;
 
 const mergeAskRecents = (
   current: readonly PersonalDesktopAskThread[],
@@ -146,6 +153,26 @@ const mergeAskRecents = (
     bounded[bounded.length - 1] = selected;
   }
   return bounded;
+};
+
+const mergeConversationRecents = (
+  current: readonly PersonalConversationRecent[],
+  incoming: readonly PersonalConversationRecent[],
+  replace: boolean
+): PersonalConversationRecent[] => {
+  const byIdentity = new Map(
+    (replace ? incoming : [...current, ...incoming]).map((item) => [
+      item.id,
+      item
+    ])
+  );
+  return [...byIdentity.values()]
+    .sort(
+      (left, right) =>
+        Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
+        right.id.localeCompare(left.id)
+    )
+    .slice(0, PERSONAL_CONVERSATION_RECENTS_CACHE_LIMIT);
 };
 
 const defaultClient = createCollaborationRendererClient(
@@ -540,11 +567,7 @@ export function App({
   statusStoreOverride,
   teamCollaborationEnabled = true
 }: AppProps = {}) {
-  const askAvailable = Boolean(
-    personalMemoryApi?.submitAsk &&
-    personalMemoryApi.listAskThreads &&
-    personalMemoryApi.loadAskThread
-  );
+  const askAvailable = Boolean(personalMemoryApi && managedConversations);
   const activeStatusStore = statusStoreOverride ?? statusStore;
   const [navigation, dispatch] = useReducer(
     navigationReducer,
@@ -564,6 +587,8 @@ export function App({
       );
     }
   );
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
   const [inspector, setInspector] =
     useState<PersonalMemoryInspectorEvent | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -576,16 +601,22 @@ export function App({
     string | null
   >(null);
   const [askRecentsError, setAskRecentsError] = useState<string | null>(null);
+  const [capturedConversationRecents, setCapturedConversationRecents] =
+    useState<PersonalConversationRecent[]>([]);
+  const [conversationRecentsNextCursor, setConversationRecentsNextCursor] =
+    useState<string | null>(null);
+  const [conversationRecentsError, setConversationRecentsError] = useState<
+    string | null
+  >(null);
+  const conversationRecentsRefreshTimer = useRef<number | null>(null);
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
   const [
     managedConversationRecoveryRevision,
     setManagedConversationRecoveryRevision
   ] = useState(0);
-  const [managedConversationUpdate, setManagedConversationUpdate] = useState<{
-    revision: number;
-    update: ManagedConversationRealtimeUpdate;
-  } | null>(null);
+  const [managedConversationUpdate, setManagedConversationUpdate] =
+    useState<ManagedConversationUpdateEnvelope | null>(null);
   const initialSelectionApplied = useRef(
     !initialCollaborationSelection ||
       Boolean(client.current()) ||
@@ -636,6 +667,11 @@ export function App({
   const route = currentNavigationEntry(navigation).route;
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;
+  useEffect(() => {
+    if (route.kind === "personal-memory-ask") {
+      void personalMemoryStore?.loadProjects({ silent: true });
+    }
+  }, [personalMemoryStore, route.kind]);
   const snapshot = useMemo(
     () =>
       teamCollaborationEnabled
@@ -643,6 +679,66 @@ export function App({
         : snapshotWithoutTeamCollaboration(collaboration.snapshot),
     [collaboration.snapshot, teamCollaborationEnabled]
   );
+  const managedConversationLifecycle = useManagedConversationLifecycle({
+    api: managedConversations,
+    store: personalMemoryStore,
+    ownerId: snapshot?.navigation.personalOwner.id ?? null,
+    revision: managedConversationRevision,
+    update: managedConversationUpdate
+  });
+  const managedConversationDrafts = managedConversationLifecycle.drafts;
+  const personalOwnerRef = useRef<string | null>(null);
+  personalOwnerRef.current = snapshot?.navigation.personalOwner.id ?? null;
+  const conversationRecents = useMemo(() => {
+    const byIdentity = new Map(
+      capturedConversationRecents.map((item) => [item.id, item])
+    );
+    for (const [routeId, draft] of managedConversationDrafts) {
+      const identity =
+        draft.conversation.capturedSessionId || draft.conversation.threadId;
+      const captured = byIdentity.get(identity);
+      byIdentity.set(identity, {
+        id: identity,
+        latestAt:
+          captured &&
+          Date.parse(captured.latestAt) > Date.parse(draft.thread.latestAt)
+            ? captured.latestAt
+            : draft.thread.latestAt,
+        projectId: captured?.projectId ?? draft.thread.projectId,
+        projectName: captured?.projectName ?? draft.thread.projectName,
+        sessionId: captured?.sessionId ?? routeId,
+        title:
+          captured?.title || draft.thread.name || "New AI Client Conversation"
+      });
+    }
+    return [...byIdentity.values()].sort(
+      (left, right) =>
+        Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
+        left.id.localeCompare(right.id)
+    );
+  }, [capturedConversationRecents, managedConversationDrafts]);
+
+  useEffect(() => {
+    const entry = currentNavigationEntry(navigationRef.current);
+    if (entry.route.kind !== "personal-memory-session") return;
+    const draft = managedConversationDrafts.get(entry.route.sessionId);
+    if (!draft?.conversation.executionId) return;
+    const captured = capturedConversationRecents.find(
+      (item) => item.id === draft.conversation.capturedSessionId
+    );
+    if (!captured || captured.sessionId === entry.route.sessionId) return;
+    dispatch({
+      type: "replace",
+      entry: {
+        authority: entry.authority,
+        route: {
+          kind: "personal-memory-session",
+          projectId: captured.projectId,
+          sessionId: captured.sessionId
+        }
+      }
+    });
+  }, [capturedConversationRecents, managedConversationDrafts]);
   const liveHealthRefreshKey = useRef<string | null>(null);
   const lastTeamActivityReportAt = useRef(0);
   const activeTeamId = routeTeamId(route);
@@ -653,8 +749,11 @@ export function App({
 
   const refreshAskRecents = useCallback(async () => {
     if (!personalMemoryApi?.listAskThreads) return;
+    const ownerId = personalOwnerRef.current;
+    if (!ownerId) return;
     try {
       const page = await personalMemoryApi.listAskThreads({ limit: 50 });
+      if (personalOwnerRef.current !== ownerId) return;
       setAskRecents((current) =>
         mergeAskRecents(current, page.threads, selectedAskThreadId, true)
       );
@@ -667,11 +766,14 @@ export function App({
 
   const loadOlderAskRecents = useCallback(async () => {
     if (!personalMemoryApi?.listAskThreads || !askRecentsNextCursor) return;
+    const ownerId = personalOwnerRef.current;
+    if (!ownerId) return;
     try {
       const page = await personalMemoryApi.listAskThreads({
         cursor: askRecentsNextCursor,
         limit: 50
       });
+      if (personalOwnerRef.current !== ownerId) return;
       setAskRecents((current) =>
         mergeAskRecents(current, page.threads, selectedAskThreadId, false)
       );
@@ -682,18 +784,106 @@ export function App({
     }
   }, [askRecentsNextCursor, personalMemoryApi, selectedAskThreadId]);
 
+  const refreshConversationRecents = useCallback(async () => {
+    if (!personalMemoryApi?.listRecentConversations) return;
+    const ownerId = personalOwnerRef.current;
+    if (!ownerId) return;
+    try {
+      const page = await personalMemoryApi.listRecentConversations({
+        limit: 50
+      });
+      if (personalOwnerRef.current !== ownerId) return;
+      setCapturedConversationRecents((current) =>
+        mergeConversationRecents(current, page.conversations, true)
+      );
+      setConversationRecentsNextCursor(page.nextCursor);
+      setConversationRecentsError(null);
+    } catch {
+      setConversationRecentsError("Recent Conversations are unavailable.");
+    }
+  }, [personalMemoryApi]);
+
+  const scheduleConversationRecentsRefresh = useCallback(() => {
+    if (conversationRecentsRefreshTimer.current !== null) return;
+    conversationRecentsRefreshTimer.current = window.setTimeout(() => {
+      conversationRecentsRefreshTimer.current = null;
+      void refreshConversationRecents();
+    }, 1_000);
+  }, [refreshConversationRecents]);
+
+  const loadOlderConversationRecents = useCallback(async () => {
+    if (
+      !personalMemoryApi?.listRecentConversations ||
+      !conversationRecentsNextCursor
+    )
+      return;
+    const ownerId = personalOwnerRef.current;
+    if (!ownerId) return;
+    try {
+      const page = await personalMemoryApi.listRecentConversations({
+        cursor: conversationRecentsNextCursor,
+        limit: 50
+      });
+      if (personalOwnerRef.current !== ownerId) return;
+      setCapturedConversationRecents((current) =>
+        mergeConversationRecents(current, page.conversations, false)
+      );
+      setConversationRecentsNextCursor(page.nextCursor);
+      setConversationRecentsError(null);
+    } catch {
+      setConversationRecentsError("Older Conversations could not be loaded.");
+    }
+  }, [conversationRecentsNextCursor, personalMemoryApi]);
+
   useEffect(() => {
     if (!askAvailable || !personalMemoryApi) {
       setAskRecents([]);
       setAskRecentsNextCursor(null);
       setAskRecentsError(null);
+      setCapturedConversationRecents([]);
+      setConversationRecentsNextCursor(null);
+      setConversationRecentsError(null);
       return;
     }
     void refreshAskRecents();
+    void refreshConversationRecents();
     return personalMemoryApi.subscribe((change) => {
       if (change.type === "ask_questions_changed") void refreshAskRecents();
+      if (change.type !== "ask_questions_changed")
+        scheduleConversationRecentsRefresh();
     });
-  }, [askAvailable, personalMemoryApi, refreshAskRecents]);
+  }, [
+    askAvailable,
+    personalMemoryApi,
+    snapshot?.navigation.personalOwner.id,
+    refreshAskRecents,
+    refreshConversationRecents,
+    scheduleConversationRecentsRefresh
+  ]);
+
+  useEffect(() => {
+    if (!personalMemorySnapshot?.revision) return;
+    scheduleConversationRecentsRefresh();
+  }, [personalMemorySnapshot?.revision, scheduleConversationRecentsRefresh]);
+
+  useEffect(
+    () => () => {
+      if (conversationRecentsRefreshTimer.current !== null)
+        window.clearTimeout(conversationRecentsRefreshTimer.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (conversationRecentsRefreshTimer.current !== null) {
+      window.clearTimeout(conversationRecentsRefreshTimer.current);
+      conversationRecentsRefreshTimer.current = null;
+    }
+    setAskRecents([]);
+    setAskRecentsNextCursor(null);
+    setCapturedConversationRecents([]);
+    setConversationRecentsNextCursor(null);
+  }, [snapshot?.navigation.personalOwner.id]);
 
   useEffect(() => {
     if (!teamCollaborationEnabled) return;
@@ -808,11 +998,12 @@ export function App({
         }
         if (update.kind !== "realtime") return;
         if (update.realtimeUpdate?.type === "managed_conversation_upserted") {
+          const realtime =
+            update.realtimeUpdate as ManagedConversationRealtimeUpdate;
           setManagedConversationRevision((revision) => revision + 1);
-          setManagedConversationUpdate((current) => ({
-            revision: (current?.revision ?? 0) + 1,
-            update: update.realtimeUpdate as ManagedConversationRealtimeUpdate
-          }));
+          setManagedConversationUpdate((current) =>
+            appendManagedConversationUpdate(current, realtime)
+          );
         }
         if (update.realtimeUpdate?.type === "personal_memory_upserted") {
           personalMemoryStore?.refreshFromDurableEvent();
@@ -1093,11 +1284,14 @@ export function App({
     ) : (
       <PersonalContextNavigation
         askRecents={askRecents}
-        askRecentsError={askRecentsError}
+        askRecentsError={askRecentsError ?? conversationRecentsError}
         askRecentsNextCursor={askRecentsNextCursor}
         askSelected={route.kind === "personal-memory-ask"}
+        conversationRecents={conversationRecents}
+        conversationRecentsNextCursor={conversationRecentsNextCursor}
         notesSelected={route.kind === "personal-memory-notes"}
         onLoadOlderAskThreads={() => void loadOlderAskRecents()}
+        onLoadOlderConversations={() => void loadOlderConversationRecents()}
         onOpenAsk={() =>
           navigate({
             authority: {
@@ -1138,6 +1332,10 @@ export function App({
             route: { kind: "personal-memory-shares" }
           })
         }
+        onRetryRecents={() => {
+          void refreshAskRecents();
+          void refreshConversationRecents();
+        }}
         onSelectAskThread={(askThreadId) =>
           navigate({
             authority: {
@@ -1146,6 +1344,20 @@ export function App({
                 snapshot?.navigation.personalOwner.id ?? "local-personal"
             },
             route: { kind: "personal-memory-ask", askThreadId }
+          })
+        }
+        onSelectConversation={(item) =>
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: {
+              kind: "personal-memory-session",
+              projectId: item.projectId,
+              sessionId: item.sessionId
+            }
           })
         }
         projectsSelected={
@@ -1158,6 +1370,9 @@ export function App({
         sharesUnavailable={sharesUnavailable}
         teamCollaborationEnabled={teamCollaborationEnabled}
         selectedAskThreadId={selectedAskThreadId}
+        selectedConversationId={
+          route.kind === "personal-memory-session" ? route.sessionId : undefined
+        }
       />
     );
 
@@ -1359,25 +1574,76 @@ export function App({
     );
   } else if (route.kind === "personal-memory-ask") {
     content =
-      personalMemoryApi?.submitAsk &&
-      personalMemoryApi.listAskThreads &&
-      personalMemoryApi.loadAskThread ? (
+      personalMemoryApi && managedConversations ? (
         <PersonalAskView
+          localAiClients={window.koedDesktop?.localAiClients}
           api={personalMemoryApi}
+          managedConversations={managedConversations}
           markdownAdapters={collaboration.markdownAdapters}
+          onConversationStarted={(
+            project,
+            conversation,
+            status,
+            launchInput,
+            initialPrompt
+          ) => {
+            const routeId = managedConversationLifecycle.started(
+              project,
+              conversation,
+              status,
+              launchInput,
+              initialPrompt
+            );
+            if (!routeId) return;
+            const currentRoute = currentNavigationEntry(
+              navigationRef.current
+            ).route;
+            if (
+              currentRoute.kind !== "personal-memory-ask" ||
+              currentRoute.askThreadId
+            )
+              return;
+            navigate({
+              authority: currentNavigationEntry(navigationRef.current)
+                .authority,
+              route: {
+                kind: "personal-memory-session",
+                projectId: project.id,
+                sessionId: routeId
+              }
+            });
+          }}
           onNew={() =>
             navigate({
               authority: currentNavigationEntry(navigation).authority,
               route: { kind: "personal-memory-ask" }
             })
           }
-          onSelectThread={(askThreadId) =>
-            navigate({
-              authority: currentNavigationEntry(navigation).authority,
-              route: { kind: "personal-memory-ask", askThreadId }
-            })
+          onOpenProject={async () => {
+            const metadata = await platform.selectProjectDirectory();
+            if (!metadata || !personalMemoryStore) return null;
+            const refreshed = await personalMemoryStore.loadProjects({
+              silent: true
+            });
+            if (refreshed.error) throw new Error(refreshed.error);
+            return refreshed.projectsById.get(metadata.localProjectId) ?? null;
+          }}
+          onResolveIndependent={async () => {
+            const metadata = await platform.ensureIndependentProject();
+            if (!personalMemoryStore) return null;
+            const refreshed = await personalMemoryStore.loadProjects({
+              silent: true
+            });
+            if (refreshed.error) throw new Error(refreshed.error);
+            return refreshed.projectsById.get(metadata.localProjectId) ?? null;
+          }}
+          projects={
+            personalMemorySnapshot?.projectOrder.flatMap((projectId) => {
+              const project =
+                personalMemorySnapshot.projectsById.get(projectId);
+              return project ? [project] : [];
+            }) ?? []
           }
-          onThreadsChanged={() => void refreshAskRecents()}
           selectedThreadId={route.askThreadId}
         />
       ) : (
@@ -1547,13 +1813,17 @@ export function App({
           <PersonalMemoryWorkspace
             localAiClients={window.koedDesktop?.localAiClients}
             assignSessionProject={personalMemoryApi.assignSessionProject}
-            updateSessionPresentation={
-              personalMemoryApi.updateSessionPresentation
-            }
+            updateSessionPresentation={async (input) => {
+              const result =
+                await personalMemoryApi.updateSessionPresentation(input);
+              scheduleConversationRecentsRefresh();
+              return result;
+            }}
             authorizeManagedConversationTransfer={
               client.authorizeManagedConversationTransfer
             }
             managedConversationRevision={managedConversationRevision}
+            managedConversationLifecycle={managedConversationLifecycle}
             managedConversationRecoveryRevision={
               managedConversationRecoveryRevision
             }
@@ -1590,6 +1860,9 @@ export function App({
                 route: nextRoute
               });
             }}
+            onSessionProjectAssigned={() =>
+              scheduleConversationRecentsRefresh()
+            }
             onShareToWorkspace={({ source }) => {
               collaboration.setModal({
                 kind: "share_personal_memory",

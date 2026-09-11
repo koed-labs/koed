@@ -390,6 +390,15 @@ export const managedConversationFailureCode = (error: unknown): string => {
     ) {
       return payload.error;
     }
+    if (
+      current instanceof MemoryApiError &&
+      typeof current.status === "number" &&
+      Number.isInteger(current.status) &&
+      current.status >= 400 &&
+      current.status <= 599
+    ) {
+      return `ManagedConversationMemoryApi${current.status}Error`;
+    }
     if (current instanceof Error) {
       if (managedConversationErrorCodePattern.test(current.name)) {
         return current.name;
@@ -608,13 +617,15 @@ export const createManagedConversationService = (options: {
       providerItemId?: string;
       text: string;
       itemId?: string;
+      pendingWrite?: Promise<void>;
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
   const memoryClient = new MemoryApiClient({
     apiUrl: options.apiUrl,
     apiToken: options.apiToken,
-    requestTimeoutMs: 60_000
+    requestTimeoutMs: 60_000,
+    requestClass: "managed-conversation"
   });
   const executionCheckoutDriver = options.executionCheckoutDriver
     ? Promise.resolve(options.executionCheckoutDriver)
@@ -1233,21 +1244,28 @@ export const createManagedConversationService = (options: {
     const transient = transientOutputs.get(key);
     if (!transient || !transient.text) return;
     transient.timer = undefined;
-    const item = await options.repository.putManagedConversationRuntimeItem(
-      { userId: options.localOwnerUserId },
-      {
-        executionId: transient.executionId,
-        executionGeneration: transient.executionGeneration,
-        providerRequestId: transient.providerRequestId,
-        providerTurnId: transient.providerTurnId,
-        ...(transient.providerItemId
-          ? { providerItemId: transient.providerItemId }
-          : {}),
-        itemKind: "transient_output",
-        payload: { text: transient.text }
-      }
-    );
-    transient.itemId = item.id;
+    const text = transient.text;
+    const write = (transient.pendingWrite ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        const item = await options.repository.putManagedConversationRuntimeItem(
+          { userId: options.localOwnerUserId },
+          {
+            executionId: transient.executionId,
+            executionGeneration: transient.executionGeneration,
+            providerRequestId: transient.providerRequestId,
+            providerTurnId: transient.providerTurnId,
+            ...(transient.providerItemId
+              ? { providerItemId: transient.providerItemId }
+              : {}),
+            itemKind: "transient_output",
+            payload: { text }
+          }
+        );
+        transient.itemId = item.id;
+      });
+    transient.pendingWrite = write;
+    await write;
   };
 
   const flushCompletedTransientOutput = async (key: string): Promise<void> => {
@@ -1442,6 +1460,22 @@ export const createManagedConversationService = (options: {
     }
     return new CodexManagedConversationSession({
       memoryClient,
+      onStartupTiming: (timing) =>
+        options.logger.info(
+          {
+            event: {
+              name: "worker.managed_conversation.startup_stage",
+              category: "managed_conversation"
+            },
+            execution_id: execution.id,
+            execution_generation: execution.executionGeneration,
+            startup_stage: timing.stage,
+            startup_status: timing.status,
+            duration_ms: timing.durationMs,
+            elapsed_ms: timing.elapsedMs
+          },
+          "managed Conversation startup stage"
+        ),
       projectId: execution.projectId,
       appServer: {
         appServerBinary:

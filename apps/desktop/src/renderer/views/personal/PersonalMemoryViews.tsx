@@ -1,3 +1,12 @@
+import {
+  localApiRetryDelay,
+  LocalApiRateLimitError
+} from "../../../local-api-errors.js";
+import {
+  managedConversationUpdatesSince,
+  type ManagedConversationUpdateEnvelope
+} from "../../state/managed-conversation-runtime.js";
+import { assignmentFrom } from "../preferences/local-ai-client-settings-helpers.js";
 import type {
   PersonalConversationPresentation,
   PersonalDesktopApi,
@@ -16,7 +25,6 @@ import {
   DialogTitle
 } from "@koed/ui";
 import {
-  ArrowUp,
   BookText,
   Brain,
   Check,
@@ -35,7 +43,6 @@ import {
   Pin,
   RefreshCw,
   Settings,
-  Square,
   X
 } from "lucide-react";
 import {
@@ -50,12 +57,14 @@ import {
 } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { DesktopApi } from "../../../types.js";
+import { ConversationInput } from "./ConversationInput.js";
 
 import {
   NativeConversationSurface,
   type ConversationSurfaceModel
 } from "../../../NativeConversationSurface.js";
 import {
+  projectIdForSession,
   projectIsActive,
   projectLatestAt,
   relativeTime,
@@ -65,6 +74,12 @@ import {
 } from "../../../project-memory-ui.js";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { type PersonalMemoryStore } from "../../state/personal-memory.js";
+import {
+  useManagedConversationLifecycle,
+  type ManagedConversationLifecycle,
+  type ManagedConversationDraft
+} from "../../state/use-managed-conversation-lifecycle.js";
+export type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
 import { usePersonalMemorySnapshot } from "../../state/use-personal-memory.js";
 import {
   managedConversationRuntimeStateFromSnapshot,
@@ -100,8 +115,8 @@ import {
   type InitialConversationPrompt
 } from "./NewConversationComposer.js";
 import {
-  ConversationSettings,
   selectionForInstance,
+  selectionForAssignment,
   type ConversationSelection
 } from "./ConversationSettings.js";
 import {
@@ -127,11 +142,9 @@ export type PersonalMemoryWorkspaceProps = {
   updateSessionPresentation?: PersonalDesktopApi["updateSessionPresentation"];
   managedConversationRevision?: number;
   managedConversationRecoveryRevision?: number;
-  managedConversationUpdate?: {
-    revision: number;
-    update: ManagedConversationRealtimeUpdate;
-  } | null;
+  managedConversationUpdate?: ManagedConversationUpdateEnvelope | null;
   managedConversations?: ManagedConversationDesktopApi | null;
+  managedConversationLifecycle?: ManagedConversationLifecycle;
   localAiClients?: DesktopApi["localAiClients"];
   managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
@@ -451,7 +464,10 @@ function ProjectsPane({
       (value) => value.toLocaleLowerCase().includes(normalizedQuery)
     );
   });
-  const active = filtered.filter((project) => projectIsActive(project));
+  const active = filtered.filter(
+    (project) =>
+      project.contextKind === "independent" || projectIsActive(project)
+  );
   const inactive = filtered.filter(
     (project) => !active.some(({ id }) => id === project.id)
   );
@@ -506,7 +522,11 @@ function ProjectsPane({
           </div>
         ) : (
           <>
-            <section aria-label="Active Projects">
+            <section aria-labelledby="personal-active-projects">
+              <div className="personal-project-section-heading">
+                <span id="personal-active-projects">Active</span>
+                <span>{active.length}</span>
+              </div>
               {active.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -703,7 +723,6 @@ function SessionRow({
   );
 }
 
-type ManagedLaunchSelection = ConversationSelection;
 type ManagedOwnerCapabilities = {
   resume: boolean;
   send: boolean;
@@ -716,30 +735,17 @@ const ManagedCapabilitiesContext = createContext<
 const managedOwnerKey = (owner: { driverId: string; instanceId: string }) =>
   `${owner.driverId}:${owner.instanceId}`;
 
-type ManagedConversationOwner = {
-  aiClientDriverId: "codex" | "claude" | "pi";
-  aiClientInstanceId: string;
-  displayName: string;
-  ready: boolean;
-};
-
-const launchOwner = (
+const launchReady = (
   instance: ManagedConversationLaunchOptions["instances"][number]
-): ManagedConversationOwner => ({
-  aiClientDriverId: instance.driverId,
-  aiClientInstanceId: instance.instanceId,
-  displayName: instance.displayName,
-  ready:
-    instance.ready &&
-    instance.models.length > 0 &&
-    instance.capabilities.permissionModes.some(
-      (mode) => mode.support === "supported"
-    )
-});
-
-const launchSelectionForInstance = selectionForInstance;
+): boolean =>
+  instance.ready &&
+  instance.models.length > 0 &&
+  instance.capabilities.permissionModes.some(
+    (mode) => mode.support === "supported"
+  );
 
 function ProjectDetail({
+  localAiClients,
   error,
   hasProjects,
   loading,
@@ -754,12 +760,13 @@ function ProjectDetail({
   onSelectSession,
   project
 }: {
+  localAiClients?: DesktopApi["localAiClients"];
   error: string | null;
   hasProjects: boolean;
   loading: boolean;
   managedConversations?: ManagedConversationDesktopApi | null;
-  launchSelection: ManagedLaunchSelection;
-  setLaunchSelection: Dispatch<SetStateAction<ManagedLaunchSelection>>;
+  launchSelection: ConversationSelection;
+  setLaunchSelection: Dispatch<SetStateAction<ConversationSelection>>;
   onChangeSessionPresentation: (
     thread: PersonalDesktopProjectThread,
     input: Omit<
@@ -779,11 +786,7 @@ function ProjectDetail({
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
 }) {
-  const [startState, setStartState] = useState<{
-    status: "idle" | "starting" | "error";
-    message: string;
-    executionId: string | null;
-  }>({ status: "idle", message: "", executionId: null });
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [launchOptions, setLaunchOptions] =
     useState<ManagedConversationLaunchOptions | null>(null);
@@ -815,23 +818,38 @@ function ProjectDetail({
     setPresentationNow(Date.now());
     setLaunchOpen(false);
     setLaunchOptions(null);
+    setLaunchError(null);
     setOpenSessionActionsId(null);
   }, [project?.id]);
   useEffect(() => {
     if (!managedConversations || !project?.id) return;
     let active = true;
-    void managedConversations
-      .launchOptions()
-      .then(({ options }) => {
+    void Promise.all([
+      managedConversations.launchOptions(),
+      localAiClients?.list()
+    ])
+      .then(([{ options }, settings]) => {
         if (!active) return;
+        const assignment = settings
+          ? assignmentFrom(settings.readModel, "conversations")
+          : null;
+        if (settings && !assignment) {
+          throw new Error(
+            "The Conversations default is unavailable. Check Agent Configuration."
+          );
+        }
         setLaunchOptions(options);
+        setLaunchError(null);
         setLaunchSelection((current) => {
+          if (assignment) {
+            return selectionForAssignment(options, assignment);
+          }
           const instance = options.instances.find(
             (candidate) => candidate.instanceId === current.instanceId
           );
           if (
             instance &&
-            launchOwner(instance).ready &&
+            launchReady(instance) &&
             instance.models.some((model) => model.id === current.model) &&
             instance.capabilities.permissionModes.some(
               (mode) =>
@@ -840,28 +858,21 @@ function ProjectDetail({
             )
           )
             return current;
-          const firstReady = options.instances.find(
-            (candidate) => launchOwner(candidate).ready
+          const firstReady = options.instances.find((candidate) =>
+            launchReady(candidate)
           );
-          return launchSelectionForInstance(
-            options,
-            firstReady?.instanceId ?? ""
-          );
+          return selectionForInstance(options, firstReady?.instanceId ?? "");
         });
       })
       .catch((cause: unknown) => {
         if (!active) return;
         setLaunchOptions(null);
-        setStartState({
-          status: "error",
-          message: cause instanceof Error ? cause.message : String(cause),
-          executionId: null
-        });
+        setLaunchError(cause instanceof Error ? cause.message : String(cause));
       });
     return () => {
       active = false;
     };
-  }, [managedConversations, project?.id, setLaunchSelection]);
+  }, [localAiClients, managedConversations, project?.id, setLaunchSelection]);
   if (!project && loading) {
     return (
       <section
@@ -1025,6 +1036,7 @@ function ProjectDetail({
         </header>
         <div className="personal-new-conversation-content" />
         <NewConversationComposer
+          contextKind={project.contextKind}
           key={project.id}
           api={managedConversations}
           projectId={project.id}
@@ -1069,16 +1081,9 @@ function ProjectDetail({
           New
         </button>
       </header>
-      {startState.message ? (
-        <p
-          className={
-            startState.status === "error"
-              ? "personal-managed-error"
-              : "personal-managed-status"
-          }
-          role={startState.status === "error" ? "alert" : "status"}
-        >
-          {startState.message}
+      {launchError ? (
+        <p className="personal-managed-error" role="alert">
+          {launchError}
         </p>
       ) : null}
       <section className="personal-sessions" aria-label="Captured Sessions">
@@ -1122,12 +1127,18 @@ function ProjectDetail({
             ) : null}
           </div>
         ) : (
-          <div className="personal-memory-state" role="status">
-            <strong>No Captured Sessions yet</strong>
-            <p>
-              Sessions appear after the Supported Capture Hook records activity
-              in this Project.
-            </p>
+          <div
+            className="personal-memory-empty-detail personal-sessions-empty"
+            role="status"
+          >
+            <div>
+              <BookText aria-hidden="true" className="personal-empty-icon" />
+              <h2>No Captured Sessions yet</h2>
+              <p>
+                Sessions appear after the Supported Capture Hook records
+                activity in this Project.
+              </p>
+            </div>
           </div>
         )}
       </section>
@@ -1146,7 +1157,6 @@ function StoreConversation({
   pendingCanonicalConversation,
   managedDraft,
   onRetryManagedConversation,
-  onStopControlChange,
   onInspectEvent,
   project,
   routeSessionId,
@@ -1163,7 +1173,6 @@ function StoreConversation({
   pendingCanonicalConversation: boolean;
   managedDraft: ManagedConversationDraft | null;
   onRetryManagedConversation: (() => void) | null;
-  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   project: PersonalDesktopProject;
   routeSessionId: string;
@@ -1213,6 +1222,7 @@ function StoreConversation({
   const [checkoutIdentity, setCheckoutIdentity] = useState<{
     executionId: string;
     executionGeneration: number;
+    vcsDriver: "git" | null;
   } | null>(null);
   const [contextAttachments, setContextAttachments] = useState<
     Array<
@@ -1254,13 +1264,36 @@ function StoreConversation({
       attachContext({ kind: "terminal", reference: contextReference, label }),
     [attachContext]
   );
+  const retiredTransientIds = useRef(new Set<string>());
+  const refreshedTerminalCommand = useRef<string | null>(null);
   const mergeTransientOutputs = useCallback(
     (
       items: ManagedConversationRuntimeItem[],
       command: ManagedConversationRuntimeState["latestCommand"]
     ) => {
+      const terminal =
+        command?.commandKind === "prompt" &&
+        ["completed", "failed", "indeterminate"].includes(command.state);
       const completed =
         command?.commandKind === "prompt" && command.state === "completed";
+      if (terminal) {
+        if (command.state !== "indeterminate")
+          for (const item of items) retiredTransientIds.current.add(item.id);
+        const key = `${command.id}:${command.updatedAt}:${canonicalConversation?.threadId ?? thread.id}`;
+        if (refreshedTerminalCommand.current !== key) {
+          refreshedTerminalCommand.current = key;
+          store.refreshFromDurableEvent();
+          void store.loadInitial(
+            {
+              ...thread,
+              id: canonicalConversation?.threadId ?? thread.id,
+              sessionId:
+                canonicalConversation?.capturedSessionId ?? thread.sessionId
+            },
+            { refresh: true }
+          );
+        }
+      }
       if (completed && command.clientUserMessageId) {
         setOptimisticPrompts((current) =>
           current.some(
@@ -1275,16 +1308,13 @@ function StoreConversation({
       }
       const visible = items.filter(
         (item) =>
-          item.state === "pending" && (item.providerItemId || !completed)
+          item.state === "pending" && !retiredTransientIds.current.has(item.id)
       );
       const visibleIds = new Set(visible.map((item) => item.id));
       setTransientAssistantOutputs((current) => {
         const next = new Map(
           current
-            .filter(
-              (event) =>
-                event.metadata.providerItemId || visibleIds.has(event.id)
-            )
+            .filter((event) => visibleIds.has(event.id))
             .map((event) => [event.id, event] as const)
         );
         let changed = next.size !== current.length;
@@ -1324,7 +1354,12 @@ function StoreConversation({
         return changed ? [...next.values()] : current;
       });
     },
-    []
+    [
+      store,
+      thread,
+      canonicalConversation?.threadId,
+      canonicalConversation?.capturedSessionId
+    ]
   );
   useEffect(() => {
     setCanonicalConversation(initialCanonicalConversation);
@@ -1368,6 +1403,19 @@ function StoreConversation({
       ),
     [canonicalEvents]
   );
+  const canonicalProviderTurns = useMemo(
+    () =>
+      new Set(
+        canonicalEvents
+          .filter(
+            (event) => event.actor === "assistant" || event.actor === "agent"
+          )
+          .flatMap((event) =>
+            event.metadata.providerTurnId ? [event.metadata.providerTurnId] : []
+          )
+      ),
+    [canonicalEvents]
+  );
   const unreconciledTransientOutputs = useMemo(
     () =>
       transientAssistantOutputs.filter((event) => {
@@ -1375,11 +1423,12 @@ function StoreConversation({
         const itemId = event.metadata.providerItemId;
         return (
           !turnId ||
-          !itemId ||
-          !canonicalProviderItems.has(`${turnId}\0${itemId}`)
+          (itemId
+            ? !canonicalProviderItems.has(`${turnId}\0${itemId}`)
+            : !canonicalProviderTurns.has(turnId))
         );
       }),
-    [canonicalProviderItems, transientAssistantOutputs]
+    [canonicalProviderItems, canonicalProviderTurns, transientAssistantOutputs]
   );
   const unreconciledOptimisticPrompts = useMemo(() => {
     const canonicalClientMessageIds = new Set(
@@ -1399,14 +1448,24 @@ function StoreConversation({
       return;
     setOptimisticPrompts(unreconciledOptimisticPrompts);
   }, [optimisticPrompts.length, unreconciledOptimisticPrompts]);
-  const previousRouteSessionId = useRef(routeSessionId);
+  const executionIdentity =
+    managedDraft?.conversation.executionId ??
+    canonicalConversation?.executionId;
+  const previousConversation = useRef({ routeSessionId, executionIdentity });
   useEffect(() => {
-    if (previousRouteSessionId.current === routeSessionId) return;
-    previousRouteSessionId.current = routeSessionId;
+    const previous = previousConversation.current;
+    previousConversation.current = { routeSessionId, executionIdentity };
+    if (
+      previous.routeSessionId === routeSessionId ||
+      (executionIdentity && previous.executionIdentity === executionIdentity)
+    )
+      return;
     setOptimisticPrompts([]);
     setTransientAssistantOutputs([]);
+    retiredTransientIds.current.clear();
+    refreshedTerminalCommand.current = null;
     setContextAttachments([]);
-  }, [routeSessionId]);
+  }, [routeSessionId, executionIdentity]);
   const latestPromptTime = Math.max(
     0,
     ...canonicalEvents
@@ -1419,6 +1478,18 @@ function StoreConversation({
   const streamingOutput = [...unreconciledTransientOutputs]
     .reverse()
     .find((event) => Date.parse(event.timestamp) >= latestPromptTime);
+  // Capture can publish the answer before the runtime marks its prompt complete.
+  // Do not recreate the empty response row during that handoff.
+  const hasCapturedResponse = canonicalEvents.some(
+    (event) =>
+      (event.actor === "assistant" || event.actor === "agent") &&
+      (event.eventType === "captured" ||
+        event.eventType === "agent_message" ||
+        event.eventType === "message") &&
+      !event.invalidatedAt &&
+      Boolean(event.content || event.contentPreview) &&
+      Date.parse(event.timestamp) > latestPromptTime
+  );
   const overlayEvents = [
     ...unreconciledOptimisticPrompts.map(({ event }) => event),
     ...unreconciledTransientOutputs.map((event) =>
@@ -1429,7 +1500,7 @@ function StoreConversation({
           }
         : event
     ),
-    ...(responseActive && !streamingOutput
+    ...(responseActive && !streamingOutput && !hasCapturedResponse
       ? [
           {
             id: `pending-response:${routeSessionId}`,
@@ -1519,7 +1590,6 @@ function StoreConversation({
           startupStatus={managedDraft?.status ?? null}
           startupMessage={managedDraft?.message ?? ""}
           onRetryStartup={onRetryManagedConversation}
-          onStopControlChange={onStopControlChange}
           managedConversationRecoveryRevision={
             managedConversationRecoveryRevision
           }
@@ -1580,11 +1650,6 @@ type ComposerState =
   | { status: "read_only"; message: string }
   | { status: "error"; message: string };
 
-type ManagedConversationStopControl = {
-  disabled: boolean;
-  stop: () => void;
-};
-
 const transferLifecycleMessage = (
   transfer: Awaited<
     ReturnType<ManagedConversationDesktopApi["transferStatus"]>
@@ -1627,20 +1692,25 @@ const transferLifecycleMessage = (
 function ManagedConversationUsage({
   model,
   provider,
-  usage
+  usage,
+  initializing = false,
+  contextWindow
 }: {
   model: string | null;
   provider: "codex" | "claude" | "pi";
   usage: ManagedConversationContextUsage | null;
+  initializing?: boolean;
+  contextWindow?: number;
 }) {
   const displayModel = usage?.model ?? model;
+  const usedTokens = usage?.usedTokens ?? (initializing ? 0 : null);
+  const modelContextWindow = usage?.modelContextWindow ?? contextWindow;
   const percentage =
-    usage?.usedTokens !== null &&
-    usage?.usedTokens !== undefined &&
-    usage.modelContextWindow &&
-    usage.modelContextWindow > 0
-      ? Math.min(100, (usage.usedTokens / usage.modelContextWindow) * 100)
-      : null;
+    usedTokens !== null && modelContextWindow && modelContextWindow > 0
+      ? Math.min(100, (usedTokens / modelContextWindow) * 100)
+      : initializing && usedTokens === 0
+        ? 0
+        : null;
   const details = [
     usage?.inputTokens !== null && usage?.inputTokens !== undefined
       ? `Input ${compactTokenCount(usage.inputTokens)}`
@@ -1665,11 +1735,11 @@ function ManagedConversationUsage({
         .filter(Boolean)
         .join(" · ")}
     >
-      {usage?.usedTokens !== null && usage?.usedTokens !== undefined ? (
+      {usedTokens !== null ? (
         <>
           <span>Context:</span>
           <span className="personal-managed-usage-count">
-            {compactTokenCount(usage.usedTokens)}
+            {compactTokenCount(usedTokens)}
           </span>
           {percentage !== null ? (
             <span
@@ -1683,9 +1753,9 @@ function ManagedConversationUsage({
               <span style={{ width: `${percentage}%` }} />
             </span>
           ) : null}
-          {usage.modelContextWindow ? (
+          {modelContextWindow ? (
             <span className="personal-managed-usage-count">
-              {compactTokenCount(usage.modelContextWindow)}
+              {compactTokenCount(modelContextWindow)}
             </span>
           ) : null}
         </>
@@ -1921,7 +1991,6 @@ function ManagedConversationComposer({
   startupMessage,
   startupStatus,
   onRetryStartup,
-  onStopControlChange,
   managedConversationRecoveryRevision,
   managedConversationUpdate,
   contextAttachments,
@@ -1942,7 +2011,6 @@ function ManagedConversationComposer({
   startupMessage: string;
   startupStatus: ManagedConversationDraft["status"] | null;
   onRetryStartup: (() => void) | null;
-  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   managedConversationRecoveryRevision: number;
   managedConversationUpdate: PersonalMemoryWorkspaceProps["managedConversationUpdate"];
   contextAttachments: Array<
@@ -1969,7 +2037,11 @@ function ManagedConversationComposer({
     conversation: ManagedConversationIdentity
   ) => void;
   onCheckoutIdentityChanged: (
-    value: { executionId: string; executionGeneration: number } | null
+    value: {
+      executionId: string;
+      executionGeneration: number;
+      vcsDriver: "git" | null;
+    } | null
   ) => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -2066,7 +2138,6 @@ function ManagedConversationComposer({
         }
       : null
   );
-  const composingRef = useRef(false);
   const draftRef = useRef("");
   const draftEditedRef = useRef(false);
   const persistedDraftRef = useRef({ scopeKey: "", value: "" });
@@ -2109,15 +2180,23 @@ function ManagedConversationComposer({
             persistedDraftRef.current = { scopeKey, value };
           }
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (reportFailure) {
-            setDraftError("Koed could not save this draft securely.");
+            const delay = localApiRetryDelay(error);
+            setDraftError(
+              delay
+                ? new LocalApiRateLimitError(delay).message
+                : "Koed could not save this draft securely."
+            );
           }
         });
       return draftWriteChainRef.current;
     },
     [api, draftScope, draftScopeKey]
   );
+
+  const transientOutputsListener = useRef(onTransientOutputs);
+  transientOutputsListener.current = onTransientOutputs;
 
   const refreshRuntimeSnapshot = useCallback(
     async (executionId: string) => {
@@ -2134,6 +2213,10 @@ function ManagedConversationComposer({
           if (update.execution.id !== executionId) continue;
           const reduced = reduceManagedConversationRuntime(next, update);
           next = reduced.state;
+          transientOutputsListener.current(
+            next.items.filter((item) => item.itemKind === "transient_output"),
+            next.latestCommand
+          );
           requiresFollowup ||= reduced.requiresSnapshot;
         }
         runtimeRef.current = next;
@@ -2156,11 +2239,15 @@ function ManagedConversationComposer({
     [api]
   );
 
+  const [draftReadRevision, setDraftReadRevision] = useState(0);
   useEffect(() => {
     let active = true;
-    setDraft("");
-    draftRef.current = "";
-    draftEditedRef.current = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    if (persistedDraftRef.current.scopeKey !== draftScopeKey) {
+      setDraft("");
+      draftRef.current = "";
+      draftEditedRef.current = false;
+    }
     persistedDraftRef.current = { scopeKey: draftScopeKey, value: "" };
     setDraftReady(false);
     setDraftError("");
@@ -2181,15 +2268,26 @@ function ManagedConversationComposer({
         };
         setDraftReady(true);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!active) return;
-        setDraftError("Draft persistence is unavailable on this device.");
-        setDraftReady(true);
+        const delay = localApiRetryDelay(error);
+        setDraftError(
+          delay
+            ? new LocalApiRateLimitError(delay).message
+            : "Draft persistence is unavailable on this device. Reopen this Conversation to retry."
+        );
+        // Do not overwrite a saved draft when its read failed.
+        if (delay)
+          retryTimer = setTimeout(
+            () => setDraftReadRevision((value) => value + 1),
+            delay * 1000
+          );
       });
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [api, draftScope, draftScopeKey, initialPrompt]);
+  }, [api, draftScope, draftScopeKey, initialPrompt, draftReadRevision]);
 
   useEffect(() => {
     if (!draftReady) return;
@@ -2254,7 +2352,8 @@ function ManagedConversationComposer({
       resolvedConversation.executionId && runtime
         ? {
             executionId: resolvedConversation.executionId,
-            executionGeneration: runtime.executionGeneration
+            executionGeneration: runtime.executionGeneration,
+            vcsDriver: runtime.vcsDriver
           }
         : null
     );
@@ -2276,37 +2375,65 @@ function ManagedConversationComposer({
     resolvedConversation.executionId
   ]);
 
+  const processedRuntimeRevision = useRef(0);
   useEffect(() => {
     const envelope = managedConversationUpdate;
     const executionId = resolvedConversation.executionId;
-    if (
-      !envelope ||
-      !executionId ||
-      envelope.update.execution.id !== executionId
-    ) {
-      return;
-    }
-    if (runtimeSnapshotInFlightRef.current || !runtimeRef.current) {
-      pendingRuntimeUpdatesRef.current.push(envelope.update);
-      if (!runtimeSnapshotInFlightRef.current) {
-        void refreshRuntimeSnapshot(executionId);
-      }
-      return;
-    }
-    const reduced = reduceManagedConversationRuntime(
-      runtimeRef.current,
-      envelope.update
+    if (!envelope || !executionId) return;
+    const batch = managedConversationUpdatesSince(
+      envelope,
+      processedRuntimeRevision.current
     );
-    runtimeRef.current = reduced.state;
-    setRuntime(reduced.state);
-    setRuntimeActionBusy(false);
-    if (reduced.requiresSnapshot) {
-      void refreshRuntimeSnapshot(executionId);
+    processedRuntimeRevision.current = envelope.revision;
+    let requiresSnapshot = batch.gap;
+    for (const { update } of batch.updates) {
+      if (update.execution.id !== executionId) continue;
+      if (runtimeSnapshotInFlightRef.current || !runtimeRef.current) {
+        pendingRuntimeUpdatesRef.current.push(update);
+        requiresSnapshot ||= !runtimeSnapshotInFlightRef.current;
+        continue;
+      }
+      const reduced = reduceManagedConversationRuntime(
+        runtimeRef.current,
+        update
+      );
+      runtimeRef.current = reduced.state;
+      // Apply terminal turn bookkeeping before React can batch a later turn.
+      transientOutputsListener.current(
+        reduced.state.items.filter(
+          (item) => item.itemKind === "transient_output"
+        ),
+        reduced.state.latestCommand
+      );
+      setRuntime(reduced.state);
+      setRuntimeActionBusy(false);
+      requiresSnapshot ||= reduced.requiresSnapshot;
     }
+    if (requiresSnapshot && !runtimeSnapshotInFlightRef.current)
+      void refreshRuntimeSnapshot(executionId);
   }, [
     managedConversationUpdate,
     refreshRuntimeSnapshot,
     resolvedConversation.executionId
+  ]);
+
+  // Reconcile missed delivery and reconnects against durable command state.
+  useEffect(() => {
+    const executionId = resolvedConversation.executionId;
+    if (
+      !executionId ||
+      ["failed", "stopped", "fenced"].includes(runtime?.executionState ?? "")
+    )
+      return;
+    const timer = setInterval(() => {
+      if (!runtimeSnapshotInFlightRef.current)
+        void refreshRuntimeSnapshot(executionId);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [
+    resolvedConversation.executionId,
+    runtime?.executionState,
+    refreshRuntimeSnapshot
   ]);
 
   useEffect(() => {
@@ -2347,6 +2474,12 @@ function ManagedConversationComposer({
     submissionInFlightRef.current = false;
     submissionRef.current = null;
     setResolvedConversation(conversation);
+    if (initialPrompt?.status === "reconciling") {
+      setState({ status: "reconciling", message: initialPrompt.message });
+      return () => {
+        active = false;
+      };
+    }
     if (startupStatus === "starting") {
       setState({
         status: "starting",
@@ -2362,12 +2495,6 @@ function ManagedConversationComposer({
         message:
           startupMessage || "Koed is reconciling this Conversation safely."
       });
-      return () => {
-        active = false;
-      };
-    }
-    if (initialPrompt?.status === "reconciling") {
-      setState({ status: "reconciling", message: initialPrompt.message });
       return () => {
         active = false;
       };
@@ -2552,7 +2679,7 @@ function ManagedConversationComposer({
       setSettingsChange(null);
       setSettingsError("");
       void refreshRuntimeSnapshot(resolvedConversation.executionId);
-      void persistDraft("", false);
+      void persistDraft(draftRef.current, false);
       setState(
         startupStatus === "starting"
           ? {
@@ -2630,28 +2757,21 @@ function ManagedConversationComposer({
     [api, resolvedConversation.executionId, runtimeActionBusy]
   );
 
-  const controlRuntime = useCallback(
-    (operation: "interrupt" | "stop") => {
-      const executionId = resolvedConversation.executionId;
-      if (!executionId || !runtime || runtimeActionBusy) return;
-      setRuntimeActionBusy(true);
-      void api[operation]({
+  const interruptRuntime = useCallback(() => {
+    const executionId = resolvedConversation.executionId;
+    if (!executionId || !runtime || runtimeActionBusy) return;
+    if (runtime.executionState !== "running") return;
+    setRuntimeActionBusy(true);
+    void api
+      .interrupt({
         executionId,
         executionGeneration: runtime.executionGeneration,
-        idempotencyKey: `desktop-${operation}:${crypto.randomUUID()}`
+        idempotencyKey: `desktop-interrupt:${crypto.randomUUID()}`
       })
-        .then(() => setRuntimeActionBusy(false))
-        .catch(() => setRuntimeActionBusy(false));
-    },
-    [api, resolvedConversation.executionId, runtime, runtimeActionBusy]
-  );
+      .then(() => setRuntimeActionBusy(false))
+      .catch(() => setRuntimeActionBusy(false));
+  }, [api, resolvedConversation.executionId, runtime, runtimeActionBusy]);
 
-  const stopDisabled =
-    !runtime ||
-    runtimeActionBusy ||
-    ["stopping", "stopped", "failed", "fenced"].includes(
-      runtime.executionState
-    );
   useEffect(() => {
     const command = runtime?.latestCommand;
     if (
@@ -2680,32 +2800,74 @@ function ManagedConversationComposer({
     onContextAttachmentsChanged,
     refreshSettingsOptions
   ]);
-  useEffect(() => {
-    if (!runtime) {
-      onStopControlChange(null);
-      return;
-    }
-    onStopControlChange({
-      disabled: stopDisabled,
-      stop: () => controlRuntime("stop")
-    });
-    return () => onStopControlChange(null);
-  }, [controlRuntime, onStopControlChange, runtime, stopDisabled]);
 
+  useEffect(() => {
+    const command = runtime?.latestCommand;
+    if (
+      command?.commandKind !== "prompt" ||
+      !["completed", "failed", "indeterminate"].includes(command.state)
+    )
+      return;
+    submissionInFlightRef.current = false;
+    setState((current) =>
+      current.status === "sending" || current.status === "starting"
+        ? {
+            status:
+              runtime?.executionState === "running" &&
+              command.state !== "indeterminate"
+                ? "ready"
+                : "reconciling",
+            message: ""
+          }
+        : current
+    );
+  }, [runtime?.latestCommand, runtime?.executionState]);
+
+  const authenticationFailed =
+    runtime?.latestCommand?.lastErrorCode ===
+      "ManagedConversationAuthenticationError" ||
+    runtime?.executionLastErrorCode ===
+      "ManagedConversationAuthenticationError";
+  const preservedPrompt =
+    lastSubmittedRef.current?.prompt ?? initialPrompt?.prompt ?? draft;
+  useEffect(() => {
+    if (
+      !authenticationFailed ||
+      !draftReady ||
+      !preservedPrompt ||
+      draftRef.current
+    )
+      return;
+    setDraft(preservedPrompt);
+    draftRef.current = preservedPrompt;
+    void persistDraft(preservedPrompt, true);
+  }, [authenticationFailed, draftReady, preservedPrompt, persistDraft]);
+
+  const terminalRuntimeFailure =
+    runtime?.executionState === "failed" || startupStatus === "failed";
   const inputDisabled =
-    !ownerSendReady || !["ready", "starting", "sending"].includes(state.status);
+    terminalRuntimeFailure ||
+    !ownerSendReady ||
+    !["ready", "starting", "sending"].includes(state.status);
   const sendDisabled =
     inputDisabled || state.status === "sending" || !draft.trim();
   const promptActive =
-    state.status === "sending" ||
-    (["attaching", "starting", "ready"].includes(state.status) &&
-      initialPrompt?.status === "queued" &&
-      !runtime?.latestCommand &&
-      runtime?.executionState !== "failed") ||
-    (runtime?.latestCommand?.commandKind === "prompt" &&
-      ["queued", "blocked", "dispatching"].includes(
+    !terminalRuntimeFailure &&
+    !(
+      runtime?.latestCommand?.commandKind === "prompt" &&
+      ["completed", "failed", "indeterminate"].includes(
         runtime.latestCommand.state
-      ));
+      )
+    ) &&
+    (state.status === "sending" ||
+      (["attaching", "starting", "ready"].includes(state.status) &&
+        initialPrompt?.status === "queued" &&
+        !runtime?.latestCommand &&
+        runtime?.executionState !== "failed") ||
+      (runtime?.latestCommand?.commandKind === "prompt" &&
+        ["queued", "blocked", "dispatching"].includes(
+          runtime.latestCommand.state
+        )));
   useEffect(() => {
     onResponseActiveChange(Boolean(promptActive));
   }, [onResponseActiveChange, promptActive]);
@@ -2714,7 +2876,26 @@ function ManagedConversationComposer({
       aria-busy={state.status === "sending"}
       className={`personal-managed-composer state-${state.status}`}
     >
-      {runtime?.latestCommand?.state === "indeterminate" ? (
+      {authenticationFailed ? (
+        <div className="personal-managed-runtime-error" role="alert">
+          <p>
+            The AI Client rejected authentication. Sign in to the selected AI
+            Client, then start a new Conversation with the preserved prompt.
+            Koed will not resend it automatically.
+          </p>
+          {preservedPrompt ? (
+            <label>
+              Preserved prompt
+              <textarea
+                aria-label="Preserved prompt"
+                readOnly
+                value={preservedPrompt}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : runtime?.latestCommand?.state === "indeterminate" ? (
         <div className="personal-managed-runtime-error" role="alert">
           Koed cannot prove whether the last {runtime.latestCommand.commandKind}{" "}
           reached the AI Client. It will not retry automatically.
@@ -2722,9 +2903,10 @@ function ManagedConversationComposer({
       ) : (runtime?.latestCommand?.state === "failed" &&
           runtime.latestCommand.lastErrorCode !==
             "ManagedConversationSettingsUnavailableError") ||
-        runtime?.executionState === "failed" ? (
+        terminalRuntimeFailure ? (
         <div className="personal-managed-runtime-error" role="alert">
-          The managed Conversation stopped after a runtime failure.
+          This Conversation stopped after a runtime failure. Start a new
+          Conversation from the Project to try again.
         </div>
       ) : null}
       {runtime?.items
@@ -2737,34 +2919,11 @@ function ManagedConversationComposer({
             onRespond={(response) => respondToRuntimeItem(item, response)}
           />
         ))}
-      {contextAttachments.length ? (
-        <div
-          className="personal-managed-attachments"
-          aria-label="Prompt attachments"
-        >
-          {contextAttachments.map((attachment) => (
-            <span key={`${attachment.kind}:${attachment.reference}`}>
-              <Paperclip aria-hidden="true" />
-              {attachment.label}
-              <button
-                aria-label={`Remove ${attachment.label}`}
-                onClick={() =>
-                  onContextAttachmentsChanged(
-                    contextAttachments.filter(
-                      (candidate) => candidate !== attachment
-                    )
-                  )
-                }
-                type="button"
-              >
-                <X aria-hidden="true" />
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {state.status === "error" ||
-      (state.status === "reconciling" && startupStatus === "reconciling") ? (
+      {!terminalRuntimeFailure &&
+      (state.status === "error" ||
+        (state.status === "reconciling" &&
+          (startupStatus === "reconciling" ||
+            initialPrompt?.status === "reconciling"))) ? (
         <p
           className="personal-managed-status"
           role={state.status === "error" ? "alert" : "status"}
@@ -2772,7 +2931,7 @@ function ManagedConversationComposer({
           {state.message}
         </p>
       ) : null}
-      {state.status === "error" && onRetryStartup ? (
+      {state.status === "error" && !terminalRuntimeFailure && onRetryStartup ? (
         <button
           className="personal-managed-retry"
           onClick={onRetryStartup}
@@ -2781,140 +2940,146 @@ function ManagedConversationComposer({
           Retry
         </button>
       ) : null}
-      <div className="personal-managed-composer-field conversation-input">
-        <label>
-          <span className="sr-only">Prompt selected AI Client</span>
-          <textarea
-            disabled={inputDisabled}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              setDraft(value);
-              draftRef.current = value;
-              draftEditedRef.current = true;
-              setDraftError("");
-              submissionRef.current = null;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-            }}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent;
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !nativeEvent.isComposing &&
-                !composingRef.current
-              ) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            placeholder={
-              state.status === "ready" ||
-              state.status === "starting" ||
-              state.status === "sending"
-                ? "Ask the selected AI Client to work in this Project"
-                : "Prompt unavailable"
-            }
-            rows={1}
-            value={draft}
-          />
-        </label>
-        <div className="conversation-input-footer">
-          <ConversationSettings
-            options={settingsOptions}
-            selection={{
-              instanceId:
-                resolvedConversation.executionOwner?.instanceId ??
-                initialSelection?.aiClientInstanceId ??
-                "",
-              model: selectedSettings?.model ?? usage?.model ?? "",
-              reasoningEffort: selectedSettings
-                ? (selectedSettings.reasoningEffort ?? "")
-                : (usage?.reasoningEffort ?? ""),
-              permissionMode: selectedSettings?.permissionMode ?? ""
-            }}
-            clientLabel={
-              usage ? managedProviderLabel(usage.provider) : undefined
-            }
-            clientProvider={usage?.provider}
-            clientLocked
-            disabledReason={
-              promptActive
-                ? "Settings are available when this turn finishes."
-                : state.status !== "ready" || transferBusy
-                  ? "Conversation settings are unavailable during this operation."
-                  : !selectedSettings
-                    ? "Loading Conversation settings…"
-                    : undefined
-            }
-            onOpen={refreshSettingsOptions}
-            onChange={(selection) => {
-              if (
-                !selectedSettings ||
-                !selection.permissionMode ||
-                promptActive ||
-                state.status !== "ready"
-              )
-                return;
-              const next = {
-                model: selection.model,
-                reasoningEffort: selection.reasoningEffort || null,
-                permissionMode: selection.permissionMode
-              };
-              const expected = settingsChange?.expected ?? selectedSettings;
-              setSettingsChange(
-                managedConversationSettingsKey(next) ===
-                  managedConversationSettingsKey(expected)
-                  ? null
-                  : { expected, next }
-              );
-              setSettingsError("");
-            }}
-          />
-          <button
-            className="conversation-send"
-            aria-label={promptActive ? "Interrupt active turn" : "Send prompt"}
-            disabled={
-              promptActive
-                ? !runtime ||
-                  runtimeActionBusy ||
-                  runtime.executionState !== "running"
-                : sendDisabled
-            }
-            onClick={() =>
-              promptActive ? controlRuntime("interrupt") : void submit()
-            }
-            title={promptActive ? "Interrupt active turn" : "Send prompt"}
-            type="button"
-          >
-            {promptActive ? (
-              <Square aria-hidden="true" />
-            ) : (
-              <ArrowUp aria-hidden="true" />
-            )}
-          </button>
-        </div>
-      </div>
+      <ConversationInput
+        action={{
+          kind: promptActive ? "interrupt" : "send",
+          label: promptActive ? "Interrupt active turn" : "Send prompt",
+          disabled: promptActive
+            ? !runtime ||
+              runtimeActionBusy ||
+              runtime.executionState !== "running"
+            : sendDisabled
+        }}
+        attachments={
+          contextAttachments.length ? (
+            <div
+              className="personal-managed-attachments"
+              aria-label="Prompt attachments"
+            >
+              {contextAttachments.map((attachment) => (
+                <span key={`${attachment.kind}:${attachment.reference}`}>
+                  <Paperclip aria-hidden="true" />
+                  {attachment.label}
+                  <button
+                    aria-label={`Remove ${attachment.label}`}
+                    onClick={() =>
+                      onContextAttachmentsChanged(
+                        contextAttachments.filter(
+                          (candidate) => candidate !== attachment
+                        )
+                      )
+                    }
+                    type="button"
+                  >
+                    <X aria-hidden="true" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null
+        }
+        disabled={inputDisabled}
+        label="Prompt selected AI Client"
+        onChange={(value) => {
+          setDraft(value);
+          draftRef.current = value;
+          draftEditedRef.current = true;
+          setDraftError("");
+          submissionRef.current = null;
+        }}
+        onSubmit={() => (promptActive ? interruptRuntime() : void submit())}
+        placeholder={
+          state.status === "ready" ||
+          state.status === "starting" ||
+          state.status === "sending"
+            ? "Ask the selected AI Client to work in this Project"
+            : "Prompt unavailable"
+        }
+        settings={{
+          options: settingsOptions,
+          selection: {
+            instanceId:
+              resolvedConversation.executionOwner?.instanceId ??
+              initialSelection?.aiClientInstanceId ??
+              "",
+            model: selectedSettings?.model ?? usage?.model ?? "",
+            reasoningEffort: selectedSettings
+              ? (selectedSettings.reasoningEffort ?? "")
+              : (usage?.reasoningEffort ?? ""),
+            permissionMode: selectedSettings?.permissionMode ?? ""
+          },
+          clientLabel: usage ? managedProviderLabel(usage.provider) : undefined,
+          clientProvider: usage?.provider,
+          clientLocked: true,
+          disabledReason: promptActive
+            ? "Settings are available when this turn finishes."
+            : state.status !== "ready" || transferBusy
+              ? "Conversation settings are unavailable during this operation."
+              : !selectedSettings
+                ? "Loading Conversation settings…"
+                : undefined,
+          onOpen: refreshSettingsOptions,
+          onChange: (selection) => {
+            if (
+              !selectedSettings ||
+              !selection.permissionMode ||
+              promptActive ||
+              state.status !== "ready"
+            )
+              return;
+            const next = {
+              model: selection.model,
+              reasoningEffort: selection.reasoningEffort || null,
+              permissionMode: selection.permissionMode
+            };
+            const expected = settingsChange?.expected ?? selectedSettings;
+            setSettingsChange(
+              managedConversationSettingsKey(next) ===
+                managedConversationSettingsKey(expected)
+                ? null
+                : { expected, next }
+            );
+            setSettingsError("");
+          }
+        }}
+        value={draft}
+      />
       {settingsError && (
         <p className="personal-managed-error" role="alert">
           {settingsError}
         </p>
       )}
-      {resolvedConversation.executionId && usage ? (
+      {resolvedConversation.executionId ? (
         <div className="personal-managed-meta-row">
           <ManagedConversationUsage
-            model={usage.model}
-            provider={usage.provider}
-            usage={usage.usage}
+            model={usage?.model ?? initialSelection?.model ?? null}
+            provider={
+              usage?.provider ??
+              resolvedConversation.executionOwner?.driverId ??
+              "codex"
+            }
+            usage={usage?.usage ?? null}
+            initializing={Boolean(initialSelection)}
+            contextWindow={
+              settingsOptions?.instances
+                .find(
+                  (instance) =>
+                    instance.instanceId === initialSelection?.aiClientInstanceId
+                )
+                ?.models.find(
+                  (model) =>
+                    model.id === (usage?.model ?? initialSelection?.model)
+                )?.contextWindow
+            }
           />
-          {state.status === "ready" && authorizeTransfer ? (
+          {authorizeTransfer ? (
             <details
               className="personal-managed-transfer"
               onToggle={(event) => {
+                if (state.status !== "ready") {
+                  event.currentTarget.open = false;
+                  return;
+                }
                 if (!event.currentTarget.open || targetDevices.length) return;
                 setTransferMessage("Loading Personal Devices…");
                 void api
@@ -2935,7 +3100,12 @@ function ManagedConversationComposer({
                   });
               }}
             >
-              <summary>
+              <summary
+                aria-disabled={state.status !== "ready"}
+                onClick={(event) => {
+                  if (state.status !== "ready") event.preventDefault();
+                }}
+              >
                 <MonitorSmartphone aria-hidden="true" />
                 Switch device
               </summary>
@@ -2959,7 +3129,10 @@ function ManagedConversationComposer({
                 </label>
                 <button
                   disabled={
-                    transferBusy || !selectedTarget || !ownerHandoffReady
+                    state.status !== "ready" ||
+                    transferBusy ||
+                    !selectedTarget ||
+                    !ownerHandoffReady
                   }
                   onClick={() => {
                     const operationId = crypto.randomUUID();
@@ -2998,7 +3171,12 @@ function ManagedConversationComposer({
                   Move
                 </button>
                 <button
-                  disabled={transferBusy || !selectedTarget || !ownerForkReady}
+                  disabled={
+                    state.status !== "ready" ||
+                    transferBusy ||
+                    !selectedTarget ||
+                    !ownerForkReady
+                  }
                   onClick={() => {
                     const operationId = crypto.randomUUID();
                     setTransferBusy(true);
@@ -3299,8 +3477,6 @@ function SessionDetail({
   const [titleDraft, setTitleDraft] = useState(title);
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
-  const [managedStopControl, setManagedStopControl] =
-    useState<ManagedConversationStopControl | null>(null);
 
   useEffect(() => {
     if (!editingTitle) setTitleDraft(title);
@@ -3445,18 +3621,6 @@ function SessionDetail({
             store={store}
             thread={thread}
           />
-          {managedStopControl ? (
-            <button
-              aria-label="Stop managed Conversation"
-              className="personal-session-stop-button"
-              disabled={managedStopControl.disabled}
-              onClick={managedStopControl.stop}
-              title="Stop managed Conversation"
-              type="button"
-            >
-              <X aria-hidden="true" />
-            </button>
-          ) : null}
         </div>
       </header>
       <div className="personal-conversation-host">
@@ -3476,7 +3640,6 @@ function SessionDetail({
           pendingCanonicalConversation={pendingCanonicalConversation}
           managedDraft={managedDraft}
           onRetryManagedConversation={onRetryManagedConversation}
-          onStopControlChange={setManagedStopControl}
           project={project}
           routeSessionId={routeSessionId}
           store={store}
@@ -3487,15 +3650,6 @@ function SessionDetail({
   );
 }
 
-type ManagedConversationDraft = {
-  conversation: ManagedConversationIdentity;
-  launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0];
-  initialPrompt?: InitialConversationPrompt;
-  status: "starting" | "ready" | "failed" | "reconciling";
-  message: string;
-  thread: PersonalDesktopProjectThread;
-};
-
 export function PersonalMemoryWorkspace({
   assignSessionProject,
   updateSessionPresentation,
@@ -3504,6 +3658,7 @@ export function PersonalMemoryWorkspace({
   managedConversationRecoveryRevision = 0,
   managedConversationUpdate = null,
   managedConversations,
+  managedConversationLifecycle,
   localAiClients,
   managedProject,
   markdownAdapters,
@@ -3520,13 +3675,14 @@ export function PersonalMemoryWorkspace({
   store,
   workspaceCandidates = []
 }: PersonalMemoryWorkspaceProps) {
-  const [launchSelection, setLaunchSelection] =
-    useState<ManagedLaunchSelection>({
+  const [launchSelection, setLaunchSelection] = useState<ConversationSelection>(
+    {
       instanceId: "",
       model: "",
       reasoningEffort: "",
       permissionMode: ""
-    });
+    }
+  );
   const [managedCapabilities, setManagedCapabilities] = useState<
     ReadonlyMap<string, ManagedOwnerCapabilities>
   >(new Map());
@@ -3587,9 +3743,14 @@ export function PersonalMemoryWorkspace({
   const snapshot = usePersonalMemorySnapshot(store);
   const requestedRef = useRef(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const [managedDrafts, setManagedDrafts] = useState<
-    ReadonlyMap<string, ManagedConversationDraft>
-  >(new Map());
+  const localLifecycle = useManagedConversationLifecycle({
+    api: managedConversationLifecycle ? null : managedConversations,
+    store,
+    revision: managedConversationRevision,
+    update: managedConversationLifecycle ? null : managedConversationUpdate
+  });
+  const lifecycle = managedConversationLifecycle ?? localLifecycle;
+  const managedDrafts = lifecycle.drafts;
   const projects = useMemo(
     () =>
       snapshot.projectOrder.flatMap((id) => {
@@ -3598,171 +3759,40 @@ export function PersonalMemoryWorkspace({
       }),
     [snapshot.projectOrder, snapshot.projectsById]
   );
-  const selectedProjectId = route.kind === "projects" ? null : route.projectId;
+  const selectedProjectId =
+    route.kind === "projects"
+      ? null
+      : snapshot.projectsById.has(route.projectId)
+        ? route.projectId
+        : route.kind === "session"
+          ? projectIdForSession(projects, route.sessionId)
+          : route.projectId;
   const selectedProject =
     (selectedProjectId ? snapshot.projectsById.get(selectedProjectId) : null) ??
     null;
+  const selectedManagedDraft =
+    route.kind === "session"
+      ? (managedDrafts.get(route.sessionId) ??
+        [...managedDrafts.values()].find(
+          (draft) =>
+            draft.conversation.executionId === route.sessionId ||
+            draft.conversation.capturedSessionId === route.sessionId
+        ) ??
+        null)
+      : null;
   const selectedThread =
     route.kind === "session" && selectedProject
       ? (selectedProject.threads.find(
           (thread) => sessionSelectionId(thread) === route.sessionId
         ) ??
         managedDrafts.get(route.sessionId)?.thread ??
+        selectedManagedDraft?.thread ??
         null)
-      : null;
-  const selectedManagedDraft =
-    route.kind === "session"
-      ? (managedDrafts.get(route.sessionId) ?? null)
       : null;
   const pendingCanonicalConversation =
     selectedManagedDraft !== null && selectedManagedDraft.status !== "ready";
 
-  useEffect(() => {
-    if (!managedConversations) return;
-    const pending = [...managedDrafts.entries()].filter(
-      ([, draft]) =>
-        draft.status === "starting" || draft.status === "reconciling"
-    );
-    if (pending.length === 0) return;
-    let active = true;
-    for (const [routeId, draft] of pending) {
-      const executionId = draft.conversation.executionId;
-      if (!executionId) continue;
-      void managedConversations
-        .inspect(executionId)
-        .then((result) => {
-          if (!active || result.status === "starting") return;
-          if (result.status === "ready" && result.conversation) {
-            store.upsertThread({
-              ...draft.thread,
-              id: result.conversation.threadId,
-              sessionId: result.conversation.capturedSessionId
-            });
-          }
-          setManagedDrafts((current) => {
-            const existing = current.get(routeId);
-            if (!existing || existing.conversation.executionId !== executionId)
-              return current;
-            const next = new Map(current);
-            if (result.status === "ready" && result.conversation) {
-              next.set(routeId, {
-                ...existing,
-                conversation: result.conversation,
-                status: "ready",
-                message: "",
-                thread: {
-                  ...existing.thread,
-                  id: result.conversation.threadId,
-                  sessionId: result.conversation.capturedSessionId
-                }
-              });
-            } else {
-              const message =
-                result.message ??
-                "The AI Client could not establish a writable Conversation.";
-              if (
-                existing.status === result.status &&
-                existing.message === message
-              ) {
-                return current;
-              }
-              next.set(routeId, {
-                ...existing,
-                status: result.status,
-                message
-              });
-            }
-            return next;
-          });
-        })
-        .catch((cause: unknown) => {
-          if (!active) return;
-          setManagedDrafts((current) => {
-            const existing = current.get(routeId);
-            if (!existing || existing.conversation.executionId !== executionId)
-              return current;
-            const next = new Map(current);
-            next.set(routeId, {
-              ...existing,
-              status: "failed",
-              message: cause instanceof Error ? cause.message : String(cause)
-            });
-            return next;
-          });
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [managedConversationRevision, managedConversations, managedDrafts]);
-  const retryManagedConversation = useCallback(
-    (routeId: string) => {
-      if (!managedConversations) return;
-      const current = managedDrafts.get(routeId);
-      if (!current) return;
-      const launchInput = {
-        ...current.launchInput,
-        idempotencyKey: `desktop-conversation:${crypto.randomUUID()}`
-      };
-      setManagedDrafts((drafts) => {
-        const existing = drafts.get(routeId);
-        if (!existing) return drafts;
-        const next = new Map(drafts);
-        next.set(routeId, {
-          ...existing,
-          launchInput,
-          status: "starting",
-          message: "Starting the AI Client in this Project…"
-        });
-        return next;
-      });
-      void managedConversations
-        .start(launchInput)
-        .then((result) => {
-          setManagedDrafts((drafts) => {
-            const existing = drafts.get(routeId);
-            if (!existing) return drafts;
-            const conversation = result.conversation ?? {
-              executionId: result.executionId,
-              projectId: launchInput.projectId,
-              capturedSessionId: result.executionId,
-              threadId: result.executionId
-            };
-            const next = new Map(drafts);
-            next.set(routeId, {
-              ...existing,
-              conversation,
-              launchInput,
-              status: result.status,
-              message:
-                result.status === "starting"
-                  ? "Starting the AI Client in this Project…"
-                  : "",
-              thread: {
-                ...existing.thread,
-                id: conversation.threadId,
-                sessionId: conversation.capturedSessionId
-              }
-            });
-            return next;
-          });
-        })
-        .catch((cause: unknown) => {
-          setManagedDrafts((drafts) => {
-            const existing = drafts.get(routeId);
-            if (!existing) return drafts;
-            const next = new Map(drafts);
-            next.set(routeId, {
-              ...existing,
-              status: "failed",
-              message: cause instanceof Error ? cause.message : String(cause)
-            });
-            return next;
-          });
-        });
-    },
-    [managedConversations, managedDrafts]
-  );
+  const retryManagedConversation = lifecycle.retry;
   const effectiveRoute =
     route.kind === "session" && !selectedThread
       ? selectedProject
@@ -3866,6 +3896,7 @@ export function PersonalMemoryWorkspace({
             />
           ) : (
             <ProjectDetail
+              localAiClients={localAiClients}
               launchSelection={launchSelection}
               setLaunchSelection={setLaunchSelection}
               error={projects.length === 0 ? snapshot.error : null}
@@ -3895,47 +3926,14 @@ export function PersonalMemoryWorkspace({
                 initialPrompt
               ) => {
                 if (!selectedProject) return;
-                const now = new Date().toISOString();
-                const routeId = conversation.executionId!;
-                const draft: PersonalDesktopProjectThread = {
-                  id: conversation.threadId,
-                  name: "New AI Client Conversation",
-                  sessionId: conversation.capturedSessionId,
-                  sourceAiClient:
-                    launchInput.aiClientDriverId === "claude"
-                      ? "claude-code"
-                      : launchInput.aiClientDriverId,
-                  projectId: selectedProject.id,
-                  projectName: selectedProject.name,
-                  projectPath: selectedProject.path,
-                  projectAssignmentSource: "user_override",
-                  eventCount: 0,
-                  invalidatedCount: 0,
-                  latestAt: now,
-                  sample: "",
-                  presentation: null
-                };
-                if (
-                  status === "ready" &&
-                  conversation.capturedSessionId !== conversation.executionId
-                ) {
-                  store.upsertThread(draft);
-                }
-                setManagedDrafts((current) => {
-                  const next = new Map(current);
-                  next.set(routeId, {
-                    conversation,
-                    launchInput,
-                    initialPrompt,
-                    status,
-                    message:
-                      status === "starting"
-                        ? "Starting the AI Client in this Project…"
-                        : "",
-                    thread: draft
-                  });
-                  return next;
-                });
+                const routeId = lifecycle.started(
+                  selectedProject,
+                  conversation,
+                  status,
+                  launchInput,
+                  initialPrompt
+                );
+                if (!routeId) return;
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,

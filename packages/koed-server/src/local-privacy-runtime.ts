@@ -70,7 +70,8 @@ const collectLocalPrivacyHealth = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {},
-  modelPath?: string
+  modelPath?: string,
+  includeDiagnostics = true
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const env = localPrivacyEnv(paths, environment);
@@ -89,18 +90,23 @@ const collectLocalPrivacyHealth = async (
   }
   const healthUrl = `${env.PRIVACY_SERVICE_URL}/health`;
   try {
-    const response = await (dependencies.fetch ?? fetch)(healthUrl);
+    const response = await (dependencies.fetch ?? fetch)(healthUrl, {
+      signal: AbortSignal.timeout(5_000)
+    });
     const body = (await response.json()) as {
       status?: string;
       runtime?: Record<string, unknown>;
     };
     let runtimeDetails = body.runtime;
     const token = trim(environment.PRIVACY_RUNTIME_CONTROL_TOKEN);
-    if (response.ok && token) {
+    if (includeDiagnostics && response.ok && token) {
       try {
         const runtimeResponse = await (dependencies.fetch ?? fetch)(
           `${env.PRIVACY_SERVICE_URL}/v1/runtime/status`,
-          { headers: { "x-koed-privacy-token": token } }
+          {
+            headers: { "x-koed-privacy-token": token },
+            signal: AbortSignal.timeout(5_000)
+          }
         );
         if (runtimeResponse.ok) {
           runtimeDetails = (await runtimeResponse.json()) as Record<
@@ -145,7 +151,7 @@ export const collectLocalPrivacyRuntimeHealthStatus = async (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
 ): Promise<LocalPrivacyRuntimeStatus> =>
-  collectLocalPrivacyHealth(paths, environment, dependencies);
+  collectLocalPrivacyHealth(paths, environment, dependencies, undefined, false);
 
 export const collectLocalPrivacyRuntimeStatus = async (
   paths: KoedServerPaths,

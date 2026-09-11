@@ -5,9 +5,9 @@ memory and evidence but does not run LLM synthesis.
 
 ## Flows
 
-The supervised Local AI Runtime owns three services and four configurable flow
-assignments:
+Agent Configuration includes five configurable assignments:
 
+- Conversations: defaults for new Conversations within Projects.
 - MCP Memory Answer: durable Personal tasks, each using a fresh isolated worker.
 - LCM Summary and Session Title: background LCM Summary and captured-session title work.
 - Curated Memory Review: asynchronous source-linked proposal review.
@@ -24,6 +24,17 @@ capability snapshots immediately, then asks the authorized Local AI Runtime to
 refresh capabilities asynchronously with a bounded timeout.
 
 ## Precedence
+
+Conversation settings resolve in this order:
+
+1. API user setting in `local_memory_agent_settings` under `conversations`.
+2. `KOED_CONVERSATIONS_*` environment defaults.
+3. Code defaults.
+
+Desktop applies this assignment when it opens a Project conversation composer.
+Users can change the agent, model, and reasoning effort before starting a Conversation.
+Existing Conversations retain their settings. Conversation defaults require a current capability snapshot that reports support for starting managed Conversations.
+Permission modes retain the selected AI Client defaults.
 
 Memory Answer settings resolve in this order:
 
@@ -50,7 +61,7 @@ enabled instance state, current capability snapshot, selected model, and
 explicitly reported reasoning effort. Stale, unhealthy, unauthenticated, or
 mismatched assignments fail closed; environment defaults are used only when no
 persisted assignment exists. Settings or capability API failures never silently
-fall back. Desktop exposes exactly `mcp_memory_answer` (Memory Answer),
+fall back. Desktop exposes `conversations`, `mcp_memory_answer` (Memory Answer),
 `lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer`
 is intentionally hidden. Reset is an explicit DELETE for one flow assignment.
 The Desktop surface for these selectors is **Preferences → AI Clients**, which is
@@ -92,3 +103,10 @@ answer bridge or submit manual synthesis work.
 
 See [Durable Memory Answer Execution](durable-memory-answer.md) and
 [ADR 0025](adr/0025-mcp-v2-local-ai-runtime-ownership.md).
+
+Codex capability discovery reads the current model list and account state without testing a fixed model name.
+A retired model does not make the AI Client unavailable.
+Desktop allows 30 seconds for capability refresh and distinguishes failed snapshot publication from other HTTP failures.
+
+The Services page includes Privacy Filter, Local AI Runtime, and runtime credential checks used by the Desktop health indicator.
+Privacy Filter readiness is required when Team collaboration is enabled.

@@ -7,6 +7,7 @@ import { CodexAppServerClient } from "../src/codex-app-server-runner.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import {
   CodexManagedConversationSession,
+  type CodexConversationStartupTiming,
   managedConversationKoedMcpConfigOverrides,
   KOED_MANAGED_CONVERSATION_ENV
 } from "../src/codex-managed-conversation.js";
@@ -849,12 +850,81 @@ describe("Codex managed conversation coordinator", () => {
     expect(overrides[0]).toContain('/cli.js"]');
     expect(overrides[0]).toContain('env={KOED_HOME="/tmp/koed home"}');
     expect(overrides[0]).toContain("enabled=true");
+    expect(overrides[0]).toContain("required=true");
     expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
   });
 
-  it("accepts a rollout path supplied by the buffered thread/started event", async () => {
+  it.each([false, true])(
+    "reports startup stages with buffered thread identity (registration fails: %s)",
+    async (registrationFails) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-managed-conversation-")
+      );
+      const transcriptPath = path.join(directory, "rollout.jsonl");
+      fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+      const memoryClient = new FakeMemoryClient();
+      if (registrationFails) {
+        memoryClient.createSession = async () => {
+          throw new Error("registration unavailable");
+        };
+      }
+      const timings: CodexConversationStartupTiming[] = [];
+      const session = new CodexManagedConversationSession({
+        ...configFor(
+          memoryClient,
+          writeManagedFakeAppServer(directory, transcriptPath, {
+            pathOnlyInThreadStarted: true
+          }),
+          directory
+        ),
+        onStartupTiming: (timing) => {
+          timings.push(timing);
+          throw new Error("diagnostic sink unavailable");
+        }
+      });
+
+      try {
+        if (registrationFails) {
+          await expect(session.start()).rejects.toThrow(
+            "registration unavailable"
+          );
+          expect(timings.at(-1)).toMatchObject({
+            stage: "capture_registration",
+            status: "failed"
+          });
+          expect(
+            timings.filter((timing) => timing.status === "failed")
+          ).toHaveLength(1);
+          return;
+        }
+        await expect(session.start()).resolves.toMatchObject({
+          thread: { id: "managed-thread-1", path: transcriptPath },
+          transcriptPath
+        });
+        expect(timings.map((timing) => timing.stage)).toEqual([
+          "prepare",
+          "protocol_check",
+          "client_initialize",
+          "thread_open",
+          "event_flush",
+          "capture_registration",
+          "startup_event_persistence"
+        ]);
+        for (const timing of timings) {
+          expect(timing.status).toBe("completed");
+          expect(timing.durationMs).toBeGreaterThanOrEqual(0);
+          expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.durationMs);
+        }
+      } finally {
+        session.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("batches startup capture without losing provider items or their order", async () => {
     const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-managed-conversation-")
+      path.join(os.tmpdir(), "koed-startup-batch-")
     );
     const transcriptPath = path.join(directory, "rollout.jsonl");
     fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
@@ -863,19 +933,22 @@ describe("Codex managed conversation coordinator", () => {
       configFor(
         memoryClient,
         writeManagedFakeAppServer(directory, transcriptPath, {
-          pathOnlyInThreadStarted: true
+          preStartEventCount: 25
         }),
         directory
       )
     );
-
     try {
-      await expect(session.start()).resolves.toMatchObject({
-        thread: { id: "managed-thread-1", path: transcriptPath },
-        transcriptPath
-      });
+      await session.start();
+      const itemIds = memoryClient.observations
+        .map((item) => item.externalItemId)
+        .filter((id) => typeof id === "string" && id.startsWith("prestart-"));
+      expect([...new Set(itemIds)]).toEqual(
+        Array.from({ length: 25 }, (_, index) => `prestart-${index}`)
+      );
+      expect(memoryClient.persistAttempts).toBeLessThan(25);
     } finally {
-      session.close();
+      await session.closeAndWait();
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });

@@ -1,3 +1,8 @@
+import {
+  appendManagedConversationUpdate,
+  type ManagedConversationUpdateEnvelope
+} from "../../state/managed-conversation-runtime.js";
+import { LocalApiRateLimitError } from "../../../local-api-errors.js";
 // @vitest-environment happy-dom
 
 import type {
@@ -13,11 +18,13 @@ import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { DesktopApi } from "../../../types.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { ManagedConversationRealtimeUpdate } from "../../state/managed-conversation-runtime.js";
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
 import {
   PersonalMemoryWorkspace,
+  type ManagedConversationDraft,
   type PersonalMemoryRoute
 } from "./PersonalMemoryViews.js";
 
@@ -433,10 +440,13 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain(source.name)
     );
     const activeProjects = container.querySelector(
-      '[aria-label="Active Projects"]'
+      '[aria-labelledby="personal-active-projects"]'
     );
     expect(activeProjects).not.toBeNull();
-    expect(activeProjects?.textContent).not.toContain("Active");
+    expect(
+      activeProjects?.querySelector(".personal-project-section-heading")
+        ?.textContent
+    ).toBe("Active1");
     expect(container.textContent).toContain("koed-labs/koed");
     const overview = container.querySelector(
       '[data-project-id="project-1"] .personal-project-overview'
@@ -1145,154 +1155,209 @@ describe("PersonalMemoryWorkspace", () => {
     });
   });
 
-  it("starts a managed Codex Conversation and keeps the chat-style composer below the timeline", async () => {
-    let finishSend:
-      | ((
-          value: Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
-        ) => void)
-      | undefined;
-    const send = vi.fn(
-      (input: Parameters<ManagedConversationDesktopApi["send"]>[0]) =>
-        new Promise<Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>>(
-          (resolve) => {
+  it.each([false, true])(
+    "starts a managed Conversation with configured defaults: %s",
+    async (configured) => {
+      const localAiClients = configured
+        ? {
+            list: vi.fn(async () => ({
+              operation: "list" as const,
+              readModel: {
+                instances: [],
+                capabilitySnapshots: [],
+                defaults: {} as Awaited<
+                  ReturnType<NonNullable<DesktopApi["localAiClients"]>["list"]>
+                >["readModel"]["defaults"],
+                settings: [
+                  {
+                    flowKey: "conversations" as const,
+                    provider: "codex" as const,
+                    aiClientInstanceId: "codex.work",
+                    model: "gpt-test",
+                    reasoningEffort: "high",
+                    timeoutMs: 120_000,
+                    maxAttempts: 2,
+                    createdAt: "",
+                    updatedAt: ""
+                  }
+                ]
+              }
+            })),
+            refresh: vi.fn(),
+            set: vi.fn(),
+            reset: vi.fn()
+          }
+        : undefined;
+      let finishSend:
+        | ((
+            value: Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
+          ) => void)
+        | undefined;
+      const send = vi.fn(
+        (input: Parameters<ManagedConversationDesktopApi["send"]>[0]) =>
+          new Promise<
+            Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
+          >((resolve) => {
             finishSend = resolve;
             void input;
-          }
-        )
-    );
-    const managed = managedApi({
-      send,
-      readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
-        async () => ({ operation: "draft_read", value: "Recovered draft" })
-      )
-    });
-    const source = project([thread(2, { sessionId: null })]);
-    const store = new PersonalMemoryStore(
-      api({ listProjects: vi.fn(async () => [source]) })
-    );
-
-    await act(async () => {
-      root.render(
-        <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
-          {({ onNavigate, route }) => (
-            <PersonalMemoryWorkspace
-              managedConversations={managed}
-              onNavigate={onNavigate}
-              route={route}
-              store={store}
-            />
-          )}
-        </Harness>
+          })
       );
-    });
-    await vi.waitFor(() => expect(container.textContent).toContain("New"));
-    await act(async () => {
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find((button) => button.textContent === "New")
-        ?.click();
-    });
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label="Start Conversation"]'
+      const managed = managedApi({
+        send,
+        readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
+          async () => ({ operation: "draft_read", value: "Recovered draft" })
         )
-        ?.click();
-    });
-    await vi.waitFor(() =>
-      expect(container.querySelector("textarea")?.value).toBe("Recovered draft")
-    );
-    expect(managed.start).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: "project-1",
-        aiClientDriverId: "codex",
-        aiClientInstanceId: "codex.default",
-        model: "gpt-test",
-        reasoningEffort: "low",
-        permissionMode: "full_access",
-        runnerKind: "local_device",
-        idempotencyKey: expect.stringMatching(/^desktop-conversation:/)
-      })
-    );
-    expect(managed.resume).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: sessionId,
-      threadId: "managed-thread"
-    });
-    const shell = container.querySelector(".personal-conversation-shell");
-    expect(shell?.lastElementChild?.classList).toContain(
-      "personal-managed-composer"
-    );
-    expect(container.textContent).not.toContain("Execution owner:");
-    expect(
-      shell?.querySelector(".personal-managed-composer-field")
-    ).not.toBeNull();
+      });
+      if (configured) {
+        const launch = await managed.launchOptions();
+        launch.options.instances.push({
+          ...launch.options.instances[0]!,
+          instanceId: "codex.work",
+          displayName: "Codex Work"
+        });
+        vi.mocked(managed.launchOptions).mockResolvedValue(launch);
+      }
+      const source = project([thread(2, { sessionId: null })]);
+      const store = new PersonalMemoryStore(
+        api({ listProjects: vi.fn(async () => [source]) })
+      );
 
-    const textarea = container.querySelector("textarea")!;
-    expect(textarea.getAttribute("rows")).toBe("1");
-    expect(textarea.value).toBe("Recovered draft");
-    expect(managed.readDraft).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: "execution-1",
-      threadId: "execution-1"
-    });
-    await act(async () => {
-      changeTextarea(textarea, "First line\nSecond line");
-    });
-    expect(textarea.value).toBe("First line\nSecond line");
-    await vi.waitFor(() =>
-      expect(managed.writeDraft).toHaveBeenCalledWith({
+      await act(async () => {
+        root.render(
+          <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
+            {({ onNavigate, route }) => (
+              <PersonalMemoryWorkspace
+                localAiClients={localAiClients}
+                managedConversations={managed}
+                onNavigate={onNavigate}
+                route={route}
+                store={store}
+              />
+            )}
+          </Harness>
+        );
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain("New"));
+      await act(async () => {
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((button) => button.textContent === "New")
+          ?.click();
+      });
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Start Conversation"]'
+          )
+          ?.click();
+      });
+      await vi.waitFor(() =>
+        expect(container.querySelector("textarea")?.value).toBe(
+          "Recovered draft"
+        )
+      );
+      expect(managed.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          aiClientDriverId: "codex",
+          aiClientInstanceId: configured ? "codex.work" : "codex.default",
+          model: "gpt-test",
+          reasoningEffort: configured ? "high" : "low",
+          permissionMode: "full_access",
+          runnerKind: "local_device",
+          idempotencyKey: expect.stringMatching(/^desktop-conversation:/)
+        })
+      );
+      if (configured) return;
+      expect(managed.resume).toHaveBeenCalledWith({
+        projectId: "project-1",
+        capturedSessionId: sessionId,
+        threadId: "managed-thread"
+      });
+      const shell = container.querySelector(".personal-conversation-shell");
+      expect(shell?.lastElementChild?.classList).toContain(
+        "personal-managed-composer"
+      );
+      expect(container.textContent).not.toContain("Execution owner:");
+      expect(
+        shell?.querySelector(".personal-managed-composer-field")
+      ).not.toBeNull();
+
+      const textarea = container.querySelector("textarea")!;
+      expect(textarea.getAttribute("rows")).toBe("1");
+      expect(textarea.value).toBe("Recovered draft");
+      expect(managed.readDraft).toHaveBeenCalledWith({
         projectId: "project-1",
         capturedSessionId: "execution-1",
-        threadId: "execution-1",
-        value: "First line\nSecond line"
-      })
-    );
-    const sendButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Send prompt"]'
-    )!;
-    await act(async () => {
-      sendButton.click();
-      sendButton.click();
-    });
-    expect(send).toHaveBeenCalledOnce();
-    const interruptButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Interrupt active turn"]'
-    )!;
-    expect(interruptButton.disabled).toBe(false);
-    await act(async () => interruptButton.click());
-    expect(managed.interrupt).toHaveBeenCalledWith(
-      expect.objectContaining({
-        executionId: "execution-1",
-        executionGeneration: 1
-      })
-    );
-    expect(container.textContent).not.toContain("Sending prompt to Codex");
-    expect(container.textContent).toContain("First line\nSecond line");
-    expect(textarea.value).toBe("");
-    expect(textarea.disabled).toBe(false);
-
-    await act(async () =>
-      finishSend?.({
-        operation: "send",
-        status: "queued",
-        conversation: {
-          executionId: null,
+        threadId: "execution-1"
+      });
+      await act(async () => {
+        changeTextarea(textarea, "First line\nSecond line");
+      });
+      expect(textarea.value).toBe("First line\nSecond line");
+      await vi.waitFor(() =>
+        expect(managed.writeDraft).toHaveBeenCalledWith({
           projectId: "project-1",
-          capturedSessionId: sessionId,
-          threadId: "managed-thread"
-        },
-        idempotencyKey: send.mock.calls[0]![0].idempotencyKey,
-        clientUserMessageId: send.mock.calls[0]![0].clientUserMessageId,
-        turnId: "turn-1"
-      })
-    );
-    expect(textarea.value).toBe("");
-    expect(managed.deleteDraft).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: "execution-1",
-      threadId: "execution-1"
-    });
-  });
+          capturedSessionId: "execution-1",
+          threadId: "execution-1",
+          value: "First line\nSecond line"
+        })
+      );
+      const sendButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send prompt"]'
+      )!;
+      await act(async () => {
+        sendButton.click();
+        sendButton.click();
+      });
+      expect(send).toHaveBeenCalledOnce();
+      const interruptButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Interrupt active turn"]'
+      )!;
+      expect(interruptButton.disabled).toBe(false);
+      await act(async () => {
+        changeTextarea(textarea, "Follow-up draft");
+        textarea.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      });
+      expect(managed.interrupt).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Follow-up draft");
+      await act(async () => interruptButton.click());
+      expect(managed.interrupt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: "execution-1",
+          executionGeneration: 1
+        })
+      );
+      expect(container.textContent).not.toContain("Sending prompt to Codex");
+      expect(container.textContent).toContain("First line\nSecond line");
+      expect(textarea.value).toBe("Follow-up draft");
+      expect(textarea.disabled).toBe(false);
+
+      await act(async () =>
+        finishSend?.({
+          operation: "send",
+          status: "queued",
+          conversation: {
+            executionId: null,
+            projectId: "project-1",
+            capturedSessionId: sessionId,
+            threadId: "managed-thread"
+          },
+          idempotencyKey: send.mock.calls[0]![0].idempotencyKey,
+          clientUserMessageId: send.mock.calls[0]![0].clientUserMessageId,
+          turnId: "turn-1"
+        })
+      );
+      expect(textarea.value).toBe("Follow-up draft");
+      expect(managed.deleteDraft).not.toHaveBeenCalled();
+    }
+  );
 
   it.each(["canonical", "completed_command"])(
     "reconciles an optimistic prompt using exact %s identity",
@@ -1412,6 +1477,277 @@ describe("PersonalMemoryWorkspace", () => {
       ).toHaveLength(1);
     }
   );
+
+  it("keeps two Pi turns ordered and retires temporary output across batched interleaved completion", async () => {
+    const managed = managedApi();
+    const captured: PersonalDesktopConversationEvent[] = [];
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([thread(1)])]),
+        loadEventPage: vi.fn(async () => [...captured])
+      })
+    );
+    let envelope: ManagedConversationUpdateEnvelope | null = null;
+    const update = (
+      sequence: number,
+      state: "dispatching" | "completed",
+      output?: string
+    ): ManagedConversationRealtimeUpdate => ({
+      type: "managed_conversation_upserted",
+      execution: {
+        id: "execution-1",
+        projectId: "project-1",
+        provider: "pi",
+        state: "running",
+        stateVersion: sequence,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        sessionId,
+        providerThreadId: "thread-1",
+        providerCliVersion: "test",
+        lastErrorCode: null,
+        createdAt: threadLatestAt,
+        updatedAt: threadLatestAt,
+        startedAt: threadLatestAt,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      latestCommand: {
+        id: `command-${sequence}`,
+        sequence,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state,
+        clientUserMessageId: `user-${sequence}`,
+        lastErrorCode: null,
+        updatedAt: threadLatestAt
+      },
+      runtimeItemChange: output
+        ? {
+            kind: "upsert",
+            item: {
+              id: `output-${sequence}`,
+              executionGeneration: 1,
+              providerTurnId: `turn-${sequence}`,
+              providerItemId: null,
+              itemKind: "transient_output",
+              state: "pending",
+              payload: { text: output },
+              revision: 1,
+              createdAt: threadLatestAt,
+              updatedAt: threadLatestAt,
+              answered: false,
+              presentation: {
+                mode: "expanded",
+                renderer: "message",
+                policyKey: "agent_message",
+                policyRevision: 1,
+                reason: "test"
+              }
+            }
+          }
+        : null
+    });
+    const render = () => (
+      <PersonalMemoryWorkspace
+        managedConversationUpdate={envelope}
+        managedConversations={managed}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render()));
+    for (const sequence of [1, 2]) {
+      const question = `Pi question ${sequence}`;
+      const answer = `Pi answer ${sequence}`;
+      captured.push({
+        ...event(sequence * 2),
+        actor: "user",
+        content: question,
+        contentPreview: question,
+        metadata: { clientUserMessageId: `user-${sequence}` }
+      });
+      envelope = appendManagedConversationUpdate(
+        envelope,
+        update(sequence, "dispatching", answer)
+      );
+      await act(async () => root.render(render()));
+      expect(container.textContent).toContain(answer);
+      captured.push({
+        ...event(sequence * 2 + 1),
+        content: answer,
+        contentPreview: answer,
+        metadata: { providerTurnId: `turn-${sequence}` }
+      });
+      const completion = update(sequence, "completed");
+      envelope = appendManagedConversationUpdate(envelope, completion);
+      envelope = appendManagedConversationUpdate(envelope, {
+        ...completion,
+        execution: { ...completion.execution, id: "another-conversation" }
+      });
+      await act(async () => root.render(render()));
+      await vi.waitFor(() => {
+        expect(container.textContent?.split(answer).length).toBe(2);
+        expect(container.textContent?.split(question).length).toBe(2);
+        expect(
+          container.querySelector('[aria-label="Interrupt active turn"]')
+        ).toBeNull();
+      });
+    }
+    const text = container.textContent!;
+    expect(text.indexOf("Pi question 1")).toBeLessThan(
+      text.indexOf("Pi answer 1")
+    );
+    expect(text.indexOf("Pi answer 1")).toBeLessThan(
+      text.indexOf("Pi question 2")
+    );
+    expect(text.indexOf("Pi question 2")).toBeLessThan(
+      text.indexOf("Pi answer 2")
+    );
+    // Reopening uses only the saved timeline.
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(render()));
+    expect(container.textContent?.split("Pi answer 1").length).toBe(2);
+    expect(container.textContent?.split("Pi answer 2").length).toBe(2);
+    // A whole turn can settle before React renders the next turn's first delta.
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(3, "dispatching", "Retired third-turn output")
+    );
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(3, "completed")
+    );
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(4, "dispatching", "Fourth-turn streaming output")
+    );
+    await act(async () => root.render(render()));
+    expect(container.textContent).not.toContain("Retired third-turn output");
+    expect(container.textContent).toContain("Fourth-turn streaming output");
+  });
+
+  it("preserves a first prompt and ends generation after a provider authentication failure", async () => {
+    const managed = managedApi({
+      readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
+        async () => ({ operation: "draft_read", value: "Keep my first prompt" })
+      ),
+      send: vi.fn<ManagedConversationDesktopApi["send"]>(async (input) => ({
+        operation: "send",
+        status: "queued",
+        conversation: {
+          executionId: "execution-1",
+          projectId: "project-1",
+          capturedSessionId: sessionId,
+          threadId: "thread-1"
+        },
+        idempotencyKey: input.idempotencyKey,
+        clientUserMessageId: input.clientUserMessageId
+      }))
+    });
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([thread(1)])]) })
+    );
+    const render = (
+      envelope: ManagedConversationUpdateEnvelope | null = null
+    ) => (
+      <PersonalMemoryWorkspace
+        managedConversationUpdate={envelope}
+        managedConversations={managed}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render()));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send prompt"]')!
+        .click()
+    );
+    expect(managed.send).toHaveBeenCalledTimes(1);
+    const input = vi.mocked(managed.send).mock.calls[0]![0];
+    const update: ManagedConversationRealtimeUpdate = {
+      type: "managed_conversation_upserted",
+      execution: {
+        id: "execution-1",
+        projectId: "project-1",
+        provider: "claude",
+        state: "reconciling",
+        stateVersion: 3,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        sessionId,
+        providerThreadId: "thread-1",
+        providerCliVersion: "test",
+        lastErrorCode: "ManagedConversationAuthenticationError",
+        createdAt: threadLatestAt,
+        updatedAt: threadLatestAt,
+        startedAt: threadLatestAt,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      latestCommand: {
+        id: "prompt-1",
+        sequence: 2,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state: "indeterminate",
+        clientUserMessageId: input.clientUserMessageId,
+        lastErrorCode: "ManagedConversationAuthenticationError",
+        updatedAt: threadLatestAt
+      },
+      runtimeItemChange: null
+    };
+    await act(async () =>
+      root.render(render(appendManagedConversationUpdate(null, update)))
+    );
+    expect(container.textContent).toContain(
+      "Sign in to the selected AI Client"
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>(
+        '[aria-label="Preserved prompt"]'
+      )?.value
+    ).toBe("Keep my first prompt");
+    expect(
+      container.querySelector('[aria-label="Interrupt active turn"]')
+    ).toBeNull();
+    expect(managed.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for Retry-After before loading a throttled draft and never overwrites it", async () => {
+    vi.useFakeTimers();
+    const readDraft = vi
+      .fn<ManagedConversationDesktopApi["readDraft"]>()
+      .mockRejectedValueOnce(new LocalApiRateLimitError(30))
+      .mockResolvedValue({ operation: "draft_read", value: "Retained draft" });
+    const managed = managedApi({ readDraft });
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([thread(1)])]) })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managed}
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: "project-1", sessionId }}
+          store={store}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Try again in 30 seconds");
+    await act(async () => vi.advanceTimersByTimeAsync(29000));
+    expect(readDraft).toHaveBeenCalledTimes(1);
+    expect(managed.deleteDraft).not.toHaveBeenCalled();
+    expect(managed.writeDraft).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(readDraft).toHaveBeenCalledTimes(2);
+    expect(
+      container.querySelector<HTMLTextAreaElement>("textarea")?.value
+    ).toBe("Retained draft");
+  });
 
   it.each(["item-1", null])(
     "streams output with provider item identity %s without reattaching or stealing focus",
@@ -1542,6 +1878,9 @@ describe("PersonalMemoryWorkspace", () => {
         status: "starting",
         executionId
       })),
+      usage: vi.fn<ManagedConversationDesktopApi["usage"]>(
+        () => new Promise(() => undefined)
+      ),
       readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
         () => new Promise(() => undefined)
       )
@@ -1555,6 +1894,9 @@ describe("PersonalMemoryWorkspace", () => {
         <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
           {({ onNavigate, route }) => (
             <PersonalMemoryWorkspace
+              authorizeManagedConversationTransfer={vi.fn(async () => ({
+                id: "grant-1"
+              }))}
               managedConversations={managed}
               onNavigate={onNavigate}
               route={route}
@@ -1585,6 +1927,28 @@ describe("PersonalMemoryWorkspace", () => {
       "Starting the AI Client in this Project"
     );
     expect(managed.resume).not.toHaveBeenCalled();
+    expect(
+      container.querySelector(".personal-managed-usage-count")?.textContent
+    ).toBe("0");
+    expect(
+      container
+        .querySelector('[role="progressbar"]')
+        ?.getAttribute("aria-valuenow")
+    ).toBe("0");
+    const switchDevice = container.querySelector<HTMLElement>(
+      ".personal-managed-transfer summary"
+    )!;
+    expect(switchDevice.textContent).toContain("Switch device");
+    expect(switchDevice.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => switchDevice.click());
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector(".personal-managed-transfer")
+          ?.hasAttribute("open")
+      ).toBe(false)
+    );
+    expect(managed.targets).not.toHaveBeenCalled();
 
     const textarea = container.querySelector("textarea")!;
     await act(async () => changeTextarea(textarea, "Begin immediately"));
@@ -1696,11 +2060,16 @@ describe("PersonalMemoryWorkspace", () => {
     await click(
       container.querySelector('button[aria-label^="Model and reasoning:"]')
     );
-    await click(
-      [...document.querySelectorAll('[role="menuitemradio"]')].find(
-        (item) => item.textContent === "High"
-      )
-    );
+    await act(async () => {
+      const slider = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Reasoning effort"]'
+      )!;
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(slider, "1");
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await click(container.querySelector('button[aria-label^="Permissions:"]'));
     await click(
       [...document.querySelectorAll('[role="menuitemradio"]')].find((item) =>
@@ -1724,6 +2093,94 @@ describe("PersonalMemoryWorkspace", () => {
       expect.objectContaining({ id: "managed-thread", sessionId })
     );
     expect(container.childElementCount).toBeGreaterThan(0);
+  });
+
+  it("retains messages when a reconciling Chat changes from execution to captured-session route", async () => {
+    const managed = managedApi();
+    const selected = thread(1);
+    const draft: ManagedConversationDraft = {
+      conversation: {
+        executionId: "execution-1",
+        projectId: "project-1",
+        capturedSessionId: sessionId,
+        threadId: selected.id
+      },
+      launchInput: {
+        projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        idempotencyKey: "launch-1"
+      },
+      initialPrompt: {
+        clientUserMessageId: "prompt-1",
+        prompt: "Retain my question",
+        status: "reconciling",
+        message: ""
+      },
+      status: "reconciling",
+      message: "Reconciling",
+      thread: selected
+    };
+    const runtime = await managed.runtime("execution-1");
+    vi.mocked(managed.runtime).mockResolvedValue({
+      ...runtime,
+      executionState: "reconciling",
+      items: [
+        {
+          id: "response-1",
+          executionGeneration: 1,
+          providerTurnId: "turn-1",
+          providerItemId: "message-1",
+          itemKind: "transient_output",
+          presentation: {
+            mode: "expanded",
+            renderer: "message",
+            policyKey: "transient_output",
+            policyRevision: 1,
+            reason: "test"
+          },
+          state: "pending",
+          payload: { text: "Retain the answer" },
+          revision: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          answered: false
+        }
+      ]
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([selected])]),
+        loadEventPage: vi.fn(async () => [])
+      })
+    );
+    const drafts = new Map([["execution-1", draft]]);
+    const render = (routeId: string) => (
+      <PersonalMemoryWorkspace
+        managedConversations={managed}
+        managedConversationLifecycle={{
+          drafts,
+          started: vi.fn(),
+          retry: vi.fn()
+        }}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId: routeId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render("execution-1")));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Retain the answer")
+    );
+    expect(container.textContent).toContain("Retain my question");
+    await act(async () => root.render(render(sessionId)));
+    expect(container.textContent).toContain("Retain the answer");
+    expect(container.textContent).toContain("Retain my question");
+    expect(managed.send).not.toHaveBeenCalled();
   });
 
   it("keeps optimistic conversation content visible during its canonical load", async () => {
@@ -1940,10 +2397,21 @@ describe("PersonalMemoryWorkspace", () => {
       const popup = document.querySelector(".conversation-settings-popup")!;
       expect(popup.textContent).not.toContain("How much effort");
       expect(popup.textContent).not.toContain("AI Client");
-      const high = [...popup.querySelectorAll('[role="menuitemradio"]')].find(
-        (item) => item.textContent === "High"
-      ) as HTMLElement;
-      await act(async () => high.click());
+      const slider = popup.querySelector<HTMLInputElement>(
+        'input[aria-label="Reasoning effort"]'
+      )!;
+      expect(slider.getAttribute("aria-valuetext")).toBe("Low");
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(slider, "1");
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(slider.getAttribute("aria-valuetext")).toBe("High");
+      expect(
+        popup.querySelector(".conversation-model-summary small")?.textContent
+      ).toBe("High");
       if (noReasoning) {
         await act(async () =>
           popup
@@ -2131,6 +2599,109 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toBeNull();
   });
 
+  it("ends response loading and disables input after a terminal runtime failure", async () => {
+    const managed = managedApi();
+    const runtime = await managed.runtime("execution-1");
+    vi.mocked(managed.runtime).mockResolvedValue({
+      ...runtime,
+      executionState: "failed",
+      executionLastErrorCode: "ManagedConversationFailure",
+      latestCommand: {
+        id: "queued-prompt",
+        sequence: 1,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state: "queued",
+        clientUserMessageId: null,
+        lastErrorCode: null,
+        updatedAt: "2026-09-09T15:11:00.000Z"
+      }
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([thread(1)])]),
+        loadEventPage: vi.fn(async () => [event(1)])
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managed}
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: "project-1", sessionId }}
+          store={store}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "This Conversation stopped after a runtime failure"
+      )
+    );
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(container.querySelector(".personal-managed-retry")).toBeNull();
+    expect(container.querySelector('[aria-label="Stop response"]')).toBeNull();
+  });
+
+  it.each([
+    [true, "assistant", "message"],
+    [false, "assistant", "message"],
+    [true, "agent", "captured"],
+    [false, "agent", "captured"]
+  ] as const)(
+    "keeps the pending response scoped to the latest prompt when captured answer is current: %s (%s / %s)",
+    async (currentAnswer, actor, eventType) => {
+      const managed = managedApi();
+      const runtime = managed.runtime;
+      managed.runtime = vi.fn(async (executionId) => ({
+        ...(await runtime(executionId)),
+        latestCommand: {
+          id: "active-prompt",
+          sequence: 1,
+          executionGeneration: 1,
+          commandKind: "prompt" as const,
+          state: "dispatching" as const,
+          clientUserMessageId: null,
+          lastErrorCode: null,
+          updatedAt: event(2).timestamp
+        }
+      }));
+      const store = new PersonalMemoryStore(
+        api({
+          listProjects: vi.fn(async () => [project([thread(1)])]),
+          loadEventPage: vi.fn(async () => [
+            event(2),
+            { ...event(currentAnswer ? 3 : 1), actor, eventType }
+          ])
+        })
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryWorkspace
+            managedConversations={managed}
+            onNavigate={vi.fn()}
+            route={{ kind: "session", projectId: "project-1", sessionId }}
+            store={store}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector('button[aria-label="Interrupt active turn"]')
+        ).not.toBeNull()
+      );
+      const timeline = container.querySelector('[data-testid="conversation"]')!;
+      expect(timeline.textContent).toContain(
+        currentAnswer ? "2 rendered events" : "3 rendered events"
+      );
+      expect(
+        [...timeline.querySelectorAll("button")].filter(
+          (button) => !button.textContent
+        )
+      ).toHaveLength(currentAnswer ? 0 : 1);
+    }
+  );
+
   it("presents transient output, durable input, controls, and indeterminate dispatch", async () => {
     const now = "2026-08-18T05:00:00.000Z";
     const respond = vi.fn<ManagedConversationDesktopApi["respond"]>(
@@ -2303,17 +2874,11 @@ describe("PersonalMemoryWorkspace", () => {
     const stopButton = container.querySelector<HTMLButtonElement>(
       '.personal-session-header-actions button[aria-label="Stop managed Conversation"]'
     );
-    expect(stopButton).not.toBeNull();
+    expect(stopButton).toBeNull();
     expect(
       container.querySelector(".personal-managed-runtime-controls")
     ).toBeNull();
-    await act(async () => stopButton?.click());
-    expect(managed.stop).toHaveBeenCalledWith(
-      expect.objectContaining({
-        executionId: "execution-runtime",
-        executionGeneration: 2
-      })
-    );
+    expect(managed.stop).not.toHaveBeenCalled();
   });
 
   it("keeps an ambiguous prompt visible and disables further submission while reconciling", async () => {
@@ -2605,7 +3170,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
   });
 
-  it("shows catalogue activity for a Project without Captured Sessions", async () => {
+  it("shows no activity for a Project without Conversations", async () => {
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-23T00:00:00.000Z",
@@ -2632,6 +3197,16 @@ describe("PersonalMemoryWorkspace", () => {
     });
     await vi.waitFor(() =>
       expect(
+        container.querySelector(".personal-inactive-toggle")
+      ).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(
         container.querySelector(
           `[data-project-id="${metadata.localProjectId}"]`
         )
@@ -2642,7 +3217,7 @@ describe("PersonalMemoryWorkspace", () => {
       `[data-project-id="${metadata.localProjectId}"]`
     );
     const activity = projectRow?.querySelector("time");
-    expect(activity?.dateTime).toBe(metadata.lastSeenAt);
-    expect(activity?.textContent).not.toBe("No activity");
+    expect(activity?.dateTime).not.toBe(metadata.lastSeenAt);
+    expect(projectRow?.textContent).toContain("No activity");
   });
 });

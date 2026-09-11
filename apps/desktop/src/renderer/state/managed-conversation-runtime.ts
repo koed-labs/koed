@@ -20,6 +20,7 @@ export type ManagedConversationRuntimeState = {
   executionStateVersion: number;
   executionState: string;
   executionLastErrorCode: string | null;
+  vcsDriver: "git" | null;
   latestCommand: ManagedConversationRuntimeSnapshot["latestCommand"];
   items: ManagedConversationRuntimeItem[];
   itemRevisions: ReadonlyMap<string, number>;
@@ -37,6 +38,7 @@ export const managedConversationRuntimeStateFromSnapshot = (
   executionStateVersion: snapshot.executionStateVersion,
   executionState: snapshot.executionState,
   executionLastErrorCode: snapshot.executionLastErrorCode,
+  vcsDriver: snapshot.vcsDriver ?? null,
   latestCommand: snapshot.latestCommand,
   items: snapshot.items,
   itemRevisions: new Map(snapshot.items.map((item) => [item.id, item.revision]))
@@ -89,6 +91,7 @@ export const reduceManagedConversationRuntime = (
         executionStateVersion: update.execution.stateVersion,
         executionState: update.execution.state,
         executionLastErrorCode: update.execution.lastErrorCode,
+        vcsDriver: current.vcsDriver,
         latestCommand: null,
         items: [],
         itemRevisions: new Map()
@@ -144,5 +147,41 @@ export const reduceManagedConversationRuntime = (
   return {
     state: next,
     requiresSnapshot: generationChanged || change?.kind === "reset"
+  };
+};
+
+export type ManagedConversationUpdateEnvelope = {
+  revision: number;
+  update: ManagedConversationRealtimeUpdate;
+  history?: Array<{
+    revision: number;
+    update: ManagedConversationRealtimeUpdate;
+  }>;
+};
+
+/** Preserve every delta across React batching; gaps fall back to durable snapshots. */
+export const appendManagedConversationUpdate = (
+  current: ManagedConversationUpdateEnvelope | null,
+  update: ManagedConversationRealtimeUpdate
+): ManagedConversationUpdateEnvelope => {
+  const entry = { revision: (current?.revision ?? 0) + 1, update };
+  return {
+    ...entry,
+    history: [...(current?.history ?? (current ? [current] : [])), entry].slice(
+      -128
+    )
+  };
+};
+
+export const managedConversationUpdatesSince = (
+  envelope: ManagedConversationUpdateEnvelope,
+  revision: number
+) => {
+  const updates = (envelope.history ?? [envelope]).filter(
+    (entry) => entry.revision > revision
+  );
+  return {
+    updates,
+    gap: updates.length > 0 && updates[0]!.revision > revision + 1
   };
 };

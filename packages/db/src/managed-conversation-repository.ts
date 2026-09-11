@@ -251,6 +251,7 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     input: {
       projectId: string;
+      contextKind?: "project" | "independent";
       provider: string;
       aiClientInstanceId: string;
       model: string;
@@ -1056,6 +1057,7 @@ const sha256 = (value: string): string =>
 
 const startDigest = (input: {
   projectId: string;
+  contextKind?: "project" | "independent";
   provider: string;
   aiClientInstanceId: string;
   model: string;
@@ -1070,6 +1072,10 @@ const startDigest = (input: {
   sha256(
     JSON.stringify({
       kind: "start",
+      // Keep existing Project request digests compatible with retries.
+      ...(input.contextKind === "independent"
+        ? { contextKind: "independent" }
+        : {}),
       projectId: input.projectId,
       provider: input.provider,
       aiClientInstanceId: input.aiClientInstanceId,
@@ -1405,6 +1411,7 @@ export const createManagedConversationRepository = (
           }
           const expectedDigest = startDigest({
             projectId,
+            contextKind: input.contextKind,
             provider: input.provider,
             aiClientInstanceId: input.aiClientInstanceId,
             model: input.model,
@@ -1437,6 +1444,7 @@ export const createManagedConversationRepository = (
         const fencingToken = randomBytes(32).toString("base64url");
         const requestDigest = startDigest({
           projectId,
+          contextKind: input.contextKind,
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,
@@ -3449,6 +3457,8 @@ export const createManagedConversationRepository = (
         const result = await client.query<{
           owner_user_id: string;
           execution_id: string;
+          execution_generation: number;
+          command_kind: string;
         }>(
           `update managed_conversation_commands
             set state = 'completed',
@@ -3459,15 +3469,31 @@ export const createManagedConversationRepository = (
                 last_error_code = null,
                 updated_at = now()
           where id = $1 and lease_token = $2 and state = 'dispatching'
-        returning owner_user_id, execution_id`,
+        returning owner_user_id, execution_id, execution_generation, command_kind`,
           [input.commandId, input.leaseToken, input.result ?? null]
         );
         const row = result.rows[0];
         if (row) {
+          // Prompts execute serially. Completion follows canonical capture, so
+          // temporary output from this generation must not survive into a new turn.
+          const retired =
+            row.command_kind === "prompt"
+              ? await client.query(
+                  `delete from managed_conversation_runtime_items
+                  where owner_user_id = $1 and execution_id = $2
+                    and execution_generation = $3 and item_kind = 'transient_output'`,
+                  [
+                    row.owner_user_id,
+                    row.execution_id,
+                    row.execution_generation
+                  ]
+                )
+              : null;
           await appendManagedConversationEvent(client, {
             ownerUserId: row.owner_user_id,
             executionId: row.execution_id,
-            mutationId: `managed-conversation-command:${input.commandId}:completed`
+            mutationId: `managed-conversation-command:${input.commandId}:completed`,
+            runtimeItemsReset: (retired?.rowCount ?? 0) > 0
           });
         }
         await client.query("commit");

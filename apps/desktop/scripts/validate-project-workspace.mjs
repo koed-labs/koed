@@ -294,6 +294,213 @@ const run = async () => {
     await waitForReady(window);
     await waitFor(
       window,
+      `Boolean(document.querySelector('.personal-agent-start textarea'))`,
+      "Ask Conversation input"
+    );
+    await setEmulatedViewport(window, 1440, 900);
+    const askLight = await window.webContents.executeJavaScript(`(() => {
+      const cards = [...document.querySelectorAll('.personal-agent-projects > button')];
+      const projectCard = cards[1];
+      const name = projectCard?.querySelector('strong')?.getBoundingClientRect();
+      const count = projectCard?.querySelector('small')?.getBoundingClientRect();
+      return {
+        background: getComputedStyle(document.documentElement).backgroundColor,
+        heading: document.querySelector('.personal-agent-start h1')?.textContent,
+        independentFirst: cards[0]?.textContent?.includes('Chat') ?? false,
+        projectVisible: projectCard?.textContent?.includes('Koed Desktop browser validation') ?? false,
+        projectCountVisible: projectCard?.textContent?.includes('4 recent Conversations') ?? false,
+        projectTextGap: name && count ? Math.round(count.top - name.bottom) : null,
+        openProjectVisible: document.querySelector('.personal-agent-open-project')?.textContent?.includes('Open a project') ?? false,
+        forbiddenCopyVisible: /CHOOSE YOUR CONTEXT|Explore an idea|Working in/u.test(document.body.innerText),
+        composerVisible: Boolean(document.querySelector('.personal-agent-start textarea')),
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    })()`);
+    assert.equal(askLight.heading, "Where shall we start?");
+    assert.equal(askLight.independentFirst, true);
+    assert.equal(askLight.projectVisible, true);
+    assert.equal(askLight.projectCountVisible, true);
+    assert.equal(askLight.projectTextGap, 4);
+    assert.equal(askLight.openProjectVisible, true);
+    assert.equal(askLight.forbiddenCopyVisible, false);
+    assert.equal(askLight.composerVisible, true);
+    assert.equal(askLight.overflow, false);
+    await captureValidationScreenshot(window, "ask-1440x900-light");
+
+    await setEmulatedViewport(window, 620, 900);
+    const askNarrowOverflow = await window.webContents.executeJavaScript(
+      `document.documentElement.scrollWidth > document.documentElement.clientWidth`
+    );
+    assert.equal(askNarrowOverflow, false);
+    await captureValidationScreenshot(window, "ask-620x900-light");
+
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: "dark" }] }
+    );
+    await window.loadFile(pagePath);
+    await waitForReady(window);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-agent-start textarea'))`,
+      "dark Ask Conversation input"
+    );
+    await setEmulatedViewport(window, 1440, 900);
+    const askDarkBackground = await window.webContents.executeJavaScript(
+      `getComputedStyle(document.documentElement).backgroundColor`
+    );
+    assert.notEqual(askDarkBackground, askLight.background);
+    await captureValidationScreenshot(window, "ask-1440x900-dark");
+
+    const genericPrompt = "Investigate the generic task from Ask.";
+    const followUpPrompt = "Summarise the next concrete step.";
+    const memoryPrompt =
+      "Use memory_answer to recall the approved Ask page decisions.";
+
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: "light" }] }
+    );
+    await window.loadFile(pagePath);
+    await waitForReady(window);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-agent-start textarea'))`,
+      "interactive Ask Conversation input"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const project = [...document.querySelectorAll('.personal-agent-projects > button')]
+        .find((button) => button.textContent.includes('Koed Desktop browser validation'));
+      project?.click();
+      const textarea = document.querySelector('.personal-agent-start textarea');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, ${JSON.stringify(genericPrompt)});
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor(
+      window,
+      `!document.querySelector('button[aria-label="Start Conversation"]')?.disabled`,
+      "enabled Project Conversation start"
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('button[aria-label="Start Conversation"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-session-detail')) && document.body.textContent.includes(${JSON.stringify(genericPrompt)}) && Boolean(document.querySelector('button[aria-label="Send prompt"]'))`,
+      "Project Conversation first message"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const textarea = document.querySelector('.personal-managed-composer textarea');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, ${JSON.stringify(followUpPrompt)});
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor(
+      window,
+      `!document.querySelector('button[aria-label="Send prompt"]')?.disabled`,
+      "enabled follow-up send"
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('button[aria-label="Send prompt"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `document.body.textContent.includes(${JSON.stringify(followUpPrompt)}) && window.__koedManagedConversationTrace?.sends.length === 2`,
+      "Project Conversation follow-up"
+    );
+
+    await window.webContents.executeJavaScript(`(() => {
+      [...document.querySelectorAll('.desktop-sidebar-nav-item')]
+        .find((button) => button.querySelector('.desktop-sidebar-nav-label')?.textContent?.trim() === 'Ask')
+        ?.click();
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.personal-agent-start textarea'))`,
+      "returned Ask Conversation input"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const textarea = document.querySelector('.personal-agent-start textarea');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, ${JSON.stringify(memoryPrompt)});
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor(
+      window,
+      `!document.querySelector('button[aria-label="Start Conversation"]')?.disabled`,
+      "enabled Independent Conversation start"
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('button[aria-label="Start Conversation"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `document.body.textContent.includes(${JSON.stringify(memoryPrompt)}) && window.__koedManagedConversationTrace?.sends.length === 3 && document.querySelectorAll('.desktop-sidebar-conversation-recent').length === 2`,
+      "Independent memory recall Conversation and unified Recents"
+    );
+    const managedFlow = await window.webContents.executeJavaScript(`(() => ({
+      starts: window.__koedManagedConversationTrace?.starts ?? [],
+      sends: window.__koedManagedConversationTrace?.sends ?? [],
+      recentLabels: [...document.querySelectorAll('.desktop-sidebar-conversation-recent .desktop-sidebar-nav-label')]
+        .map((label) => label.textContent?.trim())
+    }))()`);
+    assert.deepEqual(
+      managedFlow.starts.map(({ contextKind }) => contextKind),
+      ["project", "independent"],
+      JSON.stringify(managedFlow)
+    );
+    assert.deepEqual(
+      managedFlow.sends.map(({ prompt }) => prompt),
+      [genericPrompt, followUpPrompt, memoryPrompt],
+      JSON.stringify(managedFlow)
+    );
+    assert.ok(
+      managedFlow.recentLabels.some((label) => label?.includes("Investigate")),
+      JSON.stringify(managedFlow)
+    );
+    assert.ok(
+      managedFlow.recentLabels.some((label) =>
+        label?.includes("memory_answer")
+      ),
+      JSON.stringify(managedFlow)
+    );
+    await captureValidationScreenshot(window, "ask-managed-conversation-flow");
+
+    await window.webContents.executeJavaScript(`(() => {
+      [...document.querySelectorAll('.desktop-sidebar-conversation-recent')]
+        .find((button) => button.textContent.includes('Investigate'))
+        ?.click();
+    })()`);
+    await waitFor(
+      window,
+      `document.body.textContent.includes(${JSON.stringify(genericPrompt)}) && Boolean(document.querySelector('button[aria-label="Send prompt"]'))`,
+      "Project Conversation opened from Recents"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      [...document.querySelectorAll('.desktop-sidebar-conversation-recent')]
+        .find((button) => button.textContent.includes('memory_answer'))
+        ?.click();
+    })()`);
+    await waitFor(
+      window,
+      `document.body.textContent.includes(${JSON.stringify(memoryPrompt)}) && Boolean(document.querySelector('button[aria-label="Send prompt"]'))`,
+      "Independent Conversation opened from Recents"
+    );
+
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: "light" }] }
+    );
+    await window.loadFile(pagePath);
+    await waitForReady(window);
+    await window.webContents.executeJavaScript(`
+      [...document.querySelectorAll('button')]
+        .find((button) => button.textContent?.trim() === 'Projects')
+        ?.click()
+    `);
+    await waitFor(
+      window,
       `Boolean(document.querySelector('.personal-memory-workspace'))`,
       "Personal Memory workspace"
     );

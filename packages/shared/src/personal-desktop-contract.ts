@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 7;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 8;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -245,6 +245,24 @@ export const personalDesktopProjectSchema = z
   })
   .strict();
 
+export const personalDesktopConversationRecentSchema = z
+  .object({
+    id: identifierSchema,
+    title: z.string().max(512),
+    projectId: identifierSchema,
+    projectName: projectNameSchema,
+    sessionId: identifierSchema,
+    latestAt: timestampSchema
+  })
+  .strict();
+
+export const personalDesktopConversationRecentListInputSchema = z
+  .object({
+    cursor: z.string().regex(/^\d+$/u).max(512).optional(),
+    limit: z.literal(50)
+  })
+  .strict();
+
 const personalDesktopProjectMetadataRemoteSchema = z
   .object({
     display: z.string().trim().min(1).max(512).nullable()
@@ -258,6 +276,7 @@ export const personalDesktopProjectMetadataSchema = z
     lastSeenAt: timestampSchema,
     localProjectId: identifierSchema,
     displayName: projectNameSchema,
+    contextKind: z.enum(["project", "independent"]).optional(),
     path: z
       .object({
         cwd: localProjectPathSchema,
@@ -576,6 +595,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.conversations.recent.list"),
+      input: personalDesktopConversationRecentListInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.metadata.list"),
       input: z.object({}).strict()
     })
@@ -669,6 +695,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
 export const personalDesktopProjectsDataSchema = z
   .object({
     projects: z.array(personalDesktopProjectSchema).max(500)
+  })
+  .strict();
+
+export const personalDesktopConversationRecentsDataSchema = z
+  .object({
+    conversations: z.array(personalDesktopConversationRecentSchema).max(50),
+    nextCursor: z.string().regex(/^\d+$/u).max(512).nullable()
   })
   .strict();
 
@@ -770,6 +803,15 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.projects.list"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.conversations.recent.list"),
+      ok: z.literal(true),
+      data: personalDesktopConversationRecentsDataSchema
+    })
+    .strict(),
+  failedResult("personal.conversations.recent.list"),
   z
     .object({
       ...resultBase,
@@ -894,6 +936,12 @@ export type PersonalDesktopProjectThread = z.infer<
 >;
 export type PersonalDesktopProject = z.infer<
   typeof personalDesktopProjectSchema
+>;
+export type PersonalDesktopConversationRecent = z.infer<
+  typeof personalDesktopConversationRecentSchema
+>;
+export type PersonalDesktopConversationRecentListInput = z.infer<
+  typeof personalDesktopConversationRecentListInputSchema
 >;
 export type PersonalDesktopProjectMetadata = z.infer<
   typeof personalDesktopProjectMetadataSchema
@@ -1035,6 +1083,12 @@ export const conversationToolKindAndLabel = (
 
 export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;
+  listRecentConversations?: (
+    input: PersonalDesktopConversationRecentListInput
+  ) => Promise<{
+    conversations: PersonalDesktopConversationRecent[];
+    nextCursor: string | null;
+  }>;
   listProjectMetadata?: () => Promise<PersonalDesktopProjectMetadata[]>;
   loadEventPage: (
     input: PersonalDesktopEventPageInput

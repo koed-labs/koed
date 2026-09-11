@@ -17,6 +17,7 @@ import {
   collectKoedServerStatus,
   healthy,
   inspectCodex,
+  inspectPrivacyRuntimeConfiguration,
   inspectAiClientFlowReadiness,
   inspectAiClientInstanceReadiness,
   inspectAiClientReadiness,
@@ -406,7 +407,12 @@ describe("startup status", () => {
         runtimeMode: "developer",
         dependencyMode: "bundled-local",
         automaticPorts: true,
-        services: ["api", "worker", "local-ai-runtime"],
+        services: [
+          "api",
+          "worker",
+          "local-ai-runtime",
+          "privacy-service-native"
+        ],
         processes: { api: 45, worker: 43, localAiRuntime: 44 }
       })
     );
@@ -1003,6 +1009,29 @@ describe("status state aggregation", () => {
     expect(readiness.mcp_memory_answer.state).toBe("healthy");
     expect(readiness.session_title.state).toBe("healthy");
     expect(readiness.curated_memory_review.state).toBe("healthy");
+    expect(readiness.conversations.state).toBe("needs_attention");
+    const conversationReady = inspectAiClientFlowReadiness({
+      environment: {},
+      capabilityReadModel: {
+        ...readModel,
+        capabilitySnapshots: readModel.capabilitySnapshots.map((snapshot) => ({
+          ...snapshot,
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                id: "managed_conversation_start",
+                support: "supported",
+                readiness: "ready",
+                diagnostics: []
+              }
+            }
+          }
+        }))
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+    expect(conversationReady.conversations.state).toBe("healthy");
+    expect(conversationReady.mcp_memory_answer.state).toBe("needs_attention");
   });
 
   it("reports explicit unavailable defaults as nonblocking attention", () => {
@@ -3035,5 +3064,28 @@ describe("status and doctor JSON contracts", () => {
     expect(status.codex.state).toBe("healthy");
     expect(status.mcpServer.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");
+  });
+});
+
+describe("Privacy Filter supervisor configuration", () => {
+  it("requests restart when a running supervisor omitted Privacy Filter", () => {
+    expect(
+      inspectPrivacyRuntimeConfiguration({ services: ["api", "worker"] }, true)
+    ).toMatchObject({
+      state: "needs_attention",
+      details: { reason: "runtime_configuration_changed" }
+    });
+  });
+  it("allows health checks during startup and when Privacy Filter was launched", () => {
+    expect(inspectPrivacyRuntimeConfiguration(null, false)).toBeNull();
+    expect(
+      inspectPrivacyRuntimeConfiguration({ services: [] }, false)
+    ).toBeNull();
+    expect(
+      inspectPrivacyRuntimeConfiguration(
+        { services: ["privacy-service-native"] },
+        true
+      )
+    ).toBeNull();
   });
 });

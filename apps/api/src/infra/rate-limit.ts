@@ -130,6 +130,7 @@ export const createRateLimitHandlers = (
       const keyMaterial = authenticatedUserId
         ? `user:${hashKey(authenticatedUserId)}`
         : `ip:${request.ip}`;
+      // Traffic classes supplied by callers cannot select additional quotas.
       const key = `${name}:${keyMaterial}`;
       const bucket = await rateLimitStore.increment(key, policy.windowMs);
       reply.header("x-ratelimit-limit", String(policy.max));

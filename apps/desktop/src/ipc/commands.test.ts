@@ -1,3 +1,4 @@
+import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { EventEmitter } from "node:events";
 import {
   COLLABORATION_CONTRACT_VERSION,
@@ -117,6 +118,9 @@ describe("desktop IPC command registry", () => {
     const consumePendingPersonalDevicePairingLink = vi
       .fn()
       .mockReturnValue(pairingLink);
+    const selectProjectDirectory = vi.fn(async () => ({
+      localProjectId: "project-1"
+    }));
     let themePreference: "light" | "dark" | "system" = "system";
     const getThemePreference = vi.fn(() => themePreference);
     const setThemePreference = vi.fn(
@@ -224,7 +228,8 @@ describe("desktop IPC command registry", () => {
         getHardwareAcceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
-        setLaunchAtStartup
+        setLaunchAtStartup,
+        selectProjectDirectory
       }
     );
     return {
@@ -243,10 +248,27 @@ describe("desktop IPC command registry", () => {
       setHardwareAcceleration,
       getLaunchAtStartup,
       setLaunchAtStartup,
+      selectProjectDirectory,
       mutatingHandlers,
       checkHandlers
     };
   };
+
+  it("opens Project selection without accepting renderer filesystem authority", async () => {
+    const { registered, selectProjectDirectory } = register();
+    const invoke = registered.get(invokeChannel)!;
+
+    await expect(
+      invoke(renderer(), "select_project_directory")
+    ).resolves.toEqual({ localProjectId: "project-1" });
+    expect(selectProjectDirectory).toHaveBeenCalledOnce();
+    await expect(
+      invoke(renderer(), "select_project_directory", { path: "/tmp/unsafe" })
+    ).rejects.toThrow("takes no arguments");
+    await expect(
+      invoke(renderer("https://attacker.example/"), "select_project_directory")
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
 
   it("consumes retained pairing links only for the trusted main frame", async () => {
     const { registered, consumePendingPersonalDevicePairingLink } = register();
@@ -407,6 +429,7 @@ describe("desktop IPC command registry", () => {
     expect(managedConversation).toHaveBeenCalledWith({
       operation: "start",
       projectId: "project-1",
+      contextKind: "project",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
       model: "gpt-test",
@@ -458,6 +481,19 @@ describe("desktop IPC command registry", () => {
     });
     await expect(failedStart).rejects.toThrow("Koed could not start");
     await expect(failedStart).rejects.not.toThrow("/private/managed");
+  });
+
+  it("preserves safe rate-limit retry guidance across managed Conversation IPC", async () => {
+    const { registered, managedConversation } = register();
+    managedConversation.mockRejectedValueOnce(new LocalApiRateLimitError(30));
+    await expect(
+      registered.get(managedConversationCommandChannel)!(renderer(), {
+        operation: "draft_read",
+        projectId: "project-1",
+        capturedSessionId: "session-1",
+        threadId: "thread-1"
+      })
+    ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
   });
 
   it("validates and correlates managed Project IPC for trusted renderers", async () => {

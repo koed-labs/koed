@@ -4,9 +4,59 @@ Koed Desktop provides two Personal workflows: Ask and Notes.
 
 ## Ask workflow
 
-Ask searches all Personal Memory that is visible to the current User. It uses
-the global Search Domain. The first question creates an Ask thread. A later
-question can append a turn to that thread.
+Ask starts a managed Conversation through a selected AI Client. Its initial
+AI Client, model, and reasoning effort come from the **Conversations** assignment
+in Agent Configuration. The User can
+select Chat, a recent Project, or a folder from the native directory
+picker. Project selection does not create a Conversation. The composer stays visible
+during loading and preserves the draft. Send becomes available after the
+Project and AI Client settings are ready. While local services start,
+Ask retries configuration and Project loading with a delay of up to five seconds.
+It does not show transient startup errors. Successful retries update the
+Conversations defaults and recent Projects without navigation.
+
+A terminal runtime failure ends the loading state and disables message input.
+Desktop directs the User to start a new Conversation from the Project. It does
+not offer Retry for a failed execution, which cannot restart with the same key.
+
+The first accepted message creates the managed Conversation. Desktop then opens
+the existing Conversation detail under Projects. Generic agent tasks and Memory
+Answer calls use the same AI Client execution path. The backend does not perform
+answer synthesis.
+
+Standalone Conversations appear in one **Chats** Project row. Its header and
+navigation label also show **Chats**. These Conversations use
+an owner-local Independent Project. Each
+execution uses a separate Koed-owned directory. Selecting a folder discovers or
+reuses its canonical Project identity without ingesting the folder into Memory.
+
+Ask records created by older Desktop versions remain available as read-only
+historical Ask threads. The User can start a new managed Conversation from that
+view. Koed does not replay the historical question automatically.
+
+### Conversation recovery
+
+Desktop retains realtime updates across React batches. It also reloads the runtime
+snapshot every five seconds while an execution remains active. A completed prompt
+ends the generation indicator and refreshes the saved timeline. Prompt completion
+removes temporary output in the same database transaction. The timeline uses
+provider turn identity when a temporary message has no provider item identity.
+
+A Claude authentication failure displays sign-in guidance and the preserved prompt.
+The User can copy that prompt into a new Conversation after signing in.
+Koed does not automatically resend an uncertain prompt.
+
+Draft and pending-Conversation recovery access use
+`GET /v1/managed-conversations/access`. This route authenticates the API Token and
+uses the managed Conversation read quota, independently of background memory traffic.
+A failed draft read cannot overwrite the saved draft. After HTTP 429, Desktop
+shows retry guidance and waits for `Retry-After` before another draft read.
+Other memory reads still use their existing quotas and display retry guidance.
+
+### Historical Ask execution
+
+The legacy Ask path searched all Personal Memory that was visible to the current
+User.
 
 Each turn has this lifecycle:
 
@@ -26,6 +76,10 @@ search across the Personal Memory stages. This search avoids duplicate query
 embeddings before the worker starts. Questions with retrieval hints retain the
 staged scan and routed search path.
 
+The AI Client receives retrieval stage counts, coverage, and failure details.
+Full candidate ID lists and operational telemetry remain in the saved retrieval
+trace. This keeps repeated scan diagnostics from consuming the evidence budget.
+
 The backend does not perform LLM synthesis. The Local AI Runtime uses the
 connected Codex installation for synthesis.
 
@@ -34,20 +88,37 @@ Follow-up retrieval uses only the current question. The runtime can send up to
 has a 64 KiB UTF-8 limit. The runtime removes the oldest pairs first. It does
 not send evidence, diagnostics, credentials, or authorization data as context.
 
+Project activity labels, ordering, and active status use the newest Conversation
+activity. Catalogue discovery and refresh times do not count as activity.
+Projects without Conversations show No activity. The Project list labels its
+activity groups **Active** and **Inactive**.
+
+Chats has one stable Project identity. Desktop matches captured Projects to
+catalogue entries by identity before path. Private runtime directories under
+`managed-conversations/independent` belong to Chats and do not appear as separate
+Project rows or recent Project cards. Existing catalogue entries for these
+directories are folded into Chats without deleting their Conversations.
+
 ## Recents
 
-Recents contains only threads that start in Koed Desktop. It does not include
-`memory_answer` calls from MCP or other AI Client surfaces.
+Recents combines visible Personal Conversations from Projects with historical
+Ask threads. Managed Conversations appear after first-message acceptance, before
+their captured source becomes available. Explicit execution and capture
+identities prevent duplicate rows. Standalone rows use **Chats** as their
+context label and do not expose their internal working-directory names.
 
 Recents appears at the bottom of the primary Personal navigation. The Ask
 content area does not contain a second navigation pane.
 
-The first question is the thread title. The newest turn controls the order.
-Pending and failed threads remain visible. Desktop loads 50 threads per page
-and uses an opaque cursor to load older pages.
+The newest user-visible Conversation activity controls the order. Runtime
+heartbeats and memory processing do not reorder rows. Historical Ask entries use
+their first question as the title. Desktop requests each owner-scoped history in
+pages of 50. Recents shows only the newest 10 entries across both sources.
+The list scrolls within the sidebar when the window has limited height.
 
-Memory Question change events refresh the Ask cache. They do not refresh the
-Personal Project graph. Desktop keeps prior thread content if a refresh fails.
+Conversation and presentation changes refresh Project entries. Memory Question
+change events refresh historical Ask entries. Desktop keeps prior content if a
+refresh fails.
 
 ## Notes workflow
 

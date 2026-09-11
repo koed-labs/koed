@@ -104,6 +104,16 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
     expect(
       personalDesktopRequestSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.conversations.recent.list",
+        input: { cursor: "50", limit: 50 }
+      })
+    ).toMatchObject({
+      operation: "personal.conversations.recent.list",
+      input: { cursor: "50", limit: 50 }
+    });
+    expect(
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: "personal.events.load_page",
         input: {
           projectId: "project-1",
@@ -136,6 +146,23 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
         input: { sessionId, expectedVersion: 0, pinned: true }
       })
     ).toMatchObject({ operation: "personal.sessions.update_presentation" });
+  });
+
+  it("bounds recent Conversation pagination and rejects supplied authority", () => {
+    for (const input of [
+      { limit: 500 },
+      { limit: 50, cursor: "not-an-offset" },
+      { limit: 50, projectId: "other-owner-project" },
+      { limit: 50, path: "/tmp/project" }
+    ]) {
+      expect(() =>
+        personalDesktopRequestSchema.parse({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.conversations.recent.list",
+          input
+        })
+      ).toThrow();
+    }
   });
 
   it.each([

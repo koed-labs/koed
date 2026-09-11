@@ -299,6 +299,7 @@ describe("Koed server desktop manager", () => {
         projects: [
           {
             localProjectId: "local-project",
+            contextKind: "project",
             git: {
               remotes: [{ display: "github.com/koed-labs/koed" }]
             }
@@ -306,6 +307,69 @@ describe("Koed server desktop manager", () => {
         ]
       }
     });
+  });
+
+  it("marks only the exact Koed-owned Chats root as independent metadata", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-chats-metadata-"));
+    try {
+      mkdirSync(resolve(koedHome, "config"), { recursive: true });
+      writeFileSync(
+        resolve(koedHome, "config/projects.json"),
+        JSON.stringify({
+          schemaVersion: 3,
+          updatedAt: "2026-07-24T00:00:00.000Z",
+          deviceSaltId: "pms_test",
+          projects: [
+            resolve(koedHome, "projects", "Independent"),
+            "/work/projects/Independent"
+          ].map((cwd, index) => ({
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId: `project-${index}`,
+            displayName: "Independent",
+            path: {
+              cwd,
+              projectRoot: null,
+              basename: "Independent",
+              localPathHash: `hmac_sha256:${index}`
+            },
+            packages: []
+          }))
+        })
+      );
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) =>
+          callback(null, JSON.stringify({ ok: true }), ""),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      const result = await manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.metadata.list",
+        input: {}
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          projects: [
+            { localProjectId: "project-0", contextKind: "independent" },
+            { localProjectId: "project-1", contextKind: "project" }
+          ]
+        }
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("reconciles graph Project paths into fresh local metadata", async () => {
@@ -367,7 +431,7 @@ describe("Koed server desktop manager", () => {
     });
 
     const listProjectsRequest = {
-      contractVersion: 7,
+      contractVersion: 8,
       operation: "personal.projects.list",
       input: {}
     } as const;
@@ -1560,6 +1624,34 @@ describe("Koed server desktop manager", () => {
       parentSessionId: null,
       ...overrides
     });
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (...args) => {
+      void args;
+      return new Response(
+        JSON.stringify({
+          projects: [
+            {
+              id: "project-1",
+              name: "koed",
+              path: "/repo",
+              eventCount: 7,
+              threads: [
+                thread({}),
+                thread({
+                  id: "019fd173-d3cd-7753-84a4-421d8010f356",
+                  name: "019fd173-d3cd-7753-84a4-421d8010f356",
+                  sessionId: "00000000-0000-4000-8000-000000000002",
+                  eventCount: 4,
+                  sample: "Development activity captured in koed.",
+                  threadKind: "subagent",
+                  parentThreadId
+                })
+              ]
+            }
+          ]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -1586,34 +1678,7 @@ describe("Koed server desktop manager", () => {
       },
       spawn: () => childProcess() as never,
       openExternal: async () => undefined,
-      personalMemoryFetch: vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              projects: [
-                {
-                  id: "project-1",
-                  name: "koed",
-                  path: "/repo",
-                  eventCount: 7,
-                  threads: [
-                    thread({}),
-                    thread({
-                      id: "019fd173-d3cd-7753-84a4-421d8010f356",
-                      name: "019fd173-d3cd-7753-84a4-421d8010f356",
-                      sessionId: "00000000-0000-4000-8000-000000000002",
-                      eventCount: 4,
-                      sample: "Development activity captured in koed.",
-                      threadKind: "subagent",
-                      parentThreadId
-                    })
-                  ]
-                }
-              ]
-            }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          )
-      )
+      personalMemoryFetch
     });
 
     await expect(
@@ -1631,6 +1696,114 @@ describe("Koed server desktop manager", () => {
             threads: [{ id: parentThreadId, threadKind: "conversation" }]
           }
         ]
+      }
+    });
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.conversations.recent.list",
+        input: { limit: 50 }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        conversations: [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            projectId: "project-1",
+            projectName: "koed"
+          }
+        ],
+        nextCursor: null
+      }
+    });
+    const recentUrl = new URL(String(personalMemoryFetch.mock.calls[1]?.[0]));
+    expect(recentUrl.searchParams.get("limit")).toBe("51");
+    expect(recentUrl.searchParams.get("offset")).toBe("0");
+    const rows = Array.from({ length: 123 }, (_, index) =>
+      thread({
+        id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        sessionId: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        latestAt: new Date(
+          Date.parse("2026-08-05T12:00:00.000Z") - index * 1000
+        ).toISOString(),
+        threadKind: index < 70 ? "subagent" : "conversation"
+      })
+    );
+    personalMemoryFetch.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const offset = Number(url.searchParams.get("offset"));
+      const limit = Number(url.searchParams.get("limit"));
+      return new Response(
+        JSON.stringify({
+          projects: [
+            {
+              id: "project-1",
+              name: "koed",
+              path: "/repo",
+              eventCount: 0,
+              threads: rows.slice(offset, offset + limit)
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const page = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.conversations.recent.list",
+      input: { limit: 50 }
+    });
+    expect(page).toMatchObject({ ok: true, data: { nextCursor: "120" } });
+    if (!page.ok || page.operation !== "personal.conversations.recent.list")
+      throw new Error("Expected recents");
+    expect(page.data.conversations).toHaveLength(50);
+    expect(page.data.conversations.map((item) => item.id)).toEqual(
+      rows.slice(70, 120).map((item) => item.sessionId)
+    );
+    const older = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.conversations.recent.list",
+      input: { limit: 50, cursor: page.data.nextCursor! }
+    });
+    expect(older).toMatchObject({ ok: true, data: { nextCursor: null } });
+    if (!older.ok || older.operation !== "personal.conversations.recent.list")
+      throw new Error("Expected recents");
+    expect(older.data.conversations.map((item) => item.id)).toEqual(
+      rows.slice(120).map((item) => item.sessionId)
+    );
+    const runtimeId = "69b33165-f70c-4123-8291-4a3871a68400";
+    personalMemoryFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          projects: [
+            {
+              id: "project-1",
+              name: runtimeId,
+              path: resolve(
+                koedHome,
+                "managed-conversations",
+                "independent",
+                runtimeId
+              ),
+              eventCount: 3,
+              threads: [thread({})]
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.conversations.recent.list",
+        input: { limit: 50 }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        conversations: [{ projectId: "project-1", projectName: "Chats" }]
       }
     });
   });
@@ -4016,7 +4189,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
   });
 
-  it("scopes managed Conversation drafts to the authenticated owner and backend", async () => {
+  it("scopes managed Conversation drafts and recovery to the authenticated owner and backend", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));
     const credentialDirectory = resolve(koedHome, "config");
     mkdirSync(credentialDirectory, { recursive: true });
@@ -4036,7 +4209,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     };
     const personalMemoryFetch = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
-      if (url.pathname === "/v1/access/check") {
+      if (url.pathname === "/v1/managed-conversations/access") {
         return new Response(
           JSON.stringify({
             user: {
@@ -4113,15 +4286,62 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         manager.managedConversation({ operation: "draft_read", ...identity })
       ).resolves.toEqual({ operation: "draft_read", value: "" });
 
+      const recoveryValue = JSON.stringify({ schemaVersion: 1, drafts: [] });
+      const recoveryOwnerId = "00000000-0000-4000-8000-000000000001";
+      await expect(
+        manager.managedConversation({
+          operation: "recovery_write",
+          ownerId: recoveryOwnerId,
+          value: recoveryValue
+        })
+      ).resolves.toEqual({ operation: "recovery_write", ok: true });
+      await expect(
+        manager.managedConversation({
+          operation: "recovery_read",
+          ownerId: recoveryOwnerId
+        })
+      ).resolves.toEqual({ operation: "recovery_read", value: recoveryValue });
+      await expect(
+        manager.managedConversation({
+          operation: "recovery_read",
+          ownerId: "00000000-0000-4000-8000-000000000002"
+        })
+      ).rejects.toThrow();
+      await expect(
+        manager.managedConversation({
+          operation: "recovery_delete",
+          ownerId: recoveryOwnerId
+        })
+      ).resolves.toEqual({ operation: "recovery_delete", ok: true });
+
       const references = [
         ...draftStore.put.mock.calls.map(([reference]) => reference),
         ...draftStore.get.mock.calls.map(([reference]) => reference),
         ...draftStore.delete.mock.calls.map(([reference]) => reference)
       ];
-      expect(new Set(references).size).toBe(1);
-      expect(references[0]).toMatch(/^managed-draft-[0-9a-f]{64}$/);
-      expect(references[0]).not.toContain(identity.projectId);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(4);
+      expect(new Set(references).size).toBe(2);
+      expect(references).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^managed-draft-[0-9a-f]{64}$/),
+          expect.stringMatching(/^managed-recovery-[0-9a-f]{64}$/)
+        ])
+      );
+      expect(
+        references.every((reference) => !reference.includes(identity.projectId))
+      ).toBe(true);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(8);
+      const reads = draftStore.get.mock.calls.length;
+      personalMemoryFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: "rate_limited", private: "do not expose" }),
+          { status: 429, headers: { "retry-after": "30" } }
+        )
+      );
+      await expect(
+        manager.managedConversation({ operation: "draft_read", ...identity })
+      ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
+      expect(draftStore.get).toHaveBeenCalledTimes(reads);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(9);
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

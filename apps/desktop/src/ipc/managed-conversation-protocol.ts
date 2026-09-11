@@ -10,6 +10,7 @@ export const managedConversationCommandChannel =
   "koed:managed-conversation:command";
 
 const maximumPromptBytes = 256 * 1024;
+const maximumRecoveryBytes = 1024 * 1024;
 const maximumIdentifierLength = 512;
 const maximumIdempotencyKeyLength = 256;
 
@@ -84,6 +85,7 @@ const prompt = (value: unknown): string => {
 export type ManagedConversationStartRequest = {
   operation: "start";
   projectId: string;
+  contextKind?: "project" | "independent";
   aiClientDriverId: SupportedAiClientDriverId;
   aiClientInstanceId: string;
   model: string;
@@ -110,6 +112,11 @@ export type ManagedConversationDraftRequest =
       value: string;
     } & ManagedConversationDraftScope)
   | ({ operation: "draft_delete" } & ManagedConversationDraftScope);
+
+export type ManagedConversationRecoveryRequest =
+  | { operation: "recovery_read"; ownerId: string }
+  | { operation: "recovery_write"; ownerId: string; value: string }
+  | { operation: "recovery_delete"; ownerId: string };
 
 export type ManagedConversationResumeRequest = {
   operation: "resume";
@@ -201,6 +208,7 @@ export type ManagedConversationRequest =
   | ManagedConversationStartRequest
   | ManagedConversationLaunchOptionsRequest
   | ManagedConversationDraftRequest
+  | ManagedConversationRecoveryRequest
   | ManagedConversationInspectRequest
   | ManagedConversationResumeRequest
   | ManagedConversationSendRequest
@@ -301,6 +309,8 @@ export type ManagedConversationLaunchOptions = {
     readiness: string;
     models: Array<{
       id: string;
+      fullId?: string;
+      model?: string;
       displayName?: string;
       description?: string;
       supportedReasoningEfforts: string[];
@@ -333,6 +343,9 @@ export type ManagedConversationResult =
     }
   | { operation: "draft_write"; ok: true }
   | { operation: "draft_delete"; ok: true }
+  | { operation: "recovery_read"; value: string }
+  | { operation: "recovery_write"; ok: true }
+  | { operation: "recovery_delete"; ok: true }
   | {
       operation: "start";
       status: "starting" | "ready";
@@ -385,6 +398,7 @@ export type ManagedConversationResult =
       executionStateVersion: number;
       executionState: string;
       executionLastErrorCode: string | null;
+      vcsDriver?: "git" | null;
       latestCommand: {
         id: string;
         sequence: number;
@@ -441,6 +455,7 @@ export const parseManagedConversationRequest = (
       [
         "operation",
         "projectId",
+        ...(Object.hasOwn(input, "contextKind") ? ["contextKind"] : []),
         "aiClientDriverId",
         "aiClientInstanceId",
         "model",
@@ -454,6 +469,15 @@ export const parseManagedConversationRequest = (
     return {
       operation: "start",
       projectId: identifier(input.projectId, "Project id"),
+      contextKind:
+        input.contextKind === undefined
+          ? "project"
+          : input.contextKind === "project" ||
+              input.contextKind === "independent"
+            ? input.contextKind
+            : (() => {
+                throw new TypeError("Managed Conversation context is invalid.");
+              })(),
       aiClientDriverId:
         typeof input.aiClientDriverId === "string" &&
         isSupportedAiClientDriverId(input.aiClientDriverId)
@@ -495,6 +519,38 @@ export const parseManagedConversationRequest = (
   if (input.operation === "launch_options") {
     exactKeys(input, ["operation"], "Managed Conversation launch options");
     return { operation: "launch_options" };
+  }
+  if (
+    input.operation === "recovery_read" ||
+    input.operation === "recovery_write" ||
+    input.operation === "recovery_delete"
+  ) {
+    exactKeys(
+      input,
+      [
+        "operation",
+        "ownerId",
+        ...(input.operation === "recovery_write" ? ["value"] : [])
+      ],
+      "Managed Conversation recovery"
+    );
+    if (
+      input.operation === "recovery_write" &&
+      (typeof input.value !== "string" ||
+        new TextEncoder().encode(input.value).byteLength > maximumRecoveryBytes)
+    ) {
+      throw new TypeError("Managed Conversation recovery is invalid.");
+    }
+    return input.operation === "recovery_write"
+      ? {
+          operation: "recovery_write",
+          ownerId: identifier(input.ownerId, "Recovery owner id"),
+          value: input.value as string
+        }
+      : {
+          operation: input.operation,
+          ownerId: identifier(input.ownerId, "Recovery owner id")
+        };
   }
   if (
     input.operation === "draft_read" ||
@@ -820,7 +876,9 @@ export const parseManagedConversationRequest = (
   throw new TypeError("Unsupported Managed Conversation operation.");
 };
 
-const parseIdentity = (value: unknown): ManagedConversationIdentity => {
+export const parseManagedConversationIdentity = (
+  value: unknown
+): ManagedConversationIdentity => {
   const identity = record(value, "Managed Conversation identity");
   const hasExecutionOwner = identity.executionOwner !== undefined;
   exactKeys(
@@ -1202,6 +1260,17 @@ const parseLaunchOptions = (
           );
           return {
             id: identifier(model.id, "AI Client model id"),
+            ...(typeof model.fullId === "string"
+              ? {
+                  fullId: identifier(
+                    model.fullId,
+                    "AI Client qualified model id"
+                  )
+                }
+              : {}),
+            ...(typeof model.model === "string"
+              ? { model: identifier(model.model, "AI Client model alias") }
+              : {}),
             ...(typeof model.displayName === "string"
               ? {
                   displayName: identifier(
@@ -1291,6 +1360,34 @@ export const parseManagedConversationResult = (
     }
     return { operation: result.operation, ok: true };
   }
+  if (result.operation === "recovery_read") {
+    exactKeys(
+      result,
+      ["operation", "value"],
+      "Managed Conversation recovery read result"
+    );
+    if (
+      typeof result.value !== "string" ||
+      new TextEncoder().encode(result.value).byteLength > maximumRecoveryBytes
+    ) {
+      throw new TypeError("Managed Conversation recovery result is invalid.");
+    }
+    return { operation: "recovery_read", value: result.value };
+  }
+  if (
+    result.operation === "recovery_write" ||
+    result.operation === "recovery_delete"
+  ) {
+    exactKeys(
+      result,
+      ["operation", "ok"],
+      "Managed Conversation recovery result"
+    );
+    if (result.ok !== true) {
+      throw new TypeError("Managed Conversation recovery result is invalid.");
+    }
+    return { operation: result.operation, ok: true };
+  }
   if (result.operation === "start") {
     const hasConversation = result.conversation !== undefined;
     exactKeys(
@@ -1317,7 +1414,9 @@ export const parseManagedConversationResult = (
         "Managed Conversation execution id"
       ),
       ...(hasConversation
-        ? { conversation: parseIdentity(result.conversation) }
+        ? {
+            conversation: parseManagedConversationIdentity(result.conversation)
+          }
         : {})
     };
   }
@@ -1342,7 +1441,7 @@ export const parseManagedConversationResult = (
     return {
       operation: "resume",
       status: result.status,
-      conversation: parseIdentity(result.conversation),
+      conversation: parseManagedConversationIdentity(result.conversation),
       ...(result.message ? { message: result.message } : {})
     };
   }
@@ -1383,7 +1482,9 @@ export const parseManagedConversationResult = (
         "Managed Conversation execution id"
       ),
       ...(hasConversation
-        ? { conversation: parseIdentity(result.conversation) }
+        ? {
+            conversation: parseManagedConversationIdentity(result.conversation)
+          }
         : {}),
       ...(result.message ? { message: result.message } : {})
     };
@@ -1415,7 +1516,7 @@ export const parseManagedConversationResult = (
     return {
       operation: "send",
       status: result.status,
-      conversation: parseIdentity(result.conversation),
+      conversation: parseManagedConversationIdentity(result.conversation),
       idempotencyKey: idempotencyKey(result.idempotencyKey),
       clientUserMessageId: uuid(
         result.clientUserMessageId,
@@ -1516,6 +1617,7 @@ export const parseManagedConversationResult = (
         "executionStateVersion",
         "executionState",
         "executionLastErrorCode",
+        ...(Object.hasOwn(result, "vcsDriver") ? ["vcsDriver"] : []),
         "latestCommand",
         "items"
       ],
@@ -1536,6 +1638,13 @@ export const parseManagedConversationResult = (
       typeof result.executionLastErrorCode !== "string"
     ) {
       throw new TypeError("Managed runtime execution error is invalid.");
+    }
+    if (
+      result.vcsDriver !== undefined &&
+      result.vcsDriver !== null &&
+      result.vcsDriver !== "git"
+    ) {
+      throw new TypeError("Managed runtime VCS capability is invalid.");
     }
     const latestCommand =
       result.latestCommand === null
@@ -1583,6 +1692,7 @@ export const parseManagedConversationResult = (
         "Managed execution state"
       ),
       executionLastErrorCode: result.executionLastErrorCode as string | null,
+      vcsDriver: result.vcsDriver === "git" ? "git" : null,
       latestCommand: latestCommand
         ? {
             id: identifier(latestCommand.id, "Managed runtime command id"),
@@ -1717,6 +1827,22 @@ export interface ManagedConversationDesktopApi {
     input: ManagedConversationDraftScope
   ) => Promise<
     Extract<ManagedConversationResult, { operation: "draft_delete" }>
+  >;
+  readRecovery?: (
+    ownerId: string
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "recovery_read" }>
+  >;
+  writeRecovery?: (
+    ownerId: string,
+    value: string
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "recovery_write" }>
+  >;
+  deleteRecovery?: (
+    ownerId: string
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "recovery_delete" }>
   >;
   targets: () => Promise<
     Extract<ManagedConversationResult, { operation: "targets" }>

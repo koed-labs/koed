@@ -45,6 +45,7 @@ import { ManagedSourceControlPane } from "./ManagedSourceControlPane.js";
 type CheckoutIdentity = {
   executionId: string;
   executionGeneration: number;
+  vcsDriver?: "git" | null;
 };
 
 type PendingFileOperation = {
@@ -95,9 +96,10 @@ export function ManagedProjectCockpit({
   }) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const supportsSourceControl = identity.vcsDriver === "git";
   const [tab, setTab] = useState<
     "changes" | "files" | "terminal" | "preview" | "source"
-  >("changes");
+  >(supportsSourceControl ? "changes" : "files");
   const [error, setError] = useState("");
   const [diff, setDiff] = useState<ManagedConversationDiff | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -228,7 +230,7 @@ export function ManagedProjectCockpit({
   ]);
 
   useEffect(() => {
-    if (!open || tab !== "changes") return;
+    if (!open || tab !== "changes" || !supportsSourceControl) return;
     let active = true;
     setError("");
     void api
@@ -255,7 +257,13 @@ export function ManagedProjectCockpit({
     return () => {
       active = false;
     };
-  }, [api, identity.executionId, open, revision, tab]);
+  }, [api, identity.executionId, open, revision, supportsSourceControl, tab]);
+
+  useEffect(() => {
+    if (!supportsSourceControl && (tab === "changes" || tab === "source")) {
+      setTab("files");
+    }
+  }, [supportsSourceControl, tab]);
 
   const settleFileOperation = useCallback(
     async (pending: PendingFileOperation) => {
@@ -712,16 +720,18 @@ export function ManagedProjectCockpit({
     <aside className="personal-cockpit" aria-label="Project">
       <div className="personal-cockpit-toolbar">
         <div role="tablist" aria-label="Project views">
-          <button
-            aria-label="Changes"
-            aria-selected={tab === "changes"}
-            onClick={() => setTab("changes")}
-            role="tab"
-            title="Changes"
-            type="button"
-          >
-            <FileDiff aria-hidden="true" />
-          </button>
+          {supportsSourceControl ? (
+            <button
+              aria-label="Changes"
+              aria-selected={tab === "changes"}
+              onClick={() => setTab("changes")}
+              role="tab"
+              title="Changes"
+              type="button"
+            >
+              <FileDiff aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             aria-label="Files"
             aria-selected={tab === "files"}
@@ -732,16 +742,18 @@ export function ManagedProjectCockpit({
           >
             <Files aria-hidden="true" />
           </button>
-          <button
-            aria-label="Source control"
-            aria-selected={tab === "source"}
-            onClick={() => setTab("source")}
-            role="tab"
-            title="Source control"
-            type="button"
-          >
-            <GitPullRequest aria-hidden="true" />
-          </button>
+          {supportsSourceControl ? (
+            <button
+              aria-label="Source control"
+              aria-selected={tab === "source"}
+              onClick={() => setTab("source")}
+              role="tab"
+              title="Source control"
+              type="button"
+            >
+              <GitPullRequest aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             aria-label="Terminal"
             aria-selected={tab === "terminal"}

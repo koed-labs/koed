@@ -580,6 +580,21 @@ const fetchJson = async <T>(
   }
 };
 
+export const inspectPrivacyRuntimeConfiguration = (
+  runtime: Pick<KoedServerRuntimeState, "services"> | null,
+  running: boolean
+): KoedServerComponentStatus | null =>
+  running &&
+  runtime &&
+  Array.isArray(runtime.services) &&
+  !runtime.services.includes("privacy-service-native")
+    ? needsAttention(
+        "Privacy Filter was not started by the running supervisor.",
+        "Restart Koed with Team collaboration enabled to start Privacy Filter.",
+        { reason: "runtime_configuration_changed" }
+      )
+    : null;
+
 const inspectExternalPrivacyService = async (
   baseUrl: string,
   token: string,
@@ -2016,14 +2031,18 @@ const flowAssignmentReadiness = (input: {
       `AI Client instance "${instance.instanceId}" is not healthy.`
     );
   }
-  const synthesis = descriptorFor(snapshot, "local_synthesis");
+  const capability =
+    input.flowKey === "conversations"
+      ? "managed_conversation_start"
+      : "local_synthesis";
+  const synthesis = descriptorFor(snapshot, capability);
   if (
     !synthesis ||
     synthesis.support !== "supported" ||
     synthesis.readiness !== "ready"
   ) {
     return unavailable(
-      `AI Client instance "${instance.instanceId}" local synthesis is unavailable.`
+      `AI Client instance "${instance.instanceId}" ${input.flowKey === "conversations" ? "conversation start" : "local synthesis"} is unavailable.`
     );
   }
   const model = snapshot.models.find(
@@ -2415,14 +2434,15 @@ export const collectKoedServerStartupStatus = async (
         }
       )
     : useBundledLocalDependencies
-      ? await collectLocalPrivacyRuntimeHealthStatus(
+      ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
+        (await collectLocalPrivacyRuntimeHealthStatus(
           paths,
           serviceEnvironment,
           {
             existsSync: deps.existsSync,
             fetch: deps.fetch
           }
-        )
+        )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(
@@ -2678,10 +2698,11 @@ export const collectKoedServerStatus = async (
         }
       )
     : useBundledLocalDependencies
-      ? await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
+      ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
+        (await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
           fetch: deps.fetch
-        })
+        })))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(

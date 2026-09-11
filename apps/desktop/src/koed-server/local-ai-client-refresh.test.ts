@@ -32,6 +32,32 @@ const runtimeHome = (): string => {
 };
 
 describe("Local AI Client capability refresh", () => {
+  it("preserves publication failure context from a 503 response", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            publications: [
+              {
+                instanceId: "codex.default",
+                published: false,
+                error: "private backend detail"
+              }
+            ]
+          }),
+          { status: 503, headers: { "content-type": "application/json" } }
+        )
+    );
+    await expect(
+      refreshLocalAiRuntime({ fetch, koedHome: runtimeHome() })
+    ).resolves.toEqual({
+      refreshed: false,
+      refreshError:
+        "Capability publication failed for 1 AI Client instance. Retry Refresh capabilities."
+    });
+  });
+
   it("explains rate-limited publication instead of discarding the runtime diagnostic", async () => {
     const fetch = vi.fn(
       async () =>
@@ -69,7 +95,8 @@ describe("Local AI Client capability refresh", () => {
       refreshLocalAiRuntime({ fetch, koedHome: runtimeHome() })
     ).resolves.toEqual({
       refreshed: false,
-      refreshError: "Capability refresh request failed."
+      refreshError:
+        "Capability refresh request failed (HTTP 503). Retry Refresh capabilities."
     });
   });
 });

@@ -143,11 +143,18 @@ local credential. It does not inspect AI Client profiles, MCP or Capture Hook
 configuration, device identity, upstream backends, last verification, or model
 digests. Use normal `status --json` or `doctor --json` for those diagnostics.
 
+Privacy Filter health requests have a five-second deadline. Startup polling
+does not request accelerator diagnostics, so those diagnostics cannot delay
+the next readiness check.
+
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
 running service health response and does not read the model again. A later
 normal status or explicit model-status command remains a deep diagnostic and
-calculates the digest again.
+calculates the digest again. If Team collaboration is enabled after a
+supervisor starts without Privacy Filter, status reports that a restart is
+required. Restart with the same Team collaboration setting as Desktop. The
+missing process is not reported as an indefinitely loading service.
 
 The supervisor log records structured `koed.supervisor.startup` events. Events
 from one process share a `startupId` and contain a `milestone` plus cumulative,

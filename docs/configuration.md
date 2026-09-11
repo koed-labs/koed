@@ -729,13 +729,33 @@ policy, or full URLs containing customer content.
   `auto`, `cuda`, `coreml`, or `dml`. Bundled-local operation inherits the
   product-level `KOED_HARDWARE_ACCELERATION` preference and therefore defaults
   to `auto`; an explicit value remains an Operator override. Candidate
-  accelerators are verified by model load,
-  final-mask parity, and warm calibration before activation. `auto` keeps CPU
+  accelerators require model loading and final-mask parity validation.
+  Startup never runs performance calibration. `auto` uses cached measurements
+  or starts on CPU when measurements are absent. After readiness, a deferred
+  task measures CPU and the candidate accelerator, then stores the measurements.
+  Classification remains available during this task. Provider controls serialize
+  with calibration, and shutdown cancels calibration that has not started.
+  An explicit runtime control request for `auto` also measures providers when needed. Explicit provider choices
+  do not require performance calibration. `auto` keeps CPU
   when accelerator pressure is critical or measured benefit is insufficient;
   explicit unavailable providers fail without changing the active runtime.
   Active accelerator inference failure reloads the verified CPU provider and
   retries the side-effect-free classification once. This setting does not
   change Embedding Service acceleration.
+  Successful validation and measurements are stored in
+  `KOED_PRIVACY_TRANSFORMERS_CACHE/runtime-validation-v1.json`. This file contains
+  synthetic validation outputs, with no Personal Memory or Team Memory. The cache
+  identity includes model revision, classifier hash, service implementation,
+  resolved runtime dependencies, OS version, CPU and GPU identity, GPU driver version, Node version, and model
+  cache location. Every startup runs the complete three-input parity corpus on CPU.
+  Each provider activation checks the complete corpus against the current CPU baseline.
+  Cached measurements avoid repeated calibration but never replace parity checks.
+  A changed CPU baseline discards cached measurements.
+  An accelerator that fails validation cannot activate. Delete this cache after
+  GPU hardware or driver changes to force validation and new measurements.
+  Cache write failures do not prevent startup. Model loading still occurs on every
+  service start.
+
 - `PRIVACY_GPU_IDLE_UNLOAD_SECONDS`: seconds of Privacy Filter accelerator
   inactivity before the model is unloaded from accelerator memory. Defaults to
   `300`; `0` keeps it resident. The next classification reloads the selected

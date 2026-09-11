@@ -1,3 +1,4 @@
+import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
@@ -169,6 +170,7 @@ export const registerDesktopCommandHandlers = (
     setLaunchAtStartup: (
       enabled: boolean
     ) => Promise<DesktopLaunchAtStartupState>;
+    selectProjectDirectory?: () => Promise<unknown>;
   }
 ): void => {
   ipcMain.handle(
@@ -182,6 +184,15 @@ export const registerDesktopCommandHandlers = (
       }
       if (command === "collaboration") {
         throw new Error("Use the strict collaboration command channel.");
+      }
+      if (command === "select_project_directory") {
+        if (args && Object.keys(args).length > 0) {
+          throw new Error("Project directory selection takes no arguments.");
+        }
+        if (!options.selectProjectDirectory) {
+          throw new Error("Project directory selection is unavailable.");
+        }
+        return await options.selectProjectDirectory();
       }
       if (
         profileMutationCommands.has(command) &&
@@ -363,7 +374,8 @@ export const registerDesktopCommandHandlers = (
       let rawResult: ManagedConversationResult;
       try {
         rawResult = await options.managedConversation(request);
-      } catch {
+      } catch (error) {
+        if (error instanceof LocalApiRateLimitError) throw error;
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
             launch_options:
@@ -377,6 +389,12 @@ export const registerDesktopCommandHandlers = (
             draft_read: "Koed could not restore the local Conversation draft.",
             draft_write: "Koed could not save the local Conversation draft.",
             draft_delete: "Koed could not remove the local Conversation draft.",
+            recovery_read:
+              "Koed could not restore pending managed Conversations.",
+            recovery_write:
+              "Koed could not save pending managed Conversations.",
+            recovery_delete:
+              "Koed could not remove pending managed Conversations.",
             targets: "Koed could not load Personal Devices.",
             usage: "Koed could not load managed Conversation usage.",
             runtime: "Koed could not load managed Conversation activity.",
@@ -389,6 +407,8 @@ export const registerDesktopCommandHandlers = (
             handoff: "Koed could not move the managed Conversation.",
             fork: "Koed could not fork the managed Conversation."
           };
+        // IPC errors deliberately omit causes that can contain private provider diagnostics.
+        // eslint-disable-next-line preserve-caught-error
         throw new Error(messages[request.operation]);
       }
       const result = parseManagedConversationResult(rawResult);
