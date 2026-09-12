@@ -81,6 +81,13 @@ It neither rebuilds the app nor launches the renderer, collaboration broker, or
 daemon. The job does not create or upload a DMG, ZIP, block map, or release
 artifact. Diagnostics are uploaded only on failure.
 
+The ordinary CI build job creates the Linux x64 standalone `koed-server`
+package and runs the same deterministic artifact inspector used by release.
+For packaging-relevant changes, the macOS packaged-app smoke job also builds,
+runs, and inspects the macOS arm64 standalone package. This keeps foreign native
+binaries, unusable target runtimes, unsafe archive entries, checkout leaks, and
+size-policy regressions from reaching the post-merge publication workflow.
+
 ## Release candidates and releases
 
 The Changesets release pull request runs `Full release-candidate Desktop
