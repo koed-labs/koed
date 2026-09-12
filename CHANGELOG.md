@@ -1,5 +1,11 @@
 # Koed
 
+## 0.8.1
+
+### Patch Changes
+
+- eed0ffa: Prune standalone server terminal runtimes to the target platform and architecture, verify the packaged PTY, and run release artifact inspection during pull request CI.
+
 ## 0.8.0
 
 ### Minor Changes
