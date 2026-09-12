@@ -209,6 +209,15 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --platform linux --arch x64 --json
 
+      - name: Inspect standalone koed-server package
+        run: |
+          node scripts/inspect-release-artifact.mjs \
+            --path "dist/koed-server-package/linux-x64/koed-server-${{ github.sha }}-linux-x64.tar.gz" \
+            --platform linux \
+            --arch x64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json
+
   relevant-packaged-smoke:
     name: Relevant packaged Desktop app smoke
     needs:
