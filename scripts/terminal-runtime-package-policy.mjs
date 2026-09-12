@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
@@ -165,6 +166,10 @@ export const pruneTerminalRuntimeForTarget = ({
     ) {
       throw new Error(`node-pty does not contain a usable ${target} runtime.`);
     }
+  }
+
+  if (platform === "macos") {
+    chmodSync(resolve(selectedPrebuild, "spawn-helper"), 0o755);
   }
 
   for (const entry of actualTargets) {

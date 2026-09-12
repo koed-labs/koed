@@ -155,8 +155,9 @@ entry paths while dependencies are materialized once under the shared
 removed before validation, so the final tree has no symlinks or package-store
 dependency. Before validation, it retains only target-specific native
 dependency payloads, pruning unselected `node-pty` prebuilds and rejecting
-unreviewed dependency shapes. It launches a real PTY through the retained target
-runtime, then writes `koed-server-package-manifest.json` and `README.txt`, validates the
+unreviewed dependency shapes. The package policy normalizes the selected Darwin
+`spawn-helper` executable mode before it launches a real PTY through the retained
+target runtime. It then writes `koed-server-package-manifest.json` and `README.txt`, validates the
 required runtime files, rejects retired Explorer artifacts, native runtime assets, model files, and Python
 embedding leftovers, then emits a deterministic tarball and `.sha256` under
 `dist/koed-server-package/<platform>-<arch>/`.

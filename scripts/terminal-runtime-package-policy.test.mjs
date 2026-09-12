@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -52,7 +54,9 @@ const fixture = () => {
   );
   for (const target of ["darwin-arm64", "darwin-x64"]) {
     for (const file of ["pty.node", "spawn-helper"]) {
-      writeFile(resolve(packageRoot, "prebuilds", target, file));
+      const path = resolve(packageRoot, "prebuilds", target, file);
+      writeFile(path);
+      if (file === "spawn-helper") chmodSync(path, 0o644);
     }
   }
   for (const target of ["win32-arm64", "win32-x64"]) {
@@ -119,6 +123,11 @@ test("keeps only the selected macOS prebuild", () => {
   assert.equal(
     existsSync(resolve(packageRoot, "prebuilds", "darwin-arm64", "pty.node")),
     true
+  );
+  assert.equal(
+    lstatSync(resolve(packageRoot, "prebuilds", "darwin-arm64", "spawn-helper"))
+      .mode & 0o777,
+    0o755
   );
   assert.equal(
     existsSync(resolve(packageRoot, "prebuilds", "darwin-x64")),

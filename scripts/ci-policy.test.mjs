@@ -81,6 +81,10 @@ test("release validation compares clean package trees and deterministic archives
     ci,
     /Build standalone koed-server package[\s\S]*Inspect standalone koed-server package[\s\S]*scripts\/inspect-release-artifact\.mjs/
   );
+  assert.match(
+    ci,
+    /Relevant packaged Desktop app smoke[\s\S]*Build macOS standalone koed-server package[\s\S]*Inspect macOS standalone koed-server package[\s\S]*--platform macos[\s\S]*--arch arm64/
+  );
   assert.match(release, /Verify standalone package reproducibility/);
   assert.match(release, /Verify native runtime artifact reproducibility/);
   assert.match(release, /SOURCE_DATE_EPOCH: 0/);
