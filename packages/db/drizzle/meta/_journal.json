@@ -281,6 +281,13 @@
       "when": 1789020430576,
       "tag": "0039_conversation_agent_default",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789129599334,
+      "tag": "0040_repair_conversation_start_authority",
+      "breakpoints": true
     }
   ]
 }

@@ -34,6 +34,25 @@ Ask records created by older Desktop versions remain available as read-only
 historical Ask threads. The User can start a new managed Conversation from that
 view. Koed does not replay the historical question automatically.
 
+### Conversation recovery
+
+Desktop retains realtime updates across React batches. It also reloads the runtime
+snapshot every five seconds while an execution remains active. A completed prompt
+ends the generation indicator and refreshes the saved timeline. Prompt completion
+removes temporary output in the same database transaction. The timeline uses
+provider turn identity when a temporary message has no provider item identity.
+
+A Claude authentication failure displays sign-in guidance and the preserved prompt.
+The User can copy that prompt into a new Conversation after signing in.
+Koed does not automatically resend an uncertain prompt.
+
+Draft and pending-Conversation recovery access use
+`GET /v1/managed-conversations/access`. This route authenticates the API Token and
+uses the managed Conversation read quota, independently of background memory traffic.
+A failed draft read cannot overwrite the saved draft. After HTTP 429, Desktop
+shows retry guidance and waits for `Retry-After` before another draft read.
+Other memory reads still use their existing quotas and display retry guidance.
+
 ### Historical Ask execution
 
 The legacy Ask path searched all Personal Memory that was visible to the current

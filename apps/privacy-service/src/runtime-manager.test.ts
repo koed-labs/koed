@@ -22,6 +22,7 @@ class FakeRuntime implements LoadablePrivacyRuntime {
     private readonly options: {
       failLoad?: boolean;
       parityMismatch?: boolean;
+      parityMismatchText?: string;
       calibrationDelayMs?: number;
       holdText?: string;
       failText?: string;
@@ -54,7 +55,10 @@ class FakeRuntime implements LoadablePrivacyRuntime {
       );
     }
     const deterministic = new DeterministicPrivacyRuntime();
-    if (this.options.parityMismatch && text.length > 0) {
+    if (
+      (this.options.parityMismatch && text.length > 0) ||
+      text === this.options.parityMismatchText
+    ) {
       deterministic.setDetections(text, [
         { label: "private_person", start: 0, end: 1 }
       ]);
@@ -377,7 +381,7 @@ describe("Privacy Filter runtime manager", () => {
 });
 
 describe("Privacy Filter startup validation cache", () => {
-  it("never benchmarks startup and reduces a cached boot to one inference", async () => {
+  it("never benchmarks startup and checks the full corpus on cached boots", async () => {
     let saved: Awaited<
       ReturnType<import("./runtime-manager.js").PrivacyValidationCache["read"]>
     >;
@@ -410,7 +414,7 @@ describe("Privacy Filter startup validation cache", () => {
     await cold.dispose();
     texts.length = 0;
     const warm = await PrivacyRuntimeManager.create(options);
-    expect(texts).toHaveLength(1);
+    expect(texts).toHaveLength(3);
     expect(warm.status().calibrations).toEqual([]);
     await warm.dispose();
   });
@@ -565,7 +569,79 @@ describe("Privacy Filter startup validation cache", () => {
     await second.dispose();
   });
 
-  it("rejects an accelerator that fails its cached smoke check", async () => {
+  it("discards cached measurements when CPU diverges only on the credential fixture", async () => {
+    let saved: Awaited<
+      ReturnType<import("./runtime-manager.js").PrivacyValidationCache["read"]>
+    >;
+    const options = {
+      preference: "cpu" as const,
+      candidateProviders: ["cpu"] as PrivacyRuntimeProvider[],
+      validationCache: {
+        read: async () => saved,
+        write: async (_runtime: unknown, value: NonNullable<typeof saved>) => {
+          saved = value;
+        }
+      }
+    };
+    const first = await PrivacyRuntimeManager.create({
+      ...options,
+      factory: (p) => new FakeRuntime(p)
+    });
+    await first.dispose();
+    const baseline = structuredClone(saved!.baseline);
+    saved!.providers.push("coreml");
+    saved!.calibrations = [
+      {
+        provider: "cpu",
+        measuredAt: new Date().toISOString(),
+        sampleTokens: 100,
+        durationMs: 100,
+        sampleCount: 2,
+        warmTokensPerSecond: 100
+      }
+    ];
+    const second = await PrivacyRuntimeManager.create({
+      ...options,
+      factory: (p) =>
+        new FakeRuntime(p, {
+          parityMismatchText: "api_key=synthetic_value_1234567890"
+        })
+    });
+    expect(saved!.baseline[0]).toEqual(baseline[0]);
+    expect(saved!.baseline[2]).not.toEqual(baseline[2]);
+    expect(second.status().calibrations).toEqual([]);
+    expect(second.status().verifiedProviders).toEqual(["cpu"]);
+    await second.dispose();
+  });
+
+  it("does not report cached providers as verified before activation", async () => {
+    let saved: Awaited<
+      ReturnType<import("./runtime-manager.js").PrivacyValidationCache["read"]>
+    >;
+    const options = {
+      factory: (p: PrivacyRuntimeProvider) => new FakeRuntime(p),
+      candidateProviders: ["cpu", "coreml"] as PrivacyRuntimeProvider[],
+      validationCache: {
+        read: async () => saved,
+        write: async (_runtime: unknown, value: NonNullable<typeof saved>) => {
+          saved = value;
+        }
+      }
+    };
+    const first = await PrivacyRuntimeManager.create({
+      ...options,
+      preference: "coreml"
+    });
+    await first.dispose();
+    const second = await PrivacyRuntimeManager.create({
+      ...options,
+      preference: "cpu"
+    });
+    expect(second.status().verifiedProviders).toEqual(["cpu"]);
+    await second.dispose();
+  });
+
+  it("rejects a cached accelerator that matches the first fixture but fails the credential fixture", async () => {
     let saved: Awaited<
       ReturnType<import("./runtime-manager.js").PrivacyValidationCache["read"]>
     >;
@@ -589,7 +665,11 @@ describe("Privacy Filter startup validation cache", () => {
     await expect(
       PrivacyRuntimeManager.create({
         ...options,
-        factory: (p) => new FakeRuntime(p, { parityMismatch: p === "coreml" })
+        factory: (p) =>
+          new FakeRuntime(p, {
+            parityMismatchText:
+              p === "coreml" ? "api_key=synthetic_value_1234567890" : undefined
+          })
       })
     ).rejects.toMatchObject({ code: "provider_parity_failed" });
     expect(saved?.providers).toEqual(["cpu"]);

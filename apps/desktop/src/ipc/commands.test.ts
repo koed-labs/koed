@@ -1,3 +1,4 @@
+import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { EventEmitter } from "node:events";
 import {
   COLLABORATION_CONTRACT_VERSION,
@@ -480,6 +481,19 @@ describe("desktop IPC command registry", () => {
     });
     await expect(failedStart).rejects.toThrow("Koed could not start");
     await expect(failedStart).rejects.not.toThrow("/private/managed");
+  });
+
+  it("preserves safe rate-limit retry guidance across managed Conversation IPC", async () => {
+    const { registered, managedConversation } = register();
+    managedConversation.mockRejectedValueOnce(new LocalApiRateLimitError(30));
+    await expect(
+      registered.get(managedConversationCommandChannel)!(renderer(), {
+        operation: "draft_read",
+        projectId: "project-1",
+        capturedSessionId: "session-1",
+        threadId: "thread-1"
+      })
+    ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
   });
 
   it("validates and correlates managed Project IPC for trusted renderers", async () => {

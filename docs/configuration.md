@@ -747,8 +747,10 @@ policy, or full URLs containing customer content.
   synthetic validation outputs, with no Personal Memory or Team Memory. The cache
   identity includes model revision, classifier hash, service implementation,
   resolved runtime dependencies, OS version, CPU and GPU identity, GPU driver version, Node version, and model
-  cache location. Ordinary startup checks one synthetic input against the cached
-  output. Missing, unreadable, or incompatible caches require full validation.
+  cache location. Every startup runs the complete three-input parity corpus on CPU.
+  Each provider activation checks the complete corpus against the current CPU baseline.
+  Cached measurements avoid repeated calibration but never replace parity checks.
+  A changed CPU baseline discards cached measurements.
   An accelerator that fails validation cannot activate. Delete this cache after
   GPU hardware or driver changes to force validation and new measurements.
   Cache write failures do not prevent startup. Model loading still occurs on every

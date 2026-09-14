@@ -209,6 +209,15 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --platform linux --arch x64 --json
 
+      - name: Inspect standalone koed-server package
+        run: |
+          node scripts/inspect-release-artifact.mjs \
+            --path "dist/koed-server-package/linux-x64/koed-server-${{ github.sha }}-linux-x64.tar.gz" \
+            --platform linux \
+            --arch x64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json
+
   relevant-packaged-smoke:
     name: Relevant packaged Desktop app smoke
     needs:
@@ -237,8 +246,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Build macOS standalone koed-server package
+        env:
+          KOED_SERVER_PACKAGE_VERSION: ${{ github.sha }}
+          SOURCE_DATE_EPOCH: 0
+        run: pnpm koed-server:package -- --platform macos --arch arm64 --json
+
+      - name: Inspect macOS standalone koed-server package
+        run: |
+          node scripts/inspect-release-artifact.mjs \
+            --path "dist/koed-server-package/macos-arm64/koed-server-${{ github.sha }}-macos-arm64.tar.gz" \
+            --platform macos \
+            --arch arm64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json
 
       - name: Fingerprint native toolchain
         id: toolchain

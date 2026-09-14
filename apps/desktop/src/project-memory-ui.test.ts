@@ -118,21 +118,27 @@ describe("repoUrlFromRemoteDisplay", () => {
     expect(projectIdForSession(projects, "session-1")).toBe("lp_chats");
   });
 
-  it("merges legacy standalone runtime Projects into Chats without losing their Conversations", () => {
-    const root = metadata({
-      localProjectId: "lp_chats",
-      displayName: "Independent",
-      contextKind: "independent",
-      path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
-    });
-    const path =
-      "/tmp/koed/managed-conversations/independent/6749259b-8f10-4b53-92d8-66e7f87a8663";
-    const captured = graphProject({ id: "lp_runtime", path });
-    const projects = mergeProjectSources([captured], [root]);
-    expect(projects).toHaveLength(1);
-    expect(projects[0]?.threads).toEqual(captured.threads);
-    expect(projects[0]?.id).toBe("lp_chats");
-  });
+  it.each([
+    "/tmp/koed",
+    "C:\\Users\\Operator\\koed",
+    "\\\\server\\share\\koed"
+  ])(
+    "merges legacy standalone runtime Projects into Chats under %s",
+    (home) => {
+      const root = metadata({
+        localProjectId: "lp_chats",
+        displayName: "Independent",
+        contextKind: "independent",
+        path: { cwd: `${home}/projects/Independent`, projectRoot: null }
+      });
+      const path = `${home}/managed-conversations/independent/6749259b-8f10-4b53-92d8-66e7f87a8663`;
+      const captured = graphProject({ id: "lp_runtime", path });
+      const projects = mergeProjectSources([captured], [root]);
+      expect(projects).toHaveLength(1);
+      expect(projects[0]?.threads).toEqual(captured.threads);
+      expect(projects[0]?.id).toBe("lp_chats");
+    }
+  );
 
   it("keeps user Projects named Independent, including lookalike paths, available as Projects", () => {
     const ordinary = metadata({

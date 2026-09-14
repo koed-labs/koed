@@ -1,3 +1,4 @@
+import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
@@ -373,7 +374,8 @@ export const registerDesktopCommandHandlers = (
       let rawResult: ManagedConversationResult;
       try {
         rawResult = await options.managedConversation(request);
-      } catch {
+      } catch (error) {
+        if (error instanceof LocalApiRateLimitError) throw error;
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
             launch_options:
@@ -405,6 +407,8 @@ export const registerDesktopCommandHandlers = (
             handoff: "Koed could not move the managed Conversation.",
             fork: "Koed could not fork the managed Conversation."
           };
+        // IPC errors deliberately omit causes that can contain private provider diagnostics.
+        // eslint-disable-next-line preserve-caught-error
         throw new Error(messages[request.operation]);
       }
       const result = parseManagedConversationResult(rawResult);

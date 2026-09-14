@@ -1111,6 +1111,14 @@ export class ClaudeManagedConversationSession {
             `Claude Agent SDK returned unexpected session ID ${message.session_id}`
           );
         }
+        if (
+          message.type === "assistant" &&
+          message.error === "authentication_failed"
+        ) {
+          const error = new Error("ManagedConversationAuthenticationError");
+          error.name = "ManagedConversationAuthenticationError";
+          throw error;
+        }
         if (message.type === "stream_event") {
           const event = message.event;
           if (

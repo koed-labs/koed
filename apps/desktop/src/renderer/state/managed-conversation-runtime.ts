@@ -149,3 +149,39 @@ export const reduceManagedConversationRuntime = (
     requiresSnapshot: generationChanged || change?.kind === "reset"
   };
 };
+
+export type ManagedConversationUpdateEnvelope = {
+  revision: number;
+  update: ManagedConversationRealtimeUpdate;
+  history?: Array<{
+    revision: number;
+    update: ManagedConversationRealtimeUpdate;
+  }>;
+};
+
+/** Preserve every delta across React batching; gaps fall back to durable snapshots. */
+export const appendManagedConversationUpdate = (
+  current: ManagedConversationUpdateEnvelope | null,
+  update: ManagedConversationRealtimeUpdate
+): ManagedConversationUpdateEnvelope => {
+  const entry = { revision: (current?.revision ?? 0) + 1, update };
+  return {
+    ...entry,
+    history: [...(current?.history ?? (current ? [current] : [])), entry].slice(
+      -128
+    )
+  };
+};
+
+export const managedConversationUpdatesSince = (
+  envelope: ManagedConversationUpdateEnvelope,
+  revision: number
+) => {
+  const updates = (envelope.history ?? [envelope]).filter(
+    (entry) => entry.revision > revision
+  );
+  return {
+    updates,
+    gap: updates.length > 0 && updates[0]!.revision > revision + 1
+  };
+};

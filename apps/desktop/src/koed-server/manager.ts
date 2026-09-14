@@ -1,3 +1,5 @@
+import { LocalApiRateLimitError } from "../local-api-errors.js";
+import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import WebSocket from "ws";
@@ -2554,6 +2556,15 @@ export const createKoedServerManager = ({
     }
     if (!response.ok) {
       const status = response.status;
+      if (status === 429) {
+        const header = response.headers.get("retry-after") ?? "";
+        const delay = /^\d+$/.test(header)
+          ? Number(header)
+          : Math.ceil((Date.parse(header) - Date.now()) / 1000);
+        throw new LocalApiRateLimitError(
+          Number.isFinite(delay) ? Math.max(1, Math.min(86400, delay)) : 60
+        );
+      }
       await response.body?.cancel().catch(() => undefined);
       throw new PersonalMemoryBoundaryError(
         status === 404
@@ -2601,12 +2612,11 @@ export const createKoedServerManager = ({
         listProjectMetadata(resolveKoedServerPaths(environment)).projects ?? []
       ).map((metadata) => [metadata.localProjectId, metadata])
     );
-    const standaloneRuntimeRoot =
-      resolve(
-        resolveKoedHome(environment),
-        "managed-conversations",
-        "independent"
-      ) + "/";
+    const standaloneRuntimeRoot = resolve(
+      resolveKoedHome(environment),
+      "managed-conversations",
+      "independent"
+    );
     const recentProjectName = (project: {
       id: string;
       name: string;
@@ -2620,7 +2630,10 @@ export const createKoedServerManager = ({
         "projects",
         "Independent"
       );
-      if (path === independentRoot || path?.startsWith(standaloneRuntimeRoot))
+      if (
+        normalizedLocalPath(path) === normalizedLocalPath(independentRoot) ||
+        localPathDescendant(standaloneRuntimeRoot, path) !== null
+      )
         return "Chats";
       return metadata?.displayName || project.name;
     };
@@ -2690,7 +2703,7 @@ export const createKoedServerManager = ({
       "independent"
     );
     for (const path of localProjectPathsFrom(projects)) {
-      if (path.startsWith(`${standaloneRuntimeRoot}/`)) continue;
+      if (localPathDescendant(standaloneRuntimeRoot, path) !== null) continue;
       pendingProjectMetadataPaths.add(path);
     }
     if (projectMetadataReconciliation) return projectMetadataReconciliation;
@@ -2871,7 +2884,7 @@ export const createKoedServerManager = ({
         personalMemoryAccess(),
         authenticatedPersonalMemoryRequest(
           ({ apiOrigin }) => ({
-            url: new URL("/v1/access/check", apiOrigin),
+            url: new URL("/v1/managed-conversations/access", apiOrigin),
             init: { method: "GET" }
           }),
           64 * 1_024
@@ -2924,7 +2937,7 @@ export const createKoedServerManager = ({
         personalMemoryAccess(),
         authenticatedPersonalMemoryRequest(
           ({ apiOrigin }) => ({
-            url: new URL("/v1/access/check", apiOrigin),
+            url: new URL("/v1/managed-conversations/access", apiOrigin),
             init: { method: "GET" }
           }),
           64 * 1_024
@@ -4423,14 +4436,22 @@ export const createKoedServerManager = ({
       const boundaryError =
         cause instanceof PersonalMemoryBoundaryError
           ? cause
-          : new PersonalMemoryBoundaryError("invalid_response", false);
+          : new PersonalMemoryBoundaryError(
+              cause instanceof LocalApiRateLimitError
+                ? "request_failed"
+                : "invalid_response",
+              cause instanceof LocalApiRateLimitError
+            );
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
         ok: false,
         error: {
           code: boundaryError.code,
-          message: personalMemoryErrorMessage(boundaryError.code),
+          message:
+            cause instanceof LocalApiRateLimitError
+              ? cause.message
+              : personalMemoryErrorMessage(boundaryError.code),
           retryable: boundaryError.retryable
         }
       });

@@ -617,6 +617,7 @@ export const createManagedConversationService = (options: {
       providerItemId?: string;
       text: string;
       itemId?: string;
+      pendingWrite?: Promise<void>;
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
@@ -1243,21 +1244,28 @@ export const createManagedConversationService = (options: {
     const transient = transientOutputs.get(key);
     if (!transient || !transient.text) return;
     transient.timer = undefined;
-    const item = await options.repository.putManagedConversationRuntimeItem(
-      { userId: options.localOwnerUserId },
-      {
-        executionId: transient.executionId,
-        executionGeneration: transient.executionGeneration,
-        providerRequestId: transient.providerRequestId,
-        providerTurnId: transient.providerTurnId,
-        ...(transient.providerItemId
-          ? { providerItemId: transient.providerItemId }
-          : {}),
-        itemKind: "transient_output",
-        payload: { text: transient.text }
-      }
-    );
-    transient.itemId = item.id;
+    const text = transient.text;
+    const write = (transient.pendingWrite ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        const item = await options.repository.putManagedConversationRuntimeItem(
+          { userId: options.localOwnerUserId },
+          {
+            executionId: transient.executionId,
+            executionGeneration: transient.executionGeneration,
+            providerRequestId: transient.providerRequestId,
+            providerTurnId: transient.providerTurnId,
+            ...(transient.providerItemId
+              ? { providerItemId: transient.providerItemId }
+              : {}),
+            itemKind: "transient_output",
+            payload: { text }
+          }
+        );
+        transient.itemId = item.id;
+      });
+    transient.pendingWrite = write;
+    await write;
   };
 
   const flushCompletedTransientOutput = async (key: string): Promise<void> => {

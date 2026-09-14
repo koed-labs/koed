@@ -4209,7 +4209,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     };
     const personalMemoryFetch = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
-      if (url.pathname === "/v1/access/check") {
+      if (url.pathname === "/v1/managed-conversations/access") {
         return new Response(
           JSON.stringify({
             user: {
@@ -4330,6 +4330,18 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         references.every((reference) => !reference.includes(identity.projectId))
       ).toBe(true);
       expect(personalMemoryFetch).toHaveBeenCalledTimes(8);
+      const reads = draftStore.get.mock.calls.length;
+      personalMemoryFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: "rate_limited", private: "do not expose" }),
+          { status: 429, headers: { "retry-after": "30" } }
+        )
+      );
+      await expect(
+        manager.managedConversation({ operation: "draft_read", ...identity })
+      ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
+      expect(draftStore.get).toHaveBeenCalledTimes(reads);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(9);
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

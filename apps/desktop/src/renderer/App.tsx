@@ -55,7 +55,11 @@ import { DesktopStatusStore } from "./services/desktop-commands.js";
 import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
 import { useManagedConversationLifecycle } from "./state/use-managed-conversation-lifecycle.js";
-import type { ManagedConversationRealtimeUpdate } from "./state/managed-conversation-runtime.js";
+import {
+  appendManagedConversationUpdate,
+  type ManagedConversationUpdateEnvelope,
+  type ManagedConversationRealtimeUpdate
+} from "./state/managed-conversation-runtime.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
@@ -611,10 +615,8 @@ export function App({
     managedConversationRecoveryRevision,
     setManagedConversationRecoveryRevision
   ] = useState(0);
-  const [managedConversationUpdate, setManagedConversationUpdate] = useState<{
-    revision: number;
-    update: ManagedConversationRealtimeUpdate;
-  } | null>(null);
+  const [managedConversationUpdate, setManagedConversationUpdate] =
+    useState<ManagedConversationUpdateEnvelope | null>(null);
   const initialSelectionApplied = useRef(
     !initialCollaborationSelection ||
       Boolean(client.current()) ||
@@ -999,10 +1001,9 @@ export function App({
           const realtime =
             update.realtimeUpdate as ManagedConversationRealtimeUpdate;
           setManagedConversationRevision((revision) => revision + 1);
-          setManagedConversationUpdate((current) => ({
-            revision: (current?.revision ?? 0) + 1,
-            update: realtime
-          }));
+          setManagedConversationUpdate((current) =>
+            appendManagedConversationUpdate(current, realtime)
+          );
         }
         if (update.realtimeUpdate?.type === "personal_memory_upserted") {
           personalMemoryStore?.refreshFromDurableEvent();
