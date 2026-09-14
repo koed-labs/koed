@@ -2935,9 +2935,13 @@ function ManagedConversationComposer({
                   });
               }}
             >
-              <summary>
+              <summary
+                aria-label="Switch device"
+                className="personal-managed-transfer-trigger"
+              >
                 <MonitorSmartphone aria-hidden="true" />
-                Switch device
+                <span>Switch device</span>
+                <ChevronDown aria-hidden="true" />
               </summary>
               <div>
                 <label>

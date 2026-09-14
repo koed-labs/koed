@@ -2124,6 +2124,15 @@ describe("PersonalMemoryWorkspace", () => {
     expect(container.textContent).not.toContain("Context:");
     expect(container.querySelector('[role="progressbar"]')).toBeNull();
     expect(container.textContent).toContain("Switch device");
+    const transferTrigger = container.querySelector<HTMLElement>(
+      ".personal-managed-transfer > summary"
+    );
+    expect(transferTrigger).not.toBeNull();
+    expect(transferTrigger?.getAttribute("aria-label")).toBe("Switch device");
+    expect(transferTrigger?.querySelector("span")?.textContent).toBe(
+      "Switch device"
+    );
+    expect(transferTrigger?.querySelectorAll("svg")).toHaveLength(2);
     expect(
       container.querySelector(
         ".personal-managed-meta-row > .personal-managed-transfer"
