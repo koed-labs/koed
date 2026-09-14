@@ -108,7 +108,7 @@ Commands:
   personal-sync recovery-kit create|verify --json
   personal-sync join request|challenge|complete --json
   personal-sync join redeem (--link <link>|--link-stdin|--link-fd <fd>)
-    [--expected-code <code>] [--device-label <label>] --json
+    [--device-label <label>] --json
   personal-sync active-device approve|refresh --json
   personal-sync recovery approve|guidance --json
   personal-sync policy enable|pause|resume --json

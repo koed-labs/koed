@@ -187,10 +187,9 @@ describe("desktop IPC command registry", () => {
         ) => {
           if (args?.emitPairing) {
             context?.emitPersonalDevicePairingProgress({
-              contractVersion: 1,
+              contractVersion: 2,
               requestId: "11111111-2222-4333-8444-555555555555",
-              state: "approval_pending",
-              shortCode: "A1B2C3D4"
+              state: "connecting"
             });
           }
           return {
@@ -307,9 +306,13 @@ describe("desktop IPC command registry", () => {
     expect(isDesktopCommandName("open_path")).toBe(false);
     expect(isDesktopCommandName("team_read")).toBe(false);
     expect(isDesktopCommandName("explorer_credential")).toBe(false);
+    expect(isDesktopCommandName("personal_sync_pairing_approve")).toBe(false);
     await expect(invoke(event, "team_read", {})).rejects.toThrow(
       "Unsupported Desktop command"
     );
+    await expect(
+      invoke(event, "personal_sync_pairing_approve", {})
+    ).rejects.toThrow("Unsupported Desktop command");
     await expect(invoke(event, "collaboration", {})).rejects.toThrow(
       "strict collaboration command channel"
     );
@@ -345,10 +348,9 @@ describe("desktop IPC command registry", () => {
     expect(event.sender.send).toHaveBeenCalledWith(
       personalDevicePairingProgressChannel,
       {
-        contractVersion: 1,
+        contractVersion: 2,
         requestId: "11111111-2222-4333-8444-555555555555",
-        state: "approval_pending",
-        shortCode: "A1B2C3D4"
+        state: "connecting"
       }
     );
   });

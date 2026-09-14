@@ -329,14 +329,6 @@ textarea {
   margin: 7px 0 16px;
 }
 
-.device-short-code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 1.2rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  margin-bottom: 16px;
-}
-
 .device-link-field,
 .device-join-field {
   display: grid;

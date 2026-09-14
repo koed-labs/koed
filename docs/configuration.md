@@ -304,6 +304,31 @@ or branch-created OS credential-store entries. Fresh alpha setup may use a new
 `KOED_HOME`; re-enroll devices when changing store state. Koed does not silently
 delete legacy state.
 
+### Capability-based Personal Device pairing
+
+A one-time Personal Device invitation link is the enrollment capability.
+Possession authorizes one joining device after Koed validates expiry, group,
+transport binding, signed device request, and single-use state. There is no
+human-facing short code and no separate **Approve device** action. The opaque
+`challenge_id` remains an internal binding value only.
+
+The link is short-lived, sensitive bearer material. Do not place it in logs,
+analytics, shell history, process arguments, or ordinary persistent files. For
+headless or SSH-only enrollment, pass it through standard input or an inherited
+file descriptor:
+
+```bash
+koed-server personal-sync join redeem --link-stdin --device-label studio
+koed-server personal-sync join redeem --link-fd 3 --device-label studio
+```
+
+This changes authorization, not transport exposure. The current pairing endpoint
+is private HTTP on `KOED_PDS_LAN_PORT`; it accepts private-network and Tailscale
+addresses, including `100.64.0.0/10`, and must not be exposed to the public
+internet. Application-level encryption, signed enrollment, replay protection,
+expiry, and device revocation remain required. Future public or remote pairing
+must use HTTPS or a secure relay with separate endpoint and abuse controls.
+
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired
 Authority-signed `pds_relay` membership certificate plus a domain-separated
@@ -818,11 +843,11 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
-- `KOED_PDS_LAN_PORT`: private-network or trusted-overlay Desktop pairing and
-  local PDS relay gateway port. Defaults to `3310`. Tailscale addresses in
-  `100.64.0.0/10` are supported for pairing. Keep it off the public internet;
-  changing it is intended for a local port conflict, not as an authentication
-  control.
+- `KOED_PDS_LAN_PORT`: private HTTP endpoint for trusted-overlay Desktop
+  pairing and local PDS relay gateway traffic. Defaults to `3310`. Tailscale
+  addresses in `100.64.0.0/10` are supported for pairing. Keep it off the
+  public internet; changing it is intended for a local port conflict, not as
+  an authentication control.
 - `PDS_LOCAL_CONTROL_URL`: optional local API URL used by SSH-only
   `personal-sync join redeem`; when omitted, Koed derives it from the local API
   port configuration.

@@ -13,8 +13,14 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  canonicalizePdsJson,
+  createPdsAuthorizedKeyBundle,
   parseCanonicalPdsJson,
+  pdsFinalizedStatementHash,
+  signPdsGroupDraft,
+  signPdsGroupFinal,
   signPdsRecord,
+  signPdsTwoStageFinal,
   validatePdsGroupStatement,
   verifyPdsEnrollmentProof
 } from "@koed/shared";
@@ -57,30 +63,205 @@ const controlEnv = (fd: number) => ({
   PDS_BROWSER_SESSION_FD: String(fd)
 });
 
+const testKey = (kind: "ed25519" | "x25519") => {
+  const pair = generateKeyPairSync(kind);
+  const publicJwk = pair.publicKey.export({ format: "jwk" }) as JsonWebKey;
+  const privateJwk = pair.privateKey.export({ format: "jwk" }) as JsonWebKey;
+  return {
+    publicKey: publicJwk.x as string,
+    privateSeed: privateJwk.d as string,
+    privateKey: pair.privateKey
+  };
+};
+
+const pendingApprovalFixture = () => {
+  const authority = testKey("ed25519");
+  const sourceSigning = testKey("ed25519");
+  const sourceKem = testKey("x25519");
+  const joiningSigning = testKey("ed25519");
+  const joiningKem = testKey("x25519");
+  const groupId = "pds_one";
+  const source = {
+    device_id: "source-device",
+    signing_key_id: "source-signing-key",
+    signing_public_key: sourceSigning.publicKey,
+    kem_key_id: "source-kem-key",
+    kem_public_key: sourceKem.publicKey,
+    operation_families: ["pds_relay"],
+    status: "active"
+  };
+  const joining = {
+    device_id: "joining-device",
+    signing_key_id: "joining-signing-key",
+    signing_public_key: joiningSigning.publicKey,
+    kem_key_id: "joining-kem-key",
+    kem_public_key: joiningKem.publicKey,
+    operation_families: ["pds_relay"],
+    status: "active"
+  };
+  const request = {
+    group_id: groupId,
+    device_id: joining.device_id,
+    signing_key_id: joining.signing_key_id,
+    signing_public_key: joining.signing_public_key,
+    kem_key_id: joining.kem_key_id,
+    kem_public_key: joining.kem_public_key,
+    operation_families: ["pds_relay"],
+    proof: {}
+  };
+  const secrets = {
+    epochSecret: Buffer.alloc(32, 1).toString("base64url"),
+    sourceFingerprintKey: Buffer.alloc(32, 2).toString("base64url"),
+    tombstoneFloorKey: Buffer.alloc(32, 3).toString("base64url"),
+    projectAliasKey: Buffer.alloc(32, 4).toString("base64url")
+  };
+  const authorized = createPdsAuthorizedKeyBundle({
+    groupId,
+    epoch: "2",
+    transitionKind: "add-device",
+    recipients: [
+      {
+        recipientId: source.device_id,
+        recipientKind: "device",
+        recipientKemKeyId: source.kem_key_id,
+        recipientKemPublicKey: source.kem_public_key
+      },
+      {
+        recipientId: joining.device_id,
+        recipientKind: "device",
+        recipientKemKeyId: joining.kem_key_id,
+        recipientKemPublicKey: joining.kem_public_key
+      }
+    ],
+    secrets,
+    authorizationKeyId: source.signing_key_id,
+    authorizationPrivateKey: sourceSigning.privateKey
+  });
+  const bundle = {
+    ...authorized.bundle,
+    authority: {
+      keyId: "authority-key",
+      signature: signPdsTwoStageFinal(
+        "key-bundle",
+        authorized.bundle,
+        authority.privateKey
+      )
+    }
+  };
+  const statementDraft = {
+    protocol: "koed/pds/v1",
+    kind: "add-device",
+    groupId,
+    sequence: "2",
+    previousHash: Buffer.alloc(32, 5).toString("base64url"),
+    body: {
+      deviceId: joining.device_id,
+      deviceSigningKeyId: joining.signing_key_id,
+      deviceSigningPublicKey: joining.signing_public_key,
+      deviceKemKeyId: joining.kem_key_id,
+      deviceKemPublicKey: joining.kem_public_key,
+      operationFamilies: ["pds_relay"],
+      previousEpoch: "1",
+      nextEpoch: "2",
+      keyBundleHash: authorized.authorizationHash
+    }
+  };
+  const authorization = {
+    signerKeyId: source.signing_key_id,
+    signature: signPdsGroupDraft(statementDraft, sourceSigning.privateKey)
+  };
+  const statement = {
+    draft: statementDraft,
+    authorization,
+    authority: {
+      keyId: "authority-key",
+      signature: signPdsGroupFinal(
+        { draft: statementDraft, authorization },
+        authority.privateKey
+      )
+    }
+  };
+  const runtime = {
+    version: 1,
+    userId: "browser-user",
+    relayUrl: "https://pds.test/pds",
+    groupId,
+    device: {
+      id: source.device_id,
+      originDeploymentId: Buffer.alloc(16, 6).toString("base64url"),
+      signingKeyId: source.signing_key_id,
+      signingPrivateSeed: sourceSigning.privateSeed,
+      kemKeyId: source.kem_key_id,
+      kemPrivateSeed: sourceKem.privateSeed
+    },
+    authority: {
+      keyId: "authority-key",
+      publicKey: authority.publicKey,
+      head: pdsFinalizedStatementHash(statement)
+    },
+    recovery: {
+      signingKeyId: "recovery-signing-key",
+      signingPublicKey: Buffer.alloc(32, 7).toString("base64url")
+    },
+    certificate: "source-certificate",
+    recipientCertificates: ["source-certificate"],
+    groupSecrets: {
+      currentEpoch: "1",
+      contentKey: secrets.epochSecret,
+      sourceFingerprintKey: secrets.sourceFingerprintKey,
+      tombstoneFloorKey: secrets.tombstoneFloorKey,
+      projectAliasKey: secrets.projectAliasKey
+    }
+  };
+  const group = {
+    state: "active",
+    current_epoch: "1",
+    pending_epoch: "2",
+    pending_bundle_hash: authorized.authorizationHash,
+    pending_statement_sequence: "2",
+    head: { sequence: "2", hash: pdsFinalizedStatementHash(statement) },
+    members: [source, joining],
+    recovery: {}
+  };
+  return { bundle, group, request, runtime, statement };
+};
+
+const pendingApprovalFetch =
+  (
+    fixture: ReturnType<typeof pendingApprovalFixture>,
+    onAck?: (body: Record<string, unknown>) => void
+  ) =>
+  async (url: string | URL, options?: RequestInit) => {
+    const parsed = new URL(String(url));
+    if (
+      parsed.pathname.endsWith("/groups/pds_one") &&
+      options?.method === "GET"
+    )
+      return response({ group: fixture.group });
+    if (parsed.pathname.endsWith("/groups/pds_one/log"))
+      return response({
+        statements: [
+          {
+            sequence: "2",
+            statementHash: fixture.group.head.hash,
+            canonicalStatement: canonicalizePdsJson(fixture.statement)
+          }
+        ]
+      });
+    if (parsed.pathname.endsWith("/key-bundles/2"))
+      return response({ key_bundle: fixture.bundle });
+    if (parsed.pathname.endsWith("/epoch-acks")) {
+      onAck?.(JSON.parse(String(options?.body)) as Record<string, unknown>);
+      return response({ activated: false });
+    }
+    throw new Error(`Unexpected control request ${parsed.pathname}`);
+  };
+
 describe("Personal Sync control client", () => {
   it("requires a full invitation link for SSH pairing redemption", async () => {
     await expect(
       runPersonalSyncCommand(["join", "redeem"], pathsFor(root()), {})
     ).rejects.toThrow("Use exactly one of --link, --link-stdin, or --link-fd.");
-  });
-
-  it("validates the optional SSH pairing code before network access", async () => {
-    await expect(
-      runPersonalSyncCommand(
-        [
-          "join",
-          "redeem",
-          "--link",
-          "http://100.98.6.2:3310/pair/11111111-2222-4333-8444-555555555555#token=abcdefghijklmnopqrstuvwxyzABCDEFGH123456789",
-          "--expected-code",
-          "not-a-code"
-        ],
-        pathsFor(root()),
-        {}
-      )
-    ).rejects.toThrow(
-      "--expected-code must be an eight-character hexadecimal code."
-    );
   });
 
   it("passes only local store location to the application provider", () => {
@@ -221,7 +402,6 @@ describe("Personal Sync control client", () => {
       return response({
         challenge: {
           id: "d3d89391-d05a-4d4e-b33f-4d7859a1ce45",
-          short_code: "D3D89391",
           expires_at: "2099-07-15T13:00:00.000Z",
           browser_subject_id: "browser-user",
           browser_deployment_id: "browser-deployment",
@@ -342,14 +522,14 @@ describe("Personal Sync control client", () => {
       expect(result).toMatchObject({
         state: "pending",
         pairing: {
-          challengeId: invitation.challenge_id,
-          shortCode: "D3D89391"
+          challengeId: invitation.challenge_id
         },
         request: {
           group_id: "pds_one",
           operation_families: ["pds_relay"]
         }
       });
+      expect(Object.keys(result.pairing as object)).toEqual(["challengeId"]);
       expect((result.request as { device_id: string }).device_id).toMatch(
         /^[A-Za-z0-9_-]{22}$/
       );
@@ -507,7 +687,6 @@ describe("Personal Sync control client", () => {
         return response({
           challenge: {
             id: "11111111-1111-4111-8111-111111111111",
-            short_code: "11111111",
             expires_at: "2099-07-15T13:00:00.000Z",
             browser_subject_id: "browser-user",
             browser_deployment_id: "browser-deployment",
@@ -740,7 +919,6 @@ describe("Personal Sync control client", () => {
         return response({
           challenge: {
             id: "11111111-1111-4111-8111-111111111111",
-            short_code: "11111111",
             expires_at: "2099-07-15T13:00:00.000Z",
             browser_subject_id: "browser-user",
             browser_deployment_id: "browser-deployment",
@@ -817,6 +995,118 @@ describe("Personal Sync control client", () => {
       ).rejects.toThrow("--statement-fd is required.");
     } finally {
       closeSync(sessionFd);
+    }
+  });
+
+  it("resumes exact pending epoch approval after lost response", async () => {
+    const directory = root();
+    const fixture = pendingApprovalFixture();
+    const requestFd = fdFor(
+      directory,
+      "pending-request",
+      JSON.stringify({ request: fixture.request })
+    );
+    const calls: string[] = [];
+    let ack: Record<string, unknown> | undefined;
+    try {
+      const result = await runPersonalSyncCommand(
+        [
+          "active-device",
+          "approve",
+          "--group-id",
+          "pds_one",
+          "--request-fd",
+          String(requestFd)
+        ],
+        pathsFor(directory),
+        {
+          PDS_CONTROL_URL: "https://pds.test",
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        },
+        {
+          desktopAuthorization: "Bearer desktop",
+          fetch: (async (url: string | URL, options?: RequestInit) => {
+            calls.push(`${options?.method}:${new URL(String(url)).pathname}`);
+            return pendingApprovalFetch(fixture, (body) => {
+              ack = body;
+            })(url, options);
+          }) as never,
+          getSecret: () => JSON.stringify(fixture.runtime)
+        }
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        state: "pending_joining_device",
+        message: "Device approval was resumed and source epoch acknowledged.",
+        groupId: "pds_one",
+        deviceId: "joining-device",
+        epoch: "2"
+      });
+      expect(calls).toEqual([
+        "GET:/v1/personal-device-sync/groups/pds_one",
+        "GET:/v1/personal-device-sync/groups/pds_one/log",
+        "GET:/v1/personal-device-sync/groups/pds_one/key-bundles/2",
+        "POST:/v1/personal-device-sync/groups/pds_one/epoch-acks"
+      ]);
+      expect(parseCanonicalPdsJson(String(ack?.ack))).toMatchObject({
+        groupId: "pds_one",
+        deviceId: "source-device",
+        epoch: "2",
+        bundleHash: fixture.group.pending_bundle_hash
+      });
+    } finally {
+      closeSync(requestFd);
+    }
+  });
+
+  it("rejects pending epoch approval when request does not exactly match persisted transition", async () => {
+    const directory = root();
+    const fixture = pendingApprovalFixture();
+    const requestFd = fdFor(
+      directory,
+      "mismatched-request",
+      JSON.stringify({
+        request: {
+          ...fixture.request,
+          signing_public_key: Buffer.alloc(32, 8).toString("base64url")
+        }
+      })
+    );
+    const calls: string[] = [];
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "active-device",
+            "approve",
+            "--group-id",
+            "pds_one",
+            "--request-fd",
+            String(requestFd)
+          ],
+          pathsFor(directory),
+          {
+            PDS_CONTROL_URL: "https://pds.test",
+            PDS_RUNTIME_SECRET_REF: "pds-runtime"
+          },
+          {
+            desktopAuthorization: "Bearer desktop",
+            fetch: (async (url: string | URL, options?: RequestInit) => {
+              calls.push(`${options?.method}:${new URL(String(url)).pathname}`);
+              return pendingApprovalFetch(fixture)(url, options);
+            }) as never,
+            getSecret: () => JSON.stringify(fixture.runtime)
+          }
+        )
+      ).rejects.toThrow(
+        "PDS pending membership transition does not match pairing request."
+      );
+      expect(calls).toEqual([
+        "GET:/v1/personal-device-sync/groups/pds_one",
+        "GET:/v1/personal-device-sync/groups/pds_one/log"
+      ]);
+    } finally {
+      closeSync(requestFd);
     }
   });
 });

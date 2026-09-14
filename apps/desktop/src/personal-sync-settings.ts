@@ -18,7 +18,7 @@ export type PersonalSyncSettingsView = {
   devices: Array<{ id: string; label: string; state: string }>;
   freshness: string;
   groupId: string | null;
-  pairing: { challengeId: string; shortCode: string; url?: string } | null;
+  pairing: { challengeId: string; url?: string } | null;
 };
 
 export const personalSyncSettingsViewFrom = (
@@ -73,13 +73,10 @@ export const personalSyncSettingsViewFrom = (
   const pairing =
     pairingValue &&
     typeof pairingValue === "object" &&
-    typeof (pairingValue as Record<string, unknown>).challengeId === "string" &&
-    typeof (pairingValue as Record<string, unknown>).shortCode === "string"
+    typeof (pairingValue as Record<string, unknown>).challengeId === "string"
       ? {
           challengeId: (pairingValue as Record<string, unknown>)
             .challengeId as string,
-          shortCode: (pairingValue as Record<string, unknown>)
-            .shortCode as string,
           ...(typeof (pairingValue as Record<string, unknown>).url === "string"
             ? {
                 url: (pairingValue as Record<string, unknown>).url as string
@@ -153,7 +150,7 @@ export const renderPersonalSyncSettings = (
         <button type="button" class="secondary" data-personal-sync-action="restart" ${view.busy ? "disabled" : ""}>Restart local sync</button>
       </div>
       <p class="personal-sync-freshness"><strong>Freshness:</strong> ${escapeHtml(view.freshness)}</p>
-      ${view.pairing ? `<p class="personal-sync-pairing"><strong>Pairing pending:</strong> ${escapeHtml(view.pairing.shortCode)} (${escapeHtml(view.pairing.challengeId)})${view.pairing.url ? ` <a href="${escapeHtml(view.pairing.url)}" rel="noreferrer">Open approval</a>` : ""}</p>` : ""}
+      ${view.pairing ? `<p class="personal-sync-pairing"><strong>Pairing invitation waiting for connection.</strong>${view.pairing.url ? ` <a href="${escapeHtml(view.pairing.url)}" rel="noreferrer">Open pairing</a>` : ""}</p>` : ""}
       <h3>Devices</h3>
       <ul class="personal-sync-device-list">${view.devices.length ? view.devices.map((device) => `<li><span>${escapeHtml(device.label)}</span><small>${escapeHtml(device.state)}</small><button type="button" class="secondary" aria-label="Revoke ${escapeHtml(device.label)}" data-personal-sync-revoke="${escapeHtml(device.id)}" ${view.busy || device.state !== "active" ? "disabled" : ""}>Revoke</button></li>`).join("") : "<li><span>No devices enrolled</span></li>"}</ul>
       <p class="personal-sync-note">Recovery kit password and private material never enter Desktop IPC, renderer state, localStorage, config, status, or logs. Follow headless setup guidance for encrypted kit create/verify, then refresh Desktop status.</p>

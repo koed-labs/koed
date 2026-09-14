@@ -2685,6 +2685,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       relayUrl: "http://192.168.1.20:3310/pds",
       createInvitation: vi.fn(),
       waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
       approve: vi.fn(),
       waitForCompletion: vi.fn(),
       cancel: vi.fn(),
@@ -2751,6 +2752,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         }
       ]);
       expect(startPairingServer).toHaveBeenCalledTimes(1);
+      expect(manager.handlers).not.toHaveProperty(
+        "personal_sync_pairing_approve"
+      );
       expect(
         JSON.parse(
           readFileSync(
@@ -2788,6 +2792,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       relayUrl: "http://192.168.1.21:3310/pds",
       createInvitation: vi.fn(),
       waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
       approve: vi.fn(),
       waitForCompletion: vi.fn(),
       cancel: vi.fn(),

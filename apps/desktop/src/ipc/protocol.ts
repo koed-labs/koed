@@ -31,7 +31,7 @@ export const desktopCommandNames = [
   "personal_sync_join_request",
   "personal_sync_pairing_create",
   "personal_sync_pairing_wait",
-  "personal_sync_pairing_approve",
+  "personal_sync_pairing_status",
   "personal_sync_pairing_cancel",
   "personal_sync_pairing_redeem",
   "personal_sync_recovery_guidance",

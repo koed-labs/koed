@@ -1538,6 +1538,10 @@ export const createKoedServerManager = ({
   let personalDevicePairingServer: PersonalDevicePairingServer | null = null;
   let personalDevicePairingServerStart: Promise<PersonalDevicePairingServer> | null =
     null;
+  const automaticPairingEnrollments = new Map<
+    string,
+    Promise<Record<string, unknown>>
+  >();
   let personalDevicePairingServerError: string | null = null;
   if (environment.KOED_HOME?.trim()) {
     writePersonalDevicePeerEndpoint(environment, null);
@@ -2155,6 +2159,24 @@ export const createKoedServerManager = ({
             },
             body
           };
+        },
+        validateCompletion: async ({ groupId, deviceId }) => {
+          const status = await runPersonalSync(["status"]);
+          const groups = Array.isArray(status.groups) ? status.groups : [];
+          const group = groups.find(
+            (candidate) => objectValue(candidate)?.group_id === groupId
+          );
+          const members = objectValue(group)?.members;
+          return (
+            objectValue(group)?.state === "active" &&
+            objectValue(group)?.pending_epoch === null &&
+            Array.isArray(members) &&
+            members.some(
+              (member) =>
+                objectValue(member)?.device_id === deviceId &&
+                objectValue(member)?.status === "active"
+            )
+          );
         }
       });
       try {
@@ -2380,22 +2402,10 @@ export const createKoedServerManager = ({
     if (!request || typeof request !== "object" || Array.isArray(request)) {
       throw new Error("Koed could not create the signed pairing request.");
     }
-    const joinPairing =
-      join.pairing && typeof join.pairing === "object"
-        ? (join.pairing as Record<string, unknown>)
-        : null;
-    if (
-      !joinPairing ||
-      typeof joinPairing.shortCode !== "string" ||
-      !/^[0-9A-F]{8}$/.test(joinPairing.shortCode)
-    ) {
-      throw new Error("Koed could not verify the pairing short code.");
-    }
     onProgress({
       contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
       requestId,
-      state: "approval_pending",
-      shortCode: joinPairing.shortCode
+      state: "connecting"
     });
     const submitted = await pairingExchange(
       invitationUrl,
@@ -2412,7 +2422,7 @@ export const createKoedServerManager = ({
       10 * 60 * 1_000
     );
     if (submitted.approved !== true) {
-      throw new Error("Pairing approval was not completed.");
+      throw new Error("Pairing enrollment was not accepted.");
     }
     const completed = await runPersonalSync(
       [
@@ -2472,9 +2482,121 @@ export const createKoedServerManager = ({
     if (completion.completed !== true) {
       throw new Error("Pairing invitation was not closed after enrollment.");
     }
+    onProgress({
+      contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
+      requestId,
+      state: "completed"
+    });
     const publicResult = { ...completed };
     delete publicResult.localGroupReconciliation;
     return publicResult;
+  };
+
+  const automaticPairingEnrollment = (
+    id: string
+  ): Promise<Record<string, unknown>> => {
+    const server = personalDevicePairingServer;
+    if (!server)
+      return Promise.reject(new Error("Pairing invitation is unavailable."));
+    const existing = automaticPairingEnrollments.get(id);
+    if (existing) return existing;
+    const current = server.inspect(id)[0];
+    if (current?.state === "completed") {
+      return Promise.resolve({
+        ok: true,
+        state: "completed",
+        pairing: current
+      });
+    }
+    if (current?.state === "failed") {
+      return Promise.reject(new Error("Pairing enrollment failed."));
+    }
+    const enrollment = (async () => {
+      const request = await server.waitForRequest(id);
+      // Claim before network I/O. From this boundary onward cancellation must
+      // not destroy the invitation while membership commit may be in flight.
+      server.claimApproval(id);
+      let result: Record<string, unknown> | undefined;
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          result = await withPersonalSyncJsonFd(
+            { request },
+            async (fd) =>
+              await runPersonalSync([
+                "active-device",
+                "approve",
+                "--request-fd",
+                String(fd)
+              ])
+          );
+          lastError = undefined;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) await sleep(250 * 2 ** attempt);
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+      if (!result || !resultOk(result)) {
+        throw new Error(
+          resultMessage(result, "Pairing request could not be approved.")
+        );
+      }
+      server.approve(id);
+      await server.waitForCompletion(id);
+      await runPersonalSync(["active-device", "refresh"]);
+      await wakePersonalDeviceSyncRuntime();
+      return {
+        ...result,
+        state: "completed",
+        pairing: server.inspect(id)[0]
+      };
+    })().catch((error) => {
+      // Keep claimed invitations resumable. A lost response can hide a durable
+      // commit; next wait retries against persisted group membership state.
+      throw error;
+    });
+    automaticPairingEnrollments.set(id, enrollment);
+    void enrollment.then(
+      () => {
+        if (automaticPairingEnrollments.get(id) === enrollment) {
+          automaticPairingEnrollments.delete(id);
+        }
+      },
+      () => {
+        if (automaticPairingEnrollments.get(id) === enrollment) {
+          automaticPairingEnrollments.delete(id);
+        }
+      }
+    );
+    return enrollment;
+  };
+
+  const cancellablePairingWait = async <T>(
+    promise: Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> => {
+    if (!signal) return await promise;
+    if (signal.aborted) throw new Error("Pairing wait was cancelled.");
+    return await new Promise<T>((resolve, reject) => {
+      const aborted = () => {
+        cleanup();
+        reject(new Error("Pairing wait was cancelled."));
+      };
+      const cleanup = () => signal.removeEventListener("abort", aborted);
+      signal.addEventListener("abort", aborted, { once: true });
+      promise.then(
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error: unknown) => {
+          cleanup();
+          reject(error);
+        }
+      );
+    });
   };
 
   const authenticatedPersonalMemoryRequest = async (
@@ -5096,43 +5218,38 @@ export const createKoedServerManager = ({
         if (!personalDevicePairingServer) {
           throw new Error("Pairing invitation is unavailable.");
         }
-        await personalDevicePairingServer.waitForRequest(id, context?.signal);
-        const pairing = personalDevicePairingServer.inspect(id)[0];
-        return { ok: true, state: pairing?.state ?? "cancelled", pairing };
+        if (context?.signal.aborted) {
+          throw new Error("Pairing wait was cancelled.");
+        }
+        // Shared enrollment promise prevents concurrent waits from approving twice.
+        return await cancellablePairingWait(
+          automaticPairingEnrollment(id),
+          context?.signal
+        );
       },
-      personal_sync_pairing_approve: async (args, context) => {
+      personal_sync_pairing_status: (args) => {
+        const id = pairingIdArg(args);
+        const pairing = personalDevicePairingServer?.inspect(id)[0];
+        if (!pairing) {
+          throw new Error("Pairing invitation is unavailable.");
+        }
+        return { ok: true, state: pairing.state, pairing };
+      },
+      personal_sync_pairing_cancel: (args) => {
         const id = pairingIdArg(args);
         if (!personalDevicePairingServer) {
           throw new Error("Pairing invitation is unavailable.");
         }
-        const request = await personalDevicePairingServer.waitForRequest(id);
-        const result = await withPersonalSyncJsonFd(
-          { request },
-          async (fd) =>
-            await runPersonalSync([
-              "active-device",
-              "approve",
-              "--request-fd",
-              String(fd)
-            ])
-        );
-        personalDevicePairingServer.approve(id);
-        await personalDevicePairingServer.waitForCompletion(
-          id,
-          context?.signal
-        );
-        await runPersonalSync(["active-device", "refresh"]);
-        await wakePersonalDeviceSyncRuntime();
+        personalDevicePairingServer.cancel(id);
+        const pairing = personalDevicePairingServer.inspect(id)[0];
+        if (!pairing) {
+          throw new Error("Pairing invitation is unavailable.");
+        }
         return {
-          ...result,
-          state: "completed",
-          pairing: personalDevicePairingServer.inspect(id)[0]
+          ok: true,
+          state: pairing.state,
+          pairing
         };
-      },
-      personal_sync_pairing_cancel: (args) => {
-        const id = pairingIdArg(args);
-        personalDevicePairingServer?.cancel(id);
-        return { ok: true, state: "cancelled" };
       },
       personal_sync_pairing_redeem: async (args, context) => {
         const pairingArgs = exactDesktopArgs(args, [

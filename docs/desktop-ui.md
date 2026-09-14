@@ -136,19 +136,21 @@ is accepted.
 
 Open **Devices** from the account rail. The Authority-hosting installation can
 choose **Pair another device** to show a one-use QR code, copyable
-private-network or Tailscale link, comparison code, and expiry. The joining device
-opens **Devices**, chooses **Join with link**, and waits for the active device on
-the Authority host to approve the matching code. Approval remains visibly in
-progress until the joining device activates the new membership epoch; there is
-no periodic refresh. Joined replicas remain symmetric data-plane sources and
-replicas, but direct the User back to the Authority host when another device
-must be enrolled.
+private-network or Tailscale link, and expiry. The joining device opens
+**Devices**, chooses **Join with link**, pastes or scans the link, and chooses
+**Connect device**. Link possession authorizes enrollment; Koed validates the
+signed request and completes the membership transition automatically. There is
+no short-code comparison, periodic approval step, or **Approve device** button.
+Joined replicas remain symmetric data-plane sources and replicas, but direct the
+User back to the Authority host when another device must be enrolled.
 
 The renderer sees only display-safe pairing state. It never receives the
 browser session, scoped Desktop credential, invitation transport key, device
-private keys, or PDS runtime secret. An invitation can be canceled before
-approval. After approval commits, Koed completes or reports the membership
-transition rather than pretending it can be canceled.
+private keys, or PDS runtime secret. The invitation link is sensitive bearer
+material: clear it after redemption and never persist or log it. An invitation
+can be canceled while waiting or connecting before its commit boundary. Once
+approval enters commit, status polling reports committing or awaiting joiner;
+cancellation returns an error and leaves enrollment resumable.
 
 If no Personal Device Group exists, **Set up device sync** first opens a native
 save dialog for the encrypted recovery kit. Koed generates a high-entropy

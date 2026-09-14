@@ -15,7 +15,6 @@ import { DevicesModal } from "./DevicesModal.js";
 const pairing = {
   id: "11111111-2222-4333-8444-555555555555",
   url: "http://192.168.1.2:3310/pair/11111111-2222-4333-8444-555555555555#token=abcdefghijklmnopqrstuvwxyzABCDEFGH123456789",
-  shortCode: "A1B2C3D4",
   expiresAt: "2099-07-28T12:00:00.000Z",
   state: "waiting" as const,
   joiningDeviceLabel: null
@@ -46,8 +45,7 @@ describe("Devices modal", () => {
   let pairingProgressListener:
     | ((progress: {
         requestId: string;
-        state: "approval_pending";
-        shortCode: string;
+        state: "connecting" | "completed";
       }) => void)
     | undefined;
 
@@ -79,7 +77,6 @@ describe("Devices modal", () => {
 
   it("lists active devices and creates a QR/copyable one-time invitation", async () => {
     let releaseWait: ((value: unknown) => void) | undefined;
-    let releaseApproval: ((value: unknown) => void) | undefined;
     const invoke = vi.fn(async (command: string) => {
       if (command === "personal_sync_status") return status;
       if (command === "personal_sync_pairing_create") {
@@ -88,11 +85,6 @@ describe("Devices modal", () => {
       if (command === "personal_sync_pairing_wait") {
         return await new Promise((resolve) => {
           releaseWait = resolve;
-        });
-      }
-      if (command === "personal_sync_pairing_approve") {
-        return await new Promise((resolve) => {
-          releaseApproval = resolve;
         });
       }
       throw new Error(`Unexpected command ${command}`);
@@ -108,7 +100,8 @@ describe("Devices modal", () => {
         button.textContent?.includes("Pair another device")
       ) ?? null
     );
-    expect(container.textContent).toContain("A1B2C3D4");
+    expect(container.textContent).toContain("Scan with your other device");
+    expect(container.textContent).not.toContain("Approve device");
     expect(container.querySelector('img[alt*="Scan to pair"]')).not.toBeNull();
     expect(
       (container.querySelector("input[readonly]") as HTMLInputElement).value
@@ -125,44 +118,59 @@ describe("Devices modal", () => {
       releaseWait?.({
         pairing: {
           ...pairing,
-          state: "approval_required",
+          state: "completed",
           joiningDeviceLabel: "Second laptop"
         }
       });
       await Promise.resolve();
     });
-    expect(container.textContent).toContain("Second laptop wants to connect");
-    expect(container.textContent).toContain("Approve device");
-
-    await click(
-      [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Approve device")
-      ) ?? null
+    expect(container.textContent).toContain("Connected");
+    expect(container.textContent).not.toContain("Approve device");
+    expect(invoke).not.toHaveBeenCalledWith(
+      "personal_sync_pairing_approve",
+      expect.anything()
     );
-    expect(
-      (
-        container.querySelector(
-          'button[aria-label="Close Devices"]'
-        ) as HTMLButtonElement
-      ).disabled
-    ).toBe(true);
-    expect(
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Cancel")
-        ?.hasAttribute("disabled")
-    ).toBe(true);
+  });
+
+  it("keeps invitation open and reports cancellation failures", async () => {
+    const onClose = vi.fn();
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "personal_sync_status") return status;
+      if (command === "personal_sync_pairing_create") {
+        return { ok: true, pairing };
+      }
+      if (command === "personal_sync_pairing_wait") {
+        return await new Promise(() => undefined);
+      }
+      if (command === "personal_sync_pairing_cancel") {
+        throw new Error("Pairing service is unavailable.");
+      }
+      throw new Error(`Unexpected command ${command}`);
+    });
     await act(async () => {
-      releaseApproval?.({
-        state: "completed",
-        pairing: { ...pairing, state: "completed" }
-      });
+      root.render(<DevicesModal invoke={invoke as never} onClose={onClose} />);
       await Promise.resolve();
     });
-    expect(container.textContent).toContain("Your Personal devices");
+    await click(
+      [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Pair another device")
+      ) ?? null
+    );
+    await click(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Cancel"
+      ) ?? null
+    );
+    expect(container.textContent).toContain("Scan with your other device");
+    expect(container.textContent).toContain("Pairing service is unavailable.");
+
+    await click(container.querySelector('button[aria-label="Close Devices"]'));
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("accepts a pasted or deep-linked invitation without polling", async () => {
     let completeJoin: (() => void) | undefined;
+    const onPairingLinkConsumed = vi.fn();
     const invoke = vi.fn(
       async (command: string, args?: Record<string, unknown>) => {
         if (command === "personal_sync_status") return status;
@@ -170,8 +178,7 @@ describe("Devices modal", () => {
           expect(args?.url).toBe(pairing.url);
           pairingProgressListener?.({
             requestId: String(args?.requestId),
-            state: "approval_pending",
-            shortCode: pairing.shortCode
+            state: "connecting"
           });
           return await new Promise((resolve) => {
             completeJoin = () => resolve({ ok: true });
@@ -186,20 +193,22 @@ describe("Devices modal", () => {
           initialPairingLink={pairing.url}
           invoke={invoke as never}
           onClose={vi.fn()}
+          onPairingLinkConsumed={onPairingLinkConsumed}
         />
       );
       await Promise.resolve();
     });
     expect(container.textContent).toContain("Join your existing devices");
+    expect(onPairingLinkConsumed).toHaveBeenCalledOnce();
     await click(
       [...container.querySelectorAll("button")].find((button) =>
         button.textContent?.includes("Connect device")
       ) ?? null
     );
-    expect(container.textContent).toContain(pairing.shortCode);
     expect(container.textContent).toContain(
-      "Confirm that this code matches the connected device"
+      "Connecting to your existing devices"
     );
+    expect(container.textContent).not.toContain("short code");
     expect(invoke).toHaveBeenCalledWith(
       "personal_sync_pairing_redeem",
       expect.objectContaining({

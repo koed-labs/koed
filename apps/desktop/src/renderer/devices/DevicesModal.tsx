@@ -33,15 +33,20 @@ type DeviceGroup = {
 type PairingView = {
   id: string;
   url: string;
-  shortCode: string;
   expiresAt: string;
   state:
     | "waiting"
-    | "approval_required"
-    | "approved"
+    | "connecting"
     | "completed"
     | "expired"
-    | "cancelled";
+    | "cancelled"
+    | "failed";
+  phase?:
+    | "waiting"
+    | "request_received"
+    | "committing"
+    | "awaiting_joiner"
+    | "completed";
   joiningDeviceLabel: string | null;
 };
 
@@ -189,14 +194,16 @@ function ModalFrame({
 
 function PairingInvitation({
   pairing,
-  onApprove,
   onCancel,
-  approving
+  onRetry,
+  cancelling,
+  retrying
 }: {
   pairing: PairingView;
-  onApprove: () => void;
   onCancel: () => void;
-  approving: boolean;
+  onRetry?: () => void;
+  cancelling: boolean;
+  retrying: boolean;
 }) {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [qrFailed, setQrFailed] = useState(false);
@@ -230,7 +237,40 @@ function PairingInvitation({
     window.setTimeout(() => setCopied(false), 1_500);
   };
 
-  const approvalRequired = pairing.state === "approval_required";
+  const isActive =
+    pairing.state === "waiting" || pairing.state === "connecting";
+  const copyByState = {
+    waiting: {
+      title: "Scan with your other device",
+      description:
+        "Both devices must be reachable on the same private network or Tailscale network. This invitation can be used once."
+    },
+    connecting: {
+      title: `${pairing.joiningDeviceLabel ?? "New device"} is connecting`,
+      description:
+        pairing.phase === "committing"
+          ? "Secure membership commit is in progress. Cancellation is no longer available."
+          : pairing.phase === "awaiting_joiner"
+            ? "Waiting for joining device to activate its encrypted replica."
+            : "Encrypted setup is in progress."
+    },
+    completed: {
+      title: "Connected",
+      description: "Your other device is now connected to Personal Memory."
+    },
+    expired: {
+      title: "Pairing invitation expired",
+      description: "Create a new invitation to connect another device."
+    },
+    cancelled: {
+      title: "Pairing invitation cancelled",
+      description: "Create a new invitation to connect another device."
+    },
+    failed: {
+      title: "Pairing failed",
+      description: "Create a new invitation and try again."
+    }
+  }[pairing.state];
 
   return (
     <>
@@ -245,23 +285,8 @@ function PairingInvitation({
           )}
         </div>
         <div className="device-pairing-copy">
-          <h3>
-            {approvalRequired
-              ? `${pairing.joiningDeviceLabel ?? "New device"} wants to connect`
-              : pairing.state === "approved"
-                ? "Device approved"
-                : "Scan with your other device"}
-          </h3>
-          <p>
-            {approvalRequired
-              ? "Confirm that the short code is the same on both devices before approving."
-              : pairing.state === "approved"
-                ? "The other device is completing encrypted setup."
-                : "Both devices must be reachable on the same private network or Tailscale network. This invitation can be used once."}
-          </p>
-          <div className="device-short-code" aria-label="Pairing short code">
-            {pairing.shortCode}
-          </div>
+          <h3>{copyByState.title}</h3>
+          <p>{copyByState.description}</p>
           <label className="device-link-field">
             <span>Pairing link</span>
             <span>
@@ -291,27 +316,26 @@ function PairingInvitation({
         </div>
       </div>
       <footer className="device-modal-actions">
-        <button
-          className="device-secondary-button"
-          disabled={approving}
-          onClick={onCancel}
-          type="button"
-        >
-          Cancel
-        </button>
-        {approvalRequired ? (
+        {isActive && onRetry ? (
           <button
-            className="device-primary-button"
-            disabled={approving}
-            onClick={onApprove}
+            className="device-secondary-button"
+            disabled={retrying || cancelling}
+            onClick={onRetry}
             type="button"
           >
-            {approving ? (
-              <LoaderCircle aria-hidden="true" />
-            ) : (
-              <Check aria-hidden="true" />
-            )}
-            Approve device
+            {retrying ? <LoaderCircle aria-hidden="true" /> : null}
+            Retry connection
+          </button>
+        ) : null}
+        {isActive ? (
+          <button
+            className="device-secondary-button"
+            disabled={cancelling}
+            onClick={onCancel}
+            type="button"
+          >
+            {cancelling ? <LoaderCircle aria-hidden="true" /> : null}
+            Cancel
           </button>
         ) : null}
       </footer>
@@ -322,11 +346,13 @@ function PairingInvitation({
 export function DevicesModal({
   initialPairingLink = "",
   invoke = desktopInvoke,
-  onClose
+  onClose,
+  onPairingLinkConsumed
 }: {
   initialPairingLink?: string;
   invoke?: Invoke;
   onClose: () => void;
+  onPairingLinkConsumed?: () => void;
 }) {
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [pairingInvitationGroupIds, setPairingInvitationGroupIds] = useState<
@@ -336,14 +362,18 @@ export function DevicesModal({
     "loading" | "overview" | "invite" | "join" | "joining" | "recovery"
   >("loading");
   const [pairing, setPairing] = useState<PairingView | null>(null);
+  const [pairingWaitFailed, setPairingWaitFailed] = useState(false);
   const [pairingLink, setPairingLink] = useState(initialPairingLink);
-  const [joiningShortCode, setJoiningShortCode] = useState<string | null>(null);
+  const [joiningProgress, setJoiningProgress] = useState<
+    "connecting" | "completed" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [recovery, setRecovery] = useState<RecoveryView | null>(null);
   const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
   const [recoveryCopied, setRecoveryCopied] = useState(false);
   const joiningRequestId = useRef<string | null>(null);
+  const activePairingId = useRef<string | null>(null);
   const group = groups[0] ?? null;
   const canCreateInvitation = Boolean(
     group && pairingInvitationGroupIds.includes(group.group_id)
@@ -379,20 +409,68 @@ export function DevicesModal({
   }, [load]);
 
   useEffect(() => {
-    if (initialPairingLink) {
-      setPairingLink(initialPairingLink);
-      setState("join");
+    if (!initialPairingLink) return;
+    setPairingLink(initialPairingLink);
+    setState("join");
+    onPairingLinkConsumed?.();
+  }, [initialPairingLink, onPairingLinkConsumed]);
+
+  useEffect(() => {
+    if (
+      !pairing ||
+      ["completed", "expired", "cancelled", "failed"].includes(pairing.state)
+    ) {
+      return;
     }
-  }, [initialPairingLink]);
+    const poll = () => {
+      void invoke<{ pairing?: PairingView }>("personal_sync_pairing_status", {
+        id: pairing.id
+      })
+        .then((result) => {
+          if (activePairingId.current !== pairing.id || !result.pairing) return;
+          setPairing(result.pairing);
+        })
+        .catch(() => undefined);
+    };
+    const timer = window.setInterval(poll, 500);
+    return () => window.clearInterval(timer);
+  }, [invoke, pairing]);
 
   useEffect(() => {
     const devices = window.koedDesktop?.devices;
     if (!devices) return;
     return devices.subscribePairingProgress((progress) => {
       if (progress.requestId !== joiningRequestId.current) return;
-      setJoiningShortCode(progress.shortCode);
+      setJoiningProgress(progress.state);
     });
   }, []);
+
+  const waitForInvitation = async (id: string): Promise<void> => {
+    const result = await invoke<{ pairing?: PairingView }>(
+      "personal_sync_pairing_wait",
+      { id }
+    );
+    if (activePairingId.current !== id || !result.pairing) return;
+    setPairing(result.pairing);
+    if (result.pairing.state === "completed") {
+      setPairingWaitFailed(false);
+      activePairingId.current = null;
+      await load();
+      return;
+    }
+    if (
+      result.pairing.state === "waiting" ||
+      result.pairing.state === "connecting"
+    ) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      if (activePairingId.current === id) await waitForInvitation(id);
+      return;
+    }
+    activePairingId.current = null;
+    if (result.pairing.state === "failed") {
+      setError("Pairing enrollment failed.");
+    }
+  };
 
   const beginInvitation = async () => {
     setBusy(true);
@@ -408,15 +486,16 @@ export function DevicesModal({
       if (!result.ok || !result.pairing) {
         throw new Error(result.error ?? "Pairing is not configured yet.");
       }
+      activePairingId.current = result.pairing.id;
+      setPairingWaitFailed(false);
       setPairing(result.pairing);
       setState("invite");
-      void invoke<{ pairing?: PairingView }>("personal_sync_pairing_wait", {
-        id: result.pairing.id
-      })
-        .then((waiting) => {
-          if (waiting.pairing) setPairing(waiting.pairing);
-        })
-        .catch((caught) => setError(errorMessage(caught)));
+      void waitForInvitation(result.pairing.id).catch((caught) => {
+        if (activePairingId.current === result.pairing?.id) {
+          setPairingWaitFailed(true);
+          setError(errorMessage(caught));
+        }
+      });
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -489,51 +568,55 @@ export function DevicesModal({
     }
   };
 
-  const approve = async () => {
-    if (!pairing) return;
+  const cancelPairing = async (): Promise<boolean> => {
+    const currentPairing = pairing;
+    if (
+      !currentPairing ||
+      (currentPairing.state !== "waiting" &&
+        currentPairing.state !== "connecting")
+    ) {
+      return true;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await invoke<{ pairing?: PairingView }>(
-        "personal_sync_pairing_approve",
-        { id: pairing.id }
+      const result = await invoke<{ ok?: boolean; state?: string }>(
+        "personal_sync_pairing_cancel",
+        { id: currentPairing.id }
       );
-      if (result.pairing) setPairing(result.pairing);
-      await load();
+      if (
+        result.ok !== true ||
+        !["cancelled", "expired", "failed"].includes(result.state ?? "")
+      ) {
+        throw new Error("Koed could not confirm pairing cancellation.");
+      }
+      activePairingId.current = null;
       setPairing(null);
       setState("overview");
+      return true;
     } catch (caught) {
       setError(errorMessage(caught));
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
-  const cancel = async () => {
-    if (pairing) {
-      await invoke("personal_sync_pairing_cancel", { id: pairing.id }).catch(
-        () => undefined
-      );
-    }
-    setPairing(null);
-    setError(null);
-    setState("overview");
+  const cancel = () => {
+    void cancelPairing();
   };
 
   const returnToOverview = () => {
     setError(null);
-    setJoiningShortCode(null);
+    setJoiningProgress(null);
+    setPairingLink("");
     setState("overview");
   };
 
   const close = async () => {
-    if (
-      pairing &&
-      (pairing.state === "waiting" || pairing.state === "approval_required")
-    ) {
-      await invoke("personal_sync_pairing_cancel", { id: pairing.id }).catch(
-        () => undefined
-      );
+    if (pairing) {
+      const cancelled = await cancelPairing();
+      if (!cancelled) return;
     }
     onClose();
   };
@@ -541,7 +624,7 @@ export function DevicesModal({
   const join = async () => {
     const requestId = crypto.randomUUID();
     joiningRequestId.current = requestId;
-    setJoiningShortCode(null);
+    setJoiningProgress(null);
     setBusy(true);
     setError(null);
     setState("joining");
@@ -556,12 +639,13 @@ export function DevicesModal({
             : "Linux device"
       });
       await load();
+      setPairingLink("");
       joiningRequestId.current = null;
-      setJoiningShortCode(null);
+      setJoiningProgress(null);
       setState("overview");
     } catch (caught) {
       joiningRequestId.current = null;
-      setJoiningShortCode(null);
+      setJoiningProgress(null);
       setError(errorMessage(caught));
       setState("join");
     } finally {
@@ -593,10 +677,26 @@ export function DevicesModal({
         </div>
       ) : state === "invite" && pairing ? (
         <PairingInvitation
-          approving={busy}
-          onApprove={() => void approve()}
+          cancelling={busy}
           onCancel={() => void cancel()}
+          onRetry={
+            pairingWaitFailed
+              ? () => {
+                  const id = activePairingId.current;
+                  if (!id) return;
+                  setPairingWaitFailed(false);
+                  setError(null);
+                  void waitForInvitation(id).catch((caught) => {
+                    if (activePairingId.current === id) {
+                      setPairingWaitFailed(true);
+                      setError(errorMessage(caught));
+                    }
+                  });
+                }
+              : undefined
+          }
           pairing={pairing}
+          retrying={false}
         />
       ) : state === "recovery" && recovery ? (
         <>
@@ -670,18 +770,12 @@ export function DevicesModal({
             <div>
               <h3>Join your existing devices</h3>
               <p>
-                {state === "joining" && joiningShortCode
-                  ? "Confirm that this code matches the connected device before it approves you."
+                {state === "joining"
+                  ? joiningProgress === "completed"
+                    ? "Connected. Finishing encrypted setup…"
+                    : "Connecting to your existing devices…"
                   : "Paste the one-time link shown on a device already connected to your Personal Memory."}
               </p>
-              {state === "joining" && joiningShortCode ? (
-                <div
-                  aria-label="Pairing short code"
-                  className="device-short-code"
-                >
-                  {joiningShortCode}
-                </div>
-              ) : null}
             </div>
             <label className="device-join-field">
               <span>Pairing link</span>
@@ -714,7 +808,7 @@ export function DevicesModal({
               ) : (
                 <Laptop aria-hidden="true" />
               )}
-              {state === "joining" ? "Waiting for approval" : "Connect device"}
+              {state === "joining" ? "Connecting…" : "Connect device"}
             </button>
           </footer>
         </>

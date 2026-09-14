@@ -266,26 +266,32 @@ use `PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session
 value); API Tokens and legacy credentials are rejected.
 
 For an SSH-only joining device, `personal-sync join redeem` accepts the complete
-one-time Desktop invitation link, optionally checks `--expected-code`, submits
-the signed request over the encrypted invitation transport, waits for approval
-on the Authority device, and completes local enrollment. Use `--link-stdin` or
-`--link-fd` when avoiding the token-bearing link in shell history/process lists.
+one-time Desktop invitation link. Possession of this short-lived link authorizes
+Personal Device enrollment; there is no comparison code or second Authority
+approval. The command submits the signed request over the encrypted invitation
+transport, waits for automatic enrollment, and completes local reconciliation.
+Use `--link-stdin` or `--link-fd` so the token-bearing link does not enter shell
+history or process lists. Treat the link as a secret: do not log, persist, or
+share it beyond the intended joining device.
+
 It uses the Koed local Desktop credential only for the loopback reconciliation
 step; headless `setup core` provisions that scoped credential in the same
-application-managed store, so no Desktop window or OS keychain is required on
-the joining device. Redeem resolves the
-local API from Koed's configured port; set `PDS_LOCAL_CONTROL_URL` only when
-that API uses a non-default local URL. The joining User needs filesystem access
-to its local `KOED_HOME`; no OS credential store or interactive session is
-required.
+application-managed encrypted store, so no Desktop window or OS keychain is
+required on the joining device. Redeem resolves the local API from Koed's
+configured port; set `PDS_LOCAL_CONTROL_URL` only when that API uses a
+non-default local URL. The joining User needs filesystem access to its local
+`KOED_HOME`; no OS credential store or interactive session is required.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
 node packages/koed-server/dist/cli.js personal-sync join request \
   --group-id "pds_group_id" --json
 node packages/koed-server/dist/cli.js personal-sync join redeem \
-  --link 'http://100.98.6.2:3310/pair/...#token=...' \
-  --expected-code "ABCD1234" --device-label studio --json
+  --link-stdin --device-label studio --json
+
+# Supply link through an inherited descriptor when a supervisor owns stdin.
+node packages/koed-server/dist/cli.js personal-sync join redeem \
+  --link-fd 3 --device-label studio --json
 node packages/koed-server/dist/cli.js personal-sync policy pause \
   --group-id "pds_group_id" --json
 node packages/koed-server/dist/cli.js personal-sync policy resume \
@@ -296,11 +302,13 @@ node packages/koed-server/dist/cli.js personal-sync recovery-kit verify \
   --recovery-kit "$HOME/koed-recovery-kit.json" --password-fd 3 --json
 ```
 
-Pairing stores only redacted backend request IDs locally and shows challenge ID
-and short code. It is never discarded. Active-device, recovery, revoke, and
-conflict actions require exact pre-built signed transition data through
-protected FDs; Authority validates CAS/current head, countersigns, and exposes
-durable pending activation status. Arbitrary device IDs cannot succeed.
+Pairing stores only redacted backend request IDs locally. The internal
+`challenge_id` binds the invitation to its enrollment request; it is not a
+human-facing code and is never displayed as one. The invitation token is not
+stored after redemption. Active-device, recovery, revoke, and conflict actions
+require exact pre-built signed transition data through protected FDs; Authority
+validates CAS/current head, countersigns, and exposes durable pending activation
+status. Arbitrary device IDs cannot succeed.
 
 `--password` is rejected. Pipe password bytes through stdin or supply a file
 descriptor; never put recovery passwords in arguments, environment, logs, or
@@ -317,24 +325,25 @@ synchronize nothing.
 
 After first-device Personal Device Group setup, open **Devices** on the
 Authority-hosting installation and choose **Pair another device**. Koed shows a
-QR code, copyable private-network or Tailscale link, eight-character
-comparison code, and expiry. The second Desktop may scan the QR, open the
-`koed-pair://` handoff, or paste the link under **Join with link**. Confirm
-that both devices show the same short code, then approve on the Authority-hosting
-installation. Joined devices
-are symmetric Personal Memory replicas. They receive encrypted packages
-directly when every recipient has a current reachable peer route, but V1 does
-not copy the Authority key or offer another invitation from those replicas.
-Unreachable devices continue through the configured relay.
+one-time QR code, copyable private-network or Tailscale link, and expiry. The
+link is the enrollment capability: the second Desktop may scan the QR, open the
+`koed-pair://` handoff, or paste the link under **Join with link**, then choose
+**Connect device**. Koed validates the signed request and completes enrollment
+automatically; no short-code comparison or **Approve device** action exists.
+The link is cleared after redemption and must never be logged or persisted.
+Joined devices are symmetric Personal Memory replicas. They receive encrypted
+packages directly when every recipient has a current reachable peer route, but
+V1 does not copy the Authority key or offer another invitation from those
+replicas. Unreachable devices continue through the configured relay.
 
 Pairing requires both devices to reach the inviting installation's private
-IPv4 address on TCP port `3310`. This may be an RFC1918 LAN address or a
+HTTP endpoint on TCP port `3310`. This may be an RFC1918 LAN address or a
 Tailscale address in `100.64.0.0/10`; Tailscale must be configured so the
-inviting device's port is reachable over the tailnet. The invitation lasts ten
-minutes, is invalidated after completion, and never transmits its secret in
-HTTP. Koed encrypts the ceremony at the application layer and then uses the
-existing signed PDS membership and encrypted relay protocol. Do not expose
-port `3310` to the public internet.
+inviting device's port is reachable over the tailnet. The HTTP pairing server
+remains private and must not be exposed to the public internet. The invitation
+lasts ten minutes, is invalidated after completion, and its bearer token is
+sensitive even though the application encrypts the enrollment ceremony. Koed
+then uses the existing signed PDS membership and encrypted relay protocol.
 
 After enrollment, every Desktop keeps its private-network package receive path
 available for certificate-authenticated encrypted replication and restores it

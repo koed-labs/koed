@@ -36,7 +36,8 @@ import {
   pdsPublicKeyCommitment,
   signPdsGroupDraft,
   signPdsRecord,
-  validatePdsGroupStatement
+  validatePdsGroupStatement,
+  validatePdsKeyBundle
 } from "@koed/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
@@ -1668,8 +1669,7 @@ const createJoinChallenge = async (
     state: "pending",
     message: "Pairing request is pending backend approval.",
     pairing: {
-      challengeId: binding.id,
-      shortCode: binding.id.replace(/-/g, "").slice(0, 8).toUpperCase()
+      challengeId: binding.id
     },
     request: {
       group_id: groupId,
@@ -1744,6 +1744,121 @@ const epochAck = (input: {
   });
 };
 
+const requestDeviceMatches = (
+  body: Record<string, unknown>,
+  request: Record<string, unknown>
+): boolean =>
+  body.deviceId === request.device_id &&
+  body.deviceSigningKeyId === request.signing_key_id &&
+  body.deviceSigningPublicKey === request.signing_public_key &&
+  body.deviceKemKeyId === request.kem_key_id &&
+  body.deviceKemPublicKey === request.kem_public_key &&
+  Array.isArray(body.operationFamilies) &&
+  body.operationFamilies.length === 1 &&
+  body.operationFamilies[0] === "pds_relay";
+
+const pendingApprovalStatement = async (input: {
+  groupId: string;
+  current: Record<string, unknown>;
+  request: Record<string, unknown>;
+  activeRuntime: RuntimeSecret;
+  sourceMember: Record<string, unknown>;
+  environment: NodeJS.ProcessEnv;
+  controlDeps: PersonalSyncDependencies;
+}): Promise<{
+  statement: Record<string, unknown>;
+  bundle: Record<string, unknown>;
+  epoch: string;
+}> => {
+  const sequence = responseString(input.current, "pending_statement_sequence");
+  const statementResponse = await control({
+    environment: input.environment,
+    deps: input.controlDeps,
+    method: "GET",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(input.groupId)}/log`
+  });
+  if (!Array.isArray(statementResponse.statements))
+    fail("PDS pending transition statement log is invalid.");
+  const entry =
+    (statementResponse.statements as unknown[])
+      .map((value: unknown) => object(value, "group statement log entry"))
+      .find((value: Record<string, unknown>) => value.sequence === sequence) ??
+    fail("PDS pending transition statement is unavailable.");
+  const statement = parseCanonicalPdsJson(
+    responseString(entry, "canonicalStatement")
+  ) as Record<string, unknown>;
+  const head = object(input.current.head, "group.head");
+  validatePdsGroupStatement(statement, {
+    authorizationPublicKey: responseString(
+      input.sourceMember,
+      "signing_public_key"
+    ),
+    authorityPublicKey: input.activeRuntime.authority.publicKey,
+    expectedAuthorizationKeyId: input.activeRuntime.device.signingKeyId,
+    expectedAuthorityKeyId: input.activeRuntime.authority.keyId,
+    expectedGroupId: input.groupId
+  });
+  const statementDraft = object(statement.draft, "pending statement draft");
+  const statementBody = object(statementDraft.body, "pending statement body");
+  const epoch = responseString(input.current, "pending_epoch");
+  const pendingMember = groupMembers(input.current).find(
+    (member) => member.device_id === input.request.device_id
+  );
+  const memberMatches =
+    pendingMember?.status === "active"
+      ? requestDeviceMatches(
+          {
+            deviceId: pendingMember.device_id,
+            deviceSigningKeyId: pendingMember.signing_key_id,
+            deviceSigningPublicKey: pendingMember.signing_public_key,
+            deviceKemKeyId: pendingMember.kem_key_id,
+            deviceKemPublicKey: pendingMember.kem_public_key,
+            operationFamilies: pendingMember.operation_families
+          },
+          input.request
+        )
+      : false;
+  if (
+    statementDraft.kind !== "add-device" ||
+    statementDraft.sequence !== sequence ||
+    statementDraft.groupId !== input.groupId ||
+    statementBody.nextEpoch !== epoch ||
+    statementBody.previousEpoch !== input.current.current_epoch ||
+    statementBody.keyBundleHash !== input.current.pending_bundle_hash ||
+    responseString(entry, "statementHash") !== responseString(head, "hash") ||
+    responseString(head, "sequence") !== sequence ||
+    !requestDeviceMatches(statementBody, input.request) ||
+    !memberMatches
+  ) {
+    fail("PDS pending membership transition does not match pairing request.");
+  }
+  const bundleResponse = await control({
+    environment: input.environment,
+    deps: input.controlDeps,
+    method: "GET",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(input.groupId)}/key-bundles/${encodeURIComponent(epoch)}`
+  });
+  const bundle = object(bundleResponse.key_bundle, "key_bundle");
+  const metadata = validatePdsKeyBundle(bundle, {
+    authorizationPublicKey: responseString(
+      input.sourceMember,
+      "signing_public_key"
+    ),
+    authorityPublicKey: input.activeRuntime.authority.publicKey,
+    expectedAuthorizationKeyId: input.activeRuntime.device.signingKeyId,
+    expectedAuthorityKeyId: input.activeRuntime.authority.keyId
+  });
+  if (
+    metadata.authorizationHash !== input.current.pending_bundle_hash ||
+    metadata.draft.groupId !== input.groupId ||
+    metadata.draft.epoch !== epoch ||
+    metadata.draft.transitionKind !== "add-device"
+  ) {
+    fail("PDS pending key bundle does not match pairing request.");
+  }
+  return { statement, bundle, epoch };
+};
+
 const approveActiveDevice = async (
   args: string[],
   environment: NodeJS.ProcessEnv,
@@ -1780,11 +1895,7 @@ const approveActiveDevice = async (
     path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}`
   });
   const current = object(currentResponse.group, "group");
-  if (
-    current.state !== "active" ||
-    current.pending_epoch !== null ||
-    typeof current.current_epoch !== "string"
-  )
+  if (current.state !== "active" || typeof current.current_epoch !== "string")
     fail("PDS group is not ready for membership transition.");
   const sourceMember = groupMember(current, activeRuntime.device.id);
   const recovery = object(current.recovery, "group.recovery");
@@ -1802,6 +1913,93 @@ const approveActiveDevice = async (
     Array.isArray(request.proof)
   )
     fail("PDS pairing request is invalid.");
+  const existingMember = groupMembers(current).find(
+    (member) =>
+      member.device_id === newDevice.deviceId && member.status === "active"
+  );
+  if (current.pending_epoch === null && existingMember) {
+    if (
+      !requestDeviceMatches(
+        {
+          deviceId: existingMember.device_id,
+          deviceSigningKeyId: existingMember.signing_key_id,
+          deviceSigningPublicKey: existingMember.signing_public_key,
+          deviceKemKeyId: existingMember.kem_key_id,
+          deviceKemPublicKey: existingMember.kem_public_key,
+          operationFamilies: existingMember.operation_families
+        },
+        request
+      )
+    ) {
+      fail("PDS active membership does not match pairing request.");
+    }
+    return {
+      ok: true,
+      state: "active",
+      message: "Device approval was already completed.",
+      groupId,
+      deviceId: newDevice.deviceId,
+      epoch: current.current_epoch
+    };
+  }
+  if (current.pending_epoch !== null) {
+    const pending = await pendingApprovalStatement({
+      groupId,
+      current,
+      request,
+      activeRuntime,
+      sourceMember,
+      environment,
+      controlDeps
+    });
+    const sourceSigningKey = pdsEd25519PrivateKey(
+      activeRuntime.device.signingPrivateSeed,
+      responseString(sourceMember, "signing_public_key")
+    );
+    const decrypted = decryptPdsKeyBundleSecretSet({
+      bundle: pending.bundle,
+      authorizationPublicKey: responseString(
+        sourceMember,
+        "signing_public_key"
+      ),
+      authorityPublicKey: activeRuntime.authority.publicKey,
+      recipientId: activeRuntime.device.id,
+      recipientKemKeyId: activeRuntime.device.kemKeyId,
+      recipientKemPublicKey: responseString(sourceMember, "kem_public_key"),
+      recipientKemPrivateSeed: activeRuntime.device.kemPrivateSeed
+    });
+    if (!decrypted || typeof decrypted !== "object")
+      fail("PDS source device decrypted an invalid group secret set.");
+    const acknowledged = await control({
+      environment,
+      deps: controlDeps,
+      method: "POST",
+      path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/epoch-acks`,
+      body: {
+        ack: epochAck({
+          groupId,
+          bundleHash: responseString(current, "pending_bundle_hash"),
+          epoch: pending.epoch,
+          deviceId: activeRuntime.device.id,
+          kemKeyId: activeRuntime.device.kemKeyId,
+          kemPublicKey: responseString(sourceMember, "kem_public_key"),
+          signingKeyId: activeRuntime.device.signingKeyId,
+          signingPrivateKey: sourceSigningKey,
+          acknowledgedAt: now(deps)
+        })
+      }
+    });
+    return {
+      ok: true,
+      state: acknowledged.activated ? "active" : "pending_joining_device",
+      message: acknowledged.activated
+        ? "Device approval was already completed."
+        : "Device approval was resumed and source epoch acknowledged.",
+      groupId,
+      deviceId: newDevice.deviceId,
+      epoch: pending.epoch
+    };
+  }
   const nextEpoch = (BigInt(current.current_epoch as string) + 1n).toString();
   const nextSecrets = {
     epochSecret: b64(randomBytes(32)),
@@ -2463,10 +2661,6 @@ const redeemPairingFromCli = async (
   deps: PersonalSyncDependencies
 ): Promise<PersonalSyncResult> => {
   const link = pairingLinkFromArgs(args);
-  const expectedShortCode = flag(args, "--expected-code")?.trim().toUpperCase();
-  if (expectedShortCode && !/^[0-9A-F]{8}$/.test(expectedShortCode)) {
-    fail("--expected-code must be an eight-character hexadecimal code.");
-  }
   const deviceLabel = flag(args, "--device-label")?.trim() || "SSH device";
   if (deviceLabel.length > 80 || /[\\r\\n\\0]/.test(deviceLabel)) {
     fail("--device-label is invalid.");
@@ -2481,7 +2675,6 @@ const redeemPairingFromCli = async (
   });
   return await redeemPersonalDevicePairing({
     link,
-    ...(expectedShortCode ? { expectedShortCode } : {}),
     deviceLabel,
     requestId: randomUUID(),
     localControlUrl,

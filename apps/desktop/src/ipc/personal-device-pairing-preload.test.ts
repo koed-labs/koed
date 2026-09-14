@@ -11,6 +11,7 @@ import {
 } from "./protocol.js";
 
 const invitationId = "11111111-2222-4333-8444-555555555555";
+const progressRequestId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789";
 const link = `http://192.168.1.20:3310/pair/${invitationId}#token=${token}`;
 
@@ -72,9 +73,8 @@ describe("Personal Device pairing preload bridge", () => {
     const unsubscribe = api.subscribePairingProgress(listener);
     const progress: PersonalDevicePairingProgress = {
       contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
-      requestId: invitationId,
-      state: "approval_pending",
-      shortCode: "A1B2C3D4"
+      requestId: progressRequestId,
+      state: "connecting"
     };
 
     expect(events.on).toHaveBeenCalledWith(
@@ -83,7 +83,7 @@ describe("Personal Device pairing preload bridge", () => {
     );
     wrapped?.({}, progress);
     wrapped?.({}, { ...progress, token });
-    wrapped?.({}, { ...progress, shortCode: "invalid" });
+    wrapped?.({}, { ...progress, requestId: "\u0000invalid" });
     expect(listener).toHaveBeenCalledOnce();
     expect(listener).toHaveBeenCalledWith(progress);
 

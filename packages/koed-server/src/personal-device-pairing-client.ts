@@ -287,7 +287,6 @@ const responseJson = async (
 
 export const redeemPersonalDevicePairing = async (options: {
   link: string;
-  expectedShortCode?: string;
   deviceLabel: string;
   requestId: string;
   localControlUrl: string;
@@ -355,17 +354,6 @@ export const redeemPersonalDevicePairing = async (options: {
     relayUrl.pathname !== "/pds"
   ) {
     throw new Error("Pairing invitation endpoint binding is invalid.");
-  }
-
-  const expected = options.expectedShortCode?.trim().toUpperCase();
-  if (
-    expected &&
-    expected !==
-      typedInvitation.challenge_id.replaceAll("-", "").slice(0, 8).toUpperCase()
-  ) {
-    throw new Error(
-      "Pairing invitation code does not match the invitation link."
-    );
   }
 
   const controlFetch = (async (
@@ -461,21 +449,11 @@ export const redeemPersonalDevicePairing = async (options: {
   if (
     !joinPairing ||
     typeof joinPairing !== "object" ||
-    Array.isArray(joinPairing)
+    Array.isArray(joinPairing) ||
+    (joinPairing as Record<string, unknown>).challengeId !==
+      typedInvitation.challenge_id
   ) {
-    throw new Error("Koed could not verify the pairing short code.");
-  }
-  const joinPairingRecord = joinPairing as Record<string, unknown>;
-  if (
-    typeof joinPairingRecord.shortCode !== "string" ||
-    !/^[0-9A-F]{8}$/.test(joinPairingRecord.shortCode)
-  ) {
-    throw new Error("Koed could not verify the pairing short code.");
-  }
-  if (expected && joinPairingRecord.shortCode !== expected) {
-    throw new Error(
-      "Pairing invitation code does not match the joining request."
-    );
+    throw new Error("Koed could not verify the pairing challenge binding.");
   }
 
   const submitted = await exchange(

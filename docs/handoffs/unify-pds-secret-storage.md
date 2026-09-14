@@ -1,6 +1,7 @@
 # Handoff: Unify PDS Secret Storage Across Electron and Headless CLI
 
-Status: Implementation in progress on `docs/pds-secret-storage-handoff`.
+Status: Storage and capability-pairing implementations complete; package
+validation passed; root DB-backed and Studio live validation pending.
 
 ## Task
 
@@ -74,6 +75,21 @@ headless CLI, API, and Worker use the same store contract. Legacy Electron
 OS-store state and branch-created keytar state are intentionally not migrated
 or deleted.
 
+Capability-based Personal Device pairing is present in the child handoff. Its
+one-time invitation link is the enrollment capability, with no ordinary
+short-code comparison or Authority approval step. A claimed request retains its
+exact binding through disconnect for bounded post-expiry durable-commit recovery;
+new or non-exact exchanges are rejected and recovery eventually expires. This
+does not change the private/Tailscale HTTP transport boundary, encrypted local
+PDS store, or stdin/FD-only guidance for headless link input.
+
+Current package-scoped validation also passes: Desktop pairing-server regression
+suite (14 tests), Desktop full package suite (76 files / 711 tests),
+`@koed/koed-server` full package suite (41 files / 553 tests), Desktop
+TypeScript check, and changed-file Prettier check. Root `pnpm verify` remains
+blocked until usable `DATABASE_URL` and Postgres are available. Studio live
+Tailscale pairing remains blocked; no live result is claimed.
+
 ## Decisions
 
 - Remove the requirement for `keytar`/Keychain/Secret Service access from headless PDS operation.
@@ -105,9 +121,13 @@ The implementation agent should reconcile this change with the proposal's config
 - [x] PDS secrets never appear in process arguments, environment variables, logs, queue payloads, or ordinary world/group-readable files.
 - [x] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and restart behavior are covered by shared store and provider tests; platform crash injection remains pending.
 - [x] Existing Electron `pds-secrets.json` state and branch-created keytar state are handled deliberately through documented non-migration and fresh-`KOED_HOME` reset behavior.
-- [x] Tailscale pairing code remains present and its existing tests pass.
-- [x] `/docs` documentation reflects new provider/storage model and SSH setup.
-- [ ] Relevant full tests, typechecks, builds, Prettier checks, and studio SSH e2e pass.
+- [x] Tailscale/private-network pairing transport remains present; existing
+      storage-era pairing coverage is recorded above.
+- [x] `/docs` documentation reflects new provider/storage model, capability
+      pairing, and SSH setup.
+- [ ] Root DB-backed verification and Studio pairing e2e pass; package-scoped
+      tests, Desktop typecheck, and changed-file Prettier checks pass as recorded
+      above.
 
 ## Constraints
 

@@ -1,6 +1,7 @@
 # Handoff: Capability-Based Personal Device Pairing
 
-Status: Next implementation stage planned on `docs/pds-secret-storage-handoff`.
+Status: Capability pairing implementation and package validation present;
+live validation pending on `docs/pds-secret-storage-handoff`.
 
 Parent handoff: `docs/handoffs/unify-pds-secret-storage.md`.
 
@@ -74,93 +75,113 @@ supervisor or secure wrapper with an inherited input stream.
 
 ## Current implementation state
 
-Already implemented in the current working tree or branch:
+Capability pairing implementation is present for this handoff:
 
-- Tailscale private-network support, including `100.64.0.0/10`.
-- SSH-only redemption through `--link-stdin` and `--link-fd`.
-- Encrypted pairing transport and signed enrollment requests.
-- Unified application-managed encrypted PDS secret storage.
-- Headless `setup core` provisioning of the scoped local reconciliation
-  credential.
-- Local reconciliation and device revocation support.
-- Documentation and regression coverage for headless credential provisioning.
+- One-time invitation link possession authorizes Personal Device enrollment.
+- Human-facing short-code comparison and ordinary Authority approval are
+  removed from the intended flow.
+- Authority validates expiry, group, transport binding, signed request, and
+  single-use state before automatic enrollment.
+- Desktop pairing uses one link input, QR/deep-link population, connection
+  progress, cancellation while waiting/connecting, and completion refresh.
+- SSH-only redemption keeps `--link-stdin` and `--link-fd`; invitation links do
+  not belong in arguments, logs, shell history, or persistent files.
+- Tailscale/private-network HTTP transport, encrypted pairing, signed requests,
+  replay protection, device revocation, and application-managed encrypted PDS
+  storage remain unchanged.
 
-The following work is planned and is not yet implemented:
+Package-scoped validation is recorded below. Root DB-backed verification and
+Studio Tailscale end-to-end completion remain unclaimed.
 
-- Short-code removal.
-- Automatic Personal Device enrollment without a separate Authority approval.
-- UI state and copy changes for the new flow.
+## Implementation and validation record
 
-## Implementation plan
+### 1. Short-code plumbing removed
 
-### 1. Remove short-code plumbing
+Pairing protocol and consumers no longer expose:
 
-Update the pairing protocol and all consumers to remove:
+- `shortCode` fields in pairing views, progress events, or results.
+- `--expected-code` parsing or validation.
+- Short-code generation, comparison errors, or renderer copy.
+- The ordinary `personal_sync_pairing_approve` UI command.
 
-- `shortCode` fields from pairing views, progress events, and results.
-- `--expected-code` parsing and validation.
-- Short-code generation and comparison errors.
-- Renderer state, display, accessibility labels, and copy.
-- Related Desktop, server, CLI, and shared tests.
+Related Desktop, server, CLI, and shared tests were updated. Keep `challenge_id`
+as an internal invitation binding identifier; it is not a human-facing code and
+must not be displayed as one.
 
-Keep `challenge_id` as an internal invitation binding identifier. It is not a
-human-facing code and must not be displayed as one.
+### 2. Enrollment stages merged
 
-### 2. Merge the enrollment stages
+On receipt of a pairing request, the Authority-side flow:
 
-On receipt of a pairing request, the Authority-side flow must:
-
-1. Validate the invitation, expiry, group, transport binding, and one-time
+1. Validates the invitation, expiry, group, transport binding, and one-time
    claim state.
-2. Validate the joining device's signed request and public-key material.
-3. Perform the Authority-side membership approval automatically.
-4. Release the encrypted enrollment response.
-5. Complete local reconciliation and close the invitation.
+2. Validates the joining device's signed request and public-key material.
+3. Performs Authority-side membership approval automatically.
+4. Releases the encrypted enrollment response.
+5. Completes local reconciliation and closes the invitation.
 
-The operation must be idempotent and race-safe. An invalid, expired, replayed,
-wrong-group, or malformed request must never be auto-approved.
+The operation is idempotent and race-safe. Invalid, expired, replayed,
+wrong-group, or malformed requests never auto-approve. The normal pairing state
+machine no longer exposes `approval_required`; it reports states such as
+`waiting`, `connecting`, `completed`, `expired`, `cancelled`, and `failed`, with
+`committing` and `awaiting_joiner` phases inside `connecting`. The commit
+boundary rejects cancellation and keeps retryable enrollment alive. A claimed
+request keeps its exact signed request binding if its HTTP response disconnects;
+invitation expiry then rejects metadata and new requests. The exact bound request
+may recover approval, and an already-approved bound session may use allowlisted
+control and completion operations during the same bounded ten-minute
+commit-recovery window. Recovery expiry clears token and request state, so no
+expired capability remains indefinitely.
 
-The normal pairing state machine should no longer expose `approval_required`.
-It should report states such as `waiting`, `connecting`, `completed`,
-`expired`, `cancelled`, and `failed`.
+### 3. Desktop IPC and UI simplified
 
-### 3. Simplify Desktop IPC and UI
+- Pairing wait/completion triggers Authority-side automatic enrollment.
+- The **Approve device** button and code-comparison copy are removed.
+- Connection progress and completion copy replace manual approval state.
+- Cancellation remains available before commit; after commit, status polling
+  reports the durable transition and cancellation returns an error.
+- The device list refreshes after completion.
 
-- Remove the normal `personal_sync_pairing_approve` UI path.
-- Make the pairing wait/completion path trigger the Authority-side automatic
-  enrollment operation.
-- Remove the **Approve device** button.
-- Replace code-comparison copy with connection progress and completion copy.
-- Keep cancellation while the invitation is waiting or connecting.
-- Refresh the device list after completion.
+Low-level approval primitives remain available where recovery or administrative
+operations still require them.
 
-Do not delete any low-level approval primitive still needed for recovery or
-administrative operations without checking its other callers first.
+### 4. Headless setup stays self-configuring
 
-### 4. Keep headless setup self-configuring
+- Application-managed secret storage and strict file permissions remain in use.
+- `setup core` continues provisioning the scoped local credential.
+- Documented redemption requires no Electron, OS keychain access, `keytar`, or
+  plaintext secret configuration.
+- Runtime secret references and provider wiring retain safe application defaults.
 
-- Preserve application-managed secret storage and strict file permissions.
-- Keep `setup core` provisioning the scoped local credential.
-- Ensure documented redemption does not require Electron, OS keychain access,
-  `keytar`, or plaintext secret configuration.
-- Confirm runtime secret references and provider wiring have safe application
-  defaults where the pairing path already supports them.
+### 5. Documentation updated
 
-### 5. Update documentation
+Pairing sections in `docs/running-koed.md`, `docs/configuration.md`,
+`docs/desktop-ui.md`, and this parent handoff document link possession as the
+authorization capability and describe its one-time, short-lived, sensitive
+nature.
 
-Update the pairing sections in:
+### 6. Validation record
 
-- `docs/running-koed.md`
-- `docs/configuration.md`
-- `docs/desktop-ui.md`
-- This handoff's parent document, if its acceptance state changes
+Passed package-scoped validation:
 
-Document that link possession authorizes Personal Device enrollment, while the
-link remains one-time, short-lived, and sensitive.
+- Desktop pairing-server regression suite: 15 tests passed.
+- Desktop full package suite: 76 files / 712 tests passed.
+- `@koed/koed-server` full package suite: 41 files / 553 tests passed.
+- Desktop TypeScript check passed.
+- Prettier check passed for changed pairing server and regression-test files.
 
-### 6. Add validation coverage
+The claimed-binding regression test covers disconnect after claim, preservation of
+the original signed request, rejection of changed requests and metadata after
+invitation expiry, successful allowlisted control/completion recovery, exact
+durable-commit recovery, and bounded recovery expiry.
 
-Add or update tests for:
+Remaining validation is blocked or pending:
+
+- Root DB-backed verification was not run. Root `pnpm verify` requires a usable
+  `DATABASE_URL` and Postgres; package-scoped tests above were run instead.
+- Studio live Tailscale pairing remains blocked; no Studio end-to-end result is
+  claimed.
+
+Remaining coverage and live validation:
 
 - Successful automatic enrollment from Desktop.
 - Successful automatic enrollment through SSH stdin and FD input.
@@ -173,8 +194,8 @@ Add or update tests for:
 - No short-code fields or code-related output.
 - No invitation token leakage through process arguments or logs.
 
-Then run the relevant package tests, typechecks, builds, and formatting checks,
-followed by the Studio Tailscale end-to-end flow.
+Package checks above pass. Root DB-backed verification and Studio Tailscale
+end-to-end flow remain pending for the blockers recorded above.
 
 ## Transport expansion boundary
 
@@ -203,6 +224,6 @@ report must continue to distinguish them from PDS failures.
 
 ## Release decision
 
-This is a user-visible pairing and security-policy change. Recommend a minor
-changeset. Do not add the changeset until the Operator confirms the release
-note decision.
+Operator confirmed a minor changeset for this user-visible pairing and
+security-policy change. `.changeset/capability-based-device-pairing.md` records
+that release note. Validation remains pending.
