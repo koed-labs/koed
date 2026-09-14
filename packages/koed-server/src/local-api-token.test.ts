@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readDesktopLocalCredentialAuthorization } from "@koed/shared";
 import { writeLocalAppCredential } from "./credentials.js";
 import {
   provisionLocalApiToken,
@@ -49,9 +50,9 @@ const makePaths = (): KoedServerPaths => {
 
 const repository = (
   tokenOwner: { id: string } | null,
-  createdOwner = { id: "personal-owner" }
+  createdOwner = { id: "00000000-0000-4000-8000-000000000001" }
 ): LocalApiTokenRepository => ({
-  findUserByEmail: async () => ({ id: "personal-owner" }),
+  findUserByEmail: async () => ({ id: createdOwner.id }),
   createUser: async () => createdOwner,
   createApiToken: async () => undefined,
   getApiTokenUser: async () => tokenOwner
@@ -86,6 +87,9 @@ describe("local API Token provisioning", () => {
       readFileSync(paths.localAppCredentialPath, "utf8")
     ) as { apiToken?: unknown };
     expect(credential.apiToken).toBe(result.token);
+    expect(
+      readDesktopLocalCredentialAuthorization(paths.koedHome)?.ownerUserId
+    ).toBe(result.ownerUserId);
   });
 
   it("rejects core credential owned by different Personal owner", async () => {
@@ -103,7 +107,7 @@ describe("local API Token provisioning", () => {
         { API_TOKEN_PEPPER: "pepper" },
         {},
         () => new Date("2026-01-02T00:00:00.000Z"),
-        repository({ id: "foreign-owner" })
+        repository({ id: "00000000-0000-4000-8000-000000000002" })
       )
     ).rejects.toThrow("different Personal owner");
   });

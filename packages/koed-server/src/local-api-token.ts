@@ -149,7 +149,11 @@ export const provisionLocalApiToken = async (
     runtime,
     environment,
     async (repo) => {
-      const owner = await resolveActiveOwner(repo, false, paths);
+      // Headless local-personal startup also needs the scoped loopback
+      // credential used by PDS reconciliation.  Keeping this provisioning in
+      // the application-managed store avoids making SSH enrollment depend on
+      // Electron or an interactive OS credential store.
+      const owner = await resolveActiveOwner(repo, true, paths);
       const configured = resolveLocalApiToken(environment, repoEnv);
       const existing =
         configured?.token ?? loadLocalAppCredential(paths)?.apiToken;

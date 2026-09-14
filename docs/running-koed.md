@@ -271,7 +271,9 @@ the signed request over the encrypted invitation transport, waits for approval
 on the Authority device, and completes local enrollment. Use `--link-stdin` or
 `--link-fd` when avoiding the token-bearing link in shell history/process lists.
 It uses the Koed local Desktop credential only for the loopback reconciliation
-step; no Desktop window is required on the joining device. Redeem resolves the
+step; headless `setup core` provisions that scoped credential in the same
+application-managed store, so no Desktop window or OS keychain is required on
+the joining device. Redeem resolves the
 local API from Koed's configured port; set `PDS_LOCAL_CONTROL_URL` only when
 that API uses a non-default local URL. The joining User needs filesystem access
 to its local `KOED_HOME`; no OS credential store or interactive session is
