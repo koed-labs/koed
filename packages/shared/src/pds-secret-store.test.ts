@@ -57,6 +57,36 @@ describe("application-managed PDS secret store", () => {
     );
   });
 
+  it("accepts a standard sticky temporary parent", () => {
+    const parent = mkdtempSync(join(tmpdir(), "koed-pds-sticky-"));
+    roots.push(parent);
+    chmodSync(parent, 0o1777);
+    const root = mkdtempSync(join(parent, "koed-pds-store-"));
+    roots.push(root);
+
+    const store = createPdsApplicationSecretStore({ rootPath: root });
+    store.put("pds-runtime", "secret");
+    expect(store.get("pds-runtime")).toBe("secret");
+  });
+
+  it.each([0o0777, 0o0770, 0o0707])(
+    "rejects writable non-sticky temporary parent %o",
+    (mode) => {
+      const base = createRoot();
+      const parent = join(base, "unsafe-parent");
+      const root = join(parent, "koed-pds-store");
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      chmodSync(parent, mode);
+
+      expect(() =>
+        createPdsApplicationSecretStore({ rootPath: root }).put(
+          "pds-runtime",
+          "secret"
+        )
+      ).toThrow("path is unsafe");
+    }
+  );
+
   it("rejects unsafe store directories", () => {
     const root = createRoot();
     const secrets = join(root, "secrets");

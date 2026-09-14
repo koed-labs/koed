@@ -121,10 +121,9 @@ const assertPrivatePathAncestry = (path: string): void => {
     }
     const writableByOtherUsers = stat.mode & 0o022;
     const sticky = stat.mode & 0o1000;
-    if (
-      writableByOtherUsers !== 0 &&
-      !(sticky !== 0 && (stat.mode & 0o020) === 0)
-    ) {
+    // Sticky directories (including POSIX /tmp at 1777) protect entries
+    // owned by this user from removal or replacement by other users.
+    if (writableByOtherUsers !== 0 && sticky === 0) {
       throw new Error("PDS secret store path is unsafe.");
     }
     const parent = dirname(current);
