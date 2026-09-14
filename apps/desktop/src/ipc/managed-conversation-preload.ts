@@ -131,6 +131,40 @@ export const createManagedConversationPreloadApi = (
           })
         )
       ),
+    readRecovery: async (ownerId) =>
+      correlated(
+        "recovery_read",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({
+            operation: "recovery_read",
+            ownerId
+          })
+        )
+      ),
+    writeRecovery: async (ownerId, value) =>
+      correlated(
+        "recovery_write",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({
+            operation: "recovery_write",
+            ownerId,
+            value
+          })
+        )
+      ),
+    deleteRecovery: async (ownerId) =>
+      correlated(
+        "recovery_delete",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({
+            operation: "recovery_delete",
+            ownerId
+          })
+        )
+      ),
     targets: async () => {
       const request = parseManagedConversationRequest({
         operation: "targets"

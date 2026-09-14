@@ -1,5 +1,10 @@
 # Conversation settings
 
+Ask, Project launches, and active managed Conversations use the same agent
+input surface. The surrounding controller supplies the draft, capabilities,
+and submission action. The input supplies the text field, settings controls,
+keyboard behavior, and Send or Interrupt action.
+
 The compact composer uses the selected prototype A design.
 Permissions appear on the left. The AI Client selector sits immediately before
 the model and reasoning selector. Device handoff remains a separate action.
@@ -12,14 +17,21 @@ no leading icon.
 
 ## New Conversations
 
-**New** opens the composer with the current launch settings. Users can select
+Ask and **New** use the saved **Conversations** assignment from Agent Configuration.
+The assignment supplies the AI Client, model, and reasoning effort. Users can select
 an available AI Client, model, reasoning level, and permission mode before
 they start. Sending the first message starts the Conversation and queues that
 message behind runtime startup. Starting without a message remains available.
 
-An uncertain start retains its request identity for an explicit retry. An
-uncertain first prompt is not submitted again automatically. A rejected first
-prompt remains available as a draft.
+An uncertain start retains its request identity for an explicit retry.
+An uncertain first prompt retains its exact text and message identity.
+Desktop disables text edits until an explicit retry resolves that prompt.
+It does not submit the prompt again automatically.
+After a definite rejection, an edited prompt receives a new message identity.
+The launch identity stays the same for both retry paths.
+
+The selected Project stays fixed after a launch attempt starts.
+Ask and Projects share provisional titles, identity updates, and restart recovery.
 
 New Conversations start on this device. The existing handoff action controls
 subsequent device changes. This change does not add remote launch support.
@@ -80,5 +92,11 @@ pnpm --filter @koed/desktop dev --port 5199
 The fixture URL is
 `http://127.0.0.1:5199/browser-validation.html?view=conversation-settings`.
 
-The throwaway variants and switcher are removed. The User requested no changeset
-for this implementation.
+The throwaway variants and switcher are removed.
+
+## Database schema
+
+Migration `0039_conversation_agent_default` adds the Conversations setting.
+Migration `0037_coding_project_runtime` already creates the runtime acknowledgement column.
+Migration `0040_repair_conversation_start_authority` repairs databases that recorded an earlier version of `0037` without this column.
+The repair preserves runtime bindings and leaves their acknowledgement unset.

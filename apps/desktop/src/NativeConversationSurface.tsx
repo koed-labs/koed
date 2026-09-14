@@ -294,7 +294,9 @@ const ConversationEventRow = memo(function ConversationEventRow({
             {markdownAdapters ? (
               <SecureMarkdown adapters={markdownAdapters} source={text} />
             ) : (
-              <div className="native-event-content">{text}</div>
+              <div className="native-event-content">
+                {event.responseStreaming ? text.trimEnd() : text}
+              </div>
             )}
           </MemoryEventFrame>
         </details>
@@ -325,7 +327,7 @@ const ConversationEventRow = memo(function ConversationEventRow({
           <SecureMarkdown
             adapters={markdownAdapters}
             className="native-event-content"
-            source={text}
+            source={event.responseStreaming ? text.trimEnd() : text}
           />
         ) : (
           <div className="native-event-content">{text}</div>

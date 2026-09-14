@@ -145,10 +145,102 @@ describe("context navigation", () => {
     );
     expect(pending?.querySelector('[data-status="pending"]')).not.toBeNull();
     expect(pending?.querySelector(".lucide-loader-circle")).not.toBeNull();
-    expect(pending?.querySelector("small")).toBeNull();
+    expect(pending?.querySelector("small")?.textContent).toContain("Ask");
     expect(failed?.querySelector('[data-status="error"]')).not.toBeNull();
     expect(failed?.querySelector(".lucide-circle-alert")).not.toBeNull();
-    expect(failed?.querySelector("small")).toBeNull();
+    expect(failed?.querySelector("small")?.textContent).toContain("Ask");
+  });
+
+  it("orders Project and Independent Conversations with Ask history and limits Recents to ten entries", async () => {
+    const onSelectConversation = vi.fn();
+    const onLoadOlderAskThreads = vi.fn();
+    const onLoadOlderConversations = vi.fn();
+    const onRetryRecents = vi.fn();
+    await act(async () =>
+      root.render(
+        <PersonalContextNavigation
+          askRecents={[
+            {
+              askThreadId: "22222222-2222-4222-8222-222222222222",
+              firstQuestion: "Historical decision",
+              latestStatus: "answered",
+              turnCount: 1,
+              updatedAt: "2026-08-17T12:01:00.000Z"
+            }
+          ]}
+          askRecentsNextCursor="ask-next"
+          askRecentsError="Recent Conversations are unavailable."
+          conversationRecents={[
+            {
+              id: "execution-independent",
+              title: "Draft the proposal",
+              projectId: "independent",
+              projectName: "Independent",
+              sessionId: "execution-independent",
+              latestAt: "2026-08-17T12:02:00.000Z"
+            },
+            {
+              id: "session-project",
+              title: "Review the branch",
+              projectId: "project-koed",
+              projectName: "koed",
+              sessionId: "session-project",
+              latestAt: "2026-08-17T12:00:00.000Z"
+            },
+            ...Array.from({ length: 12 }, (_, index) => ({
+              id: `older-${index}`,
+              title: `Older ${index}`,
+              projectId: "project-koed",
+              projectName: "koed",
+              sessionId: `older-${index}`,
+              latestAt: "2026-08-16T12:00:00.000Z"
+            }))
+          ]}
+          conversationRecentsNextCursor="50"
+          notesSelected={false}
+          onLoadOlderAskThreads={onLoadOlderAskThreads}
+          onLoadOlderConversations={onLoadOlderConversations}
+          onOpenNotes={vi.fn()}
+          onOpenProjects={vi.fn()}
+          onOpenShares={vi.fn()}
+          onRetryRecents={onRetryRecents}
+          onSelectConversation={onSelectConversation}
+          projectsSelected={false}
+          selectedConversationId="execution-independent"
+          sharesSelected={false}
+        />
+      )
+    );
+
+    const rows = [
+      ...container.querySelectorAll(
+        ".desktop-sidebar-recents-section > .desktop-sidebar-items > button"
+      )
+    ];
+    expect(rows).toHaveLength(10);
+    expect(rows.slice(0, 3).map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Draft the proposal"),
+      expect.stringContaining("Historical decision"),
+      expect.stringContaining("Review the branch")
+    ]);
+    expect(rows[0]?.querySelector("small")?.textContent).toMatch(/^Chats ·/);
+    expect(rows[0]?.querySelector("time")?.getAttribute("datetime")).toBe(
+      "2026-08-17T12:02:00.000Z"
+    );
+    expect(rows[0]?.getAttribute("aria-current")).toBe("page");
+    await click(rows[0] ?? null);
+    expect(onSelectConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "execution-independent" })
+    );
+    expect(container.textContent).not.toContain("Load older");
+    expect(onLoadOlderAskThreads).not.toHaveBeenCalled();
+    expect(onLoadOlderConversations).not.toHaveBeenCalled();
+    await click(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Retry"
+      ) ?? null
+    );
+    expect(onRetryRecents).toHaveBeenCalledOnce();
   });
 
   it("renders Team, Workspace, channel, DM, People, and Shared Memory hierarchy", async () => {

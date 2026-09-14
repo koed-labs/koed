@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { ManagedConversationRuntimeItem } from "../../ipc/managed-conversation-protocol.js";
 import {
+  appendManagedConversationUpdate,
+  managedConversationUpdatesSince,
   managedConversationRuntimeStateFromSnapshot,
   reduceManagedConversationRuntime,
   type ManagedConversationRealtimeUpdate
@@ -173,5 +175,39 @@ describe("managed Conversation runtime materialisation", () => {
     expect(changed.requiresSnapshot).toBe(true);
     expect(changed.state.executionGeneration).toBe(2);
     expect(reset.requiresSnapshot).toBe(true);
+  });
+});
+
+describe("managed Conversation event batching", () => {
+  it("retains visible completion followed by another Conversation update", () => {
+    const completed = update({
+      latestCommand: { ...update().latestCommand!, state: "completed" }
+    });
+    const other = update({ execution: { ...update().execution, id: "other" } });
+    const envelope = appendManagedConversationUpdate(
+      appendManagedConversationUpdate(null, completed),
+      other
+    );
+    const batch = managedConversationUpdatesSince(envelope, 0);
+    expect(batch.gap).toBe(false);
+    expect(batch.updates.map((entry) => entry.update)).toEqual([
+      completed,
+      other
+    ]);
+    expect(
+      reduceManagedConversationRuntime(snapshot(), batch.updates[0]!.update)
+        .state.latestCommand?.state
+    ).toBe("completed");
+    expect(
+      managedConversationUpdatesSince(envelope, envelope.revision).updates
+    ).toEqual([]);
+  });
+
+  it("bounds retained deltas and reports when a consumer needs a snapshot", () => {
+    let envelope = appendManagedConversationUpdate(null, update());
+    for (let index = 0; index < 130; index++)
+      envelope = appendManagedConversationUpdate(envelope, update());
+    expect(envelope.history).toHaveLength(128);
+    expect(managedConversationUpdatesSince(envelope, 0).gap).toBe(true);
   });
 });

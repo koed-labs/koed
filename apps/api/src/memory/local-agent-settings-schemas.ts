@@ -149,6 +149,7 @@ export const aiClientCapabilitySnapshotSchema = z
   );
 
 export const localMemoryAgentFlowKeySchema = z.enum([
+  "conversations",
   "mcp_memory_answer",
   "manual_memory_answer",
   "lcm_summary",

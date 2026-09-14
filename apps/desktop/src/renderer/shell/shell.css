@@ -177,7 +177,8 @@
 
 .desktop-personal-context-content {
   display: flex;
-  min-block-size: 100%;
+  block-size: 100%;
+  min-block-size: 0;
   flex-direction: column;
 }
 
@@ -335,6 +336,21 @@
   white-space: nowrap;
 }
 
+.desktop-sidebar-recent-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.desktop-sidebar-recent-copy small {
+  color: var(--muted-foreground);
+  font-size: 0.65rem;
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .desktop-sidebar-nav-icon[data-status="pending"] > svg {
     animation: none;
@@ -358,9 +374,19 @@
 }
 
 .desktop-sidebar-section-state {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
   margin: 6px 8px;
   color: var(--muted-foreground);
   font-size: 11px;
+}
+
+.desktop-sidebar-section-state button {
+  color: var(--sidebar-accent-foreground);
+  font: inherit;
+  text-decoration: underline;
 }
 
 .desktop-sidebar-unread {
@@ -789,4 +815,68 @@
   .desktop-rail-badge {
     border-color: Canvas;
   }
+}
+
+.desktop-personal-context-content > .desktop-sidebar-header,
+.desktop-personal-context-content
+  > .desktop-sidebar-section:not(.desktop-sidebar-recents-section) {
+  flex-shrink: 0;
+}
+
+.desktop-sidebar-recents-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.desktop-sidebar-recents-section > .desktop-sidebar-items {
+  grid-auto-rows: max-content;
+  align-content: start;
+  min-block-size: 0;
+  overflow-y: auto;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  .desktop-sidebar-recents-section > .desktop-sidebar-items {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  .desktop-sidebar-recents-section > .desktop-sidebar-items::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .desktop-sidebar-recents-section
+    > .desktop-sidebar-items::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .desktop-sidebar-recents-section
+    > .desktop-sidebar-items::-webkit-scrollbar-thumb {
+    background: var(--border);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    min-height: 32px;
+  }
+
+  .desktop-sidebar-recents-section
+    > .desktop-sidebar-items::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+
+  .desktop-sidebar-recents-section
+    > .desktop-sidebar-items::-webkit-scrollbar-button {
+    display: none;
+  }
+}
+
+.desktop-sidebar-recents-section > header {
+  flex-shrink: 0;
+}
+
+.desktop-sidebar-recents-section .desktop-sidebar-nav-item {
+  block-size: 48px;
+  min-block-size: 48px;
 }

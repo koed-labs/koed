@@ -569,6 +569,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly watchers: FSWatcher[] = [];
   private readonly hintedTranscriptPaths = new Set<string>();
   private readonly processing = new Set<string>();
+  private readonly sourceFailures = new Map<
+    string,
+    { attempts: number; retryAt: number }
+  >();
   private readonly openTurnPolls = new Map<
     string,
     {
@@ -789,7 +793,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           this.scanRequested = true;
         }
       }
-      if (this.failureCount === failuresBefore) {
+      if (
+        this.failureCount === failuresBefore &&
+        this.sourceFailures.size === 0
+      ) {
         this.metrics.lastSuccessAt = new Date().toISOString();
         this.metrics.lastErrorCode = null;
       }
@@ -866,10 +873,33 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     observeHistorical = false
   ): Promise<void> {
     if (this.processing.has(transcriptPath)) return;
+    const previousFailure = this.sourceFailures.get(transcriptPath);
+    if (previousFailure && Date.now() < previousFailure.retryAt) return;
     this.processing.add(transcriptPath);
     try {
       await this.processTranscript(transcriptPath, observeHistorical);
+      this.sourceFailures.delete(transcriptPath);
     } catch (error) {
+      const code = watcherErrorCode(error);
+      if (
+        code === "transcript_prefix_mutated" ||
+        code === "transcript_truncated"
+      ) {
+        // A new filesystem hint cannot repair an already journalled range.
+        // Keep retrying for recovery, without letting a damaged file monopolize scans.
+        const attempts = Math.min((previousFailure?.attempts ?? 0) + 1, 7);
+        this.sourceFailures.delete(transcriptPath);
+        this.sourceFailures.set(transcriptPath, {
+          attempts,
+          retryAt: Date.now() + Math.min(1_000 * 2 ** (attempts - 1), 60_000)
+        });
+        const maximum = Math.max(this.config.maxFilesPerScan * 10, 100);
+        while (this.sourceFailures.size > maximum) {
+          const oldest = this.sourceFailures.keys().next().value;
+          if (oldest === undefined) break;
+          this.sourceFailures.delete(oldest);
+        }
+      }
       this.recordFailure(error);
     } finally {
       this.processing.delete(transcriptPath);

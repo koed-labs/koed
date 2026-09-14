@@ -158,7 +158,8 @@ export type SetupChecklistProps = {
 
 export function SetupChecklist({
   onComplete,
-  showTrustGuide = true,
+  // Temporarily skip the memory welcome guide; retain it for re-enabling later.
+  showTrustGuide = false,
   statusStore
 }: SetupChecklistProps) {
   const setupApi = window.koedDesktop?.setup;

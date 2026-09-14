@@ -211,6 +211,7 @@ export interface McpServerConfig {
   apiUrl: string;
   apiToken?: string;
   requestTimeoutMs?: number;
+  requestClass?: "managed-conversation";
 }
 
 export type LocalMemoryAgentFlowKey =
@@ -480,15 +481,17 @@ const positiveIntEnv = (
 export class MemoryApiError extends Error {
   readonly status?: number;
   readonly payload?: unknown;
+  readonly retryAfterMs?: number;
 
   constructor(
     message: string,
-    options: { status?: number; payload?: unknown } = {}
+    options: { status?: number; payload?: unknown; retryAfterMs?: number } = {}
   ) {
     super(message);
     this.name = "MemoryApiError";
     this.status = options.status;
     this.payload = options.payload;
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
 
@@ -1243,6 +1246,41 @@ export class MemoryApiClient {
     body?: unknown,
     options: { authorization?: string } = {}
   ): Promise<T> {
+    const registration =
+      path === "/v1/sessions" &&
+      body !== null &&
+      typeof body === "object" &&
+      "idempotencyKey" in body &&
+      typeof body.idempotencyKey === "string" &&
+      Boolean(body.idempotencyKey);
+    const retryThrottling =
+      this.config.requestClass === "managed-conversation" || registration;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.requestOnce<T>(method, path, body, options);
+      } catch (error) {
+        if (
+          !retryThrottling ||
+          !(error instanceof MemoryApiError) ||
+          error.status !== 429 ||
+          attempt >= 2
+        )
+          throw error;
+        const delay = Math.min(
+          60_000,
+          Math.max(1000, error.retryAfterMs ?? 1000 * 2 ** attempt)
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  private async requestOnce<T>(
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+    path: string,
+    body?: unknown,
+    options: { authorization?: string } = {}
+  ): Promise<T> {
     const authorization =
       options.authorization ??
       (this.config.apiToken ? `Bearer ${this.config.apiToken}` : null);
@@ -1264,6 +1302,9 @@ export class MemoryApiClient {
         signal,
         headers: {
           authorization,
+          ...(this.config.requestClass
+            ? { "x-koed-request-class": this.config.requestClass }
+            : {}),
           ...(body === undefined ? {} : { "content-type": "application/json" })
         },
         body: body === undefined ? undefined : JSON.stringify(body)
@@ -1293,6 +1334,9 @@ export class MemoryApiClient {
       const message = `${payload.error ?? `Memory API request failed with status ${response.status}.`}${setupHint}`;
       throw new MemoryApiError(message, {
         status: response.status,
+        retryAfterMs: /^\d+$/.test(response.headers.get("retry-after") ?? "")
+          ? Number(response.headers.get("retry-after")) * 1000
+          : undefined,
         payload
       });
     }

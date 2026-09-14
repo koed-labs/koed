@@ -7,6 +7,58 @@ healthy, authenticated, fresh, identity-matched capability snapshot. Hosted
 authority delegates deferred local execution readiness to the assigned Worker.
 Missing or unavailable owners never fall back to another AI Client.
 
+Managed Conversation endpoints use separate read and write budgets from Memory
+endpoints. The API selects each budget from the endpoint and authenticated User
+identity. Memory reads, Memory writes, and source-journal requests share their
+respective budgets with background ingestion. The `x-koed-request-class` header
+does not select an additional API budget.
+The Memory API client retries managed Conversation capture requests at most
+twice after HTTP 429. Registration outside this traffic class requires an
+idempotency key for retry. Each retry retains the original API request and
+waits for Retry-After, with a maximum delay of 60 seconds per retry.
+These retries do not resend prompts to the AI Client. Other API errors are
+returned without retry.
+
+Desktop retains displayed messages when a Chat route changes from execution
+identity to captured-session identity. Reconciliation does not clear those
+messages while their captured versions are unavailable.
+
+Ask and Projects use the same managed launch controller and Conversation input.
+One Desktop lifecycle module owns provisional Conversations, identity updates,
+startup retries, and encrypted recovery. App owns navigation and recent history.
+The Project view consumes lifecycle state without changing the recovery map.
+Recovery writes run in order and remain specific to the current owner.
+Desktop opens the Project Conversation detail after start, including when the
+first prompt has an uncertain delivery response. It retains stable launch and
+message identities during uncertain responses, so recovery does not create a
+second execution or prompt. After the
+start succeeds, Desktop stores the launch and first-prompt identities in a
+bounded recovery record, including uncertain delivery, in its encrypted,
+owner-scoped secret store. A restart can restore the provisional
+Conversation before capture has supplied its canonical session identity.
+After inspection reports a failed, stopped, or fenced execution, Retry creates
+and stores a new start key before dispatch. The replacement execution retains
+the existing navigation route. Uncertain requests retain their start key.
+
+Enter submits only an enabled Send action. It never invokes Interrupt during
+startup or an active turn. The Interrupt button requires a running execution,
+and the control handler checks that state again.
+
+An Independent launch uses an owner-local Independent Project for navigation.
+The API creates a separate Koed-owned working directory for each execution. A
+later resume uses the persisted runtime binding for that directory. Repository
+features remain subject to their capability checks.
+The start digest includes Independent context. Reusing a start key with a
+different context returns a conflict before the API changes the runtime binding.
+Desktop identifies Chats from metadata for the exact Koed-owned Independent
+Project directory. A User-controlled Project name does not establish this identity.
+
+Recents reads additional graph pages until it collects the requested number of
+Conversations or reaches the end. Subagent rows consume raw offsets but do not
+consume Conversation slots. An owner change clears and reloads both recent lists.
+Launch selections resolve model defaults through the canonical ID, qualified ID,
+or model alias from the capability snapshot.
+
 After API readiness, the supervisor resolves the active local API Token and
 passes the same credential to the Worker and Local AI Runtime. This includes
 credentials already stored under `KOED_HOME`, not only process-environment or
@@ -16,6 +68,8 @@ Managed Codex and Claude Code launches register Koed's packaged stdio MCP Server
 explicitly for the selected `KOED_HOME`; recall does not depend on global AI
 Client configuration. Pi loads the Koed extension explicitly. These connections
 use the Local AI Runtime and do not put API Tokens in AI Client configuration.
+Managed Codex launches mark Koed as a required MCP Server. Codex waits for its
+tools before the first turn and fails startup if the server cannot initialize.
 Desktop credentials include the distinct file, terminal, preview, and source-control
 operation families; none grants an AI Client permission or a remote mutation approval.
 
@@ -113,3 +167,30 @@ released the start and the runner records acknowledgement. Retries verify the
 existing checkout, including after runner restart. Pending assignments are
 checked against current execution authority before preparation or fenced cleanup;
 a stale local execution mirror cannot hide them from reconciliation.
+
+Desktop shows the device switch control during startup, disabled until the
+Conversation is ready. New Conversations show zero context usage until the
+AI Client reports usage. Existing Conversations without a usage report do not
+claim zero usage.
+
+The Codex Transcript Watcher backs off repeated truncated or mutated source
+ranges per file, from one second to a maximum of one minute. Filesystem hints
+do not bypass this delay. Healthy files continue through normal capture. A
+successful retry clears the backoff; retries never rewind captured cursors.
+
+Codex startup emits `worker.managed_conversation.startup_stage` Worker events.
+Each event includes the execution ID, generation, stage, status, stage duration,
+and elapsed startup time in milliseconds. Stages separate protocol validation,
+client initialization, thread opening, event flushing, capture registration,
+startup event persistence, and resume or fork transcript reconciliation.
+Failures report the stage before cleanup. These events contain no prompts,
+message content, credentials, or local paths. Diagnostic failures do not stop
+startup. Compare these timings with command creation and dispatch timestamps
+to separate queue delays from runtime preparation.
+
+Startup capture adapts buffered Codex events in provider order and sends them
+through the existing byte- and item-bounded batch transport. Events leave the
+buffer only after their batch succeeds. This reduces capture requests during
+new launches and recovery without releasing prompts before startup capture.
+Desktop recognises both `agent` capture events and `assistant` message events
+when deciding whether the current response still needs an empty placeholder.

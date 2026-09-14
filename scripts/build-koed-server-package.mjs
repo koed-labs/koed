@@ -9,6 +9,7 @@ import {
 } from "./app-runtime-staging.mjs";
 import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
 import { removeClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
+import { pruneTerminalRuntimeForTarget } from "./terminal-runtime-package-policy.mjs";
 import {
   deterministicArchiveEntries,
   sourceDate,
@@ -116,6 +117,30 @@ const validatePackagedCli = (packageRoot) =>
     { cwd: packageRoot, stdio: "pipe" }
   );
 
+const validatePackagedTerminalRuntime = (runtimeRoot) =>
+  run(
+    "Validate packaged terminal runtime",
+    process.execPath,
+    [
+      "-e",
+      [
+        "const pty = require(process.argv[1]);",
+        'let output = "";',
+        "const terminal = pty.spawn(process.execPath,",
+        '  ["-e", "process.stdout.write(\\"koed-node-pty-ok\\")"],',
+        "   { env: process.env });",
+        "const timeout = setTimeout(() => process.exit(1), 5000);",
+        "terminal.onData((data) => { output += data; });",
+        "terminal.onExit(({ exitCode }) => {",
+        "  clearTimeout(timeout);",
+        '  process.exit(exitCode === 0 && output.includes("koed-node-pty-ok") ? 0 : 1);',
+        "});"
+      ].join("\n"),
+      resolve(runtimeRoot, "node_modules", "node-pty")
+    ],
+    { cwd: runtimeRoot, stdio: "pipe" }
+  );
+
 const writeReadme = (packageRoot) => {
   writeFileSync(
     resolve(packageRoot, "README.txt"),
@@ -187,6 +212,11 @@ const main = () => {
     stageSharedAppRuntime({ repoRoot, runtimeRoot });
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
     removeClaudeAgentSdkPlatformRuntimes(packageRoot);
+    pruneTerminalRuntimeForTarget({
+      runtimeRoot,
+      platform: options.platform,
+      architecture: options.architecture
+    });
     prunePrivacyRuntimeForTarget({
       repoRoot,
       runtimeRoot,
@@ -196,6 +226,7 @@ const main = () => {
     pruneSharedAppRuntimeMetadata(runtimeRoot);
     pruneStandalonePackageMetadata(packageRoot);
     validatePackagedCli(packageRoot);
+    validatePackagedTerminalRuntime(runtimeRoot);
     writeLauncher(packageRoot);
     writeReadme(packageRoot);
     const manifest = buildPackageManifest({

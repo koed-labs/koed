@@ -242,7 +242,7 @@ const validatePostgresExtensions = (runtimeRoot) => {
       "-l",
       logPath,
       "-o",
-      `-p ${port} -k ${socketDir}`,
+      `-p ${port} -k ${socketDir} -c listen_addresses=''`,
       "start"
     ]);
     steps.push(start);

@@ -1298,51 +1298,64 @@ describe("SetupChecklist", () => {
     );
   });
 
-  it("teaches synthesis and sharing boundaries after setup", async () => {
-    const status = statusFixture("healthy");
-    window.koedDesktop = {
-      invoke: async <T = unknown,>(): Promise<T> => status as T,
-      setup: {
-        inspect: async () => ({
-          ...setupFixture("complete"),
-          stages: setupFixture().stages.map((stage) => ({
-            ...stage,
-            state: "complete"
-          }))
-        }),
-        run: async () => setupFixture("complete"),
-        subscribe: () => () => undefined
+  it.each([undefined, true])(
+    "completes setup with showTrustGuide=%s",
+    async (showTrustGuide) => {
+      const onComplete = vi.fn();
+      const status = statusFixture("healthy");
+      window.koedDesktop = {
+        invoke: async <T = unknown,>(): Promise<T> => status as T,
+        setup: {
+          inspect: async () => ({
+            ...setupFixture("complete"),
+            stages: setupFixture().stages.map((stage) => ({
+              ...stage,
+              state: "complete"
+            }))
+          }),
+          run: async () => setupFixture("complete"),
+          subscribe: () => () => undefined
+        }
+      };
+
+      await act(async () => {
+        root.render(
+          <SetupChecklist
+            onComplete={onComplete}
+            showTrustGuide={showTrustGuide}
+            statusStore={new DesktopStatusStore()}
+          />
+        );
+      });
+      await act(async () => Promise.resolve());
+      const continueButton = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Continue"
+      );
+      await act(async () => continueButton!.click());
+      await act(async () =>
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent === "Set up later")!
+          .click()
+      );
+
+      if (showTrustGuide === undefined) {
+        expect(onComplete).toHaveBeenCalledOnce();
+        expect(container.textContent).not.toContain(
+          "How Koed handles your Memory"
+        );
+        return;
       }
-    };
-
-    await act(async () => {
-      root.render(
-        <SetupChecklist
-          onComplete={vi.fn()}
-          statusStore={new DesktopStatusStore()}
-        />
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Personal and Team are separate");
+      for (let index = 0; index < 2; index += 1) {
+        const next = [...container.querySelectorAll("button")].find((button) =>
+          button.textContent?.includes("Next")
+        );
+        await act(async () => next!.click());
+      }
+      expect(container.textContent).toContain(
+        "Your AI Client performs synthesis"
       );
-    });
-    await act(async () => Promise.resolve());
-    const continueButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Continue"
-    );
-    await act(async () => continueButton!.click());
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Set up later")!
-        .click()
-    );
-
-    expect(container.textContent).toContain("Personal and Team are separate");
-    for (let index = 0; index < 2; index += 1) {
-      const next = [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Next")
-      );
-      await act(async () => next!.click());
     }
-    expect(container.textContent).toContain(
-      "Your AI Client performs synthesis"
-    );
-  });
+  );
 });

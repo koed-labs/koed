@@ -874,6 +874,79 @@ describe("memory answer worker", () => {
     }
   });
 
+  it("keeps evidence in the prompt when scan diagnostics contain many candidate IDs", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const candidateIds = Array.from(
+        { length: 50 },
+        (_, index) =>
+          `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+      );
+      const stages = [
+        "leaf_search",
+        "fresh_pending_search",
+        "raw_fallback_search"
+      ].map((name) => ({
+        name,
+        candidateCount: 50,
+        countAboveThreshold: 50,
+        maxAllowed: 50,
+        candidateIds
+      }));
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: { query: "What did we decide?", evidence: [] }
+        },
+        {
+          client: {
+            async search(input) {
+              return {
+                hits:
+                  input.retrieval_stage === "score_scan"
+                    ? []
+                    : [
+                        {
+                          nodeId: "node-1",
+                          sourceId: "event-1",
+                          visibility: "personal",
+                          summaryText:
+                            "KOE144_DYNAMIC_TOOL_EVIDENCE: Koed is running on Docker."
+                        }
+                      ],
+                retrieval: { stages }
+              };
+            },
+            async expand() {
+              throw new Error("not needed");
+            }
+          },
+          retrievalScope: "personal",
+          searchDomain: "global",
+          retrievalHints: {
+            semantic: ["deployment choice"],
+            lexical: ["Docker"]
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "6000",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false,
+                requiredPromptSnippets: ["KOE144_DYNAMIC_TOOL_EVIDENCE"]
+              })
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.evidence).toHaveLength(1);
+      expect(JSON.stringify(response.evidenceBundle?.retrieval)).toContain(
+        candidateIds[0]
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("returns grounded child evidence selected from a worker-expanded parent", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {

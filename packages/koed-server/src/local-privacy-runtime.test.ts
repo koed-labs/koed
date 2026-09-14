@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   collectLocalPrivacyRuntimeHealthStatus,
   localPrivacyEnv
@@ -70,5 +70,58 @@ describe("native Privacy Filter Service runtime", () => {
       state: "healthy",
       details: { healthUrl: "http://127.0.0.1:48092/health" }
     });
+  });
+
+  it("does not request accelerator diagnostics during startup health polling", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ status: "ok" }), { status: 200 })
+      );
+    const status = await collectLocalPrivacyRuntimeHealthStatus(
+      {
+        koedHome: "/koed",
+        modelsDir: "/koed/models",
+        repoRoot: "/repo"
+      } as KoedServerPaths,
+      { PRIVACY_RUNTIME_CONTROL_TOKEN: "test-control-token" },
+      { existsSync: () => true, fetch: fetcher }
+    );
+    expect(status.state).toBe("healthy");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]?.[0])).toMatch(/\/health$/);
+  });
+
+  it("returns a loading status when a health request exceeds its deadline", async () => {
+    const controller = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(controller.signal);
+    try {
+      const pending = collectLocalPrivacyRuntimeHealthStatus(
+        {
+          koedHome: "/koed",
+          modelsDir: "/koed/models",
+          repoRoot: "/repo"
+        } as KoedServerPaths,
+        {},
+        {
+          existsSync: () => true,
+          fetch: async (_url, init) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener(
+                "abort",
+                () => reject(new Error("Health request timed out")),
+                { once: true }
+              );
+            })
+        }
+      );
+      expect(timeout).toHaveBeenCalledWith(5_000);
+      controller.abort();
+      await expect(pending).resolves.toMatchObject({ state: "starting" });
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });

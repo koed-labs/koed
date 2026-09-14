@@ -96,7 +96,7 @@ describe("ManagedProjectCockpit", () => {
       root.render(
         <ManagedProjectCockpit
           api={api}
-          identity={{ executionId, executionGeneration: 1 }}
+          identity={{ executionId, executionGeneration: 1, vcsDriver: "git" }}
           onAttachFile={vi.fn()}
           onAttachTerminal={vi.fn()}
           revision={revision}

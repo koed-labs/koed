@@ -944,6 +944,44 @@ const sanitizeRetrievalDiagnostic = (value: unknown, depth = 0): unknown => {
   );
 };
 
+// Keep routing and failure information in the model context. Candidate IDs and
+// operational telemetry stay in the saved trace, where they cannot crowd out
+// the evidence needed to answer the question.
+const workerRetrievalDiagnostic = (value: unknown): unknown => {
+  const record = recordFromUnknown(sanitizeRetrievalDiagnostic(value));
+  const select = (source: Record<string, unknown>, keys: string[]) =>
+    Object.fromEntries(
+      keys
+        .filter((key) => source[key] !== undefined)
+        .map((key) => [key, source[key]])
+    );
+  return {
+    ...select(record, [
+      "mode",
+      "retrievalMode",
+      "semanticRetrievalComplete",
+      "semanticRetrievalError"
+    ]),
+    ...(Array.isArray(record.stages)
+      ? {
+          stages: record.stages.map((stage) =>
+            select(recordFromUnknown(stage), [
+              "name",
+              "ran",
+              "used",
+              "candidateCount",
+              "selectedCount",
+              "topScore",
+              "scoreThreshold",
+              "countAboveThreshold",
+              "maxAllowed"
+            ])
+          )
+        }
+      : {})
+  };
+};
+
 const scalarField = (
   record: Record<string, unknown>,
   names: string[]
@@ -1954,7 +1992,7 @@ const createMemoryAnswerDynamicToolHandler = (
         return dynamicToolResult({
           kind: "scan_result",
           query: (stringArg(args, "query") ?? state.query).slice(0, 512),
-          retrieval: existingScan,
+          retrieval: workerRetrievalDiagnostic(existingScan),
           cachedFromFirstPass: true,
           state: toolStateSummary(state, options.config)
         });
@@ -2018,7 +2056,9 @@ const createMemoryAnswerDynamicToolHandler = (
         return dynamicToolResult({
           kind: "scan_result",
           query: searchQuery,
-          retrieval: scanResult.retrieval ?? scanResult,
+          retrieval: workerRetrievalDiagnostic(
+            scanResult.retrieval ?? scanResult
+          ),
           state: toolStateSummary(state, options.config)
         });
       } catch (error) {
@@ -2147,7 +2187,9 @@ const createMemoryAnswerDynamicToolHandler = (
           query: searchQuery,
           stage,
           hits: indexedEvidenceObservation(state.evidence, hits),
-          retrieval: boundedUnknown(searchResult.retrieval ?? searchResult),
+          retrieval: workerRetrievalDiagnostic(
+            searchResult.retrieval ?? searchResult
+          ),
           state: toolStateSummary(state, options.config)
         });
       } catch (error) {
@@ -2325,7 +2367,7 @@ const buildDynamicMemoryAnswerPrompt = (
       {
         evidence: state.evidence,
         citations: state.citations,
-        retrievals: state.retrievals,
+        retrievals: state.retrievals.map(workerRetrievalDiagnostic),
         retrievalHints: state.retrievalHints,
         conversationContext: state.conversationContext,
         evaluationController: isDefaultMemoryAnswerEvaluation(state.evaluation)

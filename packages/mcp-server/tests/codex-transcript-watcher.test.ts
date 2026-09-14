@@ -1380,6 +1380,51 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(watcher.snapshot().lastErrorCode).toBe("transcript_prefix_mutated");
   });
 
+  it("backs off damaged sources while healthy transcripts keep advancing", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    const content =
+      line(sessionRecord("damaged")) + line(userRecord("original"));
+    writeFileSync(transcript, content);
+    await watcher.scanNow();
+    writeFileSync(transcript, content.replace("original", "tampered"));
+    const modified = new Date(Date.now() + 2_000);
+    utimesSync(transcript, modified, modified);
+    const lookup = vi.spyOn(client, "lookupConversationSourceArtifact");
+    await watcher.scanNow();
+    const callsAfterFailure = lookup.mock.calls.length;
+    await watcher.scanNow();
+    await watcher.scanNow();
+    expect(lookup).toHaveBeenCalledTimes(callsAfterFailure);
+    expect(watcher.snapshot().lastErrorCode).toBe("transcript_prefix_mutated");
+
+    const healthy = transcriptPath(root, "rollout-healthy.jsonl");
+    writeFileSync(
+      healthy,
+      line(sessionRecord("healthy")) + line(userRecord("new work"))
+    );
+    await watcher.scanNow();
+    expect(client.artifacts.has("healthy")).toBe(true);
+
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    try {
+      const beforeRetry = lookup.mock.calls.length;
+      writeFileSync(transcript, content);
+      // Same-size rewrites can retain the original millisecond mtime in CI.
+      const repairedAt = new Date(modified.getTime() + 2_000);
+      utimesSync(transcript, repairedAt, repairedAt);
+      await watcher.scanNow();
+      expect(lookup.mock.calls.length).toBeGreaterThan(beforeRetry);
+      expect(watcher.snapshot().lastErrorCode).toBeNull();
+    } finally {
+      now.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
   it("keeps provider durability ahead of canonical work after a crash boundary", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();

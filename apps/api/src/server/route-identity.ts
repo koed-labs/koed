@@ -535,6 +535,13 @@ export const routeIdentityContracts = [
 
   route(
     "GET",
+    "/v1/managed-conversations/access",
+    "api_token",
+    "capture",
+    "Authorize local Conversation draft and recovery access."
+  ),
+  route(
+    "GET",
     "/v1/access/check",
     "api_token",
     "capture",

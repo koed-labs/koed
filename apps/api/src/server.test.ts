@@ -6894,6 +6894,96 @@ describe("api health", () => {
     }
   });
 
+  it("keeps authenticated Conversation draft access available after background quotas are exhausted", async () => {
+    const previousKoedHome = process.env.KOED_HOME;
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-draft-quota-"));
+    process.env.KOED_HOME = koedHome;
+    const keys: string[] = [];
+    let exhaustConversations = false;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      ),
+      rateLimitStore: {
+        increment: async (key: string) => {
+          keys.push(key);
+          return {
+            count:
+              key.startsWith("memoryRead:") ||
+              key.startsWith("memoryWrite:") ||
+              (exhaustConversations &&
+                key.startsWith("managedConversationRead:"))
+                ? 1000000
+                : 1,
+            resetAt: Date.now() + 60000
+          };
+        }
+      }
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: { email: "draft-quota@example.com", password: "password123" }
+      });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api-tokens",
+        headers: browserSessionHeaders(cookieHeader(registered)),
+        payload: { name: "Desktop" }
+      });
+      const headers = {
+        authorization: `Bearer ${jsonBody<TokenResponse>(created).token}`
+      };
+      expect(
+        (await app.inject({ method: "GET", url: "/v1/access/check", headers }))
+          .statusCode
+      ).toBe(429);
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: "/v1/memory/conversation-items",
+            headers,
+            payload: {}
+          })
+        ).statusCode
+      ).toBe(429);
+      const access = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers
+      });
+      expect(access.statusCode).toBe(200);
+      expect(jsonBody<{ user: { id: string } }>(access).user.id).toBeTypeOf(
+        "string"
+      );
+      expect(
+        keys.some((key) => key.startsWith("managedConversationRead:"))
+      ).toBe(true);
+      const revoked = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers: { authorization: "Bearer invalid" }
+      });
+      expect(revoked.statusCode).toBe(401);
+      exhaustConversations = true;
+      const throttled = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers
+      });
+      expect(throttled.statusCode).toBe(429);
+      expect(throttled.headers["retry-after"]).toBeDefined();
+    } finally {
+      await app.close();
+      if (previousKoedHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousKoedHome;
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
     process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
     process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";
@@ -16581,6 +16671,12 @@ describe("account and access flows", () => {
         ],
         capabilities: {
           descriptors: {
+            managed_conversation_start: {
+              id: "managed_conversation_start",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
             local_synthesis: {
               id: "local_synthesis",
               support: "supported",
@@ -16598,6 +16694,41 @@ describe("account and access flows", () => {
       method: "GET",
       url: "/v1/memory/ai-client-instances",
       headers
+    });
+    const savedConversation = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/conversations",
+      headers,
+      payload: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "high",
+        timeout_ms: 120000,
+        max_attempts: 2
+      }
+    });
+    expect(savedConversation.statusCode).toBe(200);
+    const withConversation = await app.inject({
+      method: "GET",
+      url: "/v1/memory/local-agent-settings",
+      headers
+    });
+    expect(
+      jsonBody<{ settings: Array<{ flowKey: string; model: string }> }>(
+        withConversation
+      ).settings
+    ).toContainEqual(
+      expect.objectContaining({ flowKey: "conversations", model: "gpt-5.4" })
+    );
+    const resetConversation = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/conversations",
+      headers
+    });
+    expect(resetConversation.statusCode).toBe(200);
+    expect(resetConversation.json()).toMatchObject({
+      flow_key: "conversations",
+      reset: true
     });
     const savedMcp = await app.inject({
       method: "PUT",

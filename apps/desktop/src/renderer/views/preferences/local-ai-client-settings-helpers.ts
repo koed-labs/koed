@@ -21,6 +21,12 @@ export type Flow = {
 
 export const flows: readonly Flow[] = [
   {
+    key: "conversations",
+    label: "Conversations",
+    description:
+      "Sets the default agent, model, and reasoning effort for new Conversations in Ask and Projects."
+  },
+  {
     key: "mcp_memory_answer",
     label: "Memory Answer",
     description:
@@ -73,7 +79,11 @@ export const snapshotFor = (readModel: ReadModel, instanceId: string) =>
     (snapshot) => snapshot.instanceId === instanceId
   );
 
-export const statusFor = (readModel: ReadModel, instanceId: string) => {
+export const statusFor = (
+  readModel: ReadModel,
+  instanceId: string,
+  flowKey?: LocalAiClientFlowKey
+) => {
   const instance = readModel.instances.find(
     (candidate) => candidate.instanceId === instanceId
   );
@@ -101,11 +111,18 @@ export const statusFor = (readModel: ReadModel, instanceId: string) => {
   if (snapshot.healthState !== "healthy") {
     return { available: false, text: `health ${snapshot.healthState}` };
   }
-  if (
-    snapshot.localSynthesis.support !== "supported" ||
-    snapshot.localSynthesis.readiness !== "ready"
-  ) {
-    return { available: false, text: "local synthesis unavailable" };
+  const capability =
+    flowKey === "conversations"
+      ? snapshot.managedConversationStart
+      : snapshot.localSynthesis;
+  if (capability?.support !== "supported" || capability.readiness !== "ready") {
+    return {
+      available: false,
+      text:
+        flowKey === "conversations"
+          ? "conversation start unavailable"
+          : "local synthesis unavailable"
+    };
   }
   return { available: true, text: "ready" };
 };
@@ -115,9 +132,14 @@ export const assignmentStatusFor = (
   draft: Draft,
   selectedModel:
     | ReadModel["capabilitySnapshots"][number]["models"][number]
-    | undefined
+    | undefined,
+  flowKey?: LocalAiClientFlowKey
 ) => {
-  const instanceStatus = statusFor(readModel, draft.ai_client_instance_id);
+  const instanceStatus = statusFor(
+    readModel,
+    draft.ai_client_instance_id,
+    flowKey
+  );
   if (!instanceStatus.available) return instanceStatus;
   const instance = readModel.instances.find(
     (candidate) => candidate.instanceId === draft.ai_client_instance_id

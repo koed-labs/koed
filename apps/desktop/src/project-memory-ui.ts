@@ -1,3 +1,4 @@
+import { localPathDescendant, normalizedLocalPath } from "./local-path.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 
 export type DesktopThreadGroup = {
@@ -33,6 +34,7 @@ export type DesktopProjectMetadata = {
   lastSeenAt: string;
   localProjectId: string;
   displayName: string;
+  contextKind?: "project" | "independent";
   path: {
     cwd: string;
     projectRoot: string | null;
@@ -48,6 +50,7 @@ export type DesktopProjectMetadata = {
 
 export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
   threads: PersonalDesktopProjectThread[];
+  contextKind?: "project" | "independent";
   catalogued: boolean;
   discoveredAt: string | null;
   lastSeenAt: string | null;
@@ -96,10 +99,7 @@ export const repoUrlFromRemoteDisplay = (remoteDisplay: string): string =>
 export const repoLabelFromRemoteDisplay = (remoteDisplay: string): string =>
   repositoryPresentationFromRemoteDisplay(remoteDisplay).label;
 
-const normalizedPath = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim().replace(/\/+$/, "");
-  return trimmed || null;
-};
+const normalizedPath = normalizedLocalPath;
 
 const metadataPaths = (project: DesktopProjectMetadata): string[] =>
   [project.path.projectRoot, project.path.cwd]
@@ -109,13 +109,11 @@ const metadataPaths = (project: DesktopProjectMetadata): string[] =>
 export const projectLatestAt = (
   project: Pick<DesktopProject, "threads" | "lastSeenAt">
 ): string | null => {
-  const timestamps = [
-    project.lastSeenAt,
-    ...project.threads.map((thread) => thread.latestAt)
-  ]
+  const timestamps = project.threads
+    .map((thread) => thread.latestAt)
     .filter((value): value is string => Boolean(value))
     .filter((value) => Number.isFinite(Date.parse(value)))
-    .sort();
+    .sort((left, right) => Date.parse(left) - Date.parse(right));
   return timestamps.at(-1) ?? null;
 };
 
@@ -150,8 +148,8 @@ export const reconcileSelectedProjectId = (
 export const sortProjects = (projects: DesktopProject[]): DesktopProject[] =>
   [...projects].sort((left, right) => {
     const activityDelta =
-      Date.parse(projectLatestAt(right) ?? "0") -
-      Date.parse(projectLatestAt(left) ?? "0");
+      (Date.parse(projectLatestAt(right) ?? "") || 0) -
+      (Date.parse(projectLatestAt(left) ?? "") || 0);
     return activityDelta || left.name.localeCompare(right.name);
   });
 
@@ -161,7 +159,12 @@ const enrichProject = (
 ): DesktopProject => ({
   ...project,
   threads: project.threads as PersonalDesktopProjectThread[],
-  name: metadata?.displayName || project.name,
+  name:
+    metadata?.contextKind === "independent"
+      ? "Chats"
+      : metadata?.displayName || project.name,
+  contextKind:
+    metadata?.contextKind === "independent" ? "independent" : "project",
   path:
     project.path ?? metadata?.path.projectRoot ?? metadata?.path.cwd ?? null,
   catalogued: Boolean(metadata),
@@ -216,6 +219,50 @@ export const mergeProjectSources = (
   graphProjects: DesktopProjectGroup[],
   metadataProjects: DesktopProjectMetadata[]
 ): DesktopProject[] => {
+  // A standalone Conversation has a private runtime directory, but belongs
+  // to the stable Chats Project. Discovery can catalogue both directories.
+  const chatsRoots = metadataProjects.filter(
+    (metadata) => metadata.contextKind === "independent"
+  );
+  const chatsMetadataForPath = (path: string | null) => {
+    const normalized = normalizedPath(path);
+    return chatsRoots.find((metadata) => {
+      const root = normalizedPath(
+        metadata.path.projectRoot ?? metadata.path.cwd
+      )!;
+      const runtimeRoot = `${root}/../../managed-conversations/independent`;
+      const suffix = localPathDescendant(runtimeRoot, normalized) ?? "";
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        suffix
+      );
+    });
+  };
+  const metadataById = new Map(
+    metadataProjects.map((metadata) => [metadata.localProjectId, metadata])
+  );
+  graphProjects = graphProjects.map((project) => {
+    const metadata = metadataById.get(project.id);
+    const canonical = metadata
+      ? (chatsMetadataForPath(metadata.path.projectRoot ?? metadata.path.cwd) ??
+        metadata)
+      : chatsMetadataForPath(project.path);
+    return canonical
+      ? {
+          ...project,
+          id: canonical.localProjectId,
+          path:
+            normalizedPath(project.path) ===
+            normalizedPath(canonical.path.projectRoot ?? canonical.path.cwd)
+              ? project.path
+              : (canonical.path.projectRoot ?? canonical.path.cwd),
+          name: canonical.displayName
+        }
+      : project;
+  });
+  metadataProjects = metadataProjects.filter(
+    (metadata) =>
+      !chatsMetadataForPath(metadata.path.projectRoot ?? metadata.path.cwd)
+  );
   const metadataByPath = new Map<string, DesktopProjectMetadata>();
   for (const project of metadataProjects) {
     for (const path of metadataPaths(project))

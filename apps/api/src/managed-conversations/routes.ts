@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { readFile, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
   DeviceCredentialAuthContext,
@@ -56,6 +56,7 @@ const idempotencyKeySchema = z
 const startSchema = z
   .object({
     projectId: z.string().trim().min(1).max(2_048),
+    contextKind: z.enum(["project", "independent"]).default("project"),
     provider: z.enum(["codex", "claude", "pi"]),
     aiClientInstanceId: z
       .string()
@@ -1418,6 +1419,16 @@ export const registerManagedConversationRoutes = (
   };
 
   app.get(
+    "/v1/managed-conversations/access",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await context.auth.authenticateApiToken(request);
+      return { user: { id: user.id } };
+    }
+  );
+
+  app.get(
     "/v1/managed-conversations/launch-options",
     { preHandler: managedConversationReadRateLimit },
     async (request) => {
@@ -1703,6 +1714,32 @@ export const registerManagedConversationRoutes = (
           { statusCode: 409 }
         );
       }
+      const bindExecution = async (execution: {
+        id: string;
+        executionGeneration: number;
+      }) => {
+        let executionProjectPath = projectPath;
+        if (input.contextKind === "independent" && localExecution) {
+          executionProjectPath = resolve(
+            context.config.koedHome,
+            "managed-conversations",
+            "independent",
+            execution.id
+          );
+          await mkdir(executionProjectPath, { mode: 0o700, recursive: true });
+        }
+        if (!executionProjectPath) return;
+        await repository.upsertManagedConversationRuntimeBinding(
+          { userId: user.id },
+          {
+            executionId: execution.id,
+            deploymentId: runner.deploymentId,
+            deviceId: runner.deviceId,
+            executionGeneration: execution.executionGeneration,
+            projectPath: executionProjectPath
+          }
+        );
+      };
       const proxied = await proxyManaged("POST", "/v1/managed-conversations", {
         ...input,
         deferUntilRuntimeBinding: true
@@ -1731,16 +1768,7 @@ export const registerManagedConversationRoutes = (
             { statusCode: 502 }
           );
         }
-        await repository.upsertManagedConversationRuntimeBinding(
-          { userId: user.id },
-          {
-            executionId: parsed.data.execution.id,
-            deploymentId: runner.deploymentId,
-            deviceId: runner.deviceId,
-            executionGeneration: parsed.data.execution.executionGeneration,
-            projectPath
-          }
-        );
+        await bindExecution(parsed.data.execution);
         return reply
           .status(proxied.status)
           .send(await localizeExecutions(user.id, parsed.data));
@@ -1749,6 +1777,7 @@ export const registerManagedConversationRoutes = (
         { userId: user.id },
         {
           projectId: input.projectId,
+          contextKind: input.contextKind,
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,
@@ -1761,18 +1790,7 @@ export const registerManagedConversationRoutes = (
           deferUntilRuntimeBinding: true
         }
       );
-      if (projectPath) {
-        await repository.upsertManagedConversationRuntimeBinding(
-          { userId: user.id },
-          {
-            executionId: created.execution.id,
-            deploymentId: runner.deploymentId,
-            deviceId: runner.deviceId,
-            executionGeneration: created.execution.executionGeneration,
-            projectPath
-          }
-        );
-      }
+      await bindExecution(created.execution);
       return reply.status(202).send({
         execution: await publicExecutionFor(user.id, created.execution),
         command: {

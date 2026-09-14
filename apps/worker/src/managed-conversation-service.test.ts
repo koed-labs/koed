@@ -1601,6 +1601,16 @@ describe("Managed Conversation failure codes", () => {
     ).toBe("ManagedConversationPrimarySourceError");
   });
 
+  it("preserves the provider authentication code through worker failure handling", () => {
+    expect(
+      managedConversationFailureCode(
+        Object.assign(new Error("private provider diagnostic"), {
+          name: "ManagedConversationAuthenticationError"
+        })
+      )
+    ).toBe("ManagedConversationAuthenticationError");
+  });
+
   it("does not expose arbitrary exception names or messages", () => {
     expect(
       managedConversationFailureCode(new Error("database password leaked"))
@@ -1627,6 +1637,17 @@ describe("Managed Conversation failure codes", () => {
         })
       )
     ).toBe("ManagedConversationSourceReleaseError");
+  });
+
+  it("retains API failure status without exposing private response details", () => {
+    expect(
+      managedConversationFailureCode(
+        new MemoryApiError("private response", {
+          status: 429,
+          payload: { error: "private response" }
+        })
+      )
+    ).toBe("ManagedConversationMemoryApi429Error");
   });
 
   it("normalizes Codex runtime failures without exposing their details", () => {

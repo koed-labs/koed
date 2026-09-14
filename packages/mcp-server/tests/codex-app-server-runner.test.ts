@@ -15,6 +15,7 @@ import {
   runCodexAppServerTurn
 } from "../src/codex-app-server-runner.js";
 import {
+  aiClientDriverFor,
   parseCodexVersion,
   probeCodexVersion
 } from "../src/ai-client-runner.js";
@@ -393,6 +394,64 @@ describe("Codex app-server runner", () => {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }
   });
+
+  it.each([true, false])(
+    "discovers current models without requiring a legacy model, authenticated=%s",
+    async (authenticated) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-discovery-models-")
+      );
+      try {
+        const home = path.join(directory, "home");
+        fs.mkdirSync(home);
+        const binary = writeFakeAppServer(directory, {
+          modelPages: [
+            {
+              response: {
+                data: [
+                  {
+                    id: "gpt-5.6-luna",
+                    model: "gpt-5.6-luna",
+                    displayName: "Luna",
+                    hidden: false,
+                    isDefault: true,
+                    supportedReasoningEfforts: []
+                  }
+                ]
+              }
+            }
+          ],
+          accountResponse: {
+            account: authenticated ? { type: "chatgpt" } : null,
+            requiresOpenaiAuth: true
+          }
+        });
+        const result = await aiClientDriverFor("codex").discover({
+          instanceId: "codex.default",
+          executablePath: binary,
+          cwd: directory,
+          environment: {
+            ...process.env,
+            CODEX_HOME: home,
+            MEMORY_CODEX_MODEL: "retired-model"
+          }
+        });
+        expect(result.models.map((model) => model.id)).toEqual([
+          "gpt-5.6-luna"
+        ]);
+        expect(result.authenticationState).toBe(
+          authenticated ? "authenticated" : "unauthenticated"
+        );
+        expect(
+          result.capabilities.find(
+            (capability) => capability.id === "local_synthesis"
+          )?.readiness
+        ).toBe(authenticated ? "ready" : "not_ready");
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("inspects models and authentication without exposing account details", async () => {
     const tempDirectory = fs.mkdtempSync(

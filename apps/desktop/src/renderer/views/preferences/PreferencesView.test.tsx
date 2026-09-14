@@ -421,6 +421,7 @@ describe("PreferencesView", () => {
           capabilitySnapshots: [],
           settings: [],
           defaults: {
+            conversations: emptyDefault,
             mcp_memory_answer: emptyDefault,
             lcm_summary: emptyDefault,
             session_title: emptyDefault,
@@ -1099,6 +1100,23 @@ describe("PreferencesView", () => {
     );
   });
 
+  it("shows the Privacy Filter fault counted by the health indicator", async () => {
+    const status = advancedStatus({
+      privacyService: {
+        state: "starting",
+        message: "Privacy Filter is loading."
+      }
+    });
+    window.koedDesktop = { invoke: vi.fn(async () => status) } as DesktopApi;
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("1/13 services need attention")
+    );
+    expect(container.textContent).toContain("Privacy Filter Service");
+    expect(container.textContent).toContain("Privacy Filter is loading.");
+    expect(container.textContent).not.toContain("All services are healthy");
+  });
+
   it("counts unhealthy services and only shows detail for their rows", async () => {
     const status = advancedStatus({
       serverPackage: {
@@ -1119,7 +1137,7 @@ describe("PreferencesView", () => {
 
     await renderPreferences({ initialSection: "advanced" });
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("1/9 services need attention")
+      expect(container.textContent).toContain("1/13 services need attention")
     );
     expect(
       container.querySelector(

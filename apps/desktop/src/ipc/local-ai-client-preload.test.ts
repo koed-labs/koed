@@ -7,6 +7,19 @@ const readModel = {
   capabilitySnapshots: [],
   settings: [],
   defaults: {
+    conversations: {
+      source: "code",
+      available: true,
+      assignment: {
+        provider: "codex",
+        ai_client_instance_id: "codex.default",
+        model: "gpt-5.6-luna",
+        reasoning_effort: "low",
+        timeout_ms: 120000,
+        max_attempts: 2
+      },
+      reason: null
+    },
     mcp_memory_answer: {
       source: "code",
       available: true,

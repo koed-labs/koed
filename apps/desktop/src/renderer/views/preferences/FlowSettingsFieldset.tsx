@@ -172,7 +172,7 @@ const buildFlowViewModel = (
     instance,
     models,
     selectedModel,
-    status: assignmentStatusFor(readModel, draft, selectedModel),
+    status: assignmentStatusFor(readModel, draft, selectedModel, flow.key),
     instanceOptions: filteredInstances(readModel, search, instance),
     modelOptions: filteredModels(models, search, draft.model),
     efforts: selectedModel?.reasoningEfforts ?? [],
@@ -260,7 +260,7 @@ const InstanceSelect = ({
       ) : null}
       {options.map((candidate) => (
         <option key={candidate.instanceId} value={candidate.instanceId}>
-          {instanceOptionLabel(readModel, candidate)}
+          {instanceOptionLabel(readModel, candidate, flow.key)}
         </option>
       ))}
     </select>
@@ -445,9 +445,10 @@ const filteredInstances = (
 
 const instanceOptionLabel = (
   readModel: ReadModel,
-  instance: ReadModel["instances"][number]
+  instance: ReadModel["instances"][number],
+  flowKey: LocalAiClientFlowKey
 ): string => {
-  const status = statusFor(readModel, instance.instanceId);
+  const status = statusFor(readModel, instance.instanceId, flowKey);
   return status.available
     ? instance.displayName
     : `${instance.displayName} — ${capitalizeOptionLabel(status.text)}`;

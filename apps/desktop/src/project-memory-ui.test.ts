@@ -13,6 +13,7 @@ import {
   repoUrlFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId,
+  sortProjects,
   type DesktopProjectGroup,
   type DesktopProjectMetadata
 } from "./project-memory-ui.js";
@@ -64,6 +65,98 @@ const graphProject = (
 });
 
 describe("repoUrlFromRemoteDisplay", () => {
+  it("presents standalone conversations as one Chats project while preserving their identity", () => {
+    const standaloneMetadata = metadata({
+      displayName: "Independent",
+      contextKind: "independent",
+      localProjectId: "lp_chats",
+      path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
+    });
+    const standalone = graphProject({
+      id: "lp_chats",
+      name: "Independent",
+      path: standaloneMetadata.path.cwd
+    });
+    const projects = mergeProjectSources([standalone], [standaloneMetadata]);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: "lp_chats",
+      name: "Chats",
+      contextKind: "independent",
+      threads: standalone.threads
+    });
+  });
+
+  it("keeps Chats identity when capture reports a private runtime directory", () => {
+    const root = metadata({
+      localProjectId: "lp_chats",
+      displayName: "Independent",
+      contextKind: "independent",
+      path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
+    });
+    const runtimePath =
+      "/tmp/koed/managed-conversations/independent/6749259b-8f10-4b53-92d8-66e7f87a8663";
+    const captured = graphProject({
+      id: "lp_chats",
+      name: "6749259b-8f10-4b53-92d8-66e7f87a8663",
+      path: runtimePath
+    });
+    const runtimeMetadata = metadata({
+      localProjectId: "lp_runtime",
+      displayName: captured.name,
+      path: { cwd: runtimePath, projectRoot: null }
+    });
+    const projects = mergeProjectSources([captured], [root, runtimeMetadata]);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: "lp_chats",
+      name: "Chats",
+      contextKind: "independent",
+      path: root.path.cwd,
+      threads: captured.threads
+    });
+    expect(projectIdForSession(projects, "session-1")).toBe("lp_chats");
+  });
+
+  it.each([
+    "/tmp/koed",
+    "C:\\Users\\Operator\\koed",
+    "\\\\server\\share\\koed"
+  ])(
+    "merges legacy standalone runtime Projects into Chats under %s",
+    (home) => {
+      const root = metadata({
+        localProjectId: "lp_chats",
+        displayName: "Independent",
+        contextKind: "independent",
+        path: { cwd: `${home}/projects/Independent`, projectRoot: null }
+      });
+      const path = `${home}/managed-conversations/independent/6749259b-8f10-4b53-92d8-66e7f87a8663`;
+      const captured = graphProject({ id: "lp_runtime", path });
+      const projects = mergeProjectSources([captured], [root]);
+      expect(projects).toHaveLength(1);
+      expect(projects[0]?.threads).toEqual(captured.threads);
+      expect(projects[0]?.id).toBe("lp_chats");
+    }
+  );
+
+  it("keeps user Projects named Independent, including lookalike paths, available as Projects", () => {
+    const ordinary = metadata({
+      displayName: "Independent",
+      path: { cwd: "/work/projects/Independent", projectRoot: null }
+    });
+    expect(mergeProjectSources([], [ordinary])[0]).toMatchObject({
+      name: "Independent",
+      contextKind: "project"
+    });
+    expect(
+      mergeProjectSources([graphProject({ name: "Independent" })], [])[0]
+    ).toMatchObject({
+      name: "Independent",
+      contextKind: "project"
+    });
+  });
+
   it("prefixes a normalized remote display with https://", () => {
     expect(repoUrlFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
       "https://github.com/koed-labs/koed"
@@ -194,11 +287,11 @@ describe("project memory UI view model", () => {
     });
   });
 
-  it("uses the newest catalogue or session activity for active state", () => {
+  it("uses conversation activity rather than catalogue refresh time for active state", () => {
     const project = mergeProjectSources([graphProject()], [metadata()])[0]!;
     const now = Date.parse("2026-07-10T12:00:00.000Z");
 
-    expect(projectLatestAt(project)).toBe("2026-07-09T12:00:00.000Z");
+    expect(projectLatestAt(project)).toBe("2026-07-08T10:00:00.000Z");
     expect(projectIsActive(project, now)).toBe(true);
     expect(
       projectIsActive(
@@ -206,6 +299,39 @@ describe("project memory UI view model", () => {
         now
       )
     ).toBe(false);
+  });
+
+  it("orders Projects by conversations even when an older Project was just rediscovered", () => {
+    const base = mergeProjectSources([graphProject()], [metadata()])[0]!;
+    const old = {
+      ...base,
+      id: "old",
+      lastSeenAt: "2026-09-10T09:00:00Z",
+      threads: [{ ...base.threads[0]!, latestAt: "2026-09-03T09:00:00Z" }]
+    };
+    const recent = {
+      ...base,
+      id: "recent",
+      lastSeenAt: "2026-09-01T09:00:00Z",
+      threads: [{ ...base.threads[0]!, latestAt: "2026-09-10T08:00:00Z" }]
+    };
+    const empty = {
+      ...base,
+      id: "empty",
+      lastSeenAt: "2026-09-10T09:00:00Z",
+      threads: []
+    };
+    expect(
+      sortProjects([old, empty, recent]).map((project) => project.id)
+    ).toEqual(["recent", "old", "empty"]);
+    expect(
+      relativeTime(projectLatestAt(old), Date.parse("2026-09-10T09:00:00Z"))
+    ).toBe("7d ago");
+    expect(projectIsActive(old, Date.parse("2026-10-10T09:00:00Z"))).toBe(
+      false
+    );
+    expect(projectLatestAt(empty)).toBeNull();
+    expect(projectIsActive(empty)).toBe(false);
   });
 
   it("formats activity and prefers a captured session id", () => {

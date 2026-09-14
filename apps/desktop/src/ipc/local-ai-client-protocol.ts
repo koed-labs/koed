@@ -4,6 +4,7 @@ import { supportedAiClientDriverIds } from "@koed/shared/ai-client-contract";
 export const localAiClientCommandChannel = "koed:local-ai-client:command";
 
 export const localAiClientFlowKeys = [
+  "conversations",
   "mcp_memory_answer",
   "lcm_summary",
   "session_title",

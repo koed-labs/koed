@@ -28,9 +28,8 @@ import {
   runPiRpcTask
 } from "./pi-rpc-runner.js";
 import {
-  checkCodexAppServerAvailability,
+  inspectCodexAppServer,
   koedAiClientWorkerDeveloperInstructions,
-  listCodexAppServerModels,
   resolveCodexAppServerBinary,
   runCodexAppServerJsonTask,
   type CodexAppServerModelOption,
@@ -1067,12 +1066,12 @@ const codexDriver: AiClientDriver = {
       const executablePath =
         input.executablePath ?? resolveCodexAppServerBinary(input.environment);
       const cwd = input.cwd ?? process.cwd();
-      const model = input.environment.MEMORY_CODEX_MODEL ?? "gpt-5.4-mini";
+      const model = input.environment.MEMORY_CODEX_MODEL ?? "gpt-5.6-luna";
       const clientVersion = await probeCodexVersion(
         executablePath,
         input.environment
       );
-      const models = await listCodexAppServerModels(
+      const { models, authenticationState } = await inspectCodexAppServer(
         {
           appServerBinary: executablePath,
           model,
@@ -1101,31 +1100,16 @@ const codexDriver: AiClientDriver = {
           new Error("Codex reported no models")
         );
       }
-      const availability = await checkCodexAppServerAvailability(
-        {
-          appServerBinary: executablePath,
-          model,
-          cwd,
-          env: input.environment,
-          clientName: "koed-capability-check"
-        },
-        10_000
-      );
-      if (!availability.available) {
-        return aiClientDiscoveryError(
-          { ...input, executablePath },
-          "codex",
-          new Error(availability.error ?? "Codex is unavailable"),
-          normalized
-        );
-      }
       return {
         installationIdentityHash: installationIdentityHash(executablePath),
         clientVersion,
-        authenticationState: "authenticated",
+        authenticationState,
         healthState: "healthy",
         models: normalized,
-        capabilities: capabilitiesFor("codex", true),
+        capabilities: capabilitiesFor(
+          "codex",
+          authenticationState === "authenticated"
+        ),
         diagnostics: []
       };
     } catch (error) {
