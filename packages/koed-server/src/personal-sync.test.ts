@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,8 +64,13 @@ const controlEnv = (fd: number) => ({
   PDS_BROWSER_SESSION_FD: String(fd)
 });
 
-const testKey = (kind: "ed25519" | "x25519") => {
-  const pair = generateKeyPairSync(kind);
+const testKey = (
+  kind: "ed25519" | "x25519"
+): { publicKey: string; privateSeed: string; privateKey: KeyObject } => {
+  const pair =
+    kind === "ed25519"
+      ? generateKeyPairSync("ed25519")
+      : generateKeyPairSync("x25519");
   const publicJwk = pair.publicKey.export({ format: "jwk" }) as JsonWebKey;
   const privateJwk = pair.privateKey.export({ format: "jwk" }) as JsonWebKey;
   return {

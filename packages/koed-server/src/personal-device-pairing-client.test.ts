@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { storeDesktopLocalCredential } from "@koed/shared";
+import type { PersonalSyncResult } from "./personal-sync.js";
 import { redeemPersonalDevicePairing } from "./personal-device-pairing-client.js";
 
 const protocol = "koed/pds-lan-pair/v1" as const;
@@ -109,27 +110,31 @@ const harness = (completionFailure?: CompletionFailure) => {
     control_url: `${invitationOrigin}${controlPath}`,
     relay_url: `${invitationOrigin}/pds`
   };
-  const runPersonalSync = vi.fn(async (args: string[]) => {
-    runCalls.push(args);
-    if (args[1] === "request") {
-      return {
-        ok: true,
-        state: "pending",
-        request: { signed: true },
-        pairing: { challengeId: invitation.challenge_id }
-      };
+  const runPersonalSync = vi.fn(
+    async (args: string[]): Promise<PersonalSyncResult> => {
+      runCalls.push(args);
+      if (args[1] === "request") {
+        return {
+          ok: true,
+          state: "pending",
+          message: "",
+          request: { signed: true },
+          pairing: { challengeId: invitation.challenge_id }
+        };
+      }
+      if (args[1] === "complete") {
+        return {
+          ok: true,
+          state: "completed",
+          message: "",
+          localGroupReconciliation: { group_id: "group-1" }
+        };
+      }
+      return { ok: true, state: "bound", message: "" };
     }
-    if (args[1] === "complete") {
-      return {
-        ok: true,
-        state: "completed",
-        localGroupReconciliation: { group_id: "group-1" }
-      };
-    }
-    return { ok: true, state: "bound" };
-  });
+  );
 
-  const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+  const fetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.origin === localOrigin) {
       localCalls.push(url.pathname);
