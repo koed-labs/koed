@@ -91,6 +91,14 @@ const memoryPersistence = () => {
   };
 };
 
+// Pairing tests restart HTTP servers on same port. Close each fixture
+// connection so undici cannot reuse a socket owned by a stopped server.
+const fixtureFetch = (input: string | URL, init?: RequestInit) => {
+  const headers = new Headers(init?.headers);
+  headers.set("connection", "close");
+  return fetch(input, { ...init, headers });
+};
+
 const exchange = async (
   url: string,
   payload: Record<string, unknown>,
@@ -106,7 +114,7 @@ const exchange = async (
       token,
       direction: "request"
     });
-  const response = await fetch(
+  const response = await fixtureFetch(
     `${parsed.origin}/v1/pair/${invitationId}/exchange`,
     {
       method: "POST",
@@ -163,7 +171,7 @@ describe("Personal Device LAN pairing server", () => {
       const origin = new URL(view.url).origin;
       expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/);
       expect(server.relayUrl).toBe(`${origin}/pds`);
-      expect(await fetch(`${origin}/pair/${view.id}`)).toMatchObject({
+      expect(await fixtureFetch(`${origin}/pair/${view.id}`)).toMatchObject({
         status: 200
       });
     } finally {
@@ -181,7 +189,7 @@ describe("Personal Device LAN pairing server", () => {
     try {
       const pairing = server.createInvitation(baseInvitation());
       const parsed = new URL(pairing.url);
-      const landing = await fetch(`${parsed.origin}${parsed.pathname}`);
+      const landing = await fixtureFetch(`${parsed.origin}${parsed.pathname}`);
       const html = await landing.text();
       expect(landing.status).toBe(200);
       expect(html).not.toContain(parsed.hash.slice("#token=".length));
@@ -223,11 +231,14 @@ describe("Personal Device LAN pairing server", () => {
         }
       );
       expect(
-        await fetch(`${parsed.origin}/v1/pair/${invitationId}/exchange`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(wrong)
-        })
+        await fixtureFetch(
+          `${parsed.origin}/v1/pair/${invitationId}/exchange`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(wrong)
+          }
+        )
       ).toMatchObject({ status: 400 });
 
       const first = await exchange(pairing.url, { operation: "invitation" });
@@ -238,14 +249,17 @@ describe("Personal Device LAN pairing server", () => {
       );
       expect(replay.response.status).toBe(409);
       expect(
-        await fetch(`${parsed.origin}/v1/users`, { method: "GET" })
+        await fixtureFetch(`${parsed.origin}/v1/users`, { method: "GET" })
       ).toMatchObject({ status: 404 });
       expect(
-        await fetch(`${parsed.origin}/v1/pair/${invitationId}/exchange`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: "x".repeat(257 * 1_024)
-        })
+        await fixtureFetch(
+          `${parsed.origin}/v1/pair/${invitationId}/exchange`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "x".repeat(257 * 1_024)
+          }
+        )
       ).toMatchObject({ status: 400 });
     } finally {
       await server.close();
@@ -538,7 +552,7 @@ describe("Personal Device LAN pairing server", () => {
         }
       );
       const controller = new AbortController();
-      const submitted = fetch(
+      const submitted = fixtureFetch(
         `${parsed.origin}/v1/pair/${invitationId}/exchange`,
         {
           method: "POST",
@@ -1022,7 +1036,7 @@ describe("Personal Device LAN pairing server", () => {
       forwardControl
     });
     try {
-      const response = await fetch(
+      const response = await fixtureFetch(
         `http://127.0.0.1:${server.port}/pds/v1/personal-device-sync/relay/packages/package-1`,
         {
           method: "PUT",
@@ -1071,7 +1085,7 @@ describe("Personal Device LAN pairing server", () => {
       addresses: () => ["127.0.0.1"],
       forwardControl
     });
-    const held = fetch(
+    const held = fixtureFetch(
       `http://127.0.0.1:${server.port}/pds/v1/personal-device-sync/relay/wake`,
       {
         headers: {
