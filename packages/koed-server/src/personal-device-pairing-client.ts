@@ -7,6 +7,7 @@ import {
   randomUUID
 } from "node:crypto";
 import {
+  isLoopbackHostname,
   readDesktopLocalCredentialAuthorization,
   isPrivateNetworkIpv4Address
 } from "@koed/shared";
@@ -21,6 +22,17 @@ const isPersonalDevicePairingUuid = (value: unknown): value is string =>
 export const PERSONAL_DEVICE_PAIRING_PROTOCOL = "koed/pds-lan-pair/v1";
 const MAX_PLAINTEXT_BYTES = 256 * 1_024;
 const MAX_RESPONSE_BYTES = 1_048_576;
+const COMPLETION_ATTEMPTS = 3;
+
+class AmbiguousTransportFailure extends Error {
+  readonly originalError: unknown;
+
+  constructor(originalError: unknown) {
+    super("Pairing exchange transport failed.");
+    this.name = "AmbiguousTransportFailure";
+    this.originalError = originalError;
+  }
+}
 
 export type PersonalDevicePairingInvitation = {
   protocol: typeof PERSONAL_DEVICE_PAIRING_PROTOCOL;
@@ -256,22 +268,136 @@ const parseLink = (
   };
 };
 
+export const parseLoopbackOrigin = (value: unknown): string => {
+  if (typeof value !== "string" || value.length > 2_048) {
+    throw new Error("Local control URL must be an exact loopback origin.");
+  }
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error("Local control URL must be an exact loopback origin.");
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    !isLoopbackHostname(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("Local control URL must be an exact loopback origin.");
+  }
+  return url.origin;
+};
+
+const readBoundedResponseText = async (
+  response: Response,
+  classifyAmbiguousTransportFailure = false
+): Promise<string> => {
+  const rawContentLength = response.headers.get("content-length");
+  let declaredLength: number | undefined;
+  if (rawContentLength !== null) {
+    const contentLength = rawContentLength.trim();
+    if (!/^\d+$/.test(contentLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Pairing response is invalid.");
+    }
+    declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Pairing response is invalid.");
+    }
+    if (declaredLength > MAX_RESPONSE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Pairing response exceeds maximum size.");
+    }
+  }
+  if (!response.body) {
+    if (classifyAmbiguousTransportFailure && declaredLength !== 0) {
+      throw new AmbiguousTransportFailure(
+        new Error("Pairing response body was dropped.")
+      );
+    }
+    return "";
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let overflow = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (next.value.byteLength > MAX_RESPONSE_BYTES - bytes) {
+        overflow = true;
+        await reader.cancel().catch(() => undefined);
+        throw new Error("Pairing response exceeds maximum size.");
+      }
+      bytes += next.value.byteLength;
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (!overflow) await reader.cancel().catch(() => undefined);
+    if (overflow || !classifyAmbiguousTransportFailure) throw error;
+    throw new AmbiguousTransportFailure(error);
+  } finally {
+    reader.releaseLock();
+  }
+  if (declaredLength !== undefined && bytes !== declaredLength) {
+    if (bytes < declaredLength && classifyAmbiguousTransportFailure) {
+      throw new AmbiguousTransportFailure(
+        new Error("Pairing response body was truncated.")
+      );
+    }
+    throw new Error("Pairing response is invalid.");
+  }
+  if (
+    bytes === 0 &&
+    classifyAmbiguousTransportFailure &&
+    declaredLength !== 0
+  ) {
+    throw new AmbiguousTransportFailure(
+      new Error("Pairing response body was dropped.")
+    );
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
+};
+
+const isTruncatedJson = (text: string, error: unknown): boolean => {
+  const trimmed = text.trim();
+  if (
+    !(error instanceof SyntaxError) ||
+    (!trimmed.startsWith("{") && !trimmed.startsWith("["))
+  ) {
+    return false;
+  }
+  if (/unexpected end|unterminated string/i.test(error.message)) return true;
+  const position = /position (\d+)/i.exec(error.message)?.[1];
+  return position !== undefined && Number(position) >= text.length;
+};
+
 const responseJson = async (
-  response: Response
+  response: Response,
+  classifyAmbiguousTransportFailure = false
 ): Promise<Record<string, unknown>> => {
-  const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
-    throw new Error("Pairing response exceeds maximum size.");
-  }
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
-    throw new Error("Pairing response exceeds maximum size.");
-  }
+  const text = await readBoundedResponseText(
+    response,
+    classifyAmbiguousTransportFailure && response.ok
+  );
   let value: unknown;
   try {
     value = JSON.parse(text);
-  } catch {
-    throw new Error("Pairing response is invalid.");
+  } catch (error) {
+    if (
+      classifyAmbiguousTransportFailure &&
+      response.ok &&
+      isTruncatedJson(text, error)
+    ) {
+      throw new AmbiguousTransportFailure(error);
+    }
+    throw new Error("Pairing response is invalid.", { cause: error });
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Pairing response is invalid.");
@@ -302,31 +428,41 @@ export const redeemPersonalDevicePairing = async (options: {
 
   const exchange = async (
     payload: Record<string, unknown>,
-    timeoutMs = 10_000
+    timeoutMs = 10_000,
+    classifyTransportFailure = false
   ): Promise<Record<string, unknown>> => {
     const encrypted = encrypt(payload, {
       invitationId,
       token,
       direction: "request"
     });
-    const response = await fetcher(
-      new URL(`/v1/pair/${invitationId}/exchange`, invitationUrl.origin),
+    let response: Response;
+    try {
+      response = await fetcher(
+        new URL(`/v1/pair/${invitationId}/exchange`, invitationUrl.origin),
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify(encrypted),
+          redirect: "error",
+          signal: AbortSignal.timeout(timeoutMs)
+        }
+      );
+    } catch (error) {
+      if (classifyTransportFailure) throw new AmbiguousTransportFailure(error);
+      throw error;
+    }
+    const decrypted = decrypt(
+      await responseJson(response, classifyTransportFailure),
       {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(encrypted),
-        redirect: "error",
-        signal: AbortSignal.timeout(timeoutMs)
+        invitationId,
+        token,
+        direction: "response"
       }
     );
-    const decrypted = decrypt(await responseJson(response), {
-      invitationId,
-      token,
-      direction: "response"
-    });
     if (decrypted.messageId !== encrypted.message_id) {
       throw new Error("Pairing response binding is invalid.");
     }
@@ -506,7 +642,8 @@ export const redeemPersonalDevicePairing = async (options: {
     );
   }
   const localRequest = async (path: string, body?: Record<string, unknown>) => {
-    const response = await fetcher(`${options.localControlUrl}${path}`, {
+    const localOrigin = parseLoopbackOrigin(options.localControlUrl);
+    const response = await fetcher(new URL(path, `${localOrigin}/`), {
       method: "POST",
       headers: {
         accept: "application/json",
@@ -550,8 +687,17 @@ export const redeemPersonalDevicePairing = async (options: {
       fetch: controlFetch
     }
   );
-  const completion = await exchange({ operation: "complete" });
-  if (completion.completed !== true) {
+  let completion: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < COMPLETION_ATTEMPTS; attempt += 1) {
+    try {
+      completion = await exchange({ operation: "complete" }, 10_000, true);
+      break;
+    } catch (error) {
+      if (!(error instanceof AmbiguousTransportFailure)) throw error;
+      if (attempt === COMPLETION_ATTEMPTS - 1) throw error.originalError;
+    }
+  }
+  if (!completion || completion.completed !== true) {
     throw new Error("Pairing invitation was not closed after enrollment.");
   }
   const publicResult = { ...completed };

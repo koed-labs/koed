@@ -1,7 +1,7 @@
 # Handoff: Capability-Based Personal Device Pairing
 
-Status: Capability pairing implementation and package validation present;
-live validation pending on `docs/pds-secret-storage-handoff`.
+Status: Pairing hardening implementation and static/unit validation present;
+DB-backed and Studio live validation pending.
 
 Parent handoff: `docs/handoffs/unify-pds-secret-storage.md`.
 
@@ -30,9 +30,13 @@ enrollment without a second approval step.
 - Retain the opaque invitation token, internal `challenge_id`, signed device
   request, encrypted exchange, expiry, single-use enforcement, replay
   protection, and device revocation.
-- Do not put invitation links in logs, analytics, shell history, process
-  arguments, or ordinary persistent files. SSH users should use stdin or an
-  inherited file descriptor.
+- Do not put invitation links in logs, analytics, shell history, or ordinary
+  persistent files. CLI/SSH users must use stdin or an inherited file
+  descriptor, never a link argument. Desktop paste or QR scan is preferred;
+  OS `koed-pair://` activation is supported but can expose the URL through
+  platform launch plumbing: macOS normally uses Electron's `open-url` event,
+  while Windows/Linux may provide it in argv. Koed must not log or persist that
+  URL.
 - Keep low-level Authority approval operations available for recovery or
   administrative diagnostics if needed, but remove them from the ordinary
   Personal Device pairing path.
@@ -84,14 +88,31 @@ Capability pairing implementation is present for this handoff:
   single-use state before automatic enrollment.
 - Desktop pairing uses one link input, QR/deep-link population, connection
   progress, cancellation while waiting/connecting, and completion refresh.
-- SSH-only redemption keeps `--link-stdin` and `--link-fd`; invitation links do
-  not belong in arguments, logs, shell history, or persistent files.
-- Tailscale/private-network HTTP transport, encrypted pairing, signed requests,
-  replay protection, device revocation, and application-managed encrypted PDS
-  storage remain unchanged.
+- SSH-only redemption keeps `--link-stdin` and `--link-fd`; `--link` is
+  removed. Invitation links do not belong in CLI arguments, logs, shell history,
+  or persistent files. Desktop OS protocol activation is the documented argv
+  exception described above.
+- The pairing listener binds one concrete private IPv4 interface, never a
+  wildcard or public address. Invitation and relay URLs use that exact bound
+  origin; Tailscale/private-network HTTP remains the transport boundary.
+- Claimed request state is persisted through the encrypted application-managed
+  PDS store. Listener startup restores only claimed, still-bounded records; the
+  Desktop manager then resumes automatic enrollment. Waiting invitations are
+  not made durable.
+- Recovery persists the canonical signed request, device label, approval state,
+  expiry, and used encrypted message IDs. Recovery is bounded to ten minutes;
+  completed enrollment keeps a second ten-minute window for final completion
+  replay, with at most 64 encrypted exchanges per invitation. Each final retry
+  uses a fresh message ID, while a reused message ID is rejected.
+- Pairing responses and requests remain size-bounded. Desktop protected payloads
+  are written to a `0600` temporary file, fsynced, reopened read-only, unlinked
+  before the child receives its descriptor, and closed after use. Startup only
+  removes stale files from the pre-unlink implementation when their owner PID is
+  gone.
 
-Package-scoped validation is recorded below. Root DB-backed verification and
-Studio Tailscale end-to-end completion remain unclaimed.
+Package-scoped validation is recorded below. Root DB-backed verification, Studio
+Tailscale end-to-end completion, and live crash/restart validation remain
+unclaimed.
 
 ## Implementation and validation record
 
@@ -161,41 +182,41 @@ nature.
 
 ### 6. Validation record
 
-Passed package-scoped validation:
+#### Static/unit validation passed
 
-- Desktop pairing-server regression suite: 15 tests passed.
-- Desktop full package suite: 76 files / 712 tests passed.
-- `@koed/koed-server` full package suite: 41 files / 553 tests passed.
-- Desktop TypeScript check passed.
-- Prettier check passed for changed pairing server and regression-test files.
+- Desktop full package suite: 77 files / 726 tests passed.
+- `@koed/koed-server` full package suite: 42 files / 568 tests passed.
+- `@koed/shared` full package suite: 51 files / 520 tests passed.
+- API scoped-local-credential boundary test: 1 test passed.
+- Desktop and server TypeScript checks passed.
+- Prettier check passed for handoff, running, and configuration docs.
 
-The claimed-binding regression test covers disconnect after claim, preservation of
-the original signed request, rejection of changed requests and metadata after
-invitation expiry, successful allowlisted control/completion recovery, exact
-durable-commit recovery, and bounded recovery expiry.
+Coverage includes concrete private listener selection and invitation-origin
+binding; exact loopback-origin parsing; scoped local Desktop credential plus
+loopback enforcement; bounded request/response streams; encrypted-store
+permission/atomic/restart tests; claimed disconnect binding; durable recovery
+restore; startup resume hooks; persistence failure ordering; message reservation
+before forwarding; completed-state replay; three-attempt final completion retry
+with fresh message IDs; recovery expiry; and unlinked transient FD cleanup.
 
-Remaining validation is blocked or pending:
+These are package/static/unit checks. Recovery tests use injected persistence and
+an in-process server close/start sequence; they do not claim an OS process crash,
+power-loss, or live Desktop crash-restart E2E.
 
-- Root DB-backed verification was not run. Root `pnpm verify` requires a usable
-  `DATABASE_URL` and Postgres; package-scoped tests above were run instead.
+#### Outstanding live and DB validation
+
+- Root DB-backed verification was not run. Root `pnpm verify` requires usable
+  `DATABASE_URL` and Postgres; API boundary coverage above uses a fake
+  repository.
 - Studio live Tailscale pairing remains blocked; no Studio end-to-end result is
   claimed.
+- Successful Desktop and SSH enrollment against two live local APIs, including
+  QR/deep-link platform delivery and real post-restart recovery, remain pending.
+- Platform-specific `koed-pair://` activation and token exposure checks remain
+  pending; Windows/Linux argv delivery is an OS-handler caveat, not a blanket
+  no-argv guarantee.
 
-Remaining coverage and live validation:
-
-- Successful automatic enrollment from Desktop.
-- Successful automatic enrollment through SSH stdin and FD input.
-- Joining Desktop link input and deep-link/QR population.
-- Expired invitations.
-- Replay and concurrent redemption.
-- Wrong-group invitations.
-- Invalid signatures and altered invitation fields.
-- Device revocation after automatic enrollment.
-- No short-code fields or code-related output.
-- No invitation token leakage through process arguments or logs.
-
-Package checks above pass. Root DB-backed verification and Studio Tailscale
-end-to-end flow remain pending for the blockers recorded above.
+No live crash E2E is claimed.
 
 ## Transport expansion boundary
 

@@ -4,7 +4,6 @@ import {
   type IncomingMessage,
   type ServerResponse
 } from "node:http";
-import { networkInterfaces } from "node:os";
 import {
   decryptPersonalDevicePairingMessage,
   encryptPersonalDevicePairingMessage,
@@ -16,10 +15,11 @@ import {
   pdsEd25519PublicKey,
   PDS_PROTOCOL
 } from "@koed/shared";
+import { isPersonalDevicePairingUuid } from "./personal-device-pairing-link.js";
 import {
-  isPersonalDevicePairingUuid,
-  isPrivatePersonalDevicePairingIpv4
-} from "./personal-device-pairing-link.js";
+  listPersonalDevicePairingNetworkAddresses,
+  resolvePersonalDevicePairingBindAddress
+} from "./personal-device-pairing-network.js";
 
 export const PERSONAL_DEVICE_PAIRING_DEFAULT_PORT = 3310;
 const MAX_REQUEST_BYTES = PERSONAL_DEVICE_PAIRING_MAX_PLAINTEXT_BYTES + 1_024;
@@ -30,6 +30,16 @@ const MAX_EXCHANGES_PER_INVITATION = 64;
 const COMMIT_RECOVERY_WINDOW_MS = 10 * 60_000;
 
 type JsonObject = Record<string, unknown>;
+
+type PairingPersistence = {
+  get(reference: string): Promise<string | null>;
+  put(reference: string, value: string): Promise<void>;
+  delete(reference: string): Promise<void>;
+};
+
+const PAIRING_PERSISTENCE_REFERENCE = "pds-pairing-recovery";
+const PAIRING_PERSISTENCE_VERSION = 1;
+const PAIRING_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 const hasExactKeys = (value: JsonObject, keys: string[]): boolean => {
   const actual = Object.keys(value).sort();
@@ -94,11 +104,29 @@ type PendingInvitation = {
   } | null;
   approved: boolean;
   approvalClaimed: boolean;
+  approvalPersistence: Promise<void> | null;
   authorizationExpired: boolean;
   recoveryExpiresAt: number | null;
+  completedExpires: ReturnType<typeof setTimeout> | null;
   expires: ReturnType<typeof setTimeout>;
   recoveryExpires: ReturnType<typeof setTimeout> | null;
   usedMessageIds: Set<string>;
+};
+
+type PersistedPairing = {
+  version: typeof PAIRING_PERSISTENCE_VERSION;
+  id: string;
+  token: string;
+  invitation: PersonalDevicePairingInvitation;
+  request: JsonObject;
+  requestCanonical: string;
+  joiningDeviceLabel: string;
+  approvalClaimed: boolean;
+  approved: boolean;
+  authorizationExpired: boolean;
+  recoveryExpiresAt: number;
+  completedExpiresAt: number | null;
+  usedMessageIds: string[];
 };
 
 export type PersonalDevicePairingServer = {
@@ -110,13 +138,14 @@ export type PersonalDevicePairingServer = {
   ): PersonalDevicePairingView;
   waitForRequest(id: string, signal?: AbortSignal): Promise<JsonObject>;
   /** Claim approval before any durable membership write begins. */
-  claimApproval(id: string): void;
+  claimApproval(id: string): Promise<void>;
   /** Commit approval after durable membership write succeeds. */
-  approve(id: string): void;
+  approve(id: string): Promise<void>;
   fail?(id: string): void;
   waitForCompletion(id: string, signal?: AbortSignal): Promise<void>;
   cancel(id: string): void;
   inspect(id?: string): PersonalDevicePairingView[];
+  claimedInvitationIds?(): string[];
   close(): Promise<void>;
   port: number;
   relayUrl: string | null;
@@ -143,6 +172,7 @@ type PairingServerOptions = {
     groupId: string;
     deviceId: string;
   }) => Promise<boolean>;
+  persistence?: PairingPersistence;
 };
 
 export const resolvePersonalDevicePairingPort = (
@@ -158,21 +188,6 @@ export const resolvePersonalDevicePairingPort = (
     throw new Error("KOED_PDS_LAN_PORT must be a valid TCP port.");
   }
   return port;
-};
-
-const localIpv4Addresses = (): string[] => {
-  const addresses = Object.values(networkInterfaces())
-    .flatMap((entries) => entries ?? [])
-    .filter(
-      (entry) =>
-        entry.family === "IPv4" &&
-        !entry.internal &&
-        isPrivatePersonalDevicePairingIpv4(entry.address)
-    )
-    .map((entry) => entry.address);
-  return [...new Set(addresses)].sort((left, right) =>
-    left.localeCompare(right)
-  );
 };
 
 const json = (
@@ -423,14 +438,112 @@ const validPairingControlPath = (path: string, groupId: string): boolean => {
 export const startPersonalDevicePairingServer = async (
   options: PairingServerOptions
 ): Promise<PersonalDevicePairingServer> => {
-  const host = options.host ?? "0.0.0.0";
+  const availableAddresses = (
+    options.addresses ?? listPersonalDevicePairingNetworkAddresses
+  )();
+  const host = resolvePersonalDevicePairingBindAddress(
+    options.host,
+    availableAddresses
+  );
   const configuredPort = options.port ?? PERSONAL_DEVICE_PAIRING_DEFAULT_PORT;
   const now = options.now ?? (() => new Date());
+  const persistence = options.persistence;
   const invitations = new Map<string, PendingInvitation>();
+  const persisted = new Map<string, PersistedPairing>();
+  let persistenceWrite: Promise<void> = Promise.resolve();
+
+  const persistedValue = (): string =>
+    JSON.stringify({
+      version: PAIRING_PERSISTENCE_VERSION,
+      invitations: [...persisted.values()]
+    });
+
+  const writePersistence = async (
+    value: string,
+    deleteWhenEmpty: boolean
+  ): Promise<void> => {
+    if (!persistence) return;
+    if (deleteWhenEmpty) {
+      await persistence.delete(PAIRING_PERSISTENCE_REFERENCE);
+    } else {
+      await persistence.put(PAIRING_PERSISTENCE_REFERENCE, value);
+    }
+  };
+
+  const savePersistence = async (
+    value = persistedValue(),
+    deleteWhenEmpty = persisted.size === 0
+  ): Promise<void> => {
+    if (!persistence) return;
+    const write = persistenceWrite
+      .catch(() => undefined)
+      .then(() => writePersistence(value, deleteWhenEmpty));
+    persistenceWrite = write;
+    await write;
+  };
+
+  const snapshot = (pending: PendingInvitation): PersistedPairing => ({
+    version: PAIRING_PERSISTENCE_VERSION,
+    id: pending.id,
+    token: pending.token,
+    invitation: pending.invitation,
+    request: pending.request as JsonObject,
+    requestCanonical: pending.requestCanonical as string,
+    joiningDeviceLabel: pending.view.joiningDeviceLabel as string,
+    approvalClaimed: pending.approvalClaimed,
+    approved: pending.approved,
+    authorizationExpired: pending.authorizationExpired,
+    recoveryExpiresAt: pending.recoveryExpiresAt as number,
+    completedExpiresAt:
+      pending.view.state === "completed" ? pending.recoveryExpiresAt : null,
+    usedMessageIds: [...pending.usedMessageIds]
+  });
+
+  const persistPending = async (pending: PendingInvitation): Promise<void> => {
+    if (!persistence || !pending.request || !pending.requestCanonical) return;
+    const next = snapshot(pending);
+    const write = persistenceWrite
+      .catch(() => undefined)
+      .then(async () => {
+        const previous = persisted.get(pending.id);
+        persisted.set(pending.id, next);
+        try {
+          await writePersistence(persistedValue(), persisted.size === 0);
+        } catch (error) {
+          if (persisted.get(pending.id) === next) {
+            if (previous) persisted.set(pending.id, previous);
+            else persisted.delete(pending.id);
+          }
+          throw error;
+        }
+      });
+    persistenceWrite = write;
+    await write;
+  };
+
+  const deletePersisted = (id: string): void => {
+    if (!persistence) return;
+    const write = persistenceWrite
+      .catch(() => undefined)
+      .then(async () => {
+        const previous = persisted.get(id);
+        if (!previous) return;
+        persisted.delete(id);
+        try {
+          await writePersistence(persistedValue(), persisted.size === 0);
+        } catch (error) {
+          if (!persisted.has(id)) persisted.set(id, previous);
+          throw error;
+        }
+      });
+    persistenceWrite = write;
+    void write.catch(() => undefined);
+  };
 
   const markAuthorizationExpired = (pending: PendingInvitation): void => {
     pending.authorizationExpired = true;
     pending.view.url = "";
+    void persistPending(pending).catch(() => undefined);
   };
 
   const expire = (
@@ -444,7 +557,7 @@ export const startPersonalDevicePairingServer = async (
     force = false
   ) => {
     if (
-      pending.view.state === "completed" ||
+      (pending.view.state === "completed" && !force) ||
       pending.view.state === "expired" ||
       pending.view.state === "cancelled" ||
       pending.view.state === "failed"
@@ -460,8 +573,11 @@ export const startPersonalDevicePairingServer = async (
     }
     clearTimeout(pending.expires);
     if (pending.recoveryExpires) clearTimeout(pending.recoveryExpires);
+    if (pending.completedExpires) clearTimeout(pending.completedExpires);
     pending.recoveryExpires = null;
     pending.recoveryExpiresAt = null;
+    pending.completedExpires = null;
+    deletePersisted(pending.id);
     pending.view.state = state;
     pending.view.url = "";
     pending.submission?.reject(new Error(reason));
@@ -482,7 +598,6 @@ export const startPersonalDevicePairingServer = async (
     const pending = invitations.get(id);
     if (
       !pending ||
-      pending.view.state === "completed" ||
       pending.view.state === "expired" ||
       pending.view.state === "cancelled" ||
       pending.view.state === "failed"
@@ -518,6 +633,168 @@ export const startPersonalDevicePairingServer = async (
         messageId
       })
     );
+  };
+
+  const restorePersisted = async (): Promise<void> => {
+    if (!persistence) return;
+    const raw = await persistence.get(PAIRING_PERSISTENCE_REFERENCE);
+    if (!raw) return;
+    let entries: unknown[];
+    try {
+      const parsed = JSON.parse(raw) as {
+        version?: unknown;
+        invitations?: unknown;
+      };
+      if (
+        parsed.version !== PAIRING_PERSISTENCE_VERSION ||
+        !Array.isArray(parsed.invitations)
+      ) {
+        throw new Error("invalid pairing recovery state");
+      }
+      entries = parsed.invitations;
+    } catch {
+      await persistence.delete(PAIRING_PERSISTENCE_REFERENCE);
+      return;
+    }
+    const currentTime = now().getTime();
+    for (const value of entries.slice(0, MAX_ACTIVE_INVITATIONS)) {
+      try {
+        const entry = value as PersistedPairing;
+        if (
+          entry.version !== PAIRING_PERSISTENCE_VERSION ||
+          !isPersonalDevicePairingUuid(entry.id) ||
+          !PAIRING_TOKEN_PATTERN.test(entry.token) ||
+          !entry.invitation ||
+          entry.invitation.protocol !== PERSONAL_DEVICE_PAIRING_PROTOCOL ||
+          !entry.request ||
+          typeof entry.requestCanonical !== "string" ||
+          typeof entry.joiningDeviceLabel !== "string" ||
+          entry.joiningDeviceLabel.length < 1 ||
+          entry.joiningDeviceLabel.length > 80 ||
+          /[\r\n\0]/.test(entry.joiningDeviceLabel) ||
+          typeof entry.approvalClaimed !== "boolean" ||
+          !entry.approvalClaimed ||
+          typeof entry.approved !== "boolean" ||
+          typeof entry.authorizationExpired !== "boolean" ||
+          !Number.isFinite(entry.recoveryExpiresAt) ||
+          entry.recoveryExpiresAt <= currentTime ||
+          !Array.isArray(entry.usedMessageIds) ||
+          entry.usedMessageIds.length > MAX_EXCHANGES_PER_INVITATION ||
+          !entry.usedMessageIds.every(
+            (messageId) =>
+              typeof messageId === "string" &&
+              isPersonalDevicePairingUuid(messageId)
+          )
+        ) {
+          continue;
+        }
+        const invitationExpiresAt = Date.parse(entry.invitation.expires_at);
+        if (!Number.isFinite(invitationExpiresAt)) continue;
+        validateInvitation(
+          {
+            group_id: entry.invitation.group_id,
+            challenge_id: entry.invitation.challenge_id,
+            challenge: entry.invitation.challenge,
+            expires_at: entry.invitation.expires_at,
+            browser_subject_id: entry.invitation.browser_subject_id,
+            browser_deployment_id: entry.invitation.browser_deployment_id,
+            authority: entry.invitation.authority
+          },
+          new Date(invitationExpiresAt - 1)
+        );
+        validatePairingRequest(entry.request, entry.invitation);
+        if (canonicalizePdsJson(entry.request) !== entry.requestCanonical) {
+          continue;
+        }
+        const completed = entry.completedExpiresAt !== null;
+        if (
+          completed &&
+          (!entry.approved ||
+            !Number.isFinite(entry.completedExpiresAt) ||
+            (entry.completedExpiresAt as number) <= currentTime)
+        ) {
+          continue;
+        }
+        const authorizationExpired =
+          entry.authorizationExpired || invitationExpiresAt <= currentTime;
+        const view: PersonalDevicePairingView = {
+          id: entry.id,
+          // Rebuilt after listener bind so recovered links cannot retain a
+          // stale or unrelated origin from persisted state.
+          url: "",
+          expiresAt: entry.invitation.expires_at,
+          state: completed ? "completed" : "connecting",
+          phase: completed
+            ? "completed"
+            : entry.approved
+              ? "awaiting_joiner"
+              : "committing",
+          joiningDeviceLabel: entry.joiningDeviceLabel
+        };
+        const pending: PendingInvitation = {
+          id: entry.id,
+          token: entry.token,
+          invitation: entry.invitation,
+          view,
+          request: entry.request,
+          requestCanonical: entry.requestCanonical,
+          requestWaiters: [],
+          completionWaiters: [],
+          submission: null,
+          approved: entry.approved,
+          approvalClaimed: true,
+          approvalPersistence: null,
+          authorizationExpired,
+          recoveryExpiresAt: entry.recoveryExpiresAt,
+          completedExpires: null,
+          expires: setTimeout(
+            () => {
+              if (!pending.authorizationExpired)
+                markAuthorizationExpired(pending);
+            },
+            Math.max(1, Date.parse(entry.invitation.expires_at) - currentTime)
+          ),
+          recoveryExpires: null,
+          usedMessageIds: new Set(entry.usedMessageIds)
+        };
+        if (completed) {
+          pending.completedExpires = setTimeout(
+            () =>
+              expire(
+                pending,
+                "expired",
+                "Pairing invitation recovery expired.",
+                true
+              ),
+            Math.max(1, (entry.completedExpiresAt as number) - currentTime)
+          );
+        } else {
+          pending.recoveryExpires = setTimeout(
+            () =>
+              expire(
+                pending,
+                "expired",
+                "Pairing invitation recovery expired.",
+                true
+              ),
+            Math.max(1, entry.recoveryExpiresAt - currentTime)
+          );
+        }
+        invitations.set(pending.id, pending);
+        persisted.set(pending.id, snapshot(pending));
+      } catch {
+        // Ignore one malformed recovery entry without exposing its contents.
+      }
+    }
+    await savePersistence();
+  };
+
+  const clearInvitationTimers = (): void => {
+    for (const pending of invitations.values()) {
+      clearTimeout(pending.expires);
+      if (pending.recoveryExpires) clearTimeout(pending.recoveryExpires);
+      if (pending.completedExpires) clearTimeout(pending.completedExpires);
+    }
   };
 
   const handleRequest = async (
@@ -572,7 +849,6 @@ export const startPersonalDevicePairingServer = async (
           : undefined;
         if (
           !pending ||
-          pending.view.state === "completed" ||
           pending.view.state === "expired" ||
           pending.view.state === "cancelled" ||
           pending.view.state === "failed"
@@ -593,6 +869,35 @@ export const startPersonalDevicePairingServer = async (
           return;
         }
         const operation = decrypted.value.operation;
+        const reserveMessageId = async (persist = true): Promise<void> => {
+          if (pending.usedMessageIds.size >= MAX_EXCHANGES_PER_INVITATION) {
+            throw new Error("Pairing invitation exchange limit reached.");
+          }
+          pending.usedMessageIds.add(decrypted.messageId);
+          if (!persist) return;
+          try {
+            await persistPending(pending);
+          } catch {
+            pending.usedMessageIds.delete(decrypted.messageId);
+            throw new Error("Pairing state could not be persisted.");
+          }
+        };
+        if (pending.view.state === "completed") {
+          if (
+            operation !== "complete" ||
+            !hasExactKeys(decrypted.value, ["operation"])
+          ) {
+            json(response, 410, {
+              error: "Pairing invitation is unavailable."
+            });
+            return;
+          }
+          await reserveMessageId();
+          encryptedResponse(response, pending, decrypted.messageId, {
+            completed: true
+          });
+          return;
+        }
         const exactRecoveryRequest = (): boolean => {
           if (
             !pending.authorizationExpired ||
@@ -633,13 +938,16 @@ export const startPersonalDevicePairingServer = async (
           json(response, 410, { error: "Pairing invitation is unavailable." });
           return;
         }
-        if (pending.usedMessageIds.size >= MAX_EXCHANGES_PER_INVITATION) {
-          json(response, 429, {
-            error: "Pairing invitation exchange limit reached."
-          });
-          return;
-        }
-        pending.usedMessageIds.add(decrypted.messageId);
+        const waitForApprovalPersistence = async (): Promise<boolean> => {
+          const transition = pending.approvalPersistence;
+          if (!transition) return true;
+          try {
+            await transition;
+            return true;
+          } catch {
+            return false;
+          }
+        };
         const waitForApproval = (): Promise<{ approved: true }> =>
           new Promise<{ approved: true }>((resolve, reject) => {
             pending.submission = { resolve, reject };
@@ -670,6 +978,7 @@ export const startPersonalDevicePairingServer = async (
             json(response, 400, { error: "Pairing operation is invalid." });
             return;
           }
+          await reserveMessageId(false);
           encryptedResponse(response, pending, decrypted.messageId, {
             invitation: pending.invitation
           });
@@ -718,6 +1027,10 @@ export const startPersonalDevicePairingServer = async (
               return;
             }
             if (pending.approved) {
+              if (!(await waitForApprovalPersistence())) {
+                throw new Error("Pairing state could not be persisted.");
+              }
+              await reserveMessageId();
               encryptedResponse(response, pending, decrypted.messageId, {
                 approved: true
               });
@@ -729,6 +1042,7 @@ export const startPersonalDevicePairingServer = async (
               });
               return;
             }
+            await reserveMessageId();
             const approval = await waitForApproval();
             encryptedResponse(response, pending, decrypted.messageId, approval);
             return;
@@ -738,6 +1052,7 @@ export const startPersonalDevicePairingServer = async (
           pending.view.state = "connecting";
           pending.view.phase = "request_received";
           pending.view.joiningDeviceLabel = deviceLabel;
+          await reserveMessageId(false);
           for (const waiter of pending.requestWaiters.splice(0)) {
             waiter.resolve(pending.request);
           }
@@ -763,6 +1078,9 @@ export const startPersonalDevicePairingServer = async (
             });
             return;
           }
+          if (!(await waitForApprovalPersistence())) {
+            throw new Error("Pairing state could not be persisted.");
+          }
           const controlPath =
             typeof decrypted.value.path === "string"
               ? decrypted.value.path
@@ -775,6 +1093,7 @@ export const startPersonalDevicePairingServer = async (
             json(response, 404, { error: "Pairing route is unavailable." });
             return;
           }
+          await reserveMessageId();
           const forwarded = await options.forwardControl({
             method,
             path: controlPath,
@@ -803,6 +1122,10 @@ export const startPersonalDevicePairingServer = async (
             });
             return;
           }
+          if (!(await waitForApprovalPersistence())) {
+            throw new Error("Pairing state could not be persisted.");
+          }
+          await reserveMessageId();
           if (
             options.validateCompletion &&
             !(await options.validateCompletion({
@@ -818,21 +1141,67 @@ export const startPersonalDevicePairingServer = async (
             });
             return;
           }
-          encryptedResponse(response, pending, decrypted.messageId, {
-            completed: true
-          });
-          clearTimeout(pending.expires);
-          if (pending.recoveryExpires) clearTimeout(pending.recoveryExpires);
-          pending.recoveryExpires = null;
-          pending.recoveryExpiresAt = null;
+          const completionIsActive = (): boolean => {
+            const current = activeInvitation(pending.id);
+            return (
+              current === pending &&
+              pending.view.state !== "expired" &&
+              pending.view.state !== "cancelled" &&
+              pending.view.state !== "failed" &&
+              (pending.recoveryExpiresAt === null ||
+                pending.recoveryExpiresAt > now().getTime())
+            );
+          };
+          if (!completionIsActive()) {
+            json(response, 410, {
+              error: "Pairing invitation recovery expired."
+            });
+            return;
+          }
+          const previousRecoveryExpiresAt = pending.recoveryExpiresAt;
           pending.view.state = "completed";
           pending.view.phase = "completed";
           pending.view.url = "";
+          pending.recoveryExpiresAt =
+            now().getTime() + COMMIT_RECOVERY_WINDOW_MS;
+          pending.completedExpires = setTimeout(
+            () =>
+              expire(
+                pending,
+                "expired",
+                "Pairing invitation recovery expired.",
+                true
+              ),
+            COMMIT_RECOVERY_WINDOW_MS
+          );
+          try {
+            await persistPending(pending);
+          } catch {
+            if (pending.completedExpires)
+              clearTimeout(pending.completedExpires);
+            pending.completedExpires = null;
+            pending.view.state = "connecting";
+            pending.view.phase = "awaiting_joiner";
+            pending.view.url = "";
+            pending.recoveryExpiresAt = previousRecoveryExpiresAt;
+            pending.usedMessageIds.delete(decrypted.messageId);
+            throw new Error("Pairing state could not be persisted.");
+          }
+          if (!completionIsActive()) {
+            json(response, 410, {
+              error: "Pairing invitation recovery expired."
+            });
+            return;
+          }
+          clearTimeout(pending.expires);
+          if (pending.recoveryExpires) clearTimeout(pending.recoveryExpires);
+          pending.recoveryExpires = null;
+          encryptedResponse(response, pending, decrypted.messageId, {
+            completed: true
+          });
           for (const waiter of pending.completionWaiters.splice(0)) {
             waiter.resolve();
           }
-          pending.token = "";
-          pending.usedMessageIds.clear();
           return;
         }
         json(response, 400, { error: "Pairing operation is invalid." });
@@ -875,7 +1244,9 @@ export const startPersonalDevicePairingServer = async (
         message === "Pairing invitation expired." ||
         message === "Pairing invitation recovery expired."
           ? 410
-          : 400;
+          : message === "Pairing invitation exchange limit reached."
+            ? 429
+            : 400;
       json(response, status, { error: message });
     } finally {
       request.off("aborted", abortForwarding);
@@ -886,32 +1257,49 @@ export const startPersonalDevicePairingServer = async (
     void handleRequest(request, response);
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(configuredPort, host, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await restorePersisted();
+  } catch {
+    clearInvitationTimers();
+    throw new Error("Pairing recovery state is unavailable.");
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(configuredPort, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    clearInvitationTimers();
+    throw error;
+  }
   const address = server.address();
   const port =
     address && typeof address === "object" ? address.port : configuredPort;
-  const advertisedAddress = (options.addresses ?? localIpv4Addresses)().find(
-    isPrivatePersonalDevicePairingIpv4
-  );
+  const origin = `http://${host}:${port}`;
+  for (const pending of invitations.values()) {
+    pending.invitation = {
+      ...pending.invitation,
+      control_url: `${origin}/v1/pair/${pending.id}/exchange`,
+      relay_url: `${origin}/pds`
+    };
+    if (!pending.authorizationExpired && pending.view.state !== "completed") {
+      pending.view.url = `${origin}/pair/${pending.id}#token=${pending.token}`;
+    }
+  }
 
   return {
     port,
-    relayUrl: advertisedAddress
-      ? `http://${advertisedAddress}:${port}/pds`
-      : null,
+    relayUrl: `${origin}/pds`,
     createInvitation(baseInvitation) {
       for (const [id, pending] of invitations) {
         if (
           pending.view.state === "expired" ||
           pending.view.state === "cancelled" ||
-          pending.view.state === "failed" ||
-          pending.view.state === "completed"
+          pending.view.state === "failed"
         ) {
           invitations.delete(id);
         }
@@ -919,18 +1307,13 @@ export const startPersonalDevicePairingServer = async (
       if (invitations.size >= MAX_ACTIVE_INVITATIONS) {
         throw new Error("Too many pairing invitations are already active.");
       }
-      const addresses = (options.addresses ?? localIpv4Addresses)().filter(
-        isPrivatePersonalDevicePairingIpv4
-      );
-      const address = addresses[0];
-      if (!address) {
+      if (!availableAddresses.includes(host)) {
         throw new Error(
           "No private network address is available for device pairing."
         );
       }
       const id = randomUUID();
       const token = randomBytes(32).toString("base64url");
-      const origin = `http://${address}:${port}`;
       const invitation: PersonalDevicePairingInvitation = {
         ...baseInvitation,
         protocol: PERSONAL_DEVICE_PAIRING_PROTOCOL,
@@ -963,8 +1346,10 @@ export const startPersonalDevicePairingServer = async (
         submission: null,
         approved: false,
         approvalClaimed: false,
+        approvalPersistence: null,
         authorizationExpired: false,
         recoveryExpiresAt: null,
+        completedExpires: null,
         expires: setTimeout(() => {
           if (pending.approvalClaimed) markAuthorizationExpired(pending);
           else expire(pending, "expired");
@@ -1012,7 +1397,7 @@ export const startPersonalDevicePairingServer = async (
         pending.requestWaiters.push(waiter);
       });
     },
-    claimApproval(id) {
+    async claimApproval(id) {
       const pending = activeInvitation(id);
       if (
         !pending ||
@@ -1027,6 +1412,15 @@ export const startPersonalDevicePairingServer = async (
       }
       pending.approvalClaimed = true;
       pending.recoveryExpiresAt = now().getTime() + COMMIT_RECOVERY_WINDOW_MS;
+      pending.view.phase = "committing";
+      try {
+        await persistPending(pending);
+      } catch {
+        pending.approvalClaimed = false;
+        pending.recoveryExpiresAt = null;
+        pending.view.phase = "request_received";
+        throw new Error("Pairing state could not be persisted.");
+      }
       pending.recoveryExpires = setTimeout(
         () =>
           expire(
@@ -1037,9 +1431,8 @@ export const startPersonalDevicePairingServer = async (
           ),
         COMMIT_RECOVERY_WINDOW_MS
       );
-      pending.view.phase = "committing";
     },
-    approve(id) {
+    async approve(id) {
       const pending = activeInvitation(id);
       if (
         !pending ||
@@ -1060,6 +1453,15 @@ export const startPersonalDevicePairingServer = async (
       if (!pending.approvalClaimed) {
         pending.approvalClaimed = true;
         pending.recoveryExpiresAt = now().getTime() + COMMIT_RECOVERY_WINDOW_MS;
+        pending.view.phase = "committing";
+        try {
+          await persistPending(pending);
+        } catch {
+          pending.approvalClaimed = false;
+          pending.recoveryExpiresAt = null;
+          pending.view.phase = "request_received";
+          throw new Error("Pairing state could not be persisted.");
+        }
         pending.recoveryExpires = setTimeout(
           () =>
             expire(
@@ -1073,6 +1475,19 @@ export const startPersonalDevicePairingServer = async (
       }
       pending.approved = true;
       pending.view.phase = "awaiting_joiner";
+      const approvalPersistence = persistPending(pending);
+      pending.approvalPersistence = approvalPersistence;
+      try {
+        await approvalPersistence;
+      } catch {
+        pending.approved = false;
+        pending.view.phase = "committing";
+        throw new Error("Pairing state could not be persisted.");
+      } finally {
+        if (pending.approvalPersistence === approvalPersistence) {
+          pending.approvalPersistence = null;
+        }
+      }
       pending.submission?.resolve({ approved: true });
       pending.submission = null;
     },
@@ -1140,14 +1555,38 @@ export const startPersonalDevicePairingServer = async (
           return { ...pending.view };
         });
     },
+    claimedInvitationIds() {
+      return [...invitations.values()]
+        .filter((pending) => pending.approvalClaimed)
+        .map((pending) => pending.id);
+    },
     async close() {
       for (const pending of invitations.values()) {
-        expire(pending, "cancelled", "Pairing invitation was cancelled.", true);
+        if (pending.approvalClaimed) {
+          clearTimeout(pending.expires);
+          if (pending.recoveryExpires) clearTimeout(pending.recoveryExpires);
+          if (pending.completedExpires) clearTimeout(pending.completedExpires);
+          pending.recoveryExpires = null;
+          pending.completedExpires = null;
+          pending.submission?.reject(new Error("Pairing server was stopped."));
+          pending.submission = null;
+          for (const waiter of pending.completionWaiters.splice(0)) {
+            waiter.reject(new Error("Pairing server was stopped."));
+          }
+        } else {
+          expire(
+            pending,
+            "cancelled",
+            "Pairing invitation was cancelled.",
+            true
+          );
+        }
       }
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
+      await persistenceWrite.catch(() => undefined);
     }
   };
 };

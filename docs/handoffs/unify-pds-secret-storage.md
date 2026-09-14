@@ -1,7 +1,8 @@
 # Handoff: Unify PDS Secret Storage Across Electron and Headless CLI
 
-Status: Storage and capability-pairing implementations complete; package
-validation passed; root DB-backed and Studio live validation pending.
+Status: Storage and capability-pairing implementations complete; static/unit
+validation passed; root DB-backed and Studio live validation pending. No live
+process-crash or crash-restart E2E is claimed.
 
 ## Task
 
@@ -32,17 +33,26 @@ The user explicitly chose to remove secure-storage integration differences acros
 
 ## Relevant files
 
-- `packages/koed-server/src/native-secret-provider.ts` — newly added `keytar` provider and automatic headless provider wiring; likely replace/remove.
+- `packages/koed-server/src/application-secret-provider.ts` — bundled application-managed provider wiring for headless operation.
 - `packages/koed-server/src/personal-sync.ts` — provider dispatch, PDS runtime secret get/put/delete, pending material, and SSH pairing redemption.
 - `packages/koed-server/src/start.ts` — currently injects bundled native/headless provider into local service environments.
 - `packages/koed-server/src/cli.ts` — currently exposes `secret-provider get|put|delete` and pairing CLI commands.
 - `packages/koed-server/src/native-secret-provider.test.ts` — tests for the keytar provider; replace with application-managed store tests.
 - `packages/koed-server/src/personal-sync.test.ts` — PDS provider and SSH pairing tests.
-- `apps/desktop/src/pds-secure-provider.ts` — existing Electron `safeStorage`-backed Desktop store; replace its PDS storage role with the common application-managed store.
-- `apps/desktop/src/pds-secret-bridge.ts` and `apps/desktop/src/pds-secret-bridge-provider.ts` — Desktop-to-child provider bridge; remove or simplify if no longer needed for PDS secret storage.
-- `apps/desktop/src/koed-server/manager.ts` — Desktop server/provider environment setup.
-- `packages/koed-server/package.json` — currently has the branch-added `keytar` dependency.
-- `pnpm-lock.yaml` and `pnpm-workspace.yaml` — currently include `keytar` and its build permission.
+- `packages/shared/src/pds-secret-store.ts` and
+  `packages/shared/src/encrypted-state-transaction-core.ts` — shared encrypted
+  store and durable atomic transaction implementation.
+- `packages/shared/src/encrypted-state-custody-internal.test.ts` and
+  `packages/koed-server/src/application-secret-provider.test.ts` — encrypted
+  custody, provider, permission, and restart coverage.
+- `apps/desktop/src/pds-secure-provider.ts` — common application-managed Desktop
+  store adapter and optional explicit Operator-managed provider.
+- `apps/desktop/src/koed-server/manager.ts` — Desktop server/provider setup,
+  pairing recovery resume, and protected FD handoffs.
+- `apps/desktop/src/ipc/protected-json-fd.ts` — unlinked transient descriptor
+  handoff and stale legacy-file cleanup.
+- `packages/koed-server/package.json` and workspace lockfiles — confirm no
+  `keytar` dependency remains on the PDS path.
 - `docs/configuration.md` — PDS provider configuration.
 - `docs/running-koed.md` — SSH pairing and operational guidance.
 - `docs/service-sequence-overview.md` — provider/service-flow documentation.
@@ -54,18 +64,24 @@ Already implemented and tested on this branch:
 
 - Tailscale private-network support (`100.64.0.0/10`).
 - SSH-only `personal-sync join redeem`.
-- Pairing link input via `--link`, `--link-stdin`, and `--link-fd`.
+- Pairing link input via `--link-stdin` and `--link-fd`; the CLI `--link`
+  argument is removed. Desktop paste/scan remains preferred, with documented
+  OS protocol activation caveats.
 - Encrypted application-level pairing transport.
 - Automatic local API URL resolution for SSH redemption.
-- A `keytar`-based native provider for standalone/headless operation.
-- CLI `secret-provider get|put|delete` commands.
+- An application-managed encrypted provider for standalone/headless operation;
+  no `keytar` provider remains on the PDS path.
+- CLI `secret-provider get|put|delete` commands, backed by the same store.
 
-Validation before this handoff:
+Historical validation before this storage continuation:
 
 - Koed server tests: 552 passed.
 - Server typecheck, build, and Prettier checks passed.
-- Studio runtime services are healthy; overall status has an unrelated API-token HTTP 429 diagnostic.
-- Studio `keytar`/`security` writes still fail from SSH with `User interaction is not allowed`.
+- Studio runtime services were healthy; overall status had an unrelated API-token HTTP 429 diagnostic.
+- Studio `keytar`/`security` writes failed from SSH with `User interaction is not allowed`.
+
+Current validation is recorded below. It supersedes this historical baseline and
+uses the application-managed store; it does not claim live Studio enrollment.
 
 T3Code was inspected at `/Users/jedd/.cache/checkouts/github.com/pingdotgg/t3code`. Its `apps/server/src/auth/ServerSecretStore.ts` creates a `0700` secrets directory, stores `0600` files, writes atomically, and reads directly from headless processes. It does not depend on `keytar` for server secret storage.
 
@@ -75,6 +91,14 @@ headless CLI, API, and Worker use the same store contract. Legacy Electron
 OS-store state and branch-created keytar state are intentionally not migrated
 or deleted.
 
+The Desktop pairing server stores claimed recovery snapshots through this
+encrypted store. Snapshots retain the exact canonical signed request, device
+label, approval state, bounded expiry, and used encrypted message IDs. Listener
+startup restores valid claimed snapshots before binding, then the Desktop
+manager resumes their automatic enrollment. Completed enrollment remains
+replayable for one bounded ten-minute final-completion window; client retries
+use fresh message IDs. Recovery and final replay are bounded, not indefinite.
+
 Capability-based Personal Device pairing is present in the child handoff. Its
 one-time invitation link is the enrollment capability, with no ordinary
 short-code comparison or Authority approval step. A claimed request retains its
@@ -83,12 +107,17 @@ new or non-exact exchanges are rejected and recovery eventually expires. This
 does not change the private/Tailscale HTTP transport boundary, encrypted local
 PDS store, or stdin/FD-only guidance for headless link input.
 
-Current package-scoped validation also passes: Desktop pairing-server regression
-suite (14 tests), Desktop full package suite (76 files / 711 tests),
-`@koed/koed-server` full package suite (41 files / 553 tests), Desktop
-TypeScript check, and changed-file Prettier check. Root `pnpm verify` remains
-blocked until usable `DATABASE_URL` and Postgres are available. Studio live
-Tailscale pairing remains blocked; no live result is claimed.
+Current static/unit validation also passes: Desktop full package suite (77
+files / 726 tests), `@koed/koed-server` full package suite (42 files / 568
+tests), `@koed/shared` full package suite (51 files / 520 tests), the API
+scoped-local-credential boundary test, Desktop and server TypeScript checks,
+and Prettier for changed handoff, running, and configuration docs. These checks
+do not prove successful Desktop or SSH enrollment, encrypted persistence across
+an OS crash, or live crash/restart behavior.
+
+Root `pnpm verify` remains blocked until usable `DATABASE_URL` and Postgres are
+available. Studio live Tailscale pairing remains blocked; no live result is
+claimed.
 
 ## Decisions
 
@@ -119,20 +148,24 @@ The implementation agent should reconcile this change with the proposal's config
 - [ ] SSH-only pairing completes on studio using `personal-sync join redeem --link-stdin` or `--link-fd`.
 - [x] Electron/Desktop and headless use the same application-managed secret-store contract and documented state model.
 - [x] PDS secrets never appear in process arguments, environment variables, logs, queue payloads, or ordinary world/group-readable files.
-- [x] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and restart behavior are covered by shared store and provider tests; platform crash injection remains pending.
+- [x] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and restart behavior are covered by shared store and provider tests; platform crash injection remains pending. Pairing recovery ordering, startup resume, bounded final replay, and failure cleanup are covered by unit/regression tests only.
 - [x] Existing Electron `pds-secrets.json` state and branch-created keytar state are handled deliberately through documented non-migration and fresh-`KOED_HOME` reset behavior.
-- [x] Tailscale/private-network pairing transport remains present; existing
-      storage-era pairing coverage is recorded above.
-- [x] `/docs` documentation reflects new provider/storage model, capability
-      pairing, and SSH setup.
-- [ ] Root DB-backed verification and Studio pairing e2e pass; package-scoped
-      tests, Desktop typecheck, and changed-file Prettier checks pass as recorded
-      above.
+- [x] Tailscale/private-network pairing transport remains present with concrete
+      private-interface binding; wildcard/public listener binding is rejected.
+- [x] `/docs` documentation reflects provider/storage model, claimed recovery,
+      startup resume, bounded final replay, loopback-scoped local auth, transient
+      FD handling, capability pairing, and SSH setup.
+- [ ] Root DB-backed verification and Studio pairing E2E pass. Package-scoped
+      static/unit tests, Desktop/server typechecks, and changed-doc Prettier
+      checks pass as recorded above; no live crash E2E is claimed.
 
 ## Constraints
 
 - Read `CONTEXT.md` before changing domain terminology or user-facing wording.
-- Keep pairing links out of shell history/process listings by recommending stdin/FD input.
+- Keep pairing links out of shell history/process listings for CLI redemption by
+  requiring stdin/FD input. Desktop paste or QR scan is preferred; macOS normally
+  delivers `koed-pair://` through Electron `open-url`, while Windows/Linux may
+  deliver it in argv through OS protocol activation. Do not log or persist it.
 - Do not put PDS keys in `.env` or pass them via CLI/environment values.
 - Do not reintroduce a platform-dependent provider split or silently change storage models between Electron and headless operation.
 - Work in the current Koed workspace; do not create a worktree unless explicitly requested.

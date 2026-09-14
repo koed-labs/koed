@@ -147,9 +147,13 @@ User back to the Authority host when another device must be enrolled.
 The renderer sees only display-safe pairing state. It never receives the
 browser session, scoped Desktop credential, invitation transport key, device
 private keys, or PDS runtime secret. The invitation link is sensitive bearer
-material: clear it after redemption and never persist or log it. An invitation
+material: clear it after redemption and never persist or log it. Paste or QR
+scan is preferred. Opening `koed-pair://` is supported, but OS activation differs:
+macOS normally delivers the URL through Electron's `open-url` event, while
+Windows/Linux may deliver it in argv on initial launch or single-instance
+activation. Users avoiding argv exposure should paste or scan. An invitation
 can be canceled while waiting or connecting before its commit boundary. Once
-approval enters commit, status polling reports committing or awaiting joiner;
+commit begins, status polling reports committing or awaiting joiner;
 cancellation returns an error and leaves enrollment resumable.
 
 If no Personal Device Group exists, **Set up device sync** first opens a native

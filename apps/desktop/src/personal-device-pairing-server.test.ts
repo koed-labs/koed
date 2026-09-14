@@ -78,6 +78,19 @@ const signedRequest = (
   return request;
 };
 
+const memoryPersistence = () => {
+  let value: string | null = null;
+  return {
+    get: vi.fn(async () => value),
+    put: vi.fn(async (_reference: string, next: string) => {
+      value = next;
+    }),
+    delete: vi.fn(async () => {
+      value = null;
+    })
+  };
+};
+
 const exchange = async (
   url: string,
   payload: Record<string, unknown>,
@@ -127,33 +140,32 @@ describe("Personal Device LAN pairing server", () => {
     }
   });
 
-  it("does not issue pairing links for public listener addresses", async () => {
-    const server = await startPersonalDevicePairingServer({
-      port: 0,
-      host: "127.0.0.1",
-      addresses: () => ["203.0.113.5"],
-      forwardControl: vi.fn()
-    });
-    try {
-      expect(() => server.createInvitation(baseInvitation())).toThrow(
-        "No private network address"
-      );
-    } finally {
-      await server.close();
-    }
+  it("rejects public listener addresses before binding", async () => {
+    await expect(
+      startPersonalDevicePairingServer({
+        port: 0,
+        host: "203.0.113.5",
+        addresses: () => ["203.0.113.5"],
+        forwardControl: vi.fn()
+      })
+    ).rejects.toThrow("private IPv4 interface address");
   });
 
-  it("issues pairing links for Tailscale addresses", async () => {
+  it("binds selected interface and uses same invitation origin", async () => {
     const server = await startPersonalDevicePairingServer({
       port: 0,
       host: "127.0.0.1",
-      addresses: () => ["100.98.6.2"],
+      addresses: () => ["127.0.0.1"],
       forwardControl: vi.fn()
     });
     try {
       const view = server.createInvitation(baseInvitation());
-      expect(view.url).toMatch(/^http:\/\/100\.98\.6\.2:[1-9][0-9]*\/pair\//);
-      expect(view).not.toHaveProperty("shortCode");
+      const origin = new URL(view.url).origin;
+      expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/);
+      expect(server.relayUrl).toBe(`${origin}/pds`);
+      expect(await fetch(`${origin}/pair/${view.id}`)).toMatchObject({
+        status: 200
+      });
     } finally {
       await server.close();
     }
@@ -315,8 +327,8 @@ describe("Personal Device LAN pairing server", () => {
         expect.objectContaining({ device_id: "device-2" }),
         expect.objectContaining({ device_id: "device-2" })
       ]);
-      server.claimApproval(pairing.id);
-      server.approve(pairing.id);
+      await server.claimApproval(pairing.id);
+      await server.approve(pairing.id);
       await expect(submission).resolves.toMatchObject({
         opened: { value: { approved: true } }
       });
@@ -383,7 +395,7 @@ describe("Personal Device LAN pairing server", () => {
         headers: {}
       });
       expect(controlBeforeApproval.response.status).toBe(403);
-      server.approve(pairing.id);
+      await server.approve(pairing.id);
       await expect(submission).resolves.toMatchObject({
         opened: { value: { approved: true } }
       });
@@ -475,7 +487,7 @@ describe("Personal Device LAN pairing server", () => {
       await expect(server.waitForRequest(pairing.id)).resolves.toMatchObject({
         device_id: "device-2"
       });
-      server.claimApproval(pairing.id);
+      await server.claimApproval(pairing.id);
       expect(server.inspect(pairing.id)[0]).toMatchObject({
         state: "connecting",
         phase: "committing"
@@ -484,7 +496,7 @@ describe("Personal Device LAN pairing server", () => {
         "cannot be cancelled after commit started"
       );
       expect(server.inspect(pairing.id)[0]?.state).toBe("connecting");
-      server.approve(pairing.id);
+      await server.approve(pairing.id);
       await expect(submission).resolves.toMatchObject({
         opened: { value: { approved: true } }
       });
@@ -538,7 +550,7 @@ describe("Personal Device LAN pairing server", () => {
       await expect(server.waitForRequest(pairing.id)).resolves.toMatchObject({
         device_id: "device-2"
       });
-      server.claimApproval(pairing.id);
+      await server.claimApproval(pairing.id);
       controller.abort();
       await expect(submitted).rejects.toThrow();
       await vi.waitFor(() =>
@@ -570,7 +582,7 @@ describe("Personal Device LAN pairing server", () => {
       // Durable membership can finish without original HTTP response. Only
       // exact bound request may recover approval; metadata and new requests
       // remain unavailable after invitation expiry.
-      server.approve(pairing.id);
+      await server.approve(pairing.id);
       const recovered = await exchange(pairing.url, {
         operation: "request",
         request,
@@ -619,9 +631,9 @@ describe("Personal Device LAN pairing server", () => {
       await expect(server.waitForRequest(pairing.id)).resolves.toMatchObject({
         device_id: "device-2"
       });
-      server.claimApproval(pairing.id);
+      await server.claimApproval(pairing.id);
       current = new Date(new Date(invitation.expires_at).getTime() + 1);
-      server.approve(pairing.id);
+      await server.approve(pairing.id);
       await expect(submission).resolves.toMatchObject({
         opened: { value: { approved: true } }
       });
@@ -643,6 +655,358 @@ describe("Personal Device LAN pairing server", () => {
       expect(server.inspect(pairing.id)[0]?.state).toBe("expired");
     } finally {
       await server.close();
+    }
+  });
+
+  it("replays completed enrollment with a fresh encrypted message id", async () => {
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      addresses: () => ["127.0.0.1"],
+      forwardControl: vi.fn()
+    });
+    try {
+      const invitation = baseInvitation();
+      const pairing = server.createInvitation(invitation);
+      const request = signedRequest(invitation);
+      const submission = exchange(pairing.url, {
+        operation: "request",
+        request,
+        device_label: "Replay laptop"
+      });
+      await expect(server.waitForRequest(pairing.id)).resolves.toEqual(request);
+      await server.approve(pairing.id);
+      await expect(submission).resolves.toMatchObject({
+        opened: { value: { approved: true } }
+      });
+      const original = await exchange(pairing.url, { operation: "complete" });
+      expect(original.opened?.value).toEqual({ completed: true });
+      const reused = await exchange(
+        pairing.url,
+        { operation: "complete" },
+        original.encrypted
+      );
+      expect(reused.response.status).toBe(409);
+      const retry = await exchange(pairing.url, { operation: "complete" });
+      expect(retry.response.status).toBe(200);
+      expect(retry.opened?.value).toEqual({ completed: true });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("restores claimed request binding from encrypted application persistence", async () => {
+    const current = new Date();
+    const persistence = memoryPersistence();
+    const first = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    const invitation = baseInvitation();
+    const pairing = first.createInvitation(invitation);
+    const request = signedRequest(invitation);
+    const submission = exchange(pairing.url, {
+      operation: "request",
+      request,
+      device_label: "Crash laptop"
+    });
+    await expect(first.waitForRequest(pairing.id)).resolves.toEqual(request);
+    await first.claimApproval(pairing.id);
+    expect(persistence.put).toHaveBeenCalledTimes(1);
+    await first.close();
+    await expect(submission).rejects.toThrow("fetch failed");
+
+    const restored = await startPersonalDevicePairingServer({
+      port: first.port,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    try {
+      expect(restored.inspect(pairing.id)[0]).toMatchObject({
+        state: "connecting",
+        phase: "committing",
+        joiningDeviceLabel: "Crash laptop"
+      });
+      const recovery = exchange(pairing.url, {
+        operation: "request",
+        request,
+        device_label: "Crash laptop"
+      });
+      await restored.approve(pairing.id);
+      await expect(recovery).resolves.toMatchObject({
+        opened: { value: { approved: true } }
+      });
+    } finally {
+      await restored.close();
+    }
+  });
+
+  it("restores previous durable snapshot when a queued persistence update fails", async () => {
+    let current = new Date();
+    let value: string | null = null;
+    let rejectFirst: ((error: Error) => void) | null = null;
+    let putCount = 0;
+    const persistence = {
+      get: vi.fn(async () => value),
+      put: vi.fn(async (_reference: string, next: string) => {
+        putCount += 1;
+        if (putCount === 1) {
+          await new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          });
+        }
+        value = next;
+      }),
+      delete: vi.fn(async () => {
+        value = null;
+      })
+    };
+    const first = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    const invitation = baseInvitation();
+    invitation.expires_at = new Date(current.getTime() + 1_000).toISOString();
+    const pairing = first.createInvitation(invitation);
+    const submission = exchange(pairing.url, {
+      operation: "request",
+      request: signedRequest(invitation),
+      device_label: "Queued snapshot laptop"
+    });
+    await first.waitForRequest(pairing.id);
+    const claim = first.claimApproval(pairing.id);
+    await vi.waitFor(() => expect(persistence.put).toHaveBeenCalledTimes(1));
+
+    current = new Date(current.getTime() + 2_000);
+    expect(first.inspect(pairing.id)[0]?.url).toBe("");
+    rejectFirst!(new Error("first snapshot failed"));
+    await expect(claim).rejects.toThrow("could not be persisted");
+    await vi.waitFor(() => expect(value).not.toBeNull());
+    expect(JSON.parse(value!).invitations[0]).toMatchObject({
+      authorizationExpired: true,
+      approvalClaimed: true
+    });
+    await first.close();
+    await expect(submission).rejects.toThrow("fetch failed");
+  });
+
+  it("persists control message reservation before forwarding side effects", async () => {
+    const persistence = memoryPersistence();
+    const forwardControl = vi.fn(async () => {
+      throw new Error("control side effect failed");
+    });
+    const first = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl
+    });
+    const invitation = baseInvitation();
+    const pairing = first.createInvitation(invitation);
+    const request = signedRequest(invitation);
+    const submission = exchange(pairing.url, {
+      operation: "request",
+      request,
+      device_label: "Reserved message laptop"
+    });
+    await first.waitForRequest(pairing.id);
+    await first.approve(pairing.id);
+    await expect(submission).resolves.toMatchObject({
+      opened: { value: { approved: true } }
+    });
+    const control = encryptPersonalDevicePairingMessage(
+      {
+        operation: "control",
+        method: "GET",
+        path: "/v1/personal-device-sync/groups/group-1",
+        headers: {}
+      },
+      {
+        invitationId: pairing.id,
+        token: new URL(pairing.url).hash.slice("#token=".length),
+        direction: "request"
+      }
+    );
+    const failed = await exchange(
+      pairing.url,
+      {
+        operation: "control",
+        method: "GET",
+        path: "/v1/personal-device-sync/groups/group-1",
+        headers: {}
+      },
+      control
+    );
+    expect(failed.response.status).toBe(400);
+    await first.close();
+
+    const restored = await startPersonalDevicePairingServer({
+      port: first.port,
+      host: "127.0.0.1",
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    try {
+      const replay = await exchange(
+        pairing.url,
+        {
+          operation: "control",
+          method: "GET",
+          path: "/v1/personal-device-sync/groups/group-1",
+          headers: {}
+        },
+        control
+      );
+      expect(replay.response.status).toBe(409);
+    } finally {
+      await restored.close();
+    }
+  });
+
+  it("does not forward control while approval persistence is uncommitted", async () => {
+    let value: string | null = null;
+    let putCount = 0;
+    let rejectApproval: ((error: Error) => void) | null = null;
+    const persistence = {
+      get: vi.fn(async () => value),
+      put: vi.fn(async (_reference: string, next: string) => {
+        putCount += 1;
+        if (putCount === 2) {
+          await new Promise<void>((_resolve, reject) => {
+            rejectApproval = reject;
+          });
+        }
+        value = next;
+      }),
+      delete: vi.fn(async () => {
+        value = null;
+      })
+    };
+    const forwardControl = vi.fn(async () => ({ status: 200, body: "{}" }));
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl
+    });
+    const invitation = baseInvitation();
+    const pairing = server.createInvitation(invitation);
+    const submission = exchange(pairing.url, {
+      operation: "request",
+      request: signedRequest(invitation),
+      device_label: "Approval transaction laptop"
+    });
+    await server.waitForRequest(pairing.id);
+    await server.claimApproval(pairing.id);
+    const approval = server.approve(pairing.id);
+    await vi.waitFor(() => expect(persistence.put).toHaveBeenCalledTimes(2));
+    const control = exchange(pairing.url, {
+      operation: "control",
+      method: "GET",
+      path: "/v1/personal-device-sync/groups/group-1",
+      headers: {}
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    rejectApproval!(new Error("approval snapshot failed"));
+    await expect(approval).rejects.toThrow("could not be persisted");
+    expect((await control).response.status).toBe(400);
+    expect(forwardControl).not.toHaveBeenCalled();
+    await server.close();
+    await expect(submission).rejects.toThrow("fetch failed");
+  });
+
+  it("rejects completion after recovery expires during validation", async () => {
+    let current = new Date();
+    let validationEntered = false;
+    let releaseValidation: ((value: boolean) => void) | null = null;
+    const validation = new Promise<boolean>((resolve) => {
+      releaseValidation = resolve;
+    });
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      forwardControl: vi.fn(),
+      validateCompletion: async () => {
+        validationEntered = true;
+        return await validation;
+      }
+    });
+    try {
+      const invitation = baseInvitation();
+      const pairing = server.createInvitation(invitation);
+      const submission = exchange(pairing.url, {
+        operation: "request",
+        request: signedRequest(invitation),
+        device_label: "Validation deadline laptop"
+      });
+      await server.waitForRequest(pairing.id);
+      await server.approve(pairing.id);
+      await expect(submission).resolves.toMatchObject({
+        opened: { value: { approved: true } }
+      });
+      const completion = exchange(pairing.url, { operation: "complete" });
+      await vi.waitFor(() => expect(validationEntered).toBe(true));
+      current = new Date(current.getTime() + 10 * 60_000 + 1);
+      releaseValidation!(true);
+      expect((await completion).response.status).toBe(410);
+      expect(server.inspect(pairing.id)[0]?.state).toBe("expired");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("drops persisted claimed requests after recovery deadline", async () => {
+    let current = new Date();
+    const persistence = memoryPersistence();
+    const first = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    const invitation = baseInvitation();
+    const pairing = first.createInvitation(invitation);
+    const submission = exchange(pairing.url, {
+      operation: "request",
+      request: signedRequest(invitation),
+      device_label: "Expired laptop"
+    });
+    await first.waitForRequest(pairing.id);
+    await first.claimApproval(pairing.id);
+    await first.close();
+    await expect(submission).rejects.toThrow("fetch failed");
+    current = new Date(current.getTime() + 10 * 60_000 + 1);
+    const restored = await startPersonalDevicePairingServer({
+      port: first.port,
+      host: "127.0.0.1",
+      now: () => current,
+      addresses: () => ["127.0.0.1"],
+      persistence,
+      forwardControl: vi.fn()
+    });
+    try {
+      expect(restored.inspect(pairing.id)).toEqual([]);
+      expect(persistence.delete).toHaveBeenCalled();
+    } finally {
+      await restored.close();
     }
   });
 

@@ -41,9 +41,14 @@ import {
 } from "@koed/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
-import { redeemPersonalDevicePairing } from "./personal-device-pairing-client.js";
+import {
+  parseLoopbackOrigin,
+  redeemPersonalDevicePairing
+} from "./personal-device-pairing-client.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerPaths } from "./paths.js";
+
+export { parseLoopbackOrigin };
 
 const KIT_FORMAT = "koed/pds-recovery-kit/v1";
 const PENDING_VERSION = 1;
@@ -568,15 +573,54 @@ const browserSession = (environment: NodeJS.ProcessEnv): string => {
   return value;
 };
 
+const readBoundedResponseText = async (response: Response): Promise<string> => {
+  const rawContentLength = response.headers.get("content-length");
+  if (rawContentLength !== null) {
+    const contentLength = rawContentLength.trim();
+    if (!/^\d+$/.test(contentLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response is invalid.");
+    }
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response is invalid.");
+    }
+    if (declaredLength > MAX_CONTROL_RESPONSE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response exceeds maximum size.");
+    }
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let overflow = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (next.value.byteLength > MAX_CONTROL_RESPONSE_BYTES - bytes) {
+        overflow = true;
+        await reader.cancel().catch(() => undefined);
+        fail("PDS control response exceeds maximum size.");
+      }
+      bytes += next.value.byteLength;
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (!overflow) await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
+};
+
 const strictResponse = async (
   response: Response
 ): Promise<Record<string, unknown>> => {
-  const length = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
+  const text = await readBoundedResponseText(response);
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -2639,13 +2683,13 @@ const submitTransition = async (
 };
 
 const pairingLinkFromArgs = (args: string[]): string => {
-  const direct = args.includes("--link");
+  if (args.some((arg) => arg === "--link" || arg.startsWith("--link=")))
+    fail("--link is obsolete; use --link-stdin or --link-fd.");
   const stdin = args.includes("--link-stdin");
   const fd = flag(args, "--link-fd");
-  if (Number(direct) + Number(stdin) + Number(fd !== undefined) !== 1) {
-    fail("Use exactly one of --link, --link-stdin, or --link-fd.");
+  if (Number(stdin) + Number(fd !== undefined) !== 1) {
+    fail("Use exactly one of --link-stdin or --link-fd.");
   }
-  if (direct) return requiredFlag(args, "--link");
   const raw = readBoundedFd(stdin ? "0" : fd, "--link-fd", 4_096);
   try {
     return raw.toString("utf8").trim();
@@ -2662,17 +2706,13 @@ const redeemPairingFromCli = async (
 ): Promise<PersonalSyncResult> => {
   const link = pairingLinkFromArgs(args);
   const deviceLabel = flag(args, "--device-label")?.trim() || "SSH device";
-  if (deviceLabel.length > 80 || /[\\r\\n\\0]/.test(deviceLabel)) {
+  if (deviceLabel.length > 80 || /[\r\n\0]/.test(deviceLabel)) {
     fail("--device-label is invalid.");
   }
-  const localControlUrl = controlOrigin({
-    ...loadRepoEnv(paths.repoRoot, environment),
-    ...environment,
-    PDS_CONTROL_URL:
-      environment.PDS_LOCAL_CONTROL_URL?.trim() ||
-      environment.PDS_CONTROL_URL?.trim() ||
+  const localControlUrl = parseLoopbackOrigin(
+    environment.PDS_LOCAL_CONTROL_URL?.trim() ||
       resolveApiUrl(environment, loadRepoEnv(paths.repoRoot, environment))
-  });
+  );
   return await redeemPersonalDevicePairing({
     link,
     deviceLabel,

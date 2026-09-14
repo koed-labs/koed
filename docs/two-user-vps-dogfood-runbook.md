@@ -374,7 +374,11 @@ installation remains the fixed control-plane hub in V1.
 2. Create or recover one Personal Device Group through the supported device
    enrollment flow. Keep Device A as the local Authority-hosting installation.
    From Device A's **Devices** modal, issue the QR/link; on Device B, use
-   **Join with link**; compare the short code; approve on A.
+   **Join with link** and paste or scan it. Enrollment completes automatically
+   after capability and signed-request validation; there is no short-code
+   comparison or approval click. The registered deep link is optional, but
+   paste/scan is preferred because Windows/Linux OS activation may expose the
+   URL in argv (macOS normally delivers it through Electron `open-url`).
    Confirm both devices become active group members and each holds only its own
    local device secrets. Confirm Device B does not offer an invitation action
    that would require Device A's Authority key. Device A is the fixed

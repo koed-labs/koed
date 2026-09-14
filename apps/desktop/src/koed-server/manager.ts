@@ -102,12 +102,15 @@ import {
   type PersonalDevicePairingInvitation,
   type PersonalDevicePairingServer
 } from "../personal-device-pairing-server.js";
+import type { PdsDesktopSecretStore } from "../pds-secure-provider.js";
 import {
   decryptPersonalDevicePairingMessage,
-  encryptPersonalDevicePairingMessage
+  encryptPersonalDevicePairingMessage,
+  PERSONAL_DEVICE_PAIRING_MAX_PLAINTEXT_BYTES
 } from "../personal-device-pairing-crypto.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 import {
+  cleanupLegacyProtectedFdFiles,
   withProtectedJsonFd,
   withProtectedTextFd
 } from "../ipc/protected-json-fd.js";
@@ -216,6 +219,7 @@ export interface KoedServerManagerOptions {
     ): Promise<Record<string, unknown>>;
   };
   startPairingServer?: typeof startPersonalDevicePairingServer;
+  personalDevicePairingStore?: PdsDesktopSecretStore;
   managedConversationDraftStore?: {
     get(reference: string): Promise<string | null>;
     put(reference: string, value: string): Promise<void>;
@@ -640,6 +644,59 @@ const optionalExactDesktopArgs = (
   }
   return value ?? {};
 };
+
+const MAX_PAIRING_RESPONSE_BYTES =
+  PERSONAL_DEVICE_PAIRING_MAX_PLAINTEXT_BYTES * 2;
+
+const readBoundedResponseText = async (
+  response: Response,
+  maximumBytes: number,
+  errorMessage: string
+): Promise<string> => {
+  if (!response.body) {
+    const declaredLength = Number(response.headers.get("content-length") ?? "");
+    if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+      throw new Error(errorMessage);
+    }
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maximumBytes) {
+      throw new Error(errorMessage);
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > maximumBytes) {
+        await reader.cancel();
+        throw new Error(errorMessage);
+      }
+      chunks.push(decoder.decode(next.value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+  } finally {
+    reader.releaseLock();
+  }
+  return chunks.join("");
+};
+
+const readBoundedResponseJson = async (
+  response: Response,
+  maximumBytes: number
+): Promise<unknown> =>
+  JSON.parse(
+    await readBoundedResponseText(
+      response,
+      maximumBytes,
+      "Pairing response is too large."
+    )
+  );
 
 const pairingIdArg = (args: Record<string, unknown> | undefined): string => {
   const value = exactDesktopArgs(args, ["id"]).id;
@@ -1523,6 +1580,7 @@ export const createKoedServerManager = ({
   personalMemoryFetch = globalThis.fetch,
   localAiRuntimeClient,
   startPairingServer = startPersonalDevicePairingServer,
+  personalDevicePairingStore,
   managedConversationDraftStore,
   confirmSourceControlMutation
 }: KoedServerManagerOptions): KoedServerManager => {
@@ -1546,6 +1604,7 @@ export const createKoedServerManager = ({
   if (environment.KOED_HOME?.trim()) {
     writePersonalDevicePeerEndpoint(environment, null);
   }
+  cleanupLegacyProtectedFdFiles(resolve(resolveKoedHome(environment), "run"));
   const managedTerminalConnections = new Map<
     string,
     {
@@ -2114,6 +2173,9 @@ export const createKoedServerManager = ({
         return await personalDevicePairingServerStart;
       personalDevicePairingServerStart = startPairingServer({
         port: resolvePersonalDevicePairingPort(environment.KOED_PDS_LAN_PORT),
+        ...(personalDevicePairingStore
+          ? { persistence: personalDevicePairingStore }
+          : {}),
         forwardControl: async (input) => {
           const { apiOrigin } = await personalMemoryAccess();
           const desktop = readDesktopLocalCredentialAuthorization(
@@ -2146,10 +2208,11 @@ export const createKoedServerManager = ({
               ])
             }
           );
-          const body = await response.text();
-          if (Buffer.byteLength(body, "utf8") > 1_048_576) {
-            throw new Error("PDS control response exceeds maximum size.");
-          }
+          const body = await readBoundedResponseText(
+            response,
+            1_048_576,
+            "PDS control response exceeds maximum size."
+          );
           return {
             status: response.status,
             headers: {
@@ -2180,13 +2243,20 @@ export const createKoedServerManager = ({
         }
       });
       try {
-        personalDevicePairingServer = await personalDevicePairingServerStart;
-        writePersonalDevicePeerEndpoint(
-          environment,
-          personalDevicePairingServer.relayUrl
-        );
+        const startedServer = await personalDevicePairingServerStart;
+        personalDevicePairingServer = startedServer;
+        writePersonalDevicePeerEndpoint(environment, startedServer.relayUrl);
         personalDevicePairingServerError = null;
-        return personalDevicePairingServer;
+        for (const id of startedServer.claimedInvitationIds?.() ?? []) {
+          void automaticPairingEnrollment(id).catch((error: unknown) => {
+            if (personalDevicePairingServer !== startedServer) return;
+            personalDevicePairingServerError =
+              error instanceof Error
+                ? error.message
+                : "Automatic Personal Device enrollment failed.";
+          });
+        }
+        return startedServer;
       } finally {
         personalDevicePairingServerStart = null;
       }
@@ -2201,7 +2271,6 @@ export const createKoedServerManager = ({
     }
     try {
       await ensurePersonalDevicePairingServer();
-      personalDevicePairingServerError = null;
       return status;
     } catch {
       personalDevicePairingServerError =
@@ -2240,7 +2309,10 @@ export const createKoedServerManager = ({
         signal: AbortSignal.timeout(timeoutMs)
       }
     );
-    const responseBody = await response.json();
+    const responseBody = await readBoundedResponseJson(
+      response,
+      MAX_PAIRING_RESPONSE_BYTES
+    );
     if (!response.ok) {
       throw new Error(
         responseBody &&
@@ -2492,6 +2564,25 @@ export const createKoedServerManager = ({
     return publicResult;
   };
 
+  const finalizeAutomaticPairingEnrollment = async (
+    server: PersonalDevicePairingServer,
+    id: string,
+    result: Record<string, unknown> = { ok: true }
+  ): Promise<Record<string, unknown>> => {
+    // Completion is durable before these local finalization steps. Repeat them
+    // after restore so a crash between completion and refresh is recoverable.
+    await runPersonalSync(["active-device", "refresh"]);
+    await wakePersonalDeviceSyncRuntime();
+    if (personalDevicePairingServer === server) {
+      personalDevicePairingServerError = null;
+    }
+    return {
+      ...result,
+      state: "completed",
+      pairing: server.inspect(id)[0]
+    };
+  };
+
   const automaticPairingEnrollment = (
     id: string
   ): Promise<Record<string, unknown>> => {
@@ -2502,11 +2593,7 @@ export const createKoedServerManager = ({
     if (existing) return existing;
     const current = server.inspect(id)[0];
     if (current?.state === "completed") {
-      return Promise.resolve({
-        ok: true,
-        state: "completed",
-        pairing: current
-      });
+      return finalizeAutomaticPairingEnrollment(server, id);
     }
     if (current?.state === "failed") {
       return Promise.reject(new Error("Pairing enrollment failed."));
@@ -2515,43 +2602,45 @@ export const createKoedServerManager = ({
       const request = await server.waitForRequest(id);
       // Claim before network I/O. From this boundary onward cancellation must
       // not destroy the invitation while membership commit may be in flight.
-      server.claimApproval(id);
+      await server.claimApproval(id);
+      const current = server.inspect(id)[0];
+      if (current?.state === "completed") {
+        return await finalizeAutomaticPairingEnrollment(server, id);
+      }
       let result: Record<string, unknown> | undefined;
       let lastError: unknown;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          result = await withPersonalSyncJsonFd(
-            { request },
-            async (fd) =>
-              await runPersonalSync([
-                "active-device",
-                "approve",
-                "--request-fd",
-                String(fd)
-              ])
-          );
-          lastError = undefined;
-          break;
-        } catch (error) {
-          lastError = error;
-          if (attempt < 2) await sleep(250 * 2 ** attempt);
+      if (current?.phase !== "awaiting_joiner") {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            result = await withPersonalSyncJsonFd(
+              { request },
+              async (fd) =>
+                await runPersonalSync([
+                  "active-device",
+                  "approve",
+                  "--request-fd",
+                  String(fd)
+                ])
+            );
+            lastError = undefined;
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) await sleep(250 * 2 ** attempt);
+          }
         }
+        if (lastError !== undefined) throw lastError;
+        if (!result || !resultOk(result)) {
+          throw new Error(
+            resultMessage(result, "Pairing request could not be approved.")
+          );
+        }
+        await server.approve(id);
+      } else {
+        result = { ok: true };
       }
-      if (lastError !== undefined) throw lastError;
-      if (!result || !resultOk(result)) {
-        throw new Error(
-          resultMessage(result, "Pairing request could not be approved.")
-        );
-      }
-      server.approve(id);
       await server.waitForCompletion(id);
-      await runPersonalSync(["active-device", "refresh"]);
-      await wakePersonalDeviceSyncRuntime();
-      return {
-        ...result,
-        state: "completed",
-        pairing: server.inspect(id)[0]
-      };
+      return await finalizeAutomaticPairingEnrollment(server, id, result);
     })().catch((error) => {
       // Keep claimed invitations resumable. A lost response can hide a durable
       // commit; next wait retries against persisted group membership state.

@@ -27,6 +27,7 @@ import {
 import {
   decryptRecoveryKit,
   encryptRecoveryKit,
+  parseLoopbackOrigin,
   personalSyncProviderEnvironment,
   runPersonalSyncCommand
 } from "./personal-sync.js";
@@ -258,10 +259,58 @@ const pendingApprovalFetch =
   };
 
 describe("Personal Sync control client", () => {
-  it("requires a full invitation link for SSH pairing redemption", async () => {
+  it("requires stdin or an inherited FD for SSH pairing redemption", async () => {
     await expect(
       runPersonalSyncCommand(["join", "redeem"], pathsFor(root()), {})
-    ).rejects.toThrow("Use exactly one of --link, --link-stdin, or --link-fd.");
+    ).rejects.toThrow("Use exactly one of --link-stdin or --link-fd.");
+    await expect(
+      runPersonalSyncCommand(
+        ["join", "redeem", "--link", "http://127.0.0.1/pair"],
+        pathsFor(root()),
+        {}
+      )
+    ).rejects.toThrow("--link is obsolete; use --link-stdin or --link-fd.");
+  });
+
+  it("accepts only exact loopback origins for local reconciliation", () => {
+    expect(parseLoopbackOrigin("http://localhost:3300/")).toBe(
+      "http://localhost:3300"
+    );
+    expect(parseLoopbackOrigin("http://127.0.0.1:3300")).toBe(
+      "http://127.0.0.1:3300"
+    );
+    for (const value of [
+      "https://attacker.example",
+      "http://localhost.example:3300",
+      "http://user:secret@127.0.0.1:3300",
+      "http://127.0.0.1:3300/reconcile",
+      "http://127.0.0.1:3300/?redirect=attacker"
+    ]) {
+      expect(() => parseLoopbackOrigin(value)).toThrow("exact loopback origin");
+    }
+  });
+
+  it("rejects device labels containing control characters", async () => {
+    const directory = root();
+    const linkFd = fdFor(directory, "link", "not a pairing link");
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "join",
+            "redeem",
+            "--link-fd",
+            String(linkFd),
+            "--device-label",
+            "studio\nforged"
+          ],
+          pathsFor(directory),
+          {}
+        )
+      ).rejects.toThrow("--device-label is invalid.");
+    } finally {
+      closeSync(linkFd);
+    }
   });
 
   it("passes only local store location to the application provider", () => {
@@ -308,6 +357,63 @@ describe("Personal Sync control client", () => {
         PDS_CONTROL_URL: "https://pds.test"
       })
     ).rejects.toThrow("browser session FD");
+  });
+
+  it("bounds control response streams and cancels overflow", async () => {
+    const directory = root();
+    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1_048_577));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          ["status"],
+          pathsFor(directory),
+          controlEnv(sessionFd),
+          {
+            fetch: (() =>
+              new Response(body, {
+                headers: { "content-type": "application/json" }
+              })) as never
+          }
+        )
+      ).rejects.toThrow("PDS control response exceeds maximum size.");
+      expect(cancelled).toBe(true);
+    } finally {
+      closeSync(sessionFd);
+    }
+  });
+
+  it("rejects malformed control response content lengths", async () => {
+    const directory = root();
+    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          ["status"],
+          pathsFor(directory),
+          controlEnv(sessionFd),
+          {
+            fetch: (() =>
+              new Response("{}", {
+                headers: {
+                  "content-type": "application/json",
+                  "content-length": "not-a-length"
+                }
+              })) as never
+          }
+        )
+      ).rejects.toThrow("PDS control response is invalid.");
+    } finally {
+      closeSync(sessionFd);
+    }
   });
 
   it("reports backend status through bounded session-authenticated control API", async () => {

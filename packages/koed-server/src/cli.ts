@@ -107,7 +107,7 @@ Commands:
   personal-sync group bootstrap --json    Create group and encrypted recovery kit
   personal-sync recovery-kit create|verify --json
   personal-sync join request|challenge|complete --json
-  personal-sync join redeem (--link <link>|--link-stdin|--link-fd <fd>)
+  personal-sync join redeem (--link-stdin|--link-fd <fd>)
     [--device-label <label>] --json
   personal-sync active-device approve|refresh --json
   personal-sync recovery approve|guidance --json

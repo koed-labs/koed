@@ -1,6 +1,6 @@
 # Same-Network Personal Device Enrollment
 
-Status: Accepted.
+Status: Accepted, amended by current capability-pairing policy below.
 
 Related decisions:
 
@@ -11,8 +11,8 @@ Related decisions:
 
 ## Context
 
-PDS V1 already defines signed device enrollment, active-device approval,
-membership epochs, recipient key envelopes, and an opaque encrypted relay.
+PDS V1 already defines signed device enrollment, membership epochs, recipient
+key envelopes, and an opaque encrypted relay.
 Those primitives did not provide a usable same-network Desktop ceremony. A
 User needed a safe way to connect a second device without copying an API Token,
 browser cookie, recovery key, device private key, or PDS runtime secret.
@@ -32,15 +32,35 @@ content keys; it is not the inviting device's member identity. That route is an
 availability dependency for replication, not a source-of-truth or plaintext
 Memory authority.
 
+## Current capability-pairing amendment
+
+This amendment is authoritative for the current build and supersedes conflicting
+ceremony details below. A one-time invitation link is the enrollment capability.
+After Koed validates expiry, group, transport binding, the signed joining-device
+request, and single-use state, possession completes enrollment automatically.
+There is no human-facing short code, comparison ceremony, or separate **Approve
+device** action. `challenge_id` remains an internal binding identifier only.
+
+SSH/headless redemption accepts the link only through `--link-stdin` or
+`--link-fd <fd>`. The former `--link <link>` argument is removed so bearer
+material is not intentionally placed in process arguments.
+
+Desktop paste or QR scan is preferred. The registered `koed-pair://` protocol is
+also supported, but OS activation has platform-specific argument exposure:
+macOS normally delivers the URL through Electron's `open-url` event; Windows and
+Linux may deliver the complete URL through process arguments on initial launch or
+single-instance activation. That exposure is inherent to those OS protocol
+handlers, not a blanket Koed guarantee. Koed must not log or persist the URL;
+users who want to avoid argv exposure should paste or scan instead.
+
 ## Decision
 
 Koed Desktop exposes a **Devices** action in the account rail. The installation
 hosting the group's neutral Authority/Relay can create a ten-minute, one-use
 invitation and show it as both a QR code and a copyable link. The receiving
-Desktop accepts the link through explicit paste or the registered
-`koed-pair://` deep link. Both devices show the same short code. The active
-device on the Authority-hosting installation must explicitly approve the
-signed joining-device request before any membership transition occurs.
+Desktop accepts the link through explicit paste, QR scan, or the registered
+`koed-pair://` deep link. Koed validates the signed joining-device request and
+completes enrollment automatically.
 
 This control-plane placement does not make that installation a plaintext
 Personal Memory authority or aggregate Recall host. Every admitted device
@@ -64,7 +84,7 @@ http://<private-ip>:3310/pair/<invitation-id>#token=<256-bit-secret>
 The URL fragment is never sent by a browser HTTP request. Desktop derives an
 AES-256-GCM transport key from the secret with HKDF-SHA-256, the protocol
 identifier, and invitation ID. Invitation retrieval, signed-request
-submission, approval, and bounded control requests use authenticated encrypted
+submission, enrollment, and bounded control requests use authenticated encrypted
 envelopes. Direction, invitation ID, and message ID are authenticated
 additional data. Every message has a fresh nonce and message ID.
 
@@ -99,8 +119,8 @@ The main process proxies enrollment control to the loopback local API with the
 scoped `Koed-Desktop` credential. That credential is accepted only by a
 `local_personal` API on loopback and only for its recorded Personal owner.
 Neither it nor any device or Authority private key crosses renderer IPC. The
-renderer receives only the invitation display value, short code, expiry,
-device label, and coarse state. During explicit first-device setup, it may also
+renderer receives only the invitation display value, expiry, device label,
+and coarse state. During explicit first-device setup, it may also
 receive the newly generated recovery code once so the User can record it. The
 main process writes the encrypted recovery kit through a native save dialog,
 passes the recovery code to `koed-server` through an owner-only temporary file
@@ -131,10 +151,10 @@ acknowledge the new epoch, and the joining device stores only its own secrets
 through the application-managed PDS store.
 
 Pairing progress uses held encrypted requests and Desktop IPC completion. It
-does not poll. Closing an invitation before approval cancels it. Once the
-active device commits approval, Koed keeps the gateway available until the
-joining device acknowledges and activates the new epoch; that transition can
-no longer be canceled as though no membership change occurred.
+does not poll. Closing an invitation before its commit boundary cancels it.
+Once Koed commits the membership transition, it keeps the gateway available
+until the joining device acknowledges and activates the new epoch; that
+transition can no longer be canceled as though no membership change occurred.
 
 Desktop atomically replaces the protected runtime after bootstrap, enrollment,
 or epoch refresh, then sends a loopback-only authenticated wake. The worker
@@ -146,8 +166,9 @@ must not restart API, Worker, capture, or Recall services.
 - A copied landing-page URL without its fragment is useless.
 - A passive LAN observer cannot recover the invitation, enrollment request, or
   control responses.
-- Possession of the QR/link alone cannot add a device; active-device approval
-  and the signed PDS transition remain mandatory.
+- Possession of the QR/link is the enrollment capability; validation of the
+  signed PDS transition, expiry, transport binding, and single-use state remains
+  mandatory, but no second human approval is required.
 - The Authority/Relay route must be reachable for enrollment, lifecycle,
   discovery, anti-entropy, and offline delivery. A temporary outage does not
   stop local capture, Recall, or transfer over already discovered peer routes.

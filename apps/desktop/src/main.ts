@@ -181,6 +181,9 @@ const openExternal = createExternalUrlOpener({
 const createServerManager = (
   managedConversationDraftStore?: ReturnType<
     typeof createPdsDesktopSecretStore
+  > | null,
+  personalDevicePairingStore?: ReturnType<
+    typeof createPdsDesktopSecretStore
   > | null
 ): KoedServerManager =>
   createKoedServerManager({
@@ -216,6 +219,7 @@ const createServerManager = (
       return selected.canceled ? null : (selected.filePath ?? null);
     },
     ...(managedConversationDraftStore ? { managedConversationDraftStore } : {}),
+    ...(personalDevicePairingStore ? { personalDevicePairingStore } : {}),
     confirmSourceControlMutation: async ({ operation }) => {
       const options: MessageBoxOptions = {
         type: "warning",
@@ -360,8 +364,14 @@ const bootstrap = async () => {
   const managedConversationDraftStore = createManagedConversationDraftStore({
     userDataPath: app.getPath("userData")
   });
+  const personalDevicePairingStore = createPdsDesktopSecretStore({
+    userDataPath: resolveApplicationKoedHome(koedEnvironment)
+  });
   koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
-  koedServer = createServerManager(managedConversationDraftStore);
+  koedServer = createServerManager(
+    managedConversationDraftStore,
+    personalDevicePairingStore
+  );
   const server = koedServer;
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {

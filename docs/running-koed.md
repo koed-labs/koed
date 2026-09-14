@@ -270,17 +270,23 @@ one-time Desktop invitation link. Possession of this short-lived link authorizes
 Personal Device enrollment; there is no comparison code or second Authority
 approval. The command submits the signed request over the encrypted invitation
 transport, waits for automatic enrollment, and completes local reconciliation.
-Use `--link-stdin` or `--link-fd` so the token-bearing link does not enter shell
-history or process lists. Treat the link as a secret: do not log, persist, or
-share it beyond the intended joining device.
+Use only `--link-stdin` or `--link-fd`; `--link` is not supported. These
+inputs keep the token-bearing link out of shell history or process lists. Treat
+the link as a secret: do not log, persist, or share it beyond the intended
+joining device.
 
 It uses the Koed local Desktop credential only for the loopback reconciliation
 step; headless `setup core` provisions that scoped credential in the same
 application-managed encrypted store, so no Desktop window or OS keychain is
 required on the joining device. Redeem resolves the local API from Koed's
 configured port; set `PDS_LOCAL_CONTROL_URL` only when that API uses a
-non-default local URL. The joining User needs filesystem access to its local
-`KOED_HOME`; no OS credential store or interactive session is required.
+non-default local URL, and keep it an exact HTTP(S) loopback origin with no
+credentials, path, query, or fragment. `PDS_CONTROL_URL` is reserved for the
+encrypted pairing control endpoint and is never used for local reconciliation.
+The local routes require the scoped `Koed-Desktop` credential and loopback
+source; Personal API Tokens, `Koed-Device`, and non-loopback requests fail
+closed. The joining User needs filesystem access to its local `KOED_HOME`; no
+OS credential store or interactive session is required.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
@@ -305,10 +311,22 @@ node packages/koed-server/dist/cli.js personal-sync recovery-kit verify \
 Pairing stores only redacted backend request IDs locally. The internal
 `challenge_id` binds the invitation to its enrollment request; it is not a
 human-facing code and is never displayed as one. The invitation token is not
-stored after redemption. Active-device, recovery, revoke, and conflict actions
-require exact pre-built signed transition data through protected FDs; Authority
-validates CAS/current head, countersigns, and exposes durable pending activation
-status. Arbitrary device IDs cannot succeed.
+retained indefinitely: claimed recovery and completed final replay keep it only
+inside encrypted bounded state. Active-device, recovery, revoke, and
+conflict actions require exact pre-built signed transition data through
+protected FDs; Authority validates CAS/current head, countersigns, and exposes
+durable pending activation status. Arbitrary device IDs cannot succeed.
+
+Desktop pairing recovery uses the encrypted application-managed PDS store under
+`KOED_HOME/secrets`. Only claimed requests become durable: their canonical
+signed request, device label, approval state, used-message IDs, and ten-minute
+recovery deadline are retained. Pairing listener startup restores valid claimed
+records before binding, and Desktop resumes automatic enrollment for them.
+After completion, final completion can be replayed during a second bounded
+ten-minute window, within a 64-exchange invitation limit; the client retries
+ambiguous transport up to three times with fresh encrypted message IDs. Reused
+message IDs are rejected.
+Expired recovery deletes the retained snapshot and bearer token.
 
 `--password` is rejected. Pipe password bytes through stdin or supply a file
 descriptor; never put recovery passwords in arguments, environment, logs, or
@@ -331,26 +349,39 @@ link is the enrollment capability: the second Desktop may scan the QR, open the
 **Connect device**. Koed validates the signed request and completes enrollment
 automatically; no short-code comparison or **Approve device** action exists.
 The link is cleared after redemption and must never be logged or persisted.
-Joined devices are symmetric Personal Memory replicas. They receive encrypted
+Paste or QR scan is preferred. Opening `koed-pair://` uses OS protocol
+activation: macOS normally sends the URL through Electron's `open-url` event,
+while Windows/Linux may place it in argv on initial launch or single-instance
+activation. That platform behavior means Koed makes no blanket no-argv claim;
+users avoiding argv exposure should paste or scan. Joined devices are symmetric
+Personal Memory replicas. They receive encrypted
 packages directly when every recipient has a current reachable peer route, but
 V1 does not copy the Authority key or offer another invitation from those
 replicas. Unreachable devices continue through the configured relay.
 
 Pairing requires both devices to reach the inviting installation's private
-HTTP endpoint on TCP port `3310`. This may be an RFC1918 LAN address or a
+HTTP endpoint on TCP port `3310`. The listener binds one concrete non-loopback
+private IPv4 interface selected from available interfaces; it never binds
+`0.0.0.0` or a public address. This may be an RFC1918 LAN address or a
 Tailscale address in `100.64.0.0/10`; Tailscale must be configured so the
-inviting device's port is reachable over the tailnet. The HTTP pairing server
-remains private and must not be exposed to the public internet. The invitation
-lasts ten minutes, is invalidated after completion, and its bearer token is
-sensitive even though the application encrypts the enrollment ceremony. Koed
-then uses the existing signed PDS membership and encrypted relay protocol.
+inviting device's port is reachable over the tailnet. Invitation control and
+relay URLs use exact bound host and port. The HTTP pairing server remains
+private and must not be exposed to the public internet. The invitation lasts
+ten minutes, is invalidated after completion except for bounded final replay,
+and its bearer token is sensitive even though the application encrypts the
+enrollment ceremony. Koed then uses the existing signed PDS membership and
+encrypted relay protocol.
 
 After enrollment, every Desktop keeps its private-network package receive path
 available for certificate-authenticated encrypted replication and restores it
 when local services resume. Invitation routes remain Authority-host-only and
-are invalidated after use. If a receive path cannot bind, Devices status reports
-the fault and transfer falls back to the relay; Personal capture and Recall
-continue locally.
+are invalidated after use. Protected invitation, recovery-code, and IPC payloads
+use owner-only `0600` temporary files that are fsynced, reopened read-only, and
+unlinked before their descriptor is handed to a child; the open descriptor is
+closed after use. Startup removes only stale files from the older linked-file
+implementation when its owner PID is gone. If a receive path cannot bind,
+Devices status reports the fault and transfer falls back to the relay; Personal
+capture and Recall continue locally.
 
 For API-first validation, run `pnpm pds-fixture:validate` with `DATABASE_URL`
 set so its PostgreSQL stages execute. Against an isolated local-personal API
