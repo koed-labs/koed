@@ -1260,14 +1260,14 @@ const bootstrapGroup = async (
           ...deps,
           sessionCookie: deps.sessionCookie ?? browserSession(environment)
         };
-  const recoveryKitPath = requiredFlag(args, "--recovery-kit");
+  const recoveryKitPath = flag(args, "--recovery-kit");
   const runtimeSecretRef =
     flag(args, "--runtime-secret-ref")?.trim() ||
     environment.PDS_RUNTIME_SECRET_REF?.trim() ||
     fail(
       "PDS_RUNTIME_SECRET_REF or --runtime-secret-ref is required for bootstrap."
     );
-  const password = passwordFrom(args);
+  const password = recoveryKitPath ? passwordFrom(args) : randomBytes(32);
   const identity =
     deps.identity ?? (await ensureDeviceIdentity(paths, { environment }));
   if (
@@ -1318,7 +1318,8 @@ const bootstrapGroup = async (
   try {
     if (decryptRecoveryKit(kit, password) !== recoveryPlaintext)
       fail("Recovery kit round-trip verification failed.");
-    stagedRecoveryKit = stageRecoveryKit(recoveryKitPath, kit);
+    if (recoveryKitPath)
+      stagedRecoveryKit = stageRecoveryKit(recoveryKitPath, kit);
   } finally {
     password.fill(0);
   }
@@ -1397,7 +1398,7 @@ const bootstrapGroup = async (
         }
       }
     });
-    stagedRecoveryKit.finalize();
+    stagedRecoveryKit?.finalize();
   } catch (error) {
     try {
       stagedRecoveryKit?.abort();
@@ -1471,7 +1472,7 @@ const bootstrapGroup = async (
     message: "Personal Device Group created. The secure runtime is active.",
     groupId,
     deviceId: deviceInstanceId,
-    recoveryKit: resolve(recoveryKitPath)
+    ...(recoveryKitPath ? { recoveryKit: resolve(recoveryKitPath) } : {})
   };
 };
 
@@ -2704,8 +2705,22 @@ const redeemPairingFromCli = async (
   environment: NodeJS.ProcessEnv,
   deps: PersonalSyncDependencies
 ): Promise<PersonalSyncResult> => {
-  const link = pairingLinkFromArgs(args);
-  const deviceLabel = flag(args, "--device-label")?.trim() || "SSH device";
+  return redeemPairingLink(
+    pairingLinkFromArgs(args),
+    flag(args, "--device-label")?.trim() || "SSH device",
+    paths,
+    environment,
+    deps
+  );
+};
+
+export const redeemPairingLink = async (
+  link: string,
+  deviceLabel: string,
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: PersonalSyncDependencies = {}
+): Promise<PersonalSyncResult> => {
   if (deviceLabel.length > 80 || /[\r\n\0]/.test(deviceLabel)) {
     fail("--device-label is invalid.");
   }

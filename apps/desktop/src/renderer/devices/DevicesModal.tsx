@@ -1,3 +1,4 @@
+import { DeviceRequestPanel } from "./DeviceRequestPanel.js";
 import {
   Check,
   Clipboard,
@@ -50,11 +51,6 @@ type PairingView = {
   joiningDeviceLabel: string | null;
 };
 
-type RecoveryView = {
-  code: string;
-  kitPath: string;
-};
-
 type Invoke = <T = unknown>(
   command: string,
   args?: Record<string, unknown>
@@ -71,6 +67,10 @@ const errorMessage = (error: unknown): string => {
   if (!(error instanceof Error) || !error.message) {
     return "Koed could not complete device pairing.";
   }
+  if (error.message.includes("PersonalMemoryBoundaryError: not_ready"))
+    return "Koed’s local services are not ready. Check local health and restart Koed before setting up devices.";
+  if (error.message.includes("ENOSPC"))
+    return "Koed ran out of disk space. Free space and restart Koed before setting up devices.";
   return error.message.replace(
     /^Error invoking remote method '[^']+': (?:Error: )?/,
     ""
@@ -359,7 +359,7 @@ export function DevicesModal({
     string[]
   >([]);
   const [state, setState] = useState<
-    "loading" | "overview" | "invite" | "join" | "joining" | "recovery"
+    "loading" | "overview" | "invite" | "join" | "joining" | "request" | "add"
   >("loading");
   const [pairing, setPairing] = useState<PairingView | null>(null);
   const [pairingWaitFailed, setPairingWaitFailed] = useState(false);
@@ -369,9 +369,6 @@ export function DevicesModal({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [recovery, setRecovery] = useState<RecoveryView | null>(null);
-  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
-  const [recoveryCopied, setRecoveryCopied] = useState(false);
   const joiningRequestId = useRef<string | null>(null);
   const activePairingId = useRef<string | null>(null);
   const group = groups[0] ?? null;
@@ -472,93 +469,22 @@ export function DevicesModal({
     }
   };
 
-  const beginInvitation = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await invoke<{
-        ok: boolean;
-        pairing?: PairingView;
-        error?: string;
-      }>("personal_sync_pairing_create", {
-        ...(group ? { groupId: group.group_id } : {})
-      });
-      if (!result.ok || !result.pairing) {
-        throw new Error(result.error ?? "Pairing is not configured yet.");
-      }
-      activePairingId.current = result.pairing.id;
-      setPairingWaitFailed(false);
-      setPairing(result.pairing);
-      setState("invite");
-      void waitForInvitation(result.pairing.id).catch((caught) => {
-        if (activePairingId.current === result.pairing?.id) {
-          setPairingWaitFailed(true);
-          setError(errorMessage(caught));
-        }
-      });
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const requestConnected = useCallback(() => {
+    void load();
+    setState("overview");
+  }, [load]);
 
   const bootstrapGroup = async () => {
     setBusy(true);
     setError(null);
     try {
-      const result = await invoke<{
-        ok?: boolean;
-        state?: string;
-        error?: string;
-        recoveryCode?: string;
-        recoveryKitPath?: string;
-      }>("personal_sync_group_bootstrap");
-      if (result.state === "cancelled") return;
-      if (
-        result.ok !== true ||
-        typeof result.recoveryCode !== "string" ||
-        typeof result.recoveryKitPath !== "string"
-      ) {
+      const result = await invoke<{ ok?: boolean; error?: string }>(
+        "personal_sync_group_bootstrap"
+      );
+      if (result.ok !== true)
         throw new Error(
           result.error ?? "Koed could not set up Personal Device Sync."
         );
-      }
-      setRecovery({
-        code: result.recoveryCode,
-        kitPath: result.recoveryKitPath
-      });
-      setRecoveryConfirmed(false);
-      setRecoveryCopied(false);
-      setState("recovery");
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyRecoveryCode = async () => {
-    if (!recovery) return;
-    await window.koedDesktop?.clipboard?.writeText(recovery.code);
-    setRecoveryCopied(true);
-  };
-
-  const completeRecovery = async () => {
-    if (!recoveryConfirmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await invoke<{ ok?: boolean; error?: string }>(
-        "personal_sync_group_activate"
-      );
-      if (result.ok !== true) {
-        throw new Error(
-          result.error ??
-            "Koed could not activate Personal Device Sync on this device."
-        );
-      }
-      setRecovery(null);
       await load();
       setState("overview");
     } catch (caught) {
@@ -660,7 +586,7 @@ export function DevicesModal({
 
   return (
     <ModalFrame
-      closeDisabled={busy || state === "recovery"}
+      closeDisabled={busy}
       onClose={() => void close()}
       title="Devices"
     >
@@ -698,71 +624,13 @@ export function DevicesModal({
           pairing={pairing}
           retrying={false}
         />
-      ) : state === "recovery" && recovery ? (
-        <>
-          <div className="device-recovery-content">
-            <KeyRound aria-hidden="true" />
-            <div>
-              <h3>Save your recovery code</h3>
-              <p>
-                Your encrypted recovery kit was saved at the location below.
-                Keep this code separately. Koed cannot restore the device group
-                without both.
-              </p>
-              <label className="device-link-field">
-                <span>Recovery code</span>
-                <span>
-                  <input
-                    aria-label="Recovery code"
-                    autoComplete="off"
-                    readOnly
-                    spellCheck={false}
-                    value={recovery.code}
-                  />
-                  <button
-                    aria-label="Copy recovery code"
-                    className="device-icon-button"
-                    onClick={() => void copyRecoveryCode()}
-                    title="Copy recovery code"
-                    type="button"
-                  >
-                    {recoveryCopied ? (
-                      <Check aria-hidden="true" />
-                    ) : (
-                      <Clipboard aria-hidden="true" />
-                    )}
-                  </button>
-                </span>
-              </label>
-              <small className="device-recovery-path">{recovery.kitPath}</small>
-              <label className="device-recovery-confirmation">
-                <input
-                  checked={recoveryConfirmed}
-                  onChange={(event) =>
-                    setRecoveryConfirmed(event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                I saved the recovery code separately.
-              </label>
-            </div>
-          </div>
-          <footer className="device-modal-actions">
-            <button
-              className="device-primary-button"
-              disabled={!recoveryConfirmed || busy}
-              onClick={() => void completeRecovery()}
-              type="button"
-            >
-              {busy ? (
-                <LoaderCircle aria-hidden="true" />
-              ) : (
-                <Check aria-hidden="true" />
-              )}
-              {busy ? "Activating" : "Done"}
-            </button>
-          </footer>
-        </>
+      ) : state === "request" || state === "add" ? (
+        <DeviceRequestPanel
+          mode={state === "request" ? "join" : "add"}
+          invoke={invoke}
+          onBack={() => setState("overview")}
+          onConnected={requestConnected}
+        />
       ) : state === "join" || state === "joining" ? (
         <>
           <div className="device-join-content">
@@ -872,7 +740,7 @@ export function DevicesModal({
                 <button
                   className="device-primary-button"
                   disabled={busy}
-                  onClick={() => void beginInvitation()}
+                  onClick={() => setState("add")}
                   type="button"
                 >
                   {busy ? (
@@ -880,12 +748,12 @@ export function DevicesModal({
                   ) : (
                     <Plus aria-hidden="true" />
                   )}
-                  Pair another device
+                  Add device
                 </button>
               ) : (
                 <p className="device-authority-guidance">
-                  Create the next pairing link on the device that originally set
-                  up this Personal Device Group.
+                  Add devices from the installation that originally created this
+                  Personal Device Group.
                 </p>
               )
             ) : (
@@ -894,12 +762,12 @@ export function DevicesModal({
                   className="device-secondary-button"
                   onClick={() => {
                     setError(null);
-                    setState("join");
+                    setState("request");
                   }}
                   type="button"
                 >
                   <Laptop aria-hidden="true" />
-                  Join with link
+                  Connect to an existing device
                 </button>
                 <button
                   className="device-primary-button"

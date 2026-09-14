@@ -1710,7 +1710,6 @@ export const registerPersonalDeviceSyncRoutes = (
     "/v1/personal-device-sync/groups/:groupId/sessions/:sessionId/close",
     { preHandler: context.rateLimit.memoryWrite },
     async (request) => {
-      pdsAuthority(context);
       const user = await sessionUser(request);
       const input = pdsCloseSessionParamsSchema.parse(request.params);
       const secureKeys = context.personalDeviceSync.secureKeyProvider;
@@ -1795,7 +1794,6 @@ export const registerPersonalDeviceSyncRoutes = (
     "/v1/personal-device-sync/groups/:groupId/retry",
     { preHandler: context.rateLimit.memoryWrite },
     async (request) => {
-      pdsAuthority(context);
       const user = await sessionUser(request);
       const { groupId } = pdsGroupParamsSchema.parse(request.params);
       return {
@@ -1810,7 +1808,6 @@ export const registerPersonalDeviceSyncRoutes = (
     "/v1/personal-device-sync/groups/:groupId/pause",
     { preHandler: context.rateLimit.memoryWrite },
     async (request) => {
-      pdsAuthority(context);
       const user = await sessionUser(request);
       const { groupId } = pdsGroupParamsSchema.parse(request.params);
       const { paused } = pdsPauseSchema.parse(request.body);
@@ -1828,7 +1825,6 @@ export const registerPersonalDeviceSyncRoutes = (
     "/v1/personal-device-sync/groups/:groupId/local-status",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      pdsAuthority(context);
       const user = await sessionUser(request);
       const { groupId } = pdsGroupParamsSchema.parse(request.params);
       const status = await repo().getPdsLocalSyncStatus({

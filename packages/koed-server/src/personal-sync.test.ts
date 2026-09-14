@@ -776,209 +776,132 @@ describe("Personal Sync control client", () => {
     }
   });
 
-  it("bootstraps a signed group, verifies recovery material, and stores runtime secrets by reference", async () => {
-    const directory = root();
-    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
-    const passwordFd = fdFor(directory, "password", "recovery password");
-    const recoveryKit = resolve(directory, "recovery-kit.json");
-    const authority = generateKeyPairSync("ed25519");
-    const authorityPublicKey = (
-      authority.publicKey.export({ format: "jwk" }) as { x: string }
-    ).x;
-    const stored: Array<{ reference: string; value: string }> = [];
-    let submittedStatement: Record<string, unknown> | null = null;
-    let submittedProof: Record<string, unknown> | null = null;
-    const fetch = async (url: string | URL, options?: RequestInit) => {
-      const path = new URL(String(url)).pathname;
-      const body = options?.body
-        ? (JSON.parse(String(options.body)) as Record<string, unknown>)
-        : {};
-      if (path.endsWith("/challenges")) {
-        expect(body.challenge_hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
-        return response({
-          challenge: {
-            id: "11111111-1111-4111-8111-111111111111",
-            expires_at: "2099-07-15T13:00:00.000Z",
-            browser_subject_id: "browser-user",
-            browser_deployment_id: "browser-deployment",
-            authority: {
-              key_id: "authority-key",
-              public_key: authorityPublicKey
+  it.each([false, true])(
+    "bootstraps a signed group with optional recovery export (%s)",
+    async (exportRecovery) => {
+      const directory = root();
+      const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+      const passwordFd = fdFor(directory, "password", "recovery password");
+      const recoveryKit = resolve(directory, "recovery-kit.json");
+      const authority = generateKeyPairSync("ed25519");
+      const authorityPublicKey = (
+        authority.publicKey.export({ format: "jwk" }) as { x: string }
+      ).x;
+      const stored: Array<{ reference: string; value: string }> = [];
+      let submittedStatement: Record<string, unknown> | null = null;
+      let submittedProof: Record<string, unknown> | null = null;
+      const fetch = async (url: string | URL, options?: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        const body = options?.body
+          ? (JSON.parse(String(options.body)) as Record<string, unknown>)
+          : {};
+        if (path.endsWith("/challenges")) {
+          expect(body.challenge_hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+          return response({
+            challenge: {
+              id: "11111111-1111-4111-8111-111111111111",
+              expires_at: "2099-07-15T13:00:00.000Z",
+              browser_subject_id: "browser-user",
+              browser_deployment_id: "browser-deployment",
+              authority: {
+                key_id: "authority-key",
+                public_key: authorityPublicKey
+              }
             }
-          }
-        });
-      }
-      if (path.endsWith("/groups/genesis")) {
-        submittedStatement = parseCanonicalPdsJson(
-          String(body.statement)
-        ) as Record<string, unknown>;
-        submittedProof = body.proof as Record<string, unknown>;
-        const draft = submittedStatement.draft as Record<string, unknown>;
-        const statementBody = draft.body as Record<string, unknown>;
-        validatePdsGroupStatement(submittedStatement, {
-          authorizationPublicKey: String(
-            statementBody.initialDeviceSigningPublicKey
-          ),
-          expectedGroupId: String(draft.groupId),
-          expectedPreviousHash: null,
-          expectedSequence: "1"
-        });
-        verifyPdsEnrollmentProof({
-          challengeId: String(submittedProof.challenge_id),
-          challenge: String(submittedProof.challenge),
-          groupId: String(draft.groupId),
-          deviceId: String(submittedProof.device_id),
-          deviceSigningKeyId: String(statementBody.initialDeviceSigningKeyId),
-          deviceSigningPublicKey: String(
-            statementBody.initialDeviceSigningPublicKey
-          ),
-          deviceKemKeyId: String(statementBody.initialDeviceKemKeyId),
-          deviceKemPublicKey: String(statementBody.initialDeviceKemPublicKey),
-          browserSubjectId: "browser-user",
-          browserDeploymentId: "browser-deployment",
-          expiresAt: String(submittedProof.expires_at),
-          signature: String(submittedProof.signature)
-        });
-        return response({
-          group: {
-            group_id: draft.groupId,
-            current_epoch: "1",
-            head: {
-              sequence: "1",
-              hash: Buffer.alloc(32, 12).toString("base64url")
-            }
-          },
-          statement: submittedStatement
-        });
-      }
-      if (path.includes("/certificates/")) {
-        const draft = submittedStatement?.draft as Record<string, unknown>;
-        const statementBody = draft.body as Record<string, unknown>;
-        const unsigned = {
-          protocol: "koed/pds/v1",
-          groupId: draft.groupId,
-          deviceId: statementBody.initialDeviceId,
-          deviceSigningKeyId: statementBody.initialDeviceSigningKeyId,
-          deviceSigningPublicKey: statementBody.initialDeviceSigningPublicKey,
-          deviceKemKeyId: statementBody.initialDeviceKemKeyId,
-          deviceKemPublicKey: statementBody.initialDeviceKemPublicKey,
-          epoch: "1",
-          operationFamilies: ["pds_relay"],
-          statementSequence: "1",
-          statementHash: Buffer.alloc(32, 12).toString("base64url"),
-          issuedAt: new Date(Date.now() - 1_000).toISOString(),
-          expiresAt: new Date(Date.now() + 86_400_000).toISOString()
-        };
-        return response({
-          certificate: {
-            ...unsigned,
-            authoritySignature: {
-              keyId: "authority-key",
-              signature: signPdsRecord(
-                "membership-certificate",
-                unsigned,
-                authority.privateKey
-              )
-            }
-          }
-        });
-      }
-      if (path.endsWith("/policy"))
-        return response({ policy: { enabled: true } });
-      throw new Error(`Unexpected control request ${path}`);
-    };
-    try {
-      const result = await runPersonalSyncCommand(
-        [
-          "group",
-          "bootstrap",
-          "--recovery-kit",
-          recoveryKit,
-          "--password-fd",
-          String(passwordFd)
-        ],
-        pathsFor(directory),
-        {
-          ...controlEnv(sessionFd),
-          PDS_RUNTIME_SECRET_REF: "pds-runtime"
-        },
-        {
-          fetch: fetch as never,
-          identity: {
-            remoteOperationsAllowed: true,
-            deploymentId: "local-deployment",
-            deviceInstanceId: "local-device"
-          },
-          putSecret: (reference, value) => {
-            stored.push({ reference, value });
-          }
+          });
         }
-      );
-      expect(result).toMatchObject({
-        ok: true,
-        state: "active",
-        recoveryKit
-      });
-      expect(result.deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/);
-      expect(submittedStatement).not.toBeNull();
-      expect(submittedProof).not.toBeNull();
-      expect(stored).toHaveLength(1);
-      expect(stored[0]?.reference).toBe("pds-runtime");
-      const storedRuntime = JSON.parse(stored[0]!.value) as {
-        device: { originDeploymentId: string };
-      };
-      expect(storedRuntime).toMatchObject({
-        version: 1,
-        userId: "browser-user",
-        device: {
-          id: result.deviceId
-        }
-      });
-      expect(storedRuntime.device.originDeploymentId).toMatch(
-        /^[A-Za-z0-9_-]{22}$/
-      );
-      const statusSessionFd = fdFor(
-        directory,
-        "status-session",
-        "cm_session=browser-only"
-      );
-      try {
-        await expect(
-          runPersonalSyncCommand(
-            ["status"],
-            pathsFor(directory),
-            {
-              ...controlEnv(statusSessionFd),
-              PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        if (path.endsWith("/groups/genesis")) {
+          submittedStatement = parseCanonicalPdsJson(
+            String(body.statement)
+          ) as Record<string, unknown>;
+          submittedProof = body.proof as Record<string, unknown>;
+          const draft = submittedStatement.draft as Record<string, unknown>;
+          const statementBody = draft.body as Record<string, unknown>;
+          validatePdsGroupStatement(submittedStatement, {
+            authorizationPublicKey: String(
+              statementBody.initialDeviceSigningPublicKey
+            ),
+            expectedGroupId: String(draft.groupId),
+            expectedPreviousHash: null,
+            expectedSequence: "1"
+          });
+          verifyPdsEnrollmentProof({
+            challengeId: String(submittedProof.challenge_id),
+            challenge: String(submittedProof.challenge),
+            groupId: String(draft.groupId),
+            deviceId: String(submittedProof.device_id),
+            deviceSigningKeyId: String(statementBody.initialDeviceSigningKeyId),
+            deviceSigningPublicKey: String(
+              statementBody.initialDeviceSigningPublicKey
+            ),
+            deviceKemKeyId: String(statementBody.initialDeviceKemKeyId),
+            deviceKemPublicKey: String(statementBody.initialDeviceKemPublicKey),
+            browserSubjectId: "browser-user",
+            browserDeploymentId: "browser-deployment",
+            expiresAt: String(submittedProof.expires_at),
+            signature: String(submittedProof.signature)
+          });
+          return response({
+            group: {
+              group_id: draft.groupId,
+              current_epoch: "1",
+              head: {
+                sequence: "1",
+                hash: Buffer.alloc(32, 12).toString("base64url")
+              }
             },
-            {
-              fetch: (() =>
-                response({
-                  groups: [],
-                  pairing_invitation_group_ids: []
-                })) as never,
-              getSecret: () => stored.at(-1)?.value ?? null
+            statement: submittedStatement
+          });
+        }
+        if (path.includes("/certificates/")) {
+          const draft = submittedStatement?.draft as Record<string, unknown>;
+          const statementBody = draft.body as Record<string, unknown>;
+          const unsigned = {
+            protocol: "koed/pds/v1",
+            groupId: draft.groupId,
+            deviceId: statementBody.initialDeviceId,
+            deviceSigningKeyId: statementBody.initialDeviceSigningKeyId,
+            deviceSigningPublicKey: statementBody.initialDeviceSigningPublicKey,
+            deviceKemKeyId: statementBody.initialDeviceKemKeyId,
+            deviceKemPublicKey: statementBody.initialDeviceKemPublicKey,
+            epoch: "1",
+            operationFamilies: ["pds_relay"],
+            statementSequence: "1",
+            statementHash: Buffer.alloc(32, 12).toString("base64url"),
+            issuedAt: new Date(Date.now() - 1_000).toISOString(),
+            expiresAt: new Date(Date.now() + 86_400_000).toISOString()
+          };
+          return response({
+            certificate: {
+              ...unsigned,
+              authoritySignature: {
+                keyId: "authority-key",
+                signature: signPdsRecord(
+                  "membership-certificate",
+                  unsigned,
+                  authority.privateKey
+                )
+              }
             }
-          )
-        ).resolves.toMatchObject({
-          state: "local_binding_missing",
-          recoveryRequired: true,
-          groups: [],
-          pairing_invitation_group_ids: []
-        });
-      } finally {
-        closeSync(statusSessionFd);
-      }
-      const localUserId = "22222222-2222-4222-8222-222222222222";
-      await expect(
-        runPersonalSyncCommand(
+          });
+        }
+        if (path.endsWith("/policy"))
+          return response({ policy: { enabled: true } });
+        throw new Error(`Unexpected control request ${path}`);
+      };
+      try {
+        const result = await runPersonalSyncCommand(
           [
-            "join",
-            "bind-local-user",
-            "--group-id",
-            String(result.groupId),
-            "--user-id",
-            localUserId
+            "group",
+            "bootstrap",
+            ...(exportRecovery
+              ? [
+                  "--recovery-kit",
+                  recoveryKit,
+                  "--password-fd",
+                  String(passwordFd)
+                ]
+              : [])
           ],
           pathsFor(directory),
           {
@@ -986,36 +909,125 @@ describe("Personal Sync control client", () => {
             PDS_RUNTIME_SECRET_REF: "pds-runtime"
           },
           {
-            getSecret: () => stored.at(-1)?.value ?? null,
+            fetch: fetch as never,
+            identity: {
+              remoteOperationsAllowed: true,
+              deploymentId: "local-deployment",
+              deviceInstanceId: "local-device"
+            },
             putSecret: (reference, value) => {
               stored.push({ reference, value });
             }
           }
-        )
-      ).resolves.toMatchObject({
-        ok: true,
-        state: "active",
-        groupId: result.groupId,
-        deviceId: result.deviceId
-      });
-      expect(JSON.parse(stored.at(-1)!.value)).toMatchObject({
-        userId: localUserId,
-        groupId: result.groupId
-      });
-      const parsedRecoveryKit: unknown = JSON.parse(
-        readFileSync(recoveryKit, "utf8")
-      );
-      expect(() =>
-        decryptRecoveryKit(
-          parsedRecoveryKit as Parameters<typeof decryptRecoveryKit>[0],
-          Buffer.from("recovery password")
-        )
-      ).not.toThrow();
-    } finally {
-      closeSync(passwordFd);
-      closeSync(sessionFd);
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          state: "active",
+          ...(exportRecovery ? { recoveryKit } : {})
+        });
+        expect(result.deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+        expect(submittedStatement).not.toBeNull();
+        expect(submittedProof).not.toBeNull();
+        expect(stored).toHaveLength(1);
+        expect(stored[0]?.reference).toBe("pds-runtime");
+        const storedRuntime = JSON.parse(stored[0]!.value) as {
+          device: { originDeploymentId: string };
+        };
+        expect(storedRuntime).toMatchObject({
+          version: 1,
+          userId: "browser-user",
+          device: {
+            id: result.deviceId
+          }
+        });
+        expect(storedRuntime.device.originDeploymentId).toMatch(
+          /^[A-Za-z0-9_-]{22}$/
+        );
+        const statusSessionFd = fdFor(
+          directory,
+          "status-session",
+          "cm_session=browser-only"
+        );
+        try {
+          await expect(
+            runPersonalSyncCommand(
+              ["status"],
+              pathsFor(directory),
+              {
+                ...controlEnv(statusSessionFd),
+                PDS_RUNTIME_SECRET_REF: "pds-runtime"
+              },
+              {
+                fetch: (() =>
+                  response({
+                    groups: [],
+                    pairing_invitation_group_ids: []
+                  })) as never,
+                getSecret: () => stored.at(-1)?.value ?? null
+              }
+            )
+          ).resolves.toMatchObject({
+            state: "local_binding_missing",
+            recoveryRequired: true,
+            groups: [],
+            pairing_invitation_group_ids: []
+          });
+        } finally {
+          closeSync(statusSessionFd);
+        }
+        const localUserId = "22222222-2222-4222-8222-222222222222";
+        await expect(
+          runPersonalSyncCommand(
+            [
+              "join",
+              "bind-local-user",
+              "--group-id",
+              String(result.groupId),
+              "--user-id",
+              localUserId
+            ],
+            pathsFor(directory),
+            {
+              ...controlEnv(sessionFd),
+              PDS_RUNTIME_SECRET_REF: "pds-runtime"
+            },
+            {
+              getSecret: () => stored.at(-1)?.value ?? null,
+              putSecret: (reference, value) => {
+                stored.push({ reference, value });
+              }
+            }
+          )
+        ).resolves.toMatchObject({
+          ok: true,
+          state: "active",
+          groupId: result.groupId,
+          deviceId: result.deviceId
+        });
+        expect(JSON.parse(stored.at(-1)!.value)).toMatchObject({
+          userId: localUserId,
+          groupId: result.groupId
+        });
+        if (exportRecovery) {
+          const parsedRecoveryKit: unknown = JSON.parse(
+            readFileSync(recoveryKit, "utf8")
+          );
+          expect(() =>
+            decryptRecoveryKit(
+              parsedRecoveryKit as Parameters<typeof decryptRecoveryKit>[0],
+              Buffer.from("recovery password")
+            )
+          ).not.toThrow();
+        } else {
+          expect(existsSync(recoveryKit)).toBe(false);
+          expect(result).not.toHaveProperty("recoveryKit");
+        }
+      } finally {
+        closeSync(passwordFd);
+        closeSync(sessionFd);
+      }
     }
-  });
+  );
 
   it("does not commit recovery material or runtime secrets when genesis is rejected", async () => {
     const directory = root();

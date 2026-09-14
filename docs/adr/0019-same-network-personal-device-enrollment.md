@@ -32,28 +32,41 @@ content keys; it is not the inviting device's member identity. That route is an
 availability dependency for replication, not a source-of-truth or plaintext
 Memory authority.
 
-## Current capability-pairing amendment
+## Current joining-device request amendment
 
-This amendment is authoritative for the current build and supersedes conflicting
-ceremony details below. A one-time invitation link is the enrollment capability.
-After Koed validates expiry, group, transport binding, the signed joining-device
-request, and single-use state, possession completes enrollment automatically.
-There is no human-facing short code, comparison ceremony, or separate **Approve
-device** action. `challenge_id` remains an internal binding identifier only.
+This amendment supersedes the invitation-first UI and mandatory offline recovery
+ceremony described historically below. A joining CLI or Electron installation
+creates a ten-minute encrypted request link through its local supervisor. The
+existing Authority-hosting Electron installation inspects that request and
+requires explicit User acceptance. Possession of a request link alone grants no
+membership in an existing group.
 
-SSH/headless redemption accepts the link only through `--link-stdin` or
-`--link-fd <fd>`. The former `--link <link>` argument is removed so bearer
-material is not intentionally placed in process arguments.
+The request transport has identifier `koed/pds-device-request/v1`. Acceptance
+carries the existing one-time invitation inside its authenticated encrypted
+channel, after which the existing member signing authorization, Authority
+countersignature, Key Bundle, and local reconciliation protocol runs unchanged.
+The joining runtime reports connected only after reconciliation succeeds. No
+internet relay, Authority transfer, or additional comparison-code ceremony is
+introduced. Both private endpoints must remain reachable as required by PDS V1.
 
-Desktop paste or QR scan is preferred. The registered `koed-pair://` protocol is
-also supported, but OS activation has platform-specific argument exposure:
-macOS normally delivers the URL through Electron's `open-url` event; Windows and
-Linux may deliver the complete URL through process arguments on initial launch or
-single-instance activation. That exposure is inherent to those OS protocol
-handlers, not a blanket Koed guarantee. Koed must not log or persist the URL;
-users who want to avoid argv exposure should paste or scan instead.
+Request creation, encrypted pending state, restart recovery, expiry, and local
+controls belong to koed-server. CLI and Electron are adapters to that service.
+The existing Authority/Relay listener remains the established Desktop transport;
+this change adds a narrow supervisor-owned request endpoint without replacing
+that data plane or creating another synchronization protocol.
 
-## Decision
+Group setup no longer requires a recovery-file export or recording a recovery
+code. Generated recovery material is verified transiently to preserve the V1
+genesis wire contract and discarded unless an Operator explicitly requests the
+existing recovery-kit export. The trade-off is intentional: without an exported
+kit, losing every enrolled installation loses group control. The primary setup
+flow does not pretend that recoverability exists.
+
+Older invitation links retain their existing capability semantics and stdin/FD
+redemption. New request links use a distinct path and protocol and are never
+silently treated as old invitations. See [the current workflow](../device-pairing.md).
+
+## Historical invitation-first decision
 
 Koed Desktop exposes a **Devices** action in the account rail. The installation
 hosting the group's neutral Authority/Relay can create a ten-minute, one-use

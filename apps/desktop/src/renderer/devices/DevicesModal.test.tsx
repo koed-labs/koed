@@ -75,97 +75,29 @@ describe("Devices modal", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists active devices and creates a QR/copyable one-time invitation", async () => {
-    let releaseWait: ((value: unknown) => void) | undefined;
+  it("offers request-link review on the existing Electron device", async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === "personal_sync_status") return status;
-      if (command === "personal_sync_pairing_create") {
-        return { ok: true, pairing };
-      }
-      if (command === "personal_sync_pairing_wait") {
-        return await new Promise((resolve) => {
-          releaseWait = resolve;
-        });
-      }
       throw new Error(`Unexpected command ${command}`);
     });
     await act(async () => {
       root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
       await Promise.resolve();
     });
-
     expect(container.textContent).toContain("Device 1");
     await click(
       [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Pair another device")
+        button.textContent?.includes("Add device")
       ) ?? null
     );
-    expect(container.textContent).toContain("Scan with your other device");
-    expect(container.textContent).not.toContain("Approve device");
-    expect(container.querySelector('img[alt*="Scan to pair"]')).not.toBeNull();
+    expect(container.textContent).toContain("koed-server pair");
     expect(
-      (container.querySelector("input[readonly]") as HTMLInputElement).value
-    ).toBe(pairing.url);
-
-    await click(
-      container.querySelector('button[aria-label="Copy pairing link"]')
-    );
-    expect(
-      window.koedDesktop?.clipboard?.writeText as ReturnType<typeof vi.fn>
-    ).toHaveBeenCalledWith(pairing.url);
-
-    await act(async () => {
-      releaseWait?.({
-        pairing: {
-          ...pairing,
-          state: "completed",
-          joiningDeviceLabel: "Second laptop"
-        }
-      });
-      await Promise.resolve();
-    });
-    expect(container.textContent).toContain("Connected");
-    expect(container.textContent).not.toContain("Approve device");
+      container.querySelector('input[aria-label="Device request link"]')
+    ).not.toBeNull();
     expect(invoke).not.toHaveBeenCalledWith(
-      "personal_sync_pairing_approve",
+      "personal_sync_pairing_create",
       expect.anything()
     );
-  });
-
-  it("keeps invitation open and reports cancellation failures", async () => {
-    const onClose = vi.fn();
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "personal_sync_status") return status;
-      if (command === "personal_sync_pairing_create") {
-        return { ok: true, pairing };
-      }
-      if (command === "personal_sync_pairing_wait") {
-        return await new Promise(() => undefined);
-      }
-      if (command === "personal_sync_pairing_cancel") {
-        throw new Error("Pairing service is unavailable.");
-      }
-      throw new Error(`Unexpected command ${command}`);
-    });
-    await act(async () => {
-      root.render(<DevicesModal invoke={invoke as never} onClose={onClose} />);
-      await Promise.resolve();
-    });
-    await click(
-      [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Pair another device")
-      ) ?? null
-    );
-    await click(
-      [...container.querySelectorAll("button")].find(
-        (button) => button.textContent?.trim() === "Cancel"
-      ) ?? null
-    );
-    expect(container.textContent).toContain("Scan with your other device");
-    expect(container.textContent).toContain("Pairing service is unavailable.");
-
-    await click(container.querySelector('button[aria-label="Close Devices"]'));
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("accepts a pasted or deep-linked invitation without polling", async () => {
@@ -236,9 +168,13 @@ describe("Devices modal", () => {
     });
 
     expect(container.textContent).toContain(
-      "Create the next pairing link on the device that originally set up this Personal Device Group."
+      "Add devices from the installation that originally created this Personal Device Group."
     );
-    expect(container.textContent).not.toContain("Pair another device");
+    expect(
+      [...container.querySelectorAll("button")].some(
+        (button) => button.textContent === "Add device"
+      )
+    ).toBe(false);
     expect(container.textContent).not.toContain("Join with link");
   });
 
@@ -284,25 +220,14 @@ describe("Devices modal", () => {
     );
   });
 
-  it("creates the first device group and requires recovery confirmation", async () => {
-    const recoveryCode = "test-recovery-code";
-    const recoveryKitPath = "/home/user/Documents/koed-recovery-kit.json";
+  it("creates the first device group without a recovery download or code", async () => {
     let configured = false;
     const invoke = vi.fn(async (command: string) => {
-      if (command === "personal_sync_status") {
+      if (command === "personal_sync_status")
         return configured ? status : { groups: [] };
-      }
       if (command === "personal_sync_group_bootstrap") {
         configured = true;
-        return {
-          ok: true,
-          state: "active",
-          recoveryCode,
-          recoveryKitPath
-        };
-      }
-      if (command === "personal_sync_group_activate") {
-        return { ok: true, state: "healthy" };
+        return { ok: true, state: "active" };
       }
       throw new Error(`Unexpected command ${command}`);
     });
@@ -310,48 +235,13 @@ describe("Devices modal", () => {
       root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
       await Promise.resolve();
     });
-
     await click(
       [...container.querySelectorAll("button")].find((button) =>
         button.textContent?.includes("Set up device sync")
       ) ?? null
     );
-    expect(container.textContent).toContain("Save your recovery code");
-    expect(container.textContent).toContain(recoveryKitPath);
-    const recoveryCodeInput = container.querySelector(
-      'input[aria-label="Recovery code"]'
-    ) as HTMLInputElement;
-    expect(recoveryCodeInput.value).toBe(recoveryCode);
-    expect(recoveryCodeInput.readOnly).toBe(true);
-    expect(recoveryCodeInput.autocomplete).toBe("off");
-    expect(recoveryCodeInput.getAttribute("spellcheck")).toBe("false");
-    expect(
-      (
-        container.querySelector(
-          'button[aria-label="Close Devices"]'
-        ) as HTMLButtonElement
-      ).disabled
-    ).toBe(true);
-    await click(
-      container.querySelector('button[aria-label="Copy recovery code"]')
-    );
-    expect(
-      window.koedDesktop?.clipboard?.writeText as ReturnType<typeof vi.fn>
-    ).toHaveBeenCalledWith(recoveryCode);
-
-    const confirmation = container.querySelector(
-      'input[type="checkbox"]'
-    ) as HTMLInputElement;
-    await act(async () => {
-      confirmation.click();
-      await Promise.resolve();
-    });
-    await click(
-      [...container.querySelectorAll("button")].find(
-        (button) => button.textContent?.trim() === "Done"
-      ) ?? null
-    );
-    expect(invoke).toHaveBeenCalledWith("personal_sync_group_activate");
-    expect(container.textContent).toContain("Device 1");
+    expect(invoke).toHaveBeenCalledWith("personal_sync_group_bootstrap");
+    expect(container.textContent).not.toContain("recovery");
+    expect(container.textContent).toContain("Add device");
   });
 });

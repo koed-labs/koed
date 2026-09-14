@@ -1263,3 +1263,20 @@ results, sanitized artifacts, Team vectors, and their wrapped keys participate
 in retention, hard purge, backup expiry, and encryption rewrap.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.
+
+## Personal device request startup
+
+A fresh `koed-server` defaults to `local-personal` with `bundled-local`
+dependencies. Explicit environment and saved configuration retain precedence;
+explicit `developer` or `external` runtime modes default to external dependencies
+unless their dependency mode is also specified. Native local startup provisions
+credentials in source checkouts as well as packaged installations, independently
+of whether automatic ports were explicitly requested. Resolved runtime and
+dependency modes are passed to child services.
+
+The supervisor owns the joining-device request service. Its owner-only local
+socket is separate from the narrow private-interface request listener; request
+links carry that listener's allocated port. No additional flags are needed for
+`koed-server pair`. `KOED_PDS_LAN_PORT` still configures the existing Desktop
+Authority/Relay listener. Both private paths must be reachable; no public relay
+or inbound-network traversal is provided. See [Connect Personal devices](device-pairing.md).

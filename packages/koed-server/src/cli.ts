@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { deviceRequestCommand } from "./personal-device-request.js";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import {
   appendFileSync,
@@ -103,8 +104,9 @@ Commands:
   doctor --json          Print actionable setup/dependency diagnostics
   identity status --json Print clone-safe deployment/device identity state
   identity rotate --json Create fresh device identity and invalidate local enrollment references
+  pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
   personal-sync status --json             Print redacted Personal Sync status
-  personal-sync group bootstrap --json    Create group and encrypted recovery kit
+  personal-sync group bootstrap --json    Create a Personal Device Group
   personal-sync recovery-kit create|verify --json
   personal-sync join request|challenge|complete --json
   personal-sync join redeem (--link-stdin|--link-fd <fd>)
@@ -635,6 +637,59 @@ export const runKoedServerCli = async (
         stdout.write(`${identity.health}\n`);
       }
       return identity.remoteOperationsAllowed ? 0 : 1;
+    }
+
+    if (command === "pair") {
+      const paths = resolvePaths();
+      if (subcommand === "status" || subcommand === "cancel") {
+        const value = await deviceRequestCommand(paths, subcommand);
+        if (wantsJson) printJson(stdout, value);
+        else stdout.write(`${value.state}\n`);
+        return 0;
+      }
+      if (subcommand && !subcommand.startsWith("--"))
+        throw new Error("Use pair, pair status, or pair cancel.");
+      let ready = await collectKoedServerStartupStatus();
+      if (!ready.ok) {
+        const started = startDaemon();
+        if (!started.ok) throw new Error(started.error ?? started.message);
+        for (let attempt = 0; attempt < 90 && !ready.ok; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          ready = await collectKoedServerStartupStatus();
+        }
+      }
+      if (!ready.ok)
+        throw new Error(
+          "Koed could not start. Run koed-server doctor for setup guidance."
+        );
+      const labelIndex = args.indexOf("--device-label");
+      if (labelIndex >= 0 && !args[labelIndex + 1])
+        throw new Error("--device-label needs a name.");
+      const initial = await deviceRequestCommand(
+        paths,
+        "create",
+        labelIndex < 0 ? undefined : args[labelIndex + 1]
+      );
+      if (wantsJson) printJson(stdout, initial);
+      else
+        stdout.write(
+          initial.link
+            ? `Paste this request into Devices → Add device on your existing Koed installation:\n\n${initial.link}\n\nExpires ${initial.expiresAt}. Waiting for approval…\n`
+            : `Enrollment is ${initial.state}. Waiting…\n`
+        );
+      if (args.includes("--detach")) return 0;
+      let previous = initial.state;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const value = await deviceRequestCommand(paths, "status");
+        if (value.state !== previous) {
+          if (wantsJson) printJson(stdout, value);
+          else stdout.write(`${value.state}\n`);
+          previous = value.state;
+        }
+        if (value.state === "connected") return 0;
+        if (["failed", "expired", "cancelled"].includes(value.state)) return 1;
+      }
     }
 
     if (command === "personal-sync") {

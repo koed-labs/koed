@@ -58,6 +58,15 @@ or copied API Token can add/recover/revoke a device, rotate an epoch, resolve a
 conflict, or delete PDS Memory. Browser auth may bind an enrollment request to a
 human identity, but does not authorize group transition.
 
+### Joining-device request transport
+
+The current CLI and Electron workflow begins with a joining-device request link.
+The existing Authority-hosting Electron installation explicitly accepts it. This
+bounded `koed/pds-device-request/v1` exchange carries an internal invitation and
+then uses the existing enrollment transport below; it changes neither membership
+statements nor package transport. See [Connect Personal devices](device-pairing.md)
+and ADR 0019 for request ownership, expiry, replay protection, and confirmation.
+
 ### Same-network Desktop enrollment transport
 
 The Desktop ceremony is specified by
@@ -215,17 +224,18 @@ source manifest. Their derivation and irreversible floor semantics are section
 ## 4. Group creation, recovery, membership
 
 First-device setup generates separate device signing/KEM keys, recovery signing
-and recovery KEM keys, all initial PDS symmetric keys, and an encrypted recovery
-kit. Before genesis is submitted, User must decrypt kit with recovery KEM key,
-verify root public-key fingerprints, group id, and initial authority public-key
-fingerprint, then explicitly confirm stored offline recovery material. Genesis
-is invalid without signed `recoveryKitVerified: true` from first device and
-Authority countersignature. Recovery kit must be stored separately from ordinary
-device credentials, API Tokens, browser data, `KOED_HOME`, and relay state.
+and recovery KEM keys, and initial PDS symmetric keys. The default setup verifies
+generated recovery material transiently and discards the private recovery keys;
+it does not export a file or ask the User to record a code. The V1 genesis fields,
+including signed `recoveryKitVerified: true`, retain their wire shape and denote
+local material verification, not proof that the User stored an offline backup.
+An Operator may explicitly use the optional recovery-kit export to retain recovery
+material separately. Existing exported kits remain valid.
 
-Loss of every active device and recovery kit permanently loses group control.
-Recovery restores governance and available retained packages; it cannot recreate
-lost source bytes.
+Without an exported kit, loss of every enrolled installation permanently loses
+group control. Recovery can restore governance and available retained packages;
+it cannot recreate lost source bytes. This policy is recorded in ADR 0019's
+joining-device request amendment.
 
 ### CAS group log and membership epochs
 

@@ -134,34 +134,21 @@ is accepted.
 
 ### Connect A Personal Device
 
-Open **Devices** from the account rail. The Authority-hosting installation can
-choose **Pair another device** to show a one-use QR code, copyable
-private-network or Tailscale link, and expiry. The joining device opens
-**Devices**, chooses **Join with link**, pastes or scans the link, and chooses
-**Connect device**. Link possession authorizes enrollment; Koed validates the
-signed request and completes the membership transition automatically. There is
-no short-code comparison, periodic approval step, or **Approve device** button.
-Joined replicas remain symmetric data-plane sources and replicas, but direct the
-User back to the Authority host when another device must be enrolled.
+On a joining Electron installation, open **Devices → Connect to an existing
+device** and copy the request link. On the existing Authority-hosting Electron
+installation, open **Devices → Add device**, paste it, review the device, and
+confirm **Add device**. A joining SSH-only installation produces the same link
+with `koed-server pair`. See [Connect Personal devices](device-pairing.md).
 
-The renderer sees only display-safe pairing state. It never receives the
-browser session, scoped Desktop credential, invitation transport key, device
-private keys, or PDS runtime secret. The invitation link is sensitive bearer
-material: clear it after redemption and never persist or log it. Paste or QR
-scan is preferred. Opening `koed-pair://` is supported, but OS activation differs:
-macOS normally delivers the URL through Electron's `open-url` event, while
-Windows/Linux may deliver it in argv on initial launch or single-instance
-activation. Users avoiding argv exposure should paste or scan. An invitation
-can be canceled while waiting or connecting before its commit boundary. Once
-commit begins, status polling reports committing or awaiting joiner;
-cancellation returns an error and leaves enrollment resumable.
+The request expires after ten minutes and uses encrypted private LAN/Tailscale
+transport. Neither paste nor inspection alone enrolls the joining device.
+Connected state requires signed enrollment and durable local reconciliation.
+Joined replicas direct the User to the original Authority host to add devices.
 
-If no Personal Device Group exists, **Set up device sync** first opens a native
-save dialog for the encrypted recovery kit. Koed generates a high-entropy
-recovery code in the main process, passes it to `koed-server` through an
-owner-only temporary file descriptor, and displays it once for the User to
-store separately. The modal cannot be dismissed until the User confirms that
-the code was saved.
+**Set up device sync** creates the first group without a recovery-file download
+or recovery-code step. If every enrolled installation is lost and no optional
+recovery kit was exported, the group cannot be recovered. Older invitation
+redemption remains supported for compatibility, but is not the primary flow.
 
 ### Find And Share A Prior Decision
 

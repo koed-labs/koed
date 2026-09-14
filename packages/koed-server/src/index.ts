@@ -166,3 +166,10 @@ export type {
   KoedServerStartupStatus,
   KoedServerStatus
 } from "./types.js";
+
+export {
+  deviceRequestCommand,
+  exchangeDeviceRequest,
+  parseDeviceRequestLink
+} from "./personal-device-request.js";
+export type { DeviceRequestView } from "./personal-device-request.js";

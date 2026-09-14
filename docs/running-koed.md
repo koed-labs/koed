@@ -264,6 +264,21 @@ source Session; start a new Captured Session. Replica source is read-only. Check
 and exposes only state counts/readiness, never package content, fingerprints,
 paths, or key references.
 
+### Connect a new headless or Electron device
+
+Run `koed-server pair` on the joining machine (or `pnpm koed-server pair` in a
+built source checkout). Paste its request link into **Devices → Add device** on
+the existing Authority-hosting Electron installation, review, and confirm.
+A joining Electron installation generates the same link from **Connect to an
+existing device**. No recovery-file or recovery-code step is required for group
+creation. See [Connect Personal devices](device-pairing.md) for the current flow.
+
+Fresh server installations default to native `local-personal` / `bundled-local`
+operation. The supervisor allocates ports and provisions its local credentials;
+flags previously needed for headless pairing are unnecessary. Explicit external
+runtime/dependency settings remain authoritative. Existing native runtime and
+model prerequisites still apply; unavailable resources produce setup guidance.
+
 ### Personal Sync control commands
 
 `koed-server personal-sync` is a bounded control-plane client; Authority owns
@@ -272,7 +287,7 @@ Commands never report local enable/revoke success. The ordinary control commands
 use `PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session
 value); API Tokens and legacy credentials are rejected.
 
-For an SSH-only joining device, `personal-sync join redeem` accepts the complete
+For legacy invitation links on an SSH-only joining device, `personal-sync join redeem` accepts the complete
 one-time Desktop invitation link. Possession of this short-lived link authorizes
 Personal Device enrollment; there is no comparison code or second Authority
 approval. The command submits the signed request over the encrypted invitation
@@ -346,7 +361,7 @@ locking. Existing Electron OS-store state is not migrated; changing
 `KOED_HOME` requires re-enrollment. Association and Remote Account Links alone
 synchronize nothing.
 
-### Same-network or Tailscale Desktop pairing
+### Legacy invitation-first Desktop pairing
 
 After first-device Personal Device Group setup, open **Devices** on the
 Authority-hosting installation and choose **Pair another device**. Koed shows a
