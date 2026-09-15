@@ -1,9 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { LocalEmbeddingStatus, MemorySourceRepository } from "@koed/db";
+import type {
+  LocalEmbeddingStatus,
+  MemorySourceRepository,
+  PdsCheckpointConversationItem,
+  PdsCheckpointSessionInput
+} from "@koed/db";
 import {
   PDS_ARTIFACT_PROTOCOL,
   PDS_PEER_RECEIPT_WAIT_MS,
@@ -13,6 +18,7 @@ import {
   canonicalizePdsJson,
   createPdsArtifactRecord,
   createPdsEncryptedPayloadPackage,
+  createPdsSessionCheckpointPackage,
   createPdsSessionPackageRuntimeContext,
   decryptPdsEncryptedPayloadPackage,
   decryptEnvelopeToUtf8,
@@ -34,10 +40,14 @@ import {
   validatePdsTombstone,
   verifyPdsPeerReceipt,
   verifyPdsArtifactRecord,
-  verifyAndDecryptPdsSessionPackage,
+  verifyAndDecryptPdsSessionSourcePackage,
+  isPdsSessionCheckpointManifest,
+  validatePdsSessionCheckpointManifest,
   type EnvelopeEncryptionProvider,
   type PdsEmbeddingContractV1,
+  type PdsSessionCheckpointManifest,
   type PdsSessionPackage,
+  type PdsSessionPackageRuntimeContext,
   type PdsSessionManifest,
   type SupportedEmbeddingModelConfig
 } from "@koed/shared";
@@ -233,6 +243,68 @@ const record = (value: unknown, label: string): Record<string, unknown> => {
     throw new TypeError(`PDS ${label} is invalid`);
   }
   return value as Record<string, unknown>;
+};
+
+const PDS_CHECKPOINT_SOURCE_ENVELOPE_KIND = "pds_checkpoint_source_v1";
+
+/** Rewraps retained checkpoint plaintext with the current recipient epoch. */
+export const rewrapPdsCheckpointSourceEnvelope = (input: {
+  plaintext: string;
+  runtime: PdsSessionPackageRuntimeContext;
+  servingSigningPrivateKey: KeyObject;
+  expiresAt: string;
+  expectedGroupId: string;
+  expectedPackageId: string;
+  expectedSourceManifestHash: string;
+}): PdsSessionPackage | null => {
+  const envelope = record(
+    parseCanonicalPdsJson(input.plaintext),
+    "checkpoint source envelope"
+  );
+  if (!Object.hasOwn(envelope, "kind")) return null;
+  const fields = Object.keys(envelope).sort();
+  if (
+    envelope.kind !== PDS_CHECKPOINT_SOURCE_ENVELOPE_KIND ||
+    fields.join("\0") !== ["kind", "manifest", "package"].join("\0")
+  ) {
+    throw new TypeError("PdsCryptoIdentityError");
+  }
+
+  const manifest = validatePdsSessionCheckpointManifest(envelope.manifest);
+  const retainedPackage = parsePdsSessionPackageJson(
+    canonicalizePdsJson(envelope.package)
+  );
+  if (
+    manifest.packageId !== input.expectedPackageId ||
+    retainedPackage.header.groupId !== input.expectedGroupId ||
+    retainedPackage.header.packageId !== input.expectedPackageId ||
+    retainedPackage.header.sourceManifestHash !==
+      input.expectedSourceManifestHash ||
+    retainedPackage.header.originDeviceId !== manifest.originDeviceId ||
+    retainedPackage.header.contentEpoch !== manifest.contentEpoch
+  ) {
+    throw new TypeError("PdsCryptoIdentityError");
+  }
+
+  // createPdsSessionCheckpointPackage validates the origin signature against
+  // the manifest's historical membership certificate, then signs a fresh
+  // transport for the current runtime membership and recipient epoch.
+  const rewrapped = createPdsSessionCheckpointPackage({
+    runtime: input.runtime,
+    expiresAt: input.expiresAt,
+    servingSigningPrivateKey: input.servingSigningPrivateKey,
+    manifest
+  });
+  if (
+    rewrapped.header.groupId !== input.expectedGroupId ||
+    rewrapped.header.packageId !== input.expectedPackageId ||
+    rewrapped.header.sourceManifestHash !== input.expectedSourceManifestHash ||
+    rewrapped.header.originDeviceId !== manifest.originDeviceId ||
+    rewrapped.header.contentEpoch !== manifest.contentEpoch
+  ) {
+    throw new TypeError("PdsCryptoIdentityError");
+  }
+  return rewrapped;
 };
 
 export const resolvePdsLifecycleAuthorizationPublicKey = (
@@ -1034,12 +1106,28 @@ const createPdsWorkerRuntimeFromSecret = (
         });
         // Service owns lease identity; normal runtime gets package only through secure repo path.
         if (!stored) throw new Error("PdsRelayRetryableError");
-        const pkg = parsePdsSessionPackageJson(
-          await decryptEnvelopeToUtf8(
-            input.envelopeEncryptionProvider,
-            stored.encryptedEnvelope as never
-          )
+        if (
+          stored.groupId !== secret.groupId ||
+          stored.userId !== secret.userId
+        ) {
+          throw new Error("PdsCryptoIdentityError");
+        }
+        const plaintext = await decryptEnvelopeToUtf8(
+          input.envelopeEncryptionProvider,
+          stored.encryptedEnvelope as never
         );
+        const pkg =
+          rewrapPdsCheckpointSourceEnvelope({
+            plaintext,
+            runtime,
+            servingSigningPrivateKey: signingKey,
+            expiresAt: new Date(
+              Date.now() + 24 * 60 * 60 * 1_000
+            ).toISOString(),
+            expectedGroupId: secret.groupId,
+            expectedPackageId: work.packageId,
+            expectedSourceManifestHash: work.sourceManifestHash
+          }) ?? parsePdsSessionPackageJson(plaintext);
         if (
           pkg.header.packageId !== work.packageId ||
           pkg.header.sourceManifestHash !== work.sourceManifestHash
@@ -1100,10 +1188,20 @@ const createPdsWorkerRuntimeFromSecret = (
       async outboundState(work) {
         if (work.groupId !== secret.groupId)
           throw new Error("PdsCryptoIdentityError");
-        const response = record(
-          await relay.transport(work.transportId),
-          "transport response"
-        );
+        let responseValue: unknown;
+        try {
+          responseValue = await relay.transport(work.transportId);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.name === "PdsRelayNotFoundError"
+          ) {
+            pendingOutboundTransports.delete(work.transportId);
+            return "missing" as const;
+          }
+          throw error;
+        }
+        const response = record(responseValue, "transport response");
         const transport = record(response.transport, "transport");
         if (
           transport.transportId !== work.transportId ||
@@ -1234,6 +1332,14 @@ const createPdsWorkerRuntimeFromSecret = (
         });
         if (!reconciled.accepted)
           throw new TypeError("PdsCryptoAuthorityError");
+        if (
+          typeof input.repository.refreshPdsCheckpointRecipients === "function"
+        ) {
+          await input.repository.refreshPdsCheckpointRecipients({
+            userId: secret.userId,
+            groupId: secret.groupId
+          });
+        }
         for (const item of controls) {
           const control = record(item, "lifecycle control");
           if (control.kind !== "tombstone") continue;
@@ -1518,7 +1624,7 @@ const createPdsWorkerRuntimeFromSecret = (
         if (plaintextRecord.protocol !== PDS_PROTOCOL) {
           throw new TypeError("PdsCryptoPackageError");
         }
-        const manifest = verifyAndDecryptPdsSessionPackage(
+        const manifest = verifyAndDecryptPdsSessionSourcePackage(
           canonicalizePdsJson(pkg),
           {
             runtime: servingRuntime,
@@ -1564,10 +1670,60 @@ const createPdsWorkerRuntimeFromSecret = (
           deletionFloorToken: manifest.deletionFloorToken,
           sourceFingerprint: manifest.sourceFingerprint,
           sourceClosureHash: manifest.sourceClosureHash,
+          ...(isPdsSessionCheckpointManifest(manifest)
+            ? {
+                sourceProfile: "cumulative_checkpoint" as const,
+                checkpoint: manifest.checkpoint
+              }
+            : {}),
           encryptedEnvelope
         });
         if (retained.state === "revoked")
           throw new Error("PdsCryptoFloorError");
+        if (isPdsSessionCheckpointManifest(manifest)) {
+          const checkpointInput = pdsCheckpointMaterializationSource(
+            secret.groupId,
+            manifest
+          );
+          const result = await input.repository.materializePdsSessionCheckpoint(
+            {
+              workerId: work.workerId,
+              inboxId: work.inboxId,
+              userId: secret.userId,
+              groupId: secret.groupId,
+              retainedPackageId: retained.retainedPackageId,
+              packageId: manifest.packageId,
+              sourceManifestHash: pkg.header.sourceManifestHash,
+              sourceFingerprint: manifest.sourceFingerprint,
+              closureHash: manifest.sourceClosureHash,
+              logicalMemoryId: manifest.logicalMemoryId,
+              deletionFloorToken: manifest.deletionFloorToken,
+              originDeploymentId: manifest.originDeploymentId,
+              originDeviceId: manifest.originDeviceId,
+              sourceSequence: manifest.sourceSequence,
+              sourceCheckpointAt: new Date(manifest.originSignedAt),
+              observedAt: new Date(),
+              checkpoint: manifest.checkpoint,
+              ...checkpointInput
+            }
+          );
+          if (!result.deferred && !result.conflict)
+            downloaded.set(work.inboxId, {
+              pkg,
+              transport,
+              client: sourceClient
+            });
+          return {
+            kind: "checkpoint" as const,
+            userId: secret.userId,
+            retainedPackageId: retained.retainedPackageId,
+            originDeviceId: manifest.originDeviceId,
+            sourceSequence: manifest.sourceSequence,
+            state: result.state,
+            conflict: result.conflict,
+            deferred: result.deferred
+          };
+        }
         const session = await materializePdsSession(
           input.repository,
           secret.userId,
@@ -1801,4 +1957,68 @@ export const materializePdsSession = async (
     }
   );
   return { id: session.id, itemIds: items.map((item) => item.id) };
+};
+
+/** Converts only authenticated checkpoint records; the DB receiver owns atomic append. */
+export const pdsCheckpointMaterializationSource = (
+  groupId: string,
+  manifest: PdsSessionCheckpointManifest
+): {
+  sourceSession: PdsCheckpointSessionInput;
+  sourceItems: PdsCheckpointConversationItem[];
+} => {
+  const identity = manifest.sourceFingerprint;
+  const source = manifest.sourceSession;
+  return {
+    sourceSession: {
+      logicalSessionId: source.logicalSessionId,
+      externalSessionId: source.externalSessionId,
+      ...(source.forkedFromExternalThreadId
+        ? { forkedFromExternalThreadId: source.forkedFromExternalThreadId }
+        : {}),
+      sourceCreatedAt: source.sourceCreatedAt,
+      sourceRuntime: source.sourceRuntime,
+      sourceKind: source.sourceAdapter,
+      sourceAdapterVersion: source.sourceAdapterVersion,
+      captureMethod: "transcript",
+      ...(source.sourceTitle ? { sourceTitle: source.sourceTitle } : {})
+    },
+    sourceItems: manifest.rawClosure.records.map((raw, index) => {
+      const payload = record(
+        parseCanonicalPdsJson(
+          Buffer.from(raw.payload, "base64url").toString("utf8")
+        ),
+        "checkpoint source item"
+      );
+      const actor =
+        typeof payload.actor === "string" ? payload.actor : "system";
+      const type = typeof payload.type === "string" ? payload.type : "message";
+      const content =
+        typeof payload.content === "string" ? payload.content : "";
+      const metadata = record(payload.metadata, "checkpoint source metadata");
+      return {
+        sourceKind: source.sourceAdapter,
+        sourceAdapterVersion: source.sourceAdapterVersion,
+        sourceTransport: "pds_relay",
+        externalSessionId: source.externalSessionId,
+        externalThreadId: source.externalSessionId,
+        sourceRecordType: type,
+        sourceEventType: type,
+        sourceSequence: index,
+        externalItemId: raw.sourceNativeItemId,
+        eventTime: raw.sourceTimestamp,
+        observedAt: raw.observedAt,
+        rawJson: { type, role: actor, content },
+        rawText: content,
+        sourceHash: raw.payloadHash,
+        idempotencyKey: `pds-item:${groupId}:${identity}:${raw.ordinal}`,
+        metadata: {
+          ...metadata,
+          transcriptType: type,
+          sourceRole: actor,
+          pds: { originDeviceId: manifest.originDeviceId }
+        }
+      };
+    })
+  };
 };

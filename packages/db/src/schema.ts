@@ -12887,6 +12887,8 @@ export const pdsSessionClosures = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "restrict" }),
     sourceSequence: text("source_sequence").notNull(),
+    publicationKind: text("publication_kind").notNull().default("closed"),
+    checkpointOrdinal: text("checkpoint_ordinal"),
     terminalCursor: text("terminal_cursor").notNull(),
     terminalItemCount: text("terminal_item_count").notNull(),
     sourceClosureHash: text("source_closure_hash").notNull(),
@@ -12897,9 +12899,15 @@ export const pdsSessionClosures = pgTable(
     createdAt: now()
   },
   (table) => [
-    unique("pds_session_closure_session_unique").on(
-      table.groupId,
-      table.sourceSessionId
+    uniqueIndex("pds_session_closure_session_unique")
+      .on(table.groupId, table.sourceSessionId)
+      .where(sql`${table.publicationKind} = 'closed'`),
+    uniqueIndex("pds_session_checkpoint_ordinal_unique")
+      .on(table.groupId, table.sourceSessionId, table.checkpointOrdinal)
+      .where(sql`${table.publicationKind} = 'checkpoint'`),
+    check(
+      "pds_session_publication_kind_check",
+      sql`(${table.publicationKind} = 'closed' and ${table.checkpointOrdinal} is null) or (${table.publicationKind} = 'checkpoint' and ${table.checkpointOrdinal} is not null and ${table.checkpointOrdinal} ~ '^(0|[1-9][0-9]*)$')`
     ),
     unique("pds_session_closure_sequence_unique").on(
       table.groupId,
@@ -12957,8 +12965,12 @@ export const pdsRetainedPackages = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     packageId: text("package_id").notNull(),
     sourceManifestHash: text("source_manifest_hash").notNull(),
+    sourceProfile: text("source_profile").notNull().default("closed_v1"),
     sourceFingerprint: text("source_fingerprint"),
     sourceClosureHash: text("source_closure_hash"),
+    checkpointOrdinal: text("checkpoint_ordinal"),
+    checkpointPreviousClosureHash: text("checkpoint_previous_closure_hash"),
+    checkpointItemCount: text("checkpoint_item_count"),
     originDeploymentId: text("origin_deployment_id").notNull(),
     originDeviceId: text("origin_device_id").notNull(),
     sourceSequence: text("source_sequence").notNull(),
@@ -12988,6 +13000,16 @@ export const pdsRetainedPackages = pgTable(
       sql`${table.sourceSequence} ~ '^(0|[1-9][0-9]*)$'`
     ),
     check(
+      "pds_retained_package_checkpoint_check",
+      sql`(${table.sourceProfile} = 'closed_v1' and ${table.checkpointOrdinal} is null and ${table.checkpointPreviousClosureHash} is null and ${table.checkpointItemCount} is null)
+        or (${table.sourceProfile} = 'cumulative_checkpoint' and ${table.sourceFingerprint} is not null and ${table.sourceClosureHash} is not null
+          and ${table.checkpointOrdinal} is not null and ${table.checkpointItemCount} is not null
+          and ${table.checkpointOrdinal} ~ '^(0|[1-9][0-9]*)$'
+          and (${table.checkpointPreviousClosureHash} is null or ${table.checkpointPreviousClosureHash} ~ '^[A-Za-z0-9_-]{43}$')
+          and ${table.checkpointItemCount} ~ '^[1-9][0-9]*$'
+          and ((${table.checkpointOrdinal} = '0' and ${table.checkpointPreviousClosureHash} is null) or (${table.checkpointOrdinal} <> '0' and ${table.checkpointPreviousClosureHash} is not null)))`
+    ),
+    check(
       "pds_retained_package_state_check",
       sql`${table.state} in ('ready','stale','quarantined','revoked')`
     )
@@ -13004,8 +13026,13 @@ export const pdsLogicalReplicas = pgTable(
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    materializationProfile: text("materialization_profile")
+      .notNull()
+      .default("closed_v1"),
     sourceFingerprint: text("source_fingerprint"),
     closureHash: text("closure_hash").notNull(),
+    checkpointOrdinal: text("checkpoint_ordinal"),
+    checkpointItemCount: text("checkpoint_item_count"),
     localSessionId: uuid("local_session_id").references(() => sessions.id, {
       onDelete: "set null"
     }),
@@ -13017,11 +13044,12 @@ export const pdsLogicalReplicas = pgTable(
     updatedAt: updatedNow()
   },
   (table) => [
-    unique("pds_logical_replica_fingerprint_closure_unique").on(
-      table.groupId,
-      table.sourceFingerprint,
-      table.closureHash
-    ),
+    uniqueIndex("pds_logical_replica_fingerprint_closure_unique")
+      .on(table.groupId, table.sourceFingerprint, table.closureHash)
+      .where(sql`${table.materializationProfile} = 'closed_v1'`),
+    uniqueIndex("pds_logical_replica_checkpoint_fingerprint_unique")
+      .on(table.groupId, table.sourceFingerprint)
+      .where(sql`${table.materializationProfile} = 'cumulative_checkpoint'`),
     unique("pds_logical_replica_local_session_unique").on(table.localSessionId),
     index("pds_logical_replica_recall_idx").on(
       table.ownerUserId,
@@ -13030,6 +13058,53 @@ export const pdsLogicalReplicas = pgTable(
     check(
       "pds_logical_replica_state_check",
       sql`${table.materializationState} in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
+    ),
+    check(
+      "pds_logical_replica_profile_check",
+      sql`(${table.materializationProfile} = 'closed_v1' and ${table.checkpointOrdinal} is null and ${table.checkpointItemCount} is null)
+        or (${table.materializationProfile} = 'cumulative_checkpoint' and ${table.sourceFingerprint} is not null
+          and ${table.checkpointOrdinal} is not null and ${table.checkpointItemCount} is not null
+          and ${table.checkpointOrdinal} ~ '^(0|[1-9][0-9]*)$'
+          and ${table.checkpointItemCount} ~ '^[1-9][0-9]*$')`
+    )
+  ]
+);
+
+export const pdsReplicaCheckpoints = pgTable(
+  "pds_replica_checkpoints",
+  {
+    id: id(),
+    replicaId: uuid("replica_id")
+      .notNull()
+      .references(() => pdsLogicalReplicas.id, { onDelete: "cascade" }),
+    retainedPackageId: uuid("retained_package_id")
+      .notNull()
+      .references(() => pdsRetainedPackages.id, { onDelete: "cascade" }),
+    checkpointOrdinal: text("checkpoint_ordinal").notNull(),
+    previousClosureHash: text("previous_closure_hash"),
+    sourceClosureHash: text("source_closure_hash").notNull(),
+    itemCount: text("item_count").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_replica_checkpoint_ordinal_unique").on(
+      table.replicaId,
+      table.checkpointOrdinal
+    ),
+    unique("pds_replica_checkpoint_package_unique").on(table.retainedPackageId),
+    check(
+      "pds_replica_checkpoint_shape_check",
+      sql`${table.checkpointOrdinal} ~ '^(0|[1-9][0-9]*)$'
+        and ${table.itemCount} ~ '^[1-9][0-9]*$'
+        and ${table.sourceClosureHash} ~ '^[A-Za-z0-9_-]{43}$'
+        and (${table.previousClosureHash} is null or ${table.previousClosureHash} ~ '^[A-Za-z0-9_-]{43}$')`
+    ),
+    check(
+      "pds_replica_checkpoint_genesis_check",
+      sql`(${table.checkpointOrdinal} = '0' and ${table.previousClosureHash} is null)
+        or (${table.checkpointOrdinal} <> '0' and ${table.previousClosureHash} is not null)`
     )
   ]
 );
@@ -13077,6 +13152,7 @@ export const pdsOutboxEntries = pgTable(
     closureId: uuid("closure_id")
       .notNull()
       .references(() => pdsSessionClosures.id, { onDelete: "cascade" }),
+    dispatchEpoch: text("dispatch_epoch"),
     state: text("state").notNull().default("pending"),
     idempotencyKey: text("idempotency_key").notNull(),
     leaseOwner: text("lease_owner"),
@@ -13134,7 +13210,7 @@ export const pdsInboxEntries = pgTable(
     index("pds_inbox_claim_idx").on(table.state, table.retryAt),
     check(
       "pds_inbox_state_check",
-      sql`${table.state} in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
+      sql`${table.state} in ('pending','awaiting_predecessor','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
     ),
     check("pds_inbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
   ]

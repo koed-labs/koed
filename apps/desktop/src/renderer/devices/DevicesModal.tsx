@@ -29,6 +29,15 @@ type DeviceGroup = {
   group_id: string;
   members: DeviceMember[];
   policy?: { enabled?: boolean };
+  local_sync?: {
+    enabled?: boolean;
+    paused?: boolean;
+    workerReady?: boolean;
+    pendingPublication?: number;
+    outbox?: Record<string, number>;
+    inbox?: Record<string, number>;
+    replicas?: Record<string, number>;
+  };
 };
 
 type PairingView = {
@@ -111,6 +120,9 @@ const parseGroups = (value: unknown): DeviceGroup[] => {
       {
         group_id: group.group_id,
         members,
+        ...(group.local_sync && typeof group.local_sync === "object"
+          ? { local_sync: group.local_sync as DeviceGroup["local_sync"] }
+          : {}),
         ...(group.policy &&
         typeof group.policy === "object" &&
         !Array.isArray(group.policy)
@@ -137,6 +149,41 @@ const parsePairingInvitationGroupIds = (value: unknown): string[] => {
   ).pairing_invitation_group_ids.filter(
     (groupId): groupId is string => typeof groupId === "string"
   );
+};
+
+const localSyncSummary = (group: DeviceGroup | null): string => {
+  const sync = group?.local_sync;
+  if (!sync) return "Sync status unavailable";
+  if (!sync.enabled) return "Session sync is off";
+  if (sync.paused) return "Session sync is paused";
+  if (!sync.workerReady) return "Waiting for local sync services";
+  const count = (states: Record<string, number> | undefined, names: string[]) =>
+    names.reduce((sum, name) => sum + (states?.[name] ?? 0), 0);
+  if (
+    count(sync.outbox, ["failed", "quarantined"]) +
+      count(sync.inbox, ["failed", "quarantined"]) +
+      count(sync.replicas, ["failed", "quarantined"]) >
+    0
+  )
+    return "Session sync needs attention";
+  if ((sync.pendingPublication ?? 0) > 0)
+    return "Preparing completed turns for sync…";
+  if (count(sync.inbox, ["awaiting_predecessor"]) > 0)
+    return "Waiting for earlier session checkpoints…";
+  if (
+    count(sync.outbox, ["pending", "uploading", "committed"]) +
+      count(sync.inbox, ["pending", "downloading", "verifying"]) >
+    0
+  )
+    return "Syncing session checkpoints…";
+  if (
+    count(sync.inbox, ["processing"]) + count(sync.replicas, ["processing"]) >
+    0
+  )
+    return "Processing received sessions…";
+  if (count(sync.outbox, ["acked"]) + count(sync.replicas, ["ready"]) > 0)
+    return "Local sync queue is up to date";
+  return "Waiting for completed turns to sync";
 };
 
 const deviceName = (deviceId: string, index: number): string =>
@@ -385,7 +432,10 @@ export function DevicesModal({
     group && pairingInvitationGroupIds.includes(group.group_id)
   );
 
+  const loadingStatus = useRef(false);
   const load = useCallback(async () => {
+    if (loadingStatus.current) return;
+    loadingStatus.current = true;
     setError(null);
     try {
       const result = await invoke("personal_sync_status");
@@ -410,8 +460,18 @@ export function DevicesModal({
             : "overview"
           : current
       );
+    } finally {
+      loadingStatus.current = false;
     }
   }, [initialPairingLink, invoke]);
+
+  useEffect(() => {
+    if (state !== "overview" || busy || editingDevice || !group) return;
+    const timer = setInterval(() => {
+      void load();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [load, state, busy, editingDevice, group]);
 
   useEffect(() => {
     void load();
@@ -699,9 +759,9 @@ export function DevicesModal({
               <div>
                 <h3>Your Personal devices</h3>
                 <p>
-                  Each connected device receives an encrypted local replica of
-                  every eligible closed Captured Session. Koed rebuilds its
-                  Personal Memory locally.
+                  Completed turns from new sessions sync automatically between
+                  your paired devices. Received sessions are read-only and
+                  become Personal Memory locally.
                 </p>
               </div>
               <button
@@ -720,6 +780,7 @@ export function DevicesModal({
                 No other devices connected yet. Add a device to start syncing.
               </p>
             ) : null}
+            {group ? <p role="status">{localSyncSummary(group)}</p> : null}
             <div className="device-list">
               {activeMembers.length ? (
                 activeMembers.map((member, index) => (
@@ -788,8 +849,8 @@ export function DevicesModal({
                           </strong>
                           <small>
                             {member.device_id === localDeviceId
-                              ? "This device · Ready to sync"
-                              : "Connected"}
+                              ? "This device · Paired"
+                              : "Paired"}
                           </small>
                         </>
                       )}

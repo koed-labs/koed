@@ -26,12 +26,15 @@ Deferred work:
 
 ## Personal Device session visibility and automatic publication
 
-- Wire an explicit, trustworthy session-closure lifecycle into ordinary AI Client
-  capture and Personal Device publication. A completed turn alone must not freeze
-  a resumable session. Current replication smoke calls the close/publish API
-  explicitly and does not prove automatic capture-to-replication.
-- Validate the ordinary flow across Studio and Electron with a distinctive test
-  session, including its origin-device badge and transcript contents.
+Implemented, following ADR-0045:
+
+- Signed cumulative checkpoints preserve V1 permanent closure semantics.
+- Durable Pi, Codex, and Claude Code completion evidence triggers publication.
+- Ordered, deduplicated checkpoints extend one read-only received Session.
+- Pairing and local replication progress are reported separately.
+
+Remaining validation: physical Studio-to-Electron capture, later-turn updates,
+and offline catch-up on the updated runtime.
 
 Implemented: received-session badges use verified replica provenance and the
 installation-local nickname; device icons no longer guess hardware by row order.

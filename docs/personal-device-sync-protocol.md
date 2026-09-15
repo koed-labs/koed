@@ -1,3 +1,10 @@
+> **Incremental publication amendment (2026-09-15):**
+> [ADR-0045](adr/0045-incremental-personal-session-checkpoints.md) adds the explicit
+> `version: "2", profile: "cumulative_checkpoint"` signed manifest profile for automatic completed-turn
+> publication. The closed-session V1 rules below remain binding for their original
+> profile; a checkpoint does not permanently close its source Session. Both peers
+> must support the new profile. The existing encrypted transport is reused.
+
 # Personal Device Sync Protocol V1
 
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
@@ -477,8 +484,9 @@ JCS payloads with exactly `sourceNativeItemId`, `sequence`, `sourceTimestamp`,
 `observedAt`, `actor`, `type`, `content`, and `metadata`. `sequence` equals
 record `ordinal`; `actor` is the canonical source actor and `type` is the
 source event classification needed by the receiving device's local Projection.
-Metadata permits only `contentType`, `sourceRole`, `toolName`, and `toolCallId`,
-each a bounded string. This is an immutable source-item profile, not a derived
+Metadata permits only `contentType`, `sourceRole`, `toolName`, `toolCallId`,
+`sourceComponentId`, `sourceComponentRole`, and `parentSourceComponentId`, each
+a bounded string. This is an immutable source-item profile, not a derived
 Memory/Event schema. Paths, credentials, Team fields,
 queue/database identifiers, derived Memory structures, and unknown metadata
 fail closed.
@@ -594,6 +602,112 @@ The accompanying `resolve-conflict` group statement body has exactly
 `resolutionHash` is the finalized conflict-resolution record hash. Receivers
 verify this exact record commitment, the semantic fields, and that the record's
 `statementHash` equals the statement's `previousHash` before applying it.
+
+### 5.1 Cumulative completed-turn checkpoint manifest
+
+The `cumulative_checkpoint` profile publishes completed turns from a live
+Captured Session while the origin AI Client can continue that same Conversation.
+It is a distinct signed source-manifest profile; it does not relax the immutable
+closed-session rules above. The PDS protocol identifier and encrypted package
+transport remain `koed/pds/v1` and package version `1`. A receiver dispatches
+only on the explicit manifest `version: "2"` and
+`profile: "cumulative_checkpoint"`; it must reject an unsupported profile and
+must never interpret a checkpoint as a closed-session manifest.
+
+The v2 manifest has exactly these top-level fields, with
+`projectAliasManifest` optional under section 9's rules:
+
+```json
+{
+  "protocol": "koed/pds/v1",
+  "version": "2",
+  "profile": "cumulative_checkpoint",
+  "packageId": "base64url-sha256",
+  "originDeploymentId": "opaque-id",
+  "originDeviceId": "opaque-id",
+  "originAuthorityHead": "base64url-sha256",
+  "originSignedAt": "2026-07-15T00:00:00.000Z",
+  "sourceSequence": "8",
+  "sourceType": "captured_session",
+  "sourceNativeSessionId": "opaque-source-id",
+  "sourceFingerprint": "base64url-hmac-sha256",
+  "logicalMemoryId": "base64url-hmac-sha256",
+  "deletionFloorToken": "base64url-hmac-sha256",
+  "sourceClosureHash": "base64url-sha256",
+  "contentEpoch": "3",
+  "sourceSession": {
+    "logicalSessionId": "logical-id",
+    "externalSessionId": "native-id",
+    "sourceAdapter": "pi",
+    "sourceAdapterVersion": "pi-session-v1",
+    "sourceRuntime": "pi",
+    "sourceTitle": "Optional display title",
+    "captureMethod": "transcript",
+    "sourceCreatedAt": "2026-07-15T00:00:00.000Z"
+  },
+  "checkpoint": {
+    "version": "1",
+    "ordinal": "0",
+    "previousClosureHash": null,
+    "itemCount": "2"
+  },
+  "terminal": { "cursor": "2", "itemCount": "2" },
+  "rawClosure": { "recordCount": "2", "rawByteCount": "400", "records": [] },
+  "originSignature": { "signerKeyId": "opaque-id", "signature": "base64url" }
+}
+```
+
+`sourceSession` has exactly `logicalSessionId`, `externalSessionId`,
+`sourceAdapter`, `sourceAdapterVersion`, `sourceRuntime`, `captureMethod`, and
+`sourceCreatedAt`, plus optional `forkedFromExternalThreadId` and
+`sourceTitle`. `captureMethod` is `transcript`. The pair
+`(sourceAdapter, sourceRuntime)` must be supported by the shared AI-client
+source-adapter registry, and `sourceAdapterVersion` is a bounded source
+version string. A present title is display metadata: it is
+non-empty, at most 240 characters and 960 UTF-8 bytes, and contains no control
+characters. It may change between checkpoints without changing source identity.
+Every other `sourceSession` field is stable across the checkpoint chain. The
+profile has no `closedSession`, `sourceClosedAt`, or `observedClosedAt` field.
+
+`checkpoint` has exactly `version`, `ordinal`, `previousClosureHash`, and
+`itemCount`. Its version is `"1"`; the first checkpoint has ordinal `"0"` and
+`previousClosureHash: null`. Every later checkpoint increments the ordinal by
+one and names the immediately preceding checkpoint's `sourceClosureHash`.
+`itemCount`, `terminal.cursor`, `terminal.itemCount`, and
+`rawClosure.recordCount` are equal canonical unsigned decimal strings. The
+origin signs each checkpoint using the
+`koed/pds/v1/source-checkpoint-manifest` domain. Its `packageId` uses the
+`koed/pds/v1/checkpoint-package-id` domain; `sourceManifestHash` continues to
+hash the complete manifest without `originSignature` as in section 2.
+
+Each checkpoint contains the full ordered prefix from source item ordinal zero
+through the latest durable completed-turn boundary. It is not a delta. Every
+record follows section 5's canonical source-item encoding and binds its
+ordinal, source-native item ID, source timestamp, observation time, payload,
+and payload hash. `sourceClosureHash` commits the complete prefix. A later
+checkpoint is accepted only if its origin deployment/device, native source
+session, source fingerprint, deletion identity, and stable `sourceSession`
+metadata match; its source sequence increases; its ordinal is the next ordinal;
+its previous hash matches; its item count grows; and every prior raw record is
+byte-for-byte unchanged in the same position. A missing predecessor waits for
+catch-up. A changed prefix or conflicting source identity is quarantined. An
+identical retry is idempotent.
+
+The publisher uses durable capture evidence rather than a hook notification or
+process exit. Current boundaries are Pi's canonical terminal assistant record,
+Codex transcript `task_complete`/`turn_aborted` or app-server
+`turn/completed`, and Claude Code's journalled `turn_completed` frontier.
+Publication chooses the latest completed prefix, so several turns may be
+coalesced into one checkpoint; content after the latest completed boundary is
+excluded. Capture Policy and Personal Sync Policy still apply, and only
+Sessions created after sync policy activation are candidates.
+
+The receiver extends one read-only local Captured Session for the verified
+source identity and maps only newly appended source items. It does not add a
+permanent session-close record. A receiver may store a local contentless
+`pds_turn_completed` control marker for the checkpoint boundary; this marker is
+not in the origin-signed `rawClosure` and is not source content. Only the
+originating installation can continue or edit the source Conversation.
 
 ## 6. Encryption and recipient envelopes
 

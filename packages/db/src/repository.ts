@@ -1396,7 +1396,9 @@ const conversationItemTurnCompleteSealReason = (row: {
       stringField(row.metadata ?? {}, "semanticControl") ===
         "turn_completed") ||
     (row.source_transport === "pds_relay" &&
-      row.source_event_type === "pds_session_closed")
+      ["pds_session_closed", "pds_turn_completed"].includes(
+        row.source_event_type ?? ""
+      ))
   ) {
     return "turn_completed";
   }
@@ -4126,7 +4128,14 @@ export const createMemorySourceRepository = (
       getEmbeddableSource: (sourceType, sourceId) =>
         repository.getEmbeddableSource(sourceType, sourceId)
     }),
-    ...createPersonalDeviceSyncLocalRepository(pool),
+    ...createPersonalDeviceSyncLocalRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      resolveCapturePolicy: (actor, input, client) =>
+        createSettingsRepository(createDb(client)).getEffectiveCapturePolicy(
+          actor,
+          input
+        )
+    }),
     ...createPersonalDeviceSyncLifecycleRepository(pool),
     ...createPersonalDeviceSyncRelayRepository(pool),
     ...curatedMemoryRepository,
@@ -4532,7 +4541,7 @@ export const createMemorySourceRepository = (
                 and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
               or
               (ci.source_transport = 'pds_relay'
-                and ci.source_event_type = 'pds_session_closed')
+                and ci.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
             ) as is_turn_complete_signal,
             (
               (ci.source_adapter_version = 'codex-app-server-conversation-v1'
@@ -4551,7 +4560,7 @@ export const createMemorySourceRepository = (
                 and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
               or
               (ci.source_transport = 'pds_relay'
-                and ci.source_event_type = 'pds_session_closed')
+                and ci.source_event_type in ('pds_session_closed', 'pds_turn_completed'))
             ) as is_semantic_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id

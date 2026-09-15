@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
   parseCanonicalPdsJson,
+  pdsSessionPackageDigest,
   signPdsRecord
 } from "@koed/shared";
 import {
   createReloadablePdsSecureKeyProviderFromEnvironment,
   createPdsSecureRuntimeFromEnvironment,
   createPdsSecureRuntimeForApiStartup,
+  serializePdsCheckpointSourceForEncryptedStorage,
   serializePdsPackageForEncryptedStorage
 } from "./secure-runtime.js";
 
@@ -72,7 +74,7 @@ const reloadableRuntimeSecret = () => {
     groupId,
     device: {
       id: deviceId,
-      originDeploymentId: "deployment-one",
+      originDeploymentId: randomBytes(16).toString("base64url"),
       signingKeyId,
       signingPrivateSeed: signing.privateSeed,
       kemKeyId,
@@ -359,5 +361,148 @@ describe("PDS secure runtime", () => {
       "desktop-pds-ref",
       "desktop-pds-ref"
     ]);
+  });
+
+  it("builds an authenticated cumulative checkpoint while the source Session stays open", async () => {
+    const secret = reloadableRuntimeSecret();
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      { resolveHeadlessSecret: async () => JSON.stringify(secret) }
+    );
+    const context = await provider?.getSourceContext({
+      userId: secret.userId,
+      groupId: secret.groupId
+    });
+    if (!context) throw new Error("Expected a configured PDS source context");
+
+    const built = await context.buildCompletedTurnCheckpointPackage({
+      source: {
+        groupDbId: "group-db",
+        groupId: secret.groupId,
+        sessionId: "session",
+        logicalSessionId: "logical-session",
+        externalSessionId: "native-session",
+        forkedFromExternalThreadId: null,
+        sourceRuntime: "pi",
+        sourceAdapter: "pi",
+        sourceAdapterVersion: "pi-session-v1",
+        sourceCreatedAt: "2026-07-15T00:00:00.000Z",
+        items: []
+      },
+      sourceSequence: "0",
+      checkpoint: {
+        version: "1",
+        ordinal: "0",
+        previousClosureHash: null
+      },
+      items: [
+        {
+          sourceNativeItemId: "native-item",
+          sequence: "0",
+          sourceTimestamp: "2026-07-15T00:00:01.000Z",
+          observedAt: "2026-07-15T00:00:02.000Z",
+          actor: "assistant",
+          type: "agent_message",
+          content: "done",
+          metadata: { sourceRole: "assistant" }
+        }
+      ]
+    });
+
+    expect(built.package.header.packageId).toBeTruthy();
+    expect(built.package.header.sourceManifestHash).toBe(
+      built.sourceManifestHash
+    );
+    expect(built.manifest).toMatchObject({
+      version: "2",
+      profile: "cumulative_checkpoint",
+      packageId: built.package.header.packageId,
+      sourceClosureHash: built.sourceClosureHash
+    });
+    expect(built.package.packageDigest).toBe(
+      pdsSessionPackageDigest({
+        header: built.package.header,
+        envelopes: built.package.envelopes,
+        chunks: built.package.chunks
+      })
+    );
+    expect(
+      parseCanonicalPdsJson(
+        serializePdsCheckpointSourceForEncryptedStorage({
+          manifest: built.manifest,
+          package: built.package
+        })
+      )
+    ).toMatchObject({
+      kind: "pds_checkpoint_source_v1",
+      manifest: {
+        packageId: built.package.header.packageId,
+        sourceClosureHash: built.sourceClosureHash
+      },
+      package: {
+        header: { packageId: built.package.header.packageId },
+        packageDigest: built.package.packageDigest
+      }
+    });
+  });
+
+  it("accepts the Codex app-server session adapter version for the Codex runtime", async () => {
+    const secret = reloadableRuntimeSecret();
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      { resolveHeadlessSecret: async () => JSON.stringify(secret) }
+    );
+    const context = await provider?.getSourceContext({
+      userId: secret.userId,
+      groupId: secret.groupId
+    });
+    if (!context) throw new Error("Expected a configured PDS source context");
+
+    const built = await context.buildCompletedTurnCheckpointPackage({
+      source: {
+        groupDbId: "group-db",
+        groupId: secret.groupId,
+        sessionId: "session",
+        logicalSessionId: "logical-session",
+        externalSessionId: "native-session",
+        forkedFromExternalThreadId: null,
+        sourceRuntime: "codex",
+        sourceAdapter: "codex",
+        sourceAdapterVersion: "codex-app-server-v1",
+        sourceCreatedAt: "2026-07-15T00:00:00.000Z",
+        items: []
+      },
+      sourceSequence: "0",
+      checkpoint: {
+        version: "1",
+        ordinal: "0",
+        previousClosureHash: null
+      },
+      items: [
+        {
+          sourceNativeItemId: "native-item",
+          sequence: "0",
+          sourceTimestamp: "2026-07-15T00:00:01.000Z",
+          observedAt: "2026-07-15T00:00:02.000Z",
+          actor: "assistant",
+          type: "agent_message",
+          content: "done",
+          metadata: { sourceRole: "assistant" }
+        }
+      ]
+    });
+
+    expect(built.package.header.packageId).toBeTruthy();
+    expect(built.sourceManifestHash).toBe(
+      built.package.header.sourceManifestHash
+    );
   });
 });

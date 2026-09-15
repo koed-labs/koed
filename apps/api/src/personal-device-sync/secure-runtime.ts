@@ -2,11 +2,18 @@ import { spawnSync } from "node:child_process";
 import { sign, verify } from "node:crypto";
 import {
   canonicalizePdsJson,
+  createPdsSessionCheckpointManifest,
+  createPdsSessionCheckpointPackage,
   createPdsSessionManifest,
   createPdsSessionPackage,
   createPdsSessionPackageRuntimeContext,
   pdsEd25519PrivateKey,
   pdsEd25519PublicKey
+} from "@koed/shared";
+import type {
+  AiClientSourceRuntime,
+  PdsSessionCheckpointManifest,
+  PdsSessionPackage
 } from "@koed/shared";
 import type { PdsAuthoritySigner } from "./routes.js";
 import type {
@@ -235,6 +242,31 @@ export const serializePdsPackageForEncryptedStorage = (
   value: unknown
 ): string => canonicalizePdsJson(value);
 
+export interface PdsCheckpointSourceEnvelopeV1 {
+  kind: "pds_checkpoint_source_v1";
+  manifest: PdsSessionCheckpointManifest;
+  package: PdsSessionPackage;
+}
+
+/** Keep the immutable signed source manifest with the wire package, encrypted at rest. */
+export const serializePdsCheckpointSourceForEncryptedStorage = (input: {
+  manifest: PdsSessionCheckpointManifest;
+  package: PdsSessionPackage;
+}): string =>
+  canonicalizePdsJson({
+    kind: "pds_checkpoint_source_v1",
+    manifest: input.manifest,
+    package: input.package
+  } satisfies PdsCheckpointSourceEnvelopeV1);
+
+const isAiClientSourceRuntime = (
+  value: unknown
+): value is AiClientSourceRuntime =>
+  value === "codex" ||
+  value === "codex-cli" ||
+  value === "claude-code" ||
+  value === "pi";
+
 const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
   const runtime = runtimeFor(secret);
   const signingKey = pdsEd25519PrivateKey(
@@ -284,6 +316,57 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         manifest
       });
       return Promise.resolve({
+        package: pkg,
+        sourceClosureHash: manifest.sourceClosureHash,
+        sourceManifestHash: pkg.header.sourceManifestHash,
+        sourceFingerprint: manifest.sourceFingerprint,
+        logicalMemoryId: manifest.logicalMemoryId,
+        deletionFloorToken: manifest.deletionFloorToken
+      });
+    },
+    buildCompletedTurnCheckpointPackage(input) {
+      const sourceRuntime = input.source.sourceRuntime;
+      if (!isAiClientSourceRuntime(sourceRuntime)) {
+        throw new TypeError("PDS checkpoint source runtime is invalid");
+      }
+      const sourceSession = {
+        logicalSessionId: input.source.logicalSessionId,
+        externalSessionId: input.source.externalSessionId,
+        ...(input.source.forkedFromExternalThreadId
+          ? {
+              forkedFromExternalThreadId:
+                input.source.forkedFromExternalThreadId
+            }
+          : {}),
+        sourceAdapter: input.source.sourceAdapter,
+        sourceAdapterVersion: input.source.sourceAdapterVersion,
+        sourceRuntime,
+        ...(input.source.title ? { sourceTitle: input.source.title } : {}),
+        captureMethod: "transcript" as const,
+        sourceCreatedAt: input.source.sourceCreatedAt
+      };
+      const manifest = createPdsSessionCheckpointManifest({
+        runtime,
+        originDeploymentId: secret.device.originDeploymentId,
+        sourceSequence: input.sourceSequence,
+        sourceNativeSessionId: input.source.externalSessionId,
+        contentEpoch: secret.groupSecrets.currentEpoch,
+        sourceSession,
+        checkpoint: input.checkpoint,
+        terminalCursor: String(input.items.length),
+        items: input.items,
+        sourceFingerprintKey: secret.groupSecrets.sourceFingerprintKey,
+        tombstoneFloorKey: secret.groupSecrets.tombstoneFloorKey,
+        originSigningPrivateKey: signingKey
+      });
+      const pkg = createPdsSessionCheckpointPackage({
+        runtime,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+        servingSigningPrivateKey: signingKey,
+        manifest
+      });
+      return Promise.resolve({
+        manifest,
         package: pkg,
         sourceClosureHash: manifest.sourceClosureHash,
         sourceManifestHash: pkg.header.sourceManifestHash,

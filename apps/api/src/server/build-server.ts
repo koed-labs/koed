@@ -60,6 +60,7 @@ import {
   createPersonalNoteMemoryRepairService,
   projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
+import { createPdsCheckpointPublicationService } from "../personal-device-sync/checkpoint-publication.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import {
   createLocalSharedMemoryCandidatePreparation,
@@ -513,6 +514,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
   let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
+  let pdsCheckpointPublicationService: ReturnType<
+    typeof createPdsCheckpointPublicationService
+  > | null = null;
   let requestPendingShareSourceWork: (() => void) | null = null;
   let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
@@ -665,6 +669,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await collaborationRealtimeBroker?.close();
     await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
+    await pdsCheckpointPublicationService?.stop();
     await pendingShareDrain?.stop();
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
@@ -1451,6 +1456,43 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       wakePool: pool
     }
   };
+  const pdsCheckpointRepository = repository as {
+    listPdsCheckpointCandidates?: MemorySourceRepository["listPdsCheckpointCandidates"];
+    checkpointPdsSourceSession?: MemorySourceRepository["checkpointPdsSourceSession"];
+  } | null;
+  const pdsCheckpointSecureKeyProvider =
+    routeContext.personalDeviceSync.secureKeyProvider;
+  if (
+    !config.test &&
+    pdsCheckpointRepository?.listPdsCheckpointCandidates &&
+    pdsCheckpointRepository.checkpointPdsSourceSession &&
+    pdsCheckpointSecureKeyProvider &&
+    envelopeEncryptionProvider
+  ) {
+    pdsCheckpointPublicationService = createPdsCheckpointPublicationService({
+      repository: pdsCheckpointRepository as MemorySourceRepository,
+      secureKeyProvider: pdsCheckpointSecureKeyProvider,
+      envelopeEncryptionProvider,
+      onError: (error) => {
+        const errorClass =
+          error instanceof Error &&
+          /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(error.name)
+            ? error.name
+            : "PdsCheckpointPublicationError";
+        app.log.warn(
+          {
+            event: { name: "pds.checkpoint_publication.retry" },
+            errorClass
+          },
+          "PDS completed-turn checkpoint will retry"
+        );
+      }
+    });
+    app.addHook("onReady", (done) => {
+      pdsCheckpointPublicationService?.start();
+      done();
+    });
+  }
   if (realtimeTransportTicketRepository) {
     const transportIdentity = routeContext.deploymentIdentity.inspect();
     if (

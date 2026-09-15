@@ -233,6 +233,7 @@ export const signPdsRecord = (
   recordType:
     | "membership-certificate"
     | "source-manifest"
+    | "source-checkpoint-manifest"
     | "transport-envelope"
     | "tombstone-ack"
     | "package-ack"

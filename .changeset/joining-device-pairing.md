@@ -20,3 +20,9 @@ Personal Sync status authenticate automatically on local SSH installations.
 
 Show a computer icon and local device nickname on received sessions, and use
 consistent computer icons in Devices instead of alternating laptop/phone icons.
+
+Automatically publish completed-turn checkpoints from supported AI Client
+capture, keeping source conversations resumable and received sessions read-only.
+Preserve source client identity and append later checkpoints to the same local
+session. Show pairing separately from local sync progress. Both devices need
+this checkpoint-capable version; existing closed-session packages remain valid.

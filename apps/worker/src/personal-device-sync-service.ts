@@ -31,7 +31,7 @@ export interface PdsWorkerSecureRuntime {
   outboundState(input: {
     groupId: string;
     transportId: string;
-  }): Promise<"committed" | "acked">;
+  }): Promise<"committed" | "acked" | "missing">;
   /** Durable lifecycle controls run before mailbox, publication, or Recall work. */
   pollLifecycle?(): Promise<void>;
   poll(): Promise<
@@ -71,6 +71,16 @@ export interface PdsWorkerSecureRuntime {
         sourceClosedAt: Date;
         observedAt: Date;
         sourceItemIds: string[];
+      }
+    | {
+        kind: "checkpoint";
+        userId: string;
+        retainedPackageId: string;
+        originDeviceId: string;
+        sourceSequence: string;
+        state: string;
+        conflict: boolean;
+        deferred: boolean;
       }
     | {
         kind: "artifact";
@@ -332,6 +342,18 @@ export const createPdsLocalSyncService = (input: {
               state: "acked",
               transportId: entry.transportId
             });
+          } else if (state === "missing") {
+            const requeued =
+              await input.repository.requeuePdsExpiredCheckpointOutbox({
+                workerId,
+                outboxId: entry.id,
+                transportId: entry.transportId
+              });
+            if (!requeued)
+              await input.repository.releasePdsCommittedOutbox({
+                workerId,
+                outboxId: entry.id
+              });
           } else {
             await input.repository.releasePdsCommittedOutbox({
               workerId,
@@ -430,6 +452,33 @@ export const createPdsLocalSyncService = (input: {
             ) {
               throw new Error("PdsInboxLeaseUnavailableError");
             }
+            continue;
+          }
+          if (materialized.kind === "checkpoint") {
+            if (materialized.deferred) continue;
+            if (!materialized.conflict)
+              await input.secureRuntime.acknowledge?.({
+                inboxId: entry.id,
+                groupId: entry.groupId,
+                packageId: entry.packageId,
+                sourceManifestHash: entry.sourceManifestHash,
+                originDeviceId: materialized.originDeviceId,
+                sourceSequence: materialized.sourceSequence
+              });
+            if (
+              !(await input.repository.completePdsInbox({
+                workerId,
+                inboxId: entry.id,
+                retainedPackageId: materialized.retainedPackageId,
+                state: materialized.conflict ? "quarantined" : "ready"
+              }))
+            )
+              throw new Error("PdsInboxLeaseUnavailableError");
+            await input.repository.heartbeatPdsWorker({
+              groupId: entry.groupId,
+              workerId,
+              capability: "receiver_materialization"
+            });
             continue;
           }
           const result = await input.repository.materializePdsReplica({

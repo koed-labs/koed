@@ -299,4 +299,39 @@ describe("Devices modal", () => {
     expect(container.textContent).not.toContain("recovery");
     expect(container.textContent).toContain("Add device");
   });
+  it.each([
+    [{ workerReady: false }, "Waiting for local sync services"],
+    [{ pendingPublication: 1 }, "Preparing completed turns for sync"],
+    [
+      { inbox: { awaiting_predecessor: 1 } },
+      "Waiting for earlier session checkpoints"
+    ],
+    [{ outbox: { pending: 1 } }, "Syncing session checkpoints"],
+    [{ inbox: { processing: 1 } }, "Processing received sessions"],
+    [{ outbox: { failed: 1 } }, "Session sync needs attention"],
+    [{ outbox: { acked: 1 } }, "Local sync queue is up to date"]
+  ])(
+    "separates pairing from local sync progress (%j)",
+    async (extra, message) => {
+      const invoke = vi.fn(async () => ({
+        ...status,
+        groups: [
+          {
+            ...status.groups[0],
+            local_sync: { enabled: true, workerReady: true, ...extra }
+          }
+        ]
+      }));
+      await act(async () => {
+        root.render(
+          <DevicesModal invoke={invoke as never} onClose={vi.fn()} />
+        );
+      });
+      expect(container.textContent).toContain("This device · Paired");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(
+        message
+      );
+      expect(container.textContent).not.toContain("Ready to sync");
+    }
+  );
 });

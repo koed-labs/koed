@@ -206,7 +206,13 @@ try {
   console.log(
     "PASS: explicit Electron acceptance, two active members, durable joining reconciliation, and no copied Authority key."
   );
-  const api = async (environment, route, body, desktop = false) => {
+  const api = async (
+    environment,
+    route,
+    body,
+    desktop = false,
+    method = "POST"
+  ) => {
     const runtime = JSON.parse(
       readFileSync(join(environment.KOED_HOME, "run/koed-server.json"), "utf8")
     );
@@ -221,7 +227,7 @@ try {
           .authorization
       : `Bearer ${local.apiToken}`;
     const response = await fetch(new URL(route, runtime.apiUrl), {
-      method: "POST",
+      method,
       headers: {
         authorization,
         ...(body ? { "content-type": "application/json" } : {})
@@ -238,48 +244,100 @@ try {
     return await response.json();
   };
   const replicate = async (source, destination, label) => {
-    const marker = `pair-request-smoke-${label}-${Date.now()}`;
+    const marker = `pair-checkpoint-smoke-${label}-${Date.now()}`;
     const session = await api(source, "/v1/sessions", {
       externalSessionId: marker,
-      sourceRuntime: "codex",
+      sourceRuntime: "codex-cli",
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
       captureMethod: "transcript",
       projectId: marker
     });
     const sessionId = session.session.id;
-    await api(source, "/v1/memory/conversation-items", {
-      items: replicatedTranscriptItems({
+    let replicaSessionId;
+    for (let turn = 0; turn < 2; turn++) {
+      const turnMarker = `${marker}-turn-${turn}`;
+      const observedAt = new Date().toISOString();
+      const items = replicatedTranscriptItems({
         sessionId,
-        marker,
-        observedAt: new Date().toISOString()
-      })
-    });
-    await api(source, "/v1/memory/conversation-items/project", { limit: 100 });
-    const closed = await api(
-      source,
-      `/v1/personal-device-sync/groups/${created.groupId}/sessions/${sessionId}/close`,
-      undefined,
-      true
-    );
-    assert.equal(closed.closure.state, "ready");
-    for (let attempt = 0; attempt < 120; attempt++) {
-      const search = await api(destination, "/v1/memory/search", {
-        query: marker,
-        retrieval_scope: "personal",
-        search_domain: "global",
-        limit: 5
+        marker: turnMarker,
+        observedAt
+      }).map((item) => ({
+        ...item,
+        externalSessionId: marker,
+        sourceSequence: turn * 2
+      }));
+      items.push({
+        sessionId,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "transcript",
+        externalSessionId: marker,
+        externalTurnId: `${turnMarker}-turn`,
+        externalItemId: `${turnMarker}-complete`,
+        sourceRecordType: "event_msg",
+        sourceEventType: "task_complete",
+        sourceSequence: turn * 2 + 1,
+        eventTime: observedAt,
+        rawJson: { type: "event_msg", payload: { type: "task_complete" } },
+        idempotencyKey: `${turnMarker}-complete`,
+        metadata: { transcriptType: "task_complete", sourceRole: "system" }
       });
-      if (
-        search.retrievalMode === "semantic_vector" &&
-        JSON.stringify(search.hits).includes(marker)
-      ) {
-        console.log(
-          `PASS: encrypted ${label} replication and semantic recall.`
-        );
-        return;
+      await api(source, "/v1/memory/conversation-items", { items });
+      await api(source, "/v1/memory/conversation-items/project", {
+        limit: 100
+      });
+      let found = false;
+      for (let attempt = 0; attempt < 120; attempt++) {
+        const search = await api(destination, "/v1/memory/search", {
+          query: turnMarker,
+          retrieval_scope: "personal",
+          search_domain: "global",
+          limit: 5
+        });
+        if (
+          search.retrievalMode === "semantic_vector" &&
+          JSON.stringify(search.hits).includes(turnMarker)
+        ) {
+          const graph = await api(
+            destination,
+            "/v1/memory/graph/threads?limit=100",
+            undefined,
+            false,
+            "GET"
+          );
+          const threads = graph.projects
+            .flatMap((project) => project.threads)
+            .filter(
+              (thread) =>
+                thread.threadId === marker ||
+                thread.externalSessionId === marker
+            );
+          assert.equal(
+            threads.length,
+            1,
+            "successive checkpoints must share one visible Session"
+          );
+          assert.ok(
+            threads[0].originDeviceId,
+            "received Session needs verified origin provenance"
+          );
+          if (replicaSessionId)
+            assert.equal(threads[0].sessionId, replicaSessionId);
+          replicaSessionId = threads[0].sessionId;
+          found = true;
+          console.log(
+            `PASS: automatic ${label} checkpoint ${turn}, one received Session and semantic recall.`
+          );
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      assert.ok(
+        found,
+        `Timed out waiting for automatic ${label} checkpoint ${turn}`
+      );
     }
-    throw new Error(`Timed out waiting for ${label} replication.`);
   };
   await replicate(authority, joining, "Electron-to-headless");
   await replicate(joining, authority, "headless-to-Electron");

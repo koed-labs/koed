@@ -96,8 +96,11 @@ existing immutable runtime/model assets from `~/.koed`. It disables Transcript
 Watchers, creates a group without exporting recovery material, exercises request
 review and explicit acceptance through the Desktop manager, and verifies two
 active members, joining database reconciliation, and no copied Authority key.
-It then verifies encrypted session replication and semantic recall in both
-directions.
+It then feeds completed-turn capture records and verifies automatic encrypted
+checkpoint publication, successive turns in one received Session, verified origin
+badges, and semantic recall in both directions. It does not call the permanent
+close/publish endpoint. This is an ingestion-to-replication smoke; physical
+AI Client watcher validation remains a separate end-to-end check.
 Use `KOED_SMOKE_ASSET_HOME` for another prepared asset directory. Temporary homes
 are removed after the test unless `KOED_KEEP_SMOKE_HOME=1` is selected explicitly.
 
@@ -134,11 +137,31 @@ Device replica observation, not transcript-supplied metadata. Local source sessi
 and quarantined replicas do not receive a remote-device badge. Devices uses a
 neutral computer icon because the pairing protocol does not carry hardware type.
 
-### Current session-publication boundary
+### Automatic session checkpoints
 
-Pairing and active membership do not prove automatic session replication. The
-current source-publication entry point is the explicit session close/publish API;
-normal AI Client session completion is not yet wired to that operation. The
-replication smoke explicitly publishes synthetic sessions. Once received and
-projected, sessions appear in Personal Projects, potentially under Unassigned.
-An ordinary capture-to-automatic-publication test remains follow-up work.
+After pairing with Personal Sync enabled, completed turns in new Captured
+Sessions are published automatically. Both installations must run a version
+supporting checkpoint manifests. Pi, Codex, and Claude Code use durable completion
+evidence from capture; an idle terminal is not a permanent Session closure.
+
+Open **Personal Projects** to inspect received Sessions. Sessions without a
+matching Project may appear under **Unassigned**. The computer icon and local
+device nickname identify a received Session. Open it to inspect the transcript;
+a later completed turn extends that same Session. Received Sessions are read-only,
+and their source AI Client identity is preserved. The originating Conversation
+remains resumable on its original device.
+
+**Paired** describes group membership, not successful transfer. Devices also
+reports local publication, transfer, processing, or attention state. A local queue
+being up to date does not assert that an offline peer has captured no new activity.
+Keep the Authority-hosting Electron app running and both devices reachable over
+LAN/Tailscale for the current transport. Checkpoints waiting for predecessors
+resume as those predecessors arrive; duplicate delivery is harmless. When a new
+device joins, retained eligible checkpoints are queued for its current membership
+so it can catch up before receiving later turns.
+
+Automatic publication covers Sessions created after Personal Sync Policy was
+enabled. Pairing does not import historical sessions. The checkpoint manifest is
+versioned separately from the existing permanent closed-session manifest, whose
+immutability remains enforced. See [ADR-0045](adr/0045-incremental-personal-session-checkpoints.md)
+for ordering, compatibility, and the initial cumulative-package size trade-off.

@@ -1515,7 +1515,23 @@ const status = async (
     ) {
       fail("PDS control response pairing capability is invalid.");
     }
-    const groups = response.groups as unknown[];
+    const groups = await Promise.all(
+      (response.groups as unknown[]).map(async (entry) => {
+        const group = object(entry, "group");
+        if (typeof group.group_id !== "string") return group;
+        try {
+          const local = await control({
+            environment,
+            deps,
+            method: "GET",
+            path: `/v1/personal-device-sync/groups/${encodeURIComponent(group.group_id)}/local-status`
+          });
+          return { ...group, local_sync: local.status ?? null };
+        } catch {
+          return { ...group, local_sync: null };
+        }
+      })
+    );
     if (groups.length || !runtime) {
       return {
         ok: true,
