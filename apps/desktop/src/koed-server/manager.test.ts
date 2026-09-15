@@ -2962,7 +2962,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       ]
     });
     const pairingId = "11111111-2222-4333-8444-555555555555";
-    const waitForRequest = vi.fn(async () => ({ device_id: "device-2" }));
+    const waitForRequest = vi.fn(async () => ({
+      device_id: "AAAAAAAAAAAAAAAAAAAAAA"
+    }));
     const inspect = vi.fn(() => [
       {
         id: pairingId,
@@ -3002,7 +3004,14 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
             null,
             JSON.stringify({
               ...healthyLocalServiceStatus(),
-              groups: [{ group_id: "group-one", members: [] }],
+              groups: [
+                {
+                  group_id: "group-one",
+                  members: [
+                    { device_id: "AAAAAAAAAAAAAAAAAAAAAA", status: "active" }
+                  ]
+                }
+              ],
               pairing_invitation_group_ids: ["group-one"]
             }),
             ""
@@ -3020,7 +3029,17 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
             String(input).endsWith("local-runtime-wake")
               ? { ok: true }
               : {
-                  groups: [{ group_id: "group-one", members: [] }],
+                  groups: [
+                    {
+                      group_id: "group-one",
+                      members: [
+                        {
+                          device_id: "AAAAAAAAAAAAAAAAAAAAAA",
+                          status: "active"
+                        }
+                      ]
+                    }
+                  ],
                   pairing_invitation_group_ids: ["group-one"]
                 }
           ),
@@ -3036,6 +3055,29 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       await waitFor(() => waitForRequest.mock.calls.length > 0);
       expect(waitForRequest).toHaveBeenCalledWith(pairingId);
       expect(inspect).toHaveBeenCalledWith(pairingId);
+      await waitFor(() =>
+        existsSync(resolve(koedHome, "config/personal-device-names.json"))
+      );
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ members: [{ label: "Recovered laptop" }] }]
+      });
+      await manager.handlers.personal_sync_device_rename!({
+        deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+        name: "Office Studio"
+      });
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ members: [{ label: "Office Studio" }] }]
+      });
+      await expect(
+        manager.handlers.personal_sync_device_rename!({
+          deviceId: "BBBBBBBBBBBBBBBBBBBBBB",
+          name: "Unknown"
+        })
+      ).rejects.toThrow("no longer");
     } finally {
       await manager.stop();
       rmSync(koedHome, { recursive: true, force: true });
@@ -3118,7 +3160,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         port: 3310,
         relayUrl: "http://192.168.1.23:3310/pds",
         createInvitation: vi.fn(),
-        waitForRequest: vi.fn(async () => ({ device_id: "device-2" })),
+        waitForRequest: vi.fn(async () => ({
+          device_id: "AAAAAAAAAAAAAAAAAAAAAA"
+        })),
         claimApproval: vi.fn(async () => undefined),
         approve: vi.fn(),
         waitForCompletion: vi.fn(async () => {

@@ -7,6 +7,7 @@ import {
   LoaderCircle,
   MonitorSmartphone,
   Plus,
+  Pencil,
   RefreshCw,
   Smartphone,
   X
@@ -21,6 +22,7 @@ import {
 } from "react";
 
 type DeviceMember = {
+  label?: string;
   device_id: string;
   status: string;
 };
@@ -98,7 +100,13 @@ const parseGroups = (value: unknown): DeviceGroup[] => {
       const item = member as Record<string, unknown>;
       return typeof item.device_id === "string" &&
         typeof item.status === "string"
-        ? [{ device_id: item.device_id, status: item.status }]
+        ? [
+            {
+              device_id: item.device_id,
+              status: item.status,
+              ...(typeof item.label === "string" ? { label: item.label } : {})
+            }
+          ]
         : [];
     });
     return [
@@ -370,6 +378,8 @@ export function DevicesModal({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editingDevice, setEditingDevice] = useState<string | null>(null);
+  const [editedName, setEditedName] = useState("");
   const joiningRequestId = useRef<string | null>(null);
   const activePairingId = useRef<string | null>(null);
   const group = groups[0] ?? null;
@@ -724,18 +734,87 @@ export function DevicesModal({
                       )}
                     </span>
                     <div>
-                      <strong>
-                        {member.device_id === localDeviceId
-                          ? "This device"
-                          : deviceName(member.device_id, index)}
-                      </strong>
-                      <small>
-                        {member.device_id === localDeviceId
-                          ? "Ready to sync"
-                          : "Connected"}
-                      </small>
+                      {editingDevice === member.device_id ? (
+                        <form
+                          className="device-name-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setBusy(true);
+                            setError(null);
+                            void invoke("personal_sync_device_rename", {
+                              deviceId: member.device_id,
+                              name: editedName
+                            })
+                              .then(async () => {
+                                setEditingDevice(null);
+                                await load();
+                              })
+                              .catch((error) => setError(errorMessage(error)))
+                              .finally(() => setBusy(false));
+                          }}
+                        >
+                          <label>
+                            <span>Device name</span>
+                            <input
+                              autoFocus
+                              aria-label="Device name"
+                              value={editedName}
+                              maxLength={80}
+                              disabled={busy}
+                              onChange={(event) =>
+                                setEditedName(event.target.value)
+                              }
+                            />
+                          </label>
+                          <div>
+                            <button
+                              type="submit"
+                              className="device-primary-button"
+                              disabled={busy || !editedName.trim()}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="device-secondary-button"
+                              disabled={busy}
+                              onClick={() => setEditingDevice(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <strong>
+                            {member.label ||
+                              (member.device_id === localDeviceId
+                                ? "This device"
+                                : deviceName(member.device_id, index))}
+                          </strong>
+                          <small>
+                            {member.device_id === localDeviceId
+                              ? "This device · Ready to sync"
+                              : "Connected"}
+                          </small>
+                        </>
+                      )}
                     </div>
-                    <Check aria-label="Active" />
+                    <div className="device-row-actions">
+                      <Check aria-label="Active" />
+                      <button
+                        type="button"
+                        className="device-icon-button"
+                        aria-label={`Rename ${member.label || (member.device_id === localDeviceId ? "this device" : deviceName(member.device_id, index))}`}
+                        disabled={busy || editingDevice !== null}
+                        onClick={() => {
+                          setEditedName(member.label ?? "");
+                          setEditingDevice(member.device_id);
+                        }}
+                      >
+                        <Pencil aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
                 ))
               ) : (

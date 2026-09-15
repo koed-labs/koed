@@ -13,3 +13,7 @@ included. Existing invitation redemption remains available for compatibility.
 Allow the empty device overview before Authority configuration and identify the
 local member as This device, with an explicit message when no other devices have
 joined.
+
+Remember reviewed device names and allow installation-local nicknames in Devices
+and device selectors. Simplify the AI Client setup copy and CLI help, and let
+Personal Sync status authenticate automatically on local SSH installations.

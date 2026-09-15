@@ -76,6 +76,59 @@ describe("Devices modal", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps the discovered name and saves an edited local nickname", async () => {
+    let label = "studio";
+    const invoke = vi.fn(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "personal_sync_status")
+          return {
+            ...status,
+            groups: [
+              {
+                ...status.groups[0],
+                members: [{ device_id: "device-2", status: "active", label }]
+              }
+            ]
+          };
+        if (command === "personal_sync_device_rename") {
+          label = args?.name as string;
+          return { ok: true };
+        }
+        throw new Error(`Unexpected command ${command}`);
+      }
+    );
+    await act(async () => {
+      root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
+    });
+    expect(container.textContent).toContain("studio");
+    await click(container.querySelector('button[aria-label="Rename studio"]'));
+    const input = container.querySelector(
+      'input[aria-label="Device name"]'
+    ) as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(input, "Office Studio");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input
+        .closest("form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true })
+        );
+    });
+    expect(invoke).toHaveBeenCalledWith("personal_sync_device_rename", {
+      deviceId: "device-2",
+      name: "Office Studio"
+    });
+    expect(container.textContent).toContain("Office Studio");
+    expect(
+      container.querySelector('input[aria-label="Device name"]')
+    ).toBeNull();
+  });
+
   it("offers request-link review on the existing Electron device", async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === "personal_sync_status") return status;

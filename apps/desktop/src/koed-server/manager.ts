@@ -1,3 +1,8 @@
+import { hostname } from "node:os";
+import {
+  readPersonalDeviceNames,
+  writePersonalDeviceName
+} from "../personal-device-names.js";
 import {
   deviceRequestCommand,
   exchangeDeviceRequest,
@@ -2282,7 +2287,30 @@ export const createKoedServerManager = ({
 
   const personalSyncStatusWithLanRelay = async () => {
     const status = await runPersonalSync(["status"]);
-    const groups = Array.isArray(status.groups) ? status.groups : [];
+    const names = readPersonalDeviceNames(resolveKoedHome(environment));
+    const localDeviceId = status.local_device_id;
+    const groups = Array.isArray(status.groups)
+      ? status.groups.map((entry) => {
+          const group = objectValue(entry);
+          if (!group || !Array.isArray(group.members)) return entry;
+          return {
+            ...group,
+            members: group.members.map((entry) => {
+              const member = objectValue(entry);
+              if (!member || typeof member.device_id !== "string") return entry;
+              return {
+                ...member,
+                label:
+                  names[member.device_id] ??
+                  (member.device_id === localDeviceId
+                    ? hostname().slice(0, 80)
+                    : null)
+              };
+            })
+          };
+        })
+      : [];
+    status.groups = groups;
     if (groups.length === 0) {
       personalDevicePairingServerError = null;
       return status;
@@ -2656,6 +2684,15 @@ export const createKoedServerManager = ({
         await server.approve(id);
       } else {
         result = { ok: true };
+      }
+      const label = server.inspect(id)[0]?.joiningDeviceLabel;
+      if (label && typeof request.device_id === "string") {
+        writePersonalDeviceName(
+          resolveKoedHome(environment),
+          request.device_id,
+          label,
+          true
+        );
       }
       await server.waitForCompletion(id);
       return await finalizeAutomaticPairingEnrollment(server, id, result);
@@ -3280,9 +3317,17 @@ export const createKoedServerManager = ({
       if (!Array.isArray(payload.devices)) {
         throw new PersonalMemoryBoundaryError("invalid_response", false);
       }
+      const names = readPersonalDeviceNames(resolveKoedHome(environment));
       return parseManagedConversationResult({
         operation: "targets",
-        devices: payload.devices
+        devices: payload.devices.map((entry) => {
+          const device = objectValue(entry);
+          if (!device || typeof device.deviceId !== "string") return entry;
+          return {
+            ...device,
+            label: names[device.deviceId] ?? device.label
+          };
+        })
       });
     }
 
@@ -5500,6 +5545,35 @@ export const createKoedServerManager = ({
       },
       select_project_directory: () => {
         throw new Error("Project directory selection requires Desktop.");
+      },
+      personal_sync_device_rename: async (args) => {
+        const input = exactDesktopArgs(args, ["deviceId", "name"]);
+        const status = await runPersonalSync(["status"]);
+        const member =
+          Array.isArray(status.groups) &&
+          status.groups.some((entry) => {
+            const group = objectValue(entry);
+            return (
+              Array.isArray(group?.members) &&
+              group.members.some((entry) => {
+                const device = objectValue(entry);
+                return (
+                  device?.device_id === input.deviceId &&
+                  device?.status === "active"
+                );
+              })
+            );
+          });
+        if (!member || typeof input.deviceId !== "string")
+          throw new Error(
+            "This device is no longer in your Personal Device Group."
+          );
+        writePersonalDeviceName(
+          resolveKoedHome(environment),
+          input.deviceId,
+          input.name
+        );
+        return { ok: true };
       },
       personal_sync_status: async () => {
         const status = await personalSyncStatusWithLanRelay();

@@ -468,7 +468,7 @@ textarea {
   border-top: 1px solid var(--border);
   display: grid;
   gap: 10px;
-  grid-template-columns: 32px minmax(0, 1fr) 20px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   min-height: 56px;
 }
 
@@ -630,4 +630,40 @@ textarea {
   .device-pairing-copy {
     width: 100%;
   }
+}
+
+.device-row > .device-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.device-row-actions > svg {
+  color: var(--success);
+}
+.device-name-form {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+}
+.device-name-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.75rem;
+}
+.device-name-form input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+}
+.device-name-form > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.device-row strong {
+  overflow-wrap: anywhere;
 }

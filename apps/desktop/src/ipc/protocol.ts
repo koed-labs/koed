@@ -25,6 +25,7 @@ export const desktopCommandNames = [
   "ensure_independent_project",
   "select_project_directory",
   "personal_sync_status",
+  "personal_sync_device_rename",
   "personal_sync_group_bootstrap",
   "personal_sync_group_activate",
   "personal_sync_pause",

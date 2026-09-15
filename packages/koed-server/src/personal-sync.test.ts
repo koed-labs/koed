@@ -1,7 +1,9 @@
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   closeSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -14,6 +16,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
+  storeDesktopLocalCredential,
   createPdsAuthorizedKeyBundle,
   parseCanonicalPdsJson,
   pdsFinalizedStatementHash,
@@ -356,12 +359,12 @@ describe("Personal Sync control client", () => {
     ).toThrow("Recovery kit password or authentication tag is invalid.");
   });
 
-  it("fails closed without browser-session FD and never reports local policy", async () => {
+  it("requires a running local installation before automatic status", async () => {
     await expect(
       runPersonalSyncCommand(["status"], pathsFor(root()), {
         PDS_CONTROL_URL: "https://pds.test"
       })
-    ).rejects.toThrow("browser session FD");
+    ).rejects.toThrow("Start Koed first");
   });
 
   it("bounds control response streams and cancels overflow", async () => {
@@ -419,6 +422,63 @@ describe("Personal Sync control client", () => {
     } finally {
       closeSync(sessionFd);
     }
+  });
+
+  it("reads SSH status using only this installation's loopback credential", async () => {
+    const directory = root();
+    const paths = resolveKoedServerPaths({ KOED_HOME: directory });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runtimeStatePath,
+      JSON.stringify({
+        runtimeMode: "local-personal",
+        apiUrl: "http://127.0.0.1:43300"
+      })
+    );
+    storeDesktopLocalCredential(directory, {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    let calls = 0;
+    const fetch = async (url: string | URL, options?: RequestInit) => {
+      calls += 1;
+      expect(String(url)).toBe(
+        "http://127.0.0.1:43300/v1/personal-device-sync/groups"
+      );
+      expect(new Headers(options?.headers).get("authorization")).toMatch(
+        /^Koed-Desktop /
+      );
+      expect(options?.redirect).toBe("error");
+      return response({ groups: [], pairing_invitation_group_ids: [] });
+    };
+    await expect(
+      runPersonalSyncCommand(
+        ["status"],
+        paths,
+        { KOED_HOME: directory },
+        { fetch: fetch as never, getSecret: () => null }
+      )
+    ).resolves.toMatchObject({ ok: true, groups: [] });
+    await expect(
+      runPersonalSyncCommand(
+        ["status"],
+        paths,
+        { KOED_HOME: directory, PDS_CONTROL_URL: "http://127.0.0.1:9999" },
+        { fetch: fetch as never }
+      )
+    ).rejects.toThrow("does not match");
+    await expect(
+      runPersonalSyncCommand(
+        ["status"],
+        paths,
+        { KOED_HOME: directory, PDS_CONTROL_URL: "https://example.com" },
+        { fetch: fetch as never }
+      )
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
   });
 
   it("reports backend status through bounded session-authenticated control API", async () => {

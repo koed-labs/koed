@@ -92,6 +92,43 @@ import { runPersonalSyncCommand } from "./personal-sync.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerDoctorResult } from "./types.js";
 
+export const personalSyncUsageText = `Personal Sync
+
+  koed-server pair                   Connect this device using a request link
+  koed-server pair status            Show pending pairing progress
+  koed-server pair cancel            Cancel a waiting request
+  koed-server personal-sync status --json
+                                     Show this installation’s group and members
+
+Create your first group and manage devices in Electron → Devices.
+Status uses the local Personal installation automatically; no browser session is needed.
+
+  koed-server personal-sync --help --advanced
+                                     Show retained low-level recovery commands
+`;
+
+export const personalSyncAdvancedUsageText = `${personalSyncUsageText}
+Advanced compatibility and recovery commands:
+  group bootstrap [--recovery-kit <path>] [--password-fd <fd>]
+  invite create --group-id <id>
+  join redeem --link-stdin [--device-label <name>]
+  join request | complete | bind-local-user | challenge
+  active-device approve | refresh
+  device list --group-id <id>
+  device revoke
+  policy enable | pause | resume --group-id <id>
+  replica status --group-id <id>
+  retry --group-id <id>
+  recovery approve | guidance
+  recovery-kit create | verify
+
+These are protocol/recovery operations, not the normal pairing flow. They need
+operation-specific signed artifacts, protected file descriptors, and/or browser
+session context. Use the recovery and protocol documentation before running them.
+Only status configures local authentication automatically. Existing scripts remain
+supported; use pair and Electron for ordinary enrollment and device management.
+`;
+
 export const usageText = `Usage: koed-server <command> [options]
 
 Commands:
@@ -106,22 +143,7 @@ Commands:
   identity rotate --json Create fresh device identity and invalidate local enrollment references
   pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
   personal-sync status --json             Print redacted Personal Sync status
-  personal-sync group bootstrap --json    Create a Personal Device Group
-  personal-sync recovery-kit create|verify --json
-  personal-sync join request|challenge|complete --json
-  personal-sync join redeem (--link-stdin|--link-fd <fd>)
-    [--device-label <label>] --json
-  personal-sync active-device approve|refresh --json
-  personal-sync recovery approve|guidance --json
-  personal-sync policy enable|pause|resume --json
-  personal-sync start --future-only --json
-  personal-sync device list|revoke --json
-  personal-sync credential status --json
-  personal-sync key-epoch status --json
-  personal-sync replica status --json
-  personal-sync retry --json
-  personal-sync local-replica remove --json
-  personal-sync conflict resolve --json
+  personal-sync --help   Show Personal Sync usage and advanced recovery help
   setup core --json      Prepare Koed core services and local credential
   setup codex --json     Configure the supported Codex integration
     --without-memory-guidance  Do not install the recommended global guidance
@@ -586,7 +608,13 @@ export const runKoedServerCli = async (
 
   try {
     if (wantsHelp || !command) {
-      stdout.write(usageText);
+      stdout.write(
+        command === "personal-sync"
+          ? args.includes("--advanced")
+            ? personalSyncAdvancedUsageText
+            : personalSyncUsageText
+          : usageText
+      );
       return 0;
     }
 

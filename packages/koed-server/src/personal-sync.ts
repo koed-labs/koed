@@ -26,6 +26,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   PDS_PROTOCOL,
+  readDesktopLocalCredentialAuthorization,
   canonicalizePdsJson,
   createPdsAuthorizedKeyBundle,
   createPdsSessionPackageRuntimeContext,
@@ -679,7 +680,8 @@ const control = async (input: {
         ...(input.body ? { "content-type": "application/json" } : {})
       },
       ...(input.body ? { body: JSON.stringify(input.body) } : {}),
-      signal: timeout
+      signal: timeout,
+      redirect: "error"
     }
   );
   return strictResponse(response);
@@ -2760,7 +2762,54 @@ export const runPersonalSyncCommand = async (
   const [area, action] = args;
   if (area === "group" && action === "bootstrap")
     return bootstrapGroup(args.slice(2), paths, environment, deps);
-  if (area === "status") return status(environment, deps);
+  if (area === "status") {
+    if (
+      !deps.desktopAuthorization &&
+      !deps.pairingToken &&
+      !deps.sessionCookie &&
+      environment.PDS_BROWSER_SESSION_FD === undefined
+    ) {
+      let runtime: { runtimeMode?: string; apiUrl?: string };
+      try {
+        runtime = JSON.parse(
+          readFileSync(paths.runtimeStatePath, "utf8")
+        ) as typeof runtime;
+      } catch {
+        return fail(
+          "Start Koed first with koed-server start --daemon, then retry personal-sync status."
+        );
+      }
+      if (runtime.runtimeMode !== "local-personal" || !runtime.apiUrl)
+        return fail(
+          "Automatic Personal Sync status requires a local Personal installation. Advanced remote access requires a browser session FD."
+        );
+      const origin = parseLoopbackOrigin(runtime.apiUrl);
+      if (
+        environment.PDS_CONTROL_URL?.trim() &&
+        parseLoopbackOrigin(environment.PDS_CONTROL_URL.trim()) !== origin
+      )
+        return fail(
+          "PDS_CONTROL_URL does not match this installation’s local API. Local credentials cannot be sent there."
+        );
+      const credential = readDesktopLocalCredentialAuthorization(
+        paths.koedHome
+      );
+      if (!credential)
+        return fail(
+          "Local Personal credentials are unavailable. Run koed-server setup core and retry."
+        );
+      return status(
+        {
+          ...environment,
+          PDS_CONTROL_URL: origin,
+          PDS_RUNTIME_SECRET_REF:
+            environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime"
+        },
+        { ...deps, desktopAuthorization: credential.authorization }
+      );
+    }
+    return status(environment, deps);
+  }
   if (area === "invite" && action === "create")
     return createPairingInvitation(args.slice(2), environment, deps);
   if (area === "join" && action === "request")
