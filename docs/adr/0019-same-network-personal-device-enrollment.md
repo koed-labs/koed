@@ -1,17 +1,18 @@
 # Same-Network Personal Device Enrollment
 
-Status: Accepted.
+Status: Accepted, amended by current capability-pairing policy below.
 
 Related decisions:
 
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0018 Personal Collaboration Sync And Cross-Platform Secret Providers](./0018-personal-collaboration-and-cross-platform-secret-providers.md)
+- [0044 Application-Managed PDS Secret Storage](./0044-application-managed-pds-secret-storage.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 ## Context
 
-PDS V1 already defines signed device enrollment, active-device approval,
-membership epochs, recipient key envelopes, and an opaque encrypted relay.
+PDS V1 already defines signed device enrollment, membership epochs, recipient
+key envelopes, and an opaque encrypted relay.
 Those primitives did not provide a usable same-network Desktop ceremony. A
 User needed a safe way to connect a second device without copying an API Token,
 browser cookie, recovery key, device private key, or PDS runtime secret.
@@ -26,20 +27,53 @@ the same membership and package protocols; neither creates a second sync
 protocol. In the local self-hosted topology, the
 inviting installation may co-locate the neutral PDS Authority/Relay service
 role and provides a narrowly scoped route to it. The Authority has a separate
-signing identity in Desktop's secure provider and no group content keys; it is
-not the inviting device's member identity. That route is an availability
-dependency for replication, not a source-of-truth or plaintext Memory
-authority.
+signing identity in the application-managed PDS secret store and no group
+content keys; it is not the inviting device's member identity. That route is an
+availability dependency for replication, not a source-of-truth or plaintext
+Memory authority.
 
-## Decision
+## Current joining-device request amendment
+
+This amendment supersedes the invitation-first UI and mandatory offline recovery
+ceremony described historically below. A joining CLI or Electron installation
+creates a ten-minute encrypted request link through its local supervisor. The
+existing Authority-hosting Electron installation inspects that request and
+requires explicit User acceptance. Possession of a request link alone grants no
+membership in an existing group.
+
+The request transport has identifier `koed/pds-device-request/v1`. Acceptance
+carries the existing one-time invitation inside its authenticated encrypted
+channel, after which the existing member signing authorization, Authority
+countersignature, Key Bundle, and local reconciliation protocol runs unchanged.
+The joining runtime reports connected only after reconciliation succeeds. No
+internet relay, Authority transfer, or additional comparison-code ceremony is
+introduced. Both private endpoints must remain reachable as required by PDS V1.
+
+Request creation, encrypted pending state, restart recovery, expiry, and local
+controls belong to koed-server. CLI and Electron are adapters to that service.
+The existing Authority/Relay listener remains the established Desktop transport;
+this change adds a narrow supervisor-owned request endpoint without replacing
+that data plane or creating another synchronization protocol.
+
+Group setup no longer requires a recovery-file export or recording a recovery
+code. Generated recovery material is verified transiently to preserve the V1
+genesis wire contract and discarded unless an Operator explicitly requests the
+existing recovery-kit export. The trade-off is intentional: without an exported
+kit, losing every enrolled installation loses group control. The primary setup
+flow does not pretend that recoverability exists.
+
+Older invitation links retain their existing capability semantics and stdin/FD
+redemption. New request links use a distinct path and protocol and are never
+silently treated as old invitations. See [the current workflow](../device-pairing.md).
+
+## Historical invitation-first decision
 
 Koed Desktop exposes a **Devices** action in the account rail. The installation
 hosting the group's neutral Authority/Relay can create a ten-minute, one-use
 invitation and show it as both a QR code and a copyable link. The receiving
-Desktop accepts the link through explicit paste or the registered
-`koed-pair://` deep link. Both devices show the same short code. The active
-device on the Authority-hosting installation must explicitly approve the
-signed joining-device request before any membership transition occurs.
+Desktop accepts the link through explicit paste, QR scan, or the registered
+`koed-pair://` deep link. Koed validates the signed joining-device request and
+completes enrollment automatically.
 
 This control-plane placement does not make that installation a plaintext
 Personal Memory authority or aggregate Recall host. Every admitted device
@@ -63,7 +97,7 @@ http://<private-ip>:3310/pair/<invitation-id>#token=<256-bit-secret>
 The URL fragment is never sent by a browser HTTP request. Desktop derives an
 AES-256-GCM transport key from the secret with HKDF-SHA-256, the protocol
 identifier, and invitation ID. Invitation retrieval, signed-request
-submission, approval, and bounded control requests use authenticated encrypted
+submission, enrollment, and bounded control requests use authenticated encrypted
 envelopes. Direction, invitation ID, and message ID are authenticated
 additional data. Every message has a fresh nonce and message ID.
 
@@ -98,45 +132,42 @@ The main process proxies enrollment control to the loopback local API with the
 scoped `Koed-Desktop` credential. That credential is accepted only by a
 `local_personal` API on loopback and only for its recorded Personal owner.
 Neither it nor any device or Authority private key crosses renderer IPC. The
-renderer receives only the invitation display value, short code, expiry,
-device label, and coarse state. During explicit first-device setup, it may also
+renderer receives only the invitation display value, expiry, device label,
+and coarse state. During explicit first-device setup, it may also
 receive the newly generated recovery code once so the User can record it. The
 main process writes the encrypted recovery kit through a native save dialog,
 passes the recovery code to `koed-server` through an owner-only temporary file
 descriptor, and never persists or logs the plaintext code.
 
 Desktop provisions the local Authority signing key as a separate opaque secret
-and verifies it before starting the API child. The bridge may resolve that
-specific Authority reference for the trusted local API process; Authority
-private material remains forbidden inside shared device runtime payloads. WSL
-DPAPI references are namespaced by Desktop profile so isolated local devices
-cannot overwrite one another in the Windows-host store.
+and verifies it before starting the API child. The API and Worker resolve only
+opaque references through the application-managed store; Authority private
+material remains forbidden inside shared device runtime payloads and renderer
+IPC. Store reads fail closed on unsafe permissions, malformed state, missing
+keys, or failed authentication.
 
-Desktop warms the fixed Authority and PDS runtime references once in its trusted
-main process after the platform store has been verified. API and Worker child
-reads use that bounded in-memory cache through the private bridge; writes and
-deletes reach the platform store before changing the cache. A platform-store
-read failure aborts startup rather than being treated as an absent credential.
-The cache lasts only for the Desktop process lifetime and never crosses
-renderer IPC.
+Desktop and headless processes use the same `KOED_HOME/secrets/pds-secrets.json`
+store. No platform credential provider, in-memory bridge cache, or Electron
+child-process bridge is required. Writes use the store's atomic locking path so
+concurrent Desktop and service mutations cannot overwrite each other.
 
-A platform-protected runtime is not enrollment by itself. If its profile-local
+A protected local runtime is not enrollment by itself. If its profile-local
 Personal database has no matching group and local User binding, Desktop reports
 recovery as required and must not render cached members as connected. Reusing a
 profile path after deleting its database therefore cannot silently attach the
-new local Personal principal to credentials retained by the operating system.
+new local Personal principal to secrets retained in the application store.
 
 The joining device still generates its own Ed25519 and X25519 keys. The active
 device signs the membership transition and creates recipient envelopes through
 the existing PDS implementation. The Authority countersigns it, both devices
 acknowledge the new epoch, and the joining device stores only its own secrets
-through the platform-backed provider.
+through the application-managed PDS store.
 
 Pairing progress uses held encrypted requests and Desktop IPC completion. It
-does not poll. Closing an invitation before approval cancels it. Once the
-active device commits approval, Koed keeps the gateway available until the
-joining device acknowledges and activates the new epoch; that transition can
-no longer be canceled as though no membership change occurred.
+does not poll. Closing an invitation before its commit boundary cancels it.
+Once Koed commits the membership transition, it keeps the gateway available
+until the joining device acknowledges and activates the new epoch; that
+transition can no longer be canceled as though no membership change occurred.
 
 Desktop atomically replaces the protected runtime after bootstrap, enrollment,
 or epoch refresh, then sends a loopback-only authenticated wake. The worker
@@ -148,8 +179,9 @@ must not restart API, Worker, capture, or Recall services.
 - A copied landing-page URL without its fragment is useless.
 - A passive LAN observer cannot recover the invitation, enrollment request, or
   control responses.
-- Possession of the QR/link alone cannot add a device; active-device approval
-  and the signed PDS transition remain mandatory.
+- Possession of the QR/link is the enrollment capability; validation of the
+  signed PDS transition, expiry, transport binding, and single-use state remains
+  mandatory, but no second human approval is required.
 - The Authority/Relay route must be reachable for enrollment, lifecycle,
   discovery, anti-entropy, and offline delivery. A temporary outage does not
   stop local capture, Recall, or transfer over already discovered peer routes.

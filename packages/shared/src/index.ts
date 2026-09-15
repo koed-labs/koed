@@ -813,6 +813,10 @@ export {
   updateCollaborationPendingSendState
 } from "./collaboration-pending-send-store.js";
 export {
+  createPdsApplicationSecretStore,
+  pdsApplicationSecretStorePaths
+} from "./pds-secret-store.js";
+export {
   deleteLocalEdgeClientCredential,
   localEdgeClientCredentialReferenceFor,
   readLocalEdgeClientCredentialAuthorization,
@@ -880,6 +884,11 @@ export type {
   CollaborationPendingSendInput,
   CollaborationPendingSendRecord
 } from "./collaboration-pending-send-store.js";
+export type {
+  PdsApplicationSecretStore,
+  PdsApplicationSecretStoreOptions,
+  PdsApplicationSecretStorePaths
+} from "./pds-secret-store.js";
 export type {
   DesktopLocalCredentialAuthorization,
   DesktopLocalCredentialInput,
@@ -983,6 +992,8 @@ export type {
 } from "./personal-device-sync-relay-client.js";
 export {
   PDS_SESSION_PACKAGE_VERSION,
+  PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
+  PDS_SESSION_CHECKPOINT_PROFILE,
   PDS_SESSION_PACKAGE_MAX_BYTES,
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
   PDS_SESSION_PACKAGE_MAX_CHUNKS,
@@ -993,8 +1004,12 @@ export {
   createPdsSessionPackageRuntimeContext,
   createPdsSessionManifest,
   createPdsSessionPackage,
+  createPdsSessionCheckpointManifest,
+  createPdsSessionCheckpointPackage,
   decryptPdsEncryptedPayloadPackage,
   parsePdsSessionManifestJson,
+  parsePdsSessionCheckpointManifestJson,
+  parsePdsSessionSourceManifestJson,
   parsePdsSessionPackageJson,
   pdsDeletionFloorToken,
   pdsLogicalMemoryId,
@@ -1002,21 +1017,34 @@ export {
   pdsSessionPackageDigest,
   pdsSourceFingerprint,
   rewrapPdsSessionPackage,
+  isPdsSessionCheckpointManifest,
   validatePdsRelayTransport,
+  validatePdsSessionCheckpointAppend,
+  validatePdsSessionCheckpointManifest,
+  validatePdsSessionSourceManifest,
   validatePdsSessionPackageChunk,
-  verifyAndDecryptPdsSessionPackage
+  verifyAndDecryptPdsSessionPackage,
+  verifyAndDecryptPdsSessionSourcePackage,
+  verifyPdsSessionCheckpointManifest,
+  verifyPdsSessionSourceManifest
 } from "./personal-device-session-package.js";
 export type {
+  CreatePdsSessionCheckpointManifestInput,
+  CreatePdsSessionCheckpointPackageInput,
   CreatePdsSessionManifestInput,
   CreatePdsEncryptedPayloadPackageInput,
   CreatePdsSessionPackageInput,
   DecryptPdsEncryptedPayloadPackageResult,
   CreatePdsSessionPackageRuntimeContextInput,
   PdsClosedSessionMetadata,
+  PdsCheckpointSourceSessionMetadata,
   PdsConversationSourceItem,
   PdsProjectAliasManifest,
   PdsRetainedSessionPackage,
   PdsSessionManifest,
+  PdsSessionCheckpointManifest,
+  PdsSessionCheckpointMetadata,
+  PdsSessionSourceManifest,
   PdsSessionPackage,
   PdsSessionPackageChunk,
   PdsSessionPackageReplayEntry,

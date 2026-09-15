@@ -1198,6 +1198,7 @@ export interface LcmGraphThread {
   name: string;
   sessionId: string | null;
   sourceAiClient: SourceAiClient | null;
+  originDeviceId?: string | null;
   projectId: string;
   projectName: string;
   projectPath: string | null;

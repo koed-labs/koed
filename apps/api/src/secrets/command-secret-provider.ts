@@ -28,13 +28,8 @@ const providerEnvironment = (
   USER: environment.USER,
   LANG: environment.LANG,
   LC_ALL: environment.LC_ALL,
-  ELECTRON_RUN_AS_NODE:
-    environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge"
-      ? "1"
-      : environment.ELECTRON_RUN_AS_NODE,
-  PDS_DESKTOP_SECRET_BRIDGE_SOCKET:
-    environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET,
-  PDS_DESKTOP_SECRET_BRIDGE_TOKEN: environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN
+  KOED_HOME: environment.KOED_HOME,
+  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE
 });
 
 export const resolveCommandSecret = async (
@@ -44,7 +39,7 @@ export const resolveCommandSecret = async (
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
   if (
-    (provider !== "headless" && provider !== "desktop_bridge") ||
+    provider !== "headless" ||
     !command ||
     !/^[^\s\r\n\0]+$/.test(command) ||
     !/^[A-Za-z0-9:._-]{1,240}$/.test(reference)

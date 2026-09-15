@@ -269,38 +269,94 @@ material, proof references, paths, and fingerprints.
 
 ## Personal Device Sync V1 authority configuration
 
-PDS uses explicit secret-provider mode. Headless setup requires
-`PDS_SECRET_PROVIDER=headless` and `PDS_SECRET_PROVIDER_COMMAND`; Koed invokes
-that Operator-managed provider with a bounded `get`, `put`, or `delete`
-operation and an opaque reference. Provider `put` receives generated material
-on stdin and `get` returns it on stdout inside the local process boundary. No
-secret appears in command arguments, ordinary
-configuration, status, logs, queue payloads, or `KOED_HOME` state.
+PDS uses one Koed-owned application-managed secret store for standalone
+`koed-server`, Worker, API, and Desktop. By default it lives under
+`KOED_HOME/secrets`:
 
-Packaged Desktop provisions a separate local Authority signing key through its
-platform-backed provider and gives the trusted local API child only the opaque
-`PDS_AUTHORITY_SECRET_REF`. This enables the co-located local-only
-Authority/Relay service role without placing Authority material in the device
-runtime secret, renderer IPC, or ordinary configuration. It does not change
-the active-device or recovery-root authorization required for governance.
+- `pds-secrets.json` stores AES-256-GCM envelopes keyed by opaque references.
+- `pds-secret-store.key` stores the local application-store key.
 
-Desktop configures its provider automatically. It uses Keychain on macOS,
-DPAPI on native Windows, and Electron's verified Secret Service/KWallet backend
-on Linux. WSL uses a narrowly scoped Windows-host DPAPI helper when its Windows host is
-available, so normal WSL users do not need to install or configure a Linux
-keyring daemon. The direct local `koed-server` and Worker children receive only
-a per-launch bridge capability and may perform bounded opaque-reference
-operations; they do not receive PDS secret values. Electron's Linux
-`basic_text` fallback is rejected. If no platform provider is usable, Desktop
-reports PDS unavailable while local capture and Recall remain usable; it never
-stores PDS material in plaintext or asks a User to put it in an environment
-variable. Never set raw `PDS_AUTHORITY_*`, group keys, recovery material,
-private keys, passwords, or `env://` PDS secret values.
+Koed creates the directory with mode `0700` and files with mode `0600`. Writes
+use bounded values, owner-only temporary files, fsync, atomic rename, and an
+inter-process lock. Symlinks, unsafe permissions, malformed state, missing
+keys, and oversized values fail closed. The store provides same-user/root
+filesystem trust; it does not claim protection from that account. Native Windows
+ACL validation is not part of this build; use WSL for Windows-hosted local
+runtime work.
 
-Desktop loads its window before it accesses this provider. Provider setup still
-finishes before the managed runtime starts, so children never start with a
-partially initialized secret bridge. This order keeps the window available when
-the operating system pauses for credential-provider interaction.
+Desktop and headless `koed-server` use this same store. Desktop does not use
+Electron `safeStorage`, Keychain, Credential Manager, Secret Service/KWallet,
+D-Bus, WSL DPAPI, or an interactive credential session for PDS. Child services
+receive only the store location and opaque reference through their normal
+provider command; secret values never appear in arguments, environment values,
+ordinary configuration, status, logs, queue payloads, or renderer IPC.
+
+Desktop protected invitation, recovery-code, and IPC payloads use a separate
+owner-only `0600` transient file under `KOED_HOME/run`: Koed writes and fsyncs
+the payload, reopens it read-only, unlinks the path before passing the open file
+descriptor to the child, then closes the descriptor after the operation. A
+startup cleanup removes only recognized stale files from the pre-unlink
+implementation when their recorded owner PID is no longer alive. This protects
+filesystem path exposure; it does not claim protection from a process that
+already holds the descriptor or from same-user/root access.
+
+The default bundled provider is configured automatically. An explicitly
+configured `PDS_SECRET_PROVIDER=headless` and
+`PDS_SECRET_PROVIDER_COMMAND` remains an Operator-managed override for
+special deployments; it receives bounded `get`, `put`, or `delete` requests
+with opaque references and must preserve the same no-plaintext boundary.
+Never set raw `PDS_AUTHORITY_*`, group keys, recovery material, private keys,
+passwords, or `env://` PDS secret values.
+
+PDS secret state is not migrated from prior Electron `pds-secrets.json` files
+or branch-created OS credential-store entries. Fresh alpha setup may use a new
+`KOED_HOME`; re-enroll devices when changing store state. Koed does not silently
+delete legacy state.
+
+### Capability-based Personal Device pairing
+
+A one-time Personal Device invitation link is the enrollment capability.
+Possession authorizes one joining device after Koed validates expiry, group,
+transport binding, signed device request, and single-use state. There is no
+human-facing short code and no separate **Approve device** action. The opaque
+`challenge_id` remains an internal binding value only.
+
+The link is short-lived, sensitive bearer material. Do not place it in logs,
+analytics, shell history, or ordinary persistent files. The CLI accepts only
+standard input or an inherited file descriptor; it does not accept `--link`.
+The pairing server durably encrypts only claimed recovery state: exact request
+binding, device label, approval state, used message IDs, and bounded expiry.
+Listener startup restores valid claimed state; the Desktop manager then resumes
+automatic enrollment.
+Recovery lasts ten minutes; after completion, final completion replay remains
+available for one further bounded ten-minute window, within a 64-exchange
+invitation limit. Final client retry uses up to three fresh encrypted message
+IDs; reusing one message ID is rejected.
+
+```bash
+koed-server personal-sync join redeem --link-stdin --device-label studio
+koed-server personal-sync join redeem --link-fd 3 --device-label studio
+```
+
+Desktop paste or QR scan is preferred. A registered `koed-pair://` deep link
+is also supported: macOS normally delivers protocol activation through
+Electron's `open-url` event, while Windows and Linux may deliver the complete
+URL in argv on initial launch or single-instance activation. This is OS handler
+behavior, not a blanket no-argv guarantee. Koed must not log or persist the
+URL. Users avoiding argv exposure should paste or scan.
+
+This changes authorization, not transport exposure. The current pairing endpoint
+is private HTTP on `KOED_PDS_LAN_PORT`; its listener binds one concrete
+non-loopback private IPv4 interface, never `0.0.0.0`, a wildcard, or a public
+address. It accepts private-network and Tailscale addresses, including
+`100.64.0.0/10`, and must not be exposed to the public internet. Invitation
+control and relay URLs use the exact bound origin. Application-level encryption,
+signed enrollment, replay protection, expiry, and device revocation remain
+required. During SSH redemption, local reconciliation uses only the exact
+loopback `PDS_LOCAL_CONTROL_URL` and scoped `Koed-Desktop` authorization; API
+Tokens, `Koed-Device`, credentials-bearing URLs, and non-loopback origins are
+rejected. Future public or remote pairing must use HTTPS or a secure relay with
+separate endpoint and abuse controls.
 
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired
@@ -836,9 +892,17 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
-- `KOED_PDS_LAN_PORT`: private-network Desktop pairing and local PDS relay
-  gateway port. Defaults to `3310`. Keep it off the public internet; changing
-  it is intended for a local port conflict, not as an authentication control.
+- `KOED_PDS_LAN_PORT`: private HTTP endpoint for trusted-overlay Desktop
+  pairing and local PDS relay gateway traffic. Defaults to `3310`. Koed binds
+  one concrete available non-loopback private IPv4 interface for this listener;
+  it does not bind a wildcard or public address. Tailscale addresses in
+  `100.64.0.0/10` are supported for pairing. Keep it off the public internet;
+  changing it is intended for a local port conflict, not as an authentication
+  control.
+- `PDS_LOCAL_CONTROL_URL`: optional exact loopback origin for the local API used
+  by SSH-only `personal-sync join redeem`; when omitted, Koed derives it from
+  local API port configuration. `PDS_CONTROL_URL` is never used for local
+  reconciliation, and non-loopback origins are rejected.
 - `koed-server runtime status --provider homebrew --json`: macOS, Linux, and WSL diagnostic command for Homebrew-backed native runtime assets. It does not install packages or mutate Homebrew state.
 - `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`: explicit macOS, Linux, and WSL install command that may run Homebrew for missing `postgresql@17`, `pgvector`, and `llama.cpp`, links selected binaries under `KOED_HOME/runtime`, and writes metadata under `KOED_HOME/cache`.
 - `koed-server` writes Desktop's app-provisioned local credential under `KOED_HOME/config/local-app-credential.json` without exposing the API Token in status output.
@@ -1199,3 +1263,46 @@ results, sanitized artifacts, Team vectors, and their wrapped keys participate
 in retention, hard purge, backup expiry, and encryption rewrap.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.
+
+## Personal device request startup
+
+A fresh `koed-server` defaults to `local-personal` with `bundled-local`
+dependencies. Explicit environment and saved configuration retain precedence;
+explicit `developer` or `external` runtime modes default to external dependencies
+unless their dependency mode is also specified. Native local startup provisions
+credentials in source checkouts as well as packaged installations, independently
+of whether automatic ports were explicitly requested. Resolved runtime and
+dependency modes are passed to child services.
+
+The supervisor owns the joining-device request service. Its owner-only local
+socket is separate from the narrow private-interface request listener; request
+links carry that listener's allocated port. No additional flags are needed for
+`koed-server pair`. `KOED_PDS_LAN_PORT` still configures the existing Desktop
+Authority/Relay listener. Both private paths must be reachable; no public relay
+or inbound-network traversal is provided. See [Connect Personal devices](device-pairing.md).
+
+Automatic interface selection sorts available private IPv4 addresses and picks
+the first one, which is not reachability-aware: on a device with both a LAN
+address (`10.x`/`172.16-31.x`/`192.168.x`) and a Tailscale address
+(`100.64.0.0/10`), sort order can pick an address the Authority device cannot
+actually reach. Set `KOED_PDS_REQUEST_HOST` on the joining device to pin the
+request listener to one explicit private IPv4 or Tailscale address, and
+`KOED_PDS_LAN_HOST` on the Authority-hosting Desktop installation to do the
+same for the Authority/Relay listener. Both reject a configured address that
+is not a private IPv4 or Tailscale address.
+
+### Upgrading an existing installation
+
+Koed does not migrate secret state from a pre-capability-pairing installation
+(see [ADR 0044](adr/0044-application-managed-pds-secret-storage.md)). On
+Desktop, `ensurePdsDesktopAuthority` refuses to mint a new Authority key when
+it detects a legacy `pds-secrets.json` in the Electron `userData` directory but
+finds no Authority secret in the current `KOED_HOME/secrets` store — minting a
+new key in that situation would silently orphan the installation's existing
+Personal Device Group under an Authority key the rest of the group no longer
+recognizes. Personal Device Sync is disabled with a console warning instead;
+Local Memory remains available. To move past this, either restore the prior
+Electron build to recover the existing group, or accept a fresh Personal
+Device Group and re-enroll every device: remove the legacy
+`pds-secrets.json` from the Electron `userData` directory (or point at a fresh
+`KOED_HOME`) before relaunching.

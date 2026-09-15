@@ -306,6 +306,7 @@ textarea {
 .device-pairing-copy,
 .device-overview,
 .device-join-content,
+.device-request-content,
 .device-recovery-content {
   min-width: 0;
 }
@@ -313,6 +314,7 @@ textarea {
 .device-pairing-copy h3,
 .device-overview h3,
 .device-join-content h3,
+.device-request-content h3,
 .device-recovery-content h3 {
   font-size: 1rem;
   letter-spacing: 0;
@@ -322,19 +324,12 @@ textarea {
 .device-pairing-copy p,
 .device-overview p,
 .device-join-content p,
+.device-request-content p,
 .device-recovery-content p {
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.5;
   margin: 7px 0 16px;
-}
-
-.device-short-code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 1.2rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  margin-bottom: 16px;
 }
 
 .device-link-field,
@@ -473,7 +468,7 @@ textarea {
   border-top: 1px solid var(--border);
   display: grid;
   gap: 10px;
-  grid-template-columns: 32px minmax(0, 1fr) 20px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   min-height: 56px;
 }
 
@@ -574,6 +569,45 @@ textarea {
   min-height: 38px;
 }
 
+.device-request-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  overflow-y: auto;
+  padding: 28px;
+}
+
+.device-request-content h3 {
+  overflow-wrap: anywhere;
+}
+
+.device-request-content p {
+  margin: 0;
+}
+
+.device-request-content .device-join-field {
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.device-request-content input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.device-request-content input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.device-request-content small {
+  color: var(--muted-foreground);
+}
+
+.device-request-copy {
+  justify-self: start;
+}
+
 @media (max-width: 620px) {
   .device-modal-backdrop {
     align-items: stretch;
@@ -596,4 +630,40 @@ textarea {
   .device-pairing-copy {
     width: 100%;
   }
+}
+
+.device-row > .device-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.device-row-actions > svg {
+  color: var(--success);
+}
+.device-name-form {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+}
+.device-name-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.75rem;
+}
+.device-name-form input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+}
+.device-name-form > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.device-row strong {
+  overflow-wrap: anywhere;
 }

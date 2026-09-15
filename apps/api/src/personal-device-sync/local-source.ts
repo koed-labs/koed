@@ -1,5 +1,6 @@
 import type {
   PdsConversationSourceItem,
+  PdsSessionCheckpointManifest,
   PdsSessionPackage
 } from "@koed/shared";
 import type { PdsClosureSource } from "@koed/db";
@@ -17,6 +18,24 @@ export interface PdsSecureSourceKeyContext {
     items: PdsConversationSourceItem[];
     closedAt: Date;
   }): Promise<{
+    package: PdsSessionPackage;
+    sourceClosureHash: string;
+    sourceManifestHash: string;
+    sourceFingerprint: string;
+    logicalMemoryId: string;
+    deletionFloorToken: string;
+  }>;
+  buildCompletedTurnCheckpointPackage(input: {
+    source: PdsClosureSource;
+    sourceSequence: string;
+    items: PdsConversationSourceItem[];
+    checkpoint: {
+      version: "1";
+      ordinal: string;
+      previousClosureHash: string | null;
+    };
+  }): Promise<{
+    manifest: PdsSessionCheckpointManifest;
     package: PdsSessionPackage;
     sourceClosureHash: string;
     sourceManifestHash: string;
@@ -70,6 +89,8 @@ const contentlessControlTypes = new Set([
   "thread/fork",
   "turn/started",
   "turn/completed",
+  "turn_completed",
+  "hook_signal",
   "pds_session_closed"
 ]);
 
@@ -82,35 +103,114 @@ const boundedText = (value: unknown): string | null =>
  * PDS source payload is adapter data, not an export of raw_json. Keep this
  * allowlist deliberately small; adding a field changes wire privacy surface.
  */
+const record = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const textValue = (value: unknown): string | null => {
+  const direct = boundedText(value);
+  if (direct !== null) return direct;
+  if (!Array.isArray(value)) return null;
+  const blocks = value.map((block) => {
+    const item = record(block);
+    return (
+      boundedText(item?.text) ??
+      boundedText(item?.inputText) ??
+      boundedText(item?.outputText)
+    );
+  });
+  if (blocks.some((block) => block === null)) return null;
+  const joined = blocks.join("");
+  return Buffer.byteLength(joined, "utf8") <= 512 * 1024 ? joined : null;
+};
+
 const codexContent = (raw: unknown): string | null => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
-  const direct = boundedText(value.content) ?? boundedText(value.text);
+  const direct = textValue(value.content) ?? boundedText(value.text);
   if (direct !== null) return direct;
-  const params = value.params;
-  if (!params || typeof params !== "object" || Array.isArray(params))
-    return null;
-  const item = (params as Record<string, unknown>).item;
-  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const params = record(value.params);
+  const item = record(params?.item);
+  if (!item) return null;
   return (
-    boundedText((item as Record<string, unknown>).text) ??
-    boundedText((item as Record<string, unknown>).content)
+    boundedText(item.text) ??
+    textValue(item.content) ??
+    boundedText(item.summary)
   );
 };
 
-const sourceContent = (item: PdsClosureSource["items"][number]): string => {
+const piContent = (item: PdsClosureSource["items"][number]): string | null => {
+  const raw = record(item.rawJson);
+  if (raw?.type !== "pi_session_record") return null;
+  const block = record(raw.contentBlock);
+  if (block?.type === "text") return boundedText(block.text);
+  if (block?.type === "toolCall") {
+    const name = boundedText(block.name);
+    const args = block.arguments;
+    if (name === null || !record(args)) return null;
+    const content = `Tool call: ${name}\n\nInput: ${JSON.stringify(args)}`;
+    return Buffer.byteLength(content, "utf8") <= 512 * 1024 ? content : null;
+  }
+  if (block?.type === "thinking") return boundedText(block.thinking);
+  const message = record(record(raw.sourceRecord)?.message);
+  if (message?.role === "toolResult") {
+    const content = textValue(message.content);
+    if (content !== null)
+      return content || "Tool completed without text output.";
+  }
+  if (message?.role === "bashExecution") {
+    const command = boundedText(message.command);
+    const output = boundedText(message.output);
+    if (command !== null && output !== null) {
+      const content = `Command: ${command}\n\n${output}`;
+      return Buffer.byteLength(content, "utf8") <= 512 * 1024 ? content : null;
+    }
+  }
+  return null;
+};
+
+const sourceContent = (
+  item: PdsClosureSource["items"][number],
+  sourceRuntime?: string
+): string => {
   const rawText = boundedText(item.rawText);
   if (rawText !== null) return rawText;
-  if (item.sourceKind === "codex" || item.sourceKind === "codex-cli") {
-    const content = codexContent(item.rawJson);
+  const sourceType = item.sourceEventType ?? item.sourceRecordType;
+  if (
+    contentlessControlTypes.has(sourceType) ||
+    item.metadata.semanticControl === "turn_completed"
+  ) {
+    return "";
+  }
+  if (sourceRuntime === "pi" || item.sourceKind === "pi") {
+    const content = piContent(item);
     if (content !== null) return content;
-    const sourceType = item.sourceEventType ?? item.sourceRecordType;
+    const sourceRecordType = record(item.rawJson);
+    const entry = record(sourceRecordType?.sourceRecord);
     if (
-      contentlessControlTypes.has(sourceType) ||
-      item.metadata.semanticControl === "turn_completed"
+      entry &&
+      (item.sourceEventType === "unknown" ||
+        [
+          "session",
+          "compaction",
+          "branch_summary",
+          "custom",
+          "model_change",
+          "thinking_level"
+        ].includes(String(entry.type)))
     ) {
       return "";
     }
+  }
+  if (
+    sourceRuntime === "codex" ||
+    sourceRuntime === "codex-cli" ||
+    item.sourceKind === "codex" ||
+    item.sourceKind === "codex-cli"
+  ) {
+    const content = codexContent(item.rawJson);
+    if (content !== null) return content;
   }
   throw new TypeError("PDS source adapter payload is not exportable");
 };
@@ -183,7 +283,12 @@ export const pdsConversationItemsForClosure = (
       observedAt: item.observedAt,
       actor,
       type: item.sourceEventType ?? item.sourceRecordType,
-      content: sourceContent(item),
+      content: sourceContent(
+        item,
+        typeof item.metadata.sourceRuntime === "string"
+          ? item.metadata.sourceRuntime
+          : source.sourceRuntime
+      ),
       metadata: sourceMetadata(item.metadata, actor)
     };
   });

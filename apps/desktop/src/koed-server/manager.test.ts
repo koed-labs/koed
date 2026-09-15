@@ -14,6 +14,7 @@ import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   RemoteRequestTimeoutError,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  createPdsApplicationSecretStore,
   storeDesktopLocalCredential
 } from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -389,6 +390,10 @@ describe("Koed server desktop manager", () => {
       resolve(koedHome, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "personal_token" })
     );
+    writeFileSync(
+      resolve(koedHome, "config/personal-device-names.json"),
+      JSON.stringify({ AAAAAAAAAAAAAAAAAAAAAA: "Studio" })
+    );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -422,7 +427,24 @@ describe("Koed server desktop manager", () => {
                 id: "project",
                 name: "Koed",
                 path: projectPath,
-                threads: []
+                threads: [
+                  {
+                    id: "thread-1",
+                    name: "Studio session",
+                    sessionId: "00000000-0000-4000-8000-000000000001",
+                    originDeviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+                    sourceAiClient: "codex",
+                    projectId: "project",
+                    projectName: "Koed",
+                    projectPath,
+                    projectAssignmentSource: null,
+                    eventCount: 0,
+                    invalidatedCount: 0,
+                    latestAt: "2026-09-15T00:00:00.000Z",
+                    sample: "",
+                    presentation: null
+                  }
+                ]
               }
             ]
           }),
@@ -444,6 +466,30 @@ describe("Koed server desktop manager", () => {
       expect.objectContaining({ ok: true }),
       expect.objectContaining({ ok: true })
     ]);
+    await expect(
+      manager.personalMemory(listProjectsRequest)
+    ).resolves.toMatchObject({
+      data: {
+        projects: [
+          {
+            threads: [
+              { originDevice: { id: "AAAAAAAAAAAAAAAAAAAAAA", name: "Studio" } }
+            ]
+          }
+        ]
+      }
+    });
+    writeFileSync(
+      resolve(koedHome, "config/personal-device-names.json"),
+      JSON.stringify({ AAAAAAAAAAAAAAAAAAAAAA: "Office Studio" })
+    );
+    await expect(
+      manager.personalMemory(listProjectsRequest)
+    ).resolves.toMatchObject({
+      data: {
+        projects: [{ threads: [{ originDevice: { name: "Office Studio" } }] }]
+      }
+    });
     const metadataPath = resolve(koedHome, "config/projects.json");
     const firstMetadata = readFileSync(metadataPath, "utf8");
 
@@ -1335,7 +1381,7 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/packages/koed-server/dist/cli.js",
-      environment: { PDS_DESKTOP_SECRET_STORAGE: "native_os" },
+      environment: { PDS_DESKTOP_SECRET_STORAGE: "application_managed" },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/packages/koed-server/dist/cli.js", ...args],
@@ -1363,8 +1409,7 @@ describe("Koed server desktop manager", () => {
       state: "healthy",
       personalDeviceSync: {
         state: "healthy",
-        message:
-          "Secure device storage is available through the operating system."
+        message: "Application-managed local device storage is available."
       }
     });
     expect(calls.slice(0, 2)).toEqual(
@@ -2859,6 +2904,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       relayUrl: "http://192.168.1.20:3310/pds",
       createInvitation: vi.fn(),
       waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
       approve: vi.fn(),
       waitForCompletion: vi.fn(),
       cancel: vi.fn(),
@@ -2922,9 +2968,16 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         {
           authorization: desktop.authorization,
           url: "http://127.0.0.1:3300/v1/personal-device-sync/groups"
+        },
+        {
+          authorization: desktop.authorization,
+          url: "http://127.0.0.1:3300/v1/personal-device-sync/groups/group-one/local-status"
         }
       ]);
       expect(startPairingServer).toHaveBeenCalledTimes(1);
+      expect(manager.handlers).not.toHaveProperty(
+        "personal_sync_pairing_approve"
+      );
       expect(
         JSON.parse(
           readFileSync(
@@ -2946,6 +2999,387 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   });
 
+  it("forwards an explicit KOED_PDS_LAN_HOST to the pairing server on a dual-interface device", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-pds-host-"));
+    const ownerUserId = "00000000-0000-4000-8000-000000000004";
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const startPairingServer = vi.fn(async () => ({
+      port: 3310,
+      relayUrl: "http://100.90.1.2:3310/pds",
+      createInvitation: vi.fn(),
+      waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
+      approve: vi.fn(),
+      waitForCompletion: vi.fn(),
+      cancel: vi.fn(),
+      inspect: vi.fn(() => []),
+      close: vi.fn(async () => undefined)
+    }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome, KOED_PDS_LAN_HOST: "100.90.1.2" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args[1] === "stop") {
+          callback(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async () =>
+        new Response(
+          JSON.stringify({
+            groups: [{ group_id: "group-one", members: [] }],
+            pairing_invitation_group_ids: ["group-one"]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )) as typeof fetch
+    });
+    try {
+      await manager.handlers.personal_sync_status!();
+      expect(startPairingServer).toHaveBeenCalledWith(
+        expect.objectContaining({ host: "100.90.1.2" })
+      );
+    } finally {
+      await manager.stop();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes claimed pairings when listener starts", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-pds-pairing-resume-")
+    );
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "00000000-0000-4000-8000-000000000003",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const pairingId = "11111111-2222-4333-8444-555555555555";
+    const waitForRequest = vi.fn(async () => ({
+      device_id: "AAAAAAAAAAAAAAAAAAAAAA"
+    }));
+    const inspect = vi.fn(() => [
+      {
+        id: pairingId,
+        url: "",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        state: "connecting" as const,
+        phase: "awaiting_joiner" as const,
+        joiningDeviceLabel: "Recovered laptop"
+      }
+    ]);
+    const startPairingServer = vi.fn(async () => ({
+      port: 3310,
+      relayUrl: "http://192.168.1.22:3310/pds",
+      createInvitation: vi.fn(),
+      waitForRequest,
+      claimApproval: vi.fn(async () => undefined),
+      approve: vi.fn(),
+      waitForCompletion: vi.fn(async () => undefined),
+      cancel: vi.fn(),
+      inspect,
+      claimedInvitationIds: () => [pairingId],
+      close: vi.fn(async () => undefined)
+    }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args[1] === "status") {
+          callback(
+            null,
+            JSON.stringify({
+              ...healthyLocalServiceStatus(),
+              groups: [
+                {
+                  group_id: "group-one",
+                  members: [
+                    { device_id: "AAAAAAAAAAAAAAAAAAAAAA", status: "active" }
+                  ]
+                }
+              ],
+              pairing_invitation_group_ids: ["group-one"]
+            }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async (input) =>
+        new Response(
+          JSON.stringify(
+            String(input).endsWith("local-runtime-wake")
+              ? { ok: true }
+              : {
+                  groups: [
+                    {
+                      group_id: "group-one",
+                      members: [
+                        {
+                          device_id: "AAAAAAAAAAAAAAAAAAAAAA",
+                          status: "active"
+                        }
+                      ]
+                    }
+                  ],
+                  pairing_invitation_group_ids: ["group-one"]
+                }
+          ),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )) as typeof fetch
+    });
+    try {
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ group_id: "group-one" }]
+      });
+      await waitFor(() => waitForRequest.mock.calls.length > 0);
+      expect(waitForRequest).toHaveBeenCalledWith(pairingId);
+      expect(inspect).toHaveBeenCalledWith(pairingId);
+      await waitFor(() =>
+        existsSync(resolve(koedHome, "config/personal-device-names.json"))
+      );
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ members: [{ label: "Recovered laptop" }] }]
+      });
+      await manager.handlers.personal_sync_device_rename!({
+        deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+        name: "Office Studio"
+      });
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ members: [{ label: "Office Studio" }] }]
+      });
+      await expect(
+        manager.handlers.personal_sync_device_rename!({
+          deviceId: "BBBBBBBBBBBBBBBBBBBBBB",
+          name: "Unknown"
+        })
+      ).rejects.toThrow("no longer");
+    } finally {
+      await manager.stop();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes completed pairing restored after a refresh crash", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-pds-pairing-completed-")
+    );
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "00000000-0000-4000-8000-000000000004",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    createPdsApplicationSecretStore({ rootPath: koedHome }).put(
+      "pds-runtime",
+      JSON.stringify({
+        version: 1,
+        userId: "user-one",
+        relayUrl: "http://127.0.0.1:3310/pds",
+        groupId: "group-one",
+        device: {
+          id: "device-one",
+          originDeploymentId: "deployment-one",
+          signingKeyId: "signing-key-one",
+          signingPrivateSeed: "signing-seed-one",
+          kemKeyId: "kem-key-one",
+          kemPrivateSeed: "kem-seed-one"
+        },
+        authority: {
+          keyId: "authority-one",
+          publicKey: "authority-public-one",
+          head: "authority-head-one"
+        },
+        recovery: {
+          signingKeyId: "recovery-key-one",
+          signingPublicKey: "recovery-public-one"
+        },
+        certificate: "certificate-one",
+        recipientCertificates: [],
+        groupSecrets: {
+          currentEpoch: "1",
+          contentKey: "content-key-one",
+          sourceFingerprintKey: "source-key-one",
+          tombstoneFloorKey: "tombstone-key-one",
+          projectAliasKey: "project-key-one"
+        }
+      })
+    );
+    const pairingId = "11111111-2222-4333-8444-555555555555";
+    let pairingState: "connecting" | "completed" = "connecting";
+    let refreshAttempts = 0;
+    let wakeAttempts = 0;
+    let failRefresh = true;
+    let serverCount = 0;
+    const startPairingServer = vi.fn(async () => {
+      serverCount += 1;
+      const inspect = vi.fn(() => [
+        {
+          id: pairingId,
+          url: "",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          state: pairingState,
+          phase:
+            pairingState === "completed"
+              ? ("completed" as const)
+              : ("awaiting_joiner" as const),
+          joiningDeviceLabel: "Recovered laptop"
+        }
+      ]);
+      return {
+        port: 3310,
+        relayUrl: "http://192.168.1.23:3310/pds",
+        createInvitation: vi.fn(),
+        waitForRequest: vi.fn(async () => ({
+          device_id: "AAAAAAAAAAAAAAAAAAAAAA"
+        })),
+        claimApproval: vi.fn(async () => undefined),
+        approve: vi.fn(),
+        waitForCompletion: vi.fn(async () => {
+          pairingState = "completed";
+        }),
+        cancel: vi.fn(),
+        inspect,
+        claimedInvitationIds: () => [pairingId],
+        close: vi.fn(async () => undefined)
+      };
+    });
+    const personalMemoryFetch = (async (input) => {
+      const url = String(input);
+      if (url.endsWith("/groups/group-one")) {
+        refreshAttempts += 1;
+        if (failRefresh) {
+          failRefresh = false;
+          throw new Error("simulated crash after completed persistence");
+        }
+        return new Response(
+          JSON.stringify({
+            group: { state: "active", pending_epoch: null, current_epoch: "1" }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.endsWith("/local-runtime-wake")) {
+        wakeAttempts += 1;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          groups: [{ group_id: "group-one", members: [] }],
+          pairing_invitation_group_ids: ["group-one"]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const createManager = () =>
+      createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: {
+          KOED_HOME: koedHome,
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: {
+            KOED_REPO_ROOT: "/repo",
+            KOED_HOME: koedHome,
+            PDS_RUNTIME_SECRET_REF: "pds-runtime"
+          }
+        }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) =>
+          callback(
+            null,
+            JSON.stringify(
+              args[1] === "status" ? healthyLocalServiceStatus() : { ok: true }
+            ),
+            ""
+          ),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        startPairingServer,
+        personalMemoryFetch
+      });
+    let first: ReturnType<typeof createManager> | undefined;
+    let second: ReturnType<typeof createManager> | undefined;
+    try {
+      first = createManager();
+      await expect(
+        first.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ group_id: "group-one" }]
+      });
+      await waitFor(() => refreshAttempts === 1);
+      expect(wakeAttempts).toBe(0);
+      await first.stop();
+
+      second = createManager();
+      await expect(
+        second.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        groups: [{ group_id: "group-one" }]
+      });
+      await waitFor(() => wakeAttempts === 1);
+      expect(serverCount).toBe(2);
+      expect(refreshAttempts).toBe(2);
+      expect(wakeAttempts).toBe(1);
+    } finally {
+      await second?.stop();
+      await first?.stop();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("starts peer transport without granting invitation authority on a joined replica", async () => {
     const koedHome = mkdtempSync(
       resolve(tmpdir(), "koed-desktop-pds-replica-")
@@ -2962,6 +3396,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       relayUrl: "http://192.168.1.21:3310/pds",
       createInvitation: vi.fn(),
       waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
       approve: vi.fn(),
       waitForCompletion: vi.fn(),
       cancel: vi.fn(),

@@ -35795,6 +35795,74 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("labels only verified received sessions with their origin Personal device", async () => {
+    const owner = await repo.createUser({
+      email: `pds-origin-${randomUUID()}@example.com`
+    });
+    const other = await repo.createUser({
+      email: `pds-origin-other-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `origin-${randomUUID()}`,
+        sourceRuntime: "codex",
+        metadata: { threadName: "Studio sync check" }
+      }
+    );
+    const local = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `local-${randomUUID()}`,
+        sourceRuntime: "codex",
+        metadata: {
+          threadName: "Local session",
+          pds: { originDeviceId: group.deviceIds[0] }
+        }
+      }
+    );
+    const retained = await pool.query<{ id: string }>(
+      `insert into pds_retained_packages
+      (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope)
+      values ($1,$2,'package','hash','deployment',$3,'1','{}') returning id`,
+      [group.groupDbId, owner.id, group.deviceIds[0]]
+    );
+    const replica = await pool.query<{ id: string }>(
+      `insert into pds_logical_replicas
+      (group_id,owner_user_id,closure_hash,local_session_id,materialization_state)
+      values ($1,$2,'closure',$3,'ready') returning id`,
+      [group.groupDbId, owner.id, session.id]
+    );
+    await pool.query(
+      `insert into pds_replica_observations
+      (replica_id,retained_package_id,origin_deployment_id,origin_device_id,source_sequence,source_closed_at,observed_at)
+      values ($1,$2,'deployment',$3,'1',now(),now())`,
+      [replica.rows[0]!.id, retained.rows[0]!.id, group.deviceIds[0]]
+    );
+    const threads = (
+      await repo.listLcmGraphThreads({ userId: owner.id })
+    ).flatMap((project) => project.threads);
+    expect(
+      threads.find((thread) => thread.sessionId === session.id)?.originDeviceId
+    ).toBe(group.deviceIds[0]);
+    expect(
+      threads.find((thread) => thread.sessionId === local.id)?.originDeviceId
+    ).toBeNull();
+    expect(await repo.listLcmGraphThreads({ userId: other.id })).toEqual([]);
+    await pool.query(
+      "update pds_logical_replicas set materialization_state='quarantined' where id=$1",
+      [replica.rows[0]!.id]
+    );
+    const quarantined = (
+      await repo.listLcmGraphThreads({ userId: owner.id })
+    ).flatMap((project) => project.threads);
+    expect(
+      quarantined.find((thread) => thread.sessionId === session.id)
+        ?.originDeviceId
+    ).toBeNull();
+  });
+
   it("seals a closed PDS replica agent bundle for local projection", async () => {
     const owner = await repo.createUser({
       email: `pds-projection-${randomUUID()}@example.com`

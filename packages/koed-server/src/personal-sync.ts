@@ -4,6 +4,7 @@ import {
   createHash,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   scryptSync,
   sign,
   type KeyObject
@@ -25,6 +26,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   PDS_PROTOCOL,
+  readDesktopLocalCredentialAuthorization,
   canonicalizePdsJson,
   createPdsAuthorizedKeyBundle,
   createPdsSessionPackageRuntimeContext,
@@ -35,10 +37,19 @@ import {
   pdsPublicKeyCommitment,
   signPdsGroupDraft,
   signPdsRecord,
-  validatePdsGroupStatement
+  validatePdsGroupStatement,
+  validatePdsKeyBundle
 } from "@koed/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
+import {
+  parseLoopbackOrigin,
+  redeemPersonalDevicePairing
+} from "./personal-device-pairing-client.js";
+import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerPaths } from "./paths.js";
+
+export { parseLoopbackOrigin };
 
 const KIT_FORMAT = "koed/pds-recovery-kit/v1";
 const PENDING_VERSION = 1;
@@ -563,15 +574,54 @@ const browserSession = (environment: NodeJS.ProcessEnv): string => {
   return value;
 };
 
+const readBoundedResponseText = async (response: Response): Promise<string> => {
+  const rawContentLength = response.headers.get("content-length");
+  if (rawContentLength !== null) {
+    const contentLength = rawContentLength.trim();
+    if (!/^\d+$/.test(contentLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response is invalid.");
+    }
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength)) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response is invalid.");
+    }
+    if (declaredLength > MAX_CONTROL_RESPONSE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      fail("PDS control response exceeds maximum size.");
+    }
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let overflow = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (next.value.byteLength > MAX_CONTROL_RESPONSE_BYTES - bytes) {
+        overflow = true;
+        await reader.cancel().catch(() => undefined);
+        fail("PDS control response exceeds maximum size.");
+      }
+      bytes += next.value.byteLength;
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (!overflow) await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
+};
+
 const strictResponse = async (
   response: Response
 ): Promise<Record<string, unknown>> => {
-  const length = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
+  const text = await readBoundedResponseText(response);
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -630,7 +680,8 @@ const control = async (input: {
         ...(input.body ? { "content-type": "application/json" } : {})
       },
       ...(input.body ? { body: JSON.stringify(input.body) } : {}),
-      signal: timeout
+      signal: timeout,
+      redirect: "error"
     }
   );
   return strictResponse(response);
@@ -667,13 +718,8 @@ export const personalSyncProviderEnvironment = (
   USER: environment.USER,
   LANG: environment.LANG,
   LC_ALL: environment.LC_ALL,
-  ELECTRON_RUN_AS_NODE:
-    environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge"
-      ? "1"
-      : environment.ELECTRON_RUN_AS_NODE,
-  PDS_DESKTOP_SECRET_BRIDGE_SOCKET:
-    environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET,
-  PDS_DESKTOP_SECRET_BRIDGE_TOKEN: environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN
+  KOED_HOME: environment.KOED_HOME,
+  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE
 });
 
 const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
@@ -696,8 +742,7 @@ const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
 };
 
 const validSecretProvider = (environment: NodeJS.ProcessEnv): boolean =>
-  environment.PDS_SECRET_PROVIDER?.trim() === "headless" ||
-  environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge";
+  environment.PDS_SECRET_PROVIDER?.trim() === "headless";
 
 const runSecretProvider = async (
   operation: "get" | "put" | "delete",
@@ -705,7 +750,17 @@ const runSecretProvider = async (
   environment: NodeJS.ProcessEnv,
   value?: string
 ): Promise<{ ok: boolean; stdout: string }> => {
+  const provider = environment.PDS_SECRET_PROVIDER?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
+  if (!provider && !command) {
+    const result = await runApplicationSecretProvider(
+      operation,
+      reference,
+      value,
+      environment
+    );
+    return { ok: result.ok, stdout: result.value ?? "" };
+  }
   if (
     !validSecretProvider(environment) ||
     !command ||
@@ -1207,14 +1262,14 @@ const bootstrapGroup = async (
           ...deps,
           sessionCookie: deps.sessionCookie ?? browserSession(environment)
         };
-  const recoveryKitPath = requiredFlag(args, "--recovery-kit");
+  const recoveryKitPath = flag(args, "--recovery-kit");
   const runtimeSecretRef =
     flag(args, "--runtime-secret-ref")?.trim() ||
     environment.PDS_RUNTIME_SECRET_REF?.trim() ||
     fail(
       "PDS_RUNTIME_SECRET_REF or --runtime-secret-ref is required for bootstrap."
     );
-  const password = passwordFrom(args);
+  const password = recoveryKitPath ? passwordFrom(args) : randomBytes(32);
   const identity =
     deps.identity ?? (await ensureDeviceIdentity(paths, { environment }));
   if (
@@ -1265,7 +1320,8 @@ const bootstrapGroup = async (
   try {
     if (decryptRecoveryKit(kit, password) !== recoveryPlaintext)
       fail("Recovery kit round-trip verification failed.");
-    stagedRecoveryKit = stageRecoveryKit(recoveryKitPath, kit);
+    if (recoveryKitPath)
+      stagedRecoveryKit = stageRecoveryKit(recoveryKitPath, kit);
   } finally {
     password.fill(0);
   }
@@ -1344,7 +1400,7 @@ const bootstrapGroup = async (
         }
       }
     });
-    stagedRecoveryKit.finalize();
+    stagedRecoveryKit?.finalize();
   } catch (error) {
     try {
       stagedRecoveryKit?.abort();
@@ -1418,7 +1474,7 @@ const bootstrapGroup = async (
     message: "Personal Device Group created. The secure runtime is active.",
     groupId,
     deviceId: deviceInstanceId,
-    recoveryKit: resolve(recoveryKitPath)
+    ...(recoveryKitPath ? { recoveryKit: resolve(recoveryKitPath) } : {})
   };
 };
 
@@ -1459,12 +1515,29 @@ const status = async (
     ) {
       fail("PDS control response pairing capability is invalid.");
     }
-    const groups = response.groups as unknown[];
+    const groups = await Promise.all(
+      (response.groups as unknown[]).map(async (entry) => {
+        const group = object(entry, "group");
+        if (typeof group.group_id !== "string") return group;
+        try {
+          const local = await control({
+            environment,
+            deps,
+            method: "GET",
+            path: `/v1/personal-device-sync/groups/${encodeURIComponent(group.group_id)}/local-status`
+          });
+          return { ...group, local_sync: local.status ?? null };
+        } catch {
+          return { ...group, local_sync: null };
+        }
+      })
+    );
     if (groups.length || !runtime) {
       return {
         ok: true,
         state: "backend",
         message: "Personal Sync status is Authority-owned.",
+        local_device_id: runtime?.device.id ?? null,
         groups,
         pairing_invitation_group_ids:
           response.pairing_invitation_group_ids as string[]
@@ -1496,6 +1569,7 @@ const status = async (
   return {
     ok: true,
     state: "runtime_cached",
+    local_device_id: runtime.device.id,
     message:
       "Personal Sync status is using the last cryptographically verified Authority state.",
     pairing_invitation_group_ids: [],
@@ -1660,8 +1734,7 @@ const createJoinChallenge = async (
     state: "pending",
     message: "Pairing request is pending backend approval.",
     pairing: {
-      challengeId: binding.id,
-      shortCode: binding.id.replace(/-/g, "").slice(0, 8).toUpperCase()
+      challengeId: binding.id
     },
     request: {
       group_id: groupId,
@@ -1736,6 +1809,121 @@ const epochAck = (input: {
   });
 };
 
+const requestDeviceMatches = (
+  body: Record<string, unknown>,
+  request: Record<string, unknown>
+): boolean =>
+  body.deviceId === request.device_id &&
+  body.deviceSigningKeyId === request.signing_key_id &&
+  body.deviceSigningPublicKey === request.signing_public_key &&
+  body.deviceKemKeyId === request.kem_key_id &&
+  body.deviceKemPublicKey === request.kem_public_key &&
+  Array.isArray(body.operationFamilies) &&
+  body.operationFamilies.length === 1 &&
+  body.operationFamilies[0] === "pds_relay";
+
+const pendingApprovalStatement = async (input: {
+  groupId: string;
+  current: Record<string, unknown>;
+  request: Record<string, unknown>;
+  activeRuntime: RuntimeSecret;
+  sourceMember: Record<string, unknown>;
+  environment: NodeJS.ProcessEnv;
+  controlDeps: PersonalSyncDependencies;
+}): Promise<{
+  statement: Record<string, unknown>;
+  bundle: Record<string, unknown>;
+  epoch: string;
+}> => {
+  const sequence = responseString(input.current, "pending_statement_sequence");
+  const statementResponse = await control({
+    environment: input.environment,
+    deps: input.controlDeps,
+    method: "GET",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(input.groupId)}/log`
+  });
+  if (!Array.isArray(statementResponse.statements))
+    fail("PDS pending transition statement log is invalid.");
+  const entry =
+    (statementResponse.statements as unknown[])
+      .map((value: unknown) => object(value, "group statement log entry"))
+      .find((value: Record<string, unknown>) => value.sequence === sequence) ??
+    fail("PDS pending transition statement is unavailable.");
+  const statement = parseCanonicalPdsJson(
+    responseString(entry, "canonicalStatement")
+  ) as Record<string, unknown>;
+  const head = object(input.current.head, "group.head");
+  validatePdsGroupStatement(statement, {
+    authorizationPublicKey: responseString(
+      input.sourceMember,
+      "signing_public_key"
+    ),
+    authorityPublicKey: input.activeRuntime.authority.publicKey,
+    expectedAuthorizationKeyId: input.activeRuntime.device.signingKeyId,
+    expectedAuthorityKeyId: input.activeRuntime.authority.keyId,
+    expectedGroupId: input.groupId
+  });
+  const statementDraft = object(statement.draft, "pending statement draft");
+  const statementBody = object(statementDraft.body, "pending statement body");
+  const epoch = responseString(input.current, "pending_epoch");
+  const pendingMember = groupMembers(input.current).find(
+    (member) => member.device_id === input.request.device_id
+  );
+  const memberMatches =
+    pendingMember?.status === "active"
+      ? requestDeviceMatches(
+          {
+            deviceId: pendingMember.device_id,
+            deviceSigningKeyId: pendingMember.signing_key_id,
+            deviceSigningPublicKey: pendingMember.signing_public_key,
+            deviceKemKeyId: pendingMember.kem_key_id,
+            deviceKemPublicKey: pendingMember.kem_public_key,
+            operationFamilies: pendingMember.operation_families
+          },
+          input.request
+        )
+      : false;
+  if (
+    statementDraft.kind !== "add-device" ||
+    statementDraft.sequence !== sequence ||
+    statementDraft.groupId !== input.groupId ||
+    statementBody.nextEpoch !== epoch ||
+    statementBody.previousEpoch !== input.current.current_epoch ||
+    statementBody.keyBundleHash !== input.current.pending_bundle_hash ||
+    responseString(entry, "statementHash") !== responseString(head, "hash") ||
+    responseString(head, "sequence") !== sequence ||
+    !requestDeviceMatches(statementBody, input.request) ||
+    !memberMatches
+  ) {
+    fail("PDS pending membership transition does not match pairing request.");
+  }
+  const bundleResponse = await control({
+    environment: input.environment,
+    deps: input.controlDeps,
+    method: "GET",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(input.groupId)}/key-bundles/${encodeURIComponent(epoch)}`
+  });
+  const bundle = object(bundleResponse.key_bundle, "key_bundle");
+  const metadata = validatePdsKeyBundle(bundle, {
+    authorizationPublicKey: responseString(
+      input.sourceMember,
+      "signing_public_key"
+    ),
+    authorityPublicKey: input.activeRuntime.authority.publicKey,
+    expectedAuthorizationKeyId: input.activeRuntime.device.signingKeyId,
+    expectedAuthorityKeyId: input.activeRuntime.authority.keyId
+  });
+  if (
+    metadata.authorizationHash !== input.current.pending_bundle_hash ||
+    metadata.draft.groupId !== input.groupId ||
+    metadata.draft.epoch !== epoch ||
+    metadata.draft.transitionKind !== "add-device"
+  ) {
+    fail("PDS pending key bundle does not match pairing request.");
+  }
+  return { statement, bundle, epoch };
+};
+
 const approveActiveDevice = async (
   args: string[],
   environment: NodeJS.ProcessEnv,
@@ -1772,11 +1960,7 @@ const approveActiveDevice = async (
     path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}`
   });
   const current = object(currentResponse.group, "group");
-  if (
-    current.state !== "active" ||
-    current.pending_epoch !== null ||
-    typeof current.current_epoch !== "string"
-  )
+  if (current.state !== "active" || typeof current.current_epoch !== "string")
     fail("PDS group is not ready for membership transition.");
   const sourceMember = groupMember(current, activeRuntime.device.id);
   const recovery = object(current.recovery, "group.recovery");
@@ -1794,6 +1978,93 @@ const approveActiveDevice = async (
     Array.isArray(request.proof)
   )
     fail("PDS pairing request is invalid.");
+  const existingMember = groupMembers(current).find(
+    (member) =>
+      member.device_id === newDevice.deviceId && member.status === "active"
+  );
+  if (current.pending_epoch === null && existingMember) {
+    if (
+      !requestDeviceMatches(
+        {
+          deviceId: existingMember.device_id,
+          deviceSigningKeyId: existingMember.signing_key_id,
+          deviceSigningPublicKey: existingMember.signing_public_key,
+          deviceKemKeyId: existingMember.kem_key_id,
+          deviceKemPublicKey: existingMember.kem_public_key,
+          operationFamilies: existingMember.operation_families
+        },
+        request
+      )
+    ) {
+      fail("PDS active membership does not match pairing request.");
+    }
+    return {
+      ok: true,
+      state: "active",
+      message: "Device approval was already completed.",
+      groupId,
+      deviceId: newDevice.deviceId,
+      epoch: current.current_epoch
+    };
+  }
+  if (current.pending_epoch !== null) {
+    const pending = await pendingApprovalStatement({
+      groupId,
+      current,
+      request,
+      activeRuntime,
+      sourceMember,
+      environment,
+      controlDeps
+    });
+    const sourceSigningKey = pdsEd25519PrivateKey(
+      activeRuntime.device.signingPrivateSeed,
+      responseString(sourceMember, "signing_public_key")
+    );
+    const decrypted = decryptPdsKeyBundleSecretSet({
+      bundle: pending.bundle,
+      authorizationPublicKey: responseString(
+        sourceMember,
+        "signing_public_key"
+      ),
+      authorityPublicKey: activeRuntime.authority.publicKey,
+      recipientId: activeRuntime.device.id,
+      recipientKemKeyId: activeRuntime.device.kemKeyId,
+      recipientKemPublicKey: responseString(sourceMember, "kem_public_key"),
+      recipientKemPrivateSeed: activeRuntime.device.kemPrivateSeed
+    });
+    if (!decrypted || typeof decrypted !== "object")
+      fail("PDS source device decrypted an invalid group secret set.");
+    const acknowledged = await control({
+      environment,
+      deps: controlDeps,
+      method: "POST",
+      path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/epoch-acks`,
+      body: {
+        ack: epochAck({
+          groupId,
+          bundleHash: responseString(current, "pending_bundle_hash"),
+          epoch: pending.epoch,
+          deviceId: activeRuntime.device.id,
+          kemKeyId: activeRuntime.device.kemKeyId,
+          kemPublicKey: responseString(sourceMember, "kem_public_key"),
+          signingKeyId: activeRuntime.device.signingKeyId,
+          signingPrivateKey: sourceSigningKey,
+          acknowledgedAt: now(deps)
+        })
+      }
+    });
+    return {
+      ok: true,
+      state: acknowledged.activated ? "active" : "pending_joining_device",
+      message: acknowledged.activated
+        ? "Device approval was already completed."
+        : "Device approval was resumed and source epoch acknowledged.",
+      groupId,
+      deviceId: newDevice.deviceId,
+      epoch: pending.epoch
+    };
+  }
   const nextEpoch = (BigInt(current.current_epoch as string) + 1n).toString();
   const nextSecrets = {
     epochSecret: b64(randomBytes(32)),
@@ -2371,6 +2642,26 @@ const readJsonFd = (args: string[], name: string): Record<string, unknown> => {
   }
 };
 
+const withTransientJsonFd = async <T>(
+  paths: KoedServerPaths,
+  payload: Record<string, unknown>,
+  operation: (fd: number) => Promise<T>
+): Promise<T> => {
+  mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+  const path = resolve(
+    paths.runDir,
+    `pds-cli-${process.pid}-${randomUUID()}.json`
+  );
+  writeFileSync(path, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
+  const fd = openSync(path, "r");
+  unlinkSync(path);
+  try {
+    return await operation(fd);
+  } finally {
+    closeSync(fd);
+  }
+};
+
 const submitTransition = async (
   args: string[],
   environment: NodeJS.ProcessEnv,
@@ -2412,6 +2703,71 @@ const submitTransition = async (
   };
 };
 
+const pairingLinkFromArgs = (args: string[]): string => {
+  if (args.some((arg) => arg === "--link" || arg.startsWith("--link=")))
+    fail("--link is obsolete; use --link-stdin or --link-fd.");
+  const stdin = args.includes("--link-stdin");
+  const fd = flag(args, "--link-fd");
+  if (Number(stdin) + Number(fd !== undefined) !== 1) {
+    fail("Use exactly one of --link-stdin or --link-fd.");
+  }
+  const raw = readBoundedFd(stdin ? "0" : fd, "--link-fd", 4_096);
+  try {
+    return raw.toString("utf8").trim();
+  } finally {
+    raw.fill(0);
+  }
+};
+
+const redeemPairingFromCli = async (
+  args: string[],
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: PersonalSyncDependencies
+): Promise<PersonalSyncResult> => {
+  return redeemPairingLink(
+    pairingLinkFromArgs(args),
+    flag(args, "--device-label")?.trim() || "SSH device",
+    paths,
+    environment,
+    deps
+  );
+};
+
+export const redeemPairingLink = async (
+  link: string,
+  deviceLabel: string,
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: PersonalSyncDependencies = {}
+): Promise<PersonalSyncResult> => {
+  if (deviceLabel.length > 80 || /[\r\n\0]/.test(deviceLabel)) {
+    fail("--device-label is invalid.");
+  }
+  const localControlUrl = parseLoopbackOrigin(
+    environment.PDS_LOCAL_CONTROL_URL?.trim() ||
+      resolveApiUrl(environment, loadRepoEnv(paths.repoRoot, environment))
+  );
+  return await redeemPersonalDevicePairing({
+    link,
+    deviceLabel,
+    requestId: randomUUID(),
+    localControlUrl,
+    koedHome: paths.koedHome,
+    environment,
+    fetch: deps.fetch,
+    runPersonalSync: async (nestedArgs, options) =>
+      await runPersonalSyncCommand(nestedArgs, paths, options.environment, {
+        ...deps,
+        desktopAuthorization: undefined,
+        pairingToken: options.pairingToken,
+        fetch: options.fetch
+      }),
+    withJsonFd: async (payload, operation) =>
+      await withTransientJsonFd(paths, payload, operation)
+  });
+};
+
 export const runPersonalSyncCommand = async (
   args: string[],
   paths: KoedServerPaths,
@@ -2422,11 +2778,60 @@ export const runPersonalSyncCommand = async (
   const [area, action] = args;
   if (area === "group" && action === "bootstrap")
     return bootstrapGroup(args.slice(2), paths, environment, deps);
-  if (area === "status") return status(environment, deps);
+  if (area === "status") {
+    if (
+      !deps.desktopAuthorization &&
+      !deps.pairingToken &&
+      !deps.sessionCookie &&
+      environment.PDS_BROWSER_SESSION_FD === undefined
+    ) {
+      let runtime: { runtimeMode?: string; apiUrl?: string };
+      try {
+        runtime = JSON.parse(
+          readFileSync(paths.runtimeStatePath, "utf8")
+        ) as typeof runtime;
+      } catch {
+        return fail(
+          "Start Koed first with koed-server start --daemon, then retry personal-sync status."
+        );
+      }
+      if (runtime.runtimeMode !== "local-personal" || !runtime.apiUrl)
+        return fail(
+          "Automatic Personal Sync status requires a local Personal installation. Advanced remote access requires a browser session FD."
+        );
+      const origin = parseLoopbackOrigin(runtime.apiUrl);
+      if (
+        environment.PDS_CONTROL_URL?.trim() &&
+        parseLoopbackOrigin(environment.PDS_CONTROL_URL.trim()) !== origin
+      )
+        return fail(
+          "PDS_CONTROL_URL does not match this installation’s local API. Local credentials cannot be sent there."
+        );
+      const credential = readDesktopLocalCredentialAuthorization(
+        paths.koedHome
+      );
+      if (!credential)
+        return fail(
+          "Local Personal credentials are unavailable. Run koed-server setup core and retry."
+        );
+      return status(
+        {
+          ...environment,
+          PDS_CONTROL_URL: origin,
+          PDS_RUNTIME_SECRET_REF:
+            environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime"
+        },
+        { ...deps, desktopAuthorization: credential.authorization }
+      );
+    }
+    return status(environment, deps);
+  }
   if (area === "invite" && action === "create")
     return createPairingInvitation(args.slice(2), environment, deps);
   if (area === "join" && action === "request")
     return createJoinChallenge(args.slice(2), paths, environment, deps);
+  if (area === "join" && action === "redeem")
+    return redeemPairingFromCli(args.slice(2), paths, environment, deps);
   if (area === "join" && action === "complete")
     return completeDeviceJoin(args.slice(2), paths, environment, deps);
   if (area === "join" && action === "bind-local-user")

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   createCipheriv,
   createDecipheriv,
@@ -6,7 +7,9 @@ import {
 } from "node:crypto";
 import {
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -24,7 +27,8 @@ export type EncryptedStateDomain =
   | "desktop_credential"
   | "local_edge_client_credential"
   | "pending_team_send"
-  | "action_grant";
+  | "action_grant"
+  | "pds_secret";
 
 export interface EncryptedStateEnvelope {
   algorithm: "aes-256-gcm";
@@ -40,9 +44,12 @@ export interface EncryptedStateTransactionDeps {
   readFileSync?: typeof readFileSync;
   writeFileSync?: typeof writeFileSync;
   renameSync?: typeof renameSync;
+  readFileNoFollow?: (path: string) => string;
   randomBytes?: typeof randomBytes;
   now?: () => Date;
   lockNowMs?: () => number;
+  isProcessAlive?: (pid: number) => boolean;
+  processStartTime?: (pid: number) => string | null;
   sleepSync?: (milliseconds: number) => void;
   lockTimeoutMs?: number;
   staleLockMs?: number;
@@ -68,10 +75,11 @@ interface CoreOptions<State, ParseOptions> {
 }
 
 interface StoreLockMetadata {
-  version: 1;
+  version: 1 | 2;
   ownerToken: string;
   pid: number;
   createdAtEpochMs: number;
+  ownerStartTime?: string;
 }
 
 interface StoreLock {
@@ -119,9 +127,22 @@ export const resolveEncryptedStateTransactionDeps = (
     readFileSync: deps.readFileSync ?? readFileSync,
     writeFileSync: deps.writeFileSync ?? writeFileSync,
     renameSync: deps.renameSync ?? renameSync,
+    readFileNoFollow:
+      deps.readFileNoFollow ?? ((path) => readFileNoFollow(path)),
     randomBytes: deps.randomBytes ?? randomBytes,
     now: deps.now ?? (() => new Date()),
     lockNowMs: deps.lockNowMs ?? Date.now,
+    isProcessAlive:
+      deps.isProcessAlive ??
+      ((pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          return errorCode(error) === "EPERM";
+        }
+      }),
+    processStartTime: deps.processStartTime ?? defaultProcessStartTime,
     sleepSync: deps.sleepSync ?? sleepSync,
     lockTimeoutMs,
     staleLockMs,
@@ -133,6 +154,35 @@ const errorCode = (error: unknown): string | null =>
   error && typeof error === "object" && "code" in error
     ? String(error.code)
     : null;
+
+const defaultProcessStartTime = (pid: number): string | null => {
+  if (process.platform === "win32") return null;
+  try {
+    return (
+      execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim() || null
+    );
+  } catch {
+    return null;
+  }
+};
+
+const readFileNoFollow = (path: string): string => {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+    );
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile()) throw new Error("Local secret store is malformed.");
+    return String(readFileSync(descriptor, "utf8"));
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+};
 
 const syncDirectory = (path: string): void => {
   let descriptor: number | null = null;
@@ -190,11 +240,18 @@ const parseLockMetadata = (
   if (contents === null) return null;
   try {
     const candidate = JSON.parse(contents) as Record<string, unknown>;
+    const version = candidate.version;
+    const validShape =
+      version === 1
+        ? Object.keys(candidate).length === 4
+        : version === 2 &&
+          Object.keys(candidate).length === 5 &&
+          typeof candidate.ownerStartTime === "string";
     if (
       !candidate ||
       Array.isArray(candidate) ||
-      Object.keys(candidate).length !== 4 ||
-      candidate.version !== 1 ||
+      !validShape ||
+      (version !== 1 && version !== 2) ||
       typeof candidate.ownerToken !== "string" ||
       !lockTokenPattern.test(candidate.ownerToken) ||
       !Number.isInteger(candidate.pid) ||
@@ -216,7 +273,7 @@ const readLockSnapshot = (path: string): LockSnapshot | null => {
     let contents: string | null = null;
     if (stats.isFile() && stats.size <= 1_024) {
       try {
-        contents = String(readFileSync(path, "utf8"));
+        contents = readFileNoFollow(path);
       } catch (error) {
         if (errorCode(error) !== "ENOENT") throw error;
         return null;
@@ -255,8 +312,15 @@ const recoverStaleLock = (
   const now = deps.lockNowMs();
   if (now - snapshot.mtimeMs < deps.staleLockMs) return false;
   const metadata = parseLockMetadata(snapshot.contents);
-  if (metadata && now - metadata.createdAtEpochMs < deps.staleLockMs) {
-    return false;
+  if (metadata) {
+    if (deps.isProcessAlive(metadata.pid)) {
+      if (!metadata.ownerStartTime) return false;
+      const observedStartTime = deps.processStartTime(metadata.pid);
+      if (!observedStartTime || observedStartTime === metadata.ownerStartTime) {
+        return false;
+      }
+    }
+    if (now - metadata.createdAtEpochMs < deps.staleLockMs) return false;
   }
   const confirmed = readLockSnapshot(path);
   if (!confirmed || !sameLockSnapshot(snapshot, confirmed)) return false;
@@ -276,12 +340,21 @@ const acquireStoreLock = (
 ): StoreLock => {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const ownerToken = deps.randomBytes(32).toString("base64url");
-  const metadata: StoreLockMetadata = {
-    version: 1,
-    ownerToken,
-    pid: process.pid,
-    createdAtEpochMs: deps.lockNowMs()
-  };
+  const ownerStartTime = deps.processStartTime(process.pid);
+  const metadata: StoreLockMetadata = ownerStartTime
+    ? {
+        version: 2,
+        ownerToken,
+        pid: process.pid,
+        createdAtEpochMs: deps.lockNowMs(),
+        ownerStartTime
+      }
+    : {
+        version: 1,
+        ownerToken,
+        pid: process.pid,
+        createdAtEpochMs: deps.lockNowMs()
+      };
   const startedAt = deps.lockNowMs();
   let attempt = 0;
   for (;;) {
@@ -424,7 +497,7 @@ export const createEncryptedStateTransactionCore = <
     }
     let raw: unknown;
     try {
-      raw = JSON.parse(String(deps.readFileSync(options.storePath, "utf8")));
+      raw = JSON.parse(deps.readFileNoFollow(options.storePath));
     } catch {
       throw new Error("Local secret store is malformed.");
     }
@@ -434,9 +507,7 @@ export const createEncryptedStateTransactionCore = <
   const readKey = (): Buffer | null => {
     if (!deps.existsSync(options.keyPath)) return null;
     try {
-      const keyMaterial = String(
-        deps.readFileSync(options.keyPath, "utf8")
-      ).trim();
+      const keyMaterial = deps.readFileNoFollow(options.keyPath).trim();
       if (!/^[A-Za-z0-9+/]{43}=$/.test(keyMaterial)) return null;
       const decoded = Buffer.from(keyMaterial, "base64");
       if (decoded.length !== 32 || decoded.toString("base64") !== keyMaterial) {

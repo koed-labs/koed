@@ -1729,23 +1729,66 @@
 
 .personal-managed-transfer summary {
   align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
   color: var(--muted-foreground);
   cursor: pointer;
-  display: flex;
+  display: inline-grid;
   font-size: 0.75rem;
   gap: 0.4rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   list-style: none;
-  width: fit-content;
+  max-width: min(100%, 14rem);
+  min-height: 28px;
+  padding: 3px 7px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .personal-managed-transfer summary::-webkit-details-marker {
   display: none;
 }
 
+.personal-managed-transfer summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .personal-managed-transfer summary svg,
 .personal-managed-transfer button svg {
+  flex-shrink: 0;
   height: 0.9rem;
   width: 0.9rem;
+}
+
+.personal-managed-transfer summary > svg:last-child {
+  height: 0.75rem;
+  opacity: 0.75;
+  transition: transform 120ms ease;
+  width: 0.75rem;
+}
+
+.personal-managed-transfer summary:hover,
+.personal-managed-transfer[open] summary {
+  background: var(--accent);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.personal-managed-transfer[open] summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.personal-managed-transfer summary:focus-visible,
+.personal-managed-transfer button:focus-visible,
+.personal-managed-transfer select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .personal-managed-transfer > div {
@@ -1754,6 +1797,7 @@
   border: 1px solid var(--border);
   border-radius: 7px;
   bottom: calc(100% + 0.45rem);
+  box-shadow: 0 8px 24px color-mix(in oklab, black 16%, transparent);
   display: grid;
   gap: 0.5rem;
   grid-template-columns: minmax(10rem, 1fr) auto auto;
@@ -1768,18 +1812,40 @@
   display: grid;
   font-size: 0.72rem;
   gap: 0.2rem;
+  min-width: 0;
 }
 
 .personal-managed-transfer select {
   min-height: 2rem;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .personal-managed-transfer button {
   align-items: center;
+  background: var(--secondary, var(--background));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  cursor: pointer;
   display: inline-flex;
   gap: 0.35rem;
   height: 2rem;
+  justify-content: center;
+  padding: 0 0.65rem;
+  white-space: nowrap;
+}
+
+.personal-managed-transfer button:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--ring);
+}
+
+.personal-managed-transfer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .personal-managed-transfer p {
@@ -1787,6 +1853,12 @@
   font-size: 0.72rem;
   grid-column: 1 / -1;
   margin: 0;
+}
+
+@media (max-width: 28rem) {
+  .personal-managed-transfer > div {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
 }
 
 @keyframes personal-managed-spin {
@@ -3027,4 +3099,28 @@
 .personal-managed-transfer summary[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
+}
+
+.personal-session-device-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 12rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  font-weight: 400;
+  vertical-align: middle;
+}
+.personal-session-device-badge > svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+}
+.personal-session-device-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

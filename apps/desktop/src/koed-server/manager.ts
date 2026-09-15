@@ -1,7 +1,17 @@
+import { hostname } from "node:os";
+import {
+  readPersonalDeviceNames,
+  writePersonalDeviceName
+} from "../personal-device-names.js";
+import {
+  deviceRequestCommand,
+  exchangeDeviceRequest,
+  parseDeviceRequestLink
+} from "@koed/koed-server";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomUUID, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import {
   approvalActivityClassificationSchema,
@@ -48,6 +58,7 @@ import {
   discoverProjectMetadata,
   listProjectMetadata,
   loadRepoEnv,
+  resolveKoedHome,
   resolveKoedServerConfig,
   resolveKoedServerPaths,
   runPersonalSyncCommand,
@@ -63,7 +74,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type {
   ComponentState,
@@ -105,14 +115,16 @@ import {
   type PersonalDevicePairingInvitation,
   type PersonalDevicePairingServer
 } from "../personal-device-pairing-server.js";
+import type { PdsDesktopSecretStore } from "../pds-secure-provider.js";
 import {
   decryptPersonalDevicePairingMessage,
-  encryptPersonalDevicePairingMessage
+  encryptPersonalDevicePairingMessage,
+  PERSONAL_DEVICE_PAIRING_MAX_PLAINTEXT_BYTES
 } from "../personal-device-pairing-crypto.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 import {
-  withProtectedJsonFd,
-  withProtectedTextFd
+  cleanupLegacyProtectedFdFiles,
+  withProtectedJsonFd
 } from "../ipc/protected-json-fd.js";
 import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
 import { refreshLocalAiRuntime } from "./local-ai-client-refresh.js";
@@ -219,6 +231,7 @@ export interface KoedServerManagerOptions {
     ): Promise<Record<string, unknown>>;
   };
   startPairingServer?: typeof startPersonalDevicePairingServer;
+  personalDevicePairingStore?: PdsDesktopSecretStore;
   managedConversationDraftStore?: {
     get(reference: string): Promise<string | null>;
     put(reference: string, value: string): Promise<void>;
@@ -402,16 +415,6 @@ const waitForAbortOrDelay = (
       { once: true }
     );
   });
-
-const resolveKoedHome = (environment: NodeJS.ProcessEnv): string => {
-  const configured = environment.KOED_HOME?.trim();
-  if (!configured) return resolve(homedir(), ".koed");
-  if (configured === "~") return homedir();
-  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
-    return resolve(homedir(), configured.slice(2));
-  }
-  return resolve(configured);
-};
 
 const resolveLocalAppCredentialPath = (
   environment: NodeJS.ProcessEnv
@@ -655,6 +658,59 @@ const optionalExactDesktopArgs = (
   return value ?? {};
 };
 
+const MAX_PAIRING_RESPONSE_BYTES =
+  PERSONAL_DEVICE_PAIRING_MAX_PLAINTEXT_BYTES * 2;
+
+const readBoundedResponseText = async (
+  response: Response,
+  maximumBytes: number,
+  errorMessage: string
+): Promise<string> => {
+  if (!response.body) {
+    const declaredLength = Number(response.headers.get("content-length") ?? "");
+    if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+      throw new Error(errorMessage);
+    }
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maximumBytes) {
+      throw new Error(errorMessage);
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > maximumBytes) {
+        await reader.cancel();
+        throw new Error(errorMessage);
+      }
+      chunks.push(decoder.decode(next.value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+  } finally {
+    reader.releaseLock();
+  }
+  return chunks.join("");
+};
+
+const readBoundedResponseJson = async (
+  response: Response,
+  maximumBytes: number
+): Promise<unknown> =>
+  JSON.parse(
+    await readBoundedResponseText(
+      response,
+      maximumBytes,
+      "Pairing response is too large."
+    )
+  );
+
 const pairingIdArg = (args: Record<string, unknown> | undefined): string => {
   const value = exactDesktopArgs(args, ["id"]).id;
   if (typeof value !== "string" || !/^[0-9a-f-]{36}$/.test(value)) {
@@ -688,7 +744,8 @@ const localPersonalMemoryOrigin = (value: unknown): string | null => {
 
 const personalProjectsData = (
   payload: Record<string, unknown>,
-  includeSubagents = false
+  includeSubagents = false,
+  deviceNames: Record<string, string> = {}
 ) => {
   const projects = Array.isArray(payload.projects) ? payload.projects : null;
   if (!projects) {
@@ -708,6 +765,15 @@ const personalProjectsData = (
           sessionId: thread.sessionId,
           logicalMemoryId: thread.logicalMemoryId,
           sourceAiClient: thread.sourceAiClient,
+          originDevice:
+            typeof thread.originDeviceId === "string"
+              ? {
+                  id: thread.originDeviceId,
+                  name:
+                    deviceNames[thread.originDeviceId] ??
+                    `Device ${thread.originDeviceId.slice(0, 8)}`
+                }
+              : null,
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
@@ -1262,23 +1328,21 @@ const componentHealthy = (value: unknown): boolean =>
 const personalDeviceSyncComponent = (
   environment: NodeJS.ProcessEnv
 ): ComponentStatus => {
-  switch (environment.PDS_DESKTOP_SECRET_STORAGE) {
-    case "native_os":
-      return diagnosticComponent(
-        "healthy",
-        "Secure device storage is available through the operating system."
-      );
-    case "windows_dpapi_wsl":
-      return diagnosticComponent(
-        "healthy",
-        "Secure device storage is available through Windows DPAPI."
-      );
-    default:
-      return diagnosticComponent(
-        "needs_attention",
-        "Personal Device Sync is unavailable because this device has no supported secure storage. Local Memory remains available."
-      );
+  if (
+    environment.PDS_DESKTOP_SECRET_STORAGE === "application_managed" ||
+    environment.PDS_DESKTOP_SECRET_STORAGE === "operator_managed"
+  ) {
+    return diagnosticComponent(
+      "healthy",
+      environment.PDS_DESKTOP_SECRET_STORAGE === "operator_managed"
+        ? "Operator-managed local device storage is available."
+        : "Application-managed local device storage is available."
+    );
   }
+  return diagnosticComponent(
+    "needs_attention",
+    "Personal Device Sync is unavailable because local device storage is not ready. Local Memory remains available."
+  );
 };
 
 export const setupServicesHealthy = (value: unknown): boolean => {
@@ -1546,10 +1610,10 @@ export const createKoedServerManager = ({
   openExternal,
   openPath,
   revealPath,
-  selectRecoveryKitPath,
   personalMemoryFetch = globalThis.fetch,
   localAiRuntimeClient,
   startPairingServer = startPersonalDevicePairingServer,
+  personalDevicePairingStore,
   managedConversationDraftStore,
   confirmSourceControlMutation
 }: KoedServerManagerOptions): KoedServerManager => {
@@ -1565,10 +1629,15 @@ export const createKoedServerManager = ({
   let personalDevicePairingServer: PersonalDevicePairingServer | null = null;
   let personalDevicePairingServerStart: Promise<PersonalDevicePairingServer> | null =
     null;
+  const automaticPairingEnrollments = new Map<
+    string,
+    Promise<Record<string, unknown>>
+  >();
   let personalDevicePairingServerError: string | null = null;
   if (environment.KOED_HOME?.trim()) {
     writePersonalDevicePeerEndpoint(environment, null);
   }
+  cleanupLegacyProtectedFdFiles(resolve(resolveKoedHome(environment), "run"));
   const managedTerminalConnections = new Map<
     string,
     {
@@ -1589,14 +1658,7 @@ export const createKoedServerManager = ({
     },
     caller: { cwd: string }
   ): Promise<Record<string, unknown>> => {
-    const configuredHome = environment.KOED_HOME?.trim();
-    const koedHome = !configuredHome
-      ? resolve(homedir(), ".koed")
-      : configuredHome === "~"
-        ? homedir()
-        : configuredHome.startsWith("~/")
-          ? resolve(homedir(), configuredHome.slice(2))
-          : resolve(configuredHome);
+    const koedHome = resolveKoedHome(environment);
     const registrationPath = resolve(koedHome, "run", "local-ai-runtime.json");
     const stats = statSync(registrationPath);
     if (
@@ -2144,6 +2206,12 @@ export const createKoedServerManager = ({
         return await personalDevicePairingServerStart;
       personalDevicePairingServerStart = startPairingServer({
         port: resolvePersonalDevicePairingPort(environment.KOED_PDS_LAN_PORT),
+        ...(environment.KOED_PDS_LAN_HOST?.trim()
+          ? { host: environment.KOED_PDS_LAN_HOST.trim() }
+          : {}),
+        ...(personalDevicePairingStore
+          ? { persistence: personalDevicePairingStore }
+          : {}),
         forwardControl: async (input) => {
           const { apiOrigin } = await personalMemoryAccess();
           const desktop = readDesktopLocalCredentialAuthorization(
@@ -2176,10 +2244,11 @@ export const createKoedServerManager = ({
               ])
             }
           );
-          const body = await response.text();
-          if (Buffer.byteLength(body, "utf8") > 1_048_576) {
-            throw new Error("PDS control response exceeds maximum size.");
-          }
+          const body = await readBoundedResponseText(
+            response,
+            1_048_576,
+            "PDS control response exceeds maximum size."
+          );
           return {
             status: response.status,
             headers: {
@@ -2189,16 +2258,41 @@ export const createKoedServerManager = ({
             },
             body
           };
+        },
+        validateCompletion: async ({ groupId, deviceId }) => {
+          const status = await runPersonalSync(["status"]);
+          const groups = Array.isArray(status.groups) ? status.groups : [];
+          const group = groups.find(
+            (candidate) => objectValue(candidate)?.group_id === groupId
+          );
+          const members = objectValue(group)?.members;
+          return (
+            objectValue(group)?.state === "active" &&
+            objectValue(group)?.pending_epoch === null &&
+            Array.isArray(members) &&
+            members.some(
+              (member) =>
+                objectValue(member)?.device_id === deviceId &&
+                objectValue(member)?.status === "active"
+            )
+          );
         }
       });
       try {
-        personalDevicePairingServer = await personalDevicePairingServerStart;
-        writePersonalDevicePeerEndpoint(
-          environment,
-          personalDevicePairingServer.relayUrl
-        );
+        const startedServer = await personalDevicePairingServerStart;
+        personalDevicePairingServer = startedServer;
+        writePersonalDevicePeerEndpoint(environment, startedServer.relayUrl);
         personalDevicePairingServerError = null;
-        return personalDevicePairingServer;
+        for (const id of startedServer.claimedInvitationIds?.() ?? []) {
+          void automaticPairingEnrollment(id).catch((error: unknown) => {
+            if (personalDevicePairingServer !== startedServer) return;
+            personalDevicePairingServerError =
+              error instanceof Error
+                ? error.message
+                : "Automatic Personal Device enrollment failed.";
+          });
+        }
+        return startedServer;
       } finally {
         personalDevicePairingServerStart = null;
       }
@@ -2206,14 +2300,36 @@ export const createKoedServerManager = ({
 
   const personalSyncStatusWithLanRelay = async () => {
     const status = await runPersonalSync(["status"]);
-    const groups = Array.isArray(status.groups) ? status.groups : [];
+    const names = readPersonalDeviceNames(resolveKoedHome(environment));
+    const localDeviceId = status.local_device_id;
+    const groups = Array.isArray(status.groups)
+      ? status.groups.map((entry) => {
+          const group = objectValue(entry);
+          if (!group || !Array.isArray(group.members)) return entry;
+          return {
+            ...group,
+            members: group.members.map((entry) => {
+              const member = objectValue(entry);
+              if (!member || typeof member.device_id !== "string") return entry;
+              return {
+                ...member,
+                label:
+                  names[member.device_id] ??
+                  (member.device_id === localDeviceId
+                    ? hostname().slice(0, 80)
+                    : null)
+              };
+            })
+          };
+        })
+      : [];
+    status.groups = groups;
     if (groups.length === 0) {
       personalDevicePairingServerError = null;
       return status;
     }
     try {
       await ensurePersonalDevicePairingServer();
-      personalDevicePairingServerError = null;
       return status;
     } catch {
       personalDevicePairingServerError =
@@ -2252,7 +2368,10 @@ export const createKoedServerManager = ({
         signal: AbortSignal.timeout(timeoutMs)
       }
     );
-    const responseBody = await response.json();
+    const responseBody = await readBoundedResponseJson(
+      response,
+      MAX_PAIRING_RESPONSE_BYTES
+    );
     if (!response.ok) {
       throw new Error(
         responseBody &&
@@ -2414,22 +2533,10 @@ export const createKoedServerManager = ({
     if (!request || typeof request !== "object" || Array.isArray(request)) {
       throw new Error("Koed could not create the signed pairing request.");
     }
-    const joinPairing =
-      join.pairing && typeof join.pairing === "object"
-        ? (join.pairing as Record<string, unknown>)
-        : null;
-    if (
-      !joinPairing ||
-      typeof joinPairing.shortCode !== "string" ||
-      !/^[0-9A-F]{8}$/.test(joinPairing.shortCode)
-    ) {
-      throw new Error("Koed could not verify the pairing short code.");
-    }
     onProgress({
       contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
       requestId,
-      state: "approval_pending",
-      shortCode: joinPairing.shortCode
+      state: "connecting"
     });
     const submitted = await pairingExchange(
       invitationUrl,
@@ -2446,7 +2553,7 @@ export const createKoedServerManager = ({
       10 * 60 * 1_000
     );
     if (submitted.approved !== true) {
-      throw new Error("Pairing approval was not completed.");
+      throw new Error("Pairing enrollment was not accepted.");
     }
     const completed = await runPersonalSync(
       [
@@ -2506,9 +2613,147 @@ export const createKoedServerManager = ({
     if (completion.completed !== true) {
       throw new Error("Pairing invitation was not closed after enrollment.");
     }
+    onProgress({
+      contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
+      requestId,
+      state: "completed"
+    });
     const publicResult = { ...completed };
     delete publicResult.localGroupReconciliation;
     return publicResult;
+  };
+
+  const finalizeAutomaticPairingEnrollment = async (
+    server: PersonalDevicePairingServer,
+    id: string,
+    result: Record<string, unknown> = { ok: true }
+  ): Promise<Record<string, unknown>> => {
+    // Completion is durable before these local finalization steps. Repeat them
+    // after restore so a crash between completion and refresh is recoverable.
+    await runPersonalSync(["active-device", "refresh"]);
+    await wakePersonalDeviceSyncRuntime();
+    if (personalDevicePairingServer === server) {
+      personalDevicePairingServerError = null;
+    }
+    return {
+      ...result,
+      state: "completed",
+      pairing: server.inspect(id)[0]
+    };
+  };
+
+  const automaticPairingEnrollment = (
+    id: string
+  ): Promise<Record<string, unknown>> => {
+    const server = personalDevicePairingServer;
+    if (!server)
+      return Promise.reject(new Error("Pairing invitation is unavailable."));
+    const existing = automaticPairingEnrollments.get(id);
+    if (existing) return existing;
+    const current = server.inspect(id)[0];
+    if (current?.state === "completed") {
+      return finalizeAutomaticPairingEnrollment(server, id);
+    }
+    if (current?.state === "failed") {
+      return Promise.reject(new Error("Pairing enrollment failed."));
+    }
+    const enrollment = (async () => {
+      const request = await server.waitForRequest(id);
+      // Claim before network I/O. From this boundary onward cancellation must
+      // not destroy the invitation while membership commit may be in flight.
+      await server.claimApproval(id);
+      const current = server.inspect(id)[0];
+      if (current?.state === "completed") {
+        return await finalizeAutomaticPairingEnrollment(server, id);
+      }
+      let result: Record<string, unknown> | undefined;
+      let lastError: unknown;
+      if (current?.phase !== "awaiting_joiner") {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            result = await withPersonalSyncJsonFd(
+              { request },
+              async (fd) =>
+                await runPersonalSync([
+                  "active-device",
+                  "approve",
+                  "--request-fd",
+                  String(fd)
+                ])
+            );
+            lastError = undefined;
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) await sleep(250 * 2 ** attempt);
+          }
+        }
+        if (lastError !== undefined) throw lastError;
+        if (!result || !resultOk(result)) {
+          throw new Error(
+            resultMessage(result, "Pairing request could not be approved.")
+          );
+        }
+        await server.approve(id);
+      } else {
+        result = { ok: true };
+      }
+      const label = server.inspect(id)[0]?.joiningDeviceLabel;
+      if (label && typeof request.device_id === "string") {
+        writePersonalDeviceName(
+          resolveKoedHome(environment),
+          request.device_id,
+          label,
+          true
+        );
+      }
+      await server.waitForCompletion(id);
+      return await finalizeAutomaticPairingEnrollment(server, id, result);
+    })().catch((error) => {
+      // Keep claimed invitations resumable. A lost response can hide a durable
+      // commit; next wait retries against persisted group membership state.
+      throw error;
+    });
+    automaticPairingEnrollments.set(id, enrollment);
+    void enrollment.then(
+      () => {
+        if (automaticPairingEnrollments.get(id) === enrollment) {
+          automaticPairingEnrollments.delete(id);
+        }
+      },
+      () => {
+        if (automaticPairingEnrollments.get(id) === enrollment) {
+          automaticPairingEnrollments.delete(id);
+        }
+      }
+    );
+    return enrollment;
+  };
+
+  const cancellablePairingWait = async <T>(
+    promise: Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> => {
+    if (!signal) return await promise;
+    if (signal.aborted) throw new Error("Pairing wait was cancelled.");
+    return await new Promise<T>((resolve, reject) => {
+      const aborted = () => {
+        cleanup();
+        reject(new Error("Pairing wait was cancelled."));
+      };
+      const cleanup = () => signal.removeEventListener("abort", aborted);
+      signal.addEventListener("abort", aborted, { once: true });
+      promise.then(
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error: unknown) => {
+          cleanup();
+          reject(error);
+        }
+      );
+    });
   };
 
   const authenticatedPersonalMemoryRequest = async (
@@ -2593,7 +2838,9 @@ export const createKoedServerManager = ({
           return { url, init: { method: "GET" } };
         },
         16 * 1_024 * 1_024
-      )
+      ),
+      false,
+      readPersonalDeviceNames(resolveKoedHome(environment))
     );
     await reconcileLocalProjectMetadata(projects.projects);
     return projects;
@@ -3085,9 +3332,17 @@ export const createKoedServerManager = ({
       if (!Array.isArray(payload.devices)) {
         throw new PersonalMemoryBoundaryError("invalid_response", false);
       }
+      const names = readPersonalDeviceNames(resolveKoedHome(environment));
       return parseManagedConversationResult({
         operation: "targets",
-        devices: payload.devices
+        devices: payload.devices.map((entry) => {
+          const device = objectValue(entry);
+          if (!device || typeof device.deviceId !== "string") return entry;
+          return {
+            ...device,
+            label: names[device.deviceId] ?? device.label
+          };
+        })
       });
     }
 
@@ -5092,6 +5347,95 @@ export const createKoedServerManager = ({
     return result;
   };
 
+  const createDesktopPairingInvitation = async (
+    args?: Record<string, unknown>
+  ) => {
+    const pairingArgs = optionalExactDesktopArgs(args, "groupId");
+    const requestedGroupId =
+      typeof pairingArgs.groupId === "string" ? pairingArgs.groupId.trim() : "";
+    if (requestedGroupId && !/^[\x21-\x7e]{1,240}$/.test(requestedGroupId)) {
+      throw new Error("Personal Device Group is invalid.");
+    }
+    const current = requestedGroupId ? null : await runPersonalSync(["status"]);
+    const groups =
+      current && Array.isArray(current.groups) ? current.groups : [];
+    const groupId =
+      requestedGroupId ||
+      (groups.length === 1 &&
+      groups[0] &&
+      typeof groups[0] === "object" &&
+      !Array.isArray(groups[0]) &&
+      typeof (groups[0] as { group_id?: unknown }).group_id === "string"
+        ? ((groups[0] as { group_id: string }).group_id ?? "")
+        : "");
+    if (!groupId) {
+      return {
+        ok: false,
+        state: "not_configured",
+        error:
+          "Set up Personal Device Sync on this device before pairing another device."
+      };
+    }
+    const status = current ?? (await runPersonalSync(["status"]));
+    const invitationGroupIds = Array.isArray(
+      status.pairing_invitation_group_ids
+    )
+      ? status.pairing_invitation_group_ids.filter(
+          (candidate): candidate is string => typeof candidate === "string"
+        )
+      : [];
+    if (!invitationGroupIds.includes(groupId)) {
+      return {
+        ok: false,
+        state: "authority_host_required",
+        error:
+          "Create the pairing link on the device that originally set up this Personal Device Group."
+      };
+    }
+    const created = await runPersonalSync([
+      "invite",
+      "create",
+      "--group-id",
+      groupId
+    ]);
+    if (
+      !created.invitation ||
+      typeof created.invitation !== "object" ||
+      Array.isArray(created.invitation)
+    ) {
+      throw new Error("Koed could not create a pairing invitation.");
+    }
+    const invitation = created.invitation as Record<string, unknown>;
+    const authority = invitation.authority;
+    if (
+      !authority ||
+      typeof authority !== "object" ||
+      Array.isArray(authority)
+    ) {
+      throw new Error("Koed created an invalid pairing invitation.");
+    }
+    const server = await ensurePersonalDevicePairingServer();
+    const view = server.createInvitation({
+      group_id: String(invitation.group_id ?? ""),
+      challenge_id: String(invitation.challenge_id ?? ""),
+      challenge: String(invitation.challenge ?? ""),
+      expires_at: String(invitation.expires_at ?? ""),
+      browser_subject_id: String(invitation.browser_subject_id ?? ""),
+      browser_deployment_id: String(invitation.browser_deployment_id ?? ""),
+      authority: {
+        key_id: String((authority as Record<string, unknown>).key_id ?? ""),
+        public_key: String(
+          (authority as Record<string, unknown>).public_key ?? ""
+        )
+      }
+    });
+    return { ok: true, state: view.state, pairing: view };
+  };
+  const deviceReviews = new Map<
+    string,
+    { link: string; label: string; expiresAt: string }
+  >();
+
   return {
     personalMemory,
     localAiClients,
@@ -5106,6 +5450,71 @@ export const createKoedServerManager = ({
     subscribePersonalMemory,
     resume,
     handlers: {
+      personal_sync_request_create: async () => {
+        await personalMemoryAccess();
+        return await deviceRequestCommand(
+          resolveKoedServerPaths(environment),
+          "create"
+        );
+      },
+      personal_sync_request_status: async () =>
+        deviceRequestCommand(resolveKoedServerPaths(environment), "status"),
+      personal_sync_request_cancel: async () =>
+        deviceRequestCommand(resolveKoedServerPaths(environment), "cancel"),
+      personal_sync_request_review: async (args) => {
+        const input = exactDesktopArgs(args, ["url"]);
+        if (typeof input.url !== "string")
+          throw new Error("Paste a device request link.");
+        parseDeviceRequestLink(input.url);
+        const request = await exchangeDeviceRequest(input.url, "inspect");
+        if (
+          request.state !== "waiting" ||
+          typeof request.label !== "string" ||
+          request.label.length > 80 ||
+          typeof request.expiresAt !== "string" ||
+          Date.parse(request.expiresAt) <= Date.now()
+        )
+          throw new Error("Create a fresh request on the joining device.");
+        for (const [id, review] of deviceReviews)
+          if (Date.parse(review.expiresAt) <= Date.now())
+            deviceReviews.delete(id);
+        if (deviceReviews.size >= 8)
+          throw new Error(
+            "Too many pending requests. Wait for them to expire."
+          );
+        const id = randomUUID();
+        deviceReviews.set(id, {
+          link: input.url,
+          label: request.label,
+          expiresAt: request.expiresAt
+        });
+        return { id, label: request.label, expiresAt: request.expiresAt };
+      },
+      personal_sync_request_accept: async (args) => {
+        const input = exactDesktopArgs(args, ["id"]);
+        const review = deviceReviews.get(String(input.id));
+        if (!review || Date.parse(review.expiresAt) <= Date.now())
+          throw new Error("Review the device request again.");
+        deviceReviews.delete(String(input.id));
+        const created = await createDesktopPairingInvitation();
+        if (!created.ok || !created.pairing)
+          throw new Error(
+            "Use the Electron device that created this Personal Device Group to add another device."
+          );
+        const pairing = created.pairing;
+        const enrollment = automaticPairingEnrollment(pairing.id);
+        void enrollment.catch(() => undefined);
+        try {
+          await exchangeDeviceRequest(review.link, "accept", pairing.url);
+          const result = await enrollment;
+          if (objectValue(result.pairing)?.state !== "completed")
+            throw new Error("The joining device has not completed enrollment.");
+          return { ok: true, state: "connected" };
+        } catch (error) {
+          personalDevicePairingServer?.cancel(pairing.id);
+          throw error;
+        }
+      },
       status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
@@ -5152,6 +5561,35 @@ export const createKoedServerManager = ({
       select_project_directory: () => {
         throw new Error("Project directory selection requires Desktop.");
       },
+      personal_sync_device_rename: async (args) => {
+        const input = exactDesktopArgs(args, ["deviceId", "name"]);
+        const status = await runPersonalSync(["status"]);
+        const member =
+          Array.isArray(status.groups) &&
+          status.groups.some((entry) => {
+            const group = objectValue(entry);
+            return (
+              Array.isArray(group?.members) &&
+              group.members.some((entry) => {
+                const device = objectValue(entry);
+                return (
+                  device?.device_id === input.deviceId &&
+                  device?.status === "active"
+                );
+              })
+            );
+          });
+        if (!member || typeof input.deviceId !== "string")
+          throw new Error(
+            "This device is no longer in your Personal Device Group."
+          );
+        writePersonalDeviceName(
+          resolveKoedHome(environment),
+          input.deviceId,
+          input.name
+        );
+        return { ok: true };
+      },
       personal_sync_status: async () => {
         const status = await personalSyncStatusWithLanRelay();
         return personalDevicePairingServerError
@@ -5164,35 +5602,41 @@ export const createKoedServerManager = ({
           : status;
       },
       personal_sync_group_bootstrap: async () => {
-        const recoveryKitPath = await selectRecoveryKitPath?.();
-        if (!recoveryKitPath) {
-          return {
-            ok: false,
-            state: "cancelled",
-            error: "Recovery kit location was not selected."
-          };
-        }
-        const recoveryCode = randomBytes(32).toString("base64url");
-        const created = await withProtectedTextFd(
-          resolveKoedServerPaths(environment).runDir,
-          "pds-recovery-code",
-          recoveryCode,
-          (passwordFd) =>
-            runPersonalSync([
-              "group",
-              "bootstrap",
-              "--recovery-kit",
-              recoveryKitPath,
-              "--password-fd",
-              String(passwordFd)
-            ])
+        const health = await runJson(
+          ["status", "--startup"],
+          statusCommandTimeoutMs
         );
+        if (!setupStartupReady(health)) {
+          const ready = await start();
+          if (!setupServicesHealthy(ready))
+            throw new Error(
+              "Koed’s local services could not start. Check local health and available disk space."
+            );
+        }
+        let created;
+        try {
+          created = await runPersonalSync(["group", "bootstrap"]);
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !error.message.includes(
+              "Personal Device Sync authority is unavailable"
+            )
+          )
+            throw error;
+          // A headless-started API may predate Desktop's Authority configuration.
+          // The challenge failed before genesis, so restarting and retrying is safe.
+          await stop();
+          const ready = await start();
+          if (!setupServicesHealthy(ready))
+            throw new Error("Restart Koed to prepare device setup.", {
+              cause: error
+            });
+          created = await runPersonalSync(["group", "bootstrap"]);
+        }
         if (!created.ok) return created;
-        return {
-          ...created,
-          recoveryCode,
-          recoveryKitPath
-        };
+        await wakePersonalDeviceSyncRuntime();
+        return created;
       },
       personal_sync_group_activate: async () => {
         await wakePersonalDeviceSyncRuntime();
@@ -5236,137 +5680,44 @@ export const createKoedServerManager = ({
           ],
           20_000
         ),
-      personal_sync_pairing_create: async (args) => {
-        const pairingArgs = optionalExactDesktopArgs(args, "groupId");
-        const requestedGroupId =
-          typeof pairingArgs.groupId === "string"
-            ? pairingArgs.groupId.trim()
-            : "";
-        if (
-          requestedGroupId &&
-          !/^[\x21-\x7e]{1,240}$/.test(requestedGroupId)
-        ) {
-          throw new Error("Personal Device Group is invalid.");
-        }
-        const current = requestedGroupId
-          ? null
-          : await runPersonalSync(["status"]);
-        const groups =
-          current && Array.isArray(current.groups) ? current.groups : [];
-        const groupId =
-          requestedGroupId ||
-          (groups.length === 1 &&
-          groups[0] &&
-          typeof groups[0] === "object" &&
-          !Array.isArray(groups[0]) &&
-          typeof (groups[0] as { group_id?: unknown }).group_id === "string"
-            ? ((groups[0] as { group_id: string }).group_id ?? "")
-            : "");
-        if (!groupId) {
-          return {
-            ok: false,
-            state: "not_configured",
-            error:
-              "Set up Personal Device Sync on this device before pairing another device."
-          };
-        }
-        const status = current ?? (await runPersonalSync(["status"]));
-        const invitationGroupIds = Array.isArray(
-          status.pairing_invitation_group_ids
-        )
-          ? status.pairing_invitation_group_ids.filter(
-              (candidate): candidate is string => typeof candidate === "string"
-            )
-          : [];
-        if (!invitationGroupIds.includes(groupId)) {
-          return {
-            ok: false,
-            state: "authority_host_required",
-            error:
-              "Create the pairing link on the device that originally set up this Personal Device Group."
-          };
-        }
-        const created = await runPersonalSync([
-          "invite",
-          "create",
-          "--group-id",
-          groupId
-        ]);
-        if (
-          !created.invitation ||
-          typeof created.invitation !== "object" ||
-          Array.isArray(created.invitation)
-        ) {
-          throw new Error("Koed could not create a pairing invitation.");
-        }
-        const invitation = created.invitation as Record<string, unknown>;
-        const authority = invitation.authority;
-        if (
-          !authority ||
-          typeof authority !== "object" ||
-          Array.isArray(authority)
-        ) {
-          throw new Error("Koed created an invalid pairing invitation.");
-        }
-        const server = await ensurePersonalDevicePairingServer();
-        const view = server.createInvitation({
-          group_id: String(invitation.group_id ?? ""),
-          challenge_id: String(invitation.challenge_id ?? ""),
-          challenge: String(invitation.challenge ?? ""),
-          expires_at: String(invitation.expires_at ?? ""),
-          browser_subject_id: String(invitation.browser_subject_id ?? ""),
-          browser_deployment_id: String(invitation.browser_deployment_id ?? ""),
-          authority: {
-            key_id: String((authority as Record<string, unknown>).key_id ?? ""),
-            public_key: String(
-              (authority as Record<string, unknown>).public_key ?? ""
-            )
-          }
-        });
-        return { ok: true, state: view.state, pairing: view };
-      },
+      personal_sync_pairing_create: createDesktopPairingInvitation,
       personal_sync_pairing_wait: async (args, context) => {
         const id = pairingIdArg(args);
         if (!personalDevicePairingServer) {
           throw new Error("Pairing invitation is unavailable.");
         }
-        await personalDevicePairingServer.waitForRequest(id, context?.signal);
-        const pairing = personalDevicePairingServer.inspect(id)[0];
-        return { ok: true, state: pairing?.state ?? "cancelled", pairing };
+        if (context?.signal.aborted) {
+          throw new Error("Pairing wait was cancelled.");
+        }
+        // Shared enrollment promise prevents concurrent waits from approving twice.
+        return await cancellablePairingWait(
+          automaticPairingEnrollment(id),
+          context?.signal
+        );
       },
-      personal_sync_pairing_approve: async (args, context) => {
+      personal_sync_pairing_status: (args) => {
+        const id = pairingIdArg(args);
+        const pairing = personalDevicePairingServer?.inspect(id)[0];
+        if (!pairing) {
+          throw new Error("Pairing invitation is unavailable.");
+        }
+        return { ok: true, state: pairing.state, pairing };
+      },
+      personal_sync_pairing_cancel: (args) => {
         const id = pairingIdArg(args);
         if (!personalDevicePairingServer) {
           throw new Error("Pairing invitation is unavailable.");
         }
-        const request = await personalDevicePairingServer.waitForRequest(id);
-        const result = await withPersonalSyncJsonFd(
-          { request },
-          async (fd) =>
-            await runPersonalSync([
-              "active-device",
-              "approve",
-              "--request-fd",
-              String(fd)
-            ])
-        );
-        personalDevicePairingServer.approve(id);
-        await personalDevicePairingServer.waitForCompletion(
-          id,
-          context?.signal
-        );
-        await runPersonalSync(["active-device", "refresh"]);
-        await wakePersonalDeviceSyncRuntime();
+        personalDevicePairingServer.cancel(id);
+        const pairing = personalDevicePairingServer.inspect(id)[0];
+        if (!pairing) {
+          throw new Error("Pairing invitation is unavailable.");
+        }
         return {
-          ...result,
-          state: "completed",
-          pairing: personalDevicePairingServer.inspect(id)[0]
+          ok: true,
+          state: pairing.state,
+          pairing
         };
-      },
-      personal_sync_pairing_cancel: (args) => {
-        const id = pairingIdArg(args);
-        personalDevicePairingServer?.cancel(id);
-        return { ok: true, state: "cancelled" };
       },
       personal_sync_pairing_redeem: async (args, context) => {
         const pairingArgs = exactDesktopArgs(args, [

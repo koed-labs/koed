@@ -82,6 +82,15 @@ node packages/koed-server/dist/cli.js setup core --json
 `setup codex --json` remains an explicit Codex profile compatibility command; it
 never selects Codex merely because Codex is installed.
 
+### Connect another Personal device
+
+On a prepared joining machine, run `koed-server pair` (or `pnpm koed-server pair`
+from this built checkout). Paste its request link into **Devices → Add device**
+on your existing Koed Electron installation and confirm. Another Electron
+installation can generate its link with **Connect to an existing device**.
+[Pairing instructions](docs/device-pairing.md) cover LAN/Tailscale requirements,
+request status, and cancellation. Group setup requires no recovery-file download.
+
 ### Health and routing model
 
 Core health covers Koed services and remains healthy with zero configured AI

@@ -785,7 +785,9 @@ const withCanonicalConversationIdentity = (
                 item.sourceEventType ?? ""
               )) ||
             (item.sourceAdapterVersion === "codex-hook-signal-v1" &&
-              item.sourceEventType === "turn_completed")))
+              item.sourceEventType === "turn_completed") ||
+            (item.sourceTransport === "pds_relay" &&
+              item.sourceEventType === "pds_turn_completed")))
           ? { semanticControl: "turn_completed" }
           : {})
       }

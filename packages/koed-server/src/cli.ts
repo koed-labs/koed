@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import { deviceRequestCommand } from "./personal-device-request.js";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import {
   appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
+  readSync,
   realpathSync,
   writeFileSync
 } from "node:fs";
@@ -87,7 +89,45 @@ import {
   rotateDeviceIdentity
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
+import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerDoctorResult } from "./types.js";
+
+export const personalSyncUsageText = `Personal Sync
+
+  koed-server pair                   Connect this device using a request link
+  koed-server pair status            Show pending pairing progress
+  koed-server pair cancel            Cancel a waiting request
+  koed-server personal-sync status --json
+                                     Show this installation’s group and members
+
+Create your first group and manage devices in Electron → Devices.
+Status uses the local Personal installation automatically; no browser session is needed.
+
+  koed-server personal-sync --help --advanced
+                                     Show retained low-level recovery commands
+`;
+
+export const personalSyncAdvancedUsageText = `${personalSyncUsageText}
+Advanced compatibility and recovery commands:
+  group bootstrap [--recovery-kit <path>] [--password-fd <fd>]
+  invite create --group-id <id>
+  join redeem --link-stdin [--device-label <name>]
+  join request | complete | bind-local-user | challenge
+  active-device approve | refresh
+  device list --group-id <id>
+  device revoke
+  policy enable | pause | resume --group-id <id>
+  replica status --group-id <id>
+  retry --group-id <id>
+  recovery approve | guidance
+  recovery-kit create | verify
+
+These are protocol/recovery operations, not the normal pairing flow. They need
+operation-specific signed artifacts, protected file descriptors, and/or browser
+session context. Use the recovery and protocol documentation before running them.
+Only status configures local authentication automatically. Existing scripts remain
+supported; use pair and Electron for ordinary enrollment and device management.
+`;
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -101,21 +141,9 @@ Commands:
   doctor --json          Print actionable setup/dependency diagnostics
   identity status --json Print clone-safe deployment/device identity state
   identity rotate --json Create fresh device identity and invalidate local enrollment references
+  pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
   personal-sync status --json             Print redacted Personal Sync status
-  personal-sync group bootstrap --json    Create group and encrypted recovery kit
-  personal-sync recovery-kit create|verify --json
-  personal-sync join request|challenge|complete --json
-  personal-sync active-device approve|refresh --json
-  personal-sync recovery approve|guidance --json
-  personal-sync policy enable|pause|resume --json
-  personal-sync start --future-only --json
-  personal-sync device list|revoke --json
-  personal-sync credential status --json
-  personal-sync key-epoch status --json
-  personal-sync replica status --json
-  personal-sync retry --json
-  personal-sync local-replica remove --json
-  personal-sync conflict resolve --json
+  personal-sync --help   Show Personal Sync usage and advanced recovery help
   setup core --json      Prepare Koed core services and local credential
   setup codex --json     Configure the supported Codex integration
     --without-memory-guidance  Do not install the recommended global guidance
@@ -460,6 +488,52 @@ const parseRoutePolicyUpdate = (args: string[]): UpstreamRoutePolicyUpdate => {
   return update;
 };
 
+const readSecretStdin = (): string | null => {
+  const maximum = 2_000_000;
+  const buffer = Buffer.allocUnsafe(maximum + 1);
+  let offset = 0;
+  try {
+    while (offset < buffer.length) {
+      const count = readSync(0, buffer, offset, buffer.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset > maximum) return null;
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    buffer.fill(0);
+  }
+};
+
+const runApplicationSecretProviderCli = async (
+  args: string[],
+  stdout: Pick<NodeJS.WritableStream, "write">
+): Promise<number> => {
+  const operation = args[1];
+  const reference = args[2];
+  if (
+    (operation !== "get" && operation !== "put" && operation !== "delete") ||
+    !reference ||
+    args.length !== 3
+  ) {
+    stdout.write(
+      "Usage: koed-server secret-provider <get|put|delete> <reference>\n"
+    );
+    return 1;
+  }
+  const value = operation === "put" ? readSecretStdin() : undefined;
+  if (operation === "put" && value === null) return 1;
+  const result = await runApplicationSecretProvider(
+    operation,
+    reference,
+    value ?? undefined,
+    process.env
+  );
+  if (!result.ok) return 1;
+  if (operation === "get" && result.value !== null) stdout.write(result.value);
+  return 0;
+};
+
 export const runKoedServerCli = async (
   args: string[],
   {
@@ -534,8 +608,18 @@ export const runKoedServerCli = async (
 
   try {
     if (wantsHelp || !command) {
-      stdout.write(usageText);
+      stdout.write(
+        command === "personal-sync"
+          ? args.includes("--advanced")
+            ? personalSyncAdvancedUsageText
+            : personalSyncUsageText
+          : usageText
+      );
       return 0;
+    }
+
+    if (command === "secret-provider") {
+      return await runApplicationSecretProviderCli(args, stdout);
     }
 
     if (command === "status") {
@@ -581,6 +665,59 @@ export const runKoedServerCli = async (
         stdout.write(`${identity.health}\n`);
       }
       return identity.remoteOperationsAllowed ? 0 : 1;
+    }
+
+    if (command === "pair") {
+      const paths = resolvePaths();
+      if (subcommand === "status" || subcommand === "cancel") {
+        const value = await deviceRequestCommand(paths, subcommand);
+        if (wantsJson) printJson(stdout, value);
+        else stdout.write(`${value.state}\n`);
+        return 0;
+      }
+      if (subcommand && !subcommand.startsWith("--"))
+        throw new Error("Use pair, pair status, or pair cancel.");
+      let ready = await collectKoedServerStartupStatus();
+      if (!ready.ok) {
+        const started = startDaemon();
+        if (!started.ok) throw new Error(started.error ?? started.message);
+        for (let attempt = 0; attempt < 90 && !ready.ok; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          ready = await collectKoedServerStartupStatus();
+        }
+      }
+      if (!ready.ok)
+        throw new Error(
+          "Koed could not start. Run koed-server doctor for setup guidance."
+        );
+      const labelIndex = args.indexOf("--device-label");
+      if (labelIndex >= 0 && !args[labelIndex + 1])
+        throw new Error("--device-label needs a name.");
+      const initial = await deviceRequestCommand(
+        paths,
+        "create",
+        labelIndex < 0 ? undefined : args[labelIndex + 1]
+      );
+      if (wantsJson) printJson(stdout, initial);
+      else
+        stdout.write(
+          initial.link
+            ? `Paste this request into Devices → Add device on your existing Koed installation:\n\n${initial.link}\n\nExpires ${initial.expiresAt}. Waiting for approval…\n`
+            : `Enrollment is ${initial.state}. Waiting…\n`
+        );
+      if (args.includes("--detach")) return 0;
+      let previous = initial.state;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const value = await deviceRequestCommand(paths, "status");
+        if (value.state !== previous) {
+          if (wantsJson) printJson(stdout, value);
+          else stdout.write(`${value.state}\n`);
+          previous = value.state;
+        }
+        if (value.state === "connected") return 0;
+        if (["failed", "expired", "cancelled"].includes(value.state)) return 1;
+      }
     }
 
     if (command === "personal-sync") {

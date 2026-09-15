@@ -383,12 +383,6 @@ const onboardingClients: readonly {
   { id: "pi", label: "Pi" }
 ];
 
-const formatClientList = (labels: string[]): string => {
-  if (labels.length < 2) return labels[0] ?? "";
-  if (labels.length === 2) return labels.join(" and ");
-  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
-};
-
 const clientCommand = (
   id: OnboardingClientId,
   status: KoedServerStatus | null
@@ -488,17 +482,6 @@ function AiClientSetup({
   >({});
   const resultSummaryRef = useRef<HTMLUListElement>(null);
   const confirming = useRef(false);
-
-  const consentedClientLabels = useMemo(
-    () =>
-      onboardingClients
-        .filter(
-          ({ id }) =>
-            selected.has(id) && !clientCommand(id, status).startsWith("check_")
-        )
-        .map(({ label }) => label),
-    [selected, status]
-  );
 
   const toggle = useCallback((id: OnboardingClientId) => {
     setSelected((current) => {
@@ -800,14 +783,6 @@ function AiClientSetup({
             </div>
           ) : null}
         </fieldset>
-        {consentedClientLabels.length > 0 ? (
-          <p className="koed-client-consent">
-            Continue allows Koed to change only its own integration block and
-            package for {formatClientList(consentedClientLabels)}. Existing
-            profile settings, credentials, and other AI Clients remain
-            untouched.
-          </p>
-        ) : null}
         {Object.keys(results).length > 0 ? (
           <ul
             aria-atomic="true"

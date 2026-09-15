@@ -386,4 +386,98 @@ describe("Personal Device Sync service", () => {
     });
     expect(repository.releasePdsCommittedOutbox).not.toHaveBeenCalled();
   });
+
+  it("requeues only a missing checkpoint transport for a fresh relay package", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      receivePdsInbox: vi.fn().mockResolvedValue("idempotent"),
+      claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi
+        .fn()
+        .mockResolvedValue([
+          { id: "outbox", groupId: "group", transportId: "expired-transport" }
+        ]),
+      completePdsOutbox: vi.fn().mockResolvedValue(true),
+      requeuePdsExpiredCheckpointOutbox: vi.fn().mockResolvedValue(true),
+      releasePdsCommittedOutbox: vi.fn().mockResolvedValue(true),
+      claimPdsInbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      poll: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(),
+      outboundState: vi.fn().mockResolvedValue("missing"),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(repository.requeuePdsExpiredCheckpointOutbox).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "outbox",
+      transportId: "expired-transport"
+    });
+    expect(repository.completePdsOutbox).not.toHaveBeenCalled();
+    expect(repository.releasePdsCommittedOutbox).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "acknowledges an atomic checkpoint only after its predecessor is present (deferred=%s)",
+    async (deferred) => {
+      const repository = {
+        heartbeatPdsWorker: vi.fn(),
+        claimPdsOutbox: vi.fn().mockResolvedValue([]),
+        claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+        claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+        claimPdsInbox: vi.fn().mockResolvedValue([
+          {
+            id: "inbox",
+            groupId: "group",
+            packageId: "package",
+            sourceManifestHash: "manifest",
+            attemptCount: 1
+          }
+        ]),
+        materializePdsReplica: vi.fn(),
+        completePdsInbox: vi.fn().mockResolvedValue(true),
+        getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+      };
+      const secureRuntime = {
+        heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+        poll: vi.fn().mockResolvedValue([]),
+        acknowledge: vi.fn(),
+        materialize: vi.fn().mockResolvedValue({
+          kind: "checkpoint",
+          userId: "user",
+          retainedPackageId: "retained",
+          originDeviceId: "studio",
+          sourceSequence: "2",
+          state: "ready",
+          conflict: false,
+          deferred
+        })
+      };
+      await createPdsLocalSyncService({
+        repository: repository as never,
+        secureRuntime: secureRuntime as never,
+        wakePool,
+        logger,
+        workerId: "worker"
+      }).run();
+      expect(repository.materializePdsReplica).not.toHaveBeenCalled();
+      expect(secureRuntime.acknowledge).toHaveBeenCalledTimes(deferred ? 0 : 1);
+      expect(repository.completePdsInbox).toHaveBeenCalledTimes(
+        deferred ? 0 : 1
+      );
+    }
+  );
 });

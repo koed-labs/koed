@@ -810,7 +810,7 @@ describe("SetupChecklist", () => {
         checkbox.click();
       }
     });
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "Continue allows Koed to change only its own integration block and package for Codex, Claude Code, and Pi. Existing profile settings, credentials, and other AI Clients remain untouched."
     );
     await act(async () =>

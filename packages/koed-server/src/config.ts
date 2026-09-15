@@ -31,8 +31,8 @@ export interface KoedServerConfig {
 }
 
 export const defaultKoedServerConfig: KoedServerConfig = {
-  runtimeMode: "developer",
-  dependencyMode: "external",
+  runtimeMode: "local-personal",
+  dependencyMode: "bundled-local",
   codexTranscriptWatcherEnabled: true,
   claudeTranscriptWatcherEnabled: true,
   piTranscriptWatcherEnabled: true,
@@ -145,7 +145,7 @@ export const resolveKoedServerConfig = (
     dependencyMode:
       dependencyMode(environment.KOED_DEPENDENCY_MODE) ??
       dependencyMode(file.dependencyMode) ??
-      defaultKoedServerConfig.dependencyMode,
+      (resolvedRuntimeMode === "local-personal" ? "bundled-local" : "external"),
     codexTranscriptWatcherEnabled:
       resolvedTranscriptWatcherSetting ?? resolvedRuntimeMode !== "external",
     claudeTranscriptWatcherEnabled:

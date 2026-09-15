@@ -913,6 +913,7 @@ describe("start supervisor", () => {
     await expect(
       startKoedServer({
         environment: {
+          KOED_DEPENDENCY_MODE: "external",
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
           DATABASE_URL: "postgres://operator/db",
@@ -1059,6 +1060,7 @@ describe("start supervisor", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_AUTO_PORTS: "0",
         KOED_TEAM_COLLABORATION_ENABLED: "true",
         MEMORY_API_TOKEN: "test-runtime-token",
         POSTGRES_HOST_PORT: "25432",
@@ -1178,6 +1180,7 @@ describe("start supervisor", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_ENV_PATH: envPath,
+        KOED_LOCAL_PORT_LEASES_PATH: resolve(root, "port-leases.json"),
         KOED_AUTO_PORTS: "1",
         API_TOKEN_PEPPER: "test-api-token-pepper"
       },
@@ -1446,6 +1449,7 @@ describe("start supervisor", () => {
     await startKoedServer({
       signal: cleanShutdownSignal(),
       environment: {
+        KOED_DEPENDENCY_MODE: "external",
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         DATABASE_URL: "postgres://operator/db",
@@ -2011,6 +2015,7 @@ describe("start supervisor", () => {
     await startKoedServer({
       signal: cleanShutdownSignal(),
       environment: {
+        KOED_DEPENDENCY_MODE: "external",
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         DATABASE_URL: "postgres://operator/db",

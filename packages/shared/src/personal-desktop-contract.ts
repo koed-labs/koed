@@ -217,6 +217,10 @@ export const personalDesktopProjectThreadSchema = z
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
     logicalMemoryId: z.uuid().nullable().optional(),
+    originDevice: z
+      .object({ id: identifierSchema, name: z.string().max(80) })
+      .nullable()
+      .optional(),
     sourceAiClient: z
       .enum(["codex", "codex-cli", "claude-code", "pi"])
       .nullable(),

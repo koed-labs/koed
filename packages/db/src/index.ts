@@ -270,9 +270,12 @@ export {
   type PdsClaimedInboxEntry,
   type PdsClaimedOutboxEntry,
   type PdsClosureSource,
+  type PdsCheckpointConversationItem,
+  type PdsCheckpointSessionInput,
   type PdsLocalClosureRecord,
   type PdsLocalSyncStatus,
-  type PdsMaterializationState
+  type PdsMaterializationState,
+  type PdsReplicaCheckpointInput
 } from "./personal-device-sync-local-repository.js";
 export {
   createPersonalDeviceSyncRepository,

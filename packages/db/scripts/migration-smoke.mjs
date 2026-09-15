@@ -70,9 +70,9 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0040_repair_conversation_start_authority";
+const expectedLatestMigrationTag = "0041_personal_session_checkpoints";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 40;
+const expectedLatestMigrationIndex = 41;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 

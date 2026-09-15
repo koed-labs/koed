@@ -594,6 +594,10 @@ export function App({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pendingDevicePairingLink, setPendingDevicePairingLink] = useState("");
+  const clearPendingDevicePairingLink = useCallback(
+    () => setPendingDevicePairingLink(""),
+    []
+  );
   const [commandOpen, setCommandOpen] = useState(false);
   const [sharesLoadUnavailable, setSharesLoadUnavailable] = useState(false);
   const [askRecents, setAskRecents] = useState<PersonalDesktopAskThread[]>([]);
@@ -974,16 +978,18 @@ export function App({
       setPendingDevicePairingLink(url);
       setDevicesOpen(true);
     };
+    const consumeAndOpenPairingLink = (expectedUrl?: string) => {
+      void devices
+        .consumePairingLink(expectedUrl)
+        .then((url) => {
+          if (url) openPairingLink(url);
+        })
+        .catch(() => undefined);
+    };
     const unsubscribe = devices.subscribePairingLinks((url) => {
-      openPairingLink(url);
-      void devices.consumePairingLink(url).catch(() => undefined);
+      consumeAndOpenPairingLink(url);
     });
-    void devices
-      .consumePairingLink()
-      .then((url) => {
-        if (url) openPairingLink(url);
-      })
-      .catch(() => undefined);
+    consumeAndOpenPairingLink();
     return () => {
       active = false;
       unsubscribe();
@@ -2109,8 +2115,9 @@ export function App({
           initialPairingLink={pendingDevicePairingLink}
           onClose={() => {
             setDevicesOpen(false);
-            setPendingDevicePairingLink("");
+            clearPendingDevicePairingLink();
           }}
+          onPairingLinkConsumed={clearPendingDevicePairingLink}
         />
       ) : null}
 

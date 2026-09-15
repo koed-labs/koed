@@ -190,4 +190,125 @@ describe("PDS source closure sanitizer", () => {
       parentSourceComponentId: "main"
     });
   });
+
+  it("extracts Pi text from the adapter record and keeps known journal controls empty", () => {
+    const items = pdsConversationItemsForClosure({
+      ...source,
+      sourceRuntime: "pi",
+      sourceAdapter: "pi",
+      sourceAdapterVersion: "pi-session-v1",
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          sourceKind: "pi",
+          sourceRecordType: "message",
+          sourceEventType: "agent_message",
+          rawJson: {
+            type: "pi_session_record",
+            sourceRecord: {
+              type: "message",
+              id: "answer",
+              message: {
+                role: "assistant",
+                stopReason: "stop",
+                content: [{ type: "text", text: "Pi answer" }]
+              }
+            },
+            contentBlock: { type: "text", text: "Pi answer" }
+          },
+          metadata: { canonicalConversationItemActor: "assistant" }
+        },
+        {
+          ...source.items[0]!,
+          externalItemId: "compaction",
+          rawText: null,
+          sourceKind: "pi",
+          sourceRecordType: "compaction",
+          sourceEventType: "compaction",
+          rawJson: {
+            type: "pi_session_record",
+            sourceRecord: { type: "compaction", summary: "private summary" },
+            contentBlock: { type: "compaction", summary: "private summary" }
+          },
+          metadata: {}
+        },
+        {
+          ...source.items[0]!,
+          externalItemId: "unknown-control",
+          rawText: null,
+          sourceKind: "pi",
+          sourceRecordType: "thinking_level",
+          sourceEventType: "unknown",
+          rawJson: {
+            type: "pi_session_record",
+            sourceRecord: { type: "thinking_level", level: "xhigh" },
+            contentBlock: { type: "thinking_level", level: "xhigh" }
+          },
+          metadata: {}
+        }
+      ]
+    });
+
+    expect(items.map((item) => item.content)).toEqual(["Pi answer", "", ""]);
+    expect(JSON.stringify(items)).not.toContain("private summary");
+  });
+
+  it("exports a Claude completion control as contentless provenance", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      sourceRuntime: "claude-code",
+      sourceAdapter: "claude-code",
+      sourceAdapterVersion: "claude-code-transcript-v1",
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          sourceKind: "claude-code",
+          sourceRecordType: "hook_signal",
+          sourceEventType: "turn_completed",
+          rawJson: {
+            type: "hook_signal",
+            payload: {
+              type: "turn_completed",
+              sourceFrontierOffset: 42,
+              sourceFrontierLine: 3
+            }
+          },
+          metadata: {
+            sourceRuntime: "claude-code",
+            semanticControl: "turn_completed"
+          }
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("");
+    expect(item?.metadata).toEqual({ sourceRole: "system" });
+  });
+
+  it("uses the captured runtime when sourceKind is the generic Codex adapter", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      sourceRuntime: "codex-cli",
+      sourceAdapter: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          sourceKind: "codex",
+          rawJson: {
+            type: "response_item",
+            params: {
+              item: { type: "message", content: [{ text: "CLI answer" }] }
+            }
+          },
+          metadata: {}
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("CLI answer");
+  });
 });

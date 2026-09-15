@@ -173,9 +173,12 @@ export class PdsRelayClient {
         new Error(`PDS relay request failed: ${response.status}`),
         {
           name:
-            response.status >= 500 || response.status === 429
-              ? "PdsRelayRetryableError"
-              : "PdsRelayRejectedError",
+            response.status === 404
+              ? "PdsRelayNotFoundError"
+              : response.status >= 500 || response.status === 429
+                ? "PdsRelayRetryableError"
+                : "PdsRelayRejectedError",
+          statusCode: response.status,
           transient: response.status >= 500 || response.status === 429
         }
       );
