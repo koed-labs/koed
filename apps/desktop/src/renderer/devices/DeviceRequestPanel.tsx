@@ -130,7 +130,7 @@ export function DeviceRequestPanel({
   };
   return (
     <>
-      <div className="device-join-content">
+      <div className="device-request-content">
         <h3>
           {mode === "join"
             ? "Connect to an existing device"
@@ -147,7 +147,7 @@ export function DeviceRequestPanel({
               devices on the same LAN or Tailscale network.
             </p>
             {request?.link ? (
-              <label className="device-link-field">
+              <label className="device-join-field">
                 <span>Device request link</span>
                 <input
                   aria-label="Device request link"
@@ -156,6 +156,7 @@ export function DeviceRequestPanel({
                   value={request.link}
                 />
                 <button
+                  className="device-secondary-button device-request-copy"
                   type="button"
                   onClick={() => {
                     void window.koedDesktop?.clipboard
@@ -194,7 +195,7 @@ export function DeviceRequestPanel({
               Copy the request link from the other Electron app, or run{" "}
               <code>koed-server pair</code> on a headless device.
             </p>
-            <label className="device-link-field">
+            <label className="device-join-field">
               <span>Device request link</span>
               <input
                 aria-label="Device request link"
