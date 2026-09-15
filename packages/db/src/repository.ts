@@ -395,6 +395,7 @@ const mapLcmGraphThreadRow = (row: {
   thread_name: string;
   session_id: string | null;
   source_ai_client: SourceAiClient | null;
+  origin_device_id?: string | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -425,6 +426,7 @@ const mapLcmGraphThreadRow = (row: {
     name,
     sessionId: row.session_id,
     sourceAiClient: row.source_ai_client,
+    originDeviceId: row.origin_device_id ?? null,
     projectId: row.project_id,
     projectName: row.project_name,
     projectPath: row.project_path,
@@ -7947,8 +7949,23 @@ export const createMemorySourceRepository = (
           ) desc, thread_id desc
           limit $7 offset $8
         )
-        select *
+        , replica_origins as (
+          select distinct on (replica.local_session_id)
+            replica.local_session_id, observation.origin_device_id
+          from pds_logical_replicas replica
+          join ranked_threads page on page.session_id=replica.local_session_id
+          join pds_replica_observations observation on observation.replica_id=replica.id
+          where replica.owner_user_id=$1 and replica.materialization_state='ready'
+            and not exists (
+              select 1 from pds_session_closures local_source
+              where local_source.source_session_id=replica.local_session_id
+                and local_source.owner_user_id=$1
+            )
+          order by replica.local_session_id, observation.observed_at, observation.id
+        )
+        select ranked_threads.*, replica_origins.origin_device_id
         from ranked_threads
+        left join replica_origins on replica_origins.local_session_id=ranked_threads.session_id
         order by latest_at desc, thread_id desc
       `,
         [
@@ -7984,6 +8001,7 @@ export const createMemorySourceRepository = (
           name: thread.name,
           sessionId: thread.sessionId,
           sourceAiClient: thread.sourceAiClient,
+          originDeviceId: thread.originDeviceId,
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,

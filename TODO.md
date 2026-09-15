@@ -23,3 +23,15 @@ Deferred work:
 - Internet-accessible relay and restricted-network traversal.
 - Approval from joined replicas that do not host the Authority.
 - Moving the existing Authority relay listener into the supervisor.
+
+## Personal Device session visibility and automatic publication
+
+- Wire an explicit, trustworthy session-closure lifecycle into ordinary AI Client
+  capture and Personal Device publication. A completed turn alone must not freeze
+  a resumable session. Current replication smoke calls the close/publish API
+  explicitly and does not prove automatic capture-to-replication.
+- Validate the ordinary flow across Studio and Electron with a distinctive test
+  session, including its origin-device badge and transcript contents.
+
+Implemented: received-session badges use verified replica provenance and the
+installation-local nickname; device icons no longer guess hardware by row order.

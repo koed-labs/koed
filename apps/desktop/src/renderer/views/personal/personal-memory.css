@@ -3100,3 +3100,27 @@
   opacity: 0.5;
   cursor: default;
 }
+
+.personal-session-device-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 12rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  font-weight: 400;
+  vertical-align: middle;
+}
+.personal-session-device-badge > svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+}
+.personal-session-device-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -126,3 +126,19 @@ protocol and recovery operations, which require their own authentication and
 signed inputs. Previously advertised commands without implementations are no
 longer listed. The setup wizard's AI Client selection step keeps its integration
 checkboxes and Continue action without the redundant Continue explanation.
+
+Received sessions show a computer-icon-and-name badge in the session list and
+transcript header. The name uses this installation's nickname; unknown names fall
+back to a short device identifier. The badge comes from a verified, ready Personal
+Device replica observation, not transcript-supplied metadata. Local source sessions
+and quarantined replicas do not receive a remote-device badge. Devices uses a
+neutral computer icon because the pairing protocol does not carry hardware type.
+
+### Current session-publication boundary
+
+Pairing and active membership do not prove automatic session replication. The
+current source-publication entry point is the explicit session close/publish API;
+normal AI Client session completion is not yet wired to that operation. The
+replication smoke explicitly publishes synthetic sessions. Once received and
+projected, sessions appear in Personal Projects, potentially under Unassigned.
+An ordinary capture-to-automatic-publication test remains follow-up work.

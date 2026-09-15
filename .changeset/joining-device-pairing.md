@@ -17,3 +17,6 @@ joined.
 Remember reviewed device names and allow installation-local nicknames in Devices
 and device selectors. Simplify the AI Client setup copy and CLI help, and let
 Personal Sync status authenticate automatically on local SSH installations.
+
+Show a computer icon and local device nickname on received sessions, and use
+consistent computer icons in Devices instead of alternating laptop/phone icons.

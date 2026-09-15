@@ -3,13 +3,11 @@ import {
   Check,
   Clipboard,
   KeyRound,
-  Laptop,
+  Monitor,
   LoaderCircle,
-  MonitorSmartphone,
   Plus,
   Pencil,
   RefreshCw,
-  Smartphone,
   X
 } from "lucide-react";
 import {
@@ -180,7 +178,7 @@ function ModalFrame({
       <div className="device-modal" ref={panelRef} tabIndex={-1}>
         <header className="device-modal-header">
           <div>
-            <MonitorSmartphone aria-hidden="true" />
+            <Monitor aria-hidden="true" />
             <h2>{title}</h2>
           </div>
           <button
@@ -648,7 +646,7 @@ export function DevicesModal({
       ) : state === "join" || state === "joining" ? (
         <>
           <div className="device-join-content">
-            <Smartphone aria-hidden="true" />
+            <Monitor aria-hidden="true" />
             <div>
               <h3>Join your existing devices</h3>
               <p>
@@ -688,7 +686,7 @@ export function DevicesModal({
               {state === "joining" ? (
                 <LoaderCircle aria-hidden="true" />
               ) : (
-                <Laptop aria-hidden="true" />
+                <Monitor aria-hidden="true" />
               )}
               {state === "joining" ? "Connecting…" : "Connect device"}
             </button>
@@ -727,11 +725,7 @@ export function DevicesModal({
                 activeMembers.map((member, index) => (
                   <div className="device-row" key={member.device_id}>
                     <span>
-                      {index % 2 === 0 ? (
-                        <Laptop aria-hidden="true" />
-                      ) : (
-                        <Smartphone aria-hidden="true" />
-                      )}
+                      <Monitor aria-hidden="true" />
                     </span>
                     <div>
                       {editingDevice === member.device_id ? (
@@ -819,7 +813,7 @@ export function DevicesModal({
                 ))
               ) : (
                 <div className="device-empty-state">
-                  <MonitorSmartphone aria-hidden="true" />
+                  <Monitor aria-hidden="true" />
                   <div>
                     <strong>No Personal Device Group yet</strong>
                     <span>
@@ -863,7 +857,7 @@ export function DevicesModal({
                   }}
                   type="button"
                 >
-                  <Laptop aria-hidden="true" />
+                  <Monitor aria-hidden="true" />
                   Connect to an existing device
                 </button>
                 <button

@@ -744,7 +744,8 @@ const localPersonalMemoryOrigin = (value: unknown): string | null => {
 
 const personalProjectsData = (
   payload: Record<string, unknown>,
-  includeSubagents = false
+  includeSubagents = false,
+  deviceNames: Record<string, string> = {}
 ) => {
   const projects = Array.isArray(payload.projects) ? payload.projects : null;
   if (!projects) {
@@ -764,6 +765,15 @@ const personalProjectsData = (
           sessionId: thread.sessionId,
           logicalMemoryId: thread.logicalMemoryId,
           sourceAiClient: thread.sourceAiClient,
+          originDevice:
+            typeof thread.originDeviceId === "string"
+              ? {
+                  id: thread.originDeviceId,
+                  name:
+                    deviceNames[thread.originDeviceId] ??
+                    `Device ${thread.originDeviceId.slice(0, 8)}`
+                }
+              : null,
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,
@@ -2825,7 +2835,9 @@ export const createKoedServerManager = ({
           return { url, init: { method: "GET" } };
         },
         16 * 1_024 * 1_024
-      )
+      ),
+      false,
+      readPersonalDeviceNames(resolveKoedHome(environment))
     );
     await reconcileLocalProjectMetadata(projects.projects);
     return projects;

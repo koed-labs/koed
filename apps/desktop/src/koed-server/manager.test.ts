@@ -390,6 +390,10 @@ describe("Koed server desktop manager", () => {
       resolve(koedHome, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "personal_token" })
     );
+    writeFileSync(
+      resolve(koedHome, "config/personal-device-names.json"),
+      JSON.stringify({ AAAAAAAAAAAAAAAAAAAAAA: "Studio" })
+    );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -423,7 +427,24 @@ describe("Koed server desktop manager", () => {
                 id: "project",
                 name: "Koed",
                 path: projectPath,
-                threads: []
+                threads: [
+                  {
+                    id: "thread-1",
+                    name: "Studio session",
+                    sessionId: "00000000-0000-4000-8000-000000000001",
+                    originDeviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+                    sourceAiClient: "codex",
+                    projectId: "project",
+                    projectName: "Koed",
+                    projectPath,
+                    projectAssignmentSource: null,
+                    eventCount: 0,
+                    invalidatedCount: 0,
+                    latestAt: "2026-09-15T00:00:00.000Z",
+                    sample: "",
+                    presentation: null
+                  }
+                ]
               }
             ]
           }),
@@ -445,6 +466,30 @@ describe("Koed server desktop manager", () => {
       expect.objectContaining({ ok: true }),
       expect.objectContaining({ ok: true })
     ]);
+    await expect(
+      manager.personalMemory(listProjectsRequest)
+    ).resolves.toMatchObject({
+      data: {
+        projects: [
+          {
+            threads: [
+              { originDevice: { id: "AAAAAAAAAAAAAAAAAAAAAA", name: "Studio" } }
+            ]
+          }
+        ]
+      }
+    });
+    writeFileSync(
+      resolve(koedHome, "config/personal-device-names.json"),
+      JSON.stringify({ AAAAAAAAAAAAAAAAAAAAAA: "Office Studio" })
+    );
+    await expect(
+      manager.personalMemory(listProjectsRequest)
+    ).resolves.toMatchObject({
+      data: {
+        projects: [{ threads: [{ originDevice: { name: "Office Studio" } }] }]
+      }
+    });
     const metadataPath = resolve(koedHome, "config/projects.json");
     const firstMetadata = readFileSync(metadataPath, "utf8");
 

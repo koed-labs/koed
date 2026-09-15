@@ -402,7 +402,12 @@ describe("PersonalMemoryWorkspace", () => {
   });
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {
-    const source = project([thread(1, { sourceAiClient: "pi" })]);
+    const source = project([
+      thread(1, {
+        sourceAiClient: "pi",
+        originDevice: { id: "studio-id", name: "Studio" }
+      })
+    ]);
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-23T00:00:00.000Z",
@@ -470,6 +475,13 @@ describe("PersonalMemoryWorkspace", () => {
     ).toContain("route-project");
     expect(document.activeElement).toBe(heading);
     expect(container.textContent).toContain("2 invalidated");
+    expect(
+      container.querySelector(".personal-session-device-badge")?.textContent
+    ).toBe("Studio");
+    expect(
+      container.querySelector(".personal-session-device-badge .lucide-monitor")
+    ).not.toBeNull();
+
     expect(
       container.querySelector(".personal-session-row .lucide-brain")
     ).not.toBeNull();
@@ -919,7 +931,9 @@ describe("PersonalMemoryWorkspace", () => {
   });
 
   it("renames a Captured Session from the preview header", async () => {
-    const selected = thread(1);
+    const selected = thread(1, {
+      originDevice: { id: "studio-id", name: "Studio" }
+    });
     const source = project([selected]);
     const renamed = project([{ ...selected, name: "Release planning" }]);
     const listProjects = vi
@@ -950,6 +964,11 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain("Captured Session 1")
     );
 
+    expect(
+      container.querySelector(
+        ".personal-session-title-row .personal-session-device-badge"
+      )?.textContent
+    ).toBe("Studio");
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>(

@@ -38,6 +38,7 @@ import {
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
+  Monitor,
   Paperclip,
   Pencil,
   Pin,
@@ -566,6 +567,23 @@ function ProjectsPane({
   );
 }
 
+function SessionDeviceBadge({
+  thread
+}: {
+  thread: PersonalDesktopProjectThread;
+}) {
+  if (!thread.originDevice) return null;
+  return (
+    <span
+      className="personal-session-device-badge"
+      title={`Personal device: ${thread.originDevice.name}`}
+    >
+      <Monitor aria-hidden="true" />
+      <span>{thread.originDevice.name}</span>
+    </span>
+  );
+}
+
 function SessionRow({
   actionsOpen,
   busy,
@@ -616,6 +634,7 @@ function SessionRow({
         <span className="personal-session-copy">
           <span>
             <strong>{thread.name || "Untitled session"}</strong>
+            <SessionDeviceBadge thread={thread} />
             {presentation.pinnedAt ? <small>Pinned</small> : null}
             {presentationStatus === "snoozed" ? <small>Snoozed</small> : null}
             {presentation.displayMode === "active" ? (
@@ -3572,6 +3591,7 @@ function SessionDetail({
               <h2 data-personal-route-focus="session" tabIndex={-1}>
                 {title}
               </h2>
+              <SessionDeviceBadge thread={thread} />
               {thread.sessionId ? (
                 <button
                   aria-label="Rename Captured Session"
