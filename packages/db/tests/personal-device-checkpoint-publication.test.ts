@@ -322,6 +322,12 @@ describeDb("PDS automatic checkpoint publication", () => {
       [checkpointRows.rows[1]!.id]
     );
     await expect(
+      localRepository.getPdsOutboxEncryptedEnvelope({
+        workerId: "active-worker",
+        outboxId: checkpointRows.rows[1]!.id
+      })
+    ).resolves.toMatchObject({ groupId, userId });
+    await expect(
       localRepository.refreshPdsCheckpointRecipients({ userId, groupId })
     ).resolves.toBe(1);
     const requeued = await pool.query<{

@@ -784,8 +784,9 @@ export const createPersonalDeviceSyncLocalRepository = (
       owner_user_id: string;
       encrypted_envelope: unknown;
     }>(
-      `select c.group_id,c.owner_user_id,r.encrypted_envelope
+      `select g.group_id,c.owner_user_id,r.encrypted_envelope
        from pds_outbox_entries o join pds_session_closures c on c.id=o.closure_id
+       join personal_device_groups g on g.id=c.group_id
        join pds_retained_packages r on r.group_id=c.group_id and r.package_id=c.package_id
        where o.id=$1 and o.lease_owner=$2 and o.lease_until>=now()`,
       [input.outboxId, input.workerId]
