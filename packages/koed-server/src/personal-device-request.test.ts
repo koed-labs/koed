@@ -8,7 +8,8 @@ import {
   startDeviceRequestService,
   deviceRequestCommand,
   exchangeDeviceRequest,
-  parseDeviceRequestLink
+  parseDeviceRequestLink,
+  resolveDeviceRequestHost
 } from "./personal-device-request.js";
 import { encryptPersonalDevicePairingMessage } from "./personal-device-request-crypto.js";
 
@@ -188,5 +189,43 @@ describe.skipIf(!addresses.length)("supervisor device requests", () => {
     expect(
       JSON.stringify(await deviceRequestCommand(paths, "status"))
     ).not.toContain("secret");
+  });
+});
+describe("device request interface selection", () => {
+  it("prefers an explicit host over automatic selection on a dual-interface device", () => {
+    // "10." sorts before "100." lexicographically, so automatic selection
+    // would otherwise pick the LAN address even when only Tailscale is
+    // reachable from the Authority device.
+    expect(
+      resolveDeviceRequestHost("100.90.1.2", ["10.0.0.5", "100.90.1.2"])
+    ).toBe("100.90.1.2");
+  });
+  it("falls back to automatic selection when no host is configured", () => {
+    expect(
+      resolveDeviceRequestHost(undefined, ["100.90.1.2", "10.0.0.5"])
+    ).toBe("10.0.0.5");
+  });
+  it("rejects a configured host that is not a private IPv4 address", () => {
+    expect(() => resolveDeviceRequestHost("8.8.8.8", ["10.0.0.5"])).toThrow(
+      "private IPv4"
+    );
+  });
+  it("wires an explicit host through the running service into the request link", async () => {
+    const home = mkdtempSync("/tmp/koed-request-");
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    if (!addresses.length) return;
+    const pinned = addresses[0]!;
+    const service = await startDeviceRequestService({
+      paths,
+      redeem: vi.fn(async () => {}),
+      enrolled: vi.fn(async () => false),
+      addresses: () => addresses,
+      host: pinned
+    });
+    cleanups.push(() => service.close());
+    const request = await deviceRequestCommand(paths, "create", "Studio");
+    expect(new URL(request.link!).hostname).toBe(pinned);
   });
 });

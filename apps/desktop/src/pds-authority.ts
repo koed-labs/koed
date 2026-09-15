@@ -30,7 +30,14 @@ const validAuthoritySecret = (value: string): boolean => {
 };
 
 export const ensurePdsDesktopAuthority = async (
-  store: PdsDesktopSecretStore
+  store: PdsDesktopSecretStore,
+  options?: {
+    /** True when secret state from a pre-capability-pairing installation
+     * exists outside this store. That state is never migrated (see ADR
+     * 0044), so minting a new Authority key here would silently orphan an
+     * existing Personal Device Group instead of failing visibly. */
+    legacyStateDetected?: boolean;
+  }
 ): Promise<void> => {
   const existing = await store.get(PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE);
   if (existing) {
@@ -38,6 +45,15 @@ export const ensurePdsDesktopAuthority = async (
       throw new Error("Stored PDS Authority key is invalid.");
     }
     return;
+  }
+  if (options?.legacyStateDetected) {
+    throw new Error(
+      "Detected pre-upgrade PDS secret state with no Authority key in the " +
+        "current store. Refusing to create a new Authority key automatically, " +
+        "since that would leave an existing Personal Device Group unreachable. " +
+        "See docs/configuration.md#personal-device-request-startup for the " +
+        "explicit reset path."
+    );
   }
   const key = generateKeyPairSync("ed25519").privateKey.export({
     format: "jwk"

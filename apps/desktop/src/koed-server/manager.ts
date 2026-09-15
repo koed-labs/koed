@@ -2206,6 +2206,9 @@ export const createKoedServerManager = ({
         return await personalDevicePairingServerStart;
       personalDevicePairingServerStart = startPairingServer({
         port: resolvePersonalDevicePairingPort(environment.KOED_PDS_LAN_PORT),
+        ...(environment.KOED_PDS_LAN_HOST?.trim()
+          ? { host: environment.KOED_PDS_LAN_HOST.trim() }
+          : {}),
         ...(personalDevicePairingStore
           ? { persistence: personalDevicePairingStore }
           : {}),

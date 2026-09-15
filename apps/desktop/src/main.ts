@@ -464,7 +464,12 @@ const bootstrap = async () => {
       koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
       if (persistentPdsStore) {
         try {
-          await ensurePdsDesktopAuthority(persistentPdsStore);
+          const legacyStateDetected = existsSync(
+            resolve(app.getPath("userData"), "pds-secrets.json")
+          );
+          await ensurePdsDesktopAuthority(persistentPdsStore, {
+            legacyStateDetected
+          });
           koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
             persistentPdsStore.providerKind;
           const runtimeReference =
@@ -472,11 +477,14 @@ const bootstrap = async () => {
           koedEnvironment.PDS_AUTHORITY_SECRET_REF =
             PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
           koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
-        } catch {
+        } catch (error) {
           koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
           delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
           console.warn(
-            "PDS local device storage is unavailable; Local Memory remains available."
+            error instanceof Error &&
+              error.message.startsWith("Detected pre-upgrade PDS")
+              ? error.message
+              : "PDS local device storage is unavailable; Local Memory remains available."
           );
         }
       } else {

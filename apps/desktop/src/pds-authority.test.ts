@@ -39,4 +39,32 @@ describe("PDS Desktop Authority provisioning", () => {
     ).rejects.toThrow("Authority key is invalid");
     expect(put).not.toHaveBeenCalled();
   });
+
+  it("fails closed instead of minting a new authority key over legacy pre-upgrade state", async () => {
+    const put = vi.fn();
+    await expect(
+      ensurePdsDesktopAuthority(
+        {
+          get: async () => null,
+          put,
+          delete: vi.fn()
+        },
+        { legacyStateDetected: true }
+      )
+    ).rejects.toThrow("Detected pre-upgrade PDS secret state");
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("still creates a fresh authority key on a genuinely new installation", async () => {
+    const values = new Map<string, string>();
+    const store = {
+      get: vi.fn(async (reference: string) => values.get(reference) ?? null),
+      put: vi.fn(async (reference: string, value: string) => {
+        values.set(reference, value);
+      }),
+      delete: vi.fn()
+    };
+    await ensurePdsDesktopAuthority(store, { legacyStateDetected: false });
+    expect(store.put).toHaveBeenCalledTimes(1);
+  });
 });

@@ -26,3 +26,11 @@ capture, keeping source conversations resumable and received sessions read-only.
 Preserve source client identity and append later checkpoints to the same local
 session. Show pairing separately from local sync progress. Both devices need
 this checkpoint-capable version; existing closed-session packages remain valid.
+
+Refuse to mint a new PDS Authority key over undetected legacy pre-upgrade
+secret state, instead of silently orphaning an existing Personal Device Group;
+Personal Device Sync is disabled with a warning until the installation is
+explicitly reset. Add `KOED_PDS_REQUEST_HOST` and `KOED_PDS_LAN_HOST` to pin
+the pairing/request listener to one explicit private interface on devices
+reachable over more than one (for example LAN plus Tailscale), where automatic
+selection is not reachability-aware.

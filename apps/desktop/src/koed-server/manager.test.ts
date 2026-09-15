@@ -2968,6 +2968,10 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         {
           authorization: desktop.authorization,
           url: "http://127.0.0.1:3300/v1/personal-device-sync/groups"
+        },
+        {
+          authorization: desktop.authorization,
+          url: "http://127.0.0.1:3300/v1/personal-device-sync/groups/group-one/local-status"
         }
       ]);
       expect(startPairingServer).toHaveBeenCalledTimes(1);
@@ -2991,6 +2995,75 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       expect(
         existsSync(resolve(koedHome, "run", PDS_PEER_ENDPOINT_RUNTIME_FILE))
       ).toBe(false);
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards an explicit KOED_PDS_LAN_HOST to the pairing server on a dual-interface device", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-pds-host-"));
+    const ownerUserId = "00000000-0000-4000-8000-000000000004";
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const startPairingServer = vi.fn(async () => ({
+      port: 3310,
+      relayUrl: "http://100.90.1.2:3310/pds",
+      createInvitation: vi.fn(),
+      waitForRequest: vi.fn(),
+      claimApproval: vi.fn(),
+      approve: vi.fn(),
+      waitForCompletion: vi.fn(),
+      cancel: vi.fn(),
+      inspect: vi.fn(() => []),
+      close: vi.fn(async () => undefined)
+    }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome, KOED_PDS_LAN_HOST: "100.90.1.2" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args[1] === "stop") {
+          callback(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async () =>
+        new Response(
+          JSON.stringify({
+            groups: [{ group_id: "group-one", members: [] }],
+            pairing_invitation_group_ids: ["group-one"]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )) as typeof fetch
+    });
+    try {
+      await manager.handlers.personal_sync_status!();
+      expect(startPairingServer).toHaveBeenCalledWith(
+        expect.objectContaining({ host: "100.90.1.2" })
+      );
+    } finally {
+      await manager.stop();
       rmSync(koedHome, { recursive: true, force: true });
     }
   });

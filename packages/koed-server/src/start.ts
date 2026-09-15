@@ -1429,6 +1429,7 @@ export const startKoedServer = async ({
     ) {
       deviceRequestService = await startDeviceRequestService({
         paths,
+        host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,
         enrolled: () =>
           Boolean(
             createPdsApplicationSecretStore({ rootPath: paths.koedHome }).get(

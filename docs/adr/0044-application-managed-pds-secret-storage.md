@@ -47,7 +47,12 @@ this boundary.
 Existing Electron OS-store state and branch-created `keytar` entries are not
 migrated or silently deleted. A fresh `KOED_HOME` and device re-enrollment are
 valid alpha reset paths. Legacy state remains outside the new store until an
-explicit cleanup operation exists.
+explicit cleanup operation exists. Because there is no migration, Desktop
+startup refuses to mint a new Authority key when it detects a legacy
+`pds-secrets.json` and no Authority secret in the current store: doing so
+automatically would silently orphan an existing Personal Device Group under a
+key the rest of the group no longer recognizes. See
+[Upgrading an existing installation](../configuration.md#upgrading-an-existing-installation).
 
 ## Consequences
 

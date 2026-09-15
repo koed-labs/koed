@@ -207,6 +207,28 @@ export const exchangeDeviceRequest = async (
   return result.value;
 };
 
+/**
+ * Resolve one concrete private IPv4 interface address for the request link.
+ * An explicit `configuredHost` always wins, so an Operator on a device with
+ * more than one reachable private interface (for example LAN plus Tailscale)
+ * can pin the one the Authority device can actually reach, rather than
+ * relying on automatic selection, which is not reachability-aware.
+ */
+export const resolveDeviceRequestHost = (
+  configuredHost: string | undefined,
+  addresses: readonly string[]
+): string | undefined => {
+  const trimmed = configuredHost?.trim();
+  if (trimmed) {
+    if (!isPrivateNetworkIpv4Address(trimmed))
+      throw new Error(
+        "Request service host must be a private IPv4 interface address."
+      );
+    return trimmed;
+  }
+  return [...addresses].filter(isPrivateNetworkIpv4Address).sort()[0];
+};
+
 /** Owned by the local supervisor. Local controls use an owner-only Unix socket;
  * only the bounded encrypted request exchange is reachable on a private interface. */
 export const startDeviceRequestService = async (options: {
@@ -218,6 +240,11 @@ export const startDeviceRequestService = async (options: {
   ) => Promise<void>;
   enrolled: () => boolean | Promise<boolean>;
   addresses?: () => string[];
+  /** Explicit private IPv4 interface for the request link, overriding
+   * automatic selection. Required on devices with more than one reachable
+   * private interface (for example LAN plus Tailscale) where the Authority
+   * device cannot reach every candidate address. */
+  host?: string;
 }) => {
   const { paths } = options;
   const store = createPdsApplicationSecretStore({ rootPath: paths.koedHome });
@@ -435,15 +462,16 @@ export const startDeviceRequestService = async (options: {
             );
           if (!pending || !["waiting", "connecting"].includes(pending.state)) {
             await closePublic();
-            const addresses =
+            const availableAddresses =
               options.addresses?.() ??
               Object.values(networkInterfaces())
                 .flatMap((entries) => entries ?? [])
                 .filter((entry) => entry.family === "IPv4" && !entry.internal)
                 .map((entry) => entry.address);
-            const host = addresses
-              .filter(isPrivateNetworkIpv4Address)
-              .sort()[0];
+            const host = resolveDeviceRequestHost(
+              options.host,
+              availableAddresses
+            );
             if (!host)
               throw new Error(
                 "Connect to a private LAN or Tailscale network before pairing."
