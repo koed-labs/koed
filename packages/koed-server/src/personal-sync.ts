@@ -1519,6 +1519,7 @@ const status = async (
         ok: true,
         state: "backend",
         message: "Personal Sync status is Authority-owned.",
+        local_device_id: runtime?.device.id ?? null,
         groups,
         pairing_invitation_group_ids:
           response.pairing_invitation_group_ids as string[]
@@ -1550,6 +1551,7 @@ const status = async (
   return {
     ok: true,
     state: "runtime_cached",
+    local_device_id: runtime.device.id,
     message:
       "Personal Sync status is using the last cryptographically verified Authority state.",
     pairing_invitation_group_ids: [],

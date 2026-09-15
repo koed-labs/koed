@@ -972,6 +972,24 @@ describe("Personal Sync control client", () => {
             groups: [],
             pairing_invitation_group_ids: []
           });
+          await expect(
+            runPersonalSyncCommand(
+              ["status"],
+              pathsFor(directory),
+              {
+                ...controlEnv(statusSessionFd),
+                PDS_RUNTIME_SECRET_REF: "pds-runtime"
+              },
+              {
+                fetch: (() =>
+                  response({
+                    groups: [{ group_id: result.groupId }],
+                    pairing_invitation_group_ids: []
+                  })) as never,
+                getSecret: () => stored.at(-1)?.value ?? null
+              }
+            )
+          ).resolves.toMatchObject({ local_device_id: result.deviceId });
         } finally {
           closeSync(statusSessionFd);
         }

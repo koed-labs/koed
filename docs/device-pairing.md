@@ -41,7 +41,9 @@ Electron use the same supervisor-owned request state and enrollment client.
 
 A fresh installation can instead choose **Set up device sync** to create the
 first group. This no longer downloads a recovery kit, displays a recovery code,
-or requires an acknowledgment about storing a secret. Without a separately
+or requires an acknowledgment about storing a secret. The new group initially
+contains only **This device**; setup does not connect another installation.
+Choose **Add device** to connect Studio or another Electron installation. Without a separately
 exported recovery kit, losing every enrolled installation loses group control;
 create a new group in that case. Existing optional CLI recovery-kit operations
 remain available for Operators who deliberately use them.

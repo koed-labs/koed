@@ -354,6 +354,7 @@ export function DevicesModal({
   onClose: () => void;
   onPairingLinkConsumed?: () => void;
 }) {
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [pairingInvitationGroupIds, setPairingInvitationGroupIds] = useState<
     string[]
@@ -380,6 +381,9 @@ export function DevicesModal({
     setError(null);
     try {
       const result = await invoke("personal_sync_status");
+      const deviceId = (result as { local_device_id?: unknown } | null)
+        ?.local_device_id;
+      setLocalDeviceId(typeof deviceId === "string" ? deviceId : null);
       setGroups(parseGroups(result));
       setPairingInvitationGroupIds(parsePairingInvitationGroupIds(result));
       setState((current) =>
@@ -702,6 +706,12 @@ export function DevicesModal({
                 <RefreshCw aria-hidden="true" />
               </button>
             </div>
+            {activeMembers.length === 1 &&
+            activeMembers[0]?.device_id === localDeviceId ? (
+              <p>
+                No other devices connected yet. Add a device to start syncing.
+              </p>
+            ) : null}
             <div className="device-list">
               {activeMembers.length ? (
                 activeMembers.map((member, index) => (
@@ -714,8 +724,16 @@ export function DevicesModal({
                       )}
                     </span>
                     <div>
-                      <strong>{deviceName(member.device_id, index)}</strong>
-                      <small>Connected</small>
+                      <strong>
+                        {member.device_id === localDeviceId
+                          ? "This device"
+                          : deviceName(member.device_id, index)}
+                      </strong>
+                      <small>
+                        {member.device_id === localDeviceId
+                          ? "Ready to sync"
+                          : "Connected"}
+                      </small>
                     </div>
                     <Check aria-label="Active" />
                   </div>

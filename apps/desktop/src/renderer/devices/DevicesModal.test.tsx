@@ -21,6 +21,7 @@ const pairing = {
 };
 
 const status = {
+  local_device_id: "device-1",
   pairing_invitation_group_ids: ["group-1"],
   groups: [
     {
@@ -84,7 +85,8 @@ describe("Devices modal", () => {
       root.render(<DevicesModal invoke={invoke as never} onClose={vi.fn()} />);
       await Promise.resolve();
     });
-    expect(container.textContent).toContain("Device 1");
+    expect(container.textContent).toContain("This device");
+    expect(container.textContent).toContain("No other devices connected yet");
     await click(
       [...container.querySelectorAll("button")].find((button) =>
         button.textContent?.includes("Add device")

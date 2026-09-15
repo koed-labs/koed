@@ -7,6 +7,30 @@ const groupId = "AAAAAAAAAAAAAAAAAAAAAA";
 const sessionId = "00000000-0000-4000-8000-000000000001";
 
 describe("joined device local publication", () => {
+  it("shows an empty device overview before an Authority is configured", async () => {
+    const listPersonalDeviceGroups = vi.fn(async () => []);
+    const app = Fastify();
+    registerPersonalDeviceSyncRoutes(app, {
+      requireRepository: () => ({ listPersonalDeviceGroups }),
+      rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} },
+      auth: { authenticateSession: async () => ({ id: "owner" }) },
+      personalDeviceSync: { authoritySigner: null }
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/personal-device-sync/groups"
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({
+        groups: [],
+        pairing_invitation_group_ids: []
+      });
+      expect(listPersonalDeviceGroups).toHaveBeenCalledWith("owner");
+    } finally {
+      await app.close();
+    }
+  });
   it("publishes and controls its local queue without an Authority private key", async () => {
     const repository = {
       closePdsSourceSession: vi.fn(async () => ({

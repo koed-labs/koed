@@ -852,7 +852,7 @@ export const registerPersonalDeviceSyncRoutes = (
     "/v1/personal-device-sync/groups",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      const signer = pdsAuthority(context);
+      const signer = context.personalDeviceSync.authoritySigner;
       const user = await sessionUser(request);
       const groups = await repo().listPersonalDeviceGroups(user.id);
       return {
@@ -860,6 +860,7 @@ export const registerPersonalDeviceSyncRoutes = (
         pairing_invitation_group_ids: groups
           .filter(
             (group) =>
+              signer &&
               group.authorityKeyId === signer.keyId &&
               group.authorityPublicKey === signer.publicKey
           )
