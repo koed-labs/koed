@@ -557,19 +557,33 @@ export const inspectClaudeCode = (
   };
 };
 
+const withFetchTimeout = (
+  fetcher: typeof fetch,
+  timeoutMs: number = 5000
+): typeof fetch => {
+  return async (url, init) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetcher(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`API request timeout after ${timeoutMs}ms. Is koed-server running?`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+};
+
 const fetchJson = async <T>(
   url: string,
   fetcher: typeof fetch,
   init?: RequestInit
 ): Promise<{ ok: boolean; status: number; body: T | null; error?: string }> => {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const response = await fetcher(url, {
-      ...init,
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
+    const response = await fetcher(url, init);
     const text = await response.text();
     return {
       ok: response.ok,
@@ -2325,6 +2339,7 @@ export const collectKoedServerStartupStatus = async (
   ensureKoedHome(paths);
   environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
+  const fetcher = withFetchTimeout(deps.fetch);
   const runtime = readJsonFile<KoedServerRuntimeState>(
     paths.runtimeStatePath,
     deps.readFileSync
@@ -2357,7 +2372,7 @@ export const collectKoedServerStartupStatus = async (
   const apiReady =
     desktopOwnedRuntime && !runtimeProcessRunning
       ? statusWaitingForManagedRuntime(Boolean(runtime))
-      : await statusFromApiReady(apiUrl, deps.fetch, {
+      : await statusFromApiReady(apiUrl, fetcher, {
           dependencyMode: serverConfig.dependencyMode,
           apiHealthyWhenReachable: true
         });
@@ -2369,7 +2384,7 @@ export const collectKoedServerStartupStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    deps.fetch
+    fetcher
   );
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
@@ -2446,7 +2461,7 @@ export const collectKoedServerStartupStatus = async (
           serviceEnvironment,
           {
             existsSync: deps.existsSync,
-            fetch: deps.fetch
+            fetch: fetcher
           }
         )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
@@ -2459,7 +2474,7 @@ export const collectKoedServerStartupStatus = async (
           ? await inspectExternalPrivacyService(
               externalPrivacyServiceUrl,
               privacyControlToken,
-              deps.fetch
+              fetcher
             )
           : notConfigured(
               "External Privacy Filter Service URL is not configured.",
@@ -2508,6 +2523,7 @@ export const collectKoedServerStatus = async (
   ensureKoedHome(paths);
   environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
+  const fetcher = withFetchTimeout(deps.fetch);
   const runtime = readJsonFile<KoedServerRuntimeState>(
     paths.runtimeStatePath,
     deps.readFileSync
@@ -2561,7 +2577,7 @@ export const collectKoedServerStatus = async (
   const apiReady =
     runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning
       ? statusWaitingForManagedRuntime(Boolean(runtime))
-      : await statusFromApiReady(apiUrl, deps.fetch, {
+      : await statusFromApiReady(apiUrl, fetcher, {
           dependencyMode: serverConfig.dependencyMode
         });
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
@@ -2572,14 +2588,14 @@ export const collectKoedServerStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    deps.fetch
+    fetcher
   );
   const capabilityReadModel = await fetchAiClientCapabilityReadModel(
     paths,
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    deps.fetch
+    fetcher
   );
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
@@ -2684,7 +2700,7 @@ export const collectKoedServerStatus = async (
     apiReady.embeddingService.state === "starting"
       ? await collectLocalEmbeddingRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
-          fetch: deps.fetch
+          fetch: fetcher
         })
       : apiReady.embeddingService;
   const externalPrivacyServiceUrl =
@@ -2707,7 +2723,7 @@ export const collectKoedServerStatus = async (
       ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
         (await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
-          fetch: deps.fetch
+          fetch: fetcher
         })))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
@@ -2719,7 +2735,7 @@ export const collectKoedServerStatus = async (
           ? await inspectExternalPrivacyService(
               externalPrivacyServiceUrl,
               privacyControlToken,
-              deps.fetch
+              fetcher
             )
           : notConfigured(
               "External Privacy Filter Service URL is not configured.",
