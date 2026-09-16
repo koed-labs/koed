@@ -248,16 +248,19 @@ To start fresh with a new `KOED_HOME` and reset all local enrollment, memory, an
 runtime state, follow this sequence:
 
 1. **Stop Koed services:**
+
    ```bash
    koed-server stop
    ```
 
 2. **Remove local runtime state:**
+
    ```bash
    rm -rf ~/.koed
    ```
 
 3. **Desktop only:** Remove Electron-managed state (necessary if using Koed Desktop):
+
    ```bash
    # macOS
    rm -rf ~/Library/Application\ Support/Koed

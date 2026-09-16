@@ -1,11 +1,11 @@
 # Handoff: Unify PDS Secret Storage Across Electron and Headless CLI
 
 Status: Storage and capability-pairing implementations complete; static/unit
-validation passed; Desktop live validation complete; Studio SSH-only and 
-process-crash E2E pending. Desktop evidence: macOS fresh setup, pds-authority 
-provisioned to KOED_HOME/secrets without Keychain, full stop/restart cycle with 
-decryption success and device identity proof verification; secret-provider 
-round-trip and pair lifecycle (waiting → cancelled) operational; no keytar in 
+validation passed; Desktop live validation complete; Studio SSH-only and
+process-crash E2E pending. Desktop evidence: macOS fresh setup, pds-authority
+provisioned to KOED_HOME/secrets without Keychain, full stop/restart cycle with
+decryption success and device identity proof verification; secret-provider
+round-trip and pair lifecycle (waiting → cancelled) operational; no keytar in
 manifests/lockfile.
 
 ## Task
