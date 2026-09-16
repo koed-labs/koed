@@ -336,7 +336,7 @@ const checkCoreSetupNeeded = (
   if (!existsSync(paths.localAppCredentialPath)) {
     return `Core setup is required. Run:
 
-  koed-server setup core --json
+  koed-server setup core
 
 This will provision your local API Token and prepare Koed services.`;
   }
@@ -353,7 +353,7 @@ const getNoAgentsWarning = (status: {
     status.claudeCode?.configured ||
     status.pi?.configured;
   if (!anyConfigured) {
-    return "No AI Clients configured. Run: koed-server setup codex --json, setup claude --json, or setup pi --json";
+    return "No AI Clients configured. Run: koed-server setup codex, setup claude, or setup pi";
   }
   return null;
 };
