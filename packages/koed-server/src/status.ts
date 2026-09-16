@@ -569,7 +569,8 @@ const withFetchTimeout = (
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(
-          `API request timeout after ${timeoutMs}ms. Is koed-server running?`
+          `API request timeout after ${timeoutMs}ms. Is koed-server running?`,
+          { cause: error }
         );
       }
       throw error;
