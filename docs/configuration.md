@@ -308,6 +308,28 @@ with opaque references and must preserve the same no-plaintext boundary.
 Never set raw `PDS_AUTHORITY_*`, group keys, recovery material, private keys,
 passwords, or `env://` PDS secret values.
 
+### Secret provider CLI
+
+The bundled `koed-server secret-provider` command is the internal runtime
+provider that services invoke to retrieve PDS secrets. It is not a general-purpose
+secret manager. Usage is strictly three arguments:
+
+```bash
+koed-server secret-provider get <reference>
+koed-server secret-provider put <reference>
+koed-server secret-provider delete <reference>
+```
+
+`get` reads from the store and writes the plaintext value to stdout.
+`put` reads the plaintext value from standard input and stores it.
+`delete` removes the reference from the store.
+The command does not accept `--json` output formatting.
+
+This is a Koed-internal diagnostic and runtime interface. Do not call it from
+external scripts or use it as a credential manager. Operators inspecting state
+may invoke it during troubleshooting; missing or inaccessible provider commands
+trigger fail-closed PDS behavior as documented in [Running Koed](running-koed.md#personal-device-sync-local-data-plane).
+
 PDS secret state is not migrated from prior Electron `pds-secrets.json` files
 or branch-created OS credential-store entries. Fresh alpha setup may use a new
 `KOED_HOME`; re-enroll devices when changing store state. Koed does not silently

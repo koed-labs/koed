@@ -1,8 +1,12 @@
 # Handoff: Unify PDS Secret Storage Across Electron and Headless CLI
 
 Status: Storage and capability-pairing implementations complete; static/unit
-validation passed; root DB-backed and Studio live validation pending. No live
-process-crash or crash-restart E2E is claimed.
+validation passed; Desktop live validation complete; Studio SSH-only and 
+process-crash E2E pending. Desktop evidence: macOS fresh setup, pds-authority 
+provisioned to KOED_HOME/secrets without Keychain, full stop/restart cycle with 
+decryption success and device identity proof verification; secret-provider 
+round-trip and pair lifecycle (waiting → cancelled) operational; no keytar in 
+manifests/lockfile.
 
 ## Task
 
@@ -145,7 +149,7 @@ The implementation agent should reconcile this change with the proposal's config
 ## Acceptance criteria
 
 - [x] Standalone/headless `koed-server` can perform PDS secret get/put/delete without `keytar`, Keychain, D-Bus, Electron, or an interactive session.
-- [ ] SSH-only pairing completes on studio using `personal-sync join redeem --link-stdin` or `--link-fd`.
+- [ ] SSH-only pairing completes on Studio using `personal-sync join redeem --link-stdin` or `--link-fd`; process-crash and restart E2E.
 - [x] Electron/Desktop and headless use the same application-managed secret-store contract and documented state model.
 - [x] PDS secrets never appear in process arguments, environment variables, logs, queue payloads, or ordinary world/group-readable files.
 - [x] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and restart behavior are covered by shared store and provider tests; platform crash injection remains pending. Pairing recovery ordering, startup resume, bounded final replay, and failure cleanup are covered by unit/regression tests only.
@@ -155,9 +159,10 @@ The implementation agent should reconcile this change with the proposal's config
 - [x] `/docs` documentation reflects provider/storage model, claimed recovery,
       startup resume, bounded final replay, loopback-scoped local auth, transient
       FD handling, capability pairing, and SSH setup.
-- [ ] Root DB-backed verification and Studio pairing E2E pass. Package-scoped
-      static/unit tests, Desktop/server typechecks, and changed-doc Prettier
-      checks pass as recorded above; no live crash E2E is claimed.
+- [ ] Studio SSH-only pairing completes end-to-end with successful enrollment;
+      process-crash and OS restart E2E pass. Package-scoped static/unit tests,
+      Desktop/server typechecks, and changed-doc Prettier checks pass as
+      recorded above; Desktop live validation complete as of this branch run.
 
 ## Constraints
 

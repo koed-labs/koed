@@ -242,6 +242,54 @@ remote requests kept outside the locked mutation phase. Browser approval and
 upstream-side device credential revocation remain browser/session-mediated
 local-edge flows.
 
+## Reset local state / start fresh
+
+To start fresh with a new `KOED_HOME` and reset all local enrollment, memory, and
+runtime state, follow this sequence:
+
+1. **Stop Koed services:**
+   ```bash
+   koed-server stop
+   ```
+
+2. **Remove local runtime state:**
+   ```bash
+   rm -rf ~/.koed
+   ```
+
+3. **Desktop only:** Remove Electron-managed state (necessary if using Koed Desktop):
+   ```bash
+   # macOS
+   rm -rf ~/Library/Application\ Support/Koed
+
+   # Linux
+   rm -rf ~/.config/Koed ~/.local/share/Koed
+
+   # Windows
+   # %APPDATA%/Koed
+   ```
+
+4. **Source checkout only:** Reset environment:
+   ```bash
+   # Unset all injected values to re-run env:setup
+   unset API_DATA_ENCRYPTION_KEY API_TOKEN_PEPPER EMBEDDING_SERVICE_TOKEN \
+     PRIVACY_SERVICE_TOKEN POSTGRES_PASSWORD DATABASE_URL REDIS_URL \
+     EMBEDDING_SERVICE_URL
+   rm .env
+   pnpm env:setup
+   ```
+
+The fail-closed legacy-Authority behavior (documented in
+[Configuration](configuration.md#personal-device-sync-v1-authority-configuration))
+ends with exactly these reset steps: stop the service, remove `~/.koed`, remove
+Desktop state (if applicable), and start fresh with a new `KOED_HOME`. This is
+also the recovery path for device-identity issues or corrupted local state.
+
+First boot takes a few minutes: the Embedding Service and Privacy Filter model
+files download (~640 MB total), Postgres initializes, and the supervisor starts
+managed services. Watch progress with `koed-server status --json` or tail
+`~/.koed/logs/supervisor.log` to see startup milestones.
+
 ## Personal Device Sync local data plane
 
 PDS local source publication is opt-in. Browser-authenticated PDS close/status/
