@@ -563,7 +563,13 @@ const fetchJson = async <T>(
   init?: RequestInit
 ): Promise<{ ok: boolean; status: number; body: T | null; error?: string }> => {
   try {
-    const response = await fetcher(url, init);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetcher(url, {
+      ...init,
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
     const text = await response.text();
     return {
       ok: response.ok,
