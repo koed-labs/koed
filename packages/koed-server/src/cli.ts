@@ -343,6 +343,21 @@ This will provision your local API Token and prepare Koed services.`;
   return null;
 };
 
+const getNoAgentsWarning = (status: {
+  codex?: { configured?: boolean };
+  claudeCode?: { configured?: boolean };
+  pi?: { configured?: boolean };
+}): string | null => {
+  const anyConfigured =
+    status.codex?.configured ||
+    status.claudeCode?.configured ||
+    status.pi?.configured;
+  if (!anyConfigured) {
+    return "No AI Clients configured. Run: koed-server setup codex --json, setup claude --json, or setup pi --json";
+  }
+  return null;
+};
+
 type SpawnLike = typeof nodeSpawn;
 
 export interface KoedServerStartDaemonResult {
@@ -643,13 +658,20 @@ export const runKoedServerCli = async (
         stderr.write(`${setupNeeded}\n`);
         return 1;
       }
-      const status = args.includes("--startup")
+      const isStartup = args.includes("--startup");
+      const status = isStartup
         ? await collectStartupStatus()
         : await collectStatus();
       if (wantsJson) {
         printJson(stdout, status);
       } else {
         stdout.write(`${status.state}\n`);
+        if (!isStartup && "codex" in status) {
+          const warning = getNoAgentsWarning(
+            status as typeof status & { codex: { configured: boolean } }
+          );
+          if (warning) stdout.write(`Warning: ${warning}\n`);
+        }
       }
       return 0;
     }
@@ -661,6 +683,9 @@ export const runKoedServerCli = async (
         printJson(stdout, doctor);
       } else {
         stdout.write(`${doctor.summary}\n`);
+        const status = await collectStatus();
+        const warning = getNoAgentsWarning(status);
+        if (warning) stdout.write(`Warning: ${warning}\n`);
       }
       return doctor.ok ? 0 : 1;
     }
