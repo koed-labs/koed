@@ -568,7 +568,9 @@ const withFetchTimeout = (
       return await fetcher(url, { ...init, signal: controller.signal });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`API request timeout after ${timeoutMs}ms. Is koed-server running?`);
+        throw new Error(
+          `API request timeout after ${timeoutMs}ms. Is koed-server running?`
+        );
       }
       throw error;
     } finally {
