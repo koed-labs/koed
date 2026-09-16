@@ -4,6 +4,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import {
   appendFileSync,
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readSync,
@@ -329,6 +330,19 @@ const compactOptions = <T extends Record<string, unknown>>(options: T): T =>
     Object.entries(options).filter(([, value]) => value !== undefined)
   ) as T;
 
+const checkCoreSetupNeeded = (
+  paths: ReturnType<typeof resolveKoedServerPaths>
+): string | null => {
+  if (!existsSync(paths.localAppCredentialPath)) {
+    return `Core setup is required. Run:
+
+  koed-server setup core --json
+
+This will provision your local API Token and prepare Koed services.`;
+  }
+  return null;
+};
+
 type SpawnLike = typeof nodeSpawn;
 
 export interface KoedServerStartDaemonResult {
@@ -623,6 +637,12 @@ export const runKoedServerCli = async (
     }
 
     if (command === "status") {
+      const paths = resolvePaths();
+      const setupNeeded = checkCoreSetupNeeded(paths);
+      if (setupNeeded) {
+        stderr.write(`${setupNeeded}\n`);
+        return 1;
+      }
       const status = args.includes("--startup")
         ? await collectStartupStatus()
         : await collectStatus();
@@ -669,6 +689,7 @@ export const runKoedServerCli = async (
 
     if (command === "pair") {
       const paths = resolvePaths();
+      const setupNeeded = checkCoreSetupNeeded(paths);
       if (subcommand === "status" || subcommand === "cancel") {
         const value = await deviceRequestCommand(paths, subcommand);
         if (wantsJson) printJson(stdout, value);
@@ -677,6 +698,10 @@ export const runKoedServerCli = async (
       }
       if (subcommand && !subcommand.startsWith("--"))
         throw new Error("Use pair, pair status, or pair cancel.");
+      if (setupNeeded) {
+        stderr.write(`${setupNeeded}\n`);
+        return 1;
+      }
       let ready = await collectKoedServerStartupStatus();
       if (!ready.ok) {
         const started = startDaemon();
