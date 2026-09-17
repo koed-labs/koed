@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   isKoedServerCliEntrypoint,
@@ -203,6 +203,10 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["status", "--startup", "--json"], {
       stdout: stdout.stream,
+      resolvePaths: () =>
+        ({
+          localAppCredentialPath: fileURLToPath(import.meta.url)
+        }) as never,
       collectStartupStatus: async () => startupStatus,
       collectStatus: async () => {
         fullStatusCollected = true;
@@ -812,6 +816,10 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["status", "--json"], {
       stdout: stdout.stream,
+      resolvePaths: () =>
+        ({
+          localAppCredentialPath: fileURLToPath(import.meta.url)
+        }) as never,
       collectStatus: async () => status
     });
 
