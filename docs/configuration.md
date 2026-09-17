@@ -1316,15 +1316,17 @@ is not a private IPv4 or Tailscale address.
 ### Upgrading an existing installation
 
 Koed does not migrate secret state from a pre-capability-pairing installation
-(see [ADR 0044](adr/0044-application-managed-pds-secret-storage.md)). On
-Desktop, `ensurePdsDesktopAuthority` refuses to mint a new Authority key when
-it detects a legacy `pds-secrets.json` in the Electron `userData` directory but
-finds no Authority secret in the current `KOED_HOME/secrets` store — minting a
-new key in that situation would silently orphan the installation's existing
-Personal Device Group under an Authority key the rest of the group no longer
-recognizes. Personal Device Sync is disabled with a console warning instead;
-Local Memory remains available. To move past this, either restore the prior
-Electron build to recover the existing group, or accept a fresh Personal
-Device Group and re-enroll every device: remove the legacy
-`pds-secrets.json` from the Electron `userData` directory (or point at a fresh
-`KOED_HOME`) before relaunching.
+(see [ADR 0044](adr/0044-application-managed-pds-secret-storage.md)). At API
+startup, `createPdsSecureRuntimeForApiStartup` refuses to mint a new Authority
+key when no Authority secret is found in the current `KOED_HOME/secrets` store
+but the local database already has a Personal Device Group — regardless of
+where the prior secret lived (Electron `pds-secrets.json`, `keytar`, or
+WSL/DPAPI). Local-personal deployments are single-tenant, so any existing
+group row means this is not a fresh installation; minting a new key in that
+situation would silently orphan the group under an Authority key the rest of
+the group no longer recognizes. Personal Device Sync is disabled with a
+console warning instead; Local Memory remains available. To move past this,
+either restore the prior installation to recover the existing group, or accept
+a fresh Personal Device Group and re-enroll every device by pointing at a
+fresh `KOED_HOME` (a fresh database has no existing group row) before
+relaunching.

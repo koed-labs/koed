@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { sign, verify } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
   canonicalizePdsJson,
   createPdsSessionCheckpointManifest,
@@ -222,6 +222,53 @@ const resolveHeadlessSecret = (
   } catch {
     return null;
   }
+};
+
+const putHeadlessSecret = (
+  reference: string,
+  value: string,
+  environment: NodeJS.ProcessEnv
+): boolean => {
+  const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
+  if (
+    !command ||
+    !/^[^\s\r\n\0]+$/.test(command) ||
+    !/^[^\r\n\0]{1,240}$/.test(reference) ||
+    Buffer.byteLength(value, "utf8") > maximumSecretBytes
+  ) {
+    return false;
+  }
+  try {
+    const result = spawnSync(
+      command,
+      [...providerArgs(environment), "put", reference],
+      {
+        input: value,
+        encoding: "utf8",
+        env: pdsSecureProviderEnvironment(environment),
+        stdio: ["pipe", "ignore", "ignore"],
+        timeout: 10_000
+      }
+    );
+    return result.status === 0 && !result.error;
+  } catch {
+    return false;
+  }
+};
+
+const mintAuthoritySecret = (): string => {
+  const key = generateKeyPairSync("ed25519").privateKey.export({
+    format: "jwk"
+  });
+  if (typeof key.x !== "string" || typeof key.d !== "string") {
+    throw new Error("Could not generate the PDS Authority key.");
+  }
+  return JSON.stringify({
+    version: 1,
+    keyId: randomUUID(),
+    publicKey: key.x,
+    privateSeed: key.d
+  } satisfies PdsAuthoritySecret);
 };
 
 const runtimeFor = (secret: PdsRuntimeSecret) =>
@@ -484,11 +531,27 @@ const pdsAuthorityStartupRetryDelayMs = 100;
  * A configured authority is a hard API startup dependency. The Desktop secret
  * bridge can become reachable just after the child process starts, so tolerate
  * that bounded handoff but never leave the API running with PDS half-enabled.
+ *
+ * When no Authority key is found after that handoff window, this is either a
+ * genuinely fresh installation (safe to mint a key) or an installation whose
+ * Authority secret was lost in a storage-backend change (Electron safeStorage,
+ * keytar, WSL/DPAPI, or the current application-managed store) without its
+ * Personal Device Group being migrated. Minting a replacement key in the
+ * latter case would silently orphan that group. `hasAnyPersonalDeviceGroup` is
+ * a backend-agnostic signal for that: local-personal deployments are
+ * single-tenant, so any existing group row means this is not a fresh install,
+ * regardless of where the old Authority secret lived.
  */
 export const createPdsSecureRuntimeForApiStartup = async (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: {
     resolveHeadlessSecret?: PdsSecretResolver;
+    putHeadlessSecret?: (
+      reference: string,
+      value: string,
+      environment: NodeJS.ProcessEnv
+    ) => boolean;
+    hasAnyPersonalDeviceGroup?: () => Promise<boolean>;
     attempts?: number;
     retryDelayMs?: number;
     sleep?: (delayMs: number) => Promise<void>;
@@ -542,6 +605,29 @@ export const createPdsSecureRuntimeForApiStartup = async (
     if (runtime.authoritySigner) return runtime;
     if (attempt < attempts) await sleep(retryDelayMs);
   }
+
+  if (dependencies.hasAnyPersonalDeviceGroup) {
+    if (await dependencies.hasAnyPersonalDeviceGroup()) {
+      throw new Error(
+        "Detected an existing Personal Device Group with no matching " +
+          "Authority key in the current secret store. Refusing to create a " +
+          "new Authority key automatically, since that would leave the " +
+          "existing group unreachable. See " +
+          "docs/configuration.md#personal-device-request-startup for the " +
+          "explicit reset path."
+      );
+    }
+    const putSecret = dependencies.putHeadlessSecret ?? putHeadlessSecret;
+    if (!putSecret(authorityReference, mintAuthoritySecret(), environment)) {
+      throw new Error("Could not persist a newly generated PDS Authority key.");
+    }
+    const minted = await createPdsSecureRuntimeFromEnvironment(
+      environment,
+      dependencies
+    );
+    if (minted.authoritySigner) return minted;
+  }
+
   throw new Error(
     "Configured Personal Device Sync authority could not be loaded."
   );

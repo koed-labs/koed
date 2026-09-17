@@ -232,6 +232,54 @@ describe("PDS secure runtime", () => {
     );
   });
 
+  it("mints a new Authority key on a genuinely fresh installation", async () => {
+    const stored: Record<string, string> = {};
+    const runtime = await createPdsSecureRuntimeForApiStartup(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_AUTHORITY_SECRET_REF: "pds-authority"
+      },
+      {
+        attempts: 1,
+        resolveHeadlessSecret: async (reference) => stored[reference] ?? null,
+        putHeadlessSecret: (reference, value) => {
+          stored[reference] = value;
+          return true;
+        },
+        hasAnyPersonalDeviceGroup: async () => false
+      }
+    );
+
+    expect(runtime.authoritySigner).not.toBeNull();
+    expect(stored["pds-authority"]).toBeDefined();
+  });
+
+  it("fails closed instead of minting when an existing Personal Device Group has no matching Authority key", async () => {
+    let putCalled = false;
+    await expect(
+      createPdsSecureRuntimeForApiStartup(
+        {
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+          PDS_AUTHORITY_SECRET_REF: "pds-authority"
+        },
+        {
+          attempts: 1,
+          resolveHeadlessSecret: async () => null,
+          putHeadlessSecret: () => {
+            putCalled = true;
+            return true;
+          },
+          hasAnyPersonalDeviceGroup: async () => true
+        }
+      )
+    ).rejects.toThrow(
+      "Detected an existing Personal Device Group with no matching Authority key"
+    );
+    expect(putCalled).toBe(false);
+  });
+
   it("refuses a configured authority without a secure provider", async () => {
     await expect(
       createPdsSecureRuntimeForApiStartup({

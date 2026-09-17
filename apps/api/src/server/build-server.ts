@@ -12,6 +12,7 @@ import {
   createDbPool,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
+  createPersonalDeviceSyncRepository,
   createPrivacyClassificationRepository,
   createRealtimeTransportTicketRepository,
   createRetentionLifecycleRepository,
@@ -295,10 +296,6 @@ const createDefaultResolveUpstreamAuthorization =
 
 export const buildServer = async (options: BuildServerOptions = {}) => {
   const config = resolveApiServerConfig();
-  // Only configured secret references can enable PDS. No raw environment-key fallback.
-  const pdsRuntime = await createPdsSecureRuntimeForApiStartup();
-  const reloadablePdsSecureKeyProvider =
-    createReloadablePdsSecureKeyProviderFromEnvironment();
 
   if (config.test) {
     resetMemoryRateLimitStore();
@@ -358,6 +355,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   if (pool) {
     await runDbMigrations(pool);
   }
+  // Only configured secret references can enable PDS. No raw environment-key
+  // fallback. Runs after the DB pool so a missing Authority key can be
+  // checked against existing Personal Device Groups before minting a
+  // replacement (see createPdsSecureRuntimeForApiStartup).
+  const pdsRuntime = await createPdsSecureRuntimeForApiStartup(process.env, {
+    ...(pool
+      ? {
+          hasAnyPersonalDeviceGroup: () =>
+            createPersonalDeviceSyncRepository(pool).hasAnyPersonalDeviceGroup()
+        }
+      : {})
+  });
+  const reloadablePdsSecureKeyProvider =
+    createReloadablePdsSecureKeyProviderFromEnvironment();
   const envelopeEncryptionProvider: EnvelopeEncryptionProvider | undefined =
     options.envelopeEncryptionProvider ??
     createEnvelopeEncryptionProviderFromEnvironment();

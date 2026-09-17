@@ -224,6 +224,20 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     }
   },
 
+  /**
+   * Local-personal deployments are single-tenant, so any existing group row
+   * means this device previously hosted or joined a Personal Device Group.
+   * Used to fail closed on Authority-key provisioning instead of silently
+   * minting a replacement key when local secret state was lost (e.g. an
+   * upgrade from a pre-application-managed-storage installation).
+   */
+  async hasAnyPersonalDeviceGroup(): Promise<boolean> {
+    const result = await pool.query(
+      "select exists(select 1 from personal_device_groups) as exists"
+    );
+    return queryRow<{ exists: boolean }>(result.rows[0]).exists;
+  },
+
   async listPersonalDeviceGroups(
     userId: string
   ): Promise<PersonalDeviceGroupRecord[]> {

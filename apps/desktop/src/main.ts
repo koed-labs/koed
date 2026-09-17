@@ -40,10 +40,7 @@ import {
 } from "./window/app-protocol.js";
 import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
 import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
-import {
-  ensurePdsDesktopAuthority,
-  PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE
-} from "./pds-authority.js";
+import { PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE } from "./pds-authority.js";
 import { resolveKoedHome as resolveApplicationKoedHome } from "@koed/koed-server";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createExternalUrlOpener } from "./window/external-url-opener.js";
@@ -461,33 +458,16 @@ const bootstrap = async () => {
         userDataPath: resolveApplicationKoedHome(koedEnvironment),
         environment: koedEnvironment
       });
-      koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
       if (persistentPdsStore) {
-        try {
-          const legacyStateDetected = existsSync(
-            resolve(app.getPath("userData"), "pds-secrets.json")
-          );
-          await ensurePdsDesktopAuthority(persistentPdsStore, {
-            legacyStateDetected
-          });
-          koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
-            persistentPdsStore.providerKind;
-          const runtimeReference =
-            koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
-          koedEnvironment.PDS_AUTHORITY_SECRET_REF =
-            PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
-          koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
-        } catch (error) {
-          koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
-          delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
-          console.warn(
-            error instanceof Error &&
-              error.message.startsWith("Detected pre-upgrade PDS")
-              ? error.message
-              : "PDS local device storage is unavailable; Local Memory remains available."
-          );
-        }
+        koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
+          persistentPdsStore.providerKind;
+        const runtimeReference =
+          koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
+        koedEnvironment.PDS_AUTHORITY_SECRET_REF =
+          PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
+        koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
       } else {
+        koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
         delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
         console.warn(
           "PDS local device storage provider is unavailable; Local Memory remains available."
