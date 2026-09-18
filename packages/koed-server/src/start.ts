@@ -1,3 +1,6 @@
+import { startDeviceRequestService } from "./personal-device-request.js";
+import { redeemPairingLink } from "./personal-sync.js";
+import { createPdsApplicationSecretStore } from "@koed/shared";
 import {
   spawn as nodeSpawn,
   spawnSync as nodeSpawnSync,
@@ -65,6 +68,7 @@ import {
 } from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
 import { resolveTeamCollaborationEnabled } from "@koed/shared";
+import { bundledPdsSecretProviderEnvironment } from "./application-secret-provider.js";
 export {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential
@@ -362,10 +366,17 @@ const localServiceEnv = (
     ? dirname(installedModelPaths[0])
     : paths.modelsDir;
   return {
-    ...process.env,
-    ...repoEnv,
+    ...bundledPdsSecretProviderEnvironment({
+      ...process.env,
+      ...repoEnv,
+      ...environment
+    }),
+    KOED_HOME: paths.koedHome,
+    KOED_RUNTIME_MODE: serverConfig.runtimeMode,
+    KOED_DEPENDENCY_MODE: serverConfig.dependencyMode,
+    PDS_RUNTIME_SECRET_REF:
+      environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime",
     ...(apiToken ? { MEMORY_API_TOKEN: apiToken.token } : {}),
-    ...environment,
     NODE_ENV:
       environment.API_NODE_ENV ??
       repoEnv.API_NODE_ENV ??
@@ -909,12 +920,23 @@ export const startKoedServer = async ({
   const supervisorStartedAt = new Date().toISOString();
   const appRuntime = resolveKoedAppRuntime(paths, environment);
   assertKoedAppRuntimeAvailable(appRuntime, paths);
+  const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
+  const startupConfig = resolveKoedServerConfig(paths, environment);
   environment = ensurePackagedLocalServiceSecrets(
     paths,
-    appRuntime.kind === "packaged",
+    appRuntime.kind === "packaged" ||
+      (startupConfig.runtimeMode === "local-personal" &&
+        startupConfig.dependencyMode === "bundled-local"),
     environment
   );
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+  if (
+    startupConfig.runtimeMode === "local-personal" &&
+    startupConfig.dependencyMode === "bundled-local" &&
+    environment.KOED_AUTO_PORTS === undefined
+  ) {
+    environment = { ...environment, KOED_AUTO_PORTS: "1" };
+  }
   const portAllocationEnvironment = environment.KOED_ENV_PATH?.trim()
     ? environmentWithRepoEnv(paths.repoRoot, environment)
     : environment;
@@ -942,7 +964,6 @@ export const startKoedServer = async ({
   if (migration.diagnostic) {
     console.warn(migration.diagnostic);
   }
-  const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
   const apiToken = desktopManagedLocal
     ? null
     : resolveLocalApiToken(environment, repoEnv);
@@ -1044,11 +1065,15 @@ export const startKoedServer = async ({
     }
   };
 
+  let deviceRequestService:
+    | Awaited<ReturnType<typeof startDeviceRequestService>>
+    | undefined;
   let cleanupPromise: Promise<void> | undefined;
   const cleanupStartedResources = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       const cleanupErrors: string[] = [];
+      await deviceRequestService?.close();
       const shutdownOrder = [
         "localAiRuntime",
         "worker",
@@ -1253,7 +1278,7 @@ export const startKoedServer = async ({
       apiUrl,
       runtimeMode: config.runtimeMode,
       dependencyMode: config.dependencyMode,
-      automaticPorts: desktopManagedLocal,
+      automaticPorts: environment.KOED_AUTO_PORTS === "1",
       codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
       claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
       piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
@@ -1320,7 +1345,6 @@ export const startKoedServer = async ({
     } else if (
       useBundledLocalDependencies &&
       config.runtimeMode === "local-personal" &&
-      appRuntime.kind === "packaged" &&
       !resolveActiveIntegrationApiToken(paths, refreshedEnv, refreshedRepoEnv)
     ) {
       const provisioned = await provisionLocalApiTokenDependency(
@@ -1399,6 +1423,39 @@ export const startKoedServer = async ({
           );
     manageChild("worker", worker);
     emitStartupMilestone("worker_process_spawned");
+    if (
+      config.runtimeMode === "local-personal" &&
+      useBundledLocalDependencies
+    ) {
+      deviceRequestService = await startDeviceRequestService({
+        paths,
+        host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,
+        enrolled: () =>
+          Boolean(
+            createPdsApplicationSecretStore({ rootPath: paths.koedHome }).get(
+              "pds-runtime"
+            )
+          ),
+        redeem: async (link, label, signal) => {
+          const fetchWithShutdown: typeof fetch = (input, init) =>
+            fetch(input, {
+              ...init,
+              signal: init?.signal
+                ? AbortSignal.any([signal, init.signal])
+                : signal
+            });
+          const result = await redeemPairingLink(
+            link,
+            label,
+            paths,
+            { ...refreshedEnv, PDS_LOCAL_CONTROL_URL: apiUrl },
+            { fetch: fetchWithShutdown }
+          );
+          if (!result.ok) throw new Error("Enrollment did not complete.");
+        }
+      });
+    }
+
     runtime.services = [...runtimeServices, ...appServices];
     runtime.processes = {
       ...runtime.processes,

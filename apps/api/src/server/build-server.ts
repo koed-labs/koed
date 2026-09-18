@@ -12,6 +12,7 @@ import {
   createDbPool,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
+  createPersonalDeviceSyncRepository,
   createPrivacyClassificationRepository,
   createRealtimeTransportTicketRepository,
   createRetentionLifecycleRepository,
@@ -60,6 +61,7 @@ import {
   createPersonalNoteMemoryRepairService,
   projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
+import { createPdsCheckpointPublicationService } from "../personal-device-sync/checkpoint-publication.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import {
   createLocalSharedMemoryCandidatePreparation,
@@ -294,10 +296,6 @@ const createDefaultResolveUpstreamAuthorization =
 
 export const buildServer = async (options: BuildServerOptions = {}) => {
   const config = resolveApiServerConfig();
-  // Only configured secret references can enable PDS. No raw environment-key fallback.
-  const pdsRuntime = await createPdsSecureRuntimeForApiStartup();
-  const reloadablePdsSecureKeyProvider =
-    createReloadablePdsSecureKeyProviderFromEnvironment();
 
   if (config.test) {
     resetMemoryRateLimitStore();
@@ -357,6 +355,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   if (pool) {
     await runDbMigrations(pool);
   }
+  // Only configured secret references can enable PDS. No raw environment-key
+  // fallback. Runs after the DB pool so a missing Authority key can be
+  // checked against existing Personal Device Groups before minting a
+  // replacement (see createPdsSecureRuntimeForApiStartup).
+  const pdsRuntime = await createPdsSecureRuntimeForApiStartup(process.env, {
+    ...(pool
+      ? {
+          hasAnyPersonalDeviceGroup: () =>
+            createPersonalDeviceSyncRepository(pool).hasAnyPersonalDeviceGroup()
+        }
+      : {})
+  });
+  const reloadablePdsSecureKeyProvider =
+    createReloadablePdsSecureKeyProviderFromEnvironment();
   const envelopeEncryptionProvider: EnvelopeEncryptionProvider | undefined =
     options.envelopeEncryptionProvider ??
     createEnvelopeEncryptionProviderFromEnvironment();
@@ -513,6 +525,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
   let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
+  let pdsCheckpointPublicationService: ReturnType<
+    typeof createPdsCheckpointPublicationService
+  > | null = null;
   let requestPendingShareSourceWork: (() => void) | null = null;
   let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
@@ -665,6 +680,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await collaborationRealtimeBroker?.close();
     await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
+    await pdsCheckpointPublicationService?.stop();
     await pendingShareDrain?.stop();
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
@@ -1451,6 +1467,43 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       wakePool: pool
     }
   };
+  const pdsCheckpointRepository = repository as {
+    listPdsCheckpointCandidates?: MemorySourceRepository["listPdsCheckpointCandidates"];
+    checkpointPdsSourceSession?: MemorySourceRepository["checkpointPdsSourceSession"];
+  } | null;
+  const pdsCheckpointSecureKeyProvider =
+    routeContext.personalDeviceSync.secureKeyProvider;
+  if (
+    !config.test &&
+    pdsCheckpointRepository?.listPdsCheckpointCandidates &&
+    pdsCheckpointRepository.checkpointPdsSourceSession &&
+    pdsCheckpointSecureKeyProvider &&
+    envelopeEncryptionProvider
+  ) {
+    pdsCheckpointPublicationService = createPdsCheckpointPublicationService({
+      repository: pdsCheckpointRepository as MemorySourceRepository,
+      secureKeyProvider: pdsCheckpointSecureKeyProvider,
+      envelopeEncryptionProvider,
+      onError: (error) => {
+        const errorClass =
+          error instanceof Error &&
+          /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(error.name)
+            ? error.name
+            : "PdsCheckpointPublicationError";
+        app.log.warn(
+          {
+            event: { name: "pds.checkpoint_publication.retry" },
+            errorClass
+          },
+          "PDS completed-turn checkpoint will retry"
+        );
+      }
+    });
+    app.addHook("onReady", (done) => {
+      pdsCheckpointPublicationService?.start();
+      done();
+    });
+  }
   if (realtimeTransportTicketRepository) {
     const transportIdentity = routeContext.deploymentIdentity.inspect();
     if (

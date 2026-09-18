@@ -7,6 +7,8 @@ import {
   createPdsEncryptedPayloadPackage,
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
   classifyPdsSessionPackageReplay,
+  createPdsSessionCheckpointManifest,
+  createPdsSessionCheckpointPackage,
   createPdsSessionPackageRuntimeContext,
   createPdsSessionManifest,
   createPdsSessionPackage,
@@ -17,14 +19,21 @@ import {
   pdsSessionPackageDigest,
   pdsSessionPackageReplayEntry,
   pdsSourceFingerprint,
+  isPdsSessionCheckpointManifest,
   retainPdsSessionPackage,
   retryPdsSessionPackage,
   rewrapPdsSessionPackage,
   parsePdsSessionManifestJson,
+  parsePdsSessionCheckpointManifestJson,
   parsePdsSessionPackageJson,
   validatePdsSessionManifest,
+  validatePdsSessionCheckpointAppend,
+  validatePdsSessionCheckpointManifest,
+  validatePdsSessionSourceManifest,
   validatePdsSessionPackage,
   verifyAndDecryptPdsSessionPackage,
+  verifyAndDecryptPdsSessionSourcePackage,
+  verifyPdsSessionCheckpointManifest,
   verifyPdsSessionManifest,
   type PdsSessionPackage,
   type PdsSessionPackageRuntimeContext
@@ -103,6 +112,49 @@ const relayId = (label: string): string =>
     .digest()
     .subarray(0, 16)
     .toString("base64url");
+
+const signedMembershipCertificate = (input: {
+  authorityPrivateKey: KeyObject;
+  authorityKeyId: string;
+  groupId: string;
+  authorityHead: string;
+  deviceId: string;
+  signingKeyId: string;
+  signingPublicKey: string;
+  kemKeyId: string;
+  kemPublicKey: string;
+  epoch: string;
+  statementSequence: string;
+  issuedAt: string;
+  expiresAt: string;
+}): string => {
+  const unsigned = {
+    protocol: "koed/pds/v1",
+    groupId: input.groupId,
+    deviceId: input.deviceId,
+    deviceSigningKeyId: input.signingKeyId,
+    deviceSigningPublicKey: input.signingPublicKey,
+    deviceKemKeyId: input.kemKeyId,
+    deviceKemPublicKey: input.kemPublicKey,
+    epoch: input.epoch,
+    operationFamilies: ["pds_relay"],
+    statementSequence: input.statementSequence,
+    statementHash: input.authorityHead,
+    issuedAt: input.issuedAt,
+    expiresAt: input.expiresAt
+  };
+  return canonicalizePdsJson({
+    ...unsigned,
+    authoritySignature: {
+      keyId: input.authorityKeyId,
+      signature: signPdsRecord(
+        "membership-certificate",
+        unsigned,
+        input.authorityPrivateKey
+      )
+    }
+  });
+};
 
 const fixture = (
   forkedFromExternalThreadId?: string,
@@ -290,9 +342,14 @@ const fixture = (
     input,
     verify,
     manifest,
+    authority,
     origin,
     serving,
     recipient,
+    groupId,
+    authorityKeyId,
+    authorityHead,
+    servingCertificate,
     sourceKey,
     tombstoneKey,
     projectKey
@@ -310,6 +367,73 @@ const withDigest = (pkg: PdsSessionPackage): PdsSessionPackage => ({
     chunks: pkg.chunks
   })
 });
+
+const checkpointFixture = () => {
+  const base = fixture();
+  const items = [
+    {
+      sourceNativeItemId: "checkpoint-item-0",
+      sequence: "0",
+      sourceTimestamp: "2026-07-15T00:00:00.000Z",
+      observedAt: "2026-07-15T00:00:00.100Z",
+      actor: "user",
+      type: "message",
+      content: "first completed turn",
+      metadata: { contentType: "text/plain", sourceRole: "user" }
+    },
+    {
+      sourceNativeItemId: "checkpoint-item-1",
+      sequence: "1",
+      sourceTimestamp: "2026-07-15T00:00:01.000Z",
+      observedAt: "2026-07-15T00:00:01.100Z",
+      actor: "assistant",
+      type: "message",
+      content: "second completed turn",
+      metadata: { contentType: "text/plain", sourceRole: "assistant" }
+    }
+  ];
+  const sourceSession = {
+    logicalSessionId: "logical-checkpoint-session",
+    externalSessionId: "codex-thread-checkpoint",
+    sourceAdapter: "codex",
+    sourceAdapterVersion: "codex-transcript-v1",
+    sourceRuntime: "codex" as const,
+    sourceTitle: "Checkpoint fixture",
+    captureMethod: "transcript" as const,
+    sourceCreatedAt: "2026-07-15T00:00:00.000Z"
+  };
+  const create = (
+    ordinal: string,
+    previousClosureHash: string | null,
+    prefix: typeof items,
+    sourceSequence: string,
+    sourceTitle = sourceSession.sourceTitle,
+    sourceAdapterVersion = sourceSession.sourceAdapterVersion
+  ) =>
+    createPdsSessionCheckpointManifest({
+      runtime: base.input.runtime,
+      originDeploymentId: relayId("deployment-origin"),
+      sourceSequence,
+      sourceNativeSessionId: "codex-thread-checkpoint",
+      contentEpoch: base.manifest.contentEpoch,
+      sourceSession: { ...sourceSession, sourceTitle, sourceAdapterVersion },
+      checkpoint: { version: "1", ordinal, previousClosureHash },
+      terminalCursor: String(prefix.length),
+      items: prefix,
+      sourceFingerprintKey: base.sourceKey,
+      tombstoneFloorKey: base.tombstoneKey,
+      originSigningPrivateKey: base.origin.privateKey
+    });
+  const first = create("0", null, items.slice(0, 1), "7");
+  const second = create("1", first.sourceClosureHash, items, "8");
+  const pkg = createPdsSessionCheckpointPackage({
+    runtime: base.input.runtime,
+    expiresAt: base.input.expiresAt,
+    servingSigningPrivateKey: base.input.servingSigningPrivateKey,
+    manifest: second
+  });
+  return { ...base, items, sourceSession, first, second, pkg, create };
+};
 
 describe("PDS origin-signed session package", () => {
   it("round-trips Claude source-set component metadata", () => {
@@ -745,5 +869,208 @@ describe("PDS origin-signed session package", () => {
         validatePdsSessionManifest({ ...manifest, [field]: "injected" })
       ).toThrow();
     }
+  });
+
+  it("round-trips an explicitly versioned cumulative checkpoint profile", () => {
+    const { verify, origin, first, second, pkg, items, create } =
+      checkpointFixture();
+
+    expect(isPdsSessionCheckpointManifest(second)).toBe(true);
+    expect(
+      parsePdsSessionCheckpointManifestJson(canonicalizePdsJson(second))
+    ).toEqual(second);
+    expect(validatePdsSessionSourceManifest(second)).toEqual(second);
+    expect(
+      verifyPdsSessionCheckpointManifest(
+        second,
+        origin.publicKey,
+        second.originSignature.signerKeyId
+      )
+    ).toEqual(second);
+    expect(validatePdsSessionCheckpointAppend(first, second)).toEqual(second);
+    expect(
+      verifyAndDecryptPdsSessionSourcePackage(canonicalizePdsJson(pkg), verify)
+    ).toEqual(second);
+    expect(() =>
+      verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(pkg), verify)
+    ).toThrow("cumulative checkpoint profile");
+
+    const badSignature = structuredClone(second);
+    badSignature.originSignature.signature = Buffer.alloc(64, 3).toString(
+      "base64url"
+    );
+    expect(() =>
+      verifyPdsSessionCheckpointManifest(
+        badSignature,
+        origin.publicKey,
+        second.originSignature.signerKeyId
+      )
+    ).toThrow("signature is invalid");
+
+    const appServer = create(
+      "0",
+      null,
+      items.slice(0, 1),
+      "7",
+      "App server",
+      "codex-app-server-v1"
+    );
+    expect(validatePdsSessionCheckpointManifest(appServer)).toEqual(appServer);
+  });
+
+  it("rewraps an old signed checkpoint for a later joining recipient without changing source identity", () => {
+    const {
+      authority,
+      authorityKeyId,
+      groupId,
+      input,
+      origin,
+      servingCertificate: oldServingCertificate,
+      first
+    } = checkpointFixture();
+    const newAuthorityHead = Buffer.alloc(32, 8).toString("base64url");
+    const joiningDeviceId = relayId("device-recipient-joined-later");
+    const joiningSigningKey = rawPair("ed25519");
+    const joiningKemKey = rawPair("x25519");
+    const servingKemKey = rawPair("x25519");
+    const servingCertificate = signedMembershipCertificate({
+      authorityPrivateKey: authority.privateKey,
+      authorityKeyId,
+      groupId,
+      authorityHead: newAuthorityHead,
+      deviceId: relayId("device-origin"),
+      signingKeyId: relayId("origin-signing-key"),
+      signingPublicKey: origin.publicKey,
+      kemKeyId: relayId("origin-kem-key-epoch-4"),
+      kemPublicKey: servingKemKey.publicKey,
+      epoch: "4",
+      statementSequence: "2",
+      issuedAt: "2026-07-21T00:00:00.000Z",
+      expiresAt: "2026-07-27T00:00:00.000Z"
+    });
+    const joiningCertificate = signedMembershipCertificate({
+      authorityPrivateKey: authority.privateKey,
+      authorityKeyId,
+      groupId,
+      authorityHead: newAuthorityHead,
+      deviceId: joiningDeviceId,
+      signingKeyId: relayId("joining-signing-key"),
+      signingPublicKey: joiningSigningKey.publicKey,
+      kemKeyId: relayId("joining-kem-key"),
+      kemPublicKey: joiningKemKey.publicKey,
+      epoch: "4",
+      statementSequence: "2",
+      issuedAt: "2026-07-21T00:00:00.000Z",
+      expiresAt: "2026-07-27T00:00:00.000Z"
+    });
+    const currentRuntime = createPdsSessionPackageRuntimeContext({
+      authorityPublicKey: authority.publicKey,
+      authorityKeyId,
+      groupId,
+      authorityHead: newAuthorityHead,
+      currentEpoch: "4",
+      servingCertificate,
+      recipientCertificate: joiningCertificate,
+      recipientCertificates: [joiningCertificate],
+      historicalOriginCertificates: [oldServingCertificate],
+      now: new Date("2026-07-22T00:00:00.000Z")
+    });
+
+    const originalTransport = createPdsSessionCheckpointPackage({
+      runtime: input.runtime,
+      expiresAt: "2026-07-23T00:00:00.000Z",
+      servingSigningPrivateKey: origin.privateKey,
+      manifest: first
+    });
+    const rewrapped = createPdsSessionCheckpointPackage({
+      runtime: currentRuntime,
+      expiresAt: "2026-07-23T00:00:00.000Z",
+      servingSigningPrivateKey: origin.privateKey,
+      manifest: first
+    });
+    const recovered = verifyAndDecryptPdsSessionSourcePackage(
+      canonicalizePdsJson(rewrapped),
+      {
+        runtime: currentRuntime,
+        recipientKemPrivateKey: joiningKemKey.privateSeed,
+        now: new Date("2026-07-22T00:00:00.000Z")
+      }
+    );
+
+    expect(rewrapped.header.transportId).not.toBe(
+      originalTransport.header.transportId
+    );
+    expect(rewrapped.header.packageId).toBe(first.packageId);
+    expect(rewrapped.header.sourceManifestHash).toBe(
+      originalTransport.header.sourceManifestHash
+    );
+    expect(rewrapped.header.contentEpoch).toBe("3");
+    expect(rewrapped.header.recipientEpoch).toBe("4");
+    expect(rewrapped.header.intendedRecipientSnapshot).toEqual([
+      joiningDeviceId
+    ]);
+    expect(recovered).toEqual(first);
+    expect(recovered.originSignature).toEqual(first.originSignature);
+    expect(recovered.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(recovered.logicalMemoryId).toBe(first.logicalMemoryId);
+    expect(recovered.sourceClosureHash).toBe(first.sourceClosureHash);
+  });
+
+  it("accepts only a signed append of the exact previous source prefix", () => {
+    const { first, items, create } = checkpointFixture();
+    const titleUpdate = create(
+      "1",
+      first.sourceClosureHash,
+      items,
+      "8",
+      "Updated safe title"
+    );
+    expect(validatePdsSessionCheckpointAppend(first, titleUpdate)).toEqual(
+      titleUpdate
+    );
+
+    const divergentPrefix = [
+      { ...items[0]!, content: "rewritten completed turn" },
+      items[1]!
+    ];
+    const divergent = create(
+      "1",
+      first.sourceClosureHash,
+      divergentPrefix,
+      "8"
+    );
+    expect(() => validatePdsSessionCheckpointAppend(first, divergent)).toThrow(
+      "do not extend prior prefix"
+    );
+
+    const skipped = create("2", first.sourceClosureHash, items, "9");
+    expect(() => validatePdsSessionCheckpointAppend(first, skipped)).toThrow(
+      "does not append the prior checkpoint"
+    );
+  });
+
+  it("keeps V1 closed manifests strict and rejects malformed checkpoint metadata", () => {
+    const { manifest } = fixture();
+    const { second } = checkpointFixture();
+
+    expect(() =>
+      validatePdsSessionManifest({
+        ...manifest,
+        profile: "cumulative_checkpoint"
+      })
+    ).toThrow("does not support this profile");
+    expect(() => validatePdsSessionManifest(second)).toThrow(
+      "does not support this profile"
+    );
+
+    const invalid = structuredClone(second);
+    invalid.checkpoint.previousClosureHash = "not-a-hash";
+    expect(() => validatePdsSessionCheckpointManifest(invalid)).toThrow();
+
+    const unsafeTitle = structuredClone(second);
+    unsafeTitle.sourceSession.sourceTitle = "hidden\nline";
+    expect(() => validatePdsSessionCheckpointManifest(unsafeTitle)).toThrow(
+      "source title is invalid"
+    );
   });
 });

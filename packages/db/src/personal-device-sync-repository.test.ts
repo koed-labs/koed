@@ -27,6 +27,39 @@ const groupRow = (state = "active") => ({
 });
 
 describe("Personal Device Sync repository authority reads", () => {
+  it("reports whether any Personal Device Group exists", async () => {
+    const query = vi.fn(async () => ({
+      rowCount: 1,
+      rows: [{ exists: true }]
+    }));
+    const pool = { query } as unknown as pg.Pool;
+
+    const hasGroup =
+      await createPersonalDeviceSyncRepository(
+        pool
+      ).hasAnyPersonalDeviceGroup();
+
+    expect(hasGroup).toBe(true);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("exists(select 1 from personal_device_groups)")
+    );
+  });
+
+  it("reports no Personal Device Group on a fresh installation", async () => {
+    const query = vi.fn(async () => ({
+      rowCount: 1,
+      rows: [{ exists: false }]
+    }));
+    const pool = { query } as unknown as pg.Pool;
+
+    const hasGroup =
+      await createPersonalDeviceSyncRepository(
+        pool
+      ).hasAnyPersonalDeviceGroup();
+
+    expect(hasGroup).toBe(false);
+  });
+
   it("orders group statements by numeric sequence", async () => {
     const query = vi.fn(async (text: string) => {
       if (text.includes("from personal_device_groups"))

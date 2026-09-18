@@ -54,6 +54,12 @@ _Avoid_: Capture state, visibility, search domain
 Koed's record of memory capture for a conversation.
 _Avoid_: Conversation, thread, transcript
 
+**Captured Session Checkpoint**:
+An immutable completed-turn prefix of a Captured Session that can become
+available on another Personal device while the originating Conversation remains
+resumable.
+_Avoid_: Session closure, fork, historical import
+
 **Conversation**:
 An AI-client interaction thread whose activity may be captured.
 _Avoid_: Thread, chat, transcript
@@ -350,6 +356,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Supported Capture Hook** may wake the **Transcript Watcher** without providing transcript content
 - Missing, duplicate, delayed, or reordered **Supported Capture Hook** signals do not create capture gaps or duplicate **Memory Events**
 - A **Transcript Watcher** may create a **Captured Session**
+- A **Captured Session Checkpoint** preserves the source identity of one **Captured Session**
+- A receiving Personal device may inspect a **Captured Session Checkpoint** but does not gain authority to edit or resume the originating **Conversation**
 - An **Embedding Service** supports **Recall**
 - **Recall** returns an **Evidence Bundle**
 - **Memory Answer** is the normal entry point for **Recall**

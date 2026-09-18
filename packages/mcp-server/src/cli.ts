@@ -14,7 +14,8 @@ if (command === "doctor") {
       client.callTool(
         "memory_access_check",
         { include_notes: true },
-        { cwd: process.cwd() }
+        { cwd: process.cwd() },
+        AbortSignal.timeout(10_000)
       )
     ]);
     console.log(

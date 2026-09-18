@@ -38,7 +38,7 @@ export const parsePersonalDevicePairingLink = (
     url.pathname !== match[3]
   ) {
     throw new Error(
-      "Same-network pairing requires a private-network link issued by Koed."
+      "Same-network pairing requires a private-network or Tailscale link issued by Koed."
     );
   }
   const token = match[5]!;

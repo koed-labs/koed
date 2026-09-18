@@ -1,13 +1,13 @@
+import { DeviceRequestPanel } from "./DeviceRequestPanel.js";
 import {
   Check,
   Clipboard,
   KeyRound,
-  Laptop,
+  Monitor,
   LoaderCircle,
-  MonitorSmartphone,
   Plus,
+  Pencil,
   RefreshCw,
-  Smartphone,
   X
 } from "lucide-react";
 import {
@@ -20,6 +20,7 @@ import {
 } from "react";
 
 type DeviceMember = {
+  label?: string;
   device_id: string;
   status: string;
 };
@@ -28,26 +29,35 @@ type DeviceGroup = {
   group_id: string;
   members: DeviceMember[];
   policy?: { enabled?: boolean };
+  local_sync?: {
+    enabled?: boolean;
+    paused?: boolean;
+    workerReady?: boolean;
+    pendingPublication?: number;
+    outbox?: Record<string, number>;
+    inbox?: Record<string, number>;
+    replicas?: Record<string, number>;
+  };
 };
 
 type PairingView = {
   id: string;
   url: string;
-  shortCode: string;
   expiresAt: string;
   state:
     | "waiting"
-    | "approval_required"
-    | "approved"
+    | "connecting"
     | "completed"
     | "expired"
-    | "cancelled";
+    | "cancelled"
+    | "failed";
+  phase?:
+    | "waiting"
+    | "request_received"
+    | "committing"
+    | "awaiting_joiner"
+    | "completed";
   joiningDeviceLabel: string | null;
-};
-
-type RecoveryView = {
-  code: string;
-  kitPath: string;
 };
 
 type Invoke = <T = unknown>(
@@ -66,6 +76,10 @@ const errorMessage = (error: unknown): string => {
   if (!(error instanceof Error) || !error.message) {
     return "Koed could not complete device pairing.";
   }
+  if (error.message.includes("PersonalMemoryBoundaryError: not_ready"))
+    return "Koed’s local services are not ready. Check local health and restart Koed before setting up devices.";
+  if (error.message.includes("ENOSPC"))
+    return "Koed ran out of disk space. Free space and restart Koed before setting up devices.";
   return error.message.replace(
     /^Error invoking remote method '[^']+': (?:Error: )?/,
     ""
@@ -93,13 +107,22 @@ const parseGroups = (value: unknown): DeviceGroup[] => {
       const item = member as Record<string, unknown>;
       return typeof item.device_id === "string" &&
         typeof item.status === "string"
-        ? [{ device_id: item.device_id, status: item.status }]
+        ? [
+            {
+              device_id: item.device_id,
+              status: item.status,
+              ...(typeof item.label === "string" ? { label: item.label } : {})
+            }
+          ]
         : [];
     });
     return [
       {
         group_id: group.group_id,
         members,
+        ...(group.local_sync && typeof group.local_sync === "object"
+          ? { local_sync: group.local_sync as DeviceGroup["local_sync"] }
+          : {}),
         ...(group.policy &&
         typeof group.policy === "object" &&
         !Array.isArray(group.policy)
@@ -126,6 +149,41 @@ const parsePairingInvitationGroupIds = (value: unknown): string[] => {
   ).pairing_invitation_group_ids.filter(
     (groupId): groupId is string => typeof groupId === "string"
   );
+};
+
+const localSyncSummary = (group: DeviceGroup | null): string => {
+  const sync = group?.local_sync;
+  if (!sync) return "Sync status unavailable";
+  if (!sync.enabled) return "Session sync is off";
+  if (sync.paused) return "Session sync is paused";
+  if (!sync.workerReady) return "Waiting for local sync services";
+  const count = (states: Record<string, number> | undefined, names: string[]) =>
+    names.reduce((sum, name) => sum + (states?.[name] ?? 0), 0);
+  if (
+    count(sync.outbox, ["failed", "quarantined"]) +
+      count(sync.inbox, ["failed", "quarantined"]) +
+      count(sync.replicas, ["failed", "quarantined"]) >
+    0
+  )
+    return "Session sync needs attention";
+  if ((sync.pendingPublication ?? 0) > 0)
+    return "Preparing completed turns for sync…";
+  if (count(sync.inbox, ["awaiting_predecessor"]) > 0)
+    return "Waiting for earlier session checkpoints…";
+  if (
+    count(sync.outbox, ["pending", "uploading", "committed"]) +
+      count(sync.inbox, ["pending", "downloading", "verifying"]) >
+    0
+  )
+    return "Syncing session checkpoints…";
+  if (
+    count(sync.inbox, ["processing"]) + count(sync.replicas, ["processing"]) >
+    0
+  )
+    return "Processing received sessions…";
+  if (count(sync.outbox, ["acked"]) + count(sync.replicas, ["ready"]) > 0)
+    return "Local sync queue is up to date";
+  return "Waiting for completed turns to sync";
 };
 
 const deviceName = (deviceId: string, index: number): string =>
@@ -167,7 +225,7 @@ function ModalFrame({
       <div className="device-modal" ref={panelRef} tabIndex={-1}>
         <header className="device-modal-header">
           <div>
-            <MonitorSmartphone aria-hidden="true" />
+            <Monitor aria-hidden="true" />
             <h2>{title}</h2>
           </div>
           <button
@@ -189,14 +247,16 @@ function ModalFrame({
 
 function PairingInvitation({
   pairing,
-  onApprove,
   onCancel,
-  approving
+  onRetry,
+  cancelling,
+  retrying
 }: {
   pairing: PairingView;
-  onApprove: () => void;
   onCancel: () => void;
-  approving: boolean;
+  onRetry?: () => void;
+  cancelling: boolean;
+  retrying: boolean;
 }) {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [qrFailed, setQrFailed] = useState(false);
@@ -230,7 +290,40 @@ function PairingInvitation({
     window.setTimeout(() => setCopied(false), 1_500);
   };
 
-  const approvalRequired = pairing.state === "approval_required";
+  const isActive =
+    pairing.state === "waiting" || pairing.state === "connecting";
+  const copyByState = {
+    waiting: {
+      title: "Scan with your other device",
+      description:
+        "Both devices must be reachable on the same private network or Tailscale network. This invitation can be used once."
+    },
+    connecting: {
+      title: `${pairing.joiningDeviceLabel ?? "New device"} is connecting`,
+      description:
+        pairing.phase === "committing"
+          ? "Secure membership commit is in progress. Cancellation is no longer available."
+          : pairing.phase === "awaiting_joiner"
+            ? "Waiting for joining device to activate its encrypted replica."
+            : "Encrypted setup is in progress."
+    },
+    completed: {
+      title: "Connected",
+      description: "Your other device is now connected to Personal Memory."
+    },
+    expired: {
+      title: "Pairing invitation expired",
+      description: "Create a new invitation to connect another device."
+    },
+    cancelled: {
+      title: "Pairing invitation cancelled",
+      description: "Create a new invitation to connect another device."
+    },
+    failed: {
+      title: "Pairing failed",
+      description: "Create a new invitation and try again."
+    }
+  }[pairing.state];
 
   return (
     <>
@@ -245,23 +338,8 @@ function PairingInvitation({
           )}
         </div>
         <div className="device-pairing-copy">
-          <h3>
-            {approvalRequired
-              ? `${pairing.joiningDeviceLabel ?? "New device"} wants to connect`
-              : pairing.state === "approved"
-                ? "Device approved"
-                : "Scan with your other device"}
-          </h3>
-          <p>
-            {approvalRequired
-              ? "Confirm that the short code is the same on both devices before approving."
-              : pairing.state === "approved"
-                ? "The other device is completing encrypted setup."
-                : "Both devices must be on the same private network. This invitation can be used once."}
-          </p>
-          <div className="device-short-code" aria-label="Pairing short code">
-            {pairing.shortCode}
-          </div>
+          <h3>{copyByState.title}</h3>
+          <p>{copyByState.description}</p>
           <label className="device-link-field">
             <span>Pairing link</span>
             <span>
@@ -291,27 +369,26 @@ function PairingInvitation({
         </div>
       </div>
       <footer className="device-modal-actions">
-        <button
-          className="device-secondary-button"
-          disabled={approving}
-          onClick={onCancel}
-          type="button"
-        >
-          Cancel
-        </button>
-        {approvalRequired ? (
+        {isActive && onRetry ? (
           <button
-            className="device-primary-button"
-            disabled={approving}
-            onClick={onApprove}
+            className="device-secondary-button"
+            disabled={retrying || cancelling}
+            onClick={onRetry}
             type="button"
           >
-            {approving ? (
-              <LoaderCircle aria-hidden="true" />
-            ) : (
-              <Check aria-hidden="true" />
-            )}
-            Approve device
+            {retrying ? <LoaderCircle aria-hidden="true" /> : null}
+            Retry connection
+          </button>
+        ) : null}
+        {isActive ? (
+          <button
+            className="device-secondary-button"
+            disabled={cancelling}
+            onClick={onCancel}
+            type="button"
+          >
+            {cancelling ? <LoaderCircle aria-hidden="true" /> : null}
+            Cancel
           </button>
         ) : null}
       </footer>
@@ -322,37 +399,49 @@ function PairingInvitation({
 export function DevicesModal({
   initialPairingLink = "",
   invoke = desktopInvoke,
-  onClose
+  onClose,
+  onPairingLinkConsumed
 }: {
   initialPairingLink?: string;
   invoke?: Invoke;
   onClose: () => void;
+  onPairingLinkConsumed?: () => void;
 }) {
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [pairingInvitationGroupIds, setPairingInvitationGroupIds] = useState<
     string[]
   >([]);
   const [state, setState] = useState<
-    "loading" | "overview" | "invite" | "join" | "joining" | "recovery"
+    "loading" | "overview" | "invite" | "join" | "joining" | "request" | "add"
   >("loading");
   const [pairing, setPairing] = useState<PairingView | null>(null);
+  const [pairingWaitFailed, setPairingWaitFailed] = useState(false);
   const [pairingLink, setPairingLink] = useState(initialPairingLink);
-  const [joiningShortCode, setJoiningShortCode] = useState<string | null>(null);
+  const [joiningProgress, setJoiningProgress] = useState<
+    "connecting" | "completed" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [recovery, setRecovery] = useState<RecoveryView | null>(null);
-  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
-  const [recoveryCopied, setRecoveryCopied] = useState(false);
+  const [editingDevice, setEditingDevice] = useState<string | null>(null);
+  const [editedName, setEditedName] = useState("");
   const joiningRequestId = useRef<string | null>(null);
+  const activePairingId = useRef<string | null>(null);
   const group = groups[0] ?? null;
   const canCreateInvitation = Boolean(
     group && pairingInvitationGroupIds.includes(group.group_id)
   );
 
+  const loadingStatus = useRef(false);
   const load = useCallback(async () => {
+    if (loadingStatus.current) return;
+    loadingStatus.current = true;
     setError(null);
     try {
       const result = await invoke("personal_sync_status");
+      const deviceId = (result as { local_device_id?: unknown } | null)
+        ?.local_device_id;
+      setLocalDeviceId(typeof deviceId === "string" ? deviceId : null);
       setGroups(parseGroups(result));
       setPairingInvitationGroupIds(parsePairingInvitationGroupIds(result));
       setState((current) =>
@@ -371,115 +460,103 @@ export function DevicesModal({
             : "overview"
           : current
       );
+    } finally {
+      loadingStatus.current = false;
     }
   }, [initialPairingLink, invoke]);
+
+  useEffect(() => {
+    if (state !== "overview" || busy || editingDevice || !group) return;
+    const timer = setInterval(() => {
+      void load();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [load, state, busy, editingDevice, group]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    if (initialPairingLink) {
-      setPairingLink(initialPairingLink);
-      setState("join");
+    if (!initialPairingLink) return;
+    setPairingLink(initialPairingLink);
+    setState("join");
+    onPairingLinkConsumed?.();
+  }, [initialPairingLink, onPairingLinkConsumed]);
+
+  useEffect(() => {
+    if (
+      !pairing ||
+      ["completed", "expired", "cancelled", "failed"].includes(pairing.state)
+    ) {
+      return;
     }
-  }, [initialPairingLink]);
+    const poll = () => {
+      void invoke<{ pairing?: PairingView }>("personal_sync_pairing_status", {
+        id: pairing.id
+      })
+        .then((result) => {
+          if (activePairingId.current !== pairing.id || !result.pairing) return;
+          setPairing(result.pairing);
+        })
+        .catch(() => undefined);
+    };
+    const timer = window.setInterval(poll, 500);
+    return () => window.clearInterval(timer);
+  }, [invoke, pairing]);
 
   useEffect(() => {
     const devices = window.koedDesktop?.devices;
     if (!devices) return;
     return devices.subscribePairingProgress((progress) => {
       if (progress.requestId !== joiningRequestId.current) return;
-      setJoiningShortCode(progress.shortCode);
+      setJoiningProgress(progress.state);
     });
   }, []);
 
-  const beginInvitation = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await invoke<{
-        ok: boolean;
-        pairing?: PairingView;
-        error?: string;
-      }>("personal_sync_pairing_create", {
-        ...(group ? { groupId: group.group_id } : {})
-      });
-      if (!result.ok || !result.pairing) {
-        throw new Error(result.error ?? "Pairing is not configured yet.");
-      }
-      setPairing(result.pairing);
-      setState("invite");
-      void invoke<{ pairing?: PairingView }>("personal_sync_pairing_wait", {
-        id: result.pairing.id
-      })
-        .then((waiting) => {
-          if (waiting.pairing) setPairing(waiting.pairing);
-        })
-        .catch((caught) => setError(errorMessage(caught)));
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(false);
+  const waitForInvitation = async (id: string): Promise<void> => {
+    const result = await invoke<{ pairing?: PairingView }>(
+      "personal_sync_pairing_wait",
+      { id }
+    );
+    if (activePairingId.current !== id || !result.pairing) return;
+    setPairing(result.pairing);
+    if (result.pairing.state === "completed") {
+      setPairingWaitFailed(false);
+      activePairingId.current = null;
+      await load();
+      return;
+    }
+    if (
+      result.pairing.state === "waiting" ||
+      result.pairing.state === "connecting"
+    ) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      if (activePairingId.current === id) await waitForInvitation(id);
+      return;
+    }
+    activePairingId.current = null;
+    if (result.pairing.state === "failed") {
+      setError("Pairing enrollment failed.");
     }
   };
+
+  const requestConnected = useCallback(() => {
+    void load();
+    setState("overview");
+  }, [load]);
 
   const bootstrapGroup = async () => {
     setBusy(true);
     setError(null);
     try {
-      const result = await invoke<{
-        ok?: boolean;
-        state?: string;
-        error?: string;
-        recoveryCode?: string;
-        recoveryKitPath?: string;
-      }>("personal_sync_group_bootstrap");
-      if (result.state === "cancelled") return;
-      if (
-        result.ok !== true ||
-        typeof result.recoveryCode !== "string" ||
-        typeof result.recoveryKitPath !== "string"
-      ) {
+      const result = await invoke<{ ok?: boolean; error?: string }>(
+        "personal_sync_group_bootstrap"
+      );
+      if (result.ok !== true)
         throw new Error(
           result.error ?? "Koed could not set up Personal Device Sync."
         );
-      }
-      setRecovery({
-        code: result.recoveryCode,
-        kitPath: result.recoveryKitPath
-      });
-      setRecoveryConfirmed(false);
-      setRecoveryCopied(false);
-      setState("recovery");
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyRecoveryCode = async () => {
-    if (!recovery) return;
-    await window.koedDesktop?.clipboard?.writeText(recovery.code);
-    setRecoveryCopied(true);
-  };
-
-  const completeRecovery = async () => {
-    if (!recoveryConfirmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await invoke<{ ok?: boolean; error?: string }>(
-        "personal_sync_group_activate"
-      );
-      if (result.ok !== true) {
-        throw new Error(
-          result.error ??
-            "Koed could not activate Personal Device Sync on this device."
-        );
-      }
-      setRecovery(null);
       await load();
       setState("overview");
     } catch (caught) {
@@ -489,51 +566,55 @@ export function DevicesModal({
     }
   };
 
-  const approve = async () => {
-    if (!pairing) return;
+  const cancelPairing = async (): Promise<boolean> => {
+    const currentPairing = pairing;
+    if (
+      !currentPairing ||
+      (currentPairing.state !== "waiting" &&
+        currentPairing.state !== "connecting")
+    ) {
+      return true;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await invoke<{ pairing?: PairingView }>(
-        "personal_sync_pairing_approve",
-        { id: pairing.id }
+      const result = await invoke<{ ok?: boolean; state?: string }>(
+        "personal_sync_pairing_cancel",
+        { id: currentPairing.id }
       );
-      if (result.pairing) setPairing(result.pairing);
-      await load();
+      if (
+        result.ok !== true ||
+        !["cancelled", "expired", "failed"].includes(result.state ?? "")
+      ) {
+        throw new Error("Koed could not confirm pairing cancellation.");
+      }
+      activePairingId.current = null;
       setPairing(null);
       setState("overview");
+      return true;
     } catch (caught) {
       setError(errorMessage(caught));
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
-  const cancel = async () => {
-    if (pairing) {
-      await invoke("personal_sync_pairing_cancel", { id: pairing.id }).catch(
-        () => undefined
-      );
-    }
-    setPairing(null);
-    setError(null);
-    setState("overview");
+  const cancel = () => {
+    void cancelPairing();
   };
 
   const returnToOverview = () => {
     setError(null);
-    setJoiningShortCode(null);
+    setJoiningProgress(null);
+    setPairingLink("");
     setState("overview");
   };
 
   const close = async () => {
-    if (
-      pairing &&
-      (pairing.state === "waiting" || pairing.state === "approval_required")
-    ) {
-      await invoke("personal_sync_pairing_cancel", { id: pairing.id }).catch(
-        () => undefined
-      );
+    if (pairing) {
+      const cancelled = await cancelPairing();
+      if (!cancelled) return;
     }
     onClose();
   };
@@ -541,7 +622,7 @@ export function DevicesModal({
   const join = async () => {
     const requestId = crypto.randomUUID();
     joiningRequestId.current = requestId;
-    setJoiningShortCode(null);
+    setJoiningProgress(null);
     setBusy(true);
     setError(null);
     setState("joining");
@@ -556,12 +637,13 @@ export function DevicesModal({
             : "Linux device"
       });
       await load();
+      setPairingLink("");
       joiningRequestId.current = null;
-      setJoiningShortCode(null);
+      setJoiningProgress(null);
       setState("overview");
     } catch (caught) {
       joiningRequestId.current = null;
-      setJoiningShortCode(null);
+      setJoiningProgress(null);
       setError(errorMessage(caught));
       setState("join");
     } finally {
@@ -576,7 +658,7 @@ export function DevicesModal({
 
   return (
     <ModalFrame
-      closeDisabled={busy || state === "recovery"}
+      closeDisabled={busy}
       onClose={() => void close()}
       title="Devices"
     >
@@ -593,95 +675,47 @@ export function DevicesModal({
         </div>
       ) : state === "invite" && pairing ? (
         <PairingInvitation
-          approving={busy}
-          onApprove={() => void approve()}
+          cancelling={busy}
           onCancel={() => void cancel()}
+          onRetry={
+            pairingWaitFailed
+              ? () => {
+                  const id = activePairingId.current;
+                  if (!id) return;
+                  setPairingWaitFailed(false);
+                  setError(null);
+                  void waitForInvitation(id).catch((caught) => {
+                    if (activePairingId.current === id) {
+                      setPairingWaitFailed(true);
+                      setError(errorMessage(caught));
+                    }
+                  });
+                }
+              : undefined
+          }
           pairing={pairing}
+          retrying={false}
         />
-      ) : state === "recovery" && recovery ? (
-        <>
-          <div className="device-recovery-content">
-            <KeyRound aria-hidden="true" />
-            <div>
-              <h3>Save your recovery code</h3>
-              <p>
-                Your encrypted recovery kit was saved at the location below.
-                Keep this code separately. Koed cannot restore the device group
-                without both.
-              </p>
-              <label className="device-link-field">
-                <span>Recovery code</span>
-                <span>
-                  <input
-                    aria-label="Recovery code"
-                    autoComplete="off"
-                    readOnly
-                    spellCheck={false}
-                    value={recovery.code}
-                  />
-                  <button
-                    aria-label="Copy recovery code"
-                    className="device-icon-button"
-                    onClick={() => void copyRecoveryCode()}
-                    title="Copy recovery code"
-                    type="button"
-                  >
-                    {recoveryCopied ? (
-                      <Check aria-hidden="true" />
-                    ) : (
-                      <Clipboard aria-hidden="true" />
-                    )}
-                  </button>
-                </span>
-              </label>
-              <small className="device-recovery-path">{recovery.kitPath}</small>
-              <label className="device-recovery-confirmation">
-                <input
-                  checked={recoveryConfirmed}
-                  onChange={(event) =>
-                    setRecoveryConfirmed(event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                I saved the recovery code separately.
-              </label>
-            </div>
-          </div>
-          <footer className="device-modal-actions">
-            <button
-              className="device-primary-button"
-              disabled={!recoveryConfirmed || busy}
-              onClick={() => void completeRecovery()}
-              type="button"
-            >
-              {busy ? (
-                <LoaderCircle aria-hidden="true" />
-              ) : (
-                <Check aria-hidden="true" />
-              )}
-              {busy ? "Activating" : "Done"}
-            </button>
-          </footer>
-        </>
+      ) : state === "request" || state === "add" ? (
+        <DeviceRequestPanel
+          mode={state === "request" ? "join" : "add"}
+          invoke={invoke}
+          onBack={() => setState("overview")}
+          onConnected={requestConnected}
+        />
       ) : state === "join" || state === "joining" ? (
         <>
           <div className="device-join-content">
-            <Smartphone aria-hidden="true" />
+            <Monitor aria-hidden="true" />
             <div>
               <h3>Join your existing devices</h3>
               <p>
-                {state === "joining" && joiningShortCode
-                  ? "Confirm that this code matches the connected device before it approves you."
+                {state === "joining"
+                  ? joiningProgress === "completed"
+                    ? "Connected. Finishing encrypted setup…"
+                    : "Connecting to your existing devices…"
                   : "Paste the one-time link shown on a device already connected to your Personal Memory."}
               </p>
-              {state === "joining" && joiningShortCode ? (
-                <div
-                  aria-label="Pairing short code"
-                  className="device-short-code"
-                >
-                  {joiningShortCode}
-                </div>
-              ) : null}
             </div>
             <label className="device-join-field">
               <span>Pairing link</span>
@@ -712,9 +746,9 @@ export function DevicesModal({
               {state === "joining" ? (
                 <LoaderCircle aria-hidden="true" />
               ) : (
-                <Laptop aria-hidden="true" />
+                <Monitor aria-hidden="true" />
               )}
-              {state === "joining" ? "Waiting for approval" : "Connect device"}
+              {state === "joining" ? "Connecting…" : "Connect device"}
             </button>
           </footer>
         </>
@@ -725,9 +759,9 @@ export function DevicesModal({
               <div>
                 <h3>Your Personal devices</h3>
                 <p>
-                  Each connected device receives an encrypted local replica of
-                  every eligible closed Captured Session. Koed rebuilds its
-                  Personal Memory locally.
+                  Completed turns from new sessions sync automatically between
+                  your paired devices. Received sessions are read-only and
+                  become Personal Memory locally.
                 </p>
               </div>
               <button
@@ -740,27 +774,107 @@ export function DevicesModal({
                 <RefreshCw aria-hidden="true" />
               </button>
             </div>
+            {activeMembers.length === 1 &&
+            activeMembers[0]?.device_id === localDeviceId ? (
+              <p>
+                No other devices connected yet. Add a device to start syncing.
+              </p>
+            ) : null}
+            {group ? <p role="status">{localSyncSummary(group)}</p> : null}
             <div className="device-list">
               {activeMembers.length ? (
                 activeMembers.map((member, index) => (
                   <div className="device-row" key={member.device_id}>
                     <span>
-                      {index % 2 === 0 ? (
-                        <Laptop aria-hidden="true" />
-                      ) : (
-                        <Smartphone aria-hidden="true" />
-                      )}
+                      <Monitor aria-hidden="true" />
                     </span>
                     <div>
-                      <strong>{deviceName(member.device_id, index)}</strong>
-                      <small>Connected</small>
+                      {editingDevice === member.device_id ? (
+                        <form
+                          className="device-name-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setBusy(true);
+                            setError(null);
+                            void invoke("personal_sync_device_rename", {
+                              deviceId: member.device_id,
+                              name: editedName
+                            })
+                              .then(async () => {
+                                setEditingDevice(null);
+                                await load();
+                              })
+                              .catch((error) => setError(errorMessage(error)))
+                              .finally(() => setBusy(false));
+                          }}
+                        >
+                          <label>
+                            <span>Device name</span>
+                            <input
+                              autoFocus
+                              aria-label="Device name"
+                              value={editedName}
+                              maxLength={80}
+                              disabled={busy}
+                              onChange={(event) =>
+                                setEditedName(event.target.value)
+                              }
+                            />
+                          </label>
+                          <div>
+                            <button
+                              type="submit"
+                              className="device-primary-button"
+                              disabled={busy || !editedName.trim()}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="device-secondary-button"
+                              disabled={busy}
+                              onClick={() => setEditingDevice(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <strong>
+                            {member.label ||
+                              (member.device_id === localDeviceId
+                                ? "This device"
+                                : deviceName(member.device_id, index))}
+                          </strong>
+                          <small>
+                            {member.device_id === localDeviceId
+                              ? "This device · Paired"
+                              : "Paired"}
+                          </small>
+                        </>
+                      )}
                     </div>
-                    <Check aria-label="Active" />
+                    <div className="device-row-actions">
+                      <Check aria-label="Active" />
+                      <button
+                        type="button"
+                        className="device-icon-button"
+                        aria-label={`Rename ${member.label || (member.device_id === localDeviceId ? "this device" : deviceName(member.device_id, index))}`}
+                        disabled={busy || editingDevice !== null}
+                        onClick={() => {
+                          setEditedName(member.label ?? "");
+                          setEditingDevice(member.device_id);
+                        }}
+                      >
+                        <Pencil aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
                 ))
               ) : (
                 <div className="device-empty-state">
-                  <MonitorSmartphone aria-hidden="true" />
+                  <Monitor aria-hidden="true" />
                   <div>
                     <strong>No Personal Device Group yet</strong>
                     <span>
@@ -778,7 +892,7 @@ export function DevicesModal({
                 <button
                   className="device-primary-button"
                   disabled={busy}
-                  onClick={() => void beginInvitation()}
+                  onClick={() => setState("add")}
                   type="button"
                 >
                   {busy ? (
@@ -786,12 +900,12 @@ export function DevicesModal({
                   ) : (
                     <Plus aria-hidden="true" />
                   )}
-                  Pair another device
+                  Add device
                 </button>
               ) : (
                 <p className="device-authority-guidance">
-                  Create the next pairing link on the device that originally set
-                  up this Personal Device Group.
+                  Add devices from the installation that originally created this
+                  Personal Device Group.
                 </p>
               )
             ) : (
@@ -800,12 +914,12 @@ export function DevicesModal({
                   className="device-secondary-button"
                   onClick={() => {
                     setError(null);
-                    setState("join");
+                    setState("request");
                   }}
                   type="button"
                 >
-                  <Laptop aria-hidden="true" />
-                  Join with link
+                  <Monitor aria-hidden="true" />
+                  Connect to an existing device
                 </button>
                 <button
                   className="device-primary-button"

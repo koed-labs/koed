@@ -23,7 +23,7 @@ describe("Personal Sync settings", () => {
       devices: [{ id: "device_one", label: "Laptop", state: "active" }],
       freshness: "2026-07-15T00:00:00.000Z",
       groupId: "group_one",
-      pairing: { challengeId: "challenge_one", shortCode: "12345678" }
+      pairing: { challengeId: "challenge_one" }
     });
     expect(personalSyncStatusLabel("enabled")).toBe("Syncing future Sessions");
     expect(html).toContain(
@@ -31,7 +31,8 @@ describe("Personal Sync settings", () => {
     );
     expect(html).toContain("cannot erase plaintext already downloaded");
     expect(html).toContain('data-personal-sync-revoke="device_one"');
-    expect(html).toContain("12345678");
+    expect(html).toContain("Pairing invitation waiting for connection");
+    expect(html).not.toContain("12345678");
     expect(html).not.toContain("API Token copy");
     expect(html).not.toContain("window.localStorage");
   });
@@ -48,7 +49,7 @@ describe("Personal Sync settings", () => {
             members: [{ device_id: "device_one", state: "active" }]
           }
         ],
-        pairing: { challengeId: "challenge_one", shortCode: "12345678" },
+        pairing: { challengeId: "challenge_one" },
         secretRef: "must-not-be-rendered"
       },
       { ...previous, busy: true }
@@ -58,7 +59,7 @@ describe("Personal Sync settings", () => {
       status: "enabled",
       groupId: "group_one",
       devices: [{ id: "device_one", state: "active" }],
-      pairing: { challengeId: "challenge_one", shortCode: "12345678" }
+      pairing: { challengeId: "challenge_one" }
     });
     expect(renderPersonalSyncSettings(view)).not.toContain(
       "must-not-be-rendered"

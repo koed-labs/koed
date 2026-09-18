@@ -61,12 +61,12 @@ afterEach(() => {
 });
 
 describe("koed-server config", () => {
-  it("defaults source checkout control plane to external dependencies", () => {
+  it("defaults a fresh installation to native Personal services", () => {
     const root = tempDir();
 
     expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
-      runtimeMode: "developer",
-      dependencyMode: "external",
+      runtimeMode: "local-personal",
+      dependencyMode: "bundled-local",
       codexTranscriptWatcherEnabled: true,
       claudeTranscriptWatcherEnabled: true,
       piTranscriptWatcherEnabled: true,

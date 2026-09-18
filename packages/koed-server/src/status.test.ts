@@ -2255,8 +2255,8 @@ describe("status and doctor JSON contracts", () => {
     );
 
     expect(status.koedHome).toBe(root);
-    expect(status.runtimeMode).toBe("developer");
-    expect(status.dependencyMode).toBe("external");
+    expect(status.runtimeMode).toBe("local-personal");
+    expect(status.dependencyMode).toBe("bundled-local");
     expect(status.codex.configured).toBe(false);
     expect(status.captureHook.state).toBe("not_configured");
     expect(status.state).toBe("not_configured");
@@ -2630,7 +2630,13 @@ describe("status and doctor JSON contracts", () => {
   it("formats doctor result with actionable checks", async () => {
     const root = tempDir();
     const doctor = await collectKoedServerDoctor(
-      { KOED_HOME: root, KOED_REPO_ROOT: root, HOME: root },
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_RUNTIME_MODE: "developer",
+        KOED_DEPENDENCY_MODE: "external"
+      },
       {
         fetch: async () => response(false, 503, {}),
         spawnSync: () => spawnResult("", 0),
@@ -2943,6 +2949,8 @@ describe("status and doctor JSON contracts", () => {
     const status = await collectKoedServerStatus(
       {
         KOED_HOME: root,
+        KOED_RUNTIME_MODE: "developer",
+        KOED_DEPENDENCY_MODE: "external",
         KOED_REPO_ROOT: root,
         HOME: root,
         REDIS_URL: "redis://operator:6379",

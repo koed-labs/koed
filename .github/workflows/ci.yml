@@ -323,6 +323,8 @@ jobs:
           node packages/koed-server/dist/cli.js models status --kind embedding --json
 
       - name: Run packaged Desktop native smoke
+        env:
+          KOED_EMBEDDING_ACCELERATION: cpu
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Run packaged Desktop missing-asset smoke
@@ -482,10 +484,14 @@ jobs:
 
       - name: Run complete packaged Desktop smoke with cached model
         if: needs.changes.outputs.clean_model_install != 'true'
+        env:
+          KOED_EMBEDDING_ACCELERATION: cpu
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Run clean external model installation smoke
         if: needs.changes.outputs.clean_model_install == 'true'
+        env:
+          KOED_EMBEDDING_ACCELERATION: cpu
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --export-embedding-model "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Verify clean-installed model before caching

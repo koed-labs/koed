@@ -21,6 +21,10 @@ import {
   signPdsRecord
 } from "./personal-device-sync.js";
 import {
+  aiClientSourceAdapterRegistry,
+  type AiClientSourceRuntime
+} from "./ai-client-source-adapters.js";
+import {
   canonicalizePdsJson,
   parseCanonicalPdsJson,
   parsePdsUint64,
@@ -28,6 +32,8 @@ import {
 } from "./personal-device-sync-jcs.js";
 
 export const PDS_SESSION_PACKAGE_VERSION = "1" as const;
+export const PDS_SESSION_CHECKPOINT_MANIFEST_VERSION = "2" as const;
+export const PDS_SESSION_CHECKPOINT_PROFILE = "cumulative_checkpoint" as const;
 export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES = 512 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNKS = 128;
@@ -117,6 +123,59 @@ export interface PdsSessionManifest {
     records: PdsRawSourceRecord[];
   };
   originSignature: Signature;
+}
+
+/** Explicit V2 profile for signed, cumulative prefixes of a live source Session. */
+export interface PdsSessionCheckpointManifest {
+  protocol: typeof PDS_PROTOCOL;
+  version: typeof PDS_SESSION_CHECKPOINT_MANIFEST_VERSION;
+  profile: typeof PDS_SESSION_CHECKPOINT_PROFILE;
+  packageId: string;
+  originDeploymentId: string;
+  originDeviceId: string;
+  originAuthorityHead: string;
+  originSignedAt: string;
+  sourceSequence: string;
+  sourceType: "captured_session";
+  sourceNativeSessionId: string;
+  sourceFingerprint: string;
+  logicalMemoryId: string;
+  deletionFloorToken: string;
+  sourceClosureHash: string;
+  contentEpoch: string;
+  projectAliasManifest?: PdsProjectAliasManifest;
+  sourceSession: PdsCheckpointSourceSessionMetadata;
+  checkpoint: PdsSessionCheckpointMetadata;
+  terminal: { cursor: string; itemCount: string };
+  rawClosure: {
+    recordCount: string;
+    rawByteCount: string;
+    records: PdsRawSourceRecord[];
+  };
+  originSignature: Signature;
+}
+
+export type PdsSessionSourceManifest =
+  | PdsSessionManifest
+  | PdsSessionCheckpointManifest;
+
+export interface PdsCheckpointSourceSessionMetadata {
+  logicalSessionId: string;
+  externalSessionId: string;
+  forkedFromExternalThreadId?: string;
+  sourceAdapter: string;
+  sourceAdapterVersion: string;
+  sourceRuntime: AiClientSourceRuntime;
+  sourceTitle?: string;
+  captureMethod: "transcript";
+  sourceCreatedAt: string;
+}
+
+export interface PdsSessionCheckpointMetadata {
+  version: "1";
+  ordinal: string;
+  previousClosureHash: string | null;
+  itemCount: string;
 }
 
 export interface PdsRawSourceRecord {
@@ -220,11 +279,37 @@ export interface CreatePdsSessionManifestInput {
   projectAliasManifest?: PdsProjectAliasManifest;
 }
 
+export interface CreatePdsSessionCheckpointManifestInput {
+  runtime: PdsSessionPackageRuntimeContext;
+  originDeploymentId: string;
+  sourceSequence: string;
+  sourceNativeSessionId: string;
+  contentEpoch: string;
+  sourceSession: PdsCheckpointSourceSessionMetadata;
+  checkpoint: Pick<
+    PdsSessionCheckpointMetadata,
+    "version" | "ordinal" | "previousClosureHash"
+  >;
+  terminalCursor: string;
+  items: PdsConversationSourceItem[];
+  sourceFingerprintKey: string | Buffer;
+  tombstoneFloorKey: string | Buffer;
+  originSigningPrivateKey: KeyObject;
+  projectAliasManifest?: PdsProjectAliasManifest;
+}
+
 export interface CreatePdsSessionPackageInput {
   runtime: PdsSessionPackageRuntimeContext;
   expiresAt: string;
   servingSigningPrivateKey: KeyObject;
   manifest: PdsSessionManifest;
+}
+
+export interface CreatePdsSessionCheckpointPackageInput extends Omit<
+  CreatePdsSessionPackageInput,
+  "manifest"
+> {
+  manifest: PdsSessionCheckpointManifest;
 }
 
 export interface CreatePdsEncryptedPayloadPackageInput {
@@ -670,7 +755,10 @@ const without = (value: object, field: string): JsonRecord => {
 };
 
 const verifyRecord = (
-  recordType: "source-manifest" | "transport-envelope",
+  recordType:
+    | "source-manifest"
+    | "source-checkpoint-manifest"
+    | "transport-envelope",
   unsigned: JsonRecord,
   wrapper: Signature,
   publicKey: string | Buffer
@@ -783,6 +871,73 @@ const validateClosedSession = (value: unknown): PdsClosedSessionMetadata => {
   return session as unknown as PdsClosedSessionMetadata;
 };
 
+const validateCheckpointSourceSession = (
+  value: unknown
+): PdsCheckpointSourceSessionMetadata => {
+  const session = own(value, "checkpoint source session");
+  exact(
+    session,
+    [
+      "logicalSessionId",
+      "externalSessionId",
+      "sourceAdapter",
+      "sourceAdapterVersion",
+      "sourceRuntime",
+      "captureMethod",
+      "sourceCreatedAt",
+      ...(Object.hasOwn(session, "forkedFromExternalThreadId")
+        ? ["forkedFromExternalThreadId"]
+        : []),
+      ...(Object.hasOwn(session, "sourceTitle") ? ["sourceTitle"] : [])
+    ],
+    "checkpoint source session"
+  );
+  if (session.captureMethod !== "transcript") {
+    throw new TypeError("PDS checkpoint source session is invalid");
+  }
+  for (const field of [
+    "logicalSessionId",
+    "externalSessionId",
+    "sourceAdapter",
+    "sourceAdapterVersion"
+  ]) {
+    requireId(session[field], field);
+  }
+  if (
+    typeof session.sourceRuntime !== "string" ||
+    !aiClientSourceAdapterRegistry.some(
+      (adapter) =>
+        adapter.sourceKind === session.sourceAdapter &&
+        adapter.sourceRuntime === session.sourceRuntime
+    )
+  ) {
+    throw new TypeError("PDS checkpoint source runtime is unsupported");
+  }
+  if (Object.hasOwn(session, "forkedFromExternalThreadId")) {
+    requireId(session.forkedFromExternalThreadId, "forkedFromExternalThreadId");
+  }
+  if (Object.hasOwn(session, "sourceTitle")) {
+    const title = session.sourceTitle;
+    const hasAsciiControl =
+      typeof title === "string" &&
+      Array.from(title).some((character) => {
+        const code = character.charCodeAt(0);
+        return code <= 0x1f || code === 0x7f;
+      });
+    if (
+      typeof title !== "string" ||
+      title.length === 0 ||
+      title.length > 240 ||
+      Buffer.byteLength(title, "utf8") > 960 ||
+      hasAsciiControl
+    ) {
+      throw new TypeError("PDS checkpoint source title is invalid");
+    }
+  }
+  requireIso(session.sourceCreatedAt, "sourceCreatedAt");
+  return session as unknown as PdsCheckpointSourceSessionMetadata;
+};
+
 const validateProjectAliases = (
   value: unknown,
   epoch: string
@@ -893,11 +1048,21 @@ const sourcePackageId = (
     ])
   );
 
-const sourceManifestHash = (manifest: PdsSessionManifest): string =>
+const checkpointPackageId = (
+  manifest: Omit<PdsSessionCheckpointManifest, "originSignature">
+): string =>
+  sha256(
+    Buffer.concat([
+      Buffer.from(`${PDS_PROTOCOL}/checkpoint-package-id\n`, "utf8"),
+      bytes(without(manifest, "packageId"))
+    ])
+  );
+
+const sourceManifestHash = (manifest: PdsSessionSourceManifest): string =>
   sha256(bytes(without(manifest, "originSignature")));
 
 const preparedSourceClosure = (
-  input: CreatePdsSessionManifestInput
+  input: Pick<CreatePdsSessionManifestInput, "terminalCursor" | "items">
 ): {
   records: PdsRawSourceRecord[];
   rawByteCount: number;
@@ -1026,6 +1191,119 @@ export const createPdsSessionManifest = (
     runtime.serving.signingPublicKey
   );
   return validatePdsSessionManifest(manifest);
+};
+
+export const createPdsSessionCheckpointManifest = (
+  input: CreatePdsSessionCheckpointManifestInput
+): PdsSessionCheckpointManifest => {
+  const runtime = assertRuntimeContext(input.runtime);
+  requireRelayId(input.originDeploymentId, "originDeploymentId");
+  requireUint64(input.sourceSequence, "sourceSequence");
+  requireId(input.sourceNativeSessionId, "sourceNativeSessionId");
+  const sourceFingerprintKey =
+    typeof input.sourceFingerprintKey === "string"
+      ? decodePdsBase64url(input.sourceFingerprintKey, 32)
+      : input.sourceFingerprintKey;
+  const tombstoneFloorKey =
+    typeof input.tombstoneFloorKey === "string"
+      ? decodePdsBase64url(input.tombstoneFloorKey, 32)
+      : input.tombstoneFloorKey;
+  if (
+    sourceFingerprintKey.length !== 32 ||
+    tombstoneFloorKey.length !== 32 ||
+    timingSafeEqual(sourceFingerprintKey, tombstoneFloorKey)
+  ) {
+    throw new TypeError(
+      "PDS source fingerprint and tombstone keys must differ"
+    );
+  }
+  requireUint64(input.contentEpoch, "contentEpoch");
+  requireRelayId(runtime.serving.signingKeyId, "originSigningKeyId");
+  const sourceSession = validateCheckpointSourceSession(input.sourceSession);
+  const checkpointInput = own(input.checkpoint, "checkpoint metadata");
+  exact(
+    checkpointInput,
+    ["version", "ordinal", "previousClosureHash"],
+    "checkpoint metadata"
+  );
+  if (checkpointInput.version !== "1") {
+    throw new TypeError("PDS checkpoint metadata version is invalid");
+  }
+  const ordinal = requireUint64(checkpointInput.ordinal, "checkpoint ordinal");
+  const previousClosureHash = checkpointInput.previousClosureHash;
+  if (ordinal === "0") {
+    if (previousClosureHash !== null) {
+      throw new TypeError("PDS first checkpoint has a previous closure hash");
+    }
+  } else {
+    requireHash(previousClosureHash, "previous checkpoint closure hash");
+  }
+  if (input.projectAliasManifest)
+    validateProjectAliases(input.projectAliasManifest, input.contentEpoch);
+  const closure = preparedSourceClosure(input);
+  const fingerprint = pdsSourceFingerprint(
+    input.sourceFingerprintKey,
+    input.sourceNativeSessionId
+  );
+  const unsigned: Omit<PdsSessionCheckpointManifest, "originSignature"> = {
+    protocol: PDS_PROTOCOL,
+    version: PDS_SESSION_CHECKPOINT_MANIFEST_VERSION,
+    profile: PDS_SESSION_CHECKPOINT_PROFILE,
+    packageId: "",
+    originDeploymentId: input.originDeploymentId,
+    originDeviceId: runtime.serving.deviceId,
+    originAuthorityHead: input.runtime.authorityHead,
+    originSignedAt: runtime.now.toISOString(),
+    sourceSequence: input.sourceSequence,
+    sourceType: "captured_session",
+    sourceNativeSessionId: input.sourceNativeSessionId,
+    sourceFingerprint: fingerprint,
+    logicalMemoryId: pdsLogicalMemoryId(input.tombstoneFloorKey, fingerprint),
+    deletionFloorToken: pdsDeletionFloorToken(
+      input.tombstoneFloorKey,
+      fingerprint
+    ),
+    sourceClosureHash: sourceClosureHash(closure.records),
+    contentEpoch: input.contentEpoch,
+    ...(input.projectAliasManifest
+      ? { projectAliasManifest: input.projectAliasManifest }
+      : {}),
+    sourceSession,
+    checkpoint: {
+      version: "1",
+      ordinal,
+      previousClosureHash: previousClosureHash as string | null,
+      itemCount: String(closure.records.length)
+    },
+    terminal: {
+      cursor: input.terminalCursor,
+      itemCount: String(closure.records.length)
+    },
+    rawClosure: {
+      recordCount: String(closure.records.length),
+      rawByteCount: String(closure.rawByteCount),
+      records: closure.records
+    }
+  };
+  unsigned.packageId = checkpointPackageId(unsigned);
+  const manifest: PdsSessionCheckpointManifest = {
+    ...unsigned,
+    originSignature: {
+      signerKeyId: runtime.serving.signingKeyId,
+      signature: signPdsRecord(
+        "source-checkpoint-manifest",
+        unsigned,
+        input.originSigningPrivateKey
+      )
+    }
+  };
+  verifyRecord(
+    "source-checkpoint-manifest",
+    without(manifest, "originSignature"),
+    manifest.originSignature,
+    runtime.serving.signingPublicKey
+  );
+  return validatePdsSessionCheckpointManifest(manifest);
 };
 
 const validateRawRecord = (
@@ -1197,10 +1475,204 @@ export const validatePdsSessionManifest = (
   value: unknown
 ): PdsSessionManifest => {
   const manifest = own(value, "source manifest");
+  if (
+    Object.hasOwn(manifest, "profile") ||
+    Object.hasOwn(manifest, "version")
+  ) {
+    throw new TypeError(
+      "PDS V1 session manifest does not support this profile"
+    );
+  }
   validateManifestIdentity(manifest);
   validateManifestClosure(manifest);
   validateManifestPackageId(manifest);
   return manifest as unknown as PdsSessionManifest;
+};
+
+const checkpointManifestFields = [
+  "protocol",
+  "version",
+  "profile",
+  "packageId",
+  "originDeploymentId",
+  "originDeviceId",
+  "originAuthorityHead",
+  "originSignedAt",
+  "sourceSequence",
+  "sourceType",
+  "sourceNativeSessionId",
+  "sourceFingerprint",
+  "logicalMemoryId",
+  "deletionFloorToken",
+  "sourceClosureHash",
+  "contentEpoch",
+  "sourceSession",
+  "checkpoint",
+  "terminal",
+  "rawClosure",
+  "originSignature"
+];
+
+export const isPdsSessionCheckpointManifest = (
+  value: unknown
+): value is PdsSessionCheckpointManifest => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as JsonRecord;
+  return (
+    record.version === PDS_SESSION_CHECKPOINT_MANIFEST_VERSION &&
+    record.profile === PDS_SESSION_CHECKPOINT_PROFILE
+  );
+};
+
+export const validatePdsSessionCheckpointManifest = (
+  value: unknown
+): PdsSessionCheckpointManifest => {
+  const manifest = own(value, "checkpoint source manifest");
+  exact(
+    manifest,
+    "projectAliasManifest" in manifest
+      ? [...checkpointManifestFields, "projectAliasManifest"]
+      : checkpointManifestFields,
+    "checkpoint source manifest"
+  );
+  if (
+    manifest.protocol !== PDS_PROTOCOL ||
+    manifest.version !== PDS_SESSION_CHECKPOINT_MANIFEST_VERSION ||
+    manifest.profile !== PDS_SESSION_CHECKPOINT_PROFILE ||
+    manifest.sourceType !== "captured_session"
+  ) {
+    throw new TypeError("PDS checkpoint source profile is invalid");
+  }
+  for (const field of ["originDeploymentId", "originDeviceId"])
+    requireRelayId(manifest[field], field);
+  requireHash(manifest.originAuthorityHead, "origin authority head");
+  requireIso(manifest.originSignedAt, "origin signed at");
+  requireId(manifest.sourceNativeSessionId, "sourceNativeSessionId");
+  for (const field of ["sourceSequence", "contentEpoch"])
+    requireUint64(manifest[field], field);
+  for (const field of [
+    "packageId",
+    "sourceFingerprint",
+    "logicalMemoryId",
+    "deletionFloorToken",
+    "sourceClosureHash"
+  ]) {
+    requireHash(manifest[field], field);
+  }
+  validateCheckpointSourceSession(manifest.sourceSession);
+  const checkpoint = own(manifest.checkpoint, "checkpoint metadata");
+  exact(
+    checkpoint,
+    ["version", "ordinal", "previousClosureHash", "itemCount"],
+    "checkpoint metadata"
+  );
+  if (checkpoint.version !== "1") {
+    throw new TypeError("PDS checkpoint metadata version is invalid");
+  }
+  const ordinal = requireUint64(checkpoint.ordinal, "checkpoint ordinal");
+  requireUint64(checkpoint.itemCount, "checkpoint item count");
+  if (ordinal === "0") {
+    if (checkpoint.previousClosureHash !== null) {
+      throw new TypeError("PDS first checkpoint has a previous closure hash");
+    }
+  } else {
+    requireHash(
+      checkpoint.previousClosureHash,
+      "previous checkpoint closure hash"
+    );
+  }
+  if ("projectAliasManifest" in manifest) {
+    validateProjectAliases(
+      manifest.projectAliasManifest,
+      manifest.contentEpoch as string
+    );
+  }
+  validateManifestClosure(manifest);
+  const terminal = own(manifest.terminal, "terminal");
+  if (checkpoint.itemCount !== terminal.itemCount) {
+    throw new TypeError("PDS checkpoint item count is inconsistent");
+  }
+  const unsigned = without(manifest, "originSignature") as Omit<
+    PdsSessionCheckpointManifest,
+    "originSignature"
+  >;
+  if (manifest.packageId !== checkpointPackageId(unsigned)) {
+    throw new TypeError("PDS checkpoint package ID is invalid");
+  }
+  const originSignature = signature(manifest.originSignature);
+  requireRelayId(originSignature.signerKeyId, "origin signing key ID");
+  if (bytes(manifest).length > PDS_SESSION_PACKAGE_MAX_BYTES) {
+    throw new RangeError("PDS checkpoint manifest exceeds package size limit");
+  }
+  return manifest as unknown as PdsSessionCheckpointManifest;
+};
+
+/** Validates that a signed cumulative checkpoint is the immediate next prefix. */
+export const validatePdsSessionCheckpointAppend = (
+  previousValue: unknown,
+  currentValue: unknown
+): PdsSessionCheckpointManifest => {
+  const previous = validatePdsSessionCheckpointManifest(previousValue);
+  const current = validatePdsSessionCheckpointManifest(currentValue);
+  const stableSourceSession = (
+    sourceSession: PdsCheckpointSourceSessionMetadata
+  ): JsonRecord => {
+    const stable = { ...sourceSession } as JsonRecord;
+    delete stable.sourceTitle;
+    return stable;
+  };
+  if (
+    current.originDeploymentId !== previous.originDeploymentId ||
+    current.originDeviceId !== previous.originDeviceId ||
+    current.sourceNativeSessionId !== previous.sourceNativeSessionId ||
+    current.sourceFingerprint !== previous.sourceFingerprint ||
+    current.logicalMemoryId !== previous.logicalMemoryId ||
+    current.deletionFloorToken !== previous.deletionFloorToken ||
+    canonicalizePdsJson(stableSourceSession(current.sourceSession)) !==
+      canonicalizePdsJson(stableSourceSession(previous.sourceSession))
+  ) {
+    throw new TypeError("PDS checkpoint source identity changed");
+  }
+  if (
+    BigInt(current.sourceSequence) <= BigInt(previous.sourceSequence) ||
+    BigInt(current.checkpoint.ordinal) !==
+      BigInt(previous.checkpoint.ordinal) + 1n ||
+    current.checkpoint.previousClosureHash !== previous.sourceClosureHash ||
+    BigInt(current.checkpoint.itemCount) <=
+      BigInt(previous.checkpoint.itemCount)
+  ) {
+    throw new TypeError("PDS checkpoint does not append the prior checkpoint");
+  }
+  const priorRecords = previous.rawClosure.records;
+  const currentPrefix = current.rawClosure.records.slice(
+    0,
+    priorRecords.length
+  );
+  if (
+    currentPrefix.length !== priorRecords.length ||
+    canonicalizePdsJson(currentPrefix) !== canonicalizePdsJson(priorRecords)
+  ) {
+    throw new TypeError(
+      "PDS checkpoint source records do not extend prior prefix"
+    );
+  }
+  return current;
+};
+
+/** Dispatches only on an explicit new profile; V1 remains a closed-session schema. */
+export const validatePdsSessionSourceManifest = (
+  value: unknown
+): PdsSessionSourceManifest => {
+  if (isPdsSessionCheckpointManifest(value)) {
+    return validatePdsSessionCheckpointManifest(value);
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as JsonRecord;
+    if (Object.hasOwn(record, "profile") || Object.hasOwn(record, "version")) {
+      throw new TypeError("PDS source manifest profile is unsupported");
+    }
+  }
+  return validatePdsSessionManifest(value);
 };
 
 export const verifyPdsSessionManifest = (
@@ -1218,6 +1690,43 @@ export const verifyPdsSessionManifest = (
     originSigningPublicKey
   );
   return manifest;
+};
+
+export const verifyPdsSessionCheckpointManifest = (
+  value: unknown,
+  originSigningPublicKey: string | Buffer,
+  expectedOriginSigningKeyId: string
+): PdsSessionCheckpointManifest => {
+  const manifest = validatePdsSessionCheckpointManifest(value);
+  if (manifest.originSignature.signerKeyId !== expectedOriginSigningKeyId) {
+    throw new TypeError("PDS origin signing key does not match");
+  }
+  verifyRecord(
+    "source-checkpoint-manifest",
+    without(manifest, "originSignature"),
+    manifest.originSignature,
+    originSigningPublicKey
+  );
+  return manifest;
+};
+
+export const verifyPdsSessionSourceManifest = (
+  value: unknown,
+  originSigningPublicKey: string | Buffer,
+  expectedOriginSigningKeyId: string
+): PdsSessionSourceManifest => {
+  const manifest = validatePdsSessionSourceManifest(value);
+  return isPdsSessionCheckpointManifest(manifest)
+    ? verifyPdsSessionCheckpointManifest(
+        manifest,
+        originSigningPublicKey,
+        expectedOriginSigningKeyId
+      )
+    : verifyPdsSessionManifest(
+        manifest,
+        originSigningPublicKey,
+        expectedOriginSigningKeyId
+      );
 };
 
 const envelopeAad = (
@@ -1853,6 +2362,24 @@ export const createPdsSessionPackage = (
   });
 };
 
+export const createPdsSessionCheckpointPackage = (
+  input: CreatePdsSessionCheckpointPackageInput
+): PdsSessionPackage => {
+  const manifest = validatePdsSessionCheckpointManifest(input.manifest);
+  const runtime = assertRuntimeContext(input.runtime);
+  verifyOriginMembership(manifest, runtime);
+  return createPdsEncryptedPayloadPackage({
+    runtime,
+    expiresAt: input.expiresAt,
+    servingSigningPrivateKey: input.servingSigningPrivateKey,
+    packageId: manifest.packageId,
+    manifestHash: sourceManifestHash(manifest),
+    originDeviceId: manifest.originDeviceId,
+    contentEpoch: manifest.contentEpoch,
+    plaintext: bytes(manifest)
+  });
+};
+
 /**
  * Shared bounded E2EE transport for immutable PDS source and artifact
  * plaintext. Callers remain responsible for validating and signing the
@@ -2057,7 +2584,7 @@ export const classifyPdsSessionPackageReplay = (
 };
 
 const verifyOriginMembership = (
-  manifest: PdsSessionManifest,
+  manifest: PdsSessionSourceManifest,
   runtime: PdsSessionPackageRuntimeContext
 ): void => {
   const signedAt = new Date(manifest.originSignedAt);
@@ -2100,23 +2627,26 @@ const verifyOriginMembership = (
   ) {
     throw new TypeError("PDS historical origin key roles must be distinct");
   }
+  const recordType = isPdsSessionCheckpointManifest(manifest)
+    ? "source-checkpoint-manifest"
+    : "source-manifest";
   verifyRecord(
-    "source-manifest",
+    recordType,
     without(manifest, "originSignature"),
     manifest.originSignature,
     signingPublicKey
   );
 };
 
-/** Public verifier accepts only bounded canonical UTF-8 wire bytes. */
-export const verifyAndDecryptPdsSessionPackage = (
+/** Public verifier dispatches only on an explicit signed manifest profile. */
+export const verifyAndDecryptPdsSessionSourcePackage = (
   value: string | Uint8Array,
   input: VerifyPdsSessionPackageInput
-): PdsSessionManifest => {
+): PdsSessionSourceManifest => {
   const decrypted = decryptPdsEncryptedPayloadPackage(value, input);
   const pkg = decrypted.package;
   const plaintext = Buffer.from(decrypted.plaintext);
-  const manifest = validatePdsSessionManifest(
+  const manifest = validatePdsSessionSourceManifest(
     parsePdsWireJson(
       plaintext,
       PDS_SESSION_PACKAGE_MAX_BYTES,
@@ -2140,6 +2670,20 @@ export const verifyAndDecryptPdsSessionPackage = (
     )
   )
     throw new TypeError("PDS deletion floor rejects source package");
+  return manifest;
+};
+
+/** V1-only compatibility entry point; checkpoint packages use the source dispatcher. */
+export const verifyAndDecryptPdsSessionPackage = (
+  value: string | Uint8Array,
+  input: VerifyPdsSessionPackageInput
+): PdsSessionManifest => {
+  const manifest = verifyAndDecryptPdsSessionSourcePackage(value, input);
+  if (isPdsSessionCheckpointManifest(manifest)) {
+    throw new TypeError(
+      "PDS session package contains a cumulative checkpoint profile"
+    );
+  }
   return manifest;
 };
 
@@ -2218,6 +2762,28 @@ export const parsePdsSessionManifestJson = (
   input: string | Uint8Array
 ): PdsSessionManifest =>
   validatePdsSessionManifest(
+    parsePdsWireJson(
+      input,
+      PDS_SESSION_PACKAGE_MAX_BYTES,
+      "source manifest JSON"
+    )
+  );
+
+export const parsePdsSessionCheckpointManifestJson = (
+  input: string | Uint8Array
+): PdsSessionCheckpointManifest =>
+  validatePdsSessionCheckpointManifest(
+    parsePdsWireJson(
+      input,
+      PDS_SESSION_PACKAGE_MAX_BYTES,
+      "checkpoint source manifest JSON"
+    )
+  );
+
+export const parsePdsSessionSourceManifestJson = (
+  input: string | Uint8Array
+): PdsSessionSourceManifest =>
+  validatePdsSessionSourceManifest(
     parsePdsWireJson(
       input,
       PDS_SESSION_PACKAGE_MAX_BYTES,

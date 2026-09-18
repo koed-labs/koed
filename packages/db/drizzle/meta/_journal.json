@@ -288,6 +288,13 @@
       "when": 1789129599334,
       "tag": "0040_repair_conversation_start_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789477046920,
+      "tag": "0041_personal_session_checkpoints",
+      "breakpoints": true
     }
   ]
 }

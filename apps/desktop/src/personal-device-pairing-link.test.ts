@@ -5,12 +5,18 @@ import {
 } from "./personal-device-pairing-link.js";
 
 const invitationId = "11111111-2222-4333-8444-555555555555";
+const hexadecimalInvitationId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789";
 const link = `http://192.168.1.20:3310/pair/${invitationId}#token=${token}`;
+const tailscaleLink = `http://100.98.6.2:3310/pair/${invitationId}#token=${token}`;
 
 describe("Personal Device pairing links", () => {
   it("accepts exact private-network invitation and deep-link forms", () => {
     expect(parsePersonalDevicePairingLink(link)).toMatchObject({
+      invitationId,
+      token
+    });
+    expect(parsePersonalDevicePairingLink(tailscaleLink)).toMatchObject({
       invitationId,
       token
     });
@@ -24,6 +30,14 @@ describe("Personal Device pairing links", () => {
         `koed-pair://redeem?url=${encodeURIComponent(link)}`
       )
     ).toBe(link);
+  });
+
+  it("accepts hexadecimal UUID invitation ids", () => {
+    const hexadecimalLink = `http://192.168.1.20:3310/pair/${hexadecimalInvitationId}#token=${token}`;
+    expect(parsePersonalDevicePairingLink(hexadecimalLink)).toMatchObject({
+      invitationId: hexadecimalInvitationId,
+      token
+    });
   });
 
   it.each([

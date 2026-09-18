@@ -3,13 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
   parseCanonicalPdsJson,
+  pdsSessionPackageDigest,
   signPdsRecord
 } from "@koed/shared";
 import {
   createReloadablePdsSecureKeyProviderFromEnvironment,
   createPdsSecureRuntimeFromEnvironment,
   createPdsSecureRuntimeForApiStartup,
-  pdsSecureProviderEnvironment,
+  serializePdsCheckpointSourceForEncryptedStorage,
   serializePdsPackageForEncryptedStorage
 } from "./secure-runtime.js";
 
@@ -73,7 +74,7 @@ const reloadableRuntimeSecret = () => {
     groupId,
     device: {
       id: deviceId,
-      originDeploymentId: "deployment-one",
+      originDeploymentId: randomBytes(16).toString("base64url"),
       signingKeyId,
       signingPrivateSeed: signing.privateSeed,
       kemKeyId,
@@ -114,14 +115,6 @@ describe("PDS secure runtime", () => {
     });
   });
 
-  it("runs the Desktop secret bridge provider through Electron's Node mode", () => {
-    expect(
-      pdsSecureProviderEnvironment({
-        PDS_SECRET_PROVIDER: "desktop_bridge"
-      }).ELECTRON_RUN_AS_NODE
-    ).toBe("1");
-  });
-
   it("loads and verifies a headless authority signer by opaque reference", async () => {
     const pair = generateKeyPairSync("ed25519");
     const privateJwk = pair.privateKey.export({ format: "jwk" });
@@ -154,13 +147,13 @@ describe("PDS secure runtime", () => {
     expect(runtime.secureKeyProvider).toBeNull();
   });
 
-  it("loads a separate local authority from the Desktop secret bridge", async () => {
+  it("loads a separate local authority from the application provider", async () => {
     const pair = generateKeyPairSync("ed25519");
     const privateJwk = pair.privateKey.export({ format: "jwk" });
     const runtime = await createPdsSecureRuntimeFromEnvironment(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
       },
       {
@@ -189,8 +182,8 @@ describe("PDS secure runtime", () => {
     const delays: number[] = [];
     const runtime = await createPdsSecureRuntimeForApiStartup(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
       },
       {
@@ -224,8 +217,8 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeForApiStartup(
         {
-          PDS_SECRET_PROVIDER: "desktop_bridge",
-          PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_AUTHORITY_SECRET_REF: "pds-authority"
         },
         {
@@ -237,6 +230,54 @@ describe("PDS secure runtime", () => {
     ).rejects.toThrow(
       "Configured Personal Device Sync authority could not be loaded."
     );
+  });
+
+  it("mints a new Authority key on a genuinely fresh installation", async () => {
+    const stored: Record<string, string> = {};
+    const runtime = await createPdsSecureRuntimeForApiStartup(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_AUTHORITY_SECRET_REF: "pds-authority"
+      },
+      {
+        attempts: 1,
+        resolveHeadlessSecret: async (reference) => stored[reference] ?? null,
+        putHeadlessSecret: (reference, value) => {
+          stored[reference] = value;
+          return true;
+        },
+        hasAnyPersonalDeviceGroup: async () => false
+      }
+    );
+
+    expect(runtime.authoritySigner).not.toBeNull();
+    expect(stored["pds-authority"]).toBeDefined();
+  });
+
+  it("fails closed instead of minting when an existing Personal Device Group has no matching Authority key", async () => {
+    let putCalled = false;
+    await expect(
+      createPdsSecureRuntimeForApiStartup(
+        {
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+          PDS_AUTHORITY_SECRET_REF: "pds-authority"
+        },
+        {
+          attempts: 1,
+          resolveHeadlessSecret: async () => null,
+          putHeadlessSecret: () => {
+            putCalled = true;
+            return true;
+          },
+          hasAnyPersonalDeviceGroup: async () => true
+        }
+      )
+    ).rejects.toThrow(
+      "Detected an existing Personal Device Group with no matching Authority key"
+    );
+    expect(putCalled).toBe(false);
   });
 
   it("refuses a configured authority without a secure provider", async () => {
@@ -309,8 +350,8 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeFromEnvironment(
         {
-          PDS_SECRET_PROVIDER: "desktop_bridge",
-          PDS_SECRET_PROVIDER_COMMAND: "/desktop/bridge",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
         },
         { resolveHeadlessSecret: async () => secret }
@@ -318,13 +359,13 @@ describe("PDS secure runtime", () => {
     ).resolves.toEqual({ authoritySigner: null, secureKeyProvider: null });
   });
 
-  it("adopts a protected Desktop runtime after API startup", async () => {
+  it("adopts a protected application runtime after API startup", async () => {
     let stored: string | null = null;
     const resolved: string[] = [];
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
       },
       {
@@ -368,5 +409,148 @@ describe("PDS secure runtime", () => {
       "desktop-pds-ref",
       "desktop-pds-ref"
     ]);
+  });
+
+  it("builds an authenticated cumulative checkpoint while the source Session stays open", async () => {
+    const secret = reloadableRuntimeSecret();
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      { resolveHeadlessSecret: async () => JSON.stringify(secret) }
+    );
+    const context = await provider?.getSourceContext({
+      userId: secret.userId,
+      groupId: secret.groupId
+    });
+    if (!context) throw new Error("Expected a configured PDS source context");
+
+    const built = await context.buildCompletedTurnCheckpointPackage({
+      source: {
+        groupDbId: "group-db",
+        groupId: secret.groupId,
+        sessionId: "session",
+        logicalSessionId: "logical-session",
+        externalSessionId: "native-session",
+        forkedFromExternalThreadId: null,
+        sourceRuntime: "pi",
+        sourceAdapter: "pi",
+        sourceAdapterVersion: "pi-session-v1",
+        sourceCreatedAt: "2026-07-15T00:00:00.000Z",
+        items: []
+      },
+      sourceSequence: "0",
+      checkpoint: {
+        version: "1",
+        ordinal: "0",
+        previousClosureHash: null
+      },
+      items: [
+        {
+          sourceNativeItemId: "native-item",
+          sequence: "0",
+          sourceTimestamp: "2026-07-15T00:00:01.000Z",
+          observedAt: "2026-07-15T00:00:02.000Z",
+          actor: "assistant",
+          type: "agent_message",
+          content: "done",
+          metadata: { sourceRole: "assistant" }
+        }
+      ]
+    });
+
+    expect(built.package.header.packageId).toBeTruthy();
+    expect(built.package.header.sourceManifestHash).toBe(
+      built.sourceManifestHash
+    );
+    expect(built.manifest).toMatchObject({
+      version: "2",
+      profile: "cumulative_checkpoint",
+      packageId: built.package.header.packageId,
+      sourceClosureHash: built.sourceClosureHash
+    });
+    expect(built.package.packageDigest).toBe(
+      pdsSessionPackageDigest({
+        header: built.package.header,
+        envelopes: built.package.envelopes,
+        chunks: built.package.chunks
+      })
+    );
+    expect(
+      parseCanonicalPdsJson(
+        serializePdsCheckpointSourceForEncryptedStorage({
+          manifest: built.manifest,
+          package: built.package
+        })
+      )
+    ).toMatchObject({
+      kind: "pds_checkpoint_source_v1",
+      manifest: {
+        packageId: built.package.header.packageId,
+        sourceClosureHash: built.sourceClosureHash
+      },
+      package: {
+        header: { packageId: built.package.header.packageId },
+        packageDigest: built.package.packageDigest
+      }
+    });
+  });
+
+  it("accepts the Codex app-server session adapter version for the Codex runtime", async () => {
+    const secret = reloadableRuntimeSecret();
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      { resolveHeadlessSecret: async () => JSON.stringify(secret) }
+    );
+    const context = await provider?.getSourceContext({
+      userId: secret.userId,
+      groupId: secret.groupId
+    });
+    if (!context) throw new Error("Expected a configured PDS source context");
+
+    const built = await context.buildCompletedTurnCheckpointPackage({
+      source: {
+        groupDbId: "group-db",
+        groupId: secret.groupId,
+        sessionId: "session",
+        logicalSessionId: "logical-session",
+        externalSessionId: "native-session",
+        forkedFromExternalThreadId: null,
+        sourceRuntime: "codex",
+        sourceAdapter: "codex",
+        sourceAdapterVersion: "codex-app-server-v1",
+        sourceCreatedAt: "2026-07-15T00:00:00.000Z",
+        items: []
+      },
+      sourceSequence: "0",
+      checkpoint: {
+        version: "1",
+        ordinal: "0",
+        previousClosureHash: null
+      },
+      items: [
+        {
+          sourceNativeItemId: "native-item",
+          sequence: "0",
+          sourceTimestamp: "2026-07-15T00:00:01.000Z",
+          observedAt: "2026-07-15T00:00:02.000Z",
+          actor: "assistant",
+          type: "agent_message",
+          content: "done",
+          metadata: { sourceRole: "assistant" }
+        }
+      ]
+    });
+
+    expect(built.package.header.packageId).toBeTruthy();
+    expect(built.sourceManifestHash).toBe(
+      built.package.header.sourceManifestHash
+    );
   });
 });

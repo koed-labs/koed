@@ -650,6 +650,14 @@ export const smokePackagedRendererFaults = async ({
   } finally {
     cdp?.close();
     await terminateChild(child);
-    rmSync(userDataDir, { recursive: true, force: true });
+    // Electron's own helper/GPU processes can briefly outlive the main
+    // process and still hold file handles in userDataDir, racing this
+    // recursive delete with ENOTEMPTY; retry to absorb that.
+    rmSync(userDataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200
+    });
   }
 };
