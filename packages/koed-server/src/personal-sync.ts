@@ -1140,13 +1140,24 @@ const pairingInvitationBinding = (
   ] as const) {
     try {
       const url = new URL(value as string);
+      const isControl = field === "control";
+      const validRelayPath =
+        url.pathname === "/pds" ||
+        /^\/pds\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          url.pathname
+        );
       if (
         (url.protocol !== "http:" && url.protocol !== "https:") ||
         !url.hostname ||
         url.username ||
         url.password ||
         url.search ||
-        url.hash
+        (isControl && (url.hash || !url.pathname.endsWith("/exchange"))) ||
+        (!isControl &&
+          (!validRelayPath ||
+            (url.pathname === "/pds" && url.hash) ||
+            (url.pathname !== "/pds" &&
+              !/^#token=[A-Za-z0-9_-]{43}$/.test(url.hash))))
       ) {
         throw new Error();
       }

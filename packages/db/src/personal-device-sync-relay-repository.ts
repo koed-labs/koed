@@ -26,6 +26,19 @@ const publicError = (): Error =>
   Object.assign(new Error("PDS relay resource is unavailable"), {
     statusCode: 404
   });
+
+export const pdsRelayCertificateEpochAllowed = (
+  certificateEpoch: unknown,
+  currentEpoch: unknown,
+  allowStaleHead: boolean
+): boolean => {
+  const canonicalEpoch = (value: unknown): value is string =>
+    typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+  if (!canonicalEpoch(certificateEpoch) || !canonicalEpoch(currentEpoch))
+    return false;
+  if (certificateEpoch === currentEpoch) return true;
+  return allowStaleHead && BigInt(certificateEpoch) < BigInt(currentEpoch);
+};
 const securityError = (message = "PDS relay integrity check failed"): Error =>
   Object.assign(new Error(message), { statusCode: 409 });
 const number = (value: string): number => {
@@ -49,7 +62,7 @@ export interface PdsRelayAuthContext {
   signingPublicKey: string;
   recipientDeviceIds: string[];
   certificate: Record<string, unknown>;
-  /** Control plane alone accepts active same-epoch certificate at prior head. */
+  /** Control plane alone accepts an active unexpired prior-head/epoch certificate. */
   allowStaleHead?: boolean;
 }
 
@@ -165,7 +178,11 @@ const assertCurrentRelayAuth = async (
     ) ||
     certificate.groupId !== group.group_id ||
     (!input.allowStaleHead && certificate.statementHash !== group.head_hash) ||
-    certificate.epoch !== group.current_epoch ||
+    !pdsRelayCertificateEpochAllowed(
+      certificate.epoch,
+      group.current_epoch,
+      input.allowStaleHead === true
+    ) ||
     certificate.deviceId !== input.deviceId ||
     certificate.deviceSigningKeyId !== input.signingKeyId
   ) {
@@ -314,7 +331,11 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         ) ||
         (!input.allowStaleHead &&
           certificate.statementHash !== group.head_hash) ||
-        certificate.epoch !== group.current_epoch ||
+        !pdsRelayCertificateEpochAllowed(
+          certificate.epoch,
+          group.current_epoch,
+          input.allowStaleHead === true
+        ) ||
         certificate.deviceId !== input.proof.deviceId ||
         certificate.deviceSigningKeyId !== input.proof.deviceSigningKeyId
       ) {

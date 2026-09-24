@@ -17,6 +17,10 @@ import {
 } from "@koed/shared";
 import { isPersonalDevicePairingUuid } from "./personal-device-pairing-link.js";
 import {
+  normalizeDeviceRequestRelayUrl,
+  runPaseoRelayServer
+} from "@koed/koed-server";
+import {
   listPersonalDevicePairingNetworkAddresses,
   resolvePersonalDevicePairingBindAddress
 } from "./personal-device-pairing-network.js";
@@ -38,6 +42,9 @@ type PairingPersistence = {
 };
 
 const PAIRING_PERSISTENCE_REFERENCE = "pds-pairing-recovery";
+const PAIRING_RELAY_ROUTES_REFERENCE = "pds-pairing-relay-routes";
+const PAIRING_RELAY_ROUTES_VERSION = 2;
+const MAX_PERSISTED_RELAY_ROUTES = 128;
 const PAIRING_PERSISTENCE_VERSION = 1;
 const PAIRING_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
@@ -113,6 +120,13 @@ type PendingInvitation = {
   usedMessageIds: Set<string>;
 };
 
+type PersistedRelayRoute = {
+  id: string;
+  token: string;
+  relayUrl: string;
+  purpose: "pairing" | "pds" | "legacy";
+};
+
 type PersistedPairing = {
   version: typeof PAIRING_PERSISTENCE_VERSION;
   id: string;
@@ -173,6 +187,7 @@ type PairingServerOptions = {
     deviceId: string;
   }) => Promise<boolean>;
   persistence?: PairingPersistence;
+  relayUrl?: string;
 };
 
 export const resolvePersonalDevicePairingPort = (
@@ -419,6 +434,43 @@ const pairingControlHeaders = (value: unknown): Record<string, string> => {
   );
 };
 
+const pairingRelayHeaders = (value: unknown): Record<string, string> => {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Pairing relay headers are invalid.");
+  const allowed = new Set([
+    "accept",
+    "content-type",
+    "x-pds-membership-certificate",
+    "x-pds-relay-proof"
+  ]);
+  const entries = Object.entries(value as JsonObject);
+  if (
+    entries.some(
+      ([key, entry]) =>
+        !allowed.has(key) ||
+        typeof entry !== "string" ||
+        entry.length > 128_000 ||
+        /[\r\n\0]/.test(entry)
+    )
+  )
+    throw new Error("Pairing relay headers are invalid.");
+  return Object.fromEntries(entries as [string, string][]);
+};
+
+const validPairingRelayPath = (path: string): boolean => {
+  if (path.length > 2_048 || path.startsWith("//") || /\\\\|%2e/i.test(path))
+    return false;
+  try {
+    const url = new URL(path, "http://koed.invalid");
+    return (
+      url.origin === "http://koed.invalid" &&
+      url.pathname.startsWith("/v1/personal-device-sync/relay/")
+    );
+  } catch {
+    return false;
+  }
+};
+
 const validPairingControlPath = (path: string, groupId: string): boolean => {
   const encodedGroup = encodeURIComponent(groupId);
   const escapedGroup = encodedGroup.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -441,14 +493,67 @@ export const startPersonalDevicePairingServer = async (
   const availableAddresses = (
     options.addresses ?? listPersonalDevicePairingNetworkAddresses
   )();
-  const host = resolvePersonalDevicePairingBindAddress(
-    options.host,
-    availableAddresses
-  );
+  const configuredRelayUrl = options.relayUrl
+    ? normalizeDeviceRequestRelayUrl(options.relayUrl)
+    : undefined;
+  const host = configuredRelayUrl
+    ? "127.0.0.1"
+    : resolvePersonalDevicePairingBindAddress(options.host, availableAddresses);
   const configuredPort = options.port ?? PERSONAL_DEVICE_PAIRING_DEFAULT_PORT;
   const now = options.now ?? (() => new Date());
   const persistence = options.persistence;
+  if (configuredRelayUrl && !persistence)
+    throw new Error(
+      "Paseo pairing relay requires encrypted route persistence."
+    );
   const invitations = new Map<string, PendingInvitation>();
+  const relaySessions = new Map<
+    string,
+    { controller: AbortController; task: Promise<void> }
+  >();
+  const persistedRelayRoutes = new Map<string, PersistedRelayRoute>();
+  const pdsRouteFromInvitation = (
+    invitation: PersonalDevicePairingInvitation
+  ): PersistedRelayRoute | null => {
+    if (!configuredRelayUrl) return null;
+    try {
+      const relay = new URL(configuredRelayUrl);
+      const expectedOrigin = `${relay.protocol === "wss:" ? "https" : "http"}://${relay.host}`;
+      const url = new URL(invitation.relay_url);
+      const id = /^\/pds\/([^/]+)$/.exec(url.pathname)?.[1];
+      const token = /^#token=([A-Za-z0-9_-]{43})$/.exec(url.hash)?.[1];
+      if (
+        url.origin !== expectedOrigin ||
+        !id ||
+        !isPersonalDevicePairingUuid(id) ||
+        !token ||
+        Buffer.from(token, "base64url").toString("base64url") !== token
+      )
+        return null;
+      return { id, token, relayUrl: configuredRelayUrl, purpose: "pds" };
+    } catch {
+      return null;
+    }
+  };
+  const relayRoutesForInvitation = (
+    pending: PendingInvitation
+  ): PersistedRelayRoute[] => {
+    if (!configuredRelayUrl) return [];
+    const pdsRoute = pdsRouteFromInvitation(pending.invitation);
+    const sharedRoute = pdsRoute?.id === pending.id;
+    const pairingRoute: PersistedRelayRoute = {
+      id: pending.id,
+      token: pending.token,
+      relayUrl: configuredRelayUrl ?? "",
+      purpose: sharedRoute ? "legacy" : "pairing"
+    };
+    return pdsRoute && !sharedRoute ? [pairingRoute, pdsRoute] : [pairingRoute];
+  };
+  const stopRelaySession = (id: string): void => {
+    relaySessions.get(id)?.controller.abort();
+    relaySessions.delete(id);
+  };
+  let relayRouteWrite: Promise<void> = Promise.resolve();
   const persisted = new Map<string, PersistedPairing>();
   let persistenceWrite: Promise<void> = Promise.resolve();
 
@@ -480,6 +585,95 @@ export const startPersonalDevicePairingServer = async (
       .then(() => writePersistence(value, deleteWhenEmpty));
     persistenceWrite = write;
     await write;
+  };
+
+  const saveRelayRoutes = async (): Promise<void> => {
+    if (!persistence) return;
+    const value = JSON.stringify({
+      version: PAIRING_RELAY_ROUTES_VERSION,
+      routes: [...persistedRelayRoutes.values()]
+    });
+    const write = relayRouteWrite
+      .catch(() => undefined)
+      .then(async () => {
+        if (persistedRelayRoutes.size === 0)
+          await persistence.delete(PAIRING_RELAY_ROUTES_REFERENCE);
+        else await persistence.put(PAIRING_RELAY_ROUTES_REFERENCE, value);
+      });
+    relayRouteWrite = write;
+    await write;
+  };
+
+  const restoreRelayRoutes = async (): Promise<void> => {
+    if (!persistence) return;
+    const raw = await persistence.get(PAIRING_RELAY_ROUTES_REFERENCE);
+    if (!raw) return;
+    try {
+      const value = JSON.parse(raw) as { version?: unknown; routes?: unknown };
+      if (
+        (value.version !== 1 &&
+          value.version !== PAIRING_RELAY_ROUTES_VERSION) ||
+        !Array.isArray(value.routes) ||
+        value.routes.length > MAX_PERSISTED_RELAY_ROUTES
+      )
+        throw new Error("invalid relay route state");
+      for (const entry of value.routes) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry))
+          throw new Error("invalid relay route state");
+        const candidate = entry as JsonObject;
+        const legacy = value.version === 1;
+        if (
+          !hasExactKeys(
+            candidate,
+            legacy
+              ? ["id", "token", "relayUrl"]
+              : ["id", "token", "relayUrl", "purpose"]
+          ) ||
+          !isPersonalDevicePairingUuid(candidate.id) ||
+          typeof candidate.token !== "string" ||
+          !PAIRING_TOKEN_PATTERN.test(candidate.token) ||
+          typeof candidate.relayUrl !== "string" ||
+          normalizeDeviceRequestRelayUrl(candidate.relayUrl) !==
+            candidate.relayUrl ||
+          (!legacy &&
+            !["pairing", "pds", "legacy"].includes(String(candidate.purpose)))
+        )
+          throw new Error("invalid relay route state");
+        const route: PersistedRelayRoute = {
+          id: candidate.id,
+          token: candidate.token,
+          relayUrl: candidate.relayUrl,
+          purpose: legacy
+            ? "legacy"
+            : (candidate.purpose as PersistedRelayRoute["purpose"])
+        };
+        persistedRelayRoutes.set(route.id, route);
+      }
+    } catch {
+      persistedRelayRoutes.clear();
+      await persistence.delete(PAIRING_RELAY_ROUTES_REFERENCE);
+    }
+  };
+
+  const persistRelayRoute = async (
+    route: PersistedRelayRoute
+  ): Promise<void> => {
+    const previous = persistedRelayRoutes.get(route.id);
+    if (!previous && persistedRelayRoutes.size >= MAX_PERSISTED_RELAY_ROUTES)
+      throw new Error("Too many paired relay routes are already stored.");
+    persistedRelayRoutes.set(route.id, route);
+    try {
+      await saveRelayRoutes();
+    } catch (error) {
+      if (previous) persistedRelayRoutes.set(route.id, previous);
+      else persistedRelayRoutes.delete(route.id);
+      throw error;
+    }
+  };
+
+  const removePersistedRelayRoute = async (id: string): Promise<void> => {
+    if (!persistedRelayRoutes.delete(id)) return;
+    await saveRelayRoutes();
   };
 
   const snapshot = (pending: PendingInvitation): PersistedPairing => ({
@@ -556,6 +750,7 @@ export const startPersonalDevicePairingServer = async (
         : "Pairing enrollment failed.",
     force = false
   ) => {
+    const wasCompleted = pending.view.state === "completed";
     if (
       (pending.view.state === "completed" && !force) ||
       pending.view.state === "expired" ||
@@ -578,6 +773,13 @@ export const startPersonalDevicePairingServer = async (
     pending.recoveryExpiresAt = null;
     pending.completedExpires = null;
     deletePersisted(pending.id);
+    stopRelaySession(pending.id);
+    if (!wasCompleted) {
+      const pdsRoute = pdsRouteFromInvitation(pending.invitation);
+      if (pdsRoute && pdsRoute.id !== pending.id) stopRelaySession(pdsRoute.id);
+    } else if (configuredRelayUrl) {
+      void removePersistedRelayRoute(pending.id).catch(() => undefined);
+    }
     pending.view.state = state;
     pending.view.url = "";
     pending.submission?.reject(new Error(reason));
@@ -703,6 +905,8 @@ export const startPersonalDevicePairingServer = async (
           new Date(invitationExpiresAt - 1)
         );
         validatePairingRequest(entry.request, entry.invitation);
+        if (configuredRelayUrl && !pdsRouteFromInvitation(entry.invitation))
+          continue;
         if (canonicalizePdsJson(entry.request) !== entry.requestCanonical) {
           continue;
         }
@@ -1174,9 +1378,16 @@ export const startPersonalDevicePairingServer = async (
               ),
             COMMIT_RECOVERY_WINDOW_MS
           );
+          const persistedRouteIds: string[] = [];
           try {
             await persistPending(pending);
+            for (const route of relayRoutesForInvitation(pending)) {
+              await persistRelayRoute(route);
+              persistedRouteIds.push(route.id);
+            }
           } catch {
+            for (const routeId of persistedRouteIds)
+              await removePersistedRelayRoute(routeId).catch(() => undefined);
             if (pending.completedExpires)
               clearTimeout(pending.completedExpires);
             pending.completedExpires = null;
@@ -1185,9 +1396,14 @@ export const startPersonalDevicePairingServer = async (
             pending.view.url = "";
             pending.recoveryExpiresAt = previousRecoveryExpiresAt;
             pending.usedMessageIds.delete(decrypted.messageId);
+            await persistPending(pending).catch(() => undefined);
             throw new Error("Pairing state could not be persisted.");
           }
           if (!completionIsActive()) {
+            if (configuredRelayUrl)
+              await removePersistedRelayRoute(pending.id).catch(
+                () => undefined
+              );
             json(response, 410, {
               error: "Pairing invitation recovery expired."
             });
@@ -1259,6 +1475,7 @@ export const startPersonalDevicePairingServer = async (
 
   try {
     await restorePersisted();
+    await restoreRelayRoutes();
   } catch {
     clearInvitationTimers();
     throw new Error("Pairing recovery state is unavailable.");
@@ -1279,21 +1496,136 @@ export const startPersonalDevicePairingServer = async (
   const address = server.address();
   const port =
     address && typeof address === "object" ? address.port : configuredPort;
-  const origin = `http://${host}:${port}`;
+  const localOrigin = `http://${host}:${port}`;
+  const relayOrigin = configuredRelayUrl
+    ? `${new URL(configuredRelayUrl).protocol === "wss:" ? "https" : "http"}://${new URL(configuredRelayUrl).host}`
+    : localOrigin;
+  const pairingExchangeUrl = (id: string) =>
+    `${relayOrigin}/v1/pair/${id}/exchange`;
+  const pdsRelayUrl = (id: string, token: string) =>
+    configuredRelayUrl
+      ? `${relayOrigin}/pds/${id}#token=${token}`
+      : `${localOrigin}/pds`;
+  const pairingDisplayUrl = (id: string, token: string) =>
+    `${relayOrigin}/pair/${id}#token=${token}`;
+  const forwardTunnelFrame = async (
+    pending: PersistedRelayRoute,
+    frame: string,
+    signal: AbortSignal
+  ): Promise<string> => {
+    const message = strictObject(frame);
+    if (message.protocol === "koed/pds-http-tunnel/v1") {
+      if (pending.purpose === "pairing")
+        throw new Error("Pairing route cannot carry PDS relay traffic.");
+      const expectedKeys =
+        message.body === undefined
+          ? ["protocol", "request_id", "method", "path", "headers"]
+          : ["protocol", "request_id", "method", "path", "headers", "body"];
+      if (
+        !hasExactKeys(message, expectedKeys) ||
+        typeof message.request_id !== "string" ||
+        !isPersonalDevicePairingUuid(message.request_id) ||
+        (message.method !== "GET" &&
+          message.method !== "POST" &&
+          message.method !== "PUT") ||
+        typeof message.path !== "string" ||
+        !validPairingRelayPath(message.path) ||
+        (message.body !== undefined && typeof message.body !== "string")
+      )
+        throw new Error("Pairing relay request is invalid.");
+      const forwarded = await options.forwardControl({
+        method: message.method,
+        path: message.path,
+        headers: pairingRelayHeaders(message.headers),
+        ...(typeof message.body === "string" ? { body: message.body } : {}),
+        mode: "relay",
+        signal
+      });
+      if (forwarded.status === 401 || forwarded.status === 403) {
+        void removePersistedRelayRoute(pending.id).catch(() => undefined);
+        const session = relaySessions.get(pending.id);
+        if (session) {
+          const revokeTimer = setTimeout(
+            () => session.controller.abort(),
+            1_000
+          );
+          revokeTimer.unref();
+        }
+      }
+      return JSON.stringify({
+        protocol: "koed/pds-http-tunnel/v1",
+        request_id: message.request_id,
+        status: forwarded.status,
+        headers: forwarded.headers ?? {},
+        body: forwarded.body
+      });
+    }
+    if (pending.purpose === "pds")
+      throw new Error("PDS route cannot carry pairing control traffic.");
+    const response = await fetch(
+      `${localOrigin}/v1/pair/${pending.id}/exchange`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: frame,
+        redirect: "error",
+        signal
+      }
+    );
+    const body = await response.text();
+    if (Buffer.byteLength(body) > MAX_REQUEST_BYTES)
+      throw new Error("Pairing relay response is too large.");
+    return JSON.stringify({
+      protocol: "koed/pair-http-response/v1",
+      status: response.status,
+      body
+    });
+  };
+  const startRelaySession = (route: PersistedRelayRoute): void => {
+    if (relaySessions.has(route.id)) return;
+    const controller = new AbortController();
+    const task = runPaseoRelayServer({
+      relayUrl: route.relayUrl,
+      id: route.id,
+      token: route.token,
+      routeContext: PERSONAL_DEVICE_PAIRING_PROTOCOL,
+      signal: controller.signal,
+      onFrame: (frame, signal) => forwardTunnelFrame(route, frame, signal)
+    });
+    relaySessions.set(route.id, { controller, task });
+  };
+  const startInvitationRelaySessions = (pending: PendingInvitation): void => {
+    if (!configuredRelayUrl) return;
+    const pdsRoute = pdsRouteFromInvitation(pending.invitation);
+    const sharedRoute = pdsRoute?.id === pending.id;
+    startRelaySession({
+      id: pending.id,
+      token: pending.token,
+      relayUrl: configuredRelayUrl,
+      purpose: sharedRoute ? "legacy" : "pairing"
+    });
+    if (pdsRoute && !sharedRoute) startRelaySession(pdsRoute);
+  };
+  for (const pending of invitations.values())
+    startInvitationRelaySessions(pending);
+  for (const route of persistedRelayRoutes.values()) startRelaySession(route);
   for (const pending of invitations.values()) {
     pending.invitation = {
       ...pending.invitation,
-      control_url: `${origin}/v1/pair/${pending.id}/exchange`,
-      relay_url: `${origin}/pds`
+      control_url: pairingExchangeUrl(pending.id),
+      relay_url:
+        pdsRouteFromInvitation(pending.invitation)?.id === pending.id
+          ? pdsRelayUrl(pending.id, pending.token)
+          : pending.invitation.relay_url
     };
     if (!pending.authorizationExpired && pending.view.state !== "completed") {
-      pending.view.url = `${origin}/pair/${pending.id}#token=${pending.token}`;
+      pending.view.url = pairingDisplayUrl(pending.id, pending.token);
     }
   }
 
   return {
     port,
-    relayUrl: `${origin}/pds`,
+    relayUrl: configuredRelayUrl ? null : `${localOrigin}/pds`,
     createInvitation(baseInvitation) {
       for (const [id, pending] of invitations) {
         if (
@@ -1307,20 +1639,24 @@ export const startPersonalDevicePairingServer = async (
       if (invitations.size >= MAX_ACTIVE_INVITATIONS) {
         throw new Error("Too many pairing invitations are already active.");
       }
-      if (!availableAddresses.includes(host)) {
+      if (!configuredRelayUrl && !availableAddresses.includes(host)) {
         throw new Error(
           "No private network address is available for device pairing."
         );
       }
       const id = randomUUID();
       const token = randomBytes(32).toString("base64url");
+      const pdsRelayId = configuredRelayUrl ? randomUUID() : id;
+      const pdsRelayToken = configuredRelayUrl
+        ? randomBytes(32).toString("base64url")
+        : token;
       const invitation: PersonalDevicePairingInvitation = {
         ...baseInvitation,
         protocol: PERSONAL_DEVICE_PAIRING_PROTOCOL,
-        control_url: `${origin}/v1/pair/${id}/exchange`,
-        relay_url: `${origin}/pds`
+        control_url: pairingExchangeUrl(id),
+        relay_url: pdsRelayUrl(pdsRelayId, pdsRelayToken)
       };
-      const url = `${origin}/pair/${id}#token=${token}`;
+      const url = pairingDisplayUrl(id, token);
       validateInvitation(baseInvitation, now());
       const view: PersonalDevicePairingView = {
         id,
@@ -1358,6 +1694,7 @@ export const startPersonalDevicePairingServer = async (
         usedMessageIds: new Set()
       };
       invitations.set(id, pending);
+      startInvitationRelaySessions(pending);
       return { ...view };
     },
     async waitForRequest(id, signal) {
@@ -1561,6 +1898,7 @@ export const startPersonalDevicePairingServer = async (
         .map((pending) => pending.id);
     },
     async close() {
+      for (const session of relaySessions.values()) session.controller.abort();
       for (const pending of invitations.values()) {
         if (pending.approvalClaimed) {
           clearTimeout(pending.expires);
@@ -1586,7 +1924,12 @@ export const startPersonalDevicePairingServer = async (
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
+      await Promise.allSettled(
+        [...relaySessions.values()].map((session) => session.task)
+      );
+      relaySessions.clear();
       await persistenceWrite.catch(() => undefined);
+      await relayRouteWrite.catch(() => undefined);
     }
   };
 };

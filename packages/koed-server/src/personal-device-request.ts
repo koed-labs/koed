@@ -22,6 +22,12 @@ import {
   encryptPersonalDevicePairingMessage as encrypt,
   decryptPersonalDevicePairingMessage as decrypt
 } from "./personal-device-request-crypto.js";
+import {
+  deviceRequestRelayId,
+  exchangeOverDeviceRequestRelay,
+  normalizeDeviceRequestRelayUrl,
+  runDeviceRequestRelayServer
+} from "./personal-device-request-relay.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const ttl = 10 * 60_000;
@@ -47,29 +53,62 @@ type Pending = DeviceRequestView & {
   token: string;
   invitation?: string;
   used: string[];
+  relayUrl?: string;
 };
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-export const parseDeviceRequestLink = (value: unknown) => {
+export const parseDeviceRequestLink = (
+  value: unknown,
+  configuredRelayUrl = process.env.KOED_PDS_REQUEST_RELAY_URL
+) => {
   if (typeof value !== "string" || value.length > 4096)
     throw new Error("Invalid device request link.");
   const match =
     /^http:\/\/(\d+\.\d+\.\d+\.\d+):([1-9][0-9]{0,4})\/device-request\/([0-9a-f-]{36})#token=([A-Za-z0-9_-]{43})$/.exec(
       value.trim()
     );
-  if (
-    !match ||
-    !isPrivateNetworkIpv4Address(match[1]!) ||
-    !uuid.test(match[3]!) ||
-    Number(match[2]) > 65535 ||
-    Buffer.from(match[4]!, "base64url").toString("base64url") !== match[4]
-  )
-    throw new Error(
-      "Use a Koed device request link from your LAN or Tailscale network."
+  if (match) {
+    if (
+      !isPrivateNetworkIpv4Address(match[1]!) ||
+      !uuid.test(match[3]!) ||
+      Number(match[2]) > 65535 ||
+      Buffer.from(match[4]!, "base64url").toString("base64url") !== match[4]
+    )
+      throw new Error("Use a valid Koed LAN or Tailscale device request link.");
+    const url = new URL(value.trim());
+    url.hash = "";
+    return { mode: "direct" as const, url, id: match[3]!, token: match[4]! };
+  }
+  if (!configuredRelayUrl)
+    throw new Error("Configure the Koed pairing relay before using this link.");
+  const relayUrl = normalizeDeviceRequestRelayUrl(configuredRelayUrl);
+  const relay = new URL(relayUrl);
+  const expectedOrigin = relay.protocol === "wss:" ? "https:" : "http:";
+  const relayMatch =
+    /^(https?):\/\/([^/]+)\/device-request\/([0-9a-f-]{36})#token=([A-Za-z0-9_-]{43})$/.exec(
+      value.trim()
     );
+  if (!relayMatch || !uuid.test(relayMatch[3]!))
+    throw new Error("Use a valid Koed relay device request link.");
   const url = new URL(value.trim());
+  if (
+    url.protocol !== expectedOrigin ||
+    url.host !== relay.host ||
+    url.search ||
+    url.username ||
+    url.password ||
+    Buffer.from(relayMatch[4]!, "base64url").toString("base64url") !==
+      relayMatch[4]
+  )
+    throw new Error("Device request link does not match configured relay.");
   url.hash = "";
-  return { url, id: match[3]!, token: match[4]! };
+  return {
+    mode: "relay" as const,
+    url,
+    relayUrl,
+    id: relayMatch[3]!,
+    token: relayMatch[4]!
+  };
 };
 const body = async (input: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
@@ -159,16 +198,73 @@ export const deviceRequestCommand = (
     );
     request.end(JSON.stringify({ command, ...(label ? { label } : {}) }));
   });
+const relayLocalExchange = (pending: Pending, frame: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: pending.host,
+        port: pending.port,
+        path: `/device-request/${pending.id}`,
+        method: "POST",
+        headers: {
+          host: `${pending.host}:${pending.port}`,
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(frame)
+        },
+        timeout: 10_000
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        response.on("data", (part) => {
+          const chunk = Buffer.from(part);
+          size += chunk.length;
+          if (size > maxBytes)
+            response.destroy(new Error("Response too large."));
+          else chunks.push(chunk);
+        });
+        response.on("end", () => {
+          if (response.statusCode !== 200) {
+            reject(new Error("Device request was rejected."));
+            return;
+          }
+          resolve(Buffer.concat(chunks).toString("utf8"));
+        });
+        response.on("error", () => reject(new Error("Device request failed.")));
+      }
+    );
+    request.on("timeout", () => request.destroy(new Error("timeout")));
+    request.on("error", () => reject(new Error("Device request failed.")));
+    request.end(frame);
+  });
+
 export const exchangeDeviceRequest = async (
   link: string,
   operation: "inspect" | "accept",
-  invitation?: string
+  invitation?: string,
+  configuredRelayUrl = process.env.KOED_PDS_REQUEST_RELAY_URL
 ): Promise<Json> => {
-  const parsed = parseDeviceRequestLink(link);
+  const parsed = parseDeviceRequestLink(link, configuredRelayUrl);
   const envelope = encrypt(
     { operation, ...(invitation ? { invitation } : {}) },
     { invitationId: parsed.id, token: parsed.token, direction: "request" }
   );
+  if (parsed.mode === "relay") {
+    const response = await exchangeOverDeviceRequestRelay(
+      parsed.relayUrl,
+      parsed.id,
+      parsed.token,
+      JSON.stringify(envelope)
+    );
+    const result = decrypt(JSON.parse(response), {
+      invitationId: parsed.id,
+      token: parsed.token,
+      direction: "response"
+    });
+    if (result.messageId !== envelope.message_id)
+      throw new Error("Device request response does not match.");
+    return result.value;
+  }
   const response = await fetch(parsed.url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -240,6 +336,7 @@ export const startDeviceRequestService = async (options: {
   ) => Promise<void>;
   enrolled: () => boolean | Promise<boolean>;
   addresses?: () => string[];
+  relayUrl?: string;
   /** Explicit private IPv4 interface for the request link, overriding
    * automatic selection. Required on devices with more than one reachable
    * private interface (for example LAN plus Tailscale) where the Authority
@@ -253,6 +350,11 @@ export const startDeviceRequestService = async (options: {
   let running: Promise<void> | null = null;
   let mutation = Promise.resolve();
   let closed = false;
+  let relayAbort: AbortController | null = null;
+  let relayTask: Promise<void> | null = null;
+  const configuredRelayUrl = options.relayUrl
+    ? normalizeDeviceRequestRelayUrl(options.relayUrl)
+    : undefined;
   const enrollmentAbort = new AbortController();
   const persist = () => {
     if (pending) store.put(reference, JSON.stringify(pending));
@@ -268,7 +370,9 @@ export const startDeviceRequestService = async (options: {
       state: pending.state,
       ...(includeLink && pending.state === "waiting"
         ? {
-            link: `http://${pending.host}:${pending.port}/device-request/${pending.id}#token=${pending.token}`
+            link: pending.relayUrl
+              ? `${new URL(pending.relayUrl).protocol === "wss:" ? "https" : "http"}://${new URL(pending.relayUrl).host}/device-request/${pending.id}#token=${pending.token}`
+              : `http://${pending.host}:${pending.port}/device-request/${pending.id}#token=${pending.token}`
           }
         : {})
     };
@@ -396,6 +500,49 @@ export const startDeviceRequestService = async (options: {
     publicServer = server;
     persist();
   };
+  const startRelay = async (current: Pending): Promise<void> => {
+    if (!current.relayUrl || relayTask) return;
+    const controller = new AbortController();
+    relayAbort = controller;
+    let signalConnected!: () => void;
+    const connected = new Promise<void>((resolve) => {
+      signalConnected = resolve;
+    });
+    relayTask = runDeviceRequestRelayServer({
+      relayUrl: current.relayUrl,
+      id: current.id,
+      token: current.token,
+      signal: controller.signal,
+      onConnected: signalConnected,
+      onFrame: (frame) => relayLocalExchange(current, frame)
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        connected,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Pairing relay is unavailable.")),
+            10_000
+          );
+        })
+      ]);
+    } catch (error) {
+      controller.abort();
+      await relayTask;
+      relayTask = null;
+      relayAbort = null;
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const closeRelay = async (): Promise<void> => {
+    relayAbort?.abort();
+    await relayTask;
+    relayTask = null;
+    relayAbort = null;
+  };
   const closePublic = async () => {
     const server = publicServer;
     publicServer = null;
@@ -403,6 +550,7 @@ export const startDeviceRequestService = async (options: {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    await closeRelay();
   };
   const saved = store.get(reference);
   if (saved) {
@@ -410,7 +558,12 @@ export const startDeviceRequestService = async (options: {
       const value = JSON.parse(saved) as Pending;
       if (
         uuid.test(value.id) &&
-        isPrivateNetworkIpv4Address(value.host) &&
+        (isPrivateNetworkIpv4Address(value.host) ||
+          (value.host === "127.0.0.1" &&
+            typeof value.relayUrl === "string" &&
+            normalizeDeviceRequestRelayUrl(value.relayUrl) ===
+              configuredRelayUrl)) &&
+        (!value.relayUrl || value.relayUrl === configuredRelayUrl) &&
         Number.isInteger(value.port) &&
         value.port > 0 &&
         value.port <= 65535 &&
@@ -435,6 +588,7 @@ export const startDeviceRequestService = async (options: {
           // Preserve redacted terminal status across supervisor restarts.
         } else if (Date.now() < Date.parse(value.expiresAt)) {
           await listen();
+          if (pending.relayUrl) await startRelay(pending);
           resume();
         } else {
           pending.state = "expired";
@@ -468,13 +622,12 @@ export const startDeviceRequestService = async (options: {
                 .flatMap((entries) => entries ?? [])
                 .filter((entry) => entry.family === "IPv4" && !entry.internal)
                 .map((entry) => entry.address);
-            const host = resolveDeviceRequestHost(
-              options.host,
-              availableAddresses
-            );
+            const host = configuredRelayUrl
+              ? "127.0.0.1"
+              : resolveDeviceRequestHost(options.host, availableAddresses);
             if (!host)
               throw new Error(
-                "Connect to a private LAN or Tailscale network before pairing."
+                "Configure a pairing relay or connect to a private LAN or Tailscale network."
               );
             const label =
               typeof input.label === "string" ? input.label.trim() : hostname();
@@ -496,9 +649,11 @@ export const startDeviceRequestService = async (options: {
               token: randomBytes(32).toString("base64url"),
               expiresAt: new Date(Date.now() + ttl).toISOString(),
               state: "waiting",
-              used: []
+              used: [],
+              ...(configuredRelayUrl ? { relayUrl: configuredRelayUrl } : {})
             };
             await listen();
+            if (pending.relayUrl) await startRelay(pending);
           }
           return view(true);
         }

@@ -2212,6 +2212,9 @@ export const createKoedServerManager = ({
         ...(personalDevicePairingStore
           ? { persistence: personalDevicePairingStore }
           : {}),
+        ...(environment.KOED_PDS_REQUEST_RELAY_URL?.trim()
+          ? { relayUrl: environment.KOED_PDS_REQUEST_RELAY_URL.trim() }
+          : {}),
         forwardControl: async (input) => {
           const { apiOrigin } = await personalMemoryAccess();
           const desktop = readDesktopLocalCredentialAuthorization(
@@ -2491,12 +2494,27 @@ export const createKoedServerManager = ({
       invitation as unknown as PersonalDevicePairingInvitation;
     const controlUrl = new URL(typedInvitation.control_url);
     const relayUrl = new URL(typedInvitation.relay_url);
+    const pdsRouteId = /^\/pds\/([0-9a-f-]{36})$/.exec(relayUrl.pathname)?.[1];
+    const pdsRouteToken = /^#token=([A-Za-z0-9_-]{43})$/.exec(
+      relayUrl.hash
+    )?.[1];
     if (
       typedInvitation.protocol !== "koed/pds-lan-pair/v1" ||
       controlUrl.origin !== invitationUrl.origin ||
       controlUrl.pathname !== `/v1/pair/${invitationId}/exchange` ||
+      controlUrl.search ||
+      controlUrl.hash ||
       relayUrl.origin !== invitationUrl.origin ||
-      relayUrl.pathname !== "/pds"
+      relayUrl.search ||
+      (relayUrl.pathname === "/pds"
+        ? Boolean(relayUrl.hash)
+        : !pdsRouteId ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+            pdsRouteId
+          ) ||
+          !pdsRouteToken ||
+          Buffer.from(pdsRouteToken, "base64url").toString("base64url") !==
+            pdsRouteToken)
     ) {
       throw new Error("Pairing invitation endpoint binding is invalid.");
     }
@@ -5465,8 +5483,16 @@ export const createKoedServerManager = ({
         const input = exactDesktopArgs(args, ["url"]);
         if (typeof input.url !== "string")
           throw new Error("Paste a device request link.");
-        parseDeviceRequestLink(input.url);
-        const request = await exchangeDeviceRequest(input.url, "inspect");
+        parseDeviceRequestLink(
+          input.url,
+          environment.KOED_PDS_REQUEST_RELAY_URL
+        );
+        const request = await exchangeDeviceRequest(
+          input.url,
+          "inspect",
+          undefined,
+          environment.KOED_PDS_REQUEST_RELAY_URL
+        );
         if (
           request.state !== "waiting" ||
           typeof request.label !== "string" ||
@@ -5505,13 +5531,22 @@ export const createKoedServerManager = ({
         const enrollment = automaticPairingEnrollment(pairing.id);
         void enrollment.catch(() => undefined);
         try {
-          await exchangeDeviceRequest(review.link, "accept", pairing.url);
+          await exchangeDeviceRequest(
+            review.link,
+            "accept",
+            pairing.url,
+            environment.KOED_PDS_REQUEST_RELAY_URL
+          );
           const result = await enrollment;
           if (objectValue(result.pairing)?.state !== "completed")
             throw new Error("The joining device has not completed enrollment.");
           return { ok: true, state: "connected" };
         } catch (error) {
-          personalDevicePairingServer?.cancel(pairing.id);
+          try {
+            personalDevicePairingServer?.cancel(pairing.id);
+          } catch {
+            // Preserve enrollment failure when commit has made cancellation unsafe.
+          }
           throw error;
         }
       },

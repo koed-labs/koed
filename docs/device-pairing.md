@@ -1,8 +1,12 @@
 # Connect Personal devices
 
-Use a private LAN or Tailscale network. An internet-accessible pairing relay and
-restricted-network traversal are not included. The installation that created the
-Personal Device Group remains its Authority/Relay host and must be reachable.
+Use private LAN or Tailscale by default. For devices on separate networks,
+configure `KOED_PDS_REQUEST_RELAY_URL` on both installations with same trusted
+Paseo Relay WebSocket endpoint, for example `wss://relay.example/ws`. Paseo
+carries narrow pairing and PDS application tunnels; it does not approve devices,
+replace PDS durable sync, or receive plaintext pairing invitations. The
+installation that created the Personal Device Group remains its Authority/Relay
+host and retains membership authority.
 
 ## Joining through SSH
 
@@ -54,11 +58,14 @@ Use the original Authority-hosting installation to approve a new request.
 
 ## Operation and failure behavior
 
-The joining supervisor creates a narrow private-interface HTTP listener using an
-available port. Its address and port are in the request link. The existing device
-must reach that endpoint; the joining device must also reach the existing private
-Authority/Relay endpoint for enrollment and subsequent synchronization. Reversing
-the link does not remove those network requirements.
+Without Paseo, the joining supervisor creates a narrow private-interface HTTP
+listener using an available port. Its address and port are in the request link;
+both installations must reach each other's private endpoints. With Paseo
+configured, pairing listeners bind loopback only and both installations make
+outbound WebSocket connections to configured relay. Pairing-control and PDS
+traffic use distinct random relay capabilities, so competing processes cannot
+replace one another's route. Durable PDS synchronization still uses existing
+Authority/Relay mailbox protocol through its authenticated application tunnel.
 
 Requests use a separate `koed/pds-device-request/v1` authenticated encrypted
 transport. The URL fragment carries a random 256-bit secret and is never included
@@ -72,7 +79,9 @@ acceptance is serialized and persisted before enrollment starts. Repeating the
 same acceptance can acknowledge a lost response; a different invitation cannot
 replace an accepted one. Request traffic is bounded by expiry, payload size,
 connection count, and exchange count. The public listener exposes no local API,
-credentials, operational controls, or Memory.
+credentials, operational controls, or Memory. Paseo is transport only; Authority
+continues to validate membership and approve enrollment, while PDS requests retain
+certificate, proof, expiry, and revocation checks.
 
 Pending links and accepted invitation state live in the application-managed
 encrypted store under `KOED_HOME/secrets` (encrypted at rest). Local CLI/Electron

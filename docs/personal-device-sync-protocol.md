@@ -327,7 +327,13 @@ its epoch (genesis for epoch 1, or the matching committed transition thereafter)
 Its lifetime is strictly positive and no more than 7 days: `issuedAt <
 expiresAt`. Receiver permits 5 minutes `issuedAt` skew, requires `now <
 expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. Cached
-expiry blocks relay send/receive; local capture/Recall continue.
+expiry blocks relay send/receive; local capture/Recall continue. After a committed
+membership epoch change, an unexpired prior-head/prior-epoch certificate may
+authenticate only certificate refresh, lifecycle-control reads, and tombstone
+acknowledgement. These paths still require an active member with same current
+signing key, active Group, and no pending epoch. Content relay operations require
+certificate's exact current head and epoch. This lets active replicas obtain
+fresh certificates without granting revoked or replaced keys a recovery path.
 
 A membership/log fork, same sequence with different bytes, invalid prior hash,
 mismatched Authority countersignature, concurrent Authority lease, duplicate

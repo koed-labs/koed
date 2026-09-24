@@ -1,10 +1,13 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
   decryptPersonalDevicePairingMessage,
-  encryptPersonalDevicePairingMessage
+  encryptPersonalDevicePairingMessage,
+  PERSONAL_DEVICE_PAIRING_PROTOCOL
 } from "./personal-device-pairing-crypto.js";
 import { canonicalizePdsJson, PDS_PROTOCOL } from "@koed/shared";
+import { exchangeOverPaseoRelay, paseoRelayServerId } from "@koed/koed-server";
 import {
   resolvePersonalDevicePairingPort,
   startPersonalDevicePairingServer,
@@ -176,6 +179,312 @@ describe("Personal Device LAN pairing server", () => {
       });
     } finally {
       await server.close();
+    }
+  });
+
+  it("issues relay-bound pairing capabilities without exposing listener address", async () => {
+    const stored = new Map<string, string>();
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl: "wss://koed-relay.fly.dev/ws",
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl: vi.fn()
+    });
+    try {
+      const view = server.createInvitation(baseInvitation());
+      const link = new URL(view.url);
+      expect(link.origin).toBe("https://koed-relay.fly.dev");
+      expect(link.pathname).toBe(`/pair/${view.id}`);
+      expect(link.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/);
+      expect(server.relayUrl).toBeNull();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("forwards encrypted invitation exchanges through Paseo without exposing HTTP listener", async () => {
+    const relay = new WebSocketServer({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/ws"
+    });
+    await new Promise<void>((resolve) => relay.once("listening", resolve));
+    const address = relay.address();
+    if (!address || typeof address === "string")
+      throw new Error("relay bind failed");
+    const relayUrl = `ws://127.0.0.1:${address.port}/ws`;
+    const peers = new Map<string, { server?: WebSocket; client?: WebSocket }>();
+    let resolveServer!: () => void;
+    const serverConnected = new Promise<void>(
+      (resolve) => (resolveServer = resolve)
+    );
+    relay.on("connection", (socket, request) => {
+      const url = new URL(request.url ?? "/", "http://relay.invalid");
+      const route = url.searchParams.get("serverId") ?? "";
+      const role = url.searchParams.get("role");
+      const pair = peers.get(route) ?? {};
+      if (role === "server") {
+        pair.server = socket;
+        resolveServer();
+      }
+      if (role === "client") pair.client = socket;
+      peers.set(route, pair);
+      socket.on("message", (frame) => {
+        const target = role === "server" ? pair.client : pair.server;
+        target?.send(frame);
+      });
+    });
+    const stored = new Map<string, string>();
+    const forwardControl = vi.fn(async () => ({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: '{"tunnelled":true}'
+    }));
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl,
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl
+    });
+    try {
+      const pairing = server.createInvitation(baseInvitation());
+      await serverConnected;
+      const url = new URL(pairing.url);
+      const id = url.pathname.split("/").at(-1)!;
+      const token = url.hash.slice("#token=".length);
+      const request = encryptPersonalDevicePairingMessage(
+        { operation: "invitation" },
+        { invitationId: id, token, direction: "request" }
+      );
+      const raw = await exchangeOverPaseoRelay({
+        relayUrl,
+        id,
+        token,
+        routeContext: PERSONAL_DEVICE_PAIRING_PROTOCOL,
+        frame: JSON.stringify(request)
+      });
+      const response = JSON.parse(raw) as Record<string, unknown>;
+      expect(response).toMatchObject({
+        protocol: "koed/pair-http-response/v1",
+        status: 200
+      });
+      const opened = decryptPersonalDevicePairingMessage(
+        JSON.parse(String(response.body)),
+        { invitationId: id, token, direction: "response" }
+      );
+      expect(opened.value.invitation).toMatchObject({
+        group_id: "group-1",
+        control_url: `http://127.0.0.1:${address.port}/v1/pair/${id}/exchange`
+      });
+      const pdsRelayUrl = new URL(
+        String((opened.value.invitation as Record<string, unknown>).relay_url)
+      );
+      const pdsId = pdsRelayUrl.pathname.split("/").at(-1)!;
+      const pdsToken = pdsRelayUrl.hash.slice("#token=".length);
+      expect(pdsId).not.toBe(id);
+      await vi.waitFor(() =>
+        expect(
+          peers.get(
+            paseoRelayServerId(
+              PERSONAL_DEVICE_PAIRING_PROTOCOL,
+              pdsId,
+              pdsToken
+            )
+          )?.server
+        ).toBeDefined()
+      );
+      const requestId = randomUUID();
+      const pdsResponse = JSON.parse(
+        await exchangeOverPaseoRelay({
+          relayUrl,
+          id: pdsId,
+          token: pdsToken,
+          routeContext: PERSONAL_DEVICE_PAIRING_PROTOCOL,
+          frame: JSON.stringify({
+            protocol: "koed/pds-http-tunnel/v1",
+            request_id: requestId,
+            method: "GET",
+            path: "/v1/personal-device-sync/relay/transports",
+            headers: {
+              accept: "application/json",
+              "x-pds-membership-certificate": "certificate",
+              "x-pds-relay-proof": "proof"
+            }
+          })
+        })
+      ) as Record<string, unknown>;
+      expect(pdsResponse).toMatchObject({
+        protocol: "koed/pds-http-tunnel/v1",
+        request_id: requestId,
+        status: 200,
+        body: '{"tunnelled":true}'
+      });
+      expect(forwardControl).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "relay",
+          method: "GET",
+          path: "/v1/personal-device-sync/relay/transports",
+          headers: {
+            accept: "application/json",
+            "x-pds-membership-certificate": "certificate",
+            "x-pds-relay-proof": "proof"
+          }
+        })
+      );
+    } finally {
+      await server.close();
+      for (const client of relay.clients) client.terminate();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("persists relay capability only after pairing completion", async () => {
+    const stored = new Map<string, string>();
+    const relayUrl = "ws://127.0.0.1:1/ws";
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl,
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl: vi.fn()
+    });
+    try {
+      const invitation = baseInvitation();
+      const pairing = server.createInvitation(invitation);
+      const link = new URL(pairing.url);
+      const id = link.pathname.split("/").at(-1)!;
+      const token = link.hash.slice("#token=".length);
+      const localLink = `http://127.0.0.1:${server.port}/pair/${id}#token=${token}`;
+      const request = exchange(localLink, {
+        operation: "request",
+        request: signedRequest(invitation),
+        device_label: "Remote device"
+      });
+      await server.waitForRequest(id);
+      await server.claimApproval(id);
+      await server.approve(id);
+      await expect(request).resolves.toMatchObject({
+        opened: { value: { approved: true } }
+      });
+      await expect(
+        exchange(localLink, { operation: "complete" })
+      ).resolves.toMatchObject({
+        opened: { value: { completed: true } }
+      });
+      expect(
+        JSON.parse(stored.get("pds-pairing-relay-routes")!).routes
+      ).toEqual(
+        expect.arrayContaining([
+          { id, token, relayUrl, purpose: "pairing" },
+          expect.objectContaining({ relayUrl, purpose: "pds" })
+        ])
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("restores encrypted relay route capabilities after server restart", async () => {
+    const stored = new Map<string, string>([
+      [
+        "pds-pairing-relay-routes",
+        JSON.stringify({
+          version: 1,
+          routes: [
+            {
+              id: "11111111-2222-4333-8444-555555555555",
+              token: Buffer.alloc(32, 5).toString("base64url"),
+              relayUrl: "wss://koed-relay.fly.dev/ws"
+            }
+          ]
+        })
+      ]
+    ]);
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl: "wss://koed-relay.fly.dev/ws",
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl: vi.fn()
+    });
+    await server.close();
+    expect(JSON.parse(stored.get("pds-pairing-relay-routes")!)).toMatchObject({
+      version: 1,
+      routes: [{ id: "11111111-2222-4333-8444-555555555555" }]
+    });
+  });
+
+  it("restores separate pairing and PDS relay sessions after restart", async () => {
+    const relay = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => relay.once("listening", resolve));
+    const address = relay.address();
+    if (!address || typeof address === "string")
+      throw new Error("relay bind failed");
+    const relayUrl = `ws://127.0.0.1:${address.port}/ws`;
+    const connectedServerIds = new Set<string>();
+    relay.on("connection", (socket, request) => {
+      const url = new URL(request.url ?? "/", "http://relay.invalid");
+      if (url.searchParams.get("role") === "server")
+        connectedServerIds.add(url.searchParams.get("serverId") ?? "");
+      else socket.terminate();
+    });
+    const stored = new Map<string, string>([
+      [
+        "pds-pairing-relay-routes",
+        JSON.stringify({
+          version: 2,
+          routes: [
+            {
+              id: "11111111-2222-4333-8444-555555555555",
+              token: Buffer.alloc(32, 5).toString("base64url"),
+              relayUrl,
+              purpose: "pairing"
+            },
+            {
+              id: "22222222-3333-4444-8555-666666666666",
+              token: Buffer.alloc(32, 6).toString("base64url"),
+              relayUrl,
+              purpose: "pds"
+            }
+          ]
+        })
+      ]
+    ]);
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl,
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl: vi.fn()
+    });
+    try {
+      await vi.waitFor(() => expect(connectedServerIds.size).toBe(2));
+    } finally {
+      await server.close();
+      for (const client of relay.clients) client.terminate();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });
 

@@ -367,26 +367,34 @@ URL in argv on initial launch or single-instance activation. This is OS handler
 behavior, not a blanket no-argv guarantee. Koed must not log or persist the
 URL. Users avoiding argv exposure should paste or scan.
 
-This changes authorization, not transport exposure. The current pairing endpoint
-is private HTTP on `KOED_PDS_LAN_PORT`; its listener binds one concrete
-non-loopback private IPv4 interface, never `0.0.0.0`, a wildcard, or a public
-address. It accepts private-network and Tailscale addresses, including
-`100.64.0.0/10`, and must not be exposed to the public internet. Invitation
-control and relay URLs use the exact bound origin. Application-level encryption,
-signed enrollment, replay protection, expiry, and device revocation remain
-required. During SSH redemption, local reconciliation uses only the exact
-loopback `PDS_LOCAL_CONTROL_URL` and scoped `Koed-Desktop` authorization; API
-Tokens, `Koed-Device`, credentials-bearing URLs, and non-loopback origins are
-rejected. Future public or remote pairing must use HTTPS or a secure relay with
-separate endpoint and abuse controls.
+Without a Paseo relay, the current pairing endpoint is private HTTP on
+`KOED_PDS_LAN_PORT`; its listener binds one concrete non-loopback private IPv4
+interface, never `0.0.0.0`, a wildcard, or a public address. It accepts private
+network and Tailscale addresses, including `100.64.0.0/10`, and must not be
+exposed to the public internet. Invitation control and relay URLs use the exact
+bound origin.
+
+For cross-network pairing, set `KOED_PDS_REQUEST_RELAY_URL` on both
+installations to the same trusted Paseo Relay WebSocket URL (`wss://.../ws`).
+Koed then binds pairing listeners to loopback and opens outbound relay sessions.
+Pairing-control and PDS use independent, persisted random relay capabilities;
+the Paseo Relay transports frames but does not approve membership or replace
+durable PDS sync. Application-level pairing encryption, signed enrollment,
+replay protection, expiry, and device revocation remain required. During SSH
+redemption, local reconciliation uses only exact loopback `PDS_LOCAL_CONTROL_URL`
+and scoped `Koed-Desktop` authorization; API Tokens, `Koed-Device`,
+credentials-bearing URLs, and non-loopback origins are rejected.
 
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired
 Authority-signed `pds_relay` membership certificate plus a domain-separated
 Ed25519 request proof; API Tokens, browser sessions, and `Koed-Device` do not
 authorize relay traffic. Authority may be temporarily unreachable while a valid
-certificate remains unexpired; stale, expired, revoked, wrong-head, and
-wrong-epoch certificates fail closed.
+certificate remains unexpired. Only certificate refresh, lifecycle-control reads,
+and tombstone ACK may use an unexpired prior-head/prior-epoch certificate for a
+still-active member with unchanged signing key and no pending epoch; content relay
+operations require exact current head and epoch. Expired, revoked, replaced-key,
+and future-epoch certificates fail closed.
 
 Every relay action rereads and locks current Group, active member, certificate,
 head, epoch, and no-pending-epoch state in same database transaction as relay
@@ -914,13 +922,15 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
-- `KOED_PDS_LAN_PORT`: private HTTP endpoint for trusted-overlay Desktop
-  pairing and local PDS relay gateway traffic. Defaults to `3310`. Koed binds
-  one concrete available non-loopback private IPv4 interface for this listener;
-  it does not bind a wildcard or public address. Tailscale addresses in
-  `100.64.0.0/10` are supported for pairing. Keep it off the public internet;
-  changing it is intended for a local port conflict, not as an authentication
-  control.
+- `KOED_PDS_LAN_PORT`: private HTTP endpoint for Desktop pairing and local PDS
+  relay gateway traffic. Defaults to `3310`. Without Paseo relay, Koed binds one
+  concrete available non-loopback private IPv4 interface; with relay configured,
+  pairing listener binds loopback. It never binds a wildcard or public address.
+- `KOED_PDS_REQUEST_RELAY_URL`: optional trusted Paseo Relay WebSocket URL, such
+  as `wss://relay.example/ws`. Configure same URL on both Personal device
+  installations for cross-network enrollment and PDS transport. Route
+  capabilities persist encrypted at rest; the relay URL is transport configuration,
+  not membership authority or durable sync storage.
 - `PDS_LOCAL_CONTROL_URL`: optional exact loopback origin for the local API used
   by SSH-only `personal-sync join redeem`; when omitted, Koed derives it from
   local API port configuration. `PDS_CONTROL_URL` is never used for local
@@ -1297,21 +1307,18 @@ of whether automatic ports were explicitly requested. Resolved runtime and
 dependency modes are passed to child services.
 
 The supervisor owns the joining-device request service. Its owner-only local
-socket is separate from the narrow private-interface request listener; request
-links carry that listener's allocated port. No additional flags are needed for
-`koed-server pair`. `KOED_PDS_LAN_PORT` still configures the existing Desktop
-Authority/Relay listener. Both private paths must be reachable; no public relay
-or inbound-network traversal is provided. See [Connect Personal devices](device-pairing.md).
+socket is separate from the narrow request listener; no additional flags are
+needed for `koed-server pair`. Without Paseo, both devices need private-network
+reachability and listeners bind concrete private IPv4 interfaces. With
+`KOED_PDS_REQUEST_RELAY_URL` set on both devices, listeners bind loopback and
+both sides open outbound Paseo sessions. Pairing-control and PDS routes use
+separate persisted capabilities. See [Connect Personal devices](device-pairing.md).
 
-Automatic interface selection sorts available private IPv4 addresses and picks
-the first one, which is not reachability-aware: on a device with both a LAN
-address (`10.x`/`172.16-31.x`/`192.168.x`) and a Tailscale address
-(`100.64.0.0/10`), sort order can pick an address the Authority device cannot
-actually reach. Set `KOED_PDS_REQUEST_HOST` on the joining device to pin the
-request listener to one explicit private IPv4 or Tailscale address, and
-`KOED_PDS_LAN_HOST` on the Authority-hosting Desktop installation to do the
-same for the Authority/Relay listener. Both reject a configured address that
-is not a private IPv4 or Tailscale address.
+For direct LAN/Tailscale pairing, automatic interface selection sorts available
+private IPv4 addresses and picks first address, which is not reachability-aware.
+Set `KOED_PDS_REQUEST_HOST` on joining device and `KOED_PDS_LAN_HOST` on
+Authority-hosting Desktop to pin each listener to a reachable private IPv4 or
+Tailscale address. These settings do not apply to the relay path.
 
 ### Upgrading an existing installation
 

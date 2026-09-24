@@ -88,6 +88,7 @@ type CompletionFailure =
   | "stream-size"
   | "protocol"
   | "auth"
+  | "binding"
   | "malformed"
   | "size";
 
@@ -108,7 +109,7 @@ const harness = (completionFailure?: CompletionFailure) => {
     group_id: "group-1",
     challenge_id: "22222222-3333-4333-8444-555555555555",
     control_url: `${invitationOrigin}${controlPath}`,
-    relay_url: `${invitationOrigin}/pds`
+    relay_url: `${invitationOrigin}/pds/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee#token=${Buffer.alloc(32, 4).toString("base64url")}`
   };
   const runPersonalSync = vi.fn(
     async (args: string[]): Promise<PersonalSyncResult> => {
@@ -159,7 +160,12 @@ const harness = (completionFailure?: CompletionFailure) => {
       )
         throw new TypeError("fetch failed");
       const completionBody = JSON.stringify(
-        encryptResponse({ completed: true }, String(envelope.message_id))
+        encryptResponse(
+          { completed: true },
+          completionFailure === "binding" && completionMessageIds.length === 1
+            ? randomUUID()
+            : String(envelope.message_id)
+        )
       );
       if (completionFailure === "body" && completionMessageIds.length === 1) {
         return new Response(null, { status: 200 });
@@ -301,6 +307,17 @@ describe("Personal device pairing client", () => {
       "/v1/personal-device-sync/local-group-reconciliation",
       "/v1/personal-device-sync/local-runtime-wake"
     ]);
+  });
+
+  it("retries completion after a response-binding mismatch with fresh message id", async () => {
+    const fixture = harness("binding");
+
+    await expect(redeem(fixture)).resolves.toMatchObject({
+      ok: true,
+      state: "completed"
+    });
+    expect(fixture.completionMessageIds).toHaveLength(2);
+    expect(new Set(fixture.completionMessageIds).size).toBe(2);
   });
 
   it("bounds retries after repeated transport failures", async () => {

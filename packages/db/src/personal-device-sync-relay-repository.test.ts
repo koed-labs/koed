@@ -3,10 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
   pdsCanonicalRelayRecipients,
   pdsRedactedRelayReceipt,
+  pdsRelayCertificateEpochAllowed,
   pdsRelayDeliveryRecipients
 } from "./personal-device-sync-relay-repository.js";
 
 describe("Personal Device Sync relay receipts", () => {
+  it("accepts old certificate epochs only for recovery control operations", () => {
+    expect(pdsRelayCertificateEpochAllowed("3", "3", false)).toBe(true);
+    expect(pdsRelayCertificateEpochAllowed("2", "3", false)).toBe(false);
+    expect(pdsRelayCertificateEpochAllowed("2", "3", true)).toBe(true);
+    expect(pdsRelayCertificateEpochAllowed("4", "3", true)).toBe(false);
+    expect(pdsRelayCertificateEpochAllowed("02", "3", true)).toBe(false);
+  });
   it("serializes numeric audit fields as canonical decimal strings", () => {
     const receipt = pdsRedactedRelayReceipt({
       groupId: "group",

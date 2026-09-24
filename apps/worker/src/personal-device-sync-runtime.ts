@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { createPdsPaseoRelayFetch } from "./personal-device-sync-paseo-fetch.js";
 import type {
   LocalEmbeddingStatus,
   MemorySourceRepository,
@@ -508,16 +509,24 @@ const createPdsWorkerRuntimeFromSecret = (
       signingPublicKey: runtime.recipient.signingPublicKey,
       signingPrivateSeed: secret.device.signingPrivateSeed
     });
-    let relay = new PdsRelayClient({
-      baseUrl: secret.relayUrl,
-      identity: relayIdentity(secret.certificate)
-    });
     const environment = input.environment ?? process.env;
+    const relayFetch = createPdsPaseoRelayFetch(
+      secret.relayUrl,
+      environment.KOED_PDS_REQUEST_RELAY_URL
+    );
+    const relayBaseUrl = relayFetch
+      ? `${new URL(secret.relayUrl).origin}${new URL(secret.relayUrl).pathname}`
+      : secret.relayUrl;
+    let relay = new PdsRelayClient({
+      baseUrl: relayBaseUrl,
+      identity: relayIdentity(secret.certificate),
+      ...(relayFetch ? { fetch: relayFetch } : {})
+    });
     const localRelayUrl = environment.MEMORY_API_URL?.trim() || null;
     const localRelay =
       localRelayUrl &&
       normalizePdsRelayBaseUrl(localRelayUrl) !==
-        normalizePdsRelayBaseUrl(secret.relayUrl)
+        normalizePdsRelayBaseUrl(relayBaseUrl)
         ? new PdsRelayClient({
             baseUrl: localRelayUrl,
             identity: relayIdentity(secret.certificate)
@@ -1223,8 +1232,9 @@ const createPdsWorkerRuntimeFromSecret = (
         const refreshed = record(await relay.certificate(), "certificate");
         const certificate = record(refreshed.certificate, "certificate");
         relay = new PdsRelayClient({
-          baseUrl: secret.relayUrl,
-          identity: relayIdentity(canonicalizePdsJson(certificate))
+          baseUrl: relayBaseUrl,
+          identity: relayIdentity(canonicalizePdsJson(certificate)),
+          ...(relayFetch ? { fetch: relayFetch } : {})
         });
         const lifecycle = record(await relay.lifecycle(), "lifecycle");
         const head = record(lifecycle.authority_head, "authority head");

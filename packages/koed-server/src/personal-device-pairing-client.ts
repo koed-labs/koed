@@ -12,6 +12,10 @@ import {
   isPrivateNetworkIpv4Address
 } from "@koed/shared";
 import type { PersonalSyncResult } from "./personal-sync.js";
+import {
+  exchangeOverPaseoRelay,
+  normalizeDeviceRequestRelayUrl
+} from "./personal-device-request-relay.js";
 
 const isPersonalDevicePairingUuid = (value: unknown): value is string =>
   typeof value === "string" &&
@@ -230,14 +234,20 @@ const decrypt = (
 };
 
 const parseLink = (
-  value: unknown
-): { invitationUrl: URL; invitationId: string; token: string } => {
+  value: unknown,
+  configuredRelayUrl?: string
+): {
+  invitationUrl: URL;
+  invitationId: string;
+  token: string;
+  relayUrl?: string;
+} => {
   if (typeof value !== "string" || value.length > 4_096) {
     throw new Error("Pairing link is invalid.");
   }
   const normalized = value.trim();
   const match =
-    /^http:\/\/([^/:?#]+):([1-9][0-9]{0,4})(\/pair\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))#token=([A-Za-z0-9_-]{43})$/.exec(
+    /^https?:\/\/([^/:?#]+)(?::([1-9][0-9]{0,4}))?(\/pair\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))#token=([A-Za-z0-9_-]{43})$/.exec(
       normalized
     );
   if (!match) throw new Error("Pairing link is invalid.");
@@ -247,10 +257,21 @@ const parseLink = (
   } catch {
     throw new Error("Pairing link is invalid.");
   }
+  const isDirect =
+    url.protocol === "http:" &&
+    Boolean(match[2]) &&
+    isPrivateNetworkIpv4Address(url.hostname);
+  let relayUrl: string | undefined;
+  if (configuredRelayUrl) {
+    const relay = new URL(normalizeDeviceRequestRelayUrl(configuredRelayUrl));
+    const expectedProtocol = relay.protocol === "wss:" ? "https:" : "http:";
+    const expectedOrigin = `${expectedProtocol.slice(0, -1)}://${relay.host}`;
+    if (url.protocol === expectedProtocol && url.origin === expectedOrigin)
+      relayUrl = configuredRelayUrl;
+  }
   if (
     match[1] !== url.hostname ||
-    !isPrivateNetworkIpv4Address(url.hostname) ||
-    url.protocol !== "http:" ||
+    (!isDirect && !relayUrl) ||
     url.username ||
     url.password ||
     url.search ||
@@ -258,13 +279,14 @@ const parseLink = (
     url.hash !== `#token=${match[5]}`
   ) {
     throw new Error(
-      "Same-network pairing requires a private-network or Tailscale link issued by Koed."
+      "Pairing link must be a private-network Koed link or use configured Paseo relay."
     );
   }
   return {
     invitationUrl: url,
     invitationId: match[4]!,
-    token: match[5]!
+    token: match[5]!,
+    ...(relayUrl ? { relayUrl } : {})
   };
 };
 
@@ -422,9 +444,13 @@ export const redeemPersonalDevicePairing = async (options: {
   runPersonalSync: RunPersonalSync;
   withJsonFd: WithJsonFd;
 }): Promise<PersonalSyncResult> => {
-  const { invitationUrl, invitationId, token } = parseLink(options.link);
+  const { invitationUrl, invitationId, token, relayUrl } = parseLink(
+    options.link,
+    options.environment.KOED_PDS_REQUEST_RELAY_URL
+  );
   const fetcher = options.fetch ?? globalThis.fetch;
-  if (!fetcher) throw new Error("Pairing network access is unavailable.");
+  if (!relayUrl && !fetcher)
+    throw new Error("Pairing network access is unavailable.");
 
   const exchange = async (
     payload: Record<string, unknown>,
@@ -438,19 +464,46 @@ export const redeemPersonalDevicePairing = async (options: {
     });
     let response: Response;
     try {
-      response = await fetcher(
-        new URL(`/v1/pair/${invitationId}/exchange`, invitationUrl.origin),
-        {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "content-type": "application/json"
-          },
-          body: JSON.stringify(encrypted),
-          redirect: "error",
-          signal: AbortSignal.timeout(timeoutMs)
-        }
-      );
+      if (relayUrl) {
+        const raw = await exchangeOverPaseoRelay({
+          relayUrl,
+          id: invitationId,
+          token,
+          routeContext: PERSONAL_DEVICE_PAIRING_PROTOCOL,
+          frame: JSON.stringify(encrypted),
+          maxFrameBytes: MAX_RESPONSE_BYTES,
+          timeoutMs
+        });
+        const tunnelResponse = JSON.parse(raw) as Record<string, unknown>;
+        if (
+          !exactKeys(tunnelResponse, ["protocol", "status", "body"]) ||
+          tunnelResponse.protocol !== "koed/pair-http-response/v1" ||
+          typeof tunnelResponse.status !== "number" ||
+          !Number.isInteger(tunnelResponse.status) ||
+          tunnelResponse.status < 100 ||
+          tunnelResponse.status > 599 ||
+          typeof tunnelResponse.body !== "string"
+        )
+          throw new Error("Pairing relay response is invalid.");
+        response = new Response(tunnelResponse.body, {
+          status: tunnelResponse.status,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        });
+      } else {
+        response = await fetcher!(
+          new URL(`/v1/pair/${invitationId}/exchange`, invitationUrl.origin),
+          {
+            method: "POST",
+            headers: {
+              accept: "application/json",
+              "content-type": "application/json"
+            },
+            body: JSON.stringify(encrypted),
+            redirect: "error",
+            signal: AbortSignal.timeout(timeoutMs)
+          }
+        );
+      }
     } catch (error) {
       if (classifyTransportFailure) throw new AmbiguousTransportFailure(error);
       throw error;
@@ -464,7 +517,9 @@ export const redeemPersonalDevicePairing = async (options: {
       }
     );
     if (decrypted.messageId !== encrypted.message_id) {
-      throw new Error("Pairing response binding is invalid.");
+      const error = new Error("Pairing response binding is invalid.");
+      if (classifyTransportFailure) throw new AmbiguousTransportFailure(error);
+      throw error;
     }
     return decrypted.value;
   };
@@ -481,13 +536,30 @@ export const redeemPersonalDevicePairing = async (options: {
   const typedInvitation =
     invitation as unknown as PersonalDevicePairingInvitation;
   const controlUrl = new URL(typedInvitation.control_url);
-  const relayUrl = new URL(typedInvitation.relay_url);
+  const relayEndpointUrl = new URL(typedInvitation.relay_url);
+  const pdsRouteId = /^\/pds\/([0-9a-f-]{36})$/.exec(
+    relayEndpointUrl.pathname
+  )?.[1];
+  const pdsRouteToken = /^#token=([A-Za-z0-9_-]{43})$/.exec(
+    relayEndpointUrl.hash
+  )?.[1];
   if (
     typedInvitation.protocol !== PERSONAL_DEVICE_PAIRING_PROTOCOL ||
     controlUrl.origin !== invitationUrl.origin ||
     controlUrl.pathname !== `/v1/pair/${invitationId}/exchange` ||
-    relayUrl.origin !== invitationUrl.origin ||
-    relayUrl.pathname !== "/pds"
+    controlUrl.search ||
+    controlUrl.hash ||
+    relayEndpointUrl.origin !== invitationUrl.origin ||
+    relayEndpointUrl.search ||
+    (relayEndpointUrl.pathname === "/pds"
+      ? Boolean(relayEndpointUrl.hash)
+      : !pdsRouteId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          pdsRouteId
+        ) ||
+        !pdsRouteToken ||
+        Buffer.from(pdsRouteToken, "base64url").toString("base64url") !==
+          pdsRouteToken)
   ) {
     throw new Error("Pairing invitation endpoint binding is invalid.");
   }
