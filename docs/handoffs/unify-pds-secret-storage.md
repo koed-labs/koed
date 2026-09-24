@@ -169,7 +169,7 @@ The implementation agent should reconcile this change with the proposal's config
 - Read `CONTEXT.md` before changing domain terminology or user-facing wording.
 - Keep pairing links out of shell history/process listings for CLI redemption by
   requiring stdin/FD input. Desktop paste or QR scan is preferred; macOS normally
-  delivers `koed-pair://` through Electron `open-url`, while Windows/Linux may
+  delivers `koed://pair/redeem` through Electron `open-url`, while Windows/Linux may
   deliver it in argv through OS protocol activation. Do not log or persist it.
 - Do not put PDS keys in `.env` or pass them via CLI/environment values.
 - Do not reintroduce a platform-dependent provider split or silently change storage models between Electron and headless operation.

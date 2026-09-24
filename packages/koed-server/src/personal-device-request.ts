@@ -23,7 +23,6 @@ import {
   decryptPersonalDevicePairingMessage as decrypt
 } from "./personal-device-request-crypto.js";
 import {
-  deviceRequestRelayId,
   exchangeOverDeviceRequestRelay,
   normalizeDeviceRequestRelayUrl,
   runDeviceRequestRelayServer
@@ -216,8 +215,8 @@ const relayLocalExchange = (pending: Pending, frame: string): Promise<string> =>
       (response) => {
         const chunks: Buffer[] = [];
         let size = 0;
-        response.on("data", (part) => {
-          const chunk = Buffer.from(part);
+        response.on("data", (part: Buffer | string) => {
+          const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
           size += chunk.length;
           if (size > maxBytes)
             response.destroy(new Error("Response too large."));

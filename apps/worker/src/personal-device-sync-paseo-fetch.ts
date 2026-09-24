@@ -6,6 +6,15 @@ const MAX_TUNNEL_BYTES = 2 * 1024 * 1024;
 const PDS_RELAY_PREFIX = "/v1/personal-device-sync/relay/";
 const ROUTE_CONTEXT = "koed/pds-lan-pair/v1";
 
+const rawDataText = (data: WebSocket.RawData): string => {
+  const bytes = Array.isArray(data)
+    ? Buffer.concat(data)
+    : Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(data);
+  return bytes.toString("utf8");
+};
+
 type PaseoRoute = {
   relayUrl: string;
   id: string;
@@ -108,9 +117,7 @@ const exchangePaseoFrameUnlocked = (
       });
     };
     const received = (data: WebSocket.RawData) => {
-      const response = Buffer.isBuffer(data)
-        ? data.toString("utf8")
-        : data.toString();
+      const response = rawDataText(data);
       cleanup();
       socket.close();
       resolve(response);

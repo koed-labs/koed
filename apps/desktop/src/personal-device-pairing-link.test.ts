@@ -9,6 +9,10 @@ const hexadecimalInvitationId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789";
 const link = `http://192.168.1.20:3310/pair/${invitationId}#token=${token}`;
 const tailscaleLink = `http://100.98.6.2:3310/pair/${invitationId}#token=${token}`;
+const relayUrl = "wss://koed-relay.fly.dev/ws";
+const relayInvitation = `https://koed-relay.fly.dev/pair/${invitationId}#token=${token}`;
+const deepLink = (url: string) =>
+  `koed://pair/redeem?url=${encodeURIComponent(url)}`;
 
 describe("Personal Device pairing links", () => {
   it("accepts exact private-network invitation and deep-link forms", () => {
@@ -25,11 +29,27 @@ describe("Personal Device pairing links", () => {
         `http://192.168.1.20:80/pair/${invitationId}#token=${token}`
       )
     ).toMatchObject({ invitationId, token });
+    expect(pairingLinkFromDeepLink(deepLink(link))).toBe(link);
+  });
+
+  it("accepts relay invitation links only for configured relay", () => {
     expect(
-      pairingLinkFromDeepLink(
-        `koed-pair://redeem?url=${encodeURIComponent(link)}`
+      parsePersonalDevicePairingLink(relayInvitation, relayUrl)
+    ).toMatchObject({ invitationId, token });
+    expect(
+      parsePersonalDevicePairingLink(deepLink(relayInvitation), relayUrl)
+    ).toMatchObject({ invitationId, token });
+    expect(() =>
+      parsePersonalDevicePairingLink(
+        `https://other-relay.example/pair/${invitationId}#token=${token}`,
+        relayUrl
       )
-    ).toBe(link);
+    ).toThrow();
+    expect(() => parsePersonalDevicePairingLink(relayInvitation)).toThrow();
+    expect(pairingLinkFromDeepLink(deepLink(relayInvitation), relayUrl)).toBe(
+      relayInvitation
+    );
+    expect(pairingLinkFromDeepLink(deepLink(relayInvitation))).toBeNull();
   });
 
   it("accepts hexadecimal UUID invitation ids", () => {
@@ -59,10 +79,10 @@ describe("Personal Device pairing links", () => {
   });
 
   it.each([
-    "koed-pair://other?url=x",
-    `koed-pair://redeem/path?url=${encodeURIComponent(link)}`,
-    `koed-pair://redeem?url=${encodeURIComponent(link)}&extra=x`,
-    `koed-pair://redeem?url=${encodeURIComponent(link)}&url=${encodeURIComponent(link)}`,
+    "koed://other?url=x",
+    `koed://pair/path?url=${encodeURIComponent(link)}`,
+    `koed://pair/redeem?url=${encodeURIComponent(link)}&extra=x`,
+    `koed://pair/redeem?url=${encodeURIComponent(link)}&url=${encodeURIComponent(link)}`,
     "https://example.com/"
   ])("rejects malformed deep link %s", (value) => {
     expect(pairingLinkFromDeepLink(value)).toBeNull();

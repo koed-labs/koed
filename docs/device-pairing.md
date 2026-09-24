@@ -38,6 +38,12 @@ Never put that response in ordinary logs or share it beyond the existing device.
 
 ## Joining from Electron
 
+Authority-issued invitation QR codes and copy links use
+`koed://pair/redeem` deep links. Link wraps the private-network or
+configured-relay invitation URL; opening it on the joining computer routes it
+to installed Koed Desktop. Native client validates underlying URL and performs
+pairing. This is OS app handoff, not a hosted Koed web client.
+
 On the new installation, open **Devices → Connect to an existing device** and
 copy the request link. Paste it into **Devices → Add device** on the existing
 Authority-hosting Electron installation. Review and accept it there. Both CLI and

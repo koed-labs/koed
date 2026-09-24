@@ -2467,7 +2467,10 @@ export const createKoedServerManager = ({
     onProgress: (progress: PersonalDevicePairingProgress) => void
   ) => {
     const { invitationUrl, token, invitationId } =
-      parsePersonalDevicePairingLink(value);
+      parsePersonalDevicePairingLink(
+        value,
+        environment.KOED_PDS_REQUEST_RELAY_URL
+      );
     const invitationPayload = await pairingExchange(
       invitationUrl,
       invitationId,

@@ -242,10 +242,34 @@ const parseLink = (
   token: string;
   relayUrl?: string;
 } => {
-  if (typeof value !== "string" || value.length > 4_096) {
+  if (typeof value !== "string" || value.length > 8_192) {
     throw new Error("Pairing link is invalid.");
   }
-  const normalized = value.trim();
+  const input = value.trim();
+  let normalized = input;
+  if (input.startsWith("koed://")) {
+    try {
+      const deepLink = new URL(input);
+      const links = deepLink.searchParams.getAll("url");
+      if (
+        deepLink.protocol !== "koed:" ||
+        deepLink.hostname !== "pair" ||
+        deepLink.pathname !== "/redeem" ||
+        deepLink.port ||
+        deepLink.username ||
+        deepLink.password ||
+        deepLink.hash ||
+        [...deepLink.searchParams.keys()].some((key) => key !== "url") ||
+        links.length !== 1 ||
+        links[0]!.length > 4_096
+      ) {
+        throw new Error("Pairing deep link is invalid.");
+      }
+      normalized = links[0]!;
+    } catch {
+      throw new Error("Pairing deep link is invalid.");
+    }
+  }
   const match =
     /^https?:\/\/([^/:?#]+)(?::([1-9][0-9]{0,4}))?(\/pair\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))#token=([A-Za-z0-9_-]{43})$/.exec(
       normalized

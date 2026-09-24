@@ -416,13 +416,14 @@ synchronize nothing.
 
 After first-device Personal Device Group setup, open **Devices** on the
 Authority-hosting installation and choose **Pair another device**. Koed shows a
-one-time QR code, copyable private-network or Tailscale link, and expiry. The
-link is the enrollment capability: the second Desktop may scan the QR, open the
-`koed-pair://` handoff, or paste the link under **Join with link**, then choose
-**Connect device**. Koed validates the signed request and completes enrollment
+one-time QR code, copyable `koed://pair/redeem` link, and expiry. The link
+wraps a private-network or configured-relay invitation and is the enrollment
+capability: the second Desktop may scan the QR, open the link, or paste it under
+**Join with link**, then choose **Connect device**. Koed validates the signed
+request and completes enrollment
 automatically; no short-code comparison or **Approve device** action exists.
 The link is cleared after redemption and must never be logged or persisted.
-Paste or QR scan is preferred. Opening `koed-pair://` uses OS protocol
+Paste or QR scan is preferred. Opening `koed://pair/redeem` uses OS protocol
 activation: macOS normally sends the URL through Electron's `open-url` event,
 while Windows/Linux may place it in argv on initial launch or single-instance
 activation. That platform behavior means Koed makes no blanket no-argv claim;

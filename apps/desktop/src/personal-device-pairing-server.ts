@@ -15,7 +15,10 @@ import {
   pdsEd25519PublicKey,
   PDS_PROTOCOL
 } from "@koed/shared";
-import { isPersonalDevicePairingUuid } from "./personal-device-pairing-link.js";
+import {
+  isPersonalDevicePairingUuid,
+  personalDevicePairingDeepLink
+} from "./personal-device-pairing-link.js";
 import {
   normalizeDeviceRequestRelayUrl,
   runPaseoRelayServer
@@ -246,7 +249,7 @@ const landingHtml = (nonce: string): string => `<!doctype html>
     document.getElementById("open").addEventListener("click", function () {
       var token = location.hash.startsWith("#token=") ? location.hash.slice(7) : "";
       if (!token) return;
-      location.href = "koed-pair://redeem?url=" + encodeURIComponent(location.origin + location.pathname + "#token=" + token);
+      location.href = "koed://pair/redeem?url=" + encodeURIComponent(location.origin + location.pathname + "#token=" + token);
     });
   </script>
 </body>
@@ -1507,7 +1510,7 @@ export const startPersonalDevicePairingServer = async (
       ? `${relayOrigin}/pds/${id}#token=${token}`
       : `${localOrigin}/pds`;
   const pairingDisplayUrl = (id: string, token: string) =>
-    `${relayOrigin}/pair/${id}#token=${token}`;
+    personalDevicePairingDeepLink(`${relayOrigin}/pair/${id}#token=${token}`);
   const forwardTunnelFrame = async (
     pending: PersistedRelayRoute,
     frame: string,

@@ -277,7 +277,7 @@ const harness = (completionFailure?: CompletionFailure) => {
 
 const redeem = async (fixture: ReturnType<typeof harness>) =>
   await redeemPersonalDevicePairing({
-    link: `${invitationOrigin}/pair/${invitationId}#token=${token}`,
+    link: `koed://pair/redeem?url=${encodeURIComponent(`${invitationOrigin}/pair/${invitationId}#token=${token}`)}`,
     deviceLabel: "Joining laptop",
     requestId: randomUUID(),
     localControlUrl: localOrigin,

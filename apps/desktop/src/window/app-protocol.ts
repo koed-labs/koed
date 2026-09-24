@@ -26,7 +26,17 @@ export const resolveAppProtocolRequest = (
     return { kind: "not_found", status: 404 };
   }
 
-  const { pathname, search, hash } = new URL(requestUrl);
+  const request = new URL(requestUrl);
+  if (
+    request.protocol !== `${KOED_APP_SCHEME}:` ||
+    request.hostname !== "app" ||
+    request.port ||
+    request.username ||
+    request.password
+  ) {
+    return { kind: "not_found", status: 404 };
+  }
+  const { pathname, search, hash } = request;
   const decodedPath = decodeURIComponent(pathname);
 
   if (decodedPath.endsWith("/index.html")) {

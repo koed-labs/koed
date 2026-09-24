@@ -102,12 +102,20 @@ const fixtureFetch = (input: string | URL, init?: RequestInit) => {
   return fetch(input, { ...init, headers });
 };
 
+const invitationUrlFromDisplayLink = (value: string): URL => {
+  const link = new URL(value);
+  if (link.protocol !== "koed:") return link;
+  const invitationUrl = link.searchParams.get("url");
+  if (!invitationUrl) throw new Error("missing wrapped invitation URL");
+  return new URL(invitationUrl);
+};
+
 const exchange = async (
   url: string,
   payload: Record<string, unknown>,
   reuse?: ReturnType<typeof encryptPersonalDevicePairingMessage>
 ) => {
-  const parsed = new URL(url);
+  const parsed = invitationUrlFromDisplayLink(url);
   const invitationId = parsed.pathname.split("/").at(-1)!;
   const token = parsed.hash.slice("#token=".length);
   const encrypted =
@@ -171,7 +179,9 @@ describe("Personal Device LAN pairing server", () => {
     });
     try {
       const view = server.createInvitation(baseInvitation());
-      const origin = new URL(view.url).origin;
+      const invitationUrl = invitationUrlFromDisplayLink(view.url);
+      const origin = invitationUrl.origin;
+      expect(new URL(view.url).protocol).toBe("koed:");
       expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/);
       expect(server.relayUrl).toBe(`${origin}/pds`);
       expect(await fixtureFetch(`${origin}/pair/${view.id}`)).toMatchObject({
@@ -197,7 +207,11 @@ describe("Personal Device LAN pairing server", () => {
     });
     try {
       const view = server.createInvitation(baseInvitation());
-      const link = new URL(view.url);
+      const deepLink = new URL(view.url);
+      const link = invitationUrlFromDisplayLink(view.url);
+      expect(deepLink.protocol).toBe("koed:");
+      expect(deepLink.hostname).toBe("pair");
+      expect(deepLink.pathname).toBe("/redeem");
       expect(link.origin).toBe("https://koed-relay.fly.dev");
       expect(link.pathname).toBe(`/pair/${view.id}`);
       expect(link.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/);
@@ -259,7 +273,7 @@ describe("Personal Device LAN pairing server", () => {
     try {
       const pairing = server.createInvitation(baseInvitation());
       await serverConnected;
-      const url = new URL(pairing.url);
+      const url = invitationUrlFromDisplayLink(pairing.url);
       const id = url.pathname.split("/").at(-1)!;
       const token = url.hash.slice("#token=".length);
       const request = encryptPersonalDevicePairingMessage(
@@ -365,7 +379,7 @@ describe("Personal Device LAN pairing server", () => {
     try {
       const invitation = baseInvitation();
       const pairing = server.createInvitation(invitation);
-      const link = new URL(pairing.url);
+      const link = invitationUrlFromDisplayLink(pairing.url);
       const id = link.pathname.split("/").at(-1)!;
       const token = link.hash.slice("#token=".length);
       const localLink = `http://127.0.0.1:${server.port}/pair/${id}#token=${token}`;
@@ -497,11 +511,12 @@ describe("Personal Device LAN pairing server", () => {
     });
     try {
       const pairing = server.createInvitation(baseInvitation());
-      const parsed = new URL(pairing.url);
+      const parsed = invitationUrlFromDisplayLink(pairing.url);
       const landing = await fixtureFetch(`${parsed.origin}${parsed.pathname}`);
       const html = await landing.text();
       expect(landing.status).toBe(200);
       expect(html).not.toContain(parsed.hash.slice("#token=".length));
+      expect(html).toContain("koed://pair/redeem?url=");
       expect(html.match(/id="open"/g)).toHaveLength(1);
       expect(landing.headers.get("cache-control")).toBe("no-store");
       expect(landing.headers.get("referrer-policy")).toBe("no-referrer");
@@ -529,7 +544,7 @@ describe("Personal Device LAN pairing server", () => {
     });
     try {
       const pairing = server.createInvitation(baseInvitation());
-      const parsed = new URL(pairing.url);
+      const parsed = invitationUrlFromDisplayLink(pairing.url);
       const invitationId = parsed.pathname.split("/").at(-1)!;
       const wrong = encryptPersonalDevicePairingMessage(
         { operation: "invitation" },
@@ -845,7 +860,7 @@ describe("Personal Device LAN pairing server", () => {
       const invitation = baseInvitation();
       invitation.expires_at = new Date(current.getTime() + 1_000).toISOString();
       const pairing = server.createInvitation(invitation);
-      const parsed = new URL(pairing.url);
+      const parsed = invitationUrlFromDisplayLink(pairing.url);
       const invitationId = parsed.pathname.split("/").at(-1)!;
       const request = signedRequest(invitation);
       const encrypted = encryptPersonalDevicePairingMessage(
@@ -1158,7 +1173,9 @@ describe("Personal Device LAN pairing server", () => {
       },
       {
         invitationId: pairing.id,
-        token: new URL(pairing.url).hash.slice("#token=".length),
+        token: invitationUrlFromDisplayLink(pairing.url).hash.slice(
+          "#token=".length
+        ),
         direction: "request"
       }
     );

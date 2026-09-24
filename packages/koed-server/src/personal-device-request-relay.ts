@@ -5,6 +5,15 @@ import { withPaseoRelayClientLock } from "@koed/shared";
 const DEFAULT_ROUTE_CONTEXT = "koed/pds-device-request/v1";
 const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
 
+const rawDataText = (data: WebSocket.RawData): string => {
+  const bytes = Array.isArray(data)
+    ? Buffer.concat(data)
+    : Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(data);
+  return bytes.toString("utf8");
+};
+
 export const normalizeDeviceRequestRelayUrl = (value: string): string => {
   const url = new URL(value);
   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
@@ -144,9 +153,7 @@ export const exchangeOverPaseoRelay = async (input: {
           reject(new Error(message));
         };
         const received = (data: WebSocket.RawData) => {
-          const response = Buffer.isBuffer(data)
-            ? data.toString("utf8")
-            : data.toString();
+          const response = rawDataText(data);
           if (Buffer.byteLength(response) > maxFrameBytes) {
             fail("Invalid device request response.");
             return;
@@ -262,9 +269,7 @@ const serveSocket = (
       pending = pending.then(async () => {
         if (input.signal.aborted || socket.readyState !== WebSocket.OPEN)
           return;
-        const frame = Buffer.isBuffer(data)
-          ? data.toString("utf8")
-          : data.toString();
+        const frame = rawDataText(data);
         if (
           Buffer.byteLength(frame) >
           (input.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)

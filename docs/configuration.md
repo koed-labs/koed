@@ -360,10 +360,10 @@ koed-server personal-sync join redeem --link-stdin --device-label studio
 koed-server personal-sync join redeem --link-fd 3 --device-label studio
 ```
 
-Desktop paste or QR scan is preferred. A registered `koed-pair://` deep link
-is also supported: macOS normally delivers protocol activation through
-Electron's `open-url` event, while Windows and Linux may deliver the complete
-URL in argv on initial launch or single-instance activation. This is OS handler
+Desktop paste or QR scan is preferred. Pairing invitations use a registered
+`koed://pair/redeem` deep link. macOS normally delivers protocol activation
+through Electron's `open-url` event; Windows and Linux may put full URL in
+argv on initial launch or single-instance activation. This is OS handler
 behavior, not a blanket no-argv guarantee. Koed must not log or persist the
 URL. Users avoiding argv exposure should paste or scan.
 

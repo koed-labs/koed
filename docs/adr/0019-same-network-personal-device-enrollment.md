@@ -72,7 +72,7 @@ Koed Desktop exposes a **Devices** action in the account rail. The installation
 hosting the group's neutral Authority/Relay can create a ten-minute, one-use
 invitation and show it as both a QR code and a copyable link. The receiving
 Desktop accepts the link through explicit paste, QR scan, or the registered
-`koed-pair://` deep link. Koed validates the signed joining-device request and
+`koed://pair/redeem` deep link. Koed validates the signed joining-device request and
 completes enrollment automatically.
 
 This control-plane placement does not make that installation a plaintext

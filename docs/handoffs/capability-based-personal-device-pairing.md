@@ -33,7 +33,7 @@ enrollment without a second approval step.
 - Do not put invitation links in logs, analytics, shell history, or ordinary
   persistent files. CLI/SSH users must use stdin or an inherited file
   descriptor, never a link argument. Desktop paste or QR scan is preferred;
-  OS `koed-pair://` activation is supported but can expose the URL through
+  OS `koed://pair/redeem` activation is supported but can expose the URL through
   platform launch plumbing: macOS normally uses Electron's `open-url` event,
   while Windows/Linux may provide it in argv. Koed must not log or persist that
   URL.
@@ -60,7 +60,7 @@ There is no short-code comparison and no **Approve device** button.
 3. Click **Connect device**.
 4. Show **Connecting** and then **Connected**.
 
-The UI keeps one link input only. It may accept a `koed-pair://` deep link or QR
+The UI keeps one link input only. It may accept a `koed://pair/redeem` deep link or QR
 scan and populate the same input. The link is cleared after redemption and is
 never persisted or logged.
 
@@ -212,7 +212,7 @@ power-loss, or live Desktop crash-restart E2E.
   claimed.
 - Successful Desktop and SSH enrollment against two live local APIs, including
   QR/deep-link platform delivery and real post-restart recovery, remain pending.
-- Platform-specific `koed-pair://` activation and token exposure checks remain
+- Platform-specific `koed://pair/redeem` activation and token exposure checks remain
   pending; Windows/Linux argv delivery is an OS-handler caveat, not a blanket
   no-argv guarantee.
 
