@@ -24,6 +24,10 @@ asarUnpack:
   - dist-electron/koed-server/node-entrypoint-runner.js
 
 extraResources:
+  - from: .studio-stage
+    to: studio
+    filter:
+      - "**/*"
   - from: dist
     to: app-dist
     filter:

@@ -36,6 +36,7 @@ describe("rate limiting", () => {
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
         aiClientControl: { windowMs: 60_000, max: 1 },
+        personalAgentControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -68,6 +69,12 @@ describe("rate limiting", () => {
     await expect(
       handlers.memoryRead(request("Bearer attacker-two"), reply)
     ).rejects.toMatchObject({ statusCode: 429 });
+    await expect(
+      handlers.personalAgentControl(request("Bearer attacker-one"), reply)
+    ).resolves.toBeUndefined();
+    await expect(
+      handlers.personalAgentControl(request("Bearer attacker-one"), reply)
+    ).rejects.toMatchObject({ statusCode: 429 });
   });
 
   it("gives validated users behind one network address independent buckets", async () => {
@@ -83,6 +90,7 @@ describe("rate limiting", () => {
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
         aiClientControl: { windowMs: 60_000, max: 1 },
+        personalAgentControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -136,6 +144,7 @@ describe("rate limiting", () => {
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
         aiClientControl: { windowMs: 60_000, max: 1 },
+        personalAgentControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },

@@ -252,7 +252,10 @@ export interface KoedServerManager {
   };
   managedConversation: ManagedConversationDesktopHandler;
   managedProject: ManagedProjectDesktopHandler;
-  discoverProject: (cwd: string) => Promise<unknown>;
+  discoverProject: (cwd: string, name?: string) => Promise<unknown>;
+  listProjects: () => Promise<unknown>;
+  /** Current supervisor-owned local API access for the main-process Studio gateway. */
+  studioLocalAccess: () => Promise<{ apiOrigin: string; apiToken: string }>;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
     signal: AbortSignal
@@ -1765,6 +1768,8 @@ export const createKoedServerManager = ({
       );
     });
 
+  const listProjects = () => runJson(["project", "list"], 10_000);
+
   const createCollaborationTransport = () =>
     createCollaborationLocalTransport({
       openExternal,
@@ -2049,6 +2054,11 @@ export const createKoedServerManager = ({
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
     return { apiOrigin, apiToken: credential.apiToken };
+  };
+
+  const studioLocalAccess = async () => {
+    const access = await personalMemoryAccess({ refreshToken: true });
+    return { apiOrigin: access.apiOrigin, apiToken: access.apiToken };
   };
 
   const personalSyncEnvironment = async (
@@ -5445,8 +5455,19 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     managedProject,
-    discoverProject: (cwd) =>
-      runJson(["project", "discover", "--cwd", cwd], 30_000),
+    discoverProject: (cwd, name) =>
+      runJson(
+        [
+          "project",
+          "discover",
+          "--cwd",
+          cwd,
+          ...(name === undefined ? [] : ["--name", name])
+        ],
+        30_000
+      ),
+    listProjects,
+    studioLocalAccess,
     subscribePersonalMemory,
     resume,
     handlers: {
@@ -5546,7 +5567,7 @@ export const createKoedServerManager = ({
       models_install: () => runModelInstallJson(),
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
-      project_list: () => runJson(["project", "list"], 10_000),
+      project_list: () => listProjects(),
       ensure_independent_project: async () => {
         const independentRoot = resolve(
           resolveKoedHome(environment),

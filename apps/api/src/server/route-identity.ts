@@ -103,6 +103,26 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "POST",
+    "/v1/managed-conversation-runner/project-moves/claim",
+    "Claim Pending Project Moves assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/project-moves/{moveId}/lease",
+    "Renew the assigned Project Move lease."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/project-moves/{moveId}/complete",
+    "Confirm a Project Move after the runner changes local context."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/project-moves/{moveId}/fail",
+    "Fail an assigned Project Move before authority context changes."
+  ],
+  [
+    "POST",
     "/v1/managed-conversation-runner/commands/claim-controls",
     "Claim interrupt and stop commands concurrently with an active provider turn."
   ],
@@ -440,6 +460,55 @@ export const routeIdentityContracts = [
     "none",
     "implemented",
     localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/personal-agent-role-templates",
+    "session_or_api_token",
+    "personal_memory",
+    "Read the reviewed, immutable Personal Agent role template catalogue; local profiles also accept a Personal API token."
+  ),
+  route(
+    "GET",
+    "/v1/personal-agents",
+    "session_or_api_token",
+    "personal_memory",
+    "List the authenticated user's Personal Agent identities; local profiles also accept a Personal API token."
+  ),
+  route(
+    "GET",
+    "/v1/personal-agents/capabilities",
+    "session_or_api_token",
+    "personal_memory",
+    "List ready AI Client model capabilities for Personal Agent defaults; local profiles also accept a Personal API token."
+  ),
+  route(
+    "GET",
+    "/v1/personal-agents/{agentId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Read one Personal Agent identity, instructions, and retained activity; local profiles also accept a Personal API token."
+  ),
+  route(
+    "POST",
+    "/v1/personal-agents",
+    "session_or_api_token",
+    "personal_memory",
+    "Create an owner-scoped Personal Agent identity; local profiles also accept a Personal API token."
+  ),
+  route(
+    "PATCH",
+    "/v1/personal-agents/{agentId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Update a Personal Agent with an expected-version check; local profiles also accept a Personal API token."
+  ),
+  route(
+    "POST",
+    "/v1/personal-agents/{agentId}/retire",
+    "session_or_api_token",
+    "personal_memory",
+    "Retire a Personal Agent without deleting retained history; local profiles also accept a Personal API token."
   ),
   route(
     "POST",
@@ -2313,6 +2382,66 @@ export const routeIdentityContracts = [
     "none",
     "implemented",
     localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/start/cancel",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Cancel an unclaimed start before its assigned runner begins execution.",
+    "none",
+    "implemented",
+    allDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/project-moves",
+    "session_or_api_token",
+    "personal_memory",
+    "Request a Project context move for an idle managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/project-moves/latest",
+    "session_or_api_token",
+    "personal_memory",
+    "Read the latest persisted Project Move state for a Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/project-moves/{moveId}",
+    "session_or_api_token",
+    "personal_memory",
+    "Read the persisted Project Move state without runner-local paths.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/project-moves/{moveId}/cancel",
+    "session_or_api_token",
+    "personal_memory",
+    "Cancel a Pending Project Move before its runner claims it.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/prompts/{commandId}/cancel",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Cancel a queued prompt before its assigned runner claims it.",
+    "none",
+    "implemented",
+    allDeploymentModes
   ),
   route(
     "POST",

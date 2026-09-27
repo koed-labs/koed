@@ -28,6 +28,7 @@ const writeFakeAppServer = (
     versionExitCode?: number;
     versionDelayMs?: number;
     nodeEntry?: boolean;
+    expectedConfigOverrides?: string[];
     modelPages?: Array<{
       expectedCursor?: string | null;
       response: Record<string, unknown>;
@@ -68,6 +69,22 @@ if (process.argv.includes("exec")) {
 if (!process.argv.includes("app-server") || !process.argv.includes("--listen") || !process.argv.includes("stdio://")) {
   console.error("expected app-server stdio invocation: " + process.argv.join(" "));
   process.exit(43);
+}
+const expectedConfigOverrides = ${JSON.stringify(
+      options.expectedConfigOverrides ?? []
+    )};
+const actualConfigOverrides = [];
+for (let index = 0; index < process.argv.length; index += 1) {
+  if (process.argv[index] === "--config") {
+    actualConfigOverrides.push(process.argv[index + 1]);
+  }
+}
+if (JSON.stringify(actualConfigOverrides) !== JSON.stringify(expectedConfigOverrides)) {
+  console.error(
+    "unexpected app-server config overrides: " +
+      JSON.stringify(actualConfigOverrides)
+  );
+  process.exit(53);
 }
 if (!process.env.CODEX_HOME || process.env.CODEX_HOME === process.env.FAKE_REAL_CODEX_HOME) {
   console.error("expected isolated CODEX_HOME");
@@ -712,6 +729,47 @@ describe("Codex app-server runner", () => {
       }
     }
   );
+
+  it("forwards narrowly scoped app-server config overrides", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-config-overrides-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const appServerConfigOverrides = [
+      "features.shell_tool=false",
+      "features.unified_exec=false",
+      'web_search="disabled"'
+    ];
+
+    try {
+      const result = await runCodexAppServerTurn(
+        "Prompt text",
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            expectedConfigOverrides: appServerConfigOverrides
+          }),
+          model: "gpt-5.4-mini",
+          reasoningEffort: "low",
+          cwd: tempDirectory,
+          env: {
+            ...process.env,
+            CODEX_HOME: realCodexHome,
+            FAKE_REAL_CODEX_HOME: realCodexHome
+          },
+          clientName: "koed-test",
+          baseInstructions: "Return the answer.",
+          developerInstructions: "",
+          appServerConfigOverrides
+        },
+        3000
+      );
+
+      expect(result.text).toBe("app-server answer turn-test");
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
 
   it("retains child-thread events for managed durable ingestion", async () => {
     const tempDirectory = fs.mkdtempSync(

@@ -2439,6 +2439,290 @@ describeDb("memory repository visibility", () => {
     ).toBeNull();
   });
 
+  it("cancels only unclaimed owner prompts and reports the persisted race winner", async () => {
+    const repository = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 46).toString("base64")
+      )
+    });
+    const owner = await repository.createUser({
+      email: `managed-cancel-owner-${randomUUID()}@example.com`
+    });
+    const other = await repository.createUser({
+      email: `managed-cancel-other-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-cancel-${randomUUID()}`;
+    const createQueuedPrompt = async (label: string) => {
+      const managed = await repository.createManagedConversation(actor, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: `managed-cancel-${label}`,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      });
+      const [start] = await repository.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+      const running = await repository.bindManagedConversationRuntime(actor, {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      });
+      await repository.completeManagedConversationCommand({
+        commandId: start!.id,
+        leaseToken: start!.leaseToken!,
+        result: { started: true }
+      });
+      const prompt = await repository.enqueueManagedConversationPrompt(actor, {
+        executionId: running.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: `Prompt ${label}`
+      });
+      return { executionId: running.id, commandId: prompt.id };
+    };
+
+    const cancelWins = await createQueuedPrompt("cancel-wins");
+    const agentJobId = randomUUID();
+    await pool.query(
+      `insert into personal_agent_execution_jobs
+        (id, owner_user_id, conversation_id, attribution_kind, agent_id,
+         agent_version, idempotency_key, command_id, title, project_id, state)
+       values ($1, $2, $3, 'legacy', null, null, $4, $5, 'Agent task', null, 'queued')`,
+      [
+        agentJobId,
+        owner.id,
+        cancelWins.executionId,
+        randomUUID(),
+        cancelWins.commandId
+      ]
+    );
+    await pool.query(
+      `insert into personal_agent_execution_job_events
+        (owner_user_id, job_id, sequence, event_id, execution_generation,
+         event_type, payload, observed_at)
+       values ($1, $2, 1, $3, 1, 'job_enqueued', '{}'::jsonb, now())`,
+      [owner.id, agentJobId, `command:${cancelWins.commandId}:job_enqueued`]
+    );
+    await expect(
+      repository.cancelManagedConversationPrompt(
+        { userId: other.id },
+        { ...cancelWins, executionGeneration: 1 }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repository.cancelManagedConversationPrompt(actor, {
+        ...cancelWins,
+        executionGeneration: 1
+      })
+    ).resolves.toEqual({ id: cancelWins.commandId, state: "canceled" });
+    await expect(
+      repository.cancelManagedConversationPrompt(actor, {
+        ...cancelWins,
+        executionGeneration: 1
+      })
+    ).resolves.toEqual({ id: cancelWins.commandId, state: "canceled" });
+    const canceledJob = await pool.query<{
+      state: string;
+      version: number;
+      attempts_started: number;
+      attempts_succeeded: number;
+      attempts_failed: number;
+      attempts_canceled: number;
+      attempts_interrupted: number;
+    }>(
+      `select state, version, attempts_started, attempts_succeeded,
+              attempts_failed, attempts_canceled, attempts_interrupted
+         from personal_agent_execution_jobs
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, agentJobId]
+    );
+    expect(canceledJob.rows[0]).toMatchObject({
+      state: "canceled",
+      version: 2,
+      attempts_started: 0,
+      attempts_succeeded: 0,
+      attempts_failed: 0,
+      attempts_canceled: 0,
+      attempts_interrupted: 0
+    });
+    const attempts = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from personal_agent_execution_attempts
+        where owner_user_id = $1 and job_id = $2`,
+      [owner.id, agentJobId]
+    );
+    expect(attempts.rows[0]?.count).toBe("0");
+    const jobEvents = await pool.query<{
+      sequence: number;
+      event_id: string;
+      execution_generation: number;
+      event_type: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select sequence, event_id, execution_generation, event_type, payload
+         from personal_agent_execution_job_events
+        where owner_user_id = $1 and job_id = $2
+        order by sequence`,
+      [owner.id, agentJobId]
+    );
+    expect(jobEvents.rows).toEqual([
+      expect.objectContaining({
+        sequence: 1,
+        event_id: `command:${cancelWins.commandId}:job_enqueued`,
+        event_type: "job_enqueued"
+      }),
+      expect.objectContaining({
+        sequence: 2,
+        event_id: `command:${cancelWins.commandId}:job_canceled`,
+        execution_generation: 1,
+        event_type: "job_canceled",
+        payload: { commandId: cancelWins.commandId }
+      })
+    ]);
+
+    const claimWins = await createQueuedPrompt("claim-wins");
+    const [claimed] = await repository.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimed).toMatchObject({
+      id: claimWins.commandId,
+      state: "dispatching"
+    });
+    await expect(
+      repository.cancelManagedConversationPrompt(actor, {
+        ...claimWins,
+        executionGeneration: 1
+      })
+    ).resolves.toEqual({ id: claimWins.commandId, state: "dispatching" });
+  });
+
+  it("cancels a pending start before runner claim and fences later readiness", async () => {
+    const repository = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 47).toString("base64")
+      )
+    });
+    const owner = await repository.createUser({
+      email: `managed-start-cancel-${randomUUID()}@example.com`
+    });
+    const other = await repository.createUser({
+      email: `managed-start-cancel-other-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const createPending = (label: string) =>
+      repository.createManagedConversation(actor, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: `managed-start-cancel-${label}`,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      });
+    const pending = await createPending("pending");
+    const queuedPrompt = await repository.enqueueManagedConversationPrompt(
+      actor,
+      {
+        executionId: pending.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "A task that must never run after start cancellation"
+      }
+    );
+    const cancellation = {
+      executionId: pending.execution.id,
+      executionGeneration: 1
+    };
+    await expect(
+      repository.cancelManagedConversationStart(
+        { userId: other.id },
+        cancellation
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repository.cancelManagedConversationStart(actor, cancellation)
+    ).resolves.toEqual({ id: pending.command.id, state: "canceled" });
+    await expect(
+      repository.cancelManagedConversationStart(actor, cancellation)
+    ).resolves.toEqual({ id: pending.command.id, state: "canceled" });
+    expect(
+      (
+        await repository.getManagedConversationExecution(
+          actor,
+          pending.execution.id
+        )
+      )?.state
+    ).toBe("stopped");
+    const canceledFollowing = await pool.query<{ state: string }>(
+      `select state from managed_conversation_commands
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, queuedPrompt.id]
+    );
+    expect(canceledFollowing.rows[0]?.state).toBe("canceled");
+    await expect(
+      repository.releaseManagedConversationStartForRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId: pending.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toBe(false);
+
+    const claimedStart = await createPending("claimed");
+    await repository.releaseManagedConversationStartForRuntimeBinding({
+      ownerUserId: owner.id,
+      executionId: claimedStart.execution.id,
+      executionGeneration: 1,
+      deploymentId,
+      deviceId
+    });
+    const [claimed] = await repository.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId: `managed-start-cancel-${randomUUID()}`,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimed).toMatchObject({
+      id: claimedStart.command.id,
+      state: "dispatching"
+    });
+    await expect(
+      repository.cancelManagedConversationStart(actor, {
+        executionId: claimedStart.execution.id,
+        executionGeneration: 1
+      })
+    ).resolves.toEqual({ id: claimedStart.command.id, state: "dispatching" });
+  });
+
   it("rejects context changes under a reused start key in both directions", async () => {
     const repository = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
@@ -37152,5 +37436,651 @@ describeDb("memory repository visibility", () => {
       [owner.id, session.logicalSessionId]
     );
     expect(presentationRows.rows[0]?.count).toBe("0");
+  });
+
+  it("keeps Project move requests idempotent and serializes prompt, claim, and cancellation", async () => {
+    const managedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 78).toString("base64")
+      )
+    });
+    const owner = await managedRepo.createUser({
+      email: `managed-move-owner-${randomUUID()}@example.com`
+    });
+    const other = await managedRepo.createUser({
+      email: `managed-move-other-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-move-runner-${randomUUID()}`;
+    const logicalSessionId = randomUUID();
+    await managedRepo.createCapturedSession(actor, {
+      logicalSessionId,
+      sourceRuntime: "codex",
+      captureMethod: "api",
+      metadata: { managedConversation: true }
+    });
+    const managed = await managedRepo.createManagedConversation(actor, {
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      projectId: null,
+      contextKind: "independent",
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      idempotencyKey: randomUUID()
+    });
+    const [start] = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const providerThreadId = randomUUID();
+    const running = await managedRepo.bindManagedConversationRuntime(actor, {
+      executionId: managed.execution.id,
+      expectedStateVersion: start!.execution.stateVersion,
+      executionGeneration: 1,
+      runnerId,
+      logicalSessionId,
+      providerThreadId,
+      providerCliVersion: "test"
+    });
+    await managedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const prompt = await managedRepo.enqueueManagedConversationPrompt(actor, {
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      idempotencyKey: randomUUID(),
+      clientUserMessageId: randomUUID(),
+      prompt: "Queued before the move request"
+    });
+    const request = {
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      expectedStateVersion: running.stateVersion,
+      idempotencyKey: randomUUID(),
+      destinationProjectId: `project-${randomUUID()}`
+    };
+    await expect(
+      managedRepo.requestManagedConversationProjectMove(actor, request)
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await managedRepo.cancelManagedConversationPrompt(actor, {
+      executionId: managed.execution.id,
+      commandId: prompt.id,
+      executionGeneration: 1
+    });
+    const pendingInput = await managedRepo.putManagedConversationRuntimeItem(
+      actor,
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerRequestId: `input:${randomUUID()}`,
+        itemKind: "user_input",
+        payload: { questions: [] }
+      }
+    );
+    await expect(
+      managedRepo.requestManagedConversationProjectMove(actor, request)
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await managedRepo.resolveManagedConversationRuntimeItem(actor, {
+      itemId: pendingInput.id,
+      executionGeneration: 1,
+      state: "canceled"
+    });
+    await managedRepo.putManagedConversationRuntimeItem(actor, {
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      providerRequestId: `transient:${randomUUID()}:assistant`,
+      providerTurnId: randomUUID(),
+      itemKind: "transient_output",
+      payload: { text: "Recovered assistant output" }
+    });
+    const [moveRace, promptRace] = await Promise.allSettled([
+      managedRepo.requestManagedConversationProjectMove(actor, request),
+      managedRepo.enqueueManagedConversationPrompt(actor, {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "Race the Project move request"
+      })
+    ]);
+    let pending: Awaited<
+      ReturnType<
+        MemorySourceRepository["requestManagedConversationProjectMove"]
+      >
+    >;
+    if (moveRace.status === "fulfilled") {
+      pending = moveRace.value;
+      expect(promptRace).toMatchObject({
+        status: "rejected",
+        reason: { statusCode: 409 }
+      });
+    } else {
+      expect(moveRace.reason).toMatchObject({ statusCode: 409 });
+      expect(promptRace.status).toBe("fulfilled");
+      const racedPrompt =
+        promptRace.status === "fulfilled" ? promptRace.value : null;
+      expect(racedPrompt).not.toBeNull();
+      await managedRepo.cancelManagedConversationPrompt(actor, {
+        executionId: managed.execution.id,
+        commandId: racedPrompt!.id,
+        executionGeneration: 1
+      });
+      pending = await managedRepo.requestManagedConversationProjectMove(
+        actor,
+        request
+      );
+    }
+    await expect(
+      managedRepo.requestManagedConversationProjectMove(actor, request)
+    ).resolves.toMatchObject({ id: pending.id, state: "pending" });
+    await expect(
+      managedRepo.getLatestManagedConversationProjectMoveForExecution(
+        actor,
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({ id: pending.id, state: "pending" });
+    await expect(
+      managedRepo.getLatestManagedConversationProjectMoveForExecution(
+        { userId: other.id },
+        managed.execution.id
+      )
+    ).resolves.toBeNull();
+    await expect(
+      managedRepo.cancelManagedConversationProjectMove(
+        { userId: other.id },
+        { moveId: pending.id, executionGeneration: 1 }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      managedRepo.enqueueManagedConversationPrompt(actor, {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "Must not be accepted with the old Project context"
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+
+    const [cancelResult, claimResult] = await Promise.all([
+      managedRepo.cancelManagedConversationProjectMove(actor, {
+        moveId: pending.id,
+        executionGeneration: 1
+      }),
+      managedRepo.claimManagedConversationProjectMoves({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId,
+        runnerId,
+        leaseMs: 60_000
+      })
+    ]);
+    if (claimResult.length === 0) {
+      expect(cancelResult).toMatchObject({
+        id: pending.id,
+        state: "cancelled"
+      });
+      await expect(
+        managedRepo.claimManagedConversationProjectMoves({
+          ownerUserId: owner.id,
+          deploymentId,
+          deviceId,
+          runnerId,
+          leaseMs: 60_000
+        })
+      ).resolves.toEqual([]);
+    } else {
+      expect(claimResult).toHaveLength(1);
+      expect(claimResult[0]).toMatchObject({
+        id: pending.id,
+        state: "claimed"
+      });
+      expect(cancelResult).toMatchObject({ id: pending.id, state: "claimed" });
+      await expect(
+        managedRepo.cancelManagedConversationProjectMove(actor, {
+          moveId: pending.id,
+          executionGeneration: 1
+        })
+      ).resolves.toMatchObject({ id: pending.id, state: "claimed" });
+      await managedRepo.failManagedConversationProjectMove({
+        ownerUserId: owner.id,
+        moveId: pending.id,
+        executionGeneration: 1,
+        claimToken: claimResult[0]!.claimToken!,
+        runnerId,
+        deploymentId,
+        deviceId
+      });
+    }
+    await expect(
+      managedRepo.getManagedConversationExecution(actor, managed.execution.id)
+    ).resolves.toMatchObject({ projectId: null, providerThreadId });
+  });
+
+  it("fences Project move lease operations and atomically commits execution and Captured Session attribution", async () => {
+    const managedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 79).toString("base64")
+      )
+    });
+    const owner = await managedRepo.createUser({
+      email: `managed-move-finalize-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-move-runner-${randomUUID()}`;
+    const logicalSessionId = randomUUID();
+    const session = await managedRepo.createCapturedSession(actor, {
+      logicalSessionId,
+      sourceRuntime: "codex",
+      captureMethod: "api",
+      metadata: { managedConversation: true }
+    });
+    const managed = await managedRepo.createManagedConversation(actor, {
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      projectId: "source-project",
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      idempotencyKey: randomUUID()
+    });
+    const [start] = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const providerThreadId = randomUUID();
+    const running = await managedRepo.bindManagedConversationRuntime(actor, {
+      executionId: managed.execution.id,
+      expectedStateVersion: start!.execution.stateVersion,
+      executionGeneration: 1,
+      runnerId,
+      logicalSessionId,
+      providerThreadId,
+      providerCliVersion: "test"
+    });
+    await managedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const sourceProjectPath = `/managed-move-source-${randomUUID()}`;
+    const pendingBinding =
+      await managedRepo.upsertManagedConversationRuntimeBinding(actor, {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath: sourceProjectPath
+      });
+    expect(pendingBinding.checkoutLifecycle).toBe("pending");
+    await managedRepo.bindManagedConversationExecutionCheckout(actor, {
+      executionId: managed.execution.id,
+      deploymentId,
+      deviceId,
+      executionGeneration: 1,
+      sourceProjectPath,
+      projectPath: sourceProjectPath,
+      checkoutId: randomUUID(),
+      checkoutKind: "non_vcs_directory",
+      vcsDriver: null,
+      creationOperationId: randomUUID()
+    });
+    await expect(
+      managedRepo.upsertManagedConversationRuntimeBinding(actor, {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath: `/unfenced-rebind-${randomUUID()}`
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const failureIntent =
+      await managedRepo.requestManagedConversationProjectMove(actor, {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        expectedStateVersion: running.stateVersion,
+        idempotencyKey: randomUUID(),
+        destinationProjectId: "unavailable-destination"
+      });
+    const [failureClaim] =
+      await managedRepo.claimManagedConversationProjectMoves({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId,
+        runnerId,
+        leaseMs: 60_000
+      });
+    expect(failureClaim).toMatchObject({
+      id: failureIntent.id,
+      state: "claimed"
+    });
+    await expect(
+      managedRepo.failManagedConversationProjectMove({
+        ownerUserId: owner.id,
+        moveId: failureIntent.id,
+        executionGeneration: 1,
+        claimToken: failureClaim!.claimToken!,
+        runnerId,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toMatchObject({ id: failureIntent.id, state: "failed" });
+    await expect(
+      managedRepo.getManagedConversationExecution(actor, managed.execution.id)
+    ).resolves.toMatchObject({ projectId: "source-project", providerThreadId });
+    await expect(
+      managedRepo.getCapturedSession(actor, session.id)
+    ).resolves.toMatchObject({ projectOverride: null });
+    const destinationProjectId = `project-${randomUUID()}`;
+    const requestInput = {
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      expectedStateVersion: running.stateVersion,
+      idempotencyKey: randomUUID(),
+      destinationProjectId
+    };
+    const pending = await managedRepo.requestManagedConversationProjectMove(
+      actor,
+      requestInput
+    );
+    const [claim] = await managedRepo.claimManagedConversationProjectMoves({
+      ownerUserId: owner.id,
+      deploymentId,
+      deviceId,
+      runnerId,
+      leaseMs: 60_000
+    });
+    expect(claim).toMatchObject({ id: pending.id, state: "claimed" });
+    const destinationProjectPath = `/managed-move-destination-${randomUUID()}`;
+    const transitionInput = {
+      moveId: pending.id,
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      claimToken: claim!.claimToken!,
+      runnerId,
+      deploymentId,
+      deviceId,
+      sourceProjectId: "source-project",
+      destinationProjectId,
+      expectedProjectPath: sourceProjectPath,
+      projectPath: destinationProjectPath
+    };
+    await expect(
+      managedRepo.transitionManagedConversationProjectMoveRuntimeBinding(
+        actor,
+        { ...transitionInput, claimToken: randomUUID() }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      managedRepo.getManagedConversationRuntimeBinding(
+        actor,
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({
+      projectPath: sourceProjectPath,
+      checkoutLifecycle: "ready"
+    });
+    await pool.query(
+      `update managed_conversation_project_moves
+          set claim_expires_at = clock_timestamp() - interval '1 second'
+        where id = $1`,
+      [pending.id]
+    );
+    const behindClock = Date.now() - 86_400_000;
+    const oldClock = vi.spyOn(Date, "now").mockReturnValue(behindClock);
+    try {
+      await expect(
+        managedRepo.transitionManagedConversationProjectMoveRuntimeBinding(
+          actor,
+          transitionInput
+        )
+      ).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      oldClock.mockRestore();
+    }
+    await expect(
+      managedRepo.getManagedConversationRuntimeBinding(
+        actor,
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({ projectPath: sourceProjectPath });
+    await pool.query(
+      `update managed_conversation_project_moves
+          set claim_expires_at = clock_timestamp() + interval '60 seconds'
+        where id = $1`,
+      [pending.id]
+    );
+    const destinationBinding =
+      await managedRepo.transitionManagedConversationProjectMoveRuntimeBinding(
+        actor,
+        transitionInput
+      );
+    expect(destinationBinding).toMatchObject({
+      sourceProjectPath: destinationProjectPath,
+      projectPath: destinationProjectPath,
+      checkoutLifecycle: "pending",
+      checkoutId: null,
+      localSessionId: null
+    });
+    const restoredSourceBinding =
+      await managedRepo.transitionManagedConversationProjectMoveRuntimeBinding(
+        actor,
+        {
+          ...transitionInput,
+          expectedProjectPath: destinationProjectPath,
+          projectPath: sourceProjectPath
+        }
+      );
+    expect(restoredSourceBinding).toMatchObject({
+      sourceProjectPath,
+      projectPath: sourceProjectPath,
+      checkoutLifecycle: "pending"
+    });
+    await managedRepo.transitionManagedConversationProjectMoveRuntimeBinding(
+      actor,
+      {
+        ...transitionInput,
+        expectedProjectPath: sourceProjectPath
+      }
+    );
+    await expect(
+      managedRepo.renewManagedConversationProjectMoveLease({
+        ownerUserId: owner.id,
+        moveId: pending.id,
+        executionGeneration: 1,
+        claimToken: randomUUID(),
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toBe(false);
+    await expect(
+      managedRepo.renewManagedConversationProjectMoveLease({
+        ownerUserId: owner.id,
+        moveId: pending.id,
+        executionGeneration: 1,
+        claimToken: claim!.claimToken!,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toBe(true);
+    const completeInput = {
+      ownerUserId: owner.id,
+      moveId: pending.id,
+      executionGeneration: 1,
+      claimToken: claim!.claimToken!,
+      runnerId,
+      deploymentId,
+      deviceId,
+      destinationProjectName: "Destination Project"
+    };
+    await managedRepo.putManagedConversationRuntimeItem(actor, {
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      providerRequestId: `transient:${randomUUID()}:assistant`,
+      providerTurnId: randomUUID(),
+      itemKind: "transient_output",
+      payload: { text: "Persisted assistant output" }
+    });
+    await pool.query(
+      `update managed_conversation_project_moves
+          set claim_expires_at = clock_timestamp() - interval '1 second'
+        where id = $1`,
+      [pending.id]
+    );
+    const behindCompletionClock = Date.now() - 86_400_000;
+    const oldCompletionClock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(behindCompletionClock);
+    try {
+      await expect(
+        managedRepo.completeManagedConversationProjectMove(completeInput)
+      ).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      oldCompletionClock.mockRestore();
+    }
+    await expect(
+      managedRepo.getManagedConversationExecution(actor, managed.execution.id)
+    ).resolves.toMatchObject({ projectId: "source-project" });
+    await pool.query(
+      `update managed_conversation_project_moves
+          set claim_expires_at = clock_timestamp() + interval '60 seconds'
+        where id = $1`,
+      [pending.id]
+    );
+    await expect(
+      managedRepo.completeManagedConversationProjectMove(completeInput)
+    ).resolves.toMatchObject({ id: pending.id, state: "completed" });
+    await expect(
+      managedRepo.completeManagedConversationProjectMove({
+        ...completeInput,
+        claimToken: randomUUID()
+      })
+    ).resolves.toMatchObject({ id: pending.id, state: "completed" });
+    await expect(
+      managedRepo.requestManagedConversationProjectMove(actor, requestInput)
+    ).resolves.toMatchObject({ id: pending.id, state: "completed" });
+    await expect(
+      managedRepo.getLatestManagedConversationProjectMoveForExecution(
+        actor,
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({ id: pending.id, state: "completed" });
+    await expect(
+      managedRepo.getManagedConversationExecution(actor, managed.execution.id)
+    ).resolves.toMatchObject({
+      projectId: destinationProjectId,
+      logicalSessionId,
+      providerThreadId
+    });
+    const attributed = await managedRepo.getCapturedSession(actor, session.id);
+    expect(attributed).toMatchObject({
+      projectOverride: {
+        id: destinationProjectId,
+        name: "Destination Project",
+        path: null
+      }
+    });
+  });
+
+  it("uses a distinct lease token for every move in a claimed batch", async () => {
+    const managedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 80).toString("base64")
+      )
+    });
+    const owner = await managedRepo.createUser({
+      email: `managed-move-batch-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-move-batch-runner-${randomUUID()}`;
+    const moveIds: string[] = [];
+
+    for (let index = 0; index < 2; index += 1) {
+      const logicalSessionId = randomUUID();
+      await managedRepo.createCapturedSession(actor, {
+        logicalSessionId,
+        sourceRuntime: "codex",
+        captureMethod: "api",
+        metadata: { managedConversation: true }
+      });
+      const managed = await managedRepo.createManagedConversation(actor, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: `source-${index}`,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      });
+      const [start] = await managedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+      const running = await managedRepo.bindManagedConversationRuntime(actor, {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId,
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      });
+      await managedRepo.completeManagedConversationCommand({
+        commandId: start!.id,
+        leaseToken: start!.leaseToken!,
+        result: { started: true }
+      });
+      const move = await managedRepo.requestManagedConversationProjectMove(
+        actor,
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          expectedStateVersion: running.stateVersion,
+          idempotencyKey: randomUUID(),
+          destinationProjectId: `destination-${index}`
+        }
+      );
+      moveIds.push(move.id);
+    }
+
+    const claimed = await managedRepo.claimManagedConversationProjectMoves({
+      ownerUserId: owner.id,
+      deploymentId,
+      deviceId,
+      runnerId,
+      leaseMs: 60_000,
+      limit: 2
+    });
+    expect(claimed.map((move) => move.id).sort()).toEqual(moveIds.sort());
+    const claimTokens = claimed.map((move) => move.claimToken);
+    expect(claimTokens.every(Boolean)).toBe(true);
+    expect(new Set(claimTokens).size).toBe(2);
   });
 });

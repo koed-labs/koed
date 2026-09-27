@@ -48,6 +48,61 @@ describe("Managed Conversation authority client", () => {
     expect(remoteClaim).toHaveBeenCalledOnce();
   });
 
+  it("sends Project Move claims and completion to authority without local paths", async () => {
+    const moveId = "00000000-0000-4000-8000-000000000040";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      const payload = path.endsWith("/claim")
+        ? { moves: [{ id: moveId, state: "claimed", claimToken: ids.handoff }] }
+        : { move: { id: moveId, state: "completed" } };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    await client.claimManagedConversationProjectMoves({
+      ownerUserId: ids.session,
+      deploymentId: ids.generation,
+      deviceId: ids.source,
+      runnerId: "runner-1",
+      leaseMs: 30_000,
+      limit: 1
+    });
+    await client.completeManagedConversationProjectMove({
+      ownerUserId: ids.session,
+      moveId,
+      executionGeneration: 1,
+      claimToken: ids.handoff,
+      runnerId: "runner-1",
+      deploymentId: ids.generation,
+      deviceId: ids.source,
+      destinationProjectName: "Target Project"
+    });
+    expect(new URL(String(fetch.mock.calls[0]![0])).pathname).toBe(
+      "/v1/managed-conversation-runner/project-moves/claim"
+    );
+    expect(new URL(String(fetch.mock.calls[1]![0])).pathname).toBe(
+      `/v1/managed-conversation-runner/project-moves/${moveId}/complete`
+    );
+    const serialized = fetch.mock.calls
+      .map((call) => String(call[1]?.body))
+      .join("\n");
+    expect(serialized).not.toContain("sourceProjectPath");
+    expect(serialized).not.toContain("destinationLocalPath");
+    expect(JSON.parse(String(fetch.mock.calls[1]![1]?.body))).toEqual({
+      executionGeneration: 1,
+      claimToken: ids.handoff,
+      runnerId: "runner-1",
+      destinationProjectName: "Target Project"
+    });
+  });
+
   it("binds the first durable source generation through runner authority", async () => {
     const execution = {
       id: "00000000-0000-4000-8000-000000000001",

@@ -629,6 +629,65 @@ describe("managed Conversation runner routes", () => {
     await fixture.app.close();
   });
 
+  it("scopes Project Move claim and completion to the authenticated device", async () => {
+    const moveId = randomUUID();
+    const claim = vi.fn(async () => []);
+    const complete = vi.fn(async () => ({ id: moveId, state: "completed" }));
+    const fixture = await buildServer({
+      repository: {
+        claimManagedConversationProjectMoves: claim,
+        completeManagedConversationProjectMove: complete
+      }
+    });
+    try {
+      const unauthorized = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/project-moves/claim",
+        payload: { runnerId: "runner", limit: 2, leaseMs: 30_000 }
+      });
+      expect(unauthorized.statusCode).toBe(401);
+      const claimed = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/project-moves/claim",
+        headers: runnerHeaders,
+        payload: { runnerId: "runner", limit: 2, leaseMs: 30_000 }
+      });
+      expect(claimed.statusCode).toBe(200);
+      expect(claim).toHaveBeenCalledWith({
+        ownerUserId: ids.user,
+        deploymentId: ids.deployment,
+        deviceId: ids.device,
+        runnerId: "runner",
+        leaseMs: 30_000,
+        limit: 2
+      });
+      const completed = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/project-moves/${moveId}/complete`,
+        headers: runnerHeaders,
+        payload: {
+          executionGeneration: 1,
+          claimToken: ids.command,
+          runnerId: "runner",
+          destinationProjectName: "Target Project"
+        }
+      });
+      expect(completed.statusCode).toBe(200);
+      expect(complete).toHaveBeenCalledWith({
+        ownerUserId: ids.user,
+        moveId,
+        executionGeneration: 1,
+        claimToken: ids.command,
+        runnerId: "runner",
+        deploymentId: ids.deployment,
+        deviceId: ids.device,
+        destinationProjectName: "Target Project"
+      });
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("scopes the concurrent control lane to the authenticated runner", async () => {
     const fixture = await buildServer();
     const response = await fixture.app.inject({

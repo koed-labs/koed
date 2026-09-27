@@ -720,4 +720,82 @@ describe("local edge upstream routing", () => {
       reason: "live_upstream_proxy"
     });
   });
+
+  it("allows only POST prompt cancellation through managed execution routing", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/managed-conversations/execution-id/prompts/command-id/cancel"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/execution-id/prompts/command-id/cancel"
+      )
+    ).toThrow("not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/managed-conversations/execution-id/prompts/command-id/cancel/extra"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
+  it("allows only POST start cancellation through managed execution routing", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/managed-conversations/execution-id/start/cancel"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/execution-id/start/cancel"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
+  it("routes only the Project Move methods required by owner and runner", () => {
+    const allowed = [
+      ["POST", "/v1/managed-conversations/execution-id/project-moves"],
+      ["GET", "/v1/managed-conversations/execution-id/project-moves/move-id"],
+      [
+        "POST",
+        "/v1/managed-conversations/execution-id/project-moves/move-id/cancel"
+      ],
+      ["POST", "/v1/managed-conversation-runner/project-moves/claim"],
+      ["POST", "/v1/managed-conversation-runner/project-moves/move-id/lease"],
+      [
+        "POST",
+        "/v1/managed-conversation-runner/project-moves/move-id/complete"
+      ],
+      ["POST", "/v1/managed-conversation-runner/project-moves/move-id/fail"]
+    ] as const;
+    for (const [method, path] of allowed) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).not.toThrow();
+    }
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/execution-id/project-moves"
+      )
+    ).toThrow("not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversation-runner/project-moves/claim"
+      )
+    ).toThrow("not allowed for operation family");
+  });
 });

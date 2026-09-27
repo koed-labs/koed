@@ -125,6 +125,8 @@ export interface CodexAppServerRunConfig {
   approvalPolicy?: "never" | "on-request" | "untrusted";
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   approvalsReviewer?: "user" | "auto_review";
+  /** Optional app-server CLI config overrides for narrowly scoped callers. */
+  appServerConfigOverrides?: string[];
   /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
   captureProcessMetrics?: boolean;
   onProviderActivity?: (status: string) => void;
@@ -1785,7 +1787,12 @@ export class CodexAppServerThreadSession {
             }
           }
         : undefined,
-      { captureProcessMetrics: config.captureProcessMetrics }
+      {
+        captureProcessMetrics: config.captureProcessMetrics,
+        ...(config.appServerConfigOverrides
+          ? { configOverrides: config.appServerConfigOverrides }
+          : {})
+      }
     );
   }
 

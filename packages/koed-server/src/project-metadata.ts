@@ -13,6 +13,7 @@ import {
   hmacProjectValue,
   mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
+  normalizeProjectDisplayNameOverride,
   normalizeProjectDisplayName,
   type NormalizedGitRemote,
   type ProjectMetadataV1,
@@ -273,9 +274,17 @@ const discoverPackages = (
 
 export const discoverProjectMetadata = async (
   paths: KoedServerPaths,
-  input: { cwd: string; aiClientSource?: "codex" },
+  input: {
+    cwd: string;
+    aiClientSource?: "codex";
+    displayNameOverride?: string;
+  },
   depsInput: ProjectMetadataDeps = {}
 ): Promise<ProjectMetadataResult> => {
+  const requestedDisplayNameOverride =
+    input.displayNameOverride === undefined
+      ? undefined
+      : normalizeProjectDisplayNameOverride(input.displayNameOverride);
   const deps = depsWithDefaults(depsInput);
   const store = readStore(paths, deps);
   const now = deps.now().toISOString();
@@ -315,18 +324,23 @@ export const discoverProjectMetadata = async (
   const isWorktree = Boolean(
     resolvedCommonDir && resolvedGitDir && resolvedCommonDir !== resolvedGitDir
   );
-  const displayName = normalizeProjectDisplayName({
-    cwd,
-    projectRoot: gitRoot,
-    packages,
-    remotes
-  });
+  const displayNameOverride =
+    requestedDisplayNameOverride ?? previousProject?.displayNameOverride;
+  const displayName =
+    displayNameOverride ??
+    normalizeProjectDisplayName({
+      cwd,
+      projectRoot: gitRoot,
+      packages,
+      remotes
+    });
   const project: ProjectMetadataV1 = {
     schemaVersion: 1,
     discoveredAt: previousProject?.discoveredAt ?? now,
     lastSeenAt: now,
     localProjectId,
     displayName,
+    ...(displayNameOverride ? { displayNameOverride } : {}),
     path: {
       cwd,
       projectRoot: gitRoot,

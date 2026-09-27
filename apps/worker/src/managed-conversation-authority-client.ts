@@ -8,6 +8,7 @@ import type {
   ManagedConversationForkTargetMaterial,
   ManagedConversationHandoffRecord,
   ManagedConversationHandoffTargetMaterial,
+  ManagedConversationProjectMoveRecord,
   ManagedConversationRuntimeItemRecord,
   MemorySourceRepository
 } from "@koed/db";
@@ -24,6 +25,10 @@ const ordinaryResponseBytes = 4 * 1024 * 1024;
 export type ManagedConversationAuthorityRepository = Pick<
   MemorySourceRepository,
   | "claimManagedConversationCommands"
+  | "claimManagedConversationProjectMoves"
+  | "renewManagedConversationProjectMoveLease"
+  | "completeManagedConversationProjectMove"
+  | "failManagedConversationProjectMove"
   | "claimManagedConversationControlCommands"
   | "claimManagedConversationFileOperations"
   | "reconcileAbandonedManagedConversationCommands"
@@ -524,6 +529,78 @@ export const createManagedConversationAuthorityClient = (options: {
             entry,
             "managed command"
           ) as unknown as ClaimedManagedConversationCommand
+      );
+    },
+
+    async claimManagedConversationProjectMoves(input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/project-moves/claim",
+        {
+          runnerId: input.runnerId,
+          limit: input.limit,
+          leaseMs: input.leaseMs
+        }
+      );
+      if (!Array.isArray(payload.moves)) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned invalid Project Moves"
+        );
+      }
+      return payload.moves.map(
+        (entry) =>
+          object(
+            entry,
+            "managed Project Move"
+          ) as unknown as ManagedConversationProjectMoveRecord
+      );
+    },
+
+    async renewManagedConversationProjectMoveLease(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/project-moves/${encodeURIComponent(input.moveId)}/lease`,
+        {
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId,
+          leaseMs: input.leaseMs
+        }
+      );
+      return boolean(payload.renewed, "Project Move lease result");
+    },
+
+    async completeManagedConversationProjectMove(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/project-moves/${encodeURIComponent(input.moveId)}/complete`,
+        {
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId,
+          destinationProjectName: input.destinationProjectName
+        }
+      );
+      return nullableRecord<ManagedConversationProjectMoveRecord>(
+        payload.move,
+        "managed Project Move"
+      );
+    },
+
+    async failManagedConversationProjectMove(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/project-moves/${encodeURIComponent(input.moveId)}/fail`,
+        {
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId
+        }
+      );
+      return nullableRecord<ManagedConversationProjectMoveRecord>(
+        payload.move,
+        "managed Project Move"
       );
     },
 

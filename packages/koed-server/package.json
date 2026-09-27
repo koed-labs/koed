@@ -17,6 +17,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./retained-workspace-catalog": {
+      "types": "./dist/retained-workspace-catalog.d.ts",
+      "import": "./dist/retained-workspace-catalog.js"
     }
   },
   "dependencies": {

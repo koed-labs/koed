@@ -147,6 +147,173 @@ const managedCapabilityRepository = {
 };
 
 describe("managed Conversation capability admission", () => {
+  it("returns bounded owner-scoped agent state with immutable message authors", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const agentId = randomUUID();
+    const versionId = randomUUID();
+    const jobId = randomUUID();
+    const commandId = randomUUID();
+    const messageId = randomUUID();
+    const now = new Date().toISOString();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-agent-state-route-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ownerUserId: userId,
+          projectId: null,
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "supervised",
+          runnerKind: "local_device",
+          state: "running",
+          executionGeneration: 1
+        }),
+        getPersonalAgentConversation: async () => ({
+          contractVersion: 1,
+          id: executionId,
+          ownerUserId: userId,
+          participants: [
+            {
+              conversationId: executionId,
+              ownerUserId: userId,
+              agentId,
+              ordinal: 0,
+              addedAt: now
+            }
+          ],
+          activeAgentId: agentId,
+          modelOverride: null,
+          reasoningEffortOverride: null,
+          version: 1,
+          createdAt: now,
+          updatedAt: now
+        }),
+        listPersonalAgentExecutionJobs: async () => ({
+          jobs: [
+            {
+              contractVersion: 1,
+              id: jobId,
+              ownerUserId: userId,
+              conversationId: executionId,
+              commandId,
+              title: "Agent task",
+              projectId: null,
+              attribution: { kind: "agent", agentId, agentVersion: 4 },
+              state: "running",
+              counters: {
+                attemptsStarted: 1,
+                attemptsSucceeded: 0,
+                attemptsFailed: 0,
+                attemptsCanceled: 0,
+                attemptsInterrupted: 0
+              },
+              lastAttemptId: randomUUID(),
+              outputReference: { runtimeItemIds: [randomUUID()] },
+              version: 1,
+              lastObservedAt: now,
+              createdAt: now,
+              updatedAt: now
+            }
+          ],
+          hasMore: false,
+          nextCursor: null
+        }),
+        getManagedConversationCommand: async () => ({
+          id: commandId,
+          clientUserMessageId: messageId,
+          state: "dispatching",
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          createdAt: now,
+          payload: { prompt: "Review this. Do not expose private context." }
+        }),
+        getPersonalAgentVersion: async () => ({
+          contractVersion: 1,
+          id: versionId,
+          agentId,
+          ownerUserId: userId,
+          version: 4,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: "avatar:mira-v4",
+          soulInstructions: "private instruction",
+          instructionSource: "custom",
+          createdByUserId: userId,
+          createdAt: now
+        }),
+        getPersonalAgentTurnOutput: async () => "Safe assistant output",
+        getPersonalAgent: async () => ({
+          agent: {
+            id: agentId,
+            name: "Mira Current",
+            role: "Reviewer",
+            avatarReference: "avatar:mira-current",
+            lifecycle: "active",
+            currentVersion: 5
+          }
+        })
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state`
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      activeAgentId: agentId,
+      participants: [
+        { name: "Mira Current", avatarReference: "avatar:mira-current" }
+      ],
+      messages: [
+        {
+          id: messageId,
+          role: "user",
+          content: "Review this. Do not expose private context."
+        },
+        {
+          id: `agent:${jobId}`,
+          role: "assistant",
+          content: "Safe assistant output",
+          author: {
+            agentId,
+            agentVersion: 4,
+            name: "Mira",
+            avatarReference: "avatar:mira-v4"
+          }
+        }
+      ],
+      jobs: [{ observedState: "running", freshness: "current" }]
+    });
+    expect(response.body).not.toContain("private instruction");
+  });
+
   it("checks next-turn settings against the owning AI Client catalog before enqueue", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
@@ -564,6 +731,733 @@ describe("managed Conversation capability admission", () => {
 });
 
 describe("managed Conversation routes", () => {
+  it.each([
+    ["canceled", true],
+    ["dispatching", false]
+  ] as const)(
+    "reports persisted prompt cancellation state %s",
+    async (state, wasCanceled) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const cancel = vi.fn(async (_actor, input) => ({
+        id: input.commandId,
+        state
+      }));
+      const app = Fastify({ logger: false });
+      app.setErrorHandler((error, _request, reply) => {
+        const typedError = error as Error & { statusCode?: number };
+        reply
+          .status(typedError.statusCode ?? 500)
+          .send({ error: typedError.message });
+      });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "local_personal" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticate: async () => ({ id: userId }) },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: resolve(
+            mkdtempSync(resolve(tmpdir(), "koed-prompt-cancel-")),
+            "upstreams.json"
+          ),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          ...launchRepository,
+          listCurrentAiClientCapabilitySnapshots: async () => [],
+          getManagedConversationExecution: async () => ({
+            id: executionId,
+            projectId: null,
+            provider: "codex",
+            aiClientInstanceId: "codex.default",
+            model: "gpt-test",
+            reasoningEffort: "low",
+            permissionMode: "supervised"
+          }),
+          cancelManagedConversationPrompt: cancel
+        })
+      } as unknown as ApiRouteContext);
+      try {
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/managed-conversations/${executionId}/prompts/${commandId}/cancel`,
+          payload: { executionGeneration: 1 }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          command: { id: commandId, state, canceled: wasCanceled }
+        });
+        expect(cancel).toHaveBeenCalledWith(
+          { userId },
+          { executionId, commandId, executionGeneration: 1 }
+        );
+      } finally {
+        await app.close();
+      }
+    }
+  );
+
+  it("does not reveal another owner's prompt through cancellation", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const cancel = vi.fn(async () => null);
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-prompt-cancel-owner-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          projectId: null,
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "supervised"
+        }),
+        cancelManagedConversationPrompt: cancel
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts/${commandId}/cancel`,
+        payload: { executionGeneration: 1 }
+      });
+      expect(response.statusCode).toBe(404);
+      expect(cancel).toHaveBeenCalledWith(
+        { userId },
+        { executionId, commandId, executionGeneration: 1 }
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    ["canceled", true],
+    ["dispatching", false]
+  ] as const)(
+    "reports persisted Pending start cancellation state %s for a hosted session",
+    async (state, wasCanceled) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const cancel = vi.fn(async () => ({ id: commandId, state }));
+      const app = Fastify({ logger: false });
+      app.setErrorHandler((error, _request, reply) => {
+        const typedError = error as Error & { statusCode?: number };
+        reply
+          .status(typedError.statusCode ?? 500)
+          .send({ error: typedError.message });
+      });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "private_vps" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: {
+          authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: writeManagedUpstreamRegistry(),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          cancelManagedConversationStart: cancel
+        })
+      } as unknown as ApiRouteContext);
+      try {
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/managed-conversations/${executionId}/start/cancel`,
+          payload: { executionGeneration: 1 }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          command: { id: commandId, state, canceled: wasCanceled }
+        });
+        expect(cancel).toHaveBeenCalledWith(
+          { userId },
+          { executionId, executionGeneration: 1 }
+        );
+      } finally {
+        await app.close();
+      }
+    }
+  );
+
+  it("does not reveal another owner's Pending start through cancellation", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const cancel = vi.fn(async () => null);
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({ cancelManagedConversationStart: cancel })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/start/cancel`,
+        payload: { executionGeneration: 1 }
+      });
+      expect(response.statusCode).toBe(404);
+      expect(cancel).toHaveBeenCalledWith(
+        { userId },
+        { executionId, executionGeneration: 1 }
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a Codex Project Move without exposing the runner claim token", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const moveId = randomUUID();
+    const destinationProjectId = `lp_${"a".repeat(32)}`;
+    const requestMove = vi.fn(async () => ({
+      id: moveId,
+      ownerUserId: userId,
+      executionId,
+      executionGeneration: 1,
+      sourceProjectId: null,
+      destinationProjectId,
+      state: "pending",
+      claimToken: "runner-secret",
+      claimExpiresAt: null,
+      claimedByRunnerId: null,
+      claimAttempts: 0,
+      createdAt: "2026-09-26T00:00:00.000Z",
+      updatedAt: "2026-09-26T00:00:00.000Z",
+      finishedAt: null
+    }));
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          provider: "codex",
+          projectId: null
+        }),
+        listLcmGraphThreads: async () => [{ id: destinationProjectId }],
+        requestManagedConversationProjectMove: requestMove
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const input = {
+        executionGeneration: 1,
+        expectedStateVersion: 2,
+        destinationProjectId,
+        idempotencyKey: "move-request-key-01"
+      };
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/project-moves`,
+        payload: input
+      });
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        move: {
+          id: moveId,
+          executionId,
+          executionGeneration: 1,
+          sourceProjectId: null,
+          destinationProjectId,
+          state: "pending",
+          createdAt: "2026-09-26T00:00:00.000Z",
+          updatedAt: "2026-09-26T00:00:00.000Z"
+        }
+      });
+      expect(requestMove).toHaveBeenCalledWith(
+        { userId },
+        { executionId, ...input }
+      );
+      expect(JSON.stringify(response.json())).not.toContain("runner-secret");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a registered empty local Project as a Move destination", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const destinationProjectId = `lp_${"b".repeat(32)}`;
+    const projectPath = mkdtempSync(
+      resolve(tmpdir(), "koed-empty-move-project-")
+    );
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-empty-move-home-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config", "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        projects: [
+          {
+            localProjectId: destinationProjectId,
+            path: { cwd: projectPath, projectRoot: projectPath }
+          }
+        ]
+      })
+    );
+    const requestMove = vi.fn(async () => ({
+      id: randomUUID(),
+      ownerUserId: userId,
+      executionId,
+      executionGeneration: 1,
+      sourceProjectId: null,
+      destinationProjectId,
+      state: "pending",
+      claimToken: null,
+      claimExpiresAt: null,
+      claimedByRunnerId: null,
+      claimAttempts: 0,
+      createdAt: "2026-09-26T00:00:00.000Z",
+      updatedAt: "2026-09-26T00:00:00.000Z",
+      finishedAt: null
+    }));
+    const listProjects = vi.fn(async () => []);
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal", koedHome },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-empty-move-upstream-")),
+          "missing-registry.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          provider: "codex",
+          projectId: null
+        }),
+        listLcmGraphThreads: listProjects,
+        requestManagedConversationProjectMove: requestMove
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const input = {
+        executionGeneration: 1,
+        expectedStateVersion: 2,
+        destinationProjectId,
+        idempotencyKey: "empty-local-move-key-01"
+      };
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/project-moves`,
+        payload: input
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json().move).toMatchObject({
+        executionId,
+        destinationProjectId,
+        state: "pending"
+      });
+      expect(listProjects).not.toHaveBeenCalled();
+      expect(requestMove).toHaveBeenCalledWith(
+        { userId },
+        { executionId, ...input }
+      );
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unverified AI Client before requesting a Project Move", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const requestMove = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          provider: "claude"
+        }),
+        requestManagedConversationProjectMove: requestMove
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/project-moves`,
+        payload: {
+          executionGeneration: 1,
+          expectedStateVersion: 2,
+          destinationProjectId: "project-target",
+          idempotencyKey: "move-request-key-01"
+        }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(requestMove).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a path-derived Project ID on hosted Move requests", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const requestMove = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          provider: "codex",
+          projectId: null
+        }),
+        requestManagedConversationProjectMove: requestMove
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/project-moves`,
+        payload: {
+          executionGeneration: 1,
+          expectedStateVersion: 2,
+          destinationProjectId: "/Users/alice/private-work",
+          idempotencyKey: "move-request-key-01"
+        }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(requestMove).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports the persisted claim winner when Project Move cancellation loses", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const moveId = randomUUID();
+    const claimed = {
+      id: moveId,
+      ownerUserId: userId,
+      executionId,
+      executionGeneration: 1,
+      sourceProjectId: "source-project",
+      destinationProjectId: "destination-project",
+      state: "claimed",
+      claimToken: "private-runner-token",
+      claimExpiresAt: "2026-09-26T01:00:00.000Z",
+      claimedByRunnerId: "private-runner-id",
+      claimAttempts: 1,
+      createdAt: "2026-09-26T00:00:00.000Z",
+      updatedAt: "2026-09-26T00:00:01.000Z",
+      finishedAt: null
+    };
+    const cancel = vi.fn(async () => claimed);
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationProjectMove: async () => claimed,
+        cancelManagedConversationProjectMove: cancel
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/project-moves/${moveId}/cancel`,
+        payload: { executionGeneration: 1 }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().move).toMatchObject({
+        id: moveId,
+        state: "claimed"
+      });
+      expect(JSON.stringify(response.json())).not.toContain("private-runner");
+      expect(cancel).toHaveBeenCalledWith(
+        { userId },
+        { moveId, executionGeneration: 1 }
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("loads the latest Project Move after a page reload without runner fields", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const moveId = randomUUID();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({ id: executionId }),
+        getLatestManagedConversationProjectMoveForExecution: async () => ({
+          id: moveId,
+          executionId,
+          executionGeneration: 1,
+          sourceProjectId: null,
+          destinationProjectId: "target",
+          state: "pending",
+          claimToken: "private-token",
+          createdAt: "2026-09-26T00:00:00.000Z",
+          updatedAt: "2026-09-26T00:00:00.000Z"
+        })
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/managed-conversations/${executionId}/project-moves/latest`
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().move).toMatchObject({
+        id: moveId,
+        state: "pending"
+      });
+      expect(JSON.stringify(response.json())).not.toContain("private-token");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("queues a browser prompt for an offline runner without requiring a live snapshot", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const clientUserMessageId = randomUUID();
+    const command = {
+      id: randomUUID(),
+      state: "queued",
+      executionId,
+      executionGeneration: 1,
+      clientUserMessageId,
+      createdAt: new Date().toISOString()
+    };
+    const enqueue = vi.fn(async () => command);
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          projectId: "lp_project",
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          runnerDeviceId: randomUUID()
+        }),
+        listAiClientInstances: async () =>
+          launchRepository.listAiClientInstances(),
+        // No current capability snapshot: only the runner can recheck readiness.
+        listCurrentAiClientCapabilitySnapshots: async () => [],
+        enqueueManagedConversationPrompt: enqueue
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        payload: {
+          executionGeneration: 1,
+          idempotencyKey: "offline-browser-prompt-1",
+          clientUserMessageId,
+          prompt: "Continue when the selected device is back online."
+        }
+      });
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({
+        command: { id: command.id, state: "queued" }
+      });
+      expect(enqueue).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          executionId,
+          prompt: "Continue when the selected device is back online."
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("authorizes draft access independently of exhausted background memory quotas", async () => {
     const userId = randomUUID();
     let limited = false;
@@ -1417,6 +2311,194 @@ describe("managed Conversation routes", () => {
     expect(queuedPrompt).not.toContain(contextReference);
   });
 
+  it("binds an agent prompt to its owner version and Personal Project evidence", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const agentId = randomUUID();
+    const identityVersionId = randomUUID();
+    const jobId = randomUUID();
+    const projectId = "lp_agent_project";
+    const searchMemoryNodes = vi.fn(async () => ({
+      results: [
+        {
+          nodeId: "memory-node-1",
+          sourceType: "memory_node",
+          sourceId: "memory-source-1",
+          summaryText: "Earlier Project decision.",
+          citation: {
+            nodeId: "memory-node-1",
+            sourceType: "memory_node",
+            sourceId: "memory-source-1",
+            visibility: "personal" as const
+          },
+          visibility: "personal" as const,
+          sourceTime: "2026-09-01T00:00:00.000Z"
+        },
+        {
+          nodeId: "shared-node-1",
+          summaryText: "Not authorized for this agent.",
+          citation: { nodeId: "shared-node-1", visibility: "team" as const },
+          visibility: "team" as const
+        }
+      ],
+      metadata: {}
+    }));
+    const enqueue = vi.fn(async (_actor, input) => ({
+      id: randomUUID(),
+      state: "queued",
+      executionId,
+      executionGeneration: 1,
+      clientUserMessageId: input.clientUserMessageId,
+      createdAt: "2026-09-08T00:00:00Z",
+      personalAgent: {
+        jobId,
+        agentId,
+        agentVersion: 3,
+        identityVersionId,
+        replayed: false
+      }
+    }));
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-agent-prompt-route-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          projectId,
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "supervised"
+        }),
+        getPersonalAgent: async () => ({
+          agent: {
+            contractVersion: 1,
+            id: agentId,
+            ownerUserId: userId,
+            name: "Mira",
+            role: "Reviewer",
+            avatarReference: null,
+            lifecycle: "active",
+            defaultProvider: "codex",
+            defaultModel: "gpt-test",
+            defaultReasoningEffort: "low",
+            currentVersion: 3,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-02-01T00:00:00.000Z",
+            retiredAt: null
+          },
+          soulInstructions: "Be precise.",
+          history: {}
+        }),
+        getPersonalAgentVersion: async () => ({
+          contractVersion: 1,
+          id: identityVersionId,
+          agentId,
+          ownerUserId: userId,
+          version: 3,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: null,
+          defaultProvider: "codex",
+          defaultModel: "gpt-test",
+          defaultReasoningEffort: "low",
+          soulInstructions: "Be precise.",
+          instructionSource: "custom",
+          createdByUserId: userId,
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }),
+        listLcmGraphThreads: async () => [
+          {
+            id: projectId,
+            name: "Koed",
+            path: null,
+            eventCount: 1,
+            threads: []
+          }
+        ],
+        searchMemoryNodes,
+        enqueueManagedConversationPrompt: enqueue
+      })
+    } as unknown as ApiRouteContext);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "personal-agent-turn-1",
+        clientUserMessageId: randomUUID(),
+        prompt: "Review the change using our earlier decision.",
+        agentId
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(202);
+    const payload = response.json();
+    expect(payload.command.personalAgent).toEqual({
+      jobId,
+      agentId,
+      agentVersion: 3,
+      identityVersionId,
+      replayed: false
+    });
+    expect(JSON.stringify(payload)).not.toContain("Be precise.");
+    expect(JSON.stringify(payload)).not.toContain("Earlier Project decision.");
+    expect(enqueue).toHaveBeenCalledWith(
+      { userId },
+      expect.objectContaining({
+        agentId,
+        expectedAgentVersion: 3,
+        personalAgentContext: expect.objectContaining({
+          identity: expect.objectContaining({ identityVersionId, version: 3 }),
+          project: { projectId, name: "Koed" },
+          memory: {
+            searchDomain: "project",
+            evidence: [
+              expect.objectContaining({
+                nodeId: "memory-node-1",
+                summaryText: "Earlier Project decision."
+              })
+            ]
+          }
+        })
+      })
+    );
+    expect(searchMemoryNodes).toHaveBeenCalledWith(
+      { userId },
+      expect.objectContaining({
+        scope: "personal",
+        searchDomain: "project",
+        projectId
+      })
+    );
+  });
+
   it("admits bounded terminal WebSockets only with terminal authority and an allowed browser origin", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
@@ -1979,6 +3061,328 @@ describe("managed Conversation routes", () => {
     expect(response.body).not.toContain("must-not-leak");
   });
 
+  it("shows safe hosted launch choices and persists an exact offline target without a binding", async () => {
+    const userId = randomUUID();
+    const deviceId = randomUUID();
+    const deploymentId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const projectId = "lp_hosted_project";
+    const start = vi.fn(async () => ({
+      execution: {
+        id: executionId,
+        projectId,
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        state: "starting",
+        stateVersion: 1,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        lastErrorCode: null,
+        createdAt: "2026-09-25T00:00:00.000Z",
+        updatedAt: "2026-09-25T00:00:00.000Z",
+        startedAt: null,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      command: { id: commandId, state: "blocked" }
+    }));
+    const upsert = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        listCurrentAiClientCapabilitySnapshots: async () => [
+          {
+            instanceId: "codex.default",
+            installationIdentityHash: "f".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "unavailable",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "not_ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "gpt-test",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              }
+            ]
+          }
+        ],
+        listPersonalDeviceGroups: async () => [
+          {
+            state: "active",
+            policy: { enabled: true },
+            members: [{ status: "active", deviceId }]
+          }
+        ],
+        listDeviceCredentials: async () => [
+          {
+            deviceInstanceId: deviceId,
+            operationFamilies: ["sync", "managed_execution"],
+            metadata: { protocolDeploymentId: deploymentId },
+            deviceLabel: "Computer A",
+            expiresAt: null,
+            revokedAt: null
+          }
+        ],
+        listLcmGraphThreads: async (_actor, options) =>
+          options.projectId
+            ? [
+                {
+                  id: projectId,
+                  name: "Local Project",
+                  path: "/private/path",
+                  threads: [{ title: "private" }]
+                }
+              ]
+            : [
+                {
+                  id: projectId,
+                  name: "Local Project",
+                  path: "/private/path",
+                  threads: [{ title: "private" }]
+                }
+              ],
+        createManagedConversation: start,
+        upsertManagedConversationRuntimeBinding: upsert
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const options = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/launch-options"
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId,
+          ...launchSelection,
+          targetDeviceId: deviceId,
+          initialPrompt: "Start on the selected computer when it reconnects.",
+          idempotencyKey: "hosted-offline-start-1"
+        }
+      });
+      const unsafe = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId,
+          ...launchSelection,
+          targetDeviceId: deviceId,
+          projectPath: "/browser/path",
+          credential: "secret",
+          idempotencyKey: "hosted-offline-start-2"
+        }
+      });
+
+      expect(options.statusCode).toBe(200);
+      expect(options.json()).toMatchObject({
+        runners: [
+          {
+            kind: "local_device",
+            deviceId,
+            deploymentId,
+            displayName: "Computer A"
+          }
+        ],
+        projects: [{ id: projectId, name: "Local Project" }],
+        instances: [
+          { instanceId: "codex.default", models: [{ id: "gpt-test" }] }
+        ]
+      });
+      expect(options.body).not.toContain("/private/path");
+      expect(options.body).not.toContain('private"');
+      expect(options.body).not.toContain("online");
+      expect(response.statusCode).toBe(202);
+      expect(start).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          projectId,
+          runnerDeploymentId: deploymentId,
+          runnerDeviceId: deviceId,
+          deferUntilRuntimeBinding: true,
+          initialPrompt: "Start on the selected computer when it reconnects."
+        })
+      );
+      expect(upsert).not.toHaveBeenCalled();
+      expect(unsafe.statusCode).not.toBe(202);
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a hosted independent Conversation for the selected device without a Project", async () => {
+    const userId = randomUUID();
+    const deviceId = randomUUID();
+    const deploymentId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const start = vi.fn(async () => ({
+      execution: {
+        id: executionId,
+        projectId: null,
+        contextKind: "independent",
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        state: "starting",
+        stateVersion: 1,
+        executionGeneration: 7,
+        logicalSessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        lastErrorCode: null,
+        createdAt: "2026-09-25T00:00:00.000Z",
+        updatedAt: "2026-09-25T00:00:00.000Z",
+        startedAt: null,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      command: { id: commandId, state: "blocked" }
+    }));
+    const listProjects = vi.fn(async () => []);
+    const upsert = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        listPersonalDeviceGroups: async () => [
+          {
+            state: "active",
+            policy: { enabled: true },
+            members: [{ status: "active", deviceId }]
+          }
+        ],
+        listDeviceCredentials: async () => [
+          {
+            deviceInstanceId: deviceId,
+            operationFamilies: ["sync", "managed_execution"],
+            metadata: { protocolDeploymentId: deploymentId },
+            deviceLabel: "Computer A",
+            expiresAt: null,
+            revokedAt: null
+          }
+        ],
+        listLcmGraphThreads: listProjects,
+        createManagedConversation: start,
+        upsertManagedConversationRuntimeBinding: upsert
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          targetDeviceId: deviceId,
+          initialPrompt: "Start a standalone chat on Computer A.",
+          idempotencyKey: "hosted-independent-start-1"
+        }
+      });
+      const invalidProjectless = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          ...launchSelection,
+          targetDeviceId: deviceId,
+          idempotencyKey: "hosted-independent-start-2"
+        }
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({
+        execution: {
+          id: executionId,
+          projectId: null,
+          executionGeneration: 7
+        },
+        command: { id: commandId, state: "blocked" }
+      });
+      expect(start).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          projectId: null,
+          contextKind: "independent",
+          runnerDeploymentId: deploymentId,
+          runnerDeviceId: deviceId,
+          deferUntilRuntimeBinding: true,
+          idempotencyKey: "hosted-independent-start-1",
+          initialPrompt: "Start a standalone chat on Computer A."
+        })
+      );
+      expect(listProjects).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
+      expect(invalidProjectless.statusCode).toBe(400);
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("starts the first Conversation from trusted local Project metadata", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
@@ -2259,6 +3663,123 @@ describe("managed Conversation routes", () => {
       }
     );
     expect(upstreamCalls[1]?.body).toEqual(upstreamCalls[0]?.body);
+  });
+
+  it("starts an independent standalone Conversation without inventing a Project", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-managed-independent-")
+    );
+    const calls: Array<{ url: URL; body: unknown }> = [];
+    const upsert = vi.fn(async (_actor, input) => ({ ...input }));
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal", koedHome },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticate: async () => ({
+          id: userId,
+          email: "alice@example.invalid",
+          displayName: "Alice",
+          passwordHash: null
+        })
+      },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "healthy",
+          deploymentId,
+          deviceInstanceId: deviceId
+        })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () =>
+          "Koed-Device upstream-key:upstream-secret",
+        fetch: vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+          const url = new URL(String(input));
+          const body = init?.body ? JSON.parse(String(init.body)) : null;
+          calls.push({ url, body });
+          if (url.pathname.endsWith("/runtime-binding-ready")) {
+            return new Response(JSON.stringify({ ready: true }), {
+              status: 200,
+              headers: { "content-type": "application/json" }
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              execution: {
+                id: executionId,
+                projectId: null,
+                provider: managedOwner.provider,
+                aiClientInstanceId: managedOwner.aiClientInstanceId,
+                executionGeneration: 1,
+                state: "starting"
+              },
+              command: { id: commandId, state: "blocked" }
+            }),
+            { status: 202, headers: { "content-type": "application/json" } }
+          );
+        })
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        listLcmGraphThreads: async () => [],
+        upsertManagedConversationRuntimeBinding: upsert,
+        getManagedConversationRuntimeBinding: async () => null
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations",
+      payload: {
+        projectId: null,
+        contextKind: "independent",
+        ...launchSelection,
+        idempotencyKey: "phase7-independent-start"
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(202);
+    expect(
+      calls.find((call) => call.url.pathname.endsWith("/managed-conversations"))
+        ?.body
+    ).toEqual({
+      projectId: null,
+      contextKind: "independent",
+      ...launchSelection,
+      idempotencyKey: "phase7-independent-start",
+      deferUntilRuntimeBinding: true
+    });
+    expect(upsert).toHaveBeenCalledWith(
+      { userId },
+      expect.objectContaining({
+        executionId,
+        projectPath: resolve(
+          koedHome,
+          "managed-conversations",
+          "independent",
+          executionId
+        )
+      })
+    );
+    expect(
+      calls.some(
+        (call) =>
+          call.url.pathname.endsWith("/managed-conversations") &&
+          JSON.stringify(call.body).includes("projectPath")
+      )
+    ).toBe(false);
   });
 
   it("blocks a local start until the worker verifies its execution checkout", async () => {

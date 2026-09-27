@@ -5,11 +5,13 @@ import {
   decideConversationItemPresentation,
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
+  personalAgentExecutionContextSchema,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ConversationPresentationDecision,
   type ManagedConversationFileOperation,
-  type ManagedConversationFileOperationResult
+  type ManagedConversationFileOperationResult,
+  type PersonalAgentExecutionContext
 } from "@koed/shared";
 import pg from "pg";
 import {
@@ -101,7 +103,7 @@ export interface ManagedConversationRuntimeItemRecord {
 export interface ManagedConversationExecutionRecord {
   id: string;
   ownerUserId: string;
-  projectId: string;
+  projectId: string | null;
   provider: string;
   aiClientInstanceId: string;
   model: string;
@@ -167,6 +169,32 @@ export interface ManagedConversationRuntimeBindingRecord {
   sourceGenerationId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ManagedConversationProjectMoveState =
+  | "pending"
+  | "claimed"
+  | "cancelled"
+  | "completed"
+  | "failed";
+
+export interface ManagedConversationProjectMoveRecord {
+  id: string;
+  ownerUserId: string;
+  executionId: string;
+  executionGeneration: number;
+  sourceProjectId: string | null;
+  destinationProjectId: string;
+  assignedDeploymentId: string;
+  assignedDeviceId: string;
+  state: ManagedConversationProjectMoveState;
+  claimToken: string | null;
+  claimExpiresAt: string | null;
+  claimedByRunnerId: string | null;
+  claimAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
 }
 
 export interface ManagedConversationExecutionCheckpointRecord {
@@ -240,6 +268,18 @@ export interface ManagedConversationCommandRecord {
   updatedAt: string;
   dispatchingAt: string | null;
   completedAt: string | null;
+  personalAgent?: {
+    jobId: string;
+    agentId: string;
+    agentVersion: number;
+    identityVersionId: string;
+    replayed: boolean;
+  };
+}
+
+export interface ManagedConversationPromptCancellationResult {
+  id: string;
+  state: ManagedConversationCommandState;
 }
 
 export interface ClaimedManagedConversationCommand extends ManagedConversationCommandRecord {
@@ -247,10 +287,69 @@ export interface ClaimedManagedConversationCommand extends ManagedConversationCo
 }
 
 export interface ManagedConversationRepository {
+  requestManagedConversationProjectMove(
+    actor: ActorContext,
+    input: {
+      executionId: string;
+      executionGeneration: number;
+      expectedStateVersion: number;
+      idempotencyKey: string;
+      destinationProjectId: string;
+    }
+  ): Promise<ManagedConversationProjectMoveRecord>;
+  claimManagedConversationProjectMoves(input: {
+    ownerUserId?: string;
+    deploymentId: string;
+    deviceId: string;
+    runnerId: string;
+    leaseMs: number;
+    limit?: number;
+  }): Promise<ManagedConversationProjectMoveRecord[]>;
+  cancelManagedConversationProjectMove(
+    actor: ActorContext,
+    input: { moveId: string; executionGeneration: number }
+  ): Promise<ManagedConversationProjectMoveRecord | null>;
+  getManagedConversationProjectMove(
+    actor: ActorContext,
+    moveId: string
+  ): Promise<ManagedConversationProjectMoveRecord | null>;
+  getLatestManagedConversationProjectMoveForExecution(
+    actor: ActorContext,
+    executionId: string
+  ): Promise<ManagedConversationProjectMoveRecord | null>;
+  renewManagedConversationProjectMoveLease(input: {
+    ownerUserId: string;
+    moveId: string;
+    executionGeneration: number;
+    claimToken: string;
+    runnerId: string;
+    deploymentId: string;
+    deviceId: string;
+    leaseMs: number;
+  }): Promise<boolean>;
+  completeManagedConversationProjectMove(input: {
+    ownerUserId: string;
+    moveId: string;
+    executionGeneration: number;
+    claimToken: string;
+    runnerId: string;
+    deploymentId: string;
+    deviceId: string;
+    destinationProjectName: string;
+  }): Promise<ManagedConversationProjectMoveRecord | null>;
+  failManagedConversationProjectMove(input: {
+    ownerUserId: string;
+    moveId: string;
+    executionGeneration: number;
+    claimToken: string;
+    runnerId: string;
+    deploymentId: string;
+    deviceId: string;
+  }): Promise<ManagedConversationProjectMoveRecord | null>;
   createManagedConversation(
     actor: ActorContext,
     input: {
-      projectId: string;
+      projectId: string | null;
       contextKind?: "project" | "independent";
       provider: string;
       aiClientInstanceId: string;
@@ -277,10 +376,25 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       clientUserMessageId: string;
       prompt: string;
+      agentId?: string;
+      expectedAgentVersion?: number;
+      personalAgentContext?: PersonalAgentExecutionContext;
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
     }
   ): Promise<ManagedConversationCommandRecord>;
+  cancelManagedConversationPrompt(
+    actor: ActorContext,
+    input: {
+      executionId: string;
+      commandId: string;
+      executionGeneration: number;
+    }
+  ): Promise<ManagedConversationPromptCancellationResult | null>;
+  cancelManagedConversationStart(
+    actor: ActorContext,
+    input: { executionId: string; executionGeneration: number }
+  ): Promise<ManagedConversationPromptCancellationResult | null>;
   enqueueManagedConversationFileOperation(
     actor: ActorContext,
     input: {
@@ -539,6 +653,22 @@ export interface ManagedConversationRepository {
       projectPath: string;
     }
   ): Promise<ManagedConversationRuntimeBindingRecord>;
+  transitionManagedConversationProjectMoveRuntimeBinding(
+    actor: ActorContext,
+    input: {
+      moveId: string;
+      executionId: string;
+      executionGeneration: number;
+      claimToken: string;
+      runnerId: string;
+      deploymentId: string;
+      deviceId: string;
+      sourceProjectId: string | null;
+      destinationProjectId: string;
+      expectedProjectPath: string;
+      projectPath: string;
+    }
+  ): Promise<ManagedConversationRuntimeBindingRecord>;
   acknowledgeManagedConversationRuntimeBinding(input: {
     ownerUserId: string;
     executionId: string;
@@ -676,7 +806,7 @@ export interface ManagedConversationRepository {
 type ExecutionRow = {
   id: string;
   owner_user_id: string;
-  project_id: string;
+  project_id: string | null;
   provider: string;
   ai_client_instance_id: string;
   model: string;
@@ -732,6 +862,27 @@ type RuntimeBindingRow = {
   source_generation_id: string | null;
   created_at: Date | string;
   updated_at: Date | string;
+};
+
+type ProjectMoveRow = {
+  id: string;
+  owner_user_id: string;
+  execution_id: string;
+  execution_generation: number;
+  source_project_id: string | null;
+  destination_project_id: string;
+  assigned_deployment_id: string;
+  assigned_device_id: string;
+  state: ManagedConversationProjectMoveState;
+  claim_token: string | null;
+  claim_expires_at: Date | string | null;
+  claimed_by_runner_id: string | null;
+  claim_attempts: number;
+  created_at: Date | string;
+  updated_at: Date | string;
+  finished_at: Date | string | null;
+  idempotency_key?: string;
+  request_digest?: string;
 };
 
 type CommandRow = {
@@ -948,6 +1099,27 @@ const mapRuntimeBinding = (
   updatedAt: requiredIso(row.updated_at)
 });
 
+const mapProjectMove = (
+  row: ProjectMoveRow
+): ManagedConversationProjectMoveRecord => ({
+  id: row.id,
+  ownerUserId: row.owner_user_id,
+  executionId: row.execution_id,
+  executionGeneration: row.execution_generation,
+  sourceProjectId: row.source_project_id,
+  destinationProjectId: row.destination_project_id,
+  assignedDeploymentId: row.assigned_deployment_id,
+  assignedDeviceId: row.assigned_device_id,
+  state: row.state,
+  claimToken: row.claim_token,
+  claimExpiresAt: iso(row.claim_expires_at),
+  claimedByRunnerId: row.claimed_by_runner_id,
+  claimAttempts: row.claim_attempts,
+  createdAt: requiredIso(row.created_at),
+  updatedAt: requiredIso(row.updated_at),
+  finishedAt: iso(row.finished_at)
+});
+
 const mapCommand = (
   row: CommandRow,
   payload: Record<string, unknown> | null = null
@@ -1056,7 +1228,7 @@ const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
 const startDigest = (input: {
-  projectId: string;
+  projectId: string | null;
   contextKind?: "project" | "independent";
   provider: string;
   aiClientInstanceId: string;
@@ -1194,6 +1366,22 @@ const notifyManagedConversationCommand = (
     [executionId]
   );
 
+const assertNoPendingManagedConversationProjectMove = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  executionId: string
+): Promise<void> => {
+  const result = await client.query(
+    `select 1 from managed_conversation_project_moves
+      where owner_user_id = $1 and execution_id = $2
+        and state in ('pending', 'claimed') limit 1`,
+    [ownerUserId, executionId]
+  );
+  if (result.rows[0]) {
+    throw statusError("Managed Conversation Project move is pending", 409);
+  }
+};
+
 export const createManagedConversationRepository = (
   pool: pg.Pool,
   options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider }
@@ -1240,6 +1428,13 @@ export const createManagedConversationRepository = (
     prompt: string;
     fileMentions?: Array<Record<string, unknown>>;
     settings: ManagedConversationSettings;
+    personalAgent?: {
+      jobId: string;
+      agentId: string;
+      agentVersion: number;
+      identityVersionId: string;
+    };
+    personalAgentContext?: PersonalAgentExecutionContext;
   }) =>
     encryptCommandPayload({
       ownerUserId: input.ownerUserId,
@@ -1249,6 +1444,10 @@ export const createManagedConversationRepository = (
       value: {
         prompt: input.prompt,
         settings: input.settings,
+        ...(input.personalAgent ? { personalAgent: input.personalAgent } : {}),
+        ...(input.personalAgentContext
+          ? { personalAgentContext: input.personalAgentContext }
+          : {}),
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
           : {})
@@ -1373,10 +1572,517 @@ export const createManagedConversationRepository = (
   };
 
   return {
-    async createManagedConversation(actor, input) {
-      const projectId = input.projectId.trim();
+    async requestManagedConversationProjectMove(actor, input) {
+      const destinationProjectId = input.destinationProjectId.trim();
+      const idempotencyKey = input.idempotencyKey.trim();
       if (
-        !projectId ||
+        !destinationProjectId ||
+        destinationProjectId.length > 512 ||
+        idempotencyKey.length < 16 ||
+        idempotencyKey.length > 160 ||
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1 ||
+        !Number.isSafeInteger(input.expectedStateVersion) ||
+        input.expectedStateVersion < 1
+      ) {
+        throw statusError("Managed Conversation Project move is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS}
+             from managed_conversation_executions
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.executionId]
+        );
+        const execution = executionResult.rows[0];
+        if (!execution) {
+          throw statusError("Managed Conversation is unavailable", 404);
+        }
+        const previous = await client.query<ProjectMoveRow>(
+          `select id, owner_user_id, execution_id, execution_generation,
+                  source_project_id, destination_project_id,
+                  assigned_deployment_id, assigned_device_id, state,
+                  claim_token, claim_expires_at, claimed_by_runner_id,
+                  claim_attempts, created_at, updated_at, finished_at,
+                  idempotency_key, request_digest
+             from managed_conversation_project_moves
+            where owner_user_id = $1 and execution_id = $2
+              and idempotency_key = $3
+            for update`,
+          [actor.userId, input.executionId, idempotencyKey]
+        );
+        if (previous.rows[0]) {
+          const digest = sha256(
+            JSON.stringify({
+              executionId: input.executionId,
+              executionGeneration: input.executionGeneration,
+              sourceProjectId: previous.rows[0].source_project_id,
+              destinationProjectId
+            })
+          );
+          if (previous.rows[0].request_digest !== digest) {
+            throw statusError("Project move idempotency key was reused", 409);
+          }
+          await client.query("commit");
+          return mapProjectMove(previous.rows[0]);
+        }
+        const digest = sha256(
+          JSON.stringify({
+            executionId: input.executionId,
+            executionGeneration: input.executionGeneration,
+            sourceProjectId: execution.project_id,
+            destinationProjectId
+          })
+        );
+        if (
+          execution.execution_generation !== input.executionGeneration ||
+          execution.state_version !== input.expectedStateVersion ||
+          execution.state !== "running" ||
+          !execution.logical_session_id ||
+          execution.project_id === destinationProjectId
+        ) {
+          throw statusError("Managed Conversation is not movable", 409);
+        }
+        const activeCommands = await client.query(
+          `select 1 from managed_conversation_commands
+            where owner_user_id = $1 and execution_id = $2
+              and execution_generation = $3
+              and state in ('queued', 'blocked', 'dispatching', 'indeterminate')
+            limit 1`,
+          [actor.userId, input.executionId, input.executionGeneration]
+        );
+        const pendingItems = await client.query(
+          `select 1 from managed_conversation_runtime_items
+            where owner_user_id = $1 and execution_id = $2
+              and execution_generation = $3 and state = 'pending'
+              and item_kind <> 'transient_output'
+            limit 1`,
+          [actor.userId, input.executionId, input.executionGeneration]
+        );
+        const activeMove = await client.query(
+          `select 1 from managed_conversation_project_moves
+            where owner_user_id = $1 and execution_id = $2
+              and state in ('pending', 'claimed') limit 1`,
+          [actor.userId, input.executionId]
+        );
+        if (
+          activeCommands.rows[0] ||
+          pendingItems.rows[0] ||
+          activeMove.rows[0]
+        ) {
+          throw statusError(
+            "Managed Conversation has work in progress and cannot move yet",
+            409
+          );
+        }
+        const inserted = await client.query<ProjectMoveRow>(
+          `insert into managed_conversation_project_moves (
+             owner_user_id, execution_id, execution_generation,
+             source_project_id, destination_project_id,
+             assigned_deployment_id, assigned_device_id,
+             idempotency_key, request_digest
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           returning id, owner_user_id, execution_id, execution_generation,
+                     source_project_id, destination_project_id,
+                     assigned_deployment_id, assigned_device_id, state,
+                     claim_token, claim_expires_at, claimed_by_runner_id,
+                     claim_attempts, created_at, updated_at, finished_at`,
+          [
+            actor.userId,
+            input.executionId,
+            input.executionGeneration,
+            execution.project_id,
+            destinationProjectId,
+            execution.runner_deployment_id,
+            execution.runner_device_id,
+            idempotencyKey,
+            digest
+          ]
+        );
+        await client.query("commit");
+        return mapProjectMove(inserted.rows[0]!);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async claimManagedConversationProjectMoves(input) {
+      const limit = Math.min(Math.max(input.limit ?? 4, 1), 16);
+      if (
+        !Number.isSafeInteger(input.leaseMs) ||
+        input.leaseMs < 1_000 ||
+        input.leaseMs > 300_000 ||
+        !input.runnerId.trim()
+      ) {
+        throw statusError("Project move claim is invalid", 400);
+      }
+      const result = await pool.query<ProjectMoveRow>(
+        `with candidates as (
+           select move.id
+             from managed_conversation_project_moves move
+             join managed_conversation_executions execution
+               on execution.id = move.execution_id
+              and execution.owner_user_id = move.owner_user_id
+            where (move.state = 'pending'
+              or (move.state = 'claimed' and move.claim_expires_at <= now()))
+              and move.execution_generation = execution.execution_generation
+              and execution.state = 'running'
+              and execution.project_id is not distinct from move.source_project_id
+              and execution.runner_deployment_id = $1
+              and execution.runner_device_id = $2
+              and ($5::uuid is null or move.owner_user_id = $5)
+              and (execution.runner_id is null
+                or execution.runner_id = $3
+                or execution.runner_lease_expires_at <= now())
+              and not exists (
+                select 1 from managed_conversation_commands command
+                 where command.owner_user_id = move.owner_user_id
+                   and command.execution_id = move.execution_id
+                   and command.execution_generation = move.execution_generation
+                   and command.state in ('queued', 'blocked', 'dispatching', 'indeterminate')
+              )
+              and not exists (
+                select 1 from managed_conversation_runtime_items item
+                 where item.owner_user_id = move.owner_user_id
+                   and item.execution_id = move.execution_id
+                   and item.execution_generation = move.execution_generation
+                   and item.state = 'pending'
+                   and item.item_kind <> 'transient_output'
+              )
+            order by move.created_at
+            for update of move, execution skip locked
+            limit $4
+         )
+           update managed_conversation_project_moves move
+            set state = 'claimed', claim_token = gen_random_uuid(),
+                claim_expires_at = now() + ($6::bigint * interval '1 millisecond'),
+                claimed_by_runner_id = $3, claim_attempts = claim_attempts + 1,
+                updated_at = now()
+           from candidates
+          where move.id = candidates.id
+        returning move.id, move.owner_user_id, move.execution_id,
+                  move.execution_generation, move.source_project_id,
+                  move.destination_project_id, move.assigned_deployment_id,
+                  move.assigned_device_id, move.state, move.claim_token,
+                  move.claim_expires_at, move.claimed_by_runner_id,
+                  move.claim_attempts, move.created_at, move.updated_at,
+                  move.finished_at`,
+        [
+          input.deploymentId,
+          input.deviceId,
+          input.runnerId,
+          limit,
+          input.ownerUserId ?? null,
+          input.leaseMs
+        ]
+      );
+      return result.rows.map(mapProjectMove);
+    },
+
+    async cancelManagedConversationProjectMove(actor, input) {
+      const result = await pool.query<ProjectMoveRow>(
+        `update managed_conversation_project_moves
+            set state = 'cancelled', finished_at = now(), updated_at = now()
+          where id = $1 and owner_user_id = $2
+            and execution_generation = $3 and state = 'pending'
+          returning id, owner_user_id, execution_id, execution_generation,
+                    source_project_id, destination_project_id,
+                    assigned_deployment_id, assigned_device_id, state,
+                    claim_token, claim_expires_at, claimed_by_runner_id,
+                    claim_attempts, created_at, updated_at, finished_at`,
+        [input.moveId, actor.userId, input.executionGeneration]
+      );
+      if (result.rows[0]) return mapProjectMove(result.rows[0]);
+      return this.getManagedConversationProjectMove(actor, input.moveId);
+    },
+
+    async getManagedConversationProjectMove(actor, moveId) {
+      const result = await pool.query<ProjectMoveRow>(
+        `select id, owner_user_id, execution_id, execution_generation,
+                source_project_id, destination_project_id,
+                assigned_deployment_id, assigned_device_id, state,
+                claim_token, claim_expires_at, claimed_by_runner_id,
+                claim_attempts, created_at, updated_at, finished_at
+           from managed_conversation_project_moves
+          where owner_user_id = $1 and id = $2`,
+        [actor.userId, moveId]
+      );
+      return result.rows[0] ? mapProjectMove(result.rows[0]) : null;
+    },
+
+    async getLatestManagedConversationProjectMoveForExecution(
+      actor,
+      executionId
+    ) {
+      const result = await pool.query<ProjectMoveRow>(
+        `select id, owner_user_id, execution_id, execution_generation,
+                source_project_id, destination_project_id,
+                assigned_deployment_id, assigned_device_id, state,
+                claim_token, claim_expires_at, claimed_by_runner_id,
+                claim_attempts, created_at, updated_at, finished_at
+           from managed_conversation_project_moves
+          where owner_user_id = $1 and execution_id = $2
+          order by created_at desc, id desc
+          limit 1`,
+        [actor.userId, executionId]
+      );
+      return result.rows[0] ? mapProjectMove(result.rows[0]) : null;
+    },
+
+    async renewManagedConversationProjectMoveLease(input) {
+      if (
+        !Number.isSafeInteger(input.leaseMs) ||
+        input.leaseMs < 1_000 ||
+        input.leaseMs > 300_000
+      ) {
+        throw statusError("Project move lease is invalid", 400);
+      }
+      const result = await pool.query(
+        `update managed_conversation_project_moves move
+            set claim_expires_at = now() + ($7::bigint * interval '1 millisecond'),
+                updated_at = now()
+           from managed_conversation_executions execution
+          where move.id = $1 and move.owner_user_id = $2
+            and move.execution_generation = $3 and move.state = 'claimed'
+            and move.claim_token = $4 and move.claimed_by_runner_id = $5
+            and move.claim_expires_at > now()
+            and move.assigned_deployment_id = $6
+            and move.assigned_device_id = $8
+            and execution.id = move.execution_id
+            and execution.owner_user_id = move.owner_user_id
+            and execution.execution_generation = move.execution_generation
+            and execution.runner_deployment_id = move.assigned_deployment_id
+            and execution.runner_device_id = move.assigned_device_id
+          returning move.id`,
+        [
+          input.moveId,
+          input.ownerUserId,
+          input.executionGeneration,
+          input.claimToken,
+          input.runnerId,
+          input.deploymentId,
+          input.leaseMs,
+          input.deviceId
+        ]
+      );
+      return (result.rowCount ?? 0) === 1;
+    },
+
+    async completeManagedConversationProjectMove(input) {
+      const destinationProjectName = input.destinationProjectName.trim();
+      if (!destinationProjectName || destinationProjectName.length > 256) {
+        throw statusError("Destination Project name is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const selected = await client.query<ProjectMoveRow>(
+          `select move.id, move.owner_user_id, move.execution_id,
+                  move.execution_generation, move.source_project_id,
+                  move.destination_project_id, move.assigned_deployment_id,
+                  move.assigned_device_id, move.state, move.claim_token,
+                  move.claim_expires_at, move.claimed_by_runner_id,
+                  move.claim_attempts, move.created_at, move.updated_at,
+                  move.finished_at
+             from managed_conversation_project_moves move
+             join managed_conversation_executions execution
+               on execution.id = move.execution_id
+              and execution.owner_user_id = move.owner_user_id
+            where move.id = $1 and move.owner_user_id = $2
+              and move.execution_generation = $3
+            for update of execution, move`,
+          [input.moveId, input.ownerUserId, input.executionGeneration]
+        );
+        const move = selected.rows[0];
+        if (!move) {
+          await client.query("commit");
+          return null;
+        }
+        if (move.state !== "claimed") {
+          await client.query("commit");
+          return mapProjectMove(move);
+        }
+        if (
+          move.claim_token !== input.claimToken ||
+          move.claimed_by_runner_id !== input.runnerId ||
+          move.claim_expires_at === null ||
+          move.assigned_deployment_id !== input.deploymentId ||
+          move.assigned_device_id !== input.deviceId
+        ) {
+          await client.query("commit");
+          return mapProjectMove(move);
+        }
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS}
+             from managed_conversation_executions
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [input.ownerUserId, move.execution_id]
+        );
+        const execution = executionResult.rows[0];
+        const activeCommands = await client.query(
+          `select 1 from managed_conversation_commands
+            where owner_user_id = $1 and execution_id = $2
+              and execution_generation = $3
+              and state in ('queued', 'blocked', 'dispatching', 'indeterminate')
+            limit 1`,
+          [input.ownerUserId, move.execution_id, input.executionGeneration]
+        );
+        const pendingItems = await client.query(
+          `select 1 from managed_conversation_runtime_items
+            where owner_user_id = $1 and execution_id = $2
+              and execution_generation = $3 and state = 'pending'
+              and item_kind <> 'transient_output'
+            limit 1`,
+          [input.ownerUserId, move.execution_id, input.executionGeneration]
+        );
+        if (
+          !execution ||
+          execution.state !== "running" ||
+          execution.execution_generation !== input.executionGeneration ||
+          execution.project_id !== move.source_project_id ||
+          execution.runner_deployment_id !== move.assigned_deployment_id ||
+          execution.runner_device_id !== move.assigned_device_id ||
+          activeCommands.rows[0] ||
+          pendingItems.rows[0]
+        ) {
+          await client.query("commit");
+          return mapProjectMove(move);
+        }
+        if (!execution.logical_session_id) {
+          throw statusError(
+            "Captured Session for Project move is unavailable",
+            409
+          );
+        }
+        const session = await client.query(
+          `update sessions
+              set project_override_id = $3,
+                  project_override_name = $4,
+                  project_override_path = null,
+                  project_override_at = now(),
+                  project_override_by_user_id = $2,
+                  updated_at = now()
+            where owner_user_id = $2 and logical_session_id = $1
+              and visibility = 'personal'
+              and invalidated_at is null and personal_deleted_at is null`,
+          [
+            execution.logical_session_id,
+            input.ownerUserId,
+            move.destination_project_id,
+            destinationProjectName
+          ]
+        );
+        if ((session.rowCount ?? 0) !== 1) {
+          throw statusError(
+            "Captured Session for Project move is unavailable",
+            409
+          );
+        }
+        const updatedExecution = await client.query(
+          `update managed_conversation_executions
+              set project_id = $3, state_version = state_version + 1,
+                  updated_at = now()
+            where owner_user_id = $1 and id = $2
+              and execution_generation = $4
+              and project_id is not distinct from $5
+            returning id`,
+          [
+            input.ownerUserId,
+            move.execution_id,
+            move.destination_project_id,
+            input.executionGeneration,
+            move.source_project_id
+          ]
+        );
+        if ((updatedExecution.rowCount ?? 0) !== 1) {
+          throw statusError(
+            "Managed Conversation Project changed during move",
+            409
+          );
+        }
+        const completed = await client.query<ProjectMoveRow>(
+          `update managed_conversation_project_moves
+              set state = 'completed', finished_at = now(),
+                  claim_token = null, claim_expires_at = null,
+                  claimed_by_runner_id = null, updated_at = now()
+            where id = $1 and owner_user_id = $2 and state = 'claimed'
+              and claim_token = $3
+              and claim_expires_at > clock_timestamp()
+            returning id, owner_user_id, execution_id, execution_generation,
+                      source_project_id, destination_project_id,
+                      assigned_deployment_id, assigned_device_id, state,
+                      claim_token, claim_expires_at, claimed_by_runner_id,
+                      claim_attempts, created_at, updated_at, finished_at`,
+          [input.moveId, input.ownerUserId, input.claimToken]
+        );
+        if (!completed.rows[0]) {
+          throw statusError("Managed Conversation Project move changed", 409);
+        }
+        await client.query("commit");
+        return mapProjectMove(completed.rows[0]);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async failManagedConversationProjectMove(input) {
+      const result = await pool.query<ProjectMoveRow>(
+        `update managed_conversation_project_moves move
+            set state = 'failed', finished_at = now(),
+                claim_token = null, claim_expires_at = null,
+                claimed_by_runner_id = null, updated_at = now()
+           from managed_conversation_executions execution
+          where move.id = $1 and move.owner_user_id = $2
+            and move.execution_generation = $3 and move.state = 'claimed'
+            and move.claim_token = $4 and move.claimed_by_runner_id = $5
+            and move.claim_expires_at > now()
+            and move.assigned_deployment_id = $6
+            and move.assigned_device_id = $7
+            and execution.id = move.execution_id
+            and execution.owner_user_id = move.owner_user_id
+            and execution.execution_generation = move.execution_generation
+            and execution.project_id is not distinct from move.source_project_id
+            and execution.runner_deployment_id = move.assigned_deployment_id
+            and execution.runner_device_id = move.assigned_device_id
+          returning move.id, move.owner_user_id, move.execution_id,
+                    move.execution_generation, move.source_project_id,
+                    move.destination_project_id, move.assigned_deployment_id,
+                    move.assigned_device_id, move.state, move.claim_token,
+                    move.claim_expires_at, move.claimed_by_runner_id,
+                    move.claim_attempts, move.created_at, move.updated_at,
+                    move.finished_at`,
+        [
+          input.moveId,
+          input.ownerUserId,
+          input.executionGeneration,
+          input.claimToken,
+          input.runnerId,
+          input.deploymentId,
+          input.deviceId
+        ]
+      );
+      if (result.rows[0]) return mapProjectMove(result.rows[0]);
+      return this.getManagedConversationProjectMove(
+        { userId: input.ownerUserId },
+        input.moveId
+      );
+    },
+
+    async createManagedConversation(actor, input) {
+      const projectId = input.projectId?.trim() || null;
+      if (
+        (input.contextKind !== "independent" && !projectId) ||
+        (input.contextKind === "independent" && projectId !== null) ||
         !input.provider.trim() ||
         !input.aiClientInstanceId.trim() ||
         !input.model.trim() ||
@@ -1551,6 +2257,13 @@ export const createManagedConversationRepository = (
       if (
         !prompt ||
         !input.idempotencyKey.trim() ||
+        (input.expectedAgentVersion !== undefined &&
+          (!Number.isSafeInteger(input.expectedAgentVersion) ||
+            input.expectedAgentVersion <= 0)) ||
+        (input.agentId === undefined) !==
+          (input.expectedAgentVersion === undefined) ||
+        (input.agentId === undefined) !==
+          (input.personalAgentContext === undefined) ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
           input.clientUserMessageId
         ) ||
@@ -1577,6 +2290,11 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Managed Conversation is not writable", 409);
         }
+        await assertNoPendingManagedConversationProjectMove(
+          client,
+          actor.userId,
+          input.executionId
+        );
         const fileMentions: Array<Record<string, unknown>> = [];
         if (fileMentionCommandIds.length > 0) {
           const mentionRows = await client.query<CommandRow>(
@@ -1637,6 +2355,12 @@ export const createManagedConversationRepository = (
             clientUserMessageId: input.clientUserMessageId,
             prompt,
             fileMentionCommandIds,
+            ...(input.agentId
+              ? {
+                  agentId: input.agentId,
+                  expectedAgentVersion: input.expectedAgentVersion
+                }
+              : {}),
             ...(settingsChange ? { settingsChange } : {})
           })
         );
@@ -1654,11 +2378,136 @@ export const createManagedConversationRepository = (
               409
             );
           }
+          const replayPayload = await decryptPayload(existing.rows[0]);
+          const savedAgent = replayPayload?.personalAgent;
+          const replayedAgent =
+            savedAgent &&
+            typeof savedAgent === "object" &&
+            "jobId" in savedAgent &&
+            typeof savedAgent.jobId === "string" &&
+            "agentId" in savedAgent &&
+            typeof savedAgent.agentId === "string" &&
+            "agentVersion" in savedAgent &&
+            typeof savedAgent.agentVersion === "number" &&
+            "identityVersionId" in savedAgent &&
+            typeof savedAgent.identityVersionId === "string"
+              ? {
+                  jobId: savedAgent.jobId,
+                  agentId: savedAgent.agentId,
+                  agentVersion: savedAgent.agentVersion,
+                  identityVersionId: savedAgent.identityVersionId,
+                  replayed: true
+                }
+              : undefined;
           await client.query("commit");
-          return mapCommand(
-            existing.rows[0],
-            await decryptPayload(existing.rows[0])
+          return {
+            ...mapCommand(existing.rows[0], replayPayload),
+            ...(replayedAgent ? { personalAgent: replayedAgent } : {})
+          };
+        }
+        let personalAgentContext: PersonalAgentExecutionContext | undefined;
+        let personalAgent:
+          | NonNullable<ManagedConversationCommandRecord["personalAgent"]>
+          | undefined;
+        if (
+          input.agentId !== undefined &&
+          input.expectedAgentVersion !== undefined &&
+          input.personalAgentContext !== undefined
+        ) {
+          personalAgentContext = personalAgentExecutionContextSchema.parse(
+            input.personalAgentContext
           );
+          if (
+            personalAgentContext.identity.agentId !== input.agentId ||
+            personalAgentContext.identity.version !==
+              input.expectedAgentVersion ||
+            personalAgentContext.project.projectId !== current.project_id
+          ) {
+            throw statusError("Personal Agent turn context is stale", 409);
+          }
+          const identity = await client.query<{
+            current_version: number;
+            lifecycle: string;
+          }>(
+            `select current_version, lifecycle
+               from personal_agent_identities
+              where owner_user_id = $1 and id = $2
+              for update`,
+            [actor.userId, input.agentId]
+          );
+          if (
+            !identity.rows[0] ||
+            identity.rows[0].lifecycle !== "active" ||
+            identity.rows[0].current_version !== input.expectedAgentVersion
+          ) {
+            throw statusError(
+              "Personal Agent changed; reload it before sending",
+              409
+            );
+          }
+          const version = await client.query<{
+            id: string;
+            name: string;
+            role: string;
+          }>(
+            `select id, name, role from personal_agent_identity_versions
+              where owner_user_id = $1 and agent_id = $2 and version = $3`,
+            [actor.userId, input.agentId, input.expectedAgentVersion]
+          );
+          const identityVersionId = version.rows[0]?.id;
+          if (
+            !identityVersionId ||
+            identityVersionId !==
+              personalAgentContext.identity.identityVersionId ||
+            version.rows[0]?.name !== personalAgentContext.identity.name ||
+            version.rows[0]?.role !== personalAgentContext.identity.role
+          ) {
+            throw statusError("Personal Agent version is unavailable", 409);
+          }
+          await client.query(
+            `insert into personal_agent_conversations
+              (conversation_id, owner_user_id, active_agent_id)
+             values ($1, $2, $3)
+             on conflict (conversation_id) do nothing`,
+            [input.executionId, actor.userId, input.agentId]
+          );
+          const conversationOwner = await client.query<{
+            owner_user_id: string;
+          }>(
+            `select owner_user_id from personal_agent_conversations
+              where conversation_id = $1 for update`,
+            [input.executionId]
+          );
+          if (conversationOwner.rows[0]?.owner_user_id !== actor.userId) {
+            throw statusError(
+              "Personal Agent conversation is unavailable",
+              409
+            );
+          }
+          await client.query(
+            `insert into personal_agent_conversation_participants
+              (conversation_id, owner_user_id, agent_id, ordinal)
+             select $1, $2, $3, coalesce(max(ordinal), -1) + 1
+               from personal_agent_conversation_participants
+              where conversation_id = $1
+             on conflict (conversation_id, agent_id) do nothing`,
+            [input.executionId, actor.userId, input.agentId]
+          );
+          await client.query(
+            `update personal_agent_conversations
+                set active_agent_id = $3,
+                    version = version + case when active_agent_id is distinct from $3 then 1 else 0 end,
+                    updated_at = now()
+              where conversation_id = $1 and owner_user_id = $2`,
+            [input.executionId, actor.userId, input.agentId]
+          );
+          personalAgent = {
+            jobId: randomUUID(),
+            agentId: input.agentId,
+            agentVersion: input.expectedAgentVersion,
+            identityVersionId,
+            replayed: false
+          };
         }
         const currentSettings: ManagedConversationSettings = {
           model: current.model,
@@ -1723,7 +2572,9 @@ export const createManagedConversationRepository = (
           commandId,
           prompt,
           fileMentions,
-          settings
+          settings,
+          ...(personalAgent ? { personalAgent } : {}),
+          ...(personalAgentContext ? { personalAgentContext } : {})
         });
         const result = await client.query<CommandRow>(
           `insert into managed_conversation_commands (
@@ -1744,13 +2595,307 @@ export const createManagedConversationRepository = (
             encryptedPayload
           ]
         );
+        if (personalAgent && personalAgentContext) {
+          await client.query(
+            `insert into personal_agent_execution_jobs
+              (id, owner_user_id, conversation_id, attribution_kind, agent_id,
+               agent_version, idempotency_key, command_id, title, project_id, state)
+             values ($1, $2, $3, 'agent', $4, $5, $6, $7, $8, $9, 'queued')`,
+            [
+              personalAgent.jobId,
+              actor.userId,
+              input.executionId,
+              personalAgent.agentId,
+              personalAgent.agentVersion,
+              input.idempotencyKey,
+              commandId,
+              "Agent task",
+              current.project_id
+            ]
+          );
+          await client.query(
+            `insert into personal_agent_execution_job_events
+              (owner_user_id, job_id, sequence, event_id, execution_generation,
+               event_type, payload, observed_at)
+             values ($1, $2, 1, $3, $4, 'job_enqueued', '{}'::jsonb, now())`,
+            [
+              actor.userId,
+              personalAgent.jobId,
+              `command:${commandId}:job_enqueued`,
+              input.executionGeneration
+            ]
+          );
+        }
         await notifyManagedConversationCommand(client, input.executionId);
         await client.query("commit");
-        return mapCommand(result.rows[0]!, {
-          prompt,
-          settings,
-          ...(fileMentions.length > 0 ? { fileMentions } : {})
-        });
+        return {
+          ...mapCommand(result.rows[0]!, {
+            prompt,
+            settings,
+            ...(fileMentions.length > 0 ? { fileMentions } : {}),
+            ...(personalAgent ? { personalAgent, personalAgentContext } : {})
+          }),
+          ...(personalAgent ? { personalAgent } : {})
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async cancelManagedConversationPrompt(actor, input) {
+      if (
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1
+      ) {
+        throw statusError(
+          "Managed Conversation prompt cancellation is invalid",
+          400
+        );
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const canceled = await client.query<{
+          id: string;
+          state: ManagedConversationCommandState;
+        }>(
+          `update managed_conversation_commands
+              set state = 'canceled',
+                  lease_token = null,
+                  lease_expires_at = null,
+                  completed_at = now(),
+                  updated_at = now()
+            where owner_user_id = $1
+              and execution_id = $2
+              and id = $3
+              and execution_generation = $4
+              and command_kind = 'prompt'
+              and state = 'queued'
+          returning id, state`,
+          [
+            actor.userId,
+            input.executionId,
+            input.commandId,
+            input.executionGeneration
+          ]
+        );
+        if (canceled.rows[0]) {
+          const canceledJobs = await client.query<{
+            id: string;
+          }>(
+            `update personal_agent_execution_jobs
+                set state = 'canceled',
+                    version = version + 1,
+                    last_observed_at = now(),
+                    updated_at = now()
+              where owner_user_id = $1
+                and command_id = $2
+                and state = 'queued'
+            returning id`,
+            [actor.userId, input.commandId]
+          );
+          for (const job of canceledJobs.rows) {
+            const sequence = await client.query<{ sequence: number }>(
+              `select coalesce(max(sequence), 0) + 1 as sequence
+                 from personal_agent_execution_job_events
+                where owner_user_id = $1 and job_id = $2`,
+              [actor.userId, job.id]
+            );
+            await client.query(
+              `insert into personal_agent_execution_job_events
+                (owner_user_id, job_id, sequence, event_id,
+                 execution_generation, event_type, payload, observed_at)
+               values ($1, $2, $3, $4, $5, 'job_canceled', $6::jsonb, now())`,
+              [
+                actor.userId,
+                job.id,
+                sequence.rows[0]!.sequence,
+                `command:${input.commandId}:job_canceled`,
+                input.executionGeneration,
+                JSON.stringify({ commandId: input.commandId })
+              ]
+            );
+          }
+          await notifyManagedConversationCommand(client, input.executionId);
+          await client.query("commit");
+          return canceled.rows[0];
+        }
+
+        // Read the persisted state after the conditional update. This makes a
+        // concurrent runner claim visible to the caller and keeps retries
+        // idempotent without reporting a cancellation that did not happen.
+        const existing = await client.query<{
+          id: string;
+          state: ManagedConversationCommandState;
+        }>(
+          `select id, state
+             from managed_conversation_commands
+            where owner_user_id = $1
+              and execution_id = $2
+              and id = $3
+              and execution_generation = $4
+              and command_kind = 'prompt'
+            limit 1`,
+          [
+            actor.userId,
+            input.executionId,
+            input.commandId,
+            input.executionGeneration
+          ]
+        );
+        await client.query("commit");
+        return existing.rows[0] ?? null;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async cancelManagedConversationStart(actor, input) {
+      if (
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1
+      ) {
+        throw statusError(
+          "Managed Conversation start cancellation is invalid",
+          400
+        );
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const canceled = await client.query<{
+          id: string;
+          state: ManagedConversationCommandState;
+        }>(
+          `update managed_conversation_commands command
+              set state = 'canceled',
+                  blocked_on_kind = null,
+                  blocked_on_id = null,
+                  lease_token = null,
+                  lease_expires_at = null,
+                  completed_at = now(),
+                  updated_at = now()
+             from managed_conversation_executions execution
+            where command.owner_user_id = $1
+              and command.execution_id = $2
+              and command.execution_generation = $3
+              and command.command_kind = 'start'
+              and command.state in ('blocked', 'queued')
+              and execution.owner_user_id = command.owner_user_id
+              and execution.id = command.execution_id
+              and execution.execution_generation = command.execution_generation
+              and execution.state = 'starting'
+          returning command.id, command.state`,
+          [actor.userId, input.executionId, input.executionGeneration]
+        );
+        if (canceled.rows[0]) {
+          const execution = await client.query(
+            `update managed_conversation_executions
+                set state = 'stopped',
+                    state_version = state_version + 1,
+                    runner_id = null,
+                    runner_lease_expires_at = null,
+                    stopped_at = now(),
+                    updated_at = now()
+              where owner_user_id = $1
+                and id = $2
+                and execution_generation = $3
+                and state = 'starting'`,
+            [actor.userId, input.executionId, input.executionGeneration]
+          );
+          if ((execution.rowCount ?? 0) !== 1) {
+            throw statusError(
+              "Managed Conversation start cancellation conflicted",
+              409
+            );
+          }
+          const following = await client.query<{
+            id: string;
+            command_kind: string;
+          }>(
+            `update managed_conversation_commands
+                set state = 'canceled',
+                    blocked_on_kind = null,
+                    blocked_on_id = null,
+                    lease_token = null,
+                    lease_expires_at = null,
+                    completed_at = now(),
+                    updated_at = now()
+              where owner_user_id = $1
+                and execution_id = $2
+                and execution_generation = $3
+                and command_kind <> 'start'
+                and state in ('queued', 'blocked')
+            returning id, command_kind`,
+            [actor.userId, input.executionId, input.executionGeneration]
+          );
+          for (const command of following.rows) {
+            if (command.command_kind !== "prompt") continue;
+            const canceledJobs = await client.query<{ id: string }>(
+              `update personal_agent_execution_jobs
+                  set state = 'canceled',
+                      version = version + 1,
+                      last_observed_at = now(),
+                      updated_at = now()
+                where owner_user_id = $1
+                  and command_id = $2
+                  and state = 'queued'
+              returning id`,
+              [actor.userId, command.id]
+            );
+            for (const job of canceledJobs.rows) {
+              const sequence = await client.query<{ sequence: number }>(
+                `select coalesce(max(sequence), 0) + 1 as sequence
+                   from personal_agent_execution_job_events
+                  where owner_user_id = $1 and job_id = $2`,
+                [actor.userId, job.id]
+              );
+              await client.query(
+                `insert into personal_agent_execution_job_events
+                  (owner_user_id, job_id, sequence, event_id,
+                   execution_generation, event_type, payload, observed_at)
+                 values ($1, $2, $3, $4, $5, 'job_canceled', $6::jsonb, now())`,
+                [
+                  actor.userId,
+                  job.id,
+                  sequence.rows[0]!.sequence,
+                  `command:${command.id}:job_canceled`,
+                  input.executionGeneration,
+                  JSON.stringify({ commandId: command.id })
+                ]
+              );
+            }
+          }
+          await appendManagedConversationEvent(client, {
+            ownerUserId: actor.userId,
+            executionId: input.executionId,
+            mutationId: `managed-conversation:${input.executionId}:start-canceled:${input.executionGeneration}`
+          });
+          await notifyManagedConversationCommand(client, input.executionId);
+          await client.query("commit");
+          return canceled.rows[0];
+        }
+        const existing = await client.query<{
+          id: string;
+          state: ManagedConversationCommandState;
+        }>(
+          `select id, state
+             from managed_conversation_commands
+            where owner_user_id = $1
+              and execution_id = $2
+              and execution_generation = $3
+              and command_kind = 'start'
+            limit 1`,
+          [actor.userId, input.executionId, input.executionGeneration]
+        );
+        await client.query("commit");
+        return existing.rows[0] ?? null;
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -1795,6 +2940,11 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Managed Conversation files are unavailable", 409);
         }
+        await assertNoPendingManagedConversationProjectMove(
+          client,
+          actor.userId,
+          input.executionId
+        );
         const existing = await client.query<CommandRow>(
           `select ${COMMAND_COLUMNS}
              from managed_conversation_commands
@@ -1886,6 +3036,11 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Managed Conversation is not controllable", 409);
         }
+        await assertNoPendingManagedConversationProjectMove(
+          client,
+          actor.userId,
+          input.executionId
+        );
         const requestDigest = sha256(
           JSON.stringify({
             kind: input.commandKind,
@@ -1972,6 +3127,11 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Managed Conversation Restore is unavailable", 409);
         }
+        await assertNoPendingManagedConversationProjectMove(
+          client,
+          actor.userId,
+          input.executionId
+        );
         const checkpoint = await client.query<{
           id: string;
           checkpoint_status: string;
@@ -2566,6 +3726,12 @@ export const createManagedConversationRepository = (
               and ($7::uuid is null or command.owner_user_id = $7)
               and command.execution_generation = execution.execution_generation
               and not exists (
+                select 1 from managed_conversation_project_moves move
+                 where move.owner_user_id = execution.owner_user_id
+                   and move.execution_id = execution.id
+                   and move.state in ('pending', 'claimed')
+              )
+              and not exists (
                 select 1
                   from managed_conversation_commands predecessor
                  where predecessor.execution_id = command.execution_id
@@ -2685,8 +3851,14 @@ export const createManagedConversationRepository = (
               and execution.runner_id = $4
               and execution.runner_lease_expires_at > now()
               and execution.state not in ('stopped','failed','fenced')
+              and not exists (
+                select 1 from managed_conversation_project_moves move
+                 where move.owner_user_id = execution.owner_user_id
+                   and move.execution_id = execution.id
+                   and move.state in ('pending', 'claimed')
+              )
             order by command.created_at, command.sequence
-            for update of command skip locked
+            for update of command, execution skip locked
             limit $1
          ), claimed as (
            update managed_conversation_commands command
@@ -2744,8 +3916,14 @@ export const createManagedConversationRepository = (
               and ($6::uuid is null or command.owner_user_id = $6)
               and execution.runner_device_id = $4
               and execution.runner_deployment_id = $5
+              and not exists (
+                select 1 from managed_conversation_project_moves move
+                 where move.owner_user_id = execution.owner_user_id
+                   and move.execution_id = execution.id
+                   and move.state in ('pending', 'claimed')
+              )
             order by command.created_at, command.sequence
-            for update of command skip locked
+            for update of command, execution skip locked
             limit $1
          ), claimed as (
            update managed_conversation_commands command
@@ -3836,6 +5014,7 @@ export const createManagedConversationRepository = (
               and execution.id = command.execution_id
               and execution.owner_user_id = command.owner_user_id
               and execution.execution_generation = command.execution_generation
+              and execution.state = 'starting'
               and execution.runner_deployment_id = $4
               and execution.runner_device_id = $5
           returning command.execution_id`,
@@ -4152,6 +5331,169 @@ export const createManagedConversationRepository = (
         }
         await client.query("commit");
         return mapRuntimeBinding(result.rows[0]);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async transitionManagedConversationProjectMoveRuntimeBinding(actor, input) {
+      const expectedProjectPath = input.expectedProjectPath.trim();
+      const projectPath = input.projectPath.trim();
+      if (
+        !expectedProjectPath ||
+        expectedProjectPath.length > 4096 ||
+        !projectPath ||
+        projectPath.length > 4096 ||
+        !input.runnerId.trim() ||
+        !input.claimToken
+      ) {
+        throw statusError("Project move runtime binding is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const moveResult = await client.query<
+          ProjectMoveRow & {
+            current_project_id: string | null;
+            execution_state: string;
+            current_runner_device_id: string;
+            current_runner_deployment_id: string;
+          }
+        >(
+          `select move.id, move.owner_user_id, move.execution_id,
+                  move.execution_generation, move.source_project_id,
+                  move.destination_project_id, move.assigned_deployment_id,
+                  move.assigned_device_id, move.state, move.claim_token,
+                  move.claim_expires_at, move.claimed_by_runner_id,
+                  move.claim_attempts, move.created_at, move.updated_at,
+                  move.finished_at, execution.project_id as current_project_id,
+                  execution.state as execution_state,
+                  execution.runner_device_id as current_runner_device_id,
+                  execution.runner_deployment_id as current_runner_deployment_id
+             from managed_conversation_project_moves move
+             join managed_conversation_executions execution
+               on execution.id = move.execution_id
+              and execution.owner_user_id = move.owner_user_id
+            where move.id = $1 and move.owner_user_id = $2
+              and move.execution_id = $3
+              and move.execution_generation = $4
+            for update of move, execution`,
+          [
+            input.moveId,
+            actor.userId,
+            input.executionId,
+            input.executionGeneration
+          ]
+        );
+        const move = moveResult.rows[0];
+        if (
+          !move ||
+          move.state !== "claimed" ||
+          move.claim_token !== input.claimToken ||
+          move.claimed_by_runner_id !== input.runnerId ||
+          !move.claim_expires_at ||
+          move.assigned_deployment_id !== input.deploymentId ||
+          move.assigned_device_id !== input.deviceId ||
+          move.source_project_id !== input.sourceProjectId ||
+          move.destination_project_id !== input.destinationProjectId ||
+          move.current_project_id !== move.source_project_id ||
+          move.execution_state !== "running" ||
+          move.current_runner_deployment_id !== input.deploymentId ||
+          move.current_runner_device_id !== input.deviceId
+        ) {
+          throw statusError(
+            "Managed Conversation Project move claim conflicted",
+            409
+          );
+        }
+        const bindingResult = await client.query<RuntimeBindingRow>(
+          `select ${RUNTIME_BINDING_COLUMNS}
+             from managed_conversation_runtime_bindings
+            where owner_user_id = $1 and execution_id = $2
+            for update`,
+          [actor.userId, input.executionId]
+        );
+        const binding = bindingResult.rows[0];
+        if (
+          !binding ||
+          binding.deployment_id !== input.deploymentId ||
+          binding.device_id !== input.deviceId ||
+          binding.execution_generation !== input.executionGeneration ||
+          !["pending", "ready"].includes(binding.checkout_lifecycle) ||
+          (binding.project_path !== expectedProjectPath &&
+            binding.project_path !== projectPath)
+        ) {
+          throw statusError(
+            "Managed Conversation runtime binding conflicted",
+            409
+          );
+        }
+        const transitioned = await client.query<RuntimeBindingRow>(
+          `update managed_conversation_runtime_bindings
+              set source_project_path = $4,
+                  project_path = $4,
+                  checkout_id = null,
+                  checkout_kind = 'pending',
+                  checkout_lifecycle = 'pending',
+                  start_authority_acknowledged_at = null,
+                  cleanup_state = 'not_requested',
+                  vcs_driver = null,
+                  local_repository_common_directory = null,
+                  local_git_directory = null,
+                  repository_identity_hash = null,
+                  worktree_identity_hash = null,
+                  base_ref = null,
+                  base_object_id = null,
+                  branch_ref = null,
+                  head_object_id = null,
+                  creation_operation_id = null,
+                  local_session_id = null,
+                  provider_thread_id = null,
+                  transcript_path = null,
+                  managed_home = null,
+                  provider_cli_version = null,
+                  source_generation_id = null,
+                  updated_at = now()
+            where owner_user_id = $1 and execution_id = $2
+              and deployment_id = $3 and device_id = $5
+              and execution_generation = $6
+              and project_path = $7
+              and exists (
+                select 1 from managed_conversation_project_moves move
+                 where move.id = $8 and move.owner_user_id = $1
+                   and move.execution_id = $2
+                   and move.execution_generation = $6
+                   and move.state = 'claimed'
+                   and move.claim_token = $9
+                   and move.claimed_by_runner_id = $10
+                   and move.claim_expires_at > clock_timestamp()
+              )
+            returning ${RUNTIME_BINDING_COLUMNS}`,
+          [
+            actor.userId,
+            input.executionId,
+            input.deploymentId,
+            projectPath,
+            input.deviceId,
+            input.executionGeneration,
+            binding.project_path,
+            input.moveId,
+            input.claimToken,
+            input.runnerId
+          ]
+        );
+        const result = transitioned.rows[0];
+        if (!result) {
+          throw statusError(
+            "Managed Conversation runtime binding conflicted",
+            409
+          );
+        }
+        await client.query("commit");
+        return mapRuntimeBinding(result);
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;

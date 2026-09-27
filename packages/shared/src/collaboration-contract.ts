@@ -3287,7 +3287,7 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
       execution: z
         .object({
           id: z.uuid(),
-          projectId: z.string().trim().min(1).max(2_048),
+          projectId: z.string().trim().min(1).max(2_048).nullable(),
           provider: z
             .string()
             .trim()

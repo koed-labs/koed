@@ -7,6 +7,7 @@ export type RateLimitName =
   | "memoryWrite"
   | "memoryRecall"
   | "aiClientControl"
+  | "personalAgentControl"
   | "managedConversationRead"
   | "managedConversationWrite"
   | "sourceJournal"
@@ -159,6 +160,7 @@ export const createRateLimitHandlers = (
     memoryWrite: rateLimit("memoryWrite"),
     memoryRecall: rateLimit("memoryRecall"),
     aiClientControl: rateLimit("aiClientControl"),
+    personalAgentControl: rateLimit("personalAgentControl"),
     managedConversationRead: rateLimit("managedConversationRead"),
     managedConversationWrite: rateLimit("managedConversationWrite"),
     sourceJournal: rateLimit("sourceJournal"),

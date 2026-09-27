@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -99,7 +101,7 @@ describe("runner-owned execution checkouts", () => {
     ).resolves.toMatchObject({
       vcsDriver: null,
       ownership: "non_vcs_directory",
-      canonicalPath: project,
+      canonicalPath: realpathSync(project),
       repositoryIdentityHash: null,
       branchRef: null
     });
@@ -306,7 +308,7 @@ describe("runner-owned execution checkouts", () => {
       })
     ).resolves.toMatchObject({
       ownership: "user_managed_checkout",
-      canonicalPath: source,
+      canonicalPath: realpathSync(source),
       repositoryIdentityHash: sourceIdentity.repositoryIdentityHash
     });
     await expect(
@@ -410,5 +412,77 @@ describe("runner-owned execution checkouts", () => {
     await expect(driver.remove(created)).rejects.toThrow(
       "ExecutionCheckoutCleanupChangedError"
     );
+  });
+
+  it("removes an explicitly retained dirty managed worktree without deleting its Project", async () => {
+    const source = repository();
+    const managedRoot = temporaryDirectory("koed-managed-root-");
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
+    const created = await driver.create({
+      executionId: randomUUID(),
+      executionGeneration: 1,
+      operationId: randomUUID(),
+      sourcePath: source
+    });
+    const retainedFile = join(created.canonicalPath, "untracked.txt");
+    writeFileSync(retainedFile, "explicitly discarded retained file\n");
+
+    await expect(
+      driver.removeRetainedManagedWorktree(created)
+    ).resolves.toBeUndefined();
+
+    expect(existsSync(created.canonicalPath)).toBe(false);
+    expect(existsSync(join(source, "README.md"))).toBe(true);
+    expect(gitMaybe(source, "show-ref", "--verify", created.branchRef!)).toBe(
+      null
+    );
+  });
+
+  it("never deletes a user-managed Project through retained-worktree removal", async () => {
+    const project = repository();
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: temporaryDirectory("koed-managed-root-")
+    });
+    const selected = await driver.select({
+      operationId: randomUUID(),
+      path: project
+    });
+
+    await expect(
+      driver.removeRetainedManagedWorktree(selected)
+    ).rejects.toThrow("ExecutionCheckoutCleanupOwnershipError");
+
+    expect(existsSync(join(project, "README.md"))).toBe(true);
+  });
+
+  it("preserves a branch ref advanced after the retained worktree was recorded", async () => {
+    const source = repository();
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: temporaryDirectory("koed-managed-root-")
+    });
+    const created = await driver.create({
+      executionId: randomUUID(),
+      executionGeneration: 1,
+      operationId: randomUUID(),
+      sourcePath: source
+    });
+    writeFileSync(join(created.canonicalPath, "new-commit.txt"), "keep ref\n");
+    git(created.canonicalPath, "add", "new-commit.txt");
+    git(
+      created.canonicalPath,
+      "-c",
+      "user.name=Koed Test",
+      "-c",
+      "user.email=koed@example.test",
+      "commit",
+      "-m",
+      "retain branch commit"
+    );
+    const advancedHead = git(created.canonicalPath, "rev-parse", "HEAD");
+
+    await driver.removeRetainedManagedWorktree(created);
+
+    expect(existsSync(created.canonicalPath)).toBe(false);
+    expect(git(source, "rev-parse", created.branchRef!)).toBe(advancedHead);
   });
 });

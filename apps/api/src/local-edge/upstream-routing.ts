@@ -399,6 +399,36 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      (method === "POST" &&
+        /^\/v1\/managed-conversations\/[^/]+\/project-moves$/.test(pathname)) ||
+      (method === "GET" &&
+        /^\/v1\/managed-conversations\/[^/]+\/project-moves\/[^/]+$/.test(
+          pathname
+        )) ||
+      (method === "POST" &&
+        /^\/v1\/managed-conversations\/[^/]+\/project-moves\/[^/]+\/cancel$/.test(
+          pathname
+        )) ||
+      (method === "POST" &&
+        (pathname === "/v1/managed-conversation-runner/project-moves/claim" ||
+          /^\/v1\/managed-conversation-runner\/project-moves\/[^/]+\/(?:lease|complete|fail)$/.test(
+            pathname
+          )))
+    )
+      return;
+    if (
+      method === "POST" &&
+      /^\/v1\/managed-conversations\/[^/]+\/start\/cancel$/.test(pathname)
+    )
+      return;
+    if (
+      method === "POST" &&
+      /^\/v1\/managed-conversations\/[^/]+\/prompts\/[^/]+\/cancel$/.test(
+        pathname
+      )
+    )
+      return;
+    if (
       method === "POST" &&
       /^\/v1\/managed-conversations\/[^/]+\/checkpoints\/[^/]+\/restore$/.test(
         pathname

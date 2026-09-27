@@ -14,9 +14,9 @@ import {
   Tray
 } from "electron";
 import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fsPromises } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import {
   desktopStatusChangedChannel,
@@ -41,7 +41,10 @@ import {
 import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
 import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
 import { PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE } from "./pds-authority.js";
-import { resolveKoedHome as resolveApplicationKoedHome } from "@koed/koed-server";
+import {
+  listLocalConversationSources,
+  resolveKoedHome as resolveApplicationKoedHome
+} from "@koed/koed-server";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createExternalUrlOpener } from "./window/external-url-opener.js";
 import { desktopThemeChromeColor } from "./window/theme-colors.js";
@@ -53,6 +56,11 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
+import {
+  createStudioWindowController,
+  resolveStudioPaths,
+  studioWindowOptions
+} from "./window/studio-window.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
   createLaunchAtStartupController,
@@ -61,6 +69,7 @@ import {
 import {
   consumeDesktopActivation,
   createDesktopWindowActivator,
+  isStudioReviewLaunch,
   shouldQuitAfterAllWindowsClosed
 } from "./window/lifecycle.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
@@ -79,6 +88,10 @@ const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
   resourcesPath: process.resourcesPath
 });
 const appName = "Koed";
+const studioReviewOnly = isStudioReviewLaunch({
+  appIsPackaged: app.isPackaged,
+  argv: process.argv
+});
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
   packagedDesktop: app.isPackaged,
@@ -135,7 +148,7 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
         argument.startsWith("koed-pair://")
       );
       if (deepLink) void showPairingDeepLink(deepLink);
-      else void showDesktopWindow();
+      else void showPrimaryWindow();
     });
   }
 }
@@ -173,6 +186,71 @@ const openExternal = createExternalUrlOpener({
         }
       );
     })
+});
+
+let studioBrowserWindow: BrowserWindow | null = null;
+const studioWindowController = createStudioWindowController({
+  allowedRendererOrigins,
+  createWindow: () => {
+    studioBrowserWindow = new BrowserWindow(studioWindowOptions);
+    return studioBrowserWindow;
+  },
+  defaultApiOrigin: "http://127.0.0.1:43300",
+  getAccess: async () => {
+    if (!koedServer) throw new Error("Koed server manager is unavailable.");
+    return koedServer.studioLocalAccess();
+  },
+  getPaths: () =>
+    resolveStudioPaths({
+      appIsPackaged: app.isPackaged,
+      repoRoot,
+      resourcesPath: process.resourcesPath
+    }),
+  startGateway: async (options) => {
+    const { gatewayPath } = resolveStudioPaths({
+      appIsPackaged: app.isPackaged,
+      repoRoot,
+      resourcesPath: process.resourcesPath
+    });
+    const gateway = await import(pathToFileURL(gatewayPath).href);
+    return gateway.startStudioServer(options);
+  },
+  listLocalSources: (options) =>
+    listLocalConversationSources({ ...options, env: koedEnvironment }),
+  listProjects: async () => {
+    if (!koedServer) throw new Error("Koed server manager is unavailable.");
+    return koedServer.listProjects();
+  },
+  chooseProjectDirectory: async () => {
+    const options = {
+      buttonLabel: "Choose",
+      properties: ["openDirectory", "createDirectory"] as Array<
+        "openDirectory" | "createDirectory"
+      >,
+      title: "Choose a Project Folder"
+    };
+    const selected =
+      studioBrowserWindow && !studioBrowserWindow.isDestroyed()
+        ? await dialog.showOpenDialog(studioBrowserWindow, options)
+        : await dialog.showOpenDialog(options);
+    if (selected.canceled || !selected.filePaths[0]) return null;
+    const canonical = await fsPromises.realpath(selected.filePaths[0]);
+    if (!(await fsPromises.stat(canonical)).isDirectory()) return null;
+    return canonical;
+  },
+  registerProject: async ({ path, name }) => {
+    if (!koedServer) throw new Error("Koed server manager is unavailable.");
+    const canonical = await fsPromises.realpath(path);
+    if (!(await fsPromises.stat(canonical)).isDirectory()) {
+      throw new Error("The selected Project folder is unavailable.");
+    }
+    return koedServer.discoverProject(canonical, name);
+  },
+  collaboration: (args, context) => {
+    if (!koedServer) throw new Error("Koed server manager is unavailable.");
+    return koedServer.handlers.collaboration(args, context);
+  },
+  openExternal
 });
 
 const createServerManager = (
@@ -326,6 +404,17 @@ const showDesktopWindow = createDesktopWindowActivator({
   }
 });
 
+const showStudioWindow = async (): Promise<void> => {
+  await bootstrapPromise;
+  backgroundLaunchPending = false;
+  if (process.platform === "darwin") await app.dock?.show();
+  await studioWindowController.open();
+};
+
+const showPrimaryWindow = studioReviewOnly
+  ? showStudioWindow
+  : showDesktopWindow;
+
 async function showPairingDeepLink(value: string): Promise<void> {
   const pairingLink = acceptPairingDeepLink(value);
   if (!pairingLink) return;
@@ -337,6 +426,32 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: appName,
+        submenu: [
+          {
+            label: "Open Koed Studio",
+            accelerator: "CmdOrCtrl+Shift+S",
+            click: () => {
+              void studioWindowController.open().catch(() => {
+                dialog.showErrorBox(
+                  "Koed Studio could not open",
+                  "Koed Studio could not start. Check that local services are available and try again."
+                );
+              });
+            }
+          },
+          { type: "separator" },
+          { role: "quit" }
+        ]
+      },
+      { role: "editMenu" },
+      { role: "viewMenu" },
+      { role: "windowMenu" }
+    ])
+  );
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
     appIsPackaged: app.isPackaged,
@@ -451,7 +566,7 @@ const bootstrap = async () => {
     });
   }
   await startDesktopWindowAndRuntime({
-    background: backgroundLaunchPending,
+    background: backgroundLaunchPending || studioReviewOnly,
     createWindow,
     resumeRuntime: async () => {
       const persistentPdsStore = createPdsDesktopSecretStore({
@@ -490,6 +605,9 @@ const bootstrap = async () => {
       }
     }
   });
+  if (studioReviewOnly && !backgroundLaunchPending) {
+    await studioWindowController.open();
+  }
 };
 
 if (ownsDesktopInstance) {
@@ -511,8 +629,8 @@ app.on("activate", () => {
   const activation = consumeDesktopActivation(backgroundLaunchPending);
   backgroundLaunchPending = activation.backgroundLaunchPending;
   if (!activation.openWindow) return;
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void showDesktopWindow();
+  if (studioReviewOnly || BrowserWindow.getAllWindows().length === 0) {
+    void showPrimaryWindow();
   }
 });
 let koedServerStoppedForQuit = false;
@@ -523,6 +641,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();
+    await studioWindowController.close();
     await koedServer?.stop();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;

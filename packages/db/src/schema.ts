@@ -2962,6 +2962,8 @@ export const encryptedFieldPayloads = pgTable(
         'memory_questions',
         'personal_notes',
         'personal_note_revisions',
+        'personal_agent_identity_versions',
+        'personal_agent_execution_jobs',
         'memory_replica_revisions',
         'messages',
         'privacy_classification_results',
@@ -3896,7 +3898,7 @@ export const managedConversationExecutions = pgTable(
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    projectId: text("project_id").notNull(),
+    projectId: text("project_id"),
     provider: text("provider").notNull().default("codex"),
     aiClientInstanceId: text("ai_client_instance_id").notNull(),
     model: text("model").notNull(),
@@ -3925,6 +3927,10 @@ export const managedConversationExecutions = pgTable(
     stoppedAt: timestamp("stopped_at", { withTimezone: true })
   },
   (table) => [
+    unique("managed_conversation_executions_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
     unique("managed_conversation_executions_session_owner_unique").on(
       table.logicalSessionId,
       table.ownerUserId
@@ -3983,6 +3989,11 @@ export const managedConversationExecutions = pgTable(
         and (
           ${table.state} = 'failed'
           or (
+            ${table.state} = 'stopped'
+            and ${table.logicalSessionId} is null
+            and ${table.providerThreadId} is null
+          )
+          or (
             ${table.logicalSessionId} is not null
             and ${table.providerThreadId} is not null
           )
@@ -3993,6 +4004,606 @@ export const managedConversationExecutions = pgTable(
       "managed_conversation_executions_runner_lease_check",
       sql`(${table.runnerId} is null and ${table.runnerLeaseExpiresAt} is null)
         or (${table.runnerId} is not null and ${table.runnerLeaseExpiresAt} is not null)`
+    )
+  ]
+);
+
+// Authority-side move intent. This table deliberately contains Project IDs
+// and assigned-device identity only; local paths and checkout state belong to
+// the assigned runner's local journal.
+export const managedConversationProjectMoves = pgTable(
+  "managed_conversation_project_moves",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    sourceProjectId: text("source_project_id"),
+    destinationProjectId: text("destination_project_id").notNull(),
+    assignedDeploymentId: uuid("assigned_deployment_id").notNull(),
+    assignedDeviceId: uuid("assigned_device_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    state: text("state").notNull().default("pending"),
+    claimToken: uuid("claim_token"),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+    claimedByRunnerId: text("claimed_by_runner_id"),
+    claimAttempts: integer("claim_attempts").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("managed_conversation_project_moves_owner_execution_id_unique").on(
+      table.id,
+      table.ownerUserId,
+      table.executionId
+    ),
+    unique("managed_conversation_project_moves_idempotency_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.idempotencyKey
+    ),
+    foreignKey({
+      columns: [table.executionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "managed_conversation_project_moves_owner_execution_fk"
+    }).onDelete("cascade"),
+    index("managed_conversation_project_moves_owner_state_idx").on(
+      table.ownerUserId,
+      table.state,
+      table.createdAt.desc()
+    ),
+    uniqueIndex("managed_conversation_project_moves_one_active_per_execution")
+      .on(table.executionId)
+      .where(sql`${table.state} in ('pending', 'claimed')`),
+    check(
+      "managed_conversation_project_moves_shape_check",
+      sql`${table.executionGeneration} > 0
+        and length(trim(${table.idempotencyKey})) between 16 and 160
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'
+        and length(trim(${table.destinationProjectId})) between 1 and 512
+        and ${table.state} in ('pending', 'claimed', 'cancelled', 'completed', 'failed')
+        and ${table.claimAttempts} >= 0
+        and ((${table.claimToken} is null and ${table.claimExpiresAt} is null and ${table.claimedByRunnerId} is null)
+          or (${table.claimToken} is not null and ${table.claimExpiresAt} is not null and length(trim(${table.claimedByRunnerId})) > 0))
+        and ((${table.state} = 'pending' and ${table.claimToken} is null and ${table.finishedAt} is null)
+          or (${table.state} = 'claimed' and ${table.claimToken} is not null and ${table.finishedAt} is null)
+          or (${table.state} in ('cancelled', 'completed', 'failed') and ${table.claimToken} is null and ${table.finishedAt} is not null))`
+    )
+  ]
+);
+
+export const personalAgentRoleTemplateVersions = pgTable(
+  "personal_agent_role_template_versions",
+  {
+    templateId: text("template_id").notNull(),
+    version: integer("version").notNull(),
+    title: text("title").notNull(),
+    role: text("role").notNull(),
+    soulInstructions: text("soul_instructions").notNull(),
+    contentSha256: text("content_sha256").notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.templateId, table.version],
+      name: "personal_agent_role_template_versions_pk"
+    }),
+    index("personal_agent_role_template_versions_published_idx").on(
+      table.templateId,
+      table.version.desc()
+    ),
+    check(
+      "personal_agent_role_template_versions_id_check",
+      sql`${table.templateId} ~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'`
+    ),
+    check(
+      "personal_agent_role_template_versions_text_check",
+      sql`${table.version} > 0
+        and length(trim(${table.title})) between 1 and 128
+        and length(trim(${table.role})) between 1 and 160
+        and length(trim(${table.soulInstructions})) between 1 and 65536
+        and ${table.contentSha256} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const personalAgentIdentities = pgTable(
+  "personal_agent_identities",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    role: text("role").notNull(),
+    avatarReference: text("avatar_reference"),
+    lifecycle: text("lifecycle").notNull().default("active"),
+    defaultProvider: text("default_provider").notNull(),
+    defaultModel: text("default_model").notNull(),
+    defaultReasoningEffort: text("default_reasoning_effort"),
+    currentVersion: integer("current_version").notNull().default(1),
+    creationRequestId: uuid("creation_request_id").notNull(),
+    creationRequestFingerprint: text("creation_request_fingerprint").notNull(),
+    retirementRequestId: uuid("retirement_request_id"),
+    retirementRequestFingerprint: text("retirement_request_fingerprint"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    retiredAt: timestamp("retired_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("personal_agent_identities_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("personal_agent_identities_owner_creation_request_unique").on(
+      table.ownerUserId,
+      table.creationRequestId
+    ),
+    unique("personal_agent_identities_owner_retirement_request_unique").on(
+      table.ownerUserId,
+      table.retirementRequestId
+    ),
+    index("personal_agent_identities_owner_lifecycle_idx").on(
+      table.ownerUserId,
+      table.lifecycle,
+      table.updatedAt.desc()
+    ),
+    check(
+      "personal_agent_identities_text_check",
+      sql`length(trim(${table.name})) between 1 and 128
+        and length(${table.role}) <= 512
+        and (${table.avatarReference} is null or length(${table.avatarReference}) <= 4096)
+        and ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and length(trim(${table.defaultModel})) between 1 and 512
+        and (${table.defaultReasoningEffort} is null or length(trim(${table.defaultReasoningEffort})) between 1 and 64)
+        and ${table.creationRequestFingerprint} ~ '^[0-9a-f]{64}$'
+        and (${table.retirementRequestFingerprint} is null or ${table.retirementRequestFingerprint} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      "personal_agent_identities_lifecycle_check",
+      sql`(${table.lifecycle} = 'active' and ${table.retiredAt} is null)
+        or (${table.lifecycle} = 'retired' and ${table.retiredAt} is not null)`
+    ),
+    check(
+      "personal_agent_identities_version_check",
+      sql`${table.currentVersion} > 0`
+    )
+  ]
+);
+
+export const personalAgentIdentityVersions = pgTable(
+  "personal_agent_identity_versions",
+  {
+    id: id(),
+    agentId: uuid("agent_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    name: text("name").notNull(),
+    role: text("role").notNull(),
+    avatarReference: text("avatar_reference"),
+    defaultProvider: text("default_provider").notNull(),
+    defaultModel: text("default_model").notNull(),
+    defaultReasoningEffort: text("default_reasoning_effort"),
+    soulInstructions: text("soul_instructions").notNull(),
+    instructionSource: text("instruction_source").notNull(),
+    sourceTemplateId: text("source_template_id"),
+    sourceTemplateVersion: integer("source_template_version"),
+    createdByUserId: uuid("created_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    requestId: uuid("request_id").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_agent_identity_versions_agent_version_unique").on(
+      table.agentId,
+      table.version
+    ),
+    unique("personal_agent_identity_versions_owner_agent_version_unique").on(
+      table.ownerUserId,
+      table.agentId,
+      table.version
+    ),
+    unique("personal_agent_identity_versions_owner_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_identity_versions_owner_agent_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.sourceTemplateId, table.sourceTemplateVersion],
+      foreignColumns: [
+        personalAgentRoleTemplateVersions.templateId,
+        personalAgentRoleTemplateVersions.version
+      ],
+      name: "personal_agent_identity_versions_template_source_fk"
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+    foreignKey({
+      columns: [table.sourceTemplateId, table.sourceTemplateVersion],
+      foreignColumns: [
+        personalAgentRoleTemplateVersions.templateId,
+        personalAgentRoleTemplateVersions.version
+      ],
+      name: "personal_agent_identity_versions_template_source_fk"
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+    index("personal_agent_identity_versions_owner_agent_idx").on(
+      table.ownerUserId,
+      table.agentId,
+      table.version.desc()
+    ),
+    check(
+      "personal_agent_identity_versions_text_check",
+      sql`length(trim(${table.name})) between 1 and 128
+        and length(${table.role}) <= 512
+        and (${table.avatarReference} is null or length(${table.avatarReference}) <= 4096)
+        and ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and length(trim(${table.defaultModel})) between 1 and 512
+        and (${table.defaultReasoningEffort} is null or length(trim(${table.defaultReasoningEffort})) between 1 and 64)
+        and ${table.soulInstructions} = '[koed encrypted personal agent soul]'
+        and ${table.instructionSource} in ('generated', 'custom')
+        and ((${table.sourceTemplateId} is null) = (${table.sourceTemplateVersion} is null))
+        and ${table.requestFingerprint} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "personal_agent_identity_versions_number_check",
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const personalAgentConversations = pgTable(
+  "personal_agent_conversations",
+  {
+    conversationId: uuid("conversation_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    activeAgentId: uuid("active_agent_id"),
+    modelOverride: text("model_override"),
+    reasoningEffortOverride: text("reasoning_effort_override"),
+    version: integer("version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_conversations_owner_id_unique").on(
+      table.conversationId,
+      table.ownerUserId
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "personal_agent_conversations_owner_execution_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.activeAgentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_conversations_active_agent_fk"
+    }).onDelete("restrict"),
+    check(
+      "personal_agent_conversations_version_check",
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const personalAgentConversationParticipants = pgTable(
+  "personal_agent_conversation_participants",
+  {
+    conversationId: uuid("conversation_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    addedAt: timestamp("added_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.conversationId, table.agentId],
+      name: "personal_agent_conversation_participants_pk"
+    }),
+    unique("personal_agent_conversation_participants_ordinal_unique").on(
+      table.conversationId,
+      table.ordinal
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentConversations.conversationId,
+        personalAgentConversations.ownerUserId
+      ],
+      name: "personal_agent_conversation_participants_conversation_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_conversation_participants_agent_fk"
+    }).onDelete("restrict"),
+    check(
+      "personal_agent_conversation_participants_ordinal_check",
+      sql`${table.ordinal} >= 0`
+    )
+  ]
+);
+
+export const personalAgentExecutionJobs = pgTable(
+  "personal_agent_execution_jobs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id").notNull(),
+    attributionKind: text("attribution_kind").notNull().default("agent"),
+    agentId: uuid("agent_id"),
+    agentVersion: integer("agent_version"),
+    state: text("state").notNull().default("queued"),
+    idempotencyKey: text("idempotency_key"),
+    commandId: uuid("command_id"),
+    title: text("title").notNull().default("Agent task"),
+    projectId: text("project_id"),
+    outputReference: jsonb("output_reference"),
+    version: integer("version").notNull().default(1),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    attemptsStarted: integer("attempts_started").notNull().default(0),
+    attemptsSucceeded: integer("attempts_succeeded").notNull().default(0),
+    attemptsFailed: integer("attempts_failed").notNull().default(0),
+    attemptsCanceled: integer("attempts_canceled").notNull().default(0),
+    attemptsInterrupted: integer("attempts_interrupted").notNull().default(0),
+    lastAttemptId: uuid("last_attempt_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_execution_jobs_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    foreignKey({
+      columns: [table.conversationId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "personal_agent_execution_jobs_owner_execution_fk"
+    }).onDelete("cascade"),
+    unique(
+      "personal_agent_execution_jobs_owner_conversation_idempotency_unique"
+    ).on(table.ownerUserId, table.conversationId, table.idempotencyKey),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_execution_jobs_owner_agent_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.ownerUserId, table.agentId, table.agentVersion],
+      foreignColumns: [
+        personalAgentIdentityVersions.ownerUserId,
+        personalAgentIdentityVersions.agentId,
+        personalAgentIdentityVersions.version
+      ],
+      name: "personal_agent_execution_jobs_agent_version_fk"
+    }).onDelete("restrict"),
+    index("personal_agent_execution_jobs_owner_state_idx").on(
+      table.ownerUserId,
+      table.state,
+      table.updatedAt.desc()
+    ),
+    index("personal_agent_execution_jobs_owner_conversation_idx").on(
+      table.ownerUserId,
+      table.conversationId,
+      table.createdAt.desc()
+    ),
+    check(
+      "personal_agent_execution_jobs_attribution_check",
+      sql`(${table.attributionKind} = 'agent'
+          and ${table.agentId} is not null
+          and ${table.agentVersion} is not null)
+        or (${table.attributionKind} = 'legacy'
+          and ${table.agentId} is null
+          and ${table.agentVersion} is null)`
+    ),
+    check(
+      "personal_agent_execution_jobs_state_check",
+      sql`${table.state} in ('queued', 'running', 'succeeded', 'failed', 'canceled')`
+    ),
+    check(
+      "personal_agent_execution_jobs_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "personal_agent_execution_jobs_counter_check",
+      sql`${table.attemptsStarted} >= 0
+        and ${table.attemptsSucceeded} >= 0
+        and ${table.attemptsFailed} >= 0
+        and ${table.attemptsCanceled} >= 0
+        and ${table.attemptsInterrupted} >= 0
+        and ${table.attemptsSucceeded} + ${table.attemptsFailed}
+          + ${table.attemptsCanceled} + ${table.attemptsInterrupted}
+          <= ${table.attemptsStarted}`
+    )
+  ]
+);
+
+export const personalAgentExecutionJobEvents = pgTable(
+  "personal_agent_execution_job_events",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    jobId: uuid("job_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    eventId: text("event_id").notNull(),
+    executionGeneration: integer("execution_generation"),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull().default({}),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_agent_job_events_job_sequence_unique").on(
+      table.jobId,
+      table.sequence
+    ),
+    unique("personal_agent_job_events_owner_event_unique").on(
+      table.ownerUserId,
+      table.jobId,
+      table.eventId
+    ),
+    foreignKey({
+      columns: [table.jobId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentExecutionJobs.id,
+        personalAgentExecutionJobs.ownerUserId
+      ],
+      name: "personal_agent_job_events_owner_job_fk"
+    }).onDelete("cascade"),
+    index("personal_agent_job_events_job_sequence_idx").on(
+      table.ownerUserId,
+      table.jobId,
+      table.sequence.desc()
+    ),
+    check(
+      "personal_agent_job_events_sequence_check",
+      sql`${table.sequence} > 0`
+    ),
+    check(
+      "personal_agent_job_events_generation_check",
+      sql`${table.executionGeneration} is null or ${table.executionGeneration} > 0`
+    )
+  ]
+);
+
+export const personalAgentExecutionAttempts = pgTable(
+  "personal_agent_execution_attempts",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    attributionKind: text("attribution_kind").notNull().default("agent"),
+    agentId: uuid("agent_id"),
+    agentVersion: integer("agent_version"),
+    provider: text("provider"),
+    model: text("model"),
+    aiClientInstanceId: text("ai_client_instance_id"),
+    reasoningEffort: text("reasoning_effort"),
+    permissionMode: text("permission_mode"),
+    managedExecutionId: uuid("managed_execution_id"),
+    managedExecutionGeneration: integer("managed_execution_generation"),
+    status: text("status").notNull().default("running"),
+    outcome: text("outcome"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_agent_execution_attempts_job_number_unique").on(
+      table.jobId,
+      table.attemptNumber
+    ),
+    foreignKey({
+      columns: [table.jobId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentExecutionJobs.id,
+        personalAgentExecutionJobs.ownerUserId
+      ],
+      name: "personal_agent_execution_attempts_owner_job_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.agentId, table.agentVersion],
+      foreignColumns: [
+        personalAgentIdentityVersions.ownerUserId,
+        personalAgentIdentityVersions.agentId,
+        personalAgentIdentityVersions.version
+      ],
+      name: "personal_agent_execution_attempts_agent_version_fk"
+    }).onDelete("restrict"),
+    index("personal_agent_execution_attempts_owner_job_idx").on(
+      table.ownerUserId,
+      table.jobId,
+      table.attemptNumber.desc()
+    ),
+    index("personal_agent_execution_attempts_owner_status_idx").on(
+      table.ownerUserId,
+      table.status,
+      table.updatedAt.desc()
+    ),
+    check(
+      "personal_agent_execution_attempts_attribution_check",
+      sql`(${table.attributionKind} = 'agent'
+          and ${table.agentId} is not null
+          and ${table.agentVersion} is not null
+          and ${table.provider} is not null
+          and ${table.model} is not null
+          and ${table.aiClientInstanceId} is not null
+          and ${table.permissionMode} is not null)
+        or (${table.attributionKind} = 'legacy'
+          and ${table.agentId} is null
+          and ${table.agentVersion} is null)`
+    ),
+    check(
+      "personal_agent_execution_attempts_runtime_check",
+      sql`(${table.provider} is null or ${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$')
+        and (${table.aiClientInstanceId} is null or ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$')
+        and (${table.model} is null or length(trim(${table.model})) between 1 and 512)
+        and (${table.reasoningEffort} is null or length(trim(${table.reasoningEffort})) between 1 and 64)
+        and (${table.permissionMode} is null or ${table.permissionMode} in ('supervised', 'auto_edit', 'auto', 'full_access'))`
+    ),
+    check(
+      "personal_agent_execution_attempts_managed_generation_check",
+      sql`(${table.managedExecutionId} is null and ${table.managedExecutionGeneration} is null)
+        or (${table.managedExecutionId} is not null and ${table.managedExecutionGeneration} > 0)`
+    ),
+    check(
+      "personal_agent_execution_attempts_status_check",
+      sql`(${table.status} = 'running' and ${table.outcome} is null and ${table.completedAt} is null)
+        or (${table.status} in ('succeeded', 'failed', 'canceled', 'interrupted')
+          and ${table.outcome} = ${table.status}
+          and ${table.completedAt} is not null)`
+    ),
+    check(
+      "personal_agent_execution_attempts_number_check",
+      sql`${table.attemptNumber} > 0`
     )
   ]
 );

@@ -82,6 +82,21 @@ export {
   discoverProjectMetadata,
   listProjectMetadata
 } from "./project-metadata.js";
+export { listLocalConversationSources } from "./local-conversation-catalog.js";
+export {
+  RetainedWorkspaceCatalog,
+  parseRetainedWorkspaceRecord
+} from "./retained-workspace-catalog.js";
+export type {
+  RetainedWorkspaceCatalogOptions,
+  RetainedWorkspaceRecord
+} from "./retained-workspace-catalog.js";
+export type {
+  ListLocalConversationSourcesOptions,
+  LocalConversationCatalogPage,
+  LocalConversationSource,
+  LocalSourceStatus
+} from "./local-conversation-catalog.js";
 export { loadRepoEnv } from "./env-file.js";
 export {
   deviceIdentityLockTarget,

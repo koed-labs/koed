@@ -535,6 +535,92 @@ describe("ClaudeManagedConversationSession", () => {
     ).toBe(fs.realpathSync(managedHome));
   });
 
+  it("loads the exact managed Claude history after resuming from a different cwd", async () => {
+    const { config, cwd, managedHome } = fixture();
+    const destinationCwd = path.join(cwd, "destination-project");
+    fs.mkdirSync(path.join(destinationCwd, ".claude"), { recursive: true });
+    const sessionId = randomUUID();
+    const projectKeyForCwd = (queryCwd: string | undefined) =>
+      path.resolve(queryCwd ?? cwd);
+    const loadedHistory: Array<{ cwd: string; entries: string[] }> = [];
+    sdk.query.mockImplementation(
+      ({ prompt, options }: { prompt: string; options?: Options }) => {
+        async function* run(): AsyncGenerator<SDKMessage, void> {
+          const store = options?.sessionStore;
+          if (!store) throw new Error("missing managed SessionStore");
+          if (options?.resume && options.resume !== sessionId) {
+            throw new Error("provider was asked to resume a different session");
+          }
+          // The native SDK resume implementation keys its isolated transcript
+          // lookup by the project key derived from options.cwd.
+          const key = {
+            projectKey: projectKeyForCwd(options?.cwd),
+            sessionId
+          };
+          const previous = (await store.load(key)) ?? [];
+          const history = previous.map((entry) =>
+            typeof entry.message === "object" &&
+            entry.message !== null &&
+            "content" in entry.message
+              ? String(entry.message.content)
+              : "unknown"
+          );
+          loadedHistory.push({ cwd: key.projectKey, entries: history });
+          await store.append(key, [
+            {
+              type: "user",
+              sessionId,
+              message: { role: "user", content: prompt }
+            }
+          ]);
+          yield successResult(sessionId, `continued ${prompt}`);
+        }
+        const stream = run() as Query;
+        stream.close = vi.fn();
+        return stream;
+      }
+    );
+
+    const source = new ClaudeManagedConversationSession({
+      ...config,
+      sessionId
+    });
+    await source.prompt("first project prompt");
+    const resumed = new ClaudeManagedConversationSession({
+      ...config,
+      cwd: destinationCwd,
+      resumeSessionId: sessionId
+    });
+    await resumed.prompt("second project prompt");
+
+    expect(loadedHistory).toEqual([
+      { cwd: fs.realpathSync(cwd), entries: [] },
+      {
+        cwd: fs.realpathSync(destinationCwd),
+        entries: ["first project prompt"]
+      }
+    ]);
+    expect(queryOptions(0).sessionId).toBe(sessionId);
+    expect(queryOptions(0).resume).toBeUndefined();
+    expect(queryOptions(1).resume).toBe(sessionId);
+    expect(queryOptions(1).sessionId).toBeUndefined();
+    expect(queryOptions(1).cwd).toBe(fs.realpathSync(destinationCwd));
+    expect(queryOptions(1).sessionStore).not.toBe(queryOptions(0).sessionStore);
+    const persisted = await createManagedClaudeSessionStore(managedHome).load({
+      projectKey: fs.realpathSync(destinationCwd),
+      sessionId
+    });
+    expect(persisted).toHaveLength(2);
+    expect(resumed.identity).toMatchObject({
+      provider: "claude",
+      sessionId,
+      cwd: fs.realpathSync(destinationCwd),
+      resumed: true
+    });
+    await source.closeAndWait();
+    await resumed.closeAndWait();
+  });
+
   it("resolves exactly one regular transcript beneath the Claude projects home", () => {
     const { cwd } = fixture();
     const sessionId = randomUUID();

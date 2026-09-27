@@ -1282,6 +1282,40 @@ describe("JSON command output", () => {
     });
   });
 
+  it("passes a supplied project display name to project discovery", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      [
+        "project",
+        "discover",
+        "--cwd",
+        "/repo/my project",
+        "--name",
+        "Studio project",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        discoverProjectMetadata: async (_paths, input) => {
+          seen.push(input);
+          return { ok: true, state: "discovered", message: "discovered" };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen).toEqual([
+      {
+        cwd: "/repo/my project",
+        displayNameOverride: "Studio project",
+        aiClientSource: undefined
+      }
+    ]);
+  });
+
   it("prints project list --json", async () => {
     const stdout = writer();
 

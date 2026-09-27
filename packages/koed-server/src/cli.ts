@@ -173,7 +173,7 @@ Commands:
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state
-  project discover --json Discover and store local Project metadata
+  project discover [--cwd <path>] [--name <name>] --json Discover and store local Project metadata
   project list --json     List discovered local Project metadata
   project show --json     Show discovered Project metadata for a cwd
   project forget --json   Forget discovered Project metadata by local Project id
@@ -1249,10 +1249,19 @@ export const runKoedServerCli = async (
     if (command === "project") {
       const projectCommand = subcommand;
       const paths = resolvePaths();
+      const projectName = flagValue(args, "--name");
+      if (
+        projectCommand === "discover" &&
+        args.includes("--name") &&
+        (!projectName || projectName.startsWith("--"))
+      ) {
+        throw new Error("--name requires a value.");
+      }
       const result =
         projectCommand === "discover"
           ? await discoverProject(paths, {
               cwd: flagValue(args, "--cwd") ?? process.cwd(),
+              displayNameOverride: projectName,
               aiClientSource: args.includes("--codex") ? "codex" : undefined
             })
           : projectCommand === "list"

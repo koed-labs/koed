@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { CodexAppServerClient } from "../src/codex-app-server-runner.js";
@@ -95,6 +96,7 @@ const writeManagedFakeAppServer = (
     pathOnlyInThreadStarted?: boolean;
     primaryParentThreadId?: string;
     providerRequestKind?: "command_approval" | "user_input";
+    requireExistingThreadOnResume?: boolean;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "managed-fake-app-server.mjs");
@@ -281,6 +283,12 @@ reader.on("line", (line) => {
     return;
   }
   if (message.method === "thread/resume") {
+    if (options.requireExistingThreadOnResume) {
+      if (message.params.threadId !== threadId || !fs.existsSync(transcriptPath)) process.exit(17);
+      const priorTranscript = fs.readFileSync(transcriptPath, "utf8");
+      if (!priorTranscript.includes('"message":"First project prompt"')) process.exit(18);
+      lifecycle("resume:" + JSON.stringify({ threadId: message.params.threadId, cwd: message.params.cwd }));
+    }
     send({ id: message.id, result: { thread: { id: message.params.threadId, sessionId: "session-tree-1", path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     return;
   }
@@ -2292,6 +2300,163 @@ describe("Codex managed conversation coordinator", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("resumes the same provider thread and transcript from a different project cwd", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-move-cwd-")
+    );
+    const destinationCwd = path.join(directory, "destination-project");
+    fs.mkdirSync(destinationCwd);
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const lifecyclePath = path.join(directory, "lifecycle.log");
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath,
+      { requireExistingThreadOnResume: true, lifecyclePath }
+    );
+    const first = new CodexManagedConversationSession(
+      configFor(memoryClient, appServerBinary, directory)
+    );
+
+    try {
+      const started = await first.start();
+      await first.runTurn("First project prompt", 2_000);
+      await first.closeAndWait();
+
+      const resumedConfig = configFor(
+        memoryClient,
+        appServerBinary,
+        directory,
+        {
+          threadId: started.thread.id,
+          sessionId: started.sessionId,
+          transcriptPath: started.transcriptPath,
+          codexHome: started.codexHome
+        }
+      );
+      resumedConfig.appServer.cwd = destinationCwd;
+      const resumed = new CodexManagedConversationSession(resumedConfig);
+      try {
+        const resumedStart = await resumed.start();
+        expect(resumedStart.thread.id).toBe(started.thread.id);
+        expect(resumedStart.sessionId).toBe(started.sessionId);
+        expect(resumedStart.transcriptPath).toBe(started.transcriptPath);
+        await resumed.runTurn("Second project prompt", 2_000);
+        expect(fs.readFileSync(lifecyclePath, "utf8")).toContain(
+          `resume:${JSON.stringify({ threadId: started.thread.id, cwd: destinationCwd })}`
+        );
+        const transcript = fs.readFileSync(transcriptPath, "utf8");
+        expect(transcript).toContain('"message":"First project prompt"');
+        expect(transcript).toContain('"message":"Second project prompt"');
+        expect(transcript).toContain(`"cwd":"${destinationCwd}"`);
+      } finally {
+        await resumed.closeAndWait();
+      }
+    } finally {
+      await first.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.env.KOED_RUN_LIVE_CODEX_CROSS_CWD_TEST !== "1")(
+    "continues a real Codex thread and its history after changing project cwd",
+    async () => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-live-codex-move-cwd-")
+      );
+      try {
+        const sourceCwd = path.join(directory, "source-project");
+        const destinationCwd = path.join(directory, "destination-project");
+        const temporaryCodexHome = path.join(directory, "codex-home");
+        fs.mkdirSync(sourceCwd);
+        fs.mkdirSync(destinationCwd);
+        fs.mkdirSync(temporaryCodexHome, { mode: 0o700 });
+        const destinationMarker = `destination-check-${randomUUID()}`;
+        const destinationMarkerPath = path.join(
+          destinationCwd,
+          "move-context.txt"
+        );
+        fs.writeFileSync(destinationMarkerPath, `${destinationMarker}\n`);
+        const configuredCodexHome =
+          process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+        const authPath = path.join(configuredCodexHome, "auth.json");
+        if (!fs.existsSync(authPath)) {
+          throw new Error(
+            "Live Codex cross-cwd test requires an authenticated Codex home"
+          );
+        }
+        fs.copyFileSync(authPath, path.join(temporaryCodexHome, "auth.json"));
+        fs.chmodSync(path.join(temporaryCodexHome, "auth.json"), 0o600);
+        fs.writeFileSync(
+          path.join(temporaryCodexHome, "config.toml"),
+          'model = "gpt-5.6-luna"\n',
+          { mode: 0o600 }
+        );
+
+        const memoryClient = new FakeMemoryClient();
+        const appServerBinary = process.env.CODEX_CLI_PATH ?? "codex";
+        const base = configFor(memoryClient, appServerBinary, directory);
+        const config = {
+          ...base,
+          appServer: {
+            ...base.appServer,
+            model: "gpt-5.6-luna",
+            cwd: sourceCwd,
+            env: {
+              PATH: process.env.PATH,
+              CODEX_HOME: fs.realpathSync(temporaryCodexHome)
+            }
+          }
+        };
+        const phrase = `move-check-${randomUUID()}`;
+        const first = new CodexManagedConversationSession(config);
+        let resumed: CodexManagedConversationSession | undefined;
+        try {
+          const started = await first.start();
+          await first.runTurn(
+            `Remember this exact phrase for my next question: ${phrase}.`,
+            120_000
+          );
+          await first.closeAndWait();
+
+          resumed = new CodexManagedConversationSession({
+            ...config,
+            appServer: { ...config.appServer, cwd: destinationCwd },
+            resume: {
+              threadId: started.thread.id,
+              sessionId: started.sessionId,
+              transcriptPath: started.transcriptPath,
+              codexHome: started.codexHome
+            }
+          });
+          const resumedStart = await resumed.start();
+          expect(resumedStart.thread.id).toBe(started.thread.id);
+          expect(resumedStart.sessionId).toBe(started.sessionId);
+          expect(resumedStart.transcriptPath).toBe(started.transcriptPath);
+          const answer = await resumed.runTurn(
+            `Read move-context.txt in the current project, then tell me its exact contents and the exact phrase I asked you to remember.`,
+            120_000
+          );
+          expect(answer.model).toBe("codex-app-server:gpt-5.6-luna:low");
+          expect(answer.text).toContain(phrase);
+          expect(answer.text).toContain(destinationMarker);
+          const resumedTurnStart = answer.rawEvents?.find(
+            (event) => event.method === "turn/start"
+          );
+          expect(resumedTurnStart?.params).toMatchObject({
+            cwd: destinationCwd
+          });
+        } finally {
+          await resumed?.closeAndWait().catch(() => undefined);
+          await first.closeAndWait().catch(() => undefined);
+        }
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("replays terminal JSONL after an interrupted hold release before checkpoint commit", async () => {
     const directory = fs.mkdtempSync(

@@ -183,12 +183,14 @@ import {
   setRequestLogContext
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
+import { registerStudioStaticRoutes } from "./studio-static-routes.js";
 import type { ApiRouteContext } from "./context.js";
 import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
 import {
   createSourceControlRuntime,
   registerSourceControlRoutes
 } from "../source-control/index.js";
+import { registerPersonalAgentRoutes } from "../personal-agents/index.js";
 
 export {
   canReceiveGraphStreamPayload,
@@ -1784,10 +1786,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     enqueueEmbedding
   });
 
+  registerStudioStaticRoutes(app);
+
   registerBrowserApprovalRoutes(app);
   registerAuthRoutes(app, routeContext);
   registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
+  registerPersonalAgentRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,

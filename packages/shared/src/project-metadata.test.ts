@@ -3,11 +3,30 @@ import {
   deriveLocalProjectId,
   mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
+  normalizeProjectDisplayNameOverride,
+  PROJECT_DISPLAY_NAME_MAX_LENGTH,
   safeProjectMetadataForRemote,
   type ProjectMetadataV1
 } from "./project-metadata.js";
 
 describe("Project metadata helpers", () => {
+  it("trims and bounds explicit Project display-name overrides", () => {
+    expect(normalizeProjectDisplayNameOverride("  Studio name  ")).toBe(
+      "Studio name"
+    );
+    expect(() => normalizeProjectDisplayNameOverride("  ")).toThrow(
+      "Project name must not be empty."
+    );
+    expect(() =>
+      normalizeProjectDisplayNameOverride(
+        "x".repeat(PROJECT_DISPLAY_NAME_MAX_LENGTH + 1)
+      )
+    ).toThrow("Project name must be 120 characters or fewer.");
+    expect(() => normalizeProjectDisplayNameOverride("two\nlines")).toThrow(
+      "Project name cannot contain control characters."
+    );
+  });
+
   it("normalizes HTTPS Git remotes without credentials, query, or fragment", () => {
     const remote = normalizeGitRemoteUrl(
       "https://token:secret@github.com/koed-labs/koed.git?x=1#main",

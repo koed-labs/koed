@@ -295,6 +295,62 @@
       "when": 1789477046920,
       "tag": "0041_personal_session_checkpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790098166385,
+      "tag": "0042_personal_agent_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790099184126,
+      "tag": "0043_personal_agent_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790101238943,
+      "tag": "0044_personal_agent_request_fingerprints",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790101840673,
+      "tag": "0045_personal_agent_encryption_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1790107575993,
+      "tag": "0046_personal_agent_durable_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1790111250091,
+      "tag": "0047_personal_agent_role_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790417570094,
+      "tag": "0048_managed_start_cancellation",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790427490758,
+      "tag": "0049_managed_project_move",
+      "breakpoints": true
     }
   ]
 }

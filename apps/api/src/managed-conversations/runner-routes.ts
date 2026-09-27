@@ -25,6 +25,7 @@ const claimSchema = z
   .strict();
 
 const commandParamsSchema = z.object({ commandId: uuid }).strict();
+const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
 const checkpointQuerySchema = z
   .object({
@@ -118,6 +119,20 @@ const commandLeaseSchema = z
     executionId: uuid,
     leaseMs
   })
+  .strict();
+const projectMoveLeaseSchema = z
+  .object({
+    executionGeneration: z.number().int().safe().positive(),
+    claimToken: uuid,
+    runnerId: boundedRunnerId,
+    leaseMs
+  })
+  .strict();
+const projectMoveTerminalSchema = projectMoveLeaseSchema
+  .omit({ leaseMs: true })
+  .strict();
+const projectMoveCompleteSchema = projectMoveTerminalSchema
+  .extend({ destinationProjectName: z.string().trim().min(1).max(256) })
   .strict();
 
 const executionLeaseSchema = z
@@ -1012,6 +1027,94 @@ export const registerManagedConversationRunnerRoutes = (
           leaseMs: input.leaseMs
         });
       return { commands };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/project-moves/claim",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const input = claimSchema.parse(request.body);
+      const moves = await context
+        .requireRepository()
+        .claimManagedConversationProjectMoves({
+          ownerUserId: auth.userId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          runnerId: input.runnerId,
+          leaseMs: input.leaseMs,
+          limit: input.limit
+        });
+      return { moves };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/project-moves/:moveId/lease",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { moveId } = projectMoveParamsSchema.parse(request.params);
+      const input = projectMoveLeaseSchema.parse(request.body);
+      const renewed = await context
+        .requireRepository()
+        .renewManagedConversationProjectMoveLease({
+          ownerUserId: auth.userId,
+          moveId,
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          leaseMs: input.leaseMs
+        });
+      return { renewed };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/project-moves/:moveId/complete",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { moveId } = projectMoveParamsSchema.parse(request.params);
+      const input = projectMoveCompleteSchema.parse(request.body);
+      const move = await context
+        .requireRepository()
+        .completeManagedConversationProjectMove({
+          ownerUserId: auth.userId,
+          moveId,
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          destinationProjectName: input.destinationProjectName
+        });
+      return { move };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/project-moves/:moveId/fail",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { moveId } = projectMoveParamsSchema.parse(request.params);
+      const input = projectMoveTerminalSchema.parse(request.body);
+      const move = await context
+        .requireRepository()
+        .failManagedConversationProjectMove({
+          ownerUserId: auth.userId,
+          moveId,
+          executionGeneration: input.executionGeneration,
+          claimToken: input.claimToken,
+          runnerId: input.runnerId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId
+        });
+      return { move };
     }
   );
 

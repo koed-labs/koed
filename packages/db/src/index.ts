@@ -206,6 +206,8 @@ export {
   type ManagedConversationExecutionCheckpointRecord,
   type ManagedConversationExecutionDiffRecord,
   type ManagedConversationExecutionState,
+  type ManagedConversationProjectMoveRecord,
+  type ManagedConversationProjectMoveState,
   type ManagedConversationRepository,
   type ManagedConversationRuntimeBindingRecord,
   type ManagedConversationRuntimeItemKind,
@@ -313,6 +315,20 @@ export {
   createMemorySourceRepository,
   localRerankingEnabled
 } from "./repository.js";
+export {
+  createPersonalAgentRepository,
+  type CreatePersonalAgentInput,
+  type CreatePersonalAgentVersionInput,
+  type PersonalAgentDetail,
+  type PersonalAgentExecutionAttemptInput,
+  type PersonalAgentExecutionAttemptPage,
+  type PersonalAgentExecutionJobInput,
+  type PersonalAgentExecutionJobPage,
+  type PersonalAgentJobOutputReference,
+  type PersonalAgentHistory,
+  type PersonalAgentHistoryJob,
+  type PersonalAgentRepository
+} from "./personal-agent-repository.js";
 export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,

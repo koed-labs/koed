@@ -25,6 +25,8 @@ export type EncryptedFieldSourceTable =
   | "collaboration_messages"
   | "collaboration_threads"
   | "memory_replica_revisions"
+  | "personal_agent_identity_versions"
+  | "personal_agent_execution_jobs"
   | "privacy_classification_results"
   | "privacy_sanitized_source_artifacts"
   | "privacy_sanitized_source_chunks"
@@ -312,6 +314,11 @@ const backfillSources: Partial<
     columns: new Set(["tool_input", "tool_response"]),
     valueSql: jsonbValue,
     activePredicate: "invalidated_at is null"
+  },
+  personal_agent_execution_jobs: {
+    columns: new Set(["assistant_output"]),
+    valueSql: textValue,
+    activePredicate: "true"
   }
 };
 

@@ -5,6 +5,12 @@ export const shouldQuitAfterAllWindowsClosed = (
   return false;
 };
 
+export const isStudioReviewLaunch = (input: {
+  appIsPackaged: boolean;
+  argv: string[];
+}): boolean =>
+  !input.appIsPackaged && input.argv.includes("--studio-review-only");
+
 export interface DesktopActivationOutcome {
   backgroundLaunchPending: false;
   openWindow: boolean;

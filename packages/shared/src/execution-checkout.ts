@@ -50,6 +50,9 @@ export interface GitExecutionCheckoutDriver {
     checkout: ExecutionCheckoutIdentity
   ): Promise<ExecutionCheckoutIdentity>;
   remove(checkout: ExecutionCheckoutIdentity): Promise<void>;
+  removeRetainedManagedWorktree(
+    checkout: ExecutionCheckoutIdentity
+  ): Promise<void>;
 }
 
 const sha256 = (value: string): string =>
@@ -648,6 +651,79 @@ export const createGitExecutionCheckoutDriver = async (input: {
         checkout.branchRef,
         checkout.headObjectId
       ]);
+    },
+
+    async removeRetainedManagedWorktree(checkout) {
+      if (
+        checkout.vcsDriver !== "git" ||
+        checkout.ownership !== "koed_managed_worktree" ||
+        !checkout.branchRef ||
+        !checkout.headObjectId ||
+        !checkout.localRepositoryCommonDirectory ||
+        !checkout.repositoryIdentityHash
+      ) {
+        throw new Error("ExecutionCheckoutCleanupOwnershipError");
+      }
+      const commonDirectory = await realpath(
+        checkout.localRepositoryCommonDirectory
+      );
+      if (
+        sha256(`git-common-directory\0${commonDirectory}`) !==
+        checkout.repositoryIdentityHash
+      ) {
+        throw new Error("ExecutionCheckoutCleanupIdentityError");
+      }
+      const pathExists = await lstat(checkout.canonicalPath)
+        .then(() => true)
+        .catch(() => false);
+      if (pathExists) {
+        const verified = await verify(checkout);
+        if (
+          verified.ownership !== "koed_managed_worktree" ||
+          verified.canonicalPath !== checkout.canonicalPath
+        ) {
+          throw new Error("ExecutionCheckoutCleanupIdentityError");
+        }
+        await git(managedRoot, [
+          "--git-dir",
+          commonDirectory,
+          "worktree",
+          "remove",
+          "--force",
+          verified.canonicalPath
+        ]);
+      } else {
+        const attachedPath = await worktreePathForBranch(
+          managedRoot,
+          commonDirectory,
+          checkout.branchRef
+        );
+        if (attachedPath) {
+          throw new Error("ExecutionCheckoutCleanupIdentityError");
+        }
+      }
+      const branchObjectId = await git(
+        managedRoot,
+        [
+          "--git-dir",
+          commonDirectory,
+          "rev-parse",
+          "--verify",
+          `${checkout.branchRef}^{commit}`
+        ],
+        { allowFailure: true }
+      );
+      // Keep any commit created after retention as a recoverable branch ref.
+      if (branchObjectId && branchObjectId === checkout.headObjectId) {
+        await git(managedRoot, [
+          "--git-dir",
+          commonDirectory,
+          "update-ref",
+          "-d",
+          checkout.branchRef,
+          checkout.headObjectId
+        ]);
+      }
     }
   };
 };

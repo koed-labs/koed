@@ -23,6 +23,80 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("classifies pending start cancellation for local and hosted credentials", () => {
+    expect(
+      routeIdentityFor(
+        "POST",
+        "/v1/managed-conversations/{executionId}/start/cancel"
+      )
+    ).toMatchObject({
+      identity: "session_or_api_token_or_device_credential",
+      domain: "personal_memory",
+      status: "implemented"
+    });
+    expect(
+      openApiPaths["/v1/managed-conversations/{executionId}/start/cancel"]
+        ?.post
+    ).toMatchObject({
+      security: [
+        { sessionCookie: [] },
+        { bearerApiToken: [] },
+        { deviceCredential: [] }
+      ]
+    });
+  });
+
+  it("classifies prompt cancellation across local and hosted credential modes", () => {
+    expect(
+      routeIdentityFor(
+        "POST",
+        "/v1/managed-conversations/{executionId}/prompts/{commandId}/cancel"
+      )
+    ).toMatchObject({
+      identity: "session_or_api_token_or_device_credential",
+      domain: "personal_memory",
+      status: "implemented",
+      deploymentModes: [
+        "developer",
+        "local_personal",
+        "private_vps",
+        "team_self_hosted",
+        "koed_managed_cloud"
+      ]
+    });
+    expect(
+      openApiPaths[
+        "/v1/managed-conversations/{executionId}/prompts/{commandId}/cancel"
+      ]?.post
+    ).toMatchObject({
+      security: [
+        { sessionCookie: [] },
+        { bearerApiToken: [] },
+        { deviceCredential: [] }
+      ],
+      "x-koed-identity": "session_or_api_token_or_device_credential",
+      "x-koed-deployment-modes": [
+        "developer",
+        "local_personal",
+        "private_vps",
+        "team_self_hosted",
+        "koed_managed_cloud"
+      ]
+    });
+  });
+
+  it("classifies the role template catalogue as an authenticated read", () => {
+    expect(
+      implementedRouteIdentityContracts.find(
+        (contract) => contract.path === "/v1/personal-agent-role-templates"
+      )
+    ).toMatchObject({
+      method: "GET",
+      identity: "session_or_api_token",
+      domain: "personal_memory"
+    });
+  });
+
   it("has one implemented contract per method/path and exports all implemented routes through OpenAPI", () => {
     const keys = routeIdentityContracts.map(
       (contract) => `${contract.method} ${contract.path}`

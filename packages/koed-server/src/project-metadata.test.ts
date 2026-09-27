@@ -214,6 +214,48 @@ describe("Project metadata discovery", () => {
     );
   });
 
+  it("persists an explicit display name and preserves it on rediscovery", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
+    const repo = path.join(directory, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, "package.json"),
+      JSON.stringify({ name: "package-name" })
+    );
+    const paths = pathsFor(directory);
+    const deps = { execFile: execFileFor(repo), randomId: () => "device-salt" };
+
+    const first = await discoverProjectMetadata(
+      paths,
+      { cwd: repo, displayNameOverride: "  Studio Project  " },
+      deps
+    );
+    const rediscovered = await discoverProjectMetadata(
+      paths,
+      { cwd: repo },
+      deps
+    );
+
+    expect(first.project).toMatchObject({
+      displayName: "Studio Project",
+      displayNameOverride: "Studio Project"
+    });
+    expect(rediscovered.project).toMatchObject({
+      localProjectId: first.project?.localProjectId,
+      displayName: "Studio Project",
+      displayNameOverride: "Studio Project"
+    });
+  });
+
+  it("rejects invalid explicit display names before discovery", async () => {
+    await expect(
+      discoverProjectMetadata(pathsFor("/tmp/unused"), {
+        cwd: "/tmp/unused",
+        displayNameOverride: "\n"
+      })
+    ).rejects.toThrow("Project name must not be empty.");
+  });
+
   it("groups worktrees by a device-local Git common-directory signal", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
     const main = path.join(directory, "main");

@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+/*
+  Koed design tokens.
+  Every color used in components should come from one of these tokens
+  (bg-*, text-*, border-*, ring-*) rather than a literal Tailwind color
+  like zinc-800 or blue-500. That's what lets dark/light mode, and any
+  future rebrand, work by editing this file alone.
+
+  Tiers:
+    background        page canvas (deepest layer)
+    sidebar            outermost chrome (nav rail, etc.)
+    surface            elevated panel / card
+    surface-hover      hover state of a surface
+    surface-active     pressed / selected state of a surface
+    border             default hairline border
+    border-strong      emphasized border (inputs on focus-adjacent, dividers that need to read)
+    foreground         primary text
+    foreground-secondary  secondary text, still fairly prominent (subheadings, labels)
+    muted              tertiary text (metadata, timestamps)
+    subtle             quaternary text (placeholders, de-emphasized)
+    faint              least emphasis (disabled-ish, decorative icons)
+    chip / chip-foreground  solid "inverted" treatment for primary buttons & selected pills
+    accent / accent-hover   the one brand accent - links, focus, selection
+    success / warning / danger / merged  semantic status colors (PR state, alerts)
+    team-1..team-6     categorical "identity" colors - hashed onto a team/project so
+                       the same one always renders the same color. Never carries a
+                       status meaning (that's what success/warning/danger/merged are
+                       for) - purely "same color = same team", for fast pattern-matching.
+*/
+
+:root {
+  --background: #000000;
+  --sidebar: #09090b;
+  --surface: #18181b;
+  --surface-hover: #27272a;
+  --surface-active: #3f3f46;
+
+  --border: #27272a;
+  --border-strong: #52525b;
+
+  --foreground: #f4f4f5;
+  --foreground-secondary: #d4d4d8;
+  --muted: #a1a1aa;
+  --subtle: #71717a;
+  --faint: #52525b;
+
+  --chip: #f4f4f5;
+  --chip-foreground: #18181b;
+
+  --accent: #5e6ad2;
+  --accent-hover: #6b78e3;
+
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --merged: #a855f7;
+
+  --team-1: #2dd4bf;
+  --team-2: #60a5fa;
+  --team-3: #f472b6;
+  --team-4: #22d3ee;
+  --team-5: #fb923c;
+  --team-6: #a3e635;
+
+  --wallpaper-image: url("/chat-wallpaper-dark.png");
+  --wallpaper-opacity: 1;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-faint: var(--faint);
+
+  --color-chip: var(--chip);
+  --color-chip-foreground: var(--chip-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-merged: var(--merged);
+
+  --color-team-1: var(--team-1);
+  --color-team-2: var(--team-2);
+  --color-team-3: var(--team-3);
+  --color-team-4: var(--team-4);
+  --color-team-5: var(--team-5);
+  --color-team-6: var(--team-6);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+
+  --background: #fafafa;
+  --sidebar: #f4f4f5;
+  --surface: #ffffff;
+  --surface-hover: #f4f4f5;
+  --surface-active: #e4e4e7;
+
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+
+  --foreground: #18181b;
+  --foreground-secondary: #3f3f46;
+  --muted: #71717a;
+  --subtle: #a1a1aa;
+  --faint: #d4d4d8;
+
+  --chip: #18181b;
+  --chip-foreground: #fafafa;
+
+  --accent: #5e6ad2;
+  --accent-hover: #4c56b8;
+
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --merged: #9333ea;
+
+  --team-1: #0d9488;
+  --team-2: #2563eb;
+  --team-3: #db2777;
+  --team-4: #0891b2;
+  --team-5: #ea580c;
+  --team-6: #65a30d;
+
+  --wallpaper-image: url("/chat-wallpaper-light.png");
+  --wallpaper-opacity: 1;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar for Linear feel */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}

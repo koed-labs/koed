@@ -6,8 +6,24 @@ import {
 } from "@koed/shared/ai-client-contract";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, relative, resolve, sep } from "node:path";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  writeFile
+} from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep
+} from "node:path";
 
 import {
   DEVELOPMENT_WORKSPACE_SNAPSHOT_CHUNK_BYTES,
@@ -16,6 +32,7 @@ import {
   type ManagedConversationExecutionCheckpointRecord,
   type ManagedConversationExecutionRecord,
   type ManagedConversationForkRecord,
+  type ManagedConversationProjectMoveRecord,
   type ManagedConversationRepository,
   type ManagedConversationRuntimeBindingRecord,
   type ManagedConversationRuntimeItemKind,
@@ -35,6 +52,8 @@ import {
   destroyManagedClaudeHome,
   environmentForLocalAiClientInstance,
   forkClaudeTranscript,
+  formatPersonalAgentManagedPrompt,
+  managedPromptPersonalAgentContext,
   MemoryApiClient,
   MemoryApiError,
   prepareManagedClaudeHome,
@@ -51,6 +70,10 @@ import {
   type CodexThreadTokenUsage
 } from "@koed/mcp-server";
 import {
+  buildCodexTranscriptConversationItems,
+  parseTranscriptJournalBytes
+} from "@koed/mcp-server/codex-transcript-parser";
+import {
   canonicalManagedConversationHandoffManifest,
   canonicalManagedConversationForkManifest,
   createDeviceBoundSourceSigner,
@@ -63,6 +86,7 @@ import {
   managedConversationTargetReadinessEvidenceDigest,
   managedConversationTargetReadinessIsFresh,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
+  personalAgentExecutionContextSchema,
   verifyManagedConversationForkManifest,
   verifyManagedConversationHandoffCertificate,
   verifyManagedConversationHandoffSourceAttestation,
@@ -82,6 +106,8 @@ import {
 } from "./development-workspace-snapshot.js";
 import { discoverManagedConversationRuntime } from "./managed-conversation-runtime-discovery.js";
 import { captureManagedPiTurn } from "./managed-pi-runtime.js";
+import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+import { RetainedWorkspaceCatalog } from "@koed/koed-server/retained-workspace-catalog";
 import {
   captureExecutionCheckpoint,
   diffExecutionCheckpoints,
@@ -114,8 +140,123 @@ const maximumSourceBytes = 512 * 1024 * 1024;
 const targetReadinessTtlMs = 5 * 60_000;
 const maximumPromptFileContextBytes = 4 * 1024 * 1024;
 
+/** Avoid Git diffs across Project Moves that changed the repository. */
+export const diffExecutionCheckpointsForCheckout = (input: {
+  checkout: ExecutionCheckoutIdentity;
+  from: ExecutionCheckpointCapture;
+  to: ExecutionCheckpointCapture;
+}) => {
+  const matchesRepository = (capture: ExecutionCheckpointCapture): boolean =>
+    capture.vcsDriver === input.checkout.vcsDriver &&
+    capture.repositoryIdentityHash === input.checkout.repositoryIdentityHash;
+  if (!matchesRepository(input.from) || !matchesRepository(input.to)) {
+    return Promise.resolve(null);
+  }
+  return diffExecutionCheckpoints(input);
+};
+
 const sha256 = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
+
+export const gitWorkingTreeEditState = (
+  path: string
+): "clean" | "changed" | "unknown" => {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.toUpperCase().startsWith("GIT_")
+    )
+  );
+  const result = spawnSync(
+    "git",
+    [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignore-submodules=none"
+    ],
+    {
+      cwd: path,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+      maxBuffer: 2 * 1024 * 1024
+    }
+  );
+  if (
+    result.error ||
+    result.status !== 0 ||
+    typeof result.stdout !== "string"
+  ) {
+    return "unknown";
+  }
+  return result.stdout.length === 0 ? "clean" : "changed";
+};
+
+const registeredLocalProject = async (
+  koedHome: string,
+  projectId: string
+): Promise<{ id: string; name: string; path: string } | null> => {
+  if (!/^lp_[0-9a-f]{32}$/iu.test(projectId)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      await readFile(resolve(koedHome, "config", "projects.json"), "utf8")
+    );
+  } catch {
+    throw new Error("ManagedConversationProjectCatalogUnavailableError");
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (value as Record<string, unknown>).schemaVersion !== 3 ||
+    !Array.isArray((value as Record<string, unknown>).projects)
+  ) {
+    throw new Error("ManagedConversationProjectCatalogInvalidError");
+  }
+  const projects = (value as { projects: unknown[] }).projects;
+  const matches = projects.filter(
+    (candidate) =>
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      (candidate as Record<string, unknown>).localProjectId === projectId
+  );
+  if (matches.length === 0) return null;
+  if (matches.length !== 1) {
+    throw new Error("ManagedConversationProjectCatalogAmbiguousError");
+  }
+  const project = matches[0] as Record<string, unknown>;
+  const path = project.path;
+  if (
+    typeof project.displayName !== "string" ||
+    !project.displayName.trim() ||
+    project.displayName.length > 256 ||
+    !path ||
+    typeof path !== "object" ||
+    Array.isArray(path)
+  ) {
+    throw new Error("ManagedConversationProjectCatalogInvalidError");
+  }
+  const metadataPath = path as Record<string, unknown>;
+  const cwd = metadataPath.cwd;
+  const projectRoot = metadataPath.projectRoot;
+  const localPath = projectRoot === null ? cwd : projectRoot;
+  if (
+    typeof cwd !== "string" ||
+    !isAbsolute(cwd) ||
+    cwd.includes("\0") ||
+    resolve(cwd) !== cwd ||
+    (projectRoot !== null &&
+      (typeof projectRoot !== "string" || !isAbsolute(projectRoot))) ||
+    typeof localPath !== "string" ||
+    localPath.includes("\0") ||
+    resolve(localPath) !== localPath
+  ) {
+    throw new Error("ManagedConversationProjectCatalogInvalidError");
+  }
+  return { id: projectId, name: project.displayName.trim(), path: localPath };
+};
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
@@ -342,6 +483,72 @@ export const managedClaudeRuntimeHome = (
   override?: string
 ): string | undefined => override ?? binding.managedHome ?? undefined;
 
+export type ManagedConversationTransientOutputBuffer = {
+  kind: "assistant" | "other";
+  text: string;
+  itemId?: string;
+};
+
+export const managedConversationAssistantOutputForTurn = (
+  entries: Iterable<
+    readonly [string, ManagedConversationTransientOutputBuffer]
+  >,
+  executionId: string,
+  turnId: string
+): Array<readonly [string, ManagedConversationTransientOutputBuffer]> => {
+  const prefix = `${executionId}:${turnId}:`;
+  return [...entries].filter(
+    ([key, buffer]) => key.startsWith(prefix) && buffer.kind === "assistant"
+  );
+};
+
+export const codexAssistantFinalTextForTurn = (input: {
+  bytes: Uint8Array;
+  turnId: string;
+  sessionId: string;
+  providerThreadId: string;
+}): { text: string; providerItemId?: string } | null => {
+  const parsed = parseTranscriptJournalBytes({
+    bytes: input.bytes,
+    absoluteStartOffset: 0,
+    lineIndexOffset: 0
+  });
+  const items = buildCodexTranscriptConversationItems({
+    records: parsed.records,
+    sessionId: input.sessionId,
+    sourceSessionId: input.providerThreadId,
+    sourceTransport: "transcript",
+    threadKind: "conversation",
+    preferStableResponseItems: true
+  });
+  const answers = items
+    .filter(
+      (item) =>
+        item.externalTurnId === input.turnId &&
+        item.sourceRecordType === "response_item" &&
+        item.sourceEventType === "message" &&
+        item.metadata.phase === "final_answer" &&
+        typeof item.rawText === "string" &&
+        item.rawText.trim().length > 0
+    )
+    .sort(
+      (left, right) =>
+        (left.sourceLineNumber ?? 0) - (right.sourceLineNumber ?? 0)
+    );
+  const text = answers
+    .map((item) => item.rawText!.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!text) return null;
+  return {
+    text,
+    ...(typeof answers.at(-1)?.externalItemId === "string"
+      ? { providerItemId: answers.at(-1)!.externalItemId! }
+      : {})
+  };
+};
+
 export const managedCodexRuntimeEnvironment = (input: {
   execution: Pick<
     ManagedConversationExecutionRecord,
@@ -462,6 +669,16 @@ const terminalExecutionCheckoutPreparationErrors = new Set([
   "ExecutionCheckoutSourceDirtyError"
 ]);
 
+const terminalRunnerStartPreparationErrors = new Set([
+  ...terminalExecutionCheckoutPreparationErrors,
+  "ManagedConversationIndependentRuntimeBindingUnavailableError",
+  "ManagedConversationExecutionCheckoutUnavailableError",
+  "ManagedConversationProjectUnavailableError",
+  "ManagedConversationProviderUnavailableError",
+  "ManagedConversationSettingsUnavailableError",
+  "ManagedConversationUnsupportedAiClientError"
+]);
+
 const terminalExecutionCheckoutCleanupErrors = new Set([
   "ExecutionCheckpointRefIdentityChangedError",
   "ExecutionCheckoutCleanupChangedError",
@@ -578,6 +795,12 @@ export const createManagedConversationService = (options: {
     "managed-claude-capture.json"
   );
   const claudeCaptureState = managedClaudeCaptureState(claudeCaptureStatePath);
+  const projectMoveJournal = new ProjectMoveLocalJournal({
+    koedHome: options.koedHome
+  });
+  const retainedWorkspaceCatalog = new RetainedWorkspaceCatalog({
+    koedHome: options.koedHome
+  });
   const turnTimeoutMs = Math.max(
     options.turnTimeoutMs ?? defaultTurnTimeoutMs,
     1_000
@@ -597,6 +820,12 @@ export const createManagedConversationService = (options: {
   let sourceWakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let sourceWakeReconnectAttempt = 0;
   let startupRecovery: Promise<void> | null = null;
+  let startupRecoveryComplete = false;
+  let deferredStartDiscovery: Promise<void> | null = null;
+  let deferredStartDiscoveryRetryTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  let deferredStartDiscoveryRetryAttempt = 0;
+  const deferredStartPreparations = new Map<string, Promise<boolean>>();
   let remoteWakeAbort: AbortController | null = null;
   let wakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let wakeReconnectAttempt = 0;
@@ -610,6 +839,7 @@ export const createManagedConversationService = (options: {
   const transientOutputs = new Map<
     string,
     {
+      kind: "assistant";
       executionId: string;
       executionGeneration: number;
       providerRequestId: string;
@@ -621,6 +851,7 @@ export const createManagedConversationService = (options: {
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
+  const personalAgentAttemptsByCommand = new Map<string, string>();
   const memoryClient = new MemoryApiClient({
     apiUrl: options.apiUrl,
     apiToken: options.apiToken,
@@ -969,12 +1200,12 @@ export const createManagedConversationService = (options: {
       input.command.id,
       "terminal"
     );
-    const turnDiff = await diffExecutionCheckpoints({
+    const turnDiff = await diffExecutionCheckpointsForCheckout({
       checkout,
       from: captureFromRecord(baseline),
       to: capture
     });
-    const fullDiff = await diffExecutionCheckpoints({
+    const fullDiff = await diffExecutionCheckpointsForCheckout({
       checkout,
       from: captureFromRecord(firstBaseline),
       to: capture
@@ -1081,26 +1312,12 @@ export const createManagedConversationService = (options: {
     };
   };
 
-  const bindExecutionCheckout = async (
+  const bindSelectedExecutionCheckout = async (
     execution: ManagedConversationExecutionRecord,
-    binding: ManagedConversationRuntimeBindingRecord
+    sourceProjectPath: string,
+    checkout: ExecutionCheckoutIdentity,
+    operationId: string
   ): Promise<ManagedConversationRuntimeBindingRecord> => {
-    const driver = await executionCheckoutDriver;
-    if (binding.checkoutLifecycle === "ready") {
-      await driver.verify(checkoutFromBinding(binding));
-      return binding;
-    }
-    if (binding.checkoutLifecycle !== "pending") {
-      throw new Error("ManagedConversationExecutionCheckoutUnavailableError");
-    }
-    const operationId = checkoutOperationId(
-      execution.id,
-      execution.executionGeneration
-    );
-    const checkout = await driver.select({
-      operationId,
-      path: binding.sourceProjectPath
-    });
     return options.repository.bindManagedConversationExecutionCheckout(
       { userId: execution.ownerUserId },
       {
@@ -1108,7 +1325,7 @@ export const createManagedConversationService = (options: {
         deploymentId: options.deploymentId,
         deviceId: options.deviceId,
         executionGeneration: execution.executionGeneration,
-        sourceProjectPath: binding.sourceProjectPath,
+        sourceProjectPath,
         projectPath: checkout.canonicalPath,
         checkoutId: checkout.checkoutId,
         checkoutKind: checkout.ownership,
@@ -1138,6 +1355,34 @@ export const createManagedConversationService = (options: {
           : {}),
         creationOperationId: operationId
       }
+    );
+  };
+
+  const bindExecutionCheckout = async (
+    execution: ManagedConversationExecutionRecord,
+    binding: ManagedConversationRuntimeBindingRecord
+  ): Promise<ManagedConversationRuntimeBindingRecord> => {
+    const driver = await executionCheckoutDriver;
+    if (binding.checkoutLifecycle === "ready") {
+      await driver.verify(checkoutFromBinding(binding));
+      return binding;
+    }
+    if (binding.checkoutLifecycle !== "pending") {
+      throw new Error("ManagedConversationExecutionCheckoutUnavailableError");
+    }
+    const operationId = checkoutOperationId(
+      execution.id,
+      execution.executionGeneration
+    );
+    const checkout = await driver.select({
+      operationId,
+      path: binding.sourceProjectPath
+    });
+    return bindSelectedExecutionCheckout(
+      execution,
+      binding.sourceProjectPath,
+      checkout,
+      operationId
     );
   };
 
@@ -1275,6 +1520,265 @@ export const createManagedConversationService = (options: {
     await flushTransientOutput(key).catch(() => undefined);
   };
 
+  type PersonalAgentCommandContext = Pick<
+    ClaimedManagedConversationCommand,
+    | "id"
+    | "ownerUserId"
+    | "executionId"
+    | "executionGeneration"
+    | "commandKind"
+    | "payload"
+    | "execution"
+  >;
+
+  const personalAgentJobFor = (command: PersonalAgentCommandContext) => {
+    const value = command.payload?.personalAgent;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return null;
+    const metadata = value as Record<string, unknown>;
+    if (
+      typeof metadata.jobId !== "string" ||
+      typeof metadata.agentId !== "string" ||
+      typeof metadata.agentVersion !== "number"
+    ) {
+      throw managedConversationError("ManagedConversationPayloadError");
+    }
+    const contextValue = managedPromptPersonalAgentContext(command.payload);
+    const context = personalAgentExecutionContextSchema.safeParse(contextValue);
+    if (
+      !context.success ||
+      context.data.identity.agentId !== metadata.agentId ||
+      context.data.identity.version !== metadata.agentVersion
+    ) {
+      throw managedConversationError("ManagedConversationPayloadError");
+    }
+    return {
+      jobId: metadata.jobId,
+      agentId: metadata.agentId,
+      agentVersion: metadata.agentVersion
+    };
+  };
+
+  const runningPersonalAgentAttempt = async (
+    command: PersonalAgentCommandContext,
+    createIfMissing = true
+  ): Promise<{ jobId: string; attemptId: string } | null> => {
+    const personalAgent = personalAgentJobFor(command);
+    if (!personalAgent) return null;
+    const existing = personalAgentAttemptsByCommand.get(command.id);
+    if (existing) return { jobId: personalAgent.jobId, attemptId: existing };
+    const actor = { userId: command.ownerUserId };
+    const job = await options.repository.getPersonalAgentExecutionJob(
+      actor,
+      personalAgent.jobId
+    );
+    if (!job || job.commandId !== command.id) {
+      throw managedConversationError("ManagedConversationPayloadError");
+    }
+    if (job.lastAttemptId) {
+      const attempts =
+        await options.repository.listPersonalAgentExecutionAttempts(actor, {
+          jobId: job.id,
+          limit: 1
+        });
+      const latest = attempts.attempts[0];
+      if (latest?.id === job.lastAttemptId && latest.status === "running") {
+        personalAgentAttemptsByCommand.set(command.id, latest.id);
+        return { jobId: job.id, attemptId: latest.id };
+      }
+    }
+    if (!createIfMissing) return null;
+    const attempt =
+      await options.repository.createPersonalAgentExecutionAttempt(actor, {
+        jobId: job.id,
+        attemptNumber: job.counters.attemptsStarted + 1,
+        attribution: {
+          kind: "agent",
+          agentId: personalAgent.agentId,
+          agentVersion: personalAgent.agentVersion
+        },
+        provider: command.execution.provider,
+        model: command.execution.model,
+        aiClientInstanceId: command.execution.aiClientInstanceId,
+        reasoningEffort: command.execution.reasoningEffort,
+        permissionMode: command.execution.permissionMode,
+        managedExecutionId: command.executionId,
+        managedExecutionGeneration: command.executionGeneration,
+        status: "running",
+        outcome: null,
+        startedAt: new Date().toISOString(),
+        completedAt: null
+      });
+    personalAgentAttemptsByCommand.set(command.id, attempt.id);
+    return { jobId: job.id, attemptId: attempt.id };
+  };
+
+  const personalAgentTranscriptOutputForTurn = async (
+    command: PersonalAgentCommandContext,
+    turnId: string
+  ): Promise<{ text: string; providerItemId?: string } | null> => {
+    if (command.execution.provider !== "codex") return null;
+    const binding =
+      await options.repository.getManagedConversationRuntimeBinding(
+        { userId: command.ownerUserId },
+        command.executionId
+      );
+    if (
+      !binding?.localSessionId ||
+      !binding.transcriptPath ||
+      !binding.providerThreadId ||
+      !command.execution.providerThreadId ||
+      binding.providerThreadId !== command.execution.providerThreadId
+    ) {
+      throw managedConversationError(
+        "PersonalAgentTranscriptOutputRecoveryPendingError"
+      );
+    }
+    const sourceSession = await options.repository.getCapturedSession(
+      { userId: command.ownerUserId },
+      binding.localSessionId
+    );
+    if (
+      !sourceSession ||
+      sourceSession.logicalSessionId !== command.execution.logicalSessionId ||
+      sourceSession.externalSessionId !== command.execution.providerThreadId
+    ) {
+      throw managedConversationError(
+        "PersonalAgentTranscriptOutputIdentityError"
+      );
+    }
+    const transcriptStat = await stat(binding.transcriptPath);
+    if (!transcriptStat.isFile() || transcriptStat.size > 64 * 1024 * 1024) {
+      throw managedConversationError(
+        "PersonalAgentTranscriptOutputCapacityError"
+      );
+    }
+    const bytes = await readFile(binding.transcriptPath);
+    return codexAssistantFinalTextForTurn({
+      bytes,
+      turnId,
+      sessionId: binding.localSessionId,
+      providerThreadId: binding.providerThreadId
+    });
+  };
+
+  const persistPersonalAgentTranscriptOutput = async (input: {
+    command: PersonalAgentCommandContext;
+    jobId: string;
+    attemptId: string;
+    turnId: string;
+    output: { text: string; providerItemId?: string };
+  }): Promise<void> => {
+    let outputText = input.output.text;
+    while (Buffer.byteLength(outputText, "utf8") > 65_536) {
+      outputText = outputText.slice(0, Math.max(0, outputText.length - 256));
+    }
+    const item = await options.repository.putManagedConversationRuntimeItem(
+      { userId: input.command.ownerUserId },
+      {
+        executionId: input.command.executionId,
+        executionGeneration: input.command.executionGeneration,
+        providerRequestId: `transient:${input.turnId}:assistant`,
+        providerTurnId: input.turnId,
+        ...(input.output.providerItemId
+          ? { providerItemId: input.output.providerItemId }
+          : {}),
+        itemKind: "transient_output",
+        payload: { text: outputText }
+      }
+    );
+    await options.repository.recordPersonalAgentTurnOutput({
+      actor: { userId: input.command.ownerUserId },
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      outputText,
+      outputReference: { runtimeItemIds: [item.id] },
+      eventId: `output:${input.attemptId}`
+    });
+  };
+
+  const finishPersonalAgentAttempt = async (
+    command: PersonalAgentCommandContext,
+    outcome: "succeeded" | "failed" | "canceled" | "interrupted",
+    turnId?: string
+  ): Promise<void> => {
+    const personalAgent = personalAgentJobFor(command);
+    if (!personalAgent) return;
+    const actor = { userId: command.ownerUserId };
+    let active = await runningPersonalAgentAttempt(command, false);
+    if (outcome === "succeeded" && turnId) {
+      const outputEntries = managedConversationAssistantOutputForTurn(
+        transientOutputs.entries(),
+        command.executionId,
+        turnId
+      );
+      await Promise.all(
+        outputEntries.map(([key]) => flushCompletedTransientOutput(key))
+      );
+      const outputText = outputEntries
+        .map(([, transient]) => transient.text.trim())
+        .filter(Boolean)
+        .join("\n");
+      const runtimeItemIds = outputEntries
+        .map(([, transient]) => transient.itemId)
+        .filter((id): id is string => Boolean(id));
+      if (outputText && runtimeItemIds.length > 0) {
+        active ??= await runningPersonalAgentAttempt(command);
+        if (!active) {
+          throw managedConversationError(
+            "PersonalAgentAttemptRecoveryPendingError"
+          );
+        }
+        let boundedText = outputText;
+        while (Buffer.byteLength(boundedText, "utf8") > 65_536) {
+          boundedText = boundedText.slice(
+            0,
+            Math.max(0, boundedText.length - 256)
+          );
+        }
+        await options.repository.recordPersonalAgentTurnOutput({
+          actor,
+          jobId: active.jobId,
+          attemptId: active.attemptId,
+          outputText: boundedText,
+          outputReference: { runtimeItemIds }
+        });
+      } else {
+        const output = await personalAgentTranscriptOutputForTurn(
+          command,
+          turnId
+        );
+        if (!output) {
+          throw managedConversationError(
+            "PersonalAgentTurnOutputRecoveryPendingError"
+          );
+        }
+        active ??= await runningPersonalAgentAttempt(command);
+        if (!active) {
+          throw managedConversationError(
+            "PersonalAgentAttemptRecoveryPendingError"
+          );
+        }
+        await persistPersonalAgentTranscriptOutput({
+          command,
+          jobId: active.jobId,
+          attemptId: active.attemptId,
+          turnId,
+          output
+        });
+      }
+    }
+    if (!active) return;
+    await options.repository.completePersonalAgentExecutionAttempt({
+      actor,
+      jobId: active.jobId,
+      attemptId: active.attemptId,
+      outcome,
+      eventId: `command:${command.id}:attempt:${active.attemptId}:${outcome}`
+    });
+    personalAgentAttemptsByCommand.delete(command.id);
+  };
+
   const releaseTransientOutputBuffers = (
     executionId: string,
     providerTurnId: string | null
@@ -1310,6 +1814,7 @@ export const createManagedConversationService = (options: {
   ): void => {
     const key = `${execution.id}:${turnId}:assistant`;
     const existing = transientOutputs.get(key) ?? {
+      kind: "assistant" as const,
       executionId: execution.id,
       executionGeneration: execution.executionGeneration,
       providerRequestId: `transient:${turnId}:assistant`,
@@ -1476,7 +1981,7 @@ export const createManagedConversationService = (options: {
           },
           "managed Conversation startup stage"
         ),
-      projectId: execution.projectId,
+      ...(execution.projectId ? { projectId: execution.projectId } : {}),
       appServer: {
         appServerBinary:
           runtimeEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??
@@ -1568,6 +2073,7 @@ export const createManagedConversationService = (options: {
         onAgentMessageDelta: ({ turnId, itemId, delta }) => {
           const key = `${execution.id}:${turnId}:${itemId ?? "assistant"}`;
           const existing = transientOutputs.get(key) ?? {
+            kind: "assistant" as const,
             executionId: execution.id,
             executionGeneration: execution.executionGeneration,
             providerRequestId: `transient:${turnId}:${itemId ?? "assistant"}`,
@@ -2037,15 +2543,19 @@ export const createManagedConversationService = (options: {
     }
     let projectPath = projectPathOverride?.trim();
     if (!projectPath) {
-      const projects = await options.repository.listLcmGraphThreads(actor, {
-        projectId: execution.projectId,
-        limit: 1
-      });
-      projectPath =
-        projects.find(
-          (candidate) =>
-            candidate.id === execution.projectId && candidate.path?.trim()
-        )?.path ?? undefined;
+      if (!execution.projectId) {
+        projectPath = await prepareIndependentExecutionPath(execution.id);
+      } else {
+        const projects = await options.repository.listLcmGraphThreads(actor, {
+          projectId: execution.projectId,
+          limit: 1
+        });
+        projectPath =
+          projects.find(
+            (candidate) =>
+              candidate.id === execution.projectId && candidate.path?.trim()
+          )?.path ?? undefined;
+      }
     }
     if (!projectPath) {
       throw new Error("ManagedConversationProjectUnavailableError");
@@ -2059,6 +2569,39 @@ export const createManagedConversationService = (options: {
         projectPath
       });
     return bindExecutionCheckout(execution, binding);
+  };
+
+  const prepareIndependentExecutionPath = async (
+    executionId: string
+  ): Promise<string> => {
+    await mkdir(options.koedHome, { mode: 0o700, recursive: true });
+    const koedHome = await realpath(options.koedHome);
+    const independentRoot = resolve(
+      koedHome,
+      "managed-conversations",
+      "independent"
+    );
+    await mkdir(independentRoot, { mode: 0o700, recursive: true });
+    const rootStat = await lstat(independentRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error("ManagedConversationIndependentPathUnavailableError");
+    }
+    if ((await realpath(independentRoot)) !== independentRoot) {
+      throw new Error("ManagedConversationIndependentPathUnavailableError");
+    }
+    await chmod(independentRoot, 0o700);
+
+    const executionPath = resolve(independentRoot, executionId);
+    await mkdir(executionPath, { mode: 0o700, recursive: true });
+    const executionStat = await lstat(executionPath);
+    if (!executionStat.isDirectory() || executionStat.isSymbolicLink()) {
+      throw new Error("ManagedConversationIndependentPathUnavailableError");
+    }
+    if ((await realpath(executionPath)) !== executionPath) {
+      throw new Error("ManagedConversationIndependentPathUnavailableError");
+    }
+    await chmod(executionPath, 0o700);
+    return executionPath;
   };
 
   const promptWithFileMentions = async (
@@ -2216,20 +2759,26 @@ export const createManagedConversationService = (options: {
             { userId: execution.ownerUserId },
             {
               logicalSessionId: execution.logicalSessionId,
-              projectId: execution.projectId,
+              ...(execution.projectId
+                ? { projectId: execution.projectId }
+                : {}),
               externalSessionId: execution.providerThreadId,
               sourceRuntime: "codex",
               captureMethod: "api",
               model: execution.model,
               cwd: binding.projectPath,
               idempotencyKey: `managed-codex-session:${execution.providerThreadId}`,
-              detectedProjects: [
-                {
-                  id: execution.projectId,
-                  name: basename(binding.projectPath),
-                  path: binding.projectPath
-                }
-              ],
+              ...(execution.projectId
+                ? {
+                    detectedProjects: [
+                      {
+                        id: execution.projectId,
+                        name: basename(binding.projectPath),
+                        path: binding.projectPath
+                      }
+                    ]
+                  }
+                : {}),
               metadata: {
                 managedConversation: true,
                 externalThreadId: execution.providerThreadId,
@@ -2286,6 +2835,319 @@ export const createManagedConversationService = (options: {
       });
   };
 
+  const prepareDiscoveredRunnerStartOnce = async (
+    discovered: ManagedConversationExecutionRecord
+  ): Promise<boolean> => {
+    if (
+      discovered.state !== "starting" ||
+      discovered.runnerDeploymentId !== options.deploymentId ||
+      discovered.runnerDeviceId !== options.deviceId
+    ) {
+      return false;
+    }
+
+    try {
+      const execution =
+        await options.repository.getManagedConversationExecution(
+          { userId: discovered.ownerUserId },
+          discovered.id
+        );
+      if (
+        !execution ||
+        execution.ownerUserId !== discovered.ownerUserId ||
+        execution.state !== "starting" ||
+        execution.executionGeneration !== discovered.executionGeneration ||
+        execution.runnerDeploymentId !== options.deploymentId ||
+        execution.runnerDeviceId !== options.deviceId
+      ) {
+        return false;
+      }
+
+      const actor = { userId: execution.ownerUserId };
+      const binding =
+        await options.repository.getManagedConversationRuntimeBinding(
+          actor,
+          execution.id
+        );
+      // An existing local binding is prepared by the established pending-binding
+      // path. This branch only admits deferred starts that have no local row.
+      if (binding) return false;
+
+      assertManagedConversationExecutionOwner(execution);
+      clientConfigurationForOwner(
+        execution.provider,
+        execution.aiClientInstanceId
+      );
+      await assertManagedConversationTurnSettings(
+        options.repository,
+        execution
+      );
+
+      const preparedBinding = await runtimeBindingFor(
+        execution,
+        execution.ownerUserId
+      );
+      if (preparedBinding.checkoutLifecycle !== "ready") {
+        throw managedConversationError(
+          "ManagedConversationExecutionCheckoutUnavailableError"
+        );
+      }
+      const beforeReady =
+        await options.repository.getManagedConversationExecution(
+          actor,
+          execution.id
+        );
+      if (
+        !beforeReady ||
+        beforeReady.ownerUserId !== execution.ownerUserId ||
+        beforeReady.state !== "starting" ||
+        beforeReady.executionGeneration !== execution.executionGeneration ||
+        beforeReady.runnerDeploymentId !== options.deploymentId ||
+        beforeReady.runnerDeviceId !== options.deviceId
+      ) {
+        return false;
+      }
+      if (
+        !(await options.repository.releaseManagedConversationStartForRuntimeBinding(
+          {
+            ownerUserId: execution.ownerUserId,
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId
+          }
+        ))
+      ) {
+        throw managedConversationError("ExecutionCheckoutReleaseConflictError");
+      }
+      if (
+        !(await options.repository.acknowledgeManagedConversationRuntimeBinding(
+          {
+            ownerUserId: execution.ownerUserId,
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId
+          }
+        ))
+      ) {
+        throw managedConversationError(
+          "ExecutionCheckoutAcknowledgementConflictError"
+        );
+      }
+      return false;
+    } catch (error) {
+      const name = errorCode(error);
+      if (terminalRunnerStartPreparationErrors.has(name)) {
+        const failed = await options.repository
+          .failManagedConversationStartForRuntimeBinding({
+            ownerUserId: discovered.ownerUserId,
+            executionId: discovered.id,
+            executionGeneration: discovered.executionGeneration,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId,
+            errorCode: name
+          })
+          .catch(() => false);
+        if (failed) {
+          await options.repository
+            .clearManagedConversationRuntimeBinding(
+              { userId: discovered.ownerUserId },
+              discovered.id,
+              {
+                executionGeneration: discovered.executionGeneration,
+                deploymentId: options.deploymentId,
+                deviceId: options.deviceId
+              }
+            )
+            .catch(() => false);
+          options.logger.warn(
+            {
+              event: {
+                name: "worker.managed_conversation.deferred_start_rejected",
+                category: "managed_conversation"
+              },
+              execution_id: discovered.id,
+              error_name: name
+            },
+            "managed Conversation deferred start failed local readiness"
+          );
+          return false;
+        }
+      }
+      options.logger.warn(
+        {
+          event: {
+            name: "worker.managed_conversation.deferred_start_deferred",
+            category: "managed_conversation"
+          },
+          execution_id: discovered.id,
+          error_name: name
+        },
+        "managed Conversation deferred start is waiting for local readiness"
+      );
+      return true;
+    }
+  };
+
+  const prepareDiscoveredRunnerStart = (
+    execution: ManagedConversationExecutionRecord
+  ): Promise<boolean> => {
+    const key = `${execution.id}:${execution.executionGeneration}`;
+    const existing = deferredStartPreparations.get(key);
+    if (existing) return existing;
+    let preparation: Promise<boolean>;
+    preparation = prepareDiscoveredRunnerStartOnce(execution).finally(() => {
+      if (deferredStartPreparations.get(key) === preparation) {
+        deferredStartPreparations.delete(key);
+      }
+    });
+    deferredStartPreparations.set(key, preparation);
+    return preparation;
+  };
+
+  const discoverDeferredRunnerStarts = async (): Promise<void> => {
+    const executions =
+      await options.repository.listManagedConversationExecutionsForRunner({
+        ownerUserId: options.localOwnerUserId,
+        deploymentId: options.deploymentId,
+        deviceId: options.deviceId,
+        limit: 500
+      });
+    let discoveryDeferred = false;
+    for (const execution of executions) {
+      if (stopped) return;
+      if (execution.state !== "starting") continue;
+      discoveryDeferred =
+        (await prepareDiscoveredRunnerStart(execution)) || discoveryDeferred;
+    }
+    if (discoveryDeferred && !stopped && !deferredStartDiscoveryRetryTimer) {
+      const delayMs = Math.min(
+        500 * 2 ** deferredStartDiscoveryRetryAttempt,
+        10_000
+      );
+      deferredStartDiscoveryRetryAttempt += 1;
+      deferredStartDiscoveryRetryTimer = setTimeout(() => {
+        deferredStartDiscoveryRetryTimer = null;
+        void requestDeferredStartDiscovery();
+      }, delayMs);
+      deferredStartDiscoveryRetryTimer.unref?.();
+    } else if (!discoveryDeferred) {
+      deferredStartDiscoveryRetryAttempt = 0;
+      if (deferredStartDiscoveryRetryTimer) {
+        clearTimeout(deferredStartDiscoveryRetryTimer);
+        deferredStartDiscoveryRetryTimer = null;
+      }
+    }
+  };
+
+  const requestDeferredStartDiscovery = (): Promise<void> => {
+    if (stopped || !startupRecoveryComplete) return Promise.resolve();
+    deferredStartDiscovery ??= discoverDeferredRunnerStarts()
+      .catch((error) => {
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.deferred_start_discovery_failed",
+              category: "managed_conversation"
+            },
+            error_name: errorCode(error)
+          },
+          "managed Conversation deferred start discovery failed"
+        );
+      })
+      .finally(() => {
+        deferredStartDiscovery = null;
+      });
+    return deferredStartDiscovery;
+  };
+
+  const reconcileCompletedPersonalAgentOutputs = async (
+    execution: ManagedConversationExecutionRecord
+  ): Promise<boolean> => {
+    if (execution.provider !== "codex") return false;
+    const jobsPage = await options.repository.listPersonalAgentExecutionJobs(
+      { userId: execution.ownerUserId },
+      { conversationId: execution.id, limit: 100 }
+    );
+    let recoveryDeferred = false;
+    for (const job of jobsPage.jobs) {
+      if (job.state === "canceled") continue;
+      if (
+        job.state === "succeeded" &&
+        (job.outputReference?.runtimeItemIds.length ?? 0) > 0
+      ) {
+        continue;
+      }
+      if (!job.commandId) continue;
+      const commandRecord =
+        await options.repository.getManagedConversationCommand(
+          { userId: execution.ownerUserId },
+          job.commandId
+        );
+      const turnId = commandRecord?.result?.turnId;
+      if (
+        !commandRecord ||
+        commandRecord.state !== "completed" ||
+        commandRecord.commandKind !== "prompt" ||
+        commandRecord.executionGeneration !== execution.executionGeneration ||
+        typeof turnId !== "string" ||
+        !turnId.trim()
+      ) {
+        continue;
+      }
+      const command: PersonalAgentCommandContext = {
+        id: commandRecord.id,
+        ownerUserId: commandRecord.ownerUserId,
+        executionId: commandRecord.executionId,
+        executionGeneration: commandRecord.executionGeneration,
+        commandKind: commandRecord.commandKind,
+        payload: commandRecord.payload,
+        execution
+      };
+      try {
+        if (!personalAgentJobFor(command)) continue;
+        const session = await sessionFor(execution);
+        const started = await session.start();
+        if (started.thread.id !== execution.providerThreadId) {
+          throw managedConversationError(
+            "ManagedConversationRuntimeRecoveryIdentityError"
+          );
+        }
+        await session.reconcileTranscript();
+        await finishPersonalAgentAttempt(command, "succeeded", turnId);
+        options.logger.info(
+          {
+            event: {
+              name: "worker.managed_conversation.personal_agent_output_recovered",
+              category: "managed_conversation"
+            },
+            execution_id: execution.id,
+            command_id: command.id,
+            job_id: job.id
+          },
+          "managed Conversation recovered a completed Personal Agent reply from its canonical transcript"
+        );
+      } catch (error) {
+        recoveryDeferred = true;
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.personal_agent_output_recovery_deferred",
+              category: "managed_conversation"
+            },
+            execution_id: execution.id,
+            command_id: command.id,
+            job_id: job.id,
+            error_name: errorCode(error)
+          },
+          "managed Conversation Personal Agent reply recovery is waiting for its canonical transcript"
+        );
+      }
+    }
+    return recoveryDeferred;
+  };
+
   const recoverOwnedRuntimes = async (): Promise<void> => {
     let recoveryDeferred = false;
     const executions =
@@ -2297,6 +3159,11 @@ export const createManagedConversationService = (options: {
       });
     for (const execution of executions) {
       if (stopped) return;
+      if (execution.state === "starting") {
+        recoveryDeferred =
+          (await prepareDiscoveredRunnerStart(execution)) || recoveryDeferred;
+        continue;
+      }
       if (execution.state !== "running") continue;
       const activeSession = runtimeSessions.get(
         execution.provider as ManagedConversationProvider,
@@ -2305,6 +3172,9 @@ export const createManagedConversationService = (options: {
       if (
         activeSession?.executionGeneration === execution.executionGeneration
       ) {
+        recoveryDeferred =
+          (await reconcileCompletedPersonalAgentOutputs(execution)) ||
+          recoveryDeferred;
         continue;
       }
       let acquired = false;
@@ -2494,6 +3364,9 @@ export const createManagedConversationService = (options: {
           ).configIdentityHash,
           session: recoveredSession
         });
+        recoveryDeferred =
+          (await reconcileCompletedPersonalAgentOutputs(execution)) ||
+          recoveryDeferred;
       } catch (error) {
         recoveryDeferred = true;
         if (recoveredSession) {
@@ -2538,10 +3411,14 @@ export const createManagedConversationService = (options: {
   };
 
   const ensureStartupRecovery = (): Promise<void> => {
-    startupRecovery ??= recoverOwnedRuntimes().catch((error) => {
-      startupRecovery = null;
-      throw error;
-    });
+    startupRecovery ??= recoverOwnedRuntimes()
+      .then(() => {
+        startupRecoveryComplete = true;
+      })
+      .catch((error) => {
+        startupRecovery = null;
+        throw error;
+      });
     return startupRecovery;
   };
 
@@ -4492,6 +5369,11 @@ export const createManagedConversationService = (options: {
           binding.projectPath,
           { snapshotId: fork.id, createdAt: fork.createdAt }
         );
+        if (!execution.projectId) {
+          throw managedConversationError(
+            "ManagedConversationIndependentForkUnsupportedError"
+          );
+        }
         workspaceSnapshotId = await persistWorkspaceSnapshot({
           ownerUserId: command.ownerUserId,
           projectId: execution.projectId,
@@ -4837,20 +5719,26 @@ export const createManagedConversationService = (options: {
                 { userId: command.ownerUserId },
                 {
                   logicalSessionId: randomUUID(),
-                  projectId: command.execution.projectId,
+                  ...(command.execution.projectId
+                    ? { projectId: command.execution.projectId }
+                    : {}),
                   externalSessionId: identity.sessionId,
                   sourceRuntime: "pi",
                   captureMethod: "api",
                   model: command.execution.model,
                   cwd: binding.projectPath,
                   idempotencyKey: `pi-session:${identity.sessionId}`,
-                  detectedProjects: [
-                    {
-                      id: command.execution.projectId,
-                      name: basename(binding.projectPath),
-                      path: binding.projectPath
-                    }
-                  ],
+                  ...(command.execution.projectId
+                    ? {
+                        detectedProjects: [
+                          {
+                            id: command.execution.projectId,
+                            name: basename(binding.projectPath),
+                            path: binding.projectPath
+                          }
+                        ]
+                      }
+                    : {}),
                   metadata: {
                     managedConversation: true,
                     externalThreadId: identity.sessionId,
@@ -4953,20 +5841,26 @@ export const createManagedConversationService = (options: {
               { userId: command.ownerUserId },
               {
                 logicalSessionId,
-                projectId: command.execution.projectId,
+                ...(command.execution.projectId
+                  ? { projectId: command.execution.projectId }
+                  : {}),
                 externalSessionId: started.identity.sessionId,
                 sourceRuntime: "claude-code",
                 captureMethod: "api",
                 model: command.execution.model,
                 cwd: binding.projectPath,
                 idempotencyKey: `managed-claude-session:${started.identity.sessionId}`,
-                detectedProjects: [
-                  {
-                    id: command.execution.projectId,
-                    name: basename(binding.projectPath),
-                    path: binding.projectPath
-                  }
-                ],
+                ...(command.execution.projectId
+                  ? {
+                      detectedProjects: [
+                        {
+                          id: command.execution.projectId,
+                          name: basename(binding.projectPath),
+                          path: binding.projectPath
+                        }
+                      ]
+                    }
+                  : {}),
                 metadata: {
                   managedConversation: true,
                   externalThreadId: started.identity.sessionId,
@@ -5100,13 +5994,45 @@ export const createManagedConversationService = (options: {
           command.execution.provider === "codex" &&
           pendingCheckpoint.providerTurnId
         ) {
-          const session = await sessionFor(command.execution);
-          await withLease(
-            command,
-            (ownedSession) => ownedSession.reconcileTranscript(),
-            session
-          );
+          try {
+            const session = await sessionFor(command.execution);
+            await withLease(
+              command,
+              async (ownedSession) => {
+                await ownedSession.start();
+                await ownedSession.reconcileTranscript();
+              },
+              session
+            );
+          } catch (error) {
+            options.logger.warn(
+              {
+                event: {
+                  name: "worker.managed_conversation.checkpoint_transcript_reconciliation_deferred",
+                  category: "managed_conversation"
+                },
+                execution_id: command.executionId,
+                error_name: errorCode(error)
+              },
+              "managed Conversation checkpoint recovered; transcript reconciliation is deferred"
+            );
+            // A ready workspace checkpoint only proves that the files were
+            // captured. Keep this command pending until the accepted provider
+            // turn is reconciled into the canonical transcript, so the UI
+            // cannot present a missing reply as a successful Agent response.
+            throw Object.assign(
+              new Error("ExecutionCheckpointRecoveryPendingError", {
+                cause: error
+              }),
+              { name: "ExecutionCheckpointRecoveryPendingError" }
+            );
+          }
         }
+        await finishPersonalAgentAttempt(
+          command,
+          "succeeded",
+          pendingCheckpoint.providerTurnId ?? undefined
+        );
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
@@ -5129,9 +6055,17 @@ export const createManagedConversationService = (options: {
       if (command.execution.provider === "pi") {
         await ensureTurnBaselineCheckpoint(command, checkpointBinding);
         const session = await sessionForPi(command.execution);
+        const agentContext = managedPromptPersonalAgentContext(command.payload);
+        const userPrompt = await promptWithFileMentions(
+          command,
+          checkpointBinding
+        );
+        await runningPersonalAgentAttempt(command);
         await withProviderLease(command, "pi", session, async (owned) => {
           const result = await owned.prompt(
-            await promptWithFileMentions(command, checkpointBinding)
+            agentContext === null
+              ? userPrompt
+              : formatPersonalAgentManagedPrompt(userPrompt, agentContext)
           );
           await flushCompletedTransientOutput(
             `${command.executionId}:${result.turnId}:assistant`
@@ -5211,6 +6145,7 @@ export const createManagedConversationService = (options: {
             providerTurnId: result.turnId,
             sourceGenerationId
           });
+          await finishPersonalAgentAttempt(command, "succeeded", result.turnId);
           await options.repository.completeManagedConversationCommand({
             commandId: command.id,
             leaseToken: command.leaseToken!,
@@ -5244,6 +6179,12 @@ export const createManagedConversationService = (options: {
         command,
         checkpointBinding
       );
+      const agentContext = managedPromptPersonalAgentContext(command.payload);
+      const turnPrompt =
+        agentContext === null
+          ? providerPrompt
+          : formatPersonalAgentManagedPrompt(providerPrompt, agentContext);
+      await runningPersonalAgentAttempt(command);
       if (command.execution.provider === "claude") {
         if (providerRuntime.provider !== "claude") {
           throw managedConversationError(
@@ -5252,7 +6193,7 @@ export const createManagedConversationService = (options: {
         }
         const result = await withClaudeLease(
           command,
-          (session) => session.prompt(providerPrompt),
+          (session) => session.prompt(turnPrompt),
           providerRuntime.session
         );
         await flushCompletedTransientOutput(
@@ -5341,6 +6282,7 @@ export const createManagedConversationService = (options: {
           providerTurnId: null,
           sourceGenerationId: captured.sourceGenerationId
         });
+        await finishPersonalAgentAttempt(command, "succeeded", result.turnId);
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
@@ -5358,7 +6300,7 @@ export const createManagedConversationService = (options: {
         command,
         (session) =>
           session.runTurn(
-            providerPrompt,
+            turnPrompt,
             turnTimeoutMs,
             `koed-user-message:${clientUserMessageId}`
           ),
@@ -5451,6 +6393,11 @@ export const createManagedConversationService = (options: {
         command,
         (session) => session.reconcileTranscript(),
         providerRuntime.session
+      );
+      await finishPersonalAgentAttempt(
+        command,
+        "succeeded",
+        result.turnId ?? undefined
       );
       await options.repository.completeManagedConversationCommand({
         commandId: command.id,
@@ -6701,6 +7648,11 @@ export const createManagedConversationService = (options: {
             binding.projectPath,
             { snapshotId: handoff.id, createdAt: handoff.createdAt }
           );
+          if (!command.execution.projectId) {
+            throw managedConversationError(
+              "ManagedConversationIndependentHandoffUnsupportedError"
+            );
+          }
           workspaceSnapshotId = await persistWorkspaceSnapshot({
             ownerUserId: command.ownerUserId,
             projectId: command.execution.projectId,
@@ -6814,19 +7766,772 @@ export const createManagedConversationService = (options: {
     });
   };
 
-  const processOnce = async () => {
-    void ensureStartupRecovery().catch((error) => {
-      options.logger.warn(
-        {
-          event: {
-            name: "worker.managed_conversation.startup_recovery_failed",
-            category: "managed_conversation"
-          },
-          error_name: errorCode(error)
+  const projectMoveLeaseMs = 180_000;
+  const projectMoveHeartbeatMs = 45_000;
+  const projectMoveRetentionWarnings = new Set<string>();
+
+  const warnProjectMoveSourceRetained = (
+    record: NonNullable<ReturnType<ProjectMoveLocalJournal["read"]>>,
+    error?: unknown
+  ): void => {
+    if (projectMoveRetentionWarnings.has(record.moveId)) return;
+    projectMoveRetentionWarnings.add(record.moveId);
+    options.logger.warn(
+      {
+        event: {
+          name: "worker.managed_conversation.project_move_source_retained",
+          category: "managed_conversation"
         },
-        "managed Conversation startup recovery failed"
+        move_id: record.moveId,
+        ...(error === undefined ? {} : { error_name: errorCode(error) })
+      },
+      "managed Conversation source checkout retained after Project move"
+    );
+  };
+
+  const retireCompletedProjectMoveJournal = async (
+    record: NonNullable<ReturnType<ProjectMoveLocalJournal["read"]>>
+  ): Promise<void> => {
+    const source = record.sourceRuntimeBinding;
+    const catalogRetainedSource = (
+      sourcePath: string,
+      reason: "changed" | "unknown",
+      error?: unknown,
+      verifiedCheckout?: ExecutionCheckoutIdentity
+    ): void => {
+      const checkoutKind =
+        source.checkoutKind === "koed_managed_worktree" ||
+        source.checkoutKind === "user_managed_checkout" ||
+        source.checkoutKind === "non_vcs_directory"
+          ? source.checkoutKind
+          : "unknown";
+      let boundCheckout: ExecutionCheckoutIdentity | null = null;
+      if (!verifiedCheckout) {
+        try {
+          boundCheckout = checkoutFromBinding(source);
+        } catch {
+          // Keep an unknown locator non-deletable when its identity is incomplete.
+        }
+      }
+      const checkoutIdentity =
+        verifiedCheckout?.canonicalPath === sourcePath
+          ? verifiedCheckout
+          : boundCheckout?.canonicalPath === sourcePath
+            ? boundCheckout
+            : null;
+      retainedWorkspaceCatalog.upsert({
+        schemaVersion: 2,
+        moveId: record.moveId,
+        executionId: source.executionId,
+        executionGeneration: source.executionGeneration,
+        sourceProjectId: record.sourceProjectId,
+        destinationProjectId: record.destinationProjectId,
+        sourcePath,
+        destinationPath: record.destinationLocalPath,
+        providerThreadId: source.providerThreadId!,
+        checkoutKind,
+        checkoutIdentity,
+        reason,
+        retainedAt: new Date().toISOString()
+      });
+      warnProjectMoveSourceRetained(record, error);
+      projectMoveJournal.remove(record.moveId);
+    };
+    const managedWorktree = source.checkoutKind === "koed_managed_worktree";
+    const userManagedGitCheckout =
+      source.checkoutKind === "user_managed_checkout";
+    if (
+      source.vcsDriver === "git" &&
+      (managedWorktree || userManagedGitCheckout)
+    ) {
+      let driver: GitExecutionCheckoutDriver;
+      let checkout: Awaited<ReturnType<GitExecutionCheckoutDriver["verify"]>>;
+      try {
+        driver = await executionCheckoutDriver;
+        checkout = await driver.verify(checkoutFromBinding(source));
+      } catch (error) {
+        catalogRetainedSource(source.projectPath, "unknown", error);
+        return;
+      }
+      const editState =
+        checkout.headObjectId !== source.headObjectId
+          ? "unknown"
+          : gitWorkingTreeEditState(checkout.canonicalPath);
+      if (editState !== "clean") {
+        catalogRetainedSource(
+          checkout.canonicalPath,
+          editState,
+          undefined,
+          checkout
+        );
+        return;
+      }
+      if (managedWorktree) {
+        try {
+          await driver.remove(checkout);
+        } catch (error) {
+          warnProjectMoveSourceRetained(record, error);
+          return;
+        }
+      }
+    }
+    projectMoveJournal.remove(record.moveId);
+  };
+
+  const reconcileCompletedProjectMoveJournals = async (): Promise<void> => {
+    for (const record of projectMoveJournal.list()) {
+      const move = await options.repository
+        .getManagedConversationProjectMove(
+          { userId: record.sourceRuntimeBinding.ownerUserId },
+          record.moveId
+        )
+        .catch(() => null);
+      if (move?.state !== "completed") continue;
+      if (record.phase !== "complete") {
+        projectMoveJournal.write({
+          ...record,
+          phase: "complete",
+          updatedAt: new Date().toISOString()
+        });
+      }
+      await retireCompletedProjectMoveJournal({ ...record, phase: "complete" });
+    }
+  };
+
+  const retireFailedProjectMoveJournal = async (
+    record: NonNullable<ReturnType<ProjectMoveLocalJournal["read"]>>
+  ): Promise<void> => {
+    const binding = await options.repository
+      .getManagedConversationRuntimeBinding(
+        { userId: record.sourceRuntimeBinding.ownerUserId },
+        record.sourceRuntimeBinding.executionId
+      )
+      .catch(() => null);
+    const source = record.sourceRuntimeBinding;
+    if (
+      binding?.projectPath === source.projectPath &&
+      binding.checkoutId === source.checkoutId &&
+      binding.localSessionId === source.localSessionId &&
+      binding.providerThreadId === source.providerThreadId
+    ) {
+      projectMoveJournal.remove(record.moveId);
+    }
+  };
+
+  const processClaimedProjectMove = async (
+    move: ManagedConversationProjectMoveRecord
+  ): Promise<"completed" | "failed" | "deferred"> => {
+    if (
+      move.state !== "claimed" ||
+      !move.claimToken ||
+      move.assignedDeploymentId !== options.deploymentId ||
+      move.assignedDeviceId !== options.deviceId ||
+      move.claimedByRunnerId !== runnerId
+    ) {
+      return "deferred";
+    }
+
+    let leaseLost = false;
+    let renewing = false;
+    let commitAttempted = false;
+    const renew = async (): Promise<void> => {
+      if (renewing || leaseLost) return;
+      renewing = true;
+      try {
+        const renewed =
+          await options.repository.renewManagedConversationProjectMoveLease({
+            ownerUserId: move.ownerUserId,
+            moveId: move.id,
+            executionGeneration: move.executionGeneration,
+            claimToken: move.claimToken!,
+            runnerId,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId,
+            leaseMs: projectMoveLeaseMs
+          });
+        if (!renewed) leaseLost = true;
+      } catch {
+        leaseLost = true;
+      } finally {
+        renewing = false;
+      }
+    };
+    const heartbeat = setInterval(() => void renew(), projectMoveHeartbeatMs);
+    heartbeat.unref?.();
+    const assertLease = async () => {
+      await renew();
+      if (leaseLost)
+        throw new Error("ManagedConversationProjectMoveLeaseLostError");
+    };
+    try {
+      let journalRecord = projectMoveJournal.read(move.id);
+      let currentPhase = journalRecord?.phase ?? null;
+      const writePhase = (
+        phase:
+          | "requested"
+          | "source_quiesced"
+          | "destination_prepared"
+          | "binding_committed"
+          | "complete"
+          | "failed",
+        details?: {
+          sourceRuntimeBinding: ManagedConversationRuntimeBindingRecord;
+          destinationLocalPath: string;
+        }
+      ) => {
+        if (!journalRecord && !details) {
+          throw new Error("ManagedConversationProjectMoveJournalError");
+        }
+        const sourceRuntimeBinding =
+          details?.sourceRuntimeBinding ?? journalRecord!.sourceRuntimeBinding;
+        const destinationLocalPath =
+          details?.destinationLocalPath ?? journalRecord!.destinationLocalPath;
+        journalRecord = {
+          schemaVersion: 1,
+          moveId: move.id,
+          sourceRuntimeBinding,
+          sourceProjectId: move.sourceProjectId,
+          destinationProjectId: move.destinationProjectId,
+          destinationLocalPath,
+          phase,
+          updatedAt: new Date().toISOString()
+        };
+        currentPhase = phase;
+        projectMoveJournal.write(journalRecord);
+      };
+      const execution =
+        await options.repository.getManagedConversationExecution(
+          { userId: move.ownerUserId },
+          move.executionId
+        );
+      const failBeforeRuntimeRecovery = async (): Promise<
+        "failed" | "deferred"
+      > => {
+        const failed =
+          await options.repository.failManagedConversationProjectMove({
+            ownerUserId: move.ownerUserId,
+            moveId: move.id,
+            executionGeneration: move.executionGeneration,
+            claimToken: move.claimToken!,
+            runnerId,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId
+          });
+        if (failed?.state !== "failed") return "deferred";
+        if (journalRecord) {
+          writePhase("failed");
+          await retireFailedProjectMoveJournal(journalRecord);
+        }
+        return "failed";
+      };
+      if (
+        !execution ||
+        execution.state !== "running" ||
+        execution.executionGeneration !== move.executionGeneration ||
+        execution.projectId !== move.sourceProjectId ||
+        execution.runnerDeviceId !== options.deviceId ||
+        execution.runnerDeploymentId !== options.deploymentId
+      ) {
+        if (currentPhase === "binding_committed") return "deferred";
+        return failBeforeRuntimeRecovery();
+      }
+      if (execution.provider !== "codex") {
+        if (currentPhase === "binding_committed") return "deferred";
+        return failBeforeRuntimeRecovery();
+      }
+
+      const currentLocalBinding =
+        await options.repository.getManagedConversationRuntimeBinding(
+          { userId: move.ownerUserId },
+          move.executionId
+        );
+      const sourceBinding =
+        journalRecord?.sourceRuntimeBinding ?? currentLocalBinding;
+      let localBinding = currentLocalBinding ?? sourceBinding;
+      if (
+        !sourceBinding ||
+        sourceBinding.executionGeneration !== move.executionGeneration ||
+        sourceBinding.deviceId !== options.deviceId ||
+        sourceBinding.deploymentId !== options.deploymentId ||
+        sourceBinding.checkoutLifecycle !== "ready" ||
+        !sourceBinding.localSessionId ||
+        !sourceBinding.providerThreadId ||
+        !sourceBinding.managedHome ||
+        !sourceBinding.transcriptPath ||
+        sourceBinding.providerThreadId !== execution.providerThreadId
+      ) {
+        if (currentPhase === "binding_committed") return "deferred";
+        return failBeforeRuntimeRecovery();
+      }
+
+      const actor = { userId: move.ownerUserId };
+      let completedAuthority = false;
+      const restoreSource = async () => {
+        const active = runtimeSessions.get("codex", execution.id);
+        if (active) {
+          runtimeSessions.delete("codex", execution.id);
+          await active.session.closeAndWait();
+        }
+        const source = journalRecord?.sourceRuntimeBinding;
+        if (!source)
+          throw new Error("ManagedConversationProjectMoveJournalError");
+        const driver = await executionCheckoutDriver;
+        const oldCheckout = checkoutFromBinding(source);
+        await driver.verify(oldCheckout);
+        const currentBinding =
+          await options.repository.getManagedConversationRuntimeBinding(
+            actor,
+            execution.id
+          );
+        if (!currentBinding) {
+          throw new Error("ManagedConversationProjectMoveSourceRestoreError");
+        }
+        if (
+          currentBinding.projectPath === journalRecord!.destinationLocalPath
+        ) {
+          await options.repository.transitionManagedConversationProjectMoveRuntimeBinding(
+            actor,
+            {
+              moveId: move.id,
+              executionId: execution.id,
+              claimToken: move.claimToken!,
+              runnerId,
+              deploymentId: options.deploymentId,
+              deviceId: options.deviceId,
+              executionGeneration: move.executionGeneration,
+              sourceProjectId: move.sourceProjectId,
+              destinationProjectId: move.destinationProjectId,
+              expectedProjectPath: journalRecord!.destinationLocalPath,
+              projectPath: source.sourceProjectPath
+            }
+          );
+        } else if (
+          currentBinding.projectPath !== source.projectPath &&
+          currentBinding.projectPath !== source.sourceProjectPath
+        ) {
+          throw new Error("ManagedConversationProjectMoveSourceRestoreError");
+        }
+        await bindSelectedExecutionCheckout(
+          execution,
+          source.sourceProjectPath,
+          oldCheckout,
+          source.creationOperationId ?? oldCheckout.checkoutId
+        );
+        const restored =
+          await options.repository.bindManagedConversationLocalRuntime(actor, {
+            executionId: execution.id,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId,
+            executionGeneration: move.executionGeneration,
+            localSessionId: source.localSessionId!,
+            providerThreadId: source.providerThreadId!,
+            transcriptPath: source.transcriptPath,
+            managedHome: source.managedHome!,
+            ...(source.providerCliVersion
+              ? { providerCliVersion: source.providerCliVersion }
+              : {}),
+            ...(source.sourceGenerationId
+              ? { sourceGenerationId: source.sourceGenerationId }
+              : {})
+          });
+        if (
+          restored.projectPath !== source.projectPath ||
+          restored.executionGeneration !== source.executionGeneration ||
+          restored.deviceId !== source.deviceId ||
+          restored.deploymentId !== source.deploymentId ||
+          restored.localSessionId !== source.localSessionId ||
+          restored.providerThreadId !== source.providerThreadId ||
+          restored.transcriptPath !== source.transcriptPath ||
+          restored.managedHome !== source.managedHome
+        ) {
+          throw new Error("ManagedConversationProjectMoveSourceRestoreError");
+        }
+        const resumed = await sessionFor(execution);
+        const identity = await resumed.start();
+        if (
+          identity.thread.id !== source.providerThreadId ||
+          identity.thread.path !== source.transcriptPath ||
+          identity.sessionId !== source.localSessionId ||
+          resolve(identity.thread.cwd ?? restored.projectPath) !==
+            resolve(restored.projectPath)
+        ) {
+          throw new Error("ManagedConversationProjectMoveSourceRestoreError");
+        }
+      };
+      const markFailed = async () => {
+        if (leaseLost || completedAuthority) return false;
+        const failed =
+          await options.repository.failManagedConversationProjectMove({
+            ownerUserId: move.ownerUserId,
+            moveId: move.id,
+            executionGeneration: move.executionGeneration,
+            claimToken: move.claimToken!,
+            runnerId,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId
+          });
+        if (failed?.state !== "failed") return false;
+        if (journalRecord) {
+          writePhase("failed");
+          await retireFailedProjectMoveJournal(journalRecord);
+        }
+        return true;
+      };
+      const failPreflight = async (): Promise<"failed" | "deferred"> => {
+        if (currentPhase === "binding_committed") {
+          try {
+            await restoreSource();
+          } catch {
+            return "deferred";
+          }
+        }
+        try {
+          return (await markFailed()) ? "failed" : "deferred";
+        } catch {
+          return "deferred";
+        }
+      };
+      if (!/^lp_[0-9a-f]{32}$/iu.test(move.destinationProjectId)) {
+        return failPreflight();
+      }
+      const destinationProject = await registeredLocalProject(
+        options.koedHome,
+        move.destinationProjectId
       );
-    });
+      if (!destinationProject) {
+        return failPreflight();
+      }
+      const unresolvedDestinationPath = resolve(destinationProject.path);
+      const unresolvedDestinationStat = await lstat(unresolvedDestinationPath);
+      if (unresolvedDestinationStat.isSymbolicLink()) {
+        throw new Error(
+          "ManagedConversationProjectMoveDestinationUnavailableError"
+        );
+      }
+      const destinationLocalPath = await realpath(unresolvedDestinationPath);
+      try {
+        await assertLease();
+        if (!journalRecord) {
+          const driver = await executionCheckoutDriver;
+          await driver.verify(checkoutFromBinding(sourceBinding));
+          const canonicalDestination = await realpath(destinationLocalPath);
+          const destinationStat = await lstat(canonicalDestination);
+          if (
+            !destinationStat.isDirectory() ||
+            destinationStat.isSymbolicLink()
+          ) {
+            throw new Error(
+              "ManagedConversationProjectMoveDestinationUnavailableError"
+            );
+          }
+          writePhase("requested", {
+            sourceRuntimeBinding: sourceBinding!,
+            destinationLocalPath: canonicalDestination
+          });
+        } else if (
+          journalRecord.sourceProjectId !== move.sourceProjectId ||
+          journalRecord.destinationProjectId !== move.destinationProjectId ||
+          journalRecord.sourceRuntimeBinding.executionId !== move.executionId ||
+          journalRecord.sourceRuntimeBinding.executionGeneration !==
+            move.executionGeneration ||
+          journalRecord.destinationLocalPath !== destinationLocalPath
+        ) {
+          throw new Error("ManagedConversationProjectMoveJournalMismatchError");
+        }
+
+        if (currentPhase === "requested") {
+          for (const [key] of transientOutputs.entries()) {
+            if (key.startsWith(`${execution.id}:`)) {
+              await flushCompletedTransientOutput(key);
+            }
+          }
+          const active = runtimeSessions.get("codex", execution.id);
+          if (active) {
+            runtimeSessions.delete("codex", execution.id);
+            await active.session.closeAndWait();
+          }
+          writePhase("source_quiesced");
+        }
+        if (currentPhase === "source_quiesced") {
+          await assertLease();
+          const driver = await executionCheckoutDriver;
+          const prepared = await driver.select({
+            operationId: move.id,
+            path: destinationLocalPath
+          });
+          if (prepared.canonicalPath !== destinationLocalPath) {
+            throw new Error(
+              "ManagedConversationProjectMoveDestinationIdentityError"
+            );
+          }
+          writePhase("destination_prepared");
+        }
+        if (currentPhase === "destination_prepared") {
+          await assertLease();
+          const driver = await executionCheckoutDriver;
+          const prepared = await driver.select({
+            operationId: move.id,
+            path: journalRecord!.destinationLocalPath
+          });
+          localBinding =
+            await options.repository.transitionManagedConversationProjectMoveRuntimeBinding(
+              actor,
+              {
+                moveId: move.id,
+                executionId: execution.id,
+                claimToken: move.claimToken,
+                runnerId,
+                deploymentId: options.deploymentId,
+                deviceId: options.deviceId,
+                executionGeneration: move.executionGeneration,
+                sourceProjectId: move.sourceProjectId,
+                destinationProjectId: move.destinationProjectId,
+                expectedProjectPath:
+                  journalRecord!.sourceRuntimeBinding.projectPath,
+                projectPath: journalRecord!.destinationLocalPath
+              }
+            );
+          localBinding = await bindSelectedExecutionCheckout(
+            execution,
+            journalRecord!.destinationLocalPath,
+            prepared,
+            move.id
+          );
+          localBinding =
+            await options.repository.bindManagedConversationLocalRuntime(
+              actor,
+              {
+                executionId: execution.id,
+                deploymentId: options.deploymentId,
+                deviceId: options.deviceId,
+                executionGeneration: move.executionGeneration,
+                localSessionId:
+                  journalRecord!.sourceRuntimeBinding.localSessionId!,
+                providerThreadId:
+                  journalRecord!.sourceRuntimeBinding.providerThreadId!,
+                transcriptPath:
+                  journalRecord!.sourceRuntimeBinding.transcriptPath,
+                managedHome: journalRecord!.sourceRuntimeBinding.managedHome!,
+                ...(journalRecord!.sourceRuntimeBinding.providerCliVersion
+                  ? {
+                      providerCliVersion:
+                        journalRecord!.sourceRuntimeBinding.providerCliVersion
+                    }
+                  : {}),
+                ...(journalRecord!.sourceRuntimeBinding.sourceGenerationId
+                  ? {
+                      sourceGenerationId:
+                        journalRecord!.sourceRuntimeBinding.sourceGenerationId
+                    }
+                  : {})
+              }
+            );
+          writePhase("binding_committed");
+        }
+        if (currentPhase === "binding_committed") {
+          await assertLease();
+          if (
+            resolve(localBinding!.projectPath) !==
+            resolve(journalRecord!.destinationLocalPath)
+          )
+            throw new Error(
+              "ManagedConversationProjectMoveDestinationBindingError"
+            );
+          const resumed = await sessionFor(execution);
+          const identity = await resumed.start();
+          if (
+            identity.thread.id !==
+            journalRecord!.sourceRuntimeBinding.providerThreadId
+          )
+            throw new Error(
+              "ManagedConversationProjectMoveResumeThreadIdError"
+            );
+          if (
+            identity.thread.path !==
+            journalRecord!.sourceRuntimeBinding.transcriptPath
+          )
+            throw new Error(
+              "ManagedConversationProjectMoveResumeTranscriptError"
+            );
+          if (
+            identity.sessionId !==
+            journalRecord!.sourceRuntimeBinding.localSessionId
+          )
+            throw new Error(
+              "ManagedConversationProjectMoveResumeSessionIdError"
+            );
+          // Codex can report the thread's original cwd on resume. Each future
+          // turn receives the current runtime binding's cwd explicitly.
+          await assertLease();
+          let committed: ManagedConversationProjectMoveRecord | null = null;
+          try {
+            commitAttempted = true;
+            committed =
+              await options.repository.completeManagedConversationProjectMove({
+                ownerUserId: move.ownerUserId,
+                moveId: move.id,
+                executionGeneration: move.executionGeneration,
+                claimToken: move.claimToken,
+                runnerId,
+                deploymentId: options.deploymentId,
+                deviceId: options.deviceId,
+                destinationProjectName: destinationProject.name.trim()
+              });
+          } catch {
+            const confirmed = await options.repository
+              .getManagedConversationProjectMove(actor, move.id)
+              .catch(() => null);
+            if (confirmed?.state === "completed") committed = confirmed;
+            else if (!leaseLost && confirmed?.state === "claimed") {
+              await assertLease();
+              committed =
+                await options.repository.completeManagedConversationProjectMove(
+                  {
+                    ownerUserId: move.ownerUserId,
+                    moveId: move.id,
+                    executionGeneration: move.executionGeneration,
+                    claimToken: move.claimToken,
+                    runnerId,
+                    deploymentId: options.deploymentId,
+                    deviceId: options.deviceId,
+                    destinationProjectName: destinationProject.name.trim()
+                  }
+                );
+            } else {
+              throw new Error(
+                "ManagedConversationProjectMoveAuthorityCommitUnverifiedError"
+              );
+            }
+          }
+          if (!committed || committed.state !== "completed") {
+            const confirmed = await options.repository
+              .getManagedConversationProjectMove(actor, move.id)
+              .catch(() => null);
+            if (confirmed?.state !== "completed") {
+              throw new Error(
+                "ManagedConversationProjectMoveAuthorityCommitUnverifiedError"
+              );
+            }
+            committed = confirmed;
+          }
+          completedAuthority = true;
+          writePhase("complete");
+          await retireCompletedProjectMoveJournal(journalRecord!);
+        }
+        return "completed";
+      } catch (error) {
+        const failedPhase = currentPhase;
+        if (
+          leaseLost ||
+          errorCode(error) === "ManagedConversationProjectMoveLeaseLostError"
+        ) {
+          return "deferred";
+        }
+        const confirmed = await options.repository
+          .getManagedConversationProjectMove(actor, move.id)
+          .catch(() => null);
+        if (confirmed?.state === "completed") {
+          completedAuthority = true;
+          if (journalRecord) {
+            writePhase("complete");
+            await retireCompletedProjectMoveJournal(journalRecord);
+          }
+          return "completed";
+        }
+        // Once the authority commit has been attempted, a failed or timed-out read
+        // cannot prove that the authority stayed on the source Project. Keep the
+        // local binding and journal intact for a later fenced confirmation.
+        if (commitAttempted) return "deferred";
+        if (currentPhase === "binding_committed") {
+          try {
+            await restoreSource();
+          } catch {
+            // Keep the claimed move and journal for fenced recovery; never report failure over a split binding.
+            return "deferred";
+          }
+        }
+        try {
+          if (!(await markFailed())) return "deferred";
+        } catch {
+          return "deferred";
+        }
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.project_move_failed",
+              category: "managed_conversation"
+            },
+            error_name: errorCode(error),
+            phase: failedPhase
+          },
+          "managed Conversation Project move could not be completed"
+        );
+        return "failed";
+      }
+    } catch (error) {
+      if (!leaseLost) {
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.project_move_deferred",
+              category: "managed_conversation"
+            },
+            error_name: errorCode(error)
+          },
+          "managed Conversation Project move is waiting for local recovery"
+        );
+      }
+      return "deferred";
+    } finally {
+      clearInterval(heartbeat);
+    }
+  };
+
+  const processProjectMovesOnce = async (): Promise<{
+    completed: number;
+    failed: number;
+  }> => {
+    if (
+      typeof options.repository.claimManagedConversationProjectMoves !==
+      "function"
+    ) {
+      return { completed: 0, failed: 0 };
+    }
+    await reconcileCompletedProjectMoveJournals();
+    const claims =
+      await options.repository.claimManagedConversationProjectMoves({
+        ownerUserId: options.localOwnerUserId,
+        deploymentId: options.deploymentId,
+        deviceId: options.deviceId,
+        runnerId,
+        leaseMs: projectMoveLeaseMs,
+        limit: 8
+      });
+    let completed = 0;
+    let failed = 0;
+    for (const move of claims) {
+      const result = await processClaimedProjectMove(move);
+      if (result === "completed") completed += 1;
+      if (result === "failed") failed += 1;
+    }
+    return { completed, failed };
+  };
+
+  const processOnce = async () => {
+    void ensureStartupRecovery()
+      .then(() => requestDeferredStartDiscovery())
+      .catch((error) => {
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.startup_recovery_failed",
+              category: "managed_conversation"
+            },
+            error_name: errorCode(error)
+          },
+          "managed Conversation startup recovery failed"
+        );
+      });
     let completed = 0;
     let failed = 0;
     const cleanupRequests =
@@ -7041,6 +8746,9 @@ export const createManagedConversationService = (options: {
       deploymentId: options.deploymentId,
       limit: 32
     });
+    const moved = await processProjectMovesOnce();
+    completed += moved.completed;
+    failed += moved.failed;
     const claims = await options.repository.claimManagedConversationCommands({
       runnerId,
       deviceId: options.deviceId,
@@ -7134,6 +8842,32 @@ export const createManagedConversationService = (options: {
           }
         }
         const isPrompt = command.commandKind === "prompt";
+        const acceptedPromptCheckpointPending =
+          isPrompt && pendingCheckpointFor(command) !== null;
+        if (isPrompt && !acceptedPromptCheckpointPending) {
+          try {
+            if (personalAgentJobFor(command)) {
+              const code = errorCode(error).toLowerCase();
+              const outcome = code.includes("cancel")
+                ? "canceled"
+                : code.includes("interrupt") || code.includes("lease")
+                  ? "interrupted"
+                  : "failed";
+              await finishPersonalAgentAttempt(command, outcome);
+            }
+          } catch {
+            options.logger.warn(
+              {
+                event: {
+                  name: "worker.managed_conversation.personal_agent_attempt_finalize_failed",
+                  category: "managed_conversation"
+                },
+                command_id: command.id
+              },
+              "managed Conversation Personal Agent attempt could not be finalized"
+            );
+          }
+        }
         const settingsRejected =
           isPrompt &&
           errorCode(error) === "ManagedConversationSettingsUnavailableError";
@@ -7906,12 +9640,17 @@ export const createManagedConversationService = (options: {
       runnerHeartbeat = null;
       if (runtimeRecoveryTimer) clearTimeout(runtimeRecoveryTimer);
       runtimeRecoveryTimer = null;
+      if (deferredStartDiscoveryRetryTimer) {
+        clearTimeout(deferredStartDiscoveryRetryTimer);
+      }
+      deferredStartDiscoveryRetryTimer = null;
       if (executionCheckoutRetryTimer) {
         clearTimeout(executionCheckoutRetryTimer);
       }
       executionCheckoutRetryTimer = null;
       await Promise.all([
         startupRecovery?.catch(() => undefined),
+        deferredStartDiscovery?.catch(() => undefined),
         drainPromise?.catch(() => undefined),
         controlsPromise?.catch(() => undefined),
         filesPromise?.catch(() => undefined)

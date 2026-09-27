@@ -207,6 +207,48 @@ describe("managed Conversation execution owner migration", () => {
   });
 });
 
+describe("managed Project move authority migration", () => {
+  it("stores only IDs and lease state in the authority move record", async () => {
+    const [journalText, migrationSql, snapshotText, previousSnapshotText] =
+      await Promise.all([
+        readDrizzleFile("meta/_journal.json"),
+        readDrizzleFile("0049_managed_project_move.sql"),
+        readDrizzleFile("meta/0049_snapshot.json"),
+        readDrizzleFile("meta/0048_snapshot.json")
+      ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    const snapshot = JSON.parse(snapshotText) as {
+      tables: Record<string, unknown>;
+    };
+    const previousSnapshot = JSON.parse(previousSnapshotText) as {
+      tables: Record<string, unknown>;
+    };
+
+    expect(journal.entries[49]).toEqual(
+      expect.objectContaining({ idx: 49, tag: "0049_managed_project_move" })
+    );
+    expect(migrationSql).toContain(
+      'CREATE TABLE "managed_conversation_project_moves"'
+    );
+    expect(migrationSql).toContain('"destination_project_id" text NOT NULL');
+    expect(migrationSql).not.toContain("personal_agent_identity_versions");
+    for (const localOnlyField of [
+      "project_path",
+      "source_binding",
+      "checkout_id",
+      "credential",
+      "diagnostic"
+    ]) {
+      expect(migrationSql.toLowerCase()).not.toContain(localOnlyField);
+    }
+    expect(snapshot.tables["public.personal_agent_identity_versions"]).toEqual(
+      previousSnapshot.tables["public.personal_agent_identity_versions"]
+    );
+  });
+});
+
 describe("Claude AI Client migration", () => {
   it("seeds explicit semantic and raw-only Claude projection policies", async () => {
     const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");
@@ -419,5 +461,41 @@ describe("Durable Memory Answer migration", () => {
       'FOREIGN KEY ("question_id") REFERENCES "public"."memory_questions"("id") ON DELETE no action'
     );
     expect(migrationSql).toContain("'memory_answer_tasks'");
+  });
+});
+
+describe("Personal Agent role template migration", () => {
+  it("adds immutable published versions and source provenance without rewriting history", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0047_personal_agent_role_templates.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries[47]).toEqual(
+      expect.objectContaining({
+        idx: 47,
+        tag: "0047_personal_agent_role_templates"
+      })
+    );
+    expect(migrationSql).toContain(
+      'CREATE TABLE "personal_agent_role_template_versions"'
+    );
+    expect(migrationSql).toContain(
+      "personal_agent_role_template_versions_immutable_trigger"
+    );
+    expect(migrationSql).toContain('ADD COLUMN "source_template_id" text');
+    expect(migrationSql).toContain(
+      'ADD COLUMN "source_template_version" integer'
+    );
+    expect(migrationSql).toContain(
+      "personal_agent_identity_versions_template_source_fk"
+    );
+    expect(migrationSql).not.toContain("DROP TABLE");
+    expect(migrationSql).not.toContain(
+      "DELETE FROM personal_agent_identity_versions"
+    );
   });
 });

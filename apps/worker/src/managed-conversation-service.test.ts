@@ -6,6 +6,7 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,12 +15,14 @@ import { resolve } from "node:path";
 import type {
   ManagedConversationExecutionRecord,
   ManagedConversationExecutionCheckpointRecord,
+  ManagedConversationProjectMoveRecord,
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
 } from "@koed/db";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
+  CodexManagedConversationSession,
   CodexManagedConversationIdentityError,
   MemoryApiError
 } from "@koed/mcp-server";
@@ -33,16 +36,882 @@ import {
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
   managedConversationOriginSourceGeneration,
+  managedConversationAssistantOutputForTurn,
+  codexAssistantFinalTextForTurn,
   reconcileBlockedManagedConversationSource,
   shouldPublishManagedConversationSource,
   shouldRequestManagedConversationSourceRestore,
-  shouldRecoverForkPreparationFailure
+  shouldRecoverForkPreparationFailure,
+  gitWorkingTreeEditState,
+  diffExecutionCheckpointsForCheckout
 } from "./managed-conversation-service.js";
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
 import {
   createGitExecutionCheckoutDriver,
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
+import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("Managed Conversation assistant output buffers", () => {
+  it("recovers only the final answer tied to the exact Codex turn", () => {
+    const transcript = [
+      {
+        timestamp: "2026-09-26T17:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "target-turn" }
+      },
+      {
+        timestamp: "2026-09-26T17:00:01.000Z",
+        type: "response_item",
+        payload: {
+          id: "reasoning-target",
+          type: "reasoning",
+          summary: ["Internal reasoning must not be surfaced"]
+        }
+      },
+      {
+        timestamp: "2026-09-26T17:00:02.000Z",
+        type: "response_item",
+        payload: {
+          id: "answer-target",
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Recovered answer" }]
+        }
+      },
+      {
+        timestamp: "2026-09-26T17:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "other-turn" }
+      },
+      {
+        timestamp: "2026-09-26T17:00:04.000Z",
+        type: "response_item",
+        payload: {
+          id: "answer-other",
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Other turn" }]
+        }
+      }
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+
+    expect(
+      codexAssistantFinalTextForTurn({
+        bytes: Buffer.from(`${transcript}\n`),
+        turnId: "target-turn",
+        sessionId: randomUUID(),
+        providerThreadId: randomUUID()
+      })
+    ).toEqual({ text: "Recovered answer", providerItemId: "answer-target" });
+    expect(
+      codexAssistantFinalTextForTurn({
+        bytes: Buffer.from(`${transcript}\n`),
+        turnId: "missing-turn",
+        sessionId: randomUUID(),
+        providerThreadId: randomUUID()
+      })
+    ).toBeNull();
+  });
+
+  it("collects ordered assistant message items for one turn and excludes other buffers", () => {
+    const executionId = randomUUID();
+    const turnId = randomUUID();
+    const entries = new Map([
+      [
+        `${executionId}:${turnId}:message-1`,
+        { kind: "assistant" as const, text: "First part", itemId: "runtime-1" }
+      ],
+      [
+        `${executionId}:${turnId}:message-2`,
+        { kind: "assistant" as const, text: "Second part", itemId: "runtime-2" }
+      ],
+      [
+        `${executionId}:${turnId}:reasoning`,
+        {
+          kind: "other" as const,
+          text: "Not user-visible",
+          itemId: "runtime-3"
+        }
+      ],
+      [
+        `${executionId}:${randomUUID()}:message-3`,
+        {
+          kind: "assistant" as const,
+          text: "Another turn",
+          itemId: "runtime-4"
+        }
+      ]
+    ]);
+
+    const result = managedConversationAssistantOutputForTurn(
+      entries,
+      executionId,
+      turnId
+    );
+    expect(result.map(([, buffer]) => buffer.text)).toEqual([
+      "First part",
+      "Second part"
+    ]);
+    expect(result.map(([, buffer]) => buffer.itemId)).toEqual([
+      "runtime-1",
+      "runtime-2"
+    ]);
+  });
+});
+
+describe("managed Conversation Project Move runner safeguards", () => {
+  it("does not diff checkpoint refs across repositories after a Project Move", async () => {
+    const capture = (repositoryIdentityHash: string) => ({
+      status: "ready" as const,
+      vcsDriver: "git" as const,
+      repositoryIdentityHash,
+      worktreeIdentityHash: `worktree-${repositoryIdentityHash}`,
+      checkpointRef:
+        "refs/koed/checkpoints/10000000-0000-4000-8000-000000000001/1/1/baseline",
+      commitObjectId: "a".repeat(40),
+      capturedAt: new Date(0).toISOString()
+    });
+    const checkout = {
+      checkoutId: randomUUID(),
+      vcsDriver: "git" as const,
+      ownership: "user_managed_checkout" as const,
+      canonicalPath: "/missing/destination",
+      localRepositoryCommonDirectory: "/missing/destination/.git",
+      localGitDirectory: "/missing/destination/.git",
+      repositoryIdentityHash: "destination-repository",
+      worktreeIdentityHash: "destination-worktree",
+      baseRef: "refs/heads/main",
+      baseObjectId: "b".repeat(40),
+      branchRef: "refs/heads/main",
+      headObjectId: "b".repeat(40)
+    };
+
+    await expect(
+      diffExecutionCheckpointsForCheckout({
+        checkout,
+        from: capture("source-repository"),
+        to: capture("destination-repository")
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("classifies staged, unstaged, and untracked edits, and treats Git failures as unknown", async () => {
+    const root = await mkdtemp(
+      resolve(tmpdir(), "koed-project-move-edit-state-")
+    );
+    const checkout = resolve(root, "checkout");
+    await mkdir(checkout, { recursive: true });
+    execFileSync("git", ["init", "-q", checkout]);
+    expect(gitWorkingTreeEditState(checkout)).toBe("clean");
+    const file = resolve(checkout, "tracked.txt");
+    await writeFile(file, "initial");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: checkout });
+    expect(gitWorkingTreeEditState(checkout)).toBe("changed");
+    execFileSync("git", ["reset", "-q"], { cwd: checkout });
+    expect(gitWorkingTreeEditState(checkout)).toBe("changed");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: checkout });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "base"
+      ],
+      { cwd: checkout }
+    );
+    await writeFile(file, "unstaged change");
+    expect(gitWorkingTreeEditState(checkout)).toBe("changed");
+    expect(gitWorkingTreeEditState(root)).toBe("unknown");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    {
+      registeredDestination: true,
+      recoveredBinding: false,
+      failState: "failed"
+    },
+    {
+      registeredDestination: false,
+      recoveredBinding: true,
+      failState: "failed"
+    },
+    {
+      registeredDestination: false,
+      recoveredBinding: true,
+      failState: "claimed"
+    },
+    {
+      registeredDestination: false,
+      recoveredBinding: true,
+      failState: "completed"
+    },
+    {
+      registeredDestination: true,
+      recoveredBinding: false,
+      invalidJournalSource: true,
+      failState: "claimed"
+    }
+  ])(
+    "$registeredDestination registered destination / $recoveredBinding recovered binding handles destination metadata safely ($failState fail result)",
+    async ({
+      registeredDestination,
+      recoveredBinding,
+      invalidJournalSource = false,
+      failState
+    }) => {
+      const root = await mkdtemp(
+        resolve(tmpdir(), "koed-project-move-registered-")
+      );
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const providerThreadId = randomUUID();
+      const localSessionId = randomUUID();
+      const sourcePath = resolve(root, "source");
+      const destinationPath = resolve(root, "destination");
+      const koedHome = resolve(root, "koed-home");
+      const destinationProjectId = `lp_${randomUUID().replaceAll("-", "")}`;
+      const moveId = randomUUID();
+      const transcriptPath = resolve(root, "transcript.jsonl");
+      const managedHome = resolve(root, "managed-home");
+      let canonicalDestinationPath = destinationPath;
+      const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+      const start = vi
+        .spyOn(CodexManagedConversationSession.prototype, "start")
+        .mockImplementation(() => {
+          return Promise.resolve({
+            // The native resume response can retain the original thread cwd even
+            // though subsequent turns use the destination binding's cwd.
+            thread: {
+              id: providerThreadId,
+              path: transcriptPath,
+              cwd: sourcePath
+            } as never,
+            sessionId: localSessionId,
+            transcriptPath,
+            codexHome: managedHome
+          });
+        });
+      const runTurn = vi.spyOn(
+        CodexManagedConversationSession.prototype,
+        "runTurn"
+      );
+      const close = vi
+        .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+        .mockResolvedValue();
+      await mkdir(sourcePath, { recursive: true });
+      await mkdir(destinationPath, { recursive: true });
+      canonicalDestinationPath = await realpath(destinationPath);
+      await mkdir(resolve(koedHome, "config"), { recursive: true });
+      await writeFile(
+        resolve(koedHome, "config", "projects.json"),
+        JSON.stringify({
+          schemaVersion: 3,
+          projects: registeredDestination
+            ? [
+                {
+                  localProjectId: destinationProjectId,
+                  displayName: "Registered destination",
+                  path: { cwd: destinationPath, projectRoot: destinationPath }
+                }
+              ]
+            : []
+        })
+      );
+      execFileSync("git", ["init", "-q", sourcePath]);
+
+      let execution: ManagedConversationExecutionRecord = {
+        ...terminalExecutionFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId
+        }),
+        state: "running",
+        stateVersion: 3,
+        logicalSessionId: randomUUID(),
+        providerThreadId,
+        runnerId: randomUUID(),
+        runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      };
+      const sourceBinding: ManagedConversationRuntimeBindingRecord = {
+        ...pendingBindingFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId,
+          sourceProjectPath: sourcePath
+        }),
+        projectPath: sourcePath,
+        checkoutId: randomUUID(),
+        checkoutKind: "koed_managed_worktree",
+        checkoutLifecycle: "ready",
+        vcsDriver: "git",
+        localRepositoryCommonDirectory: resolve(sourcePath, ".git"),
+        localGitDirectory: resolve(sourcePath, ".git"),
+        repositoryIdentityHash: "a".repeat(64),
+        worktreeIdentityHash: "b".repeat(64),
+        baseRef: "HEAD",
+        baseObjectId: "c".repeat(40),
+        branchRef: `refs/heads/koed/${executionId}/1`,
+        headObjectId: "c".repeat(40),
+        creationOperationId: randomUUID(),
+        localSessionId,
+        providerThreadId,
+        transcriptPath,
+        managedHome
+      };
+      let binding = recoveredBinding
+        ? {
+            ...sourceBinding,
+            projectPath: canonicalDestinationPath,
+            sourceProjectPath: sourcePath,
+            checkoutId: randomUUID()
+          }
+        : sourceBinding;
+      let move = {
+        id: moveId,
+        ownerUserId,
+        executionId,
+        executionGeneration: 1,
+        sourceProjectId: execution.projectId,
+        destinationProjectId,
+        state: "claimed",
+        claimToken: randomUUID(),
+        claimExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        claimedByRunnerId: "",
+        assignedDeploymentId: deploymentId,
+        assignedDeviceId: deviceId
+      } as ManagedConversationProjectMoveRecord;
+      if (recoveredBinding || invalidJournalSource) {
+        const journalSource = invalidJournalSource
+          ? { ...sourceBinding, providerThreadId: randomUUID() }
+          : sourceBinding;
+        new ProjectMoveLocalJournal({ koedHome }).write({
+          schemaVersion: 1,
+          moveId,
+          sourceRuntimeBinding: journalSource,
+          sourceProjectId: execution.projectId,
+          destinationProjectId,
+          destinationLocalPath: canonicalDestinationPath,
+          phase: recoveredBinding ? "binding_committed" : "requested",
+          updatedAt: new Date().toISOString()
+        });
+      }
+      const sourceIdentity = {
+        checkoutId: sourceBinding.checkoutId!,
+        vcsDriver: "git" as const,
+        ownership: "koed_managed_worktree" as const,
+        canonicalPath: sourcePath,
+        localRepositoryCommonDirectory:
+          sourceBinding.localRepositoryCommonDirectory,
+        localGitDirectory: sourceBinding.localGitDirectory,
+        repositoryIdentityHash: sourceBinding.repositoryIdentityHash,
+        worktreeIdentityHash: sourceBinding.worktreeIdentityHash,
+        baseRef: sourceBinding.baseRef,
+        baseObjectId: sourceBinding.baseObjectId,
+        branchRef: sourceBinding.branchRef,
+        headObjectId: sourceBinding.headObjectId
+      };
+      const destinationIdentity = {
+        ...sourceIdentity,
+        checkoutId: randomUUID(),
+        ownership: "non_vcs_directory" as const,
+        canonicalPath: canonicalDestinationPath,
+        vcsDriver: null,
+        localRepositoryCommonDirectory: null,
+        localGitDirectory: null,
+        repositoryIdentityHash: null,
+        worktreeIdentityHash: null,
+        baseRef: null,
+        baseObjectId: null,
+        branchRef: null,
+        headObjectId: null
+      };
+      const checkoutDriver = {
+        verify: vi.fn(async () => sourceIdentity),
+        select: vi.fn(async ({ path }: { path: string }) => {
+          expect(path).toBe(canonicalDestinationPath);
+          return destinationIdentity;
+        }),
+        remove: vi.fn(async () => undefined)
+      } as unknown as GitExecutionCheckoutDriver;
+      const completeMove = vi.fn(async () => {
+        move = { ...move, state: "completed" };
+        execution = { ...execution, projectId: destinationProjectId };
+        return move;
+      });
+      const repository = {
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+          async () => []
+        ),
+        listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+        listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+        getManagedConversationExecution: vi.fn(async () => execution),
+        getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+        listLcmGraphThreads: vi.fn(async () => []),
+        claimManagedConversationProjectMoves: vi.fn(
+          async (claim: { runnerId: string }) => {
+            move = { ...move, claimedByRunnerId: claim.runnerId };
+            return [move];
+          }
+        ),
+        getManagedConversationProjectMove: vi.fn(async () => move),
+        renewManagedConversationProjectMoveLease: vi.fn(async () => true),
+        failManagedConversationProjectMove: vi.fn(async () => {
+          move = { ...move, state: failState };
+          return move;
+        }),
+        completeManagedConversationProjectMove: completeMove,
+        transitionManagedConversationProjectMoveRuntimeBinding: vi.fn(
+          async (
+            _actor,
+            input: { expectedProjectPath: string; projectPath: string }
+          ) => {
+            expect(binding.projectPath).toBe(input.expectedProjectPath);
+            binding = {
+              ...binding,
+              sourceProjectPath: input.projectPath,
+              projectPath: input.projectPath,
+              checkoutId: null,
+              checkoutKind: "pending",
+              checkoutLifecycle: "pending",
+              cleanupState: "not_requested",
+              vcsDriver: null,
+              localRepositoryCommonDirectory: null,
+              localGitDirectory: null,
+              repositoryIdentityHash: null,
+              worktreeIdentityHash: null,
+              baseRef: null,
+              baseObjectId: null,
+              branchRef: null,
+              headObjectId: null,
+              creationOperationId: null,
+              localSessionId: null,
+              providerThreadId: null,
+              transcriptPath: null,
+              managedHome: null
+            };
+            return binding;
+          }
+        ),
+        bindManagedConversationExecutionCheckout: vi.fn(
+          async (_actor, input: Record<string, unknown>) => {
+            binding = {
+              ...binding,
+              ...input,
+              checkoutLifecycle: "ready",
+              cleanupState: "not_requested"
+            } as ManagedConversationRuntimeBindingRecord;
+            return binding;
+          }
+        ),
+        bindManagedConversationLocalRuntime: vi.fn(
+          async (_actor, input: Record<string, unknown>) => {
+            binding = {
+              ...binding,
+              ...input
+            } as ManagedConversationRuntimeBindingRecord;
+            return binding;
+          }
+        ),
+        reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+        cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+        releaseManagedConversationRunner: vi.fn(async () => true),
+        claimManagedConversationCommands: vi.fn(async () => [])
+      } as unknown as MemorySourceRepository;
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const service = createManagedConversationService({
+        repository,
+        apiUrl: "http://127.0.0.1:3300",
+        apiToken: "test-token",
+        localOwnerUserId: ownerUserId,
+        appServerBinary: "codex",
+        deviceId,
+        deploymentId,
+        koedHome,
+        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        executionCheckoutDriver: checkoutDriver,
+        logger: logger as never
+      });
+      try {
+        const result = await service.processOnce();
+        expect(result).toMatchObject(
+          recoveredBinding && failState === "failed"
+            ? { completed: 0, failed: 1 }
+            : recoveredBinding || invalidJournalSource
+              ? { completed: 0, failed: 0 }
+              : { completed: 1, failed: 0 }
+        );
+        expect(repository.listLcmGraphThreads).not.toHaveBeenCalled();
+        if (recoveredBinding) {
+          expect(completeMove).not.toHaveBeenCalled();
+          expect(
+            repository.failManagedConversationProjectMove
+          ).toHaveBeenCalledOnce();
+          expect(
+            repository.transitionManagedConversationProjectMoveRuntimeBinding
+          ).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              expectedProjectPath: canonicalDestinationPath,
+              projectPath: sourcePath
+            })
+          );
+          expect(binding).toMatchObject({
+            projectPath: sourcePath,
+            localSessionId,
+            providerThreadId,
+            transcriptPath,
+            managedHome
+          });
+          const journal = new ProjectMoveLocalJournal({ koedHome }).read(
+            moveId
+          );
+          if (failState === "failed") {
+            expect(journal).toBeNull();
+          } else {
+            expect(journal?.phase).toBe("binding_committed");
+          }
+        } else if (invalidJournalSource) {
+          expect(completeMove).not.toHaveBeenCalled();
+          expect(
+            repository.failManagedConversationProjectMove
+          ).toHaveBeenCalledOnce();
+          expect(binding.projectPath).toBe(sourcePath);
+          expect(
+            new ProjectMoveLocalJournal({ koedHome }).read(moveId)?.phase
+          ).toBe("requested");
+        } else {
+          expect(completeMove).toHaveBeenCalledWith(
+            expect.objectContaining({
+              moveId,
+              destinationProjectName: "Registered destination"
+            })
+          );
+          expect(binding).toMatchObject({
+            projectPath: canonicalDestinationPath,
+            localSessionId,
+            providerThreadId,
+            transcriptPath,
+            managedHome
+          });
+        }
+        expect(start).toHaveBeenCalledTimes(invalidJournalSource ? 0 : 1);
+        expect(runTurn).not.toHaveBeenCalled();
+        expect(checkoutDriver.remove).toHaveBeenCalledTimes(
+          recoveredBinding || invalidJournalSource ? 0 : 1
+        );
+      } finally {
+        await service.stop();
+        start.mockRestore();
+        runTurn.mockRestore();
+        close.mockRestore();
+        restoreRegistry();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    { reason: "changed", checkoutKind: "koed_managed_worktree" },
+    { reason: "unknown", checkoutKind: "koed_managed_worktree" },
+    { reason: "changed", checkoutKind: "user_managed_checkout" },
+    { reason: "unknown", checkoutKind: "user_managed_checkout" }
+  ] as const)(
+    "moves a dirty $checkoutKind and preserves a durable local locator ($reason)",
+    async ({ reason: retentionReason, checkoutKind }) => {
+      const root = await mkdtemp(resolve(tmpdir(), "koed-project-move-dirty-"));
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const providerThreadId = randomUUID();
+      const localSessionId = randomUUID();
+      const moveId = randomUUID();
+      const destinationProjectId = `lp_${randomUUID().replaceAll("-", "")}`;
+      const sourcePath = resolve(root, "source");
+      const destinationPath = resolve(root, "destination");
+      const koedHome = resolve(root, "koed-home");
+      const sourceProjectRootPath = resolve(root, "source-project-root");
+      const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+      const start = vi
+        .spyOn(CodexManagedConversationSession.prototype, "start")
+        .mockImplementation(() =>
+          Promise.resolve({
+            thread: {
+              id: providerThreadId,
+              path: resolve(root, "transcript.jsonl"),
+              cwd: sourcePath
+            } as never,
+            sessionId: localSessionId,
+            transcriptPath: resolve(root, "transcript.jsonl"),
+            codexHome: resolve(root, "managed-home")
+          })
+        );
+      const close = vi
+        .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+        .mockResolvedValue();
+      await mkdir(sourcePath, { recursive: true });
+      await mkdir(destinationPath, { recursive: true });
+      await mkdir(resolve(koedHome, "config"), { recursive: true });
+      await writeFile(
+        resolve(koedHome, "config", "projects.json"),
+        JSON.stringify({
+          schemaVersion: 3,
+          projects: [
+            {
+              localProjectId: destinationProjectId,
+              displayName: "Destination",
+              path: { cwd: destinationPath, projectRoot: destinationPath }
+            }
+          ]
+        })
+      );
+      execFileSync("git", ["init", "-q", sourcePath]);
+      await writeFile(
+        resolve(sourcePath, "changed.txt"),
+        "uncommitted source edit"
+      );
+
+      const execution: ManagedConversationExecutionRecord = {
+        ...terminalExecutionFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId
+        }),
+        state: "running",
+        stateVersion: 3,
+        logicalSessionId: randomUUID(),
+        providerThreadId,
+        runnerId: randomUUID(),
+        runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      };
+      const sourceBinding: ManagedConversationRuntimeBindingRecord = {
+        ...pendingBindingFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId,
+          sourceProjectPath: sourceProjectRootPath
+        }),
+        projectPath: sourcePath,
+        checkoutId: randomUUID(),
+        checkoutKind,
+        checkoutLifecycle: "ready",
+        vcsDriver: "git",
+        localRepositoryCommonDirectory: resolve(sourcePath, ".git"),
+        localGitDirectory: resolve(sourcePath, ".git"),
+        repositoryIdentityHash: "a".repeat(64),
+        worktreeIdentityHash: "b".repeat(64),
+        baseRef: "HEAD",
+        baseObjectId: "c".repeat(40),
+        branchRef: `refs/heads/koed/${executionId}/1`,
+        headObjectId: "c".repeat(40),
+        creationOperationId: randomUUID(),
+        localSessionId,
+        providerThreadId: execution.providerThreadId,
+        transcriptPath: resolve(root, "transcript.jsonl"),
+        managedHome: resolve(root, "managed-home")
+      };
+      let move = {
+        id: moveId,
+        ownerUserId,
+        executionId,
+        executionGeneration: 1,
+        sourceProjectId: execution.projectId,
+        destinationProjectId,
+        state: "claimed",
+        claimToken: randomUUID(),
+        claimExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        claimedByRunnerId: randomUUID(),
+        assignedDeploymentId: deploymentId,
+        assignedDeviceId: deviceId
+      } as ManagedConversationProjectMoveRecord;
+      const identity = {
+        checkoutId: sourceBinding.checkoutId!,
+        vcsDriver: "git" as const,
+        ownership: checkoutKind,
+        canonicalPath: sourcePath,
+        localRepositoryCommonDirectory:
+          sourceBinding.localRepositoryCommonDirectory,
+        localGitDirectory: sourceBinding.localGitDirectory,
+        repositoryIdentityHash: sourceBinding.repositoryIdentityHash,
+        worktreeIdentityHash: sourceBinding.worktreeIdentityHash,
+        baseRef: sourceBinding.baseRef,
+        baseObjectId: sourceBinding.baseObjectId,
+        branchRef: sourceBinding.branchRef,
+        headObjectId:
+          retentionReason === "unknown"
+            ? "d".repeat(40)
+            : sourceBinding.headObjectId
+      };
+      const destinationIdentity = {
+        ...identity,
+        checkoutId: randomUUID(),
+        ownership: "non_vcs_directory" as const,
+        canonicalPath: await realpath(destinationPath),
+        vcsDriver: null,
+        localRepositoryCommonDirectory: null,
+        localGitDirectory: null,
+        repositoryIdentityHash: null,
+        worktreeIdentityHash: null,
+        baseRef: null,
+        baseObjectId: null,
+        branchRef: null,
+        headObjectId: null
+      };
+      const checkoutDriver = {
+        verify: vi.fn(async () => identity),
+        select: vi.fn(async () => destinationIdentity),
+        remove: vi.fn(async () => undefined)
+      } as unknown as GitExecutionCheckoutDriver;
+      let binding = sourceBinding;
+      const completeMove = vi.fn(async () => {
+        move = { ...move, state: "completed" };
+        return move;
+      });
+      const repository = {
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+          async () => []
+        ),
+        listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+        listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+        getManagedConversationExecution: vi.fn(async () => execution),
+        getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+        listLcmGraphThreads: vi.fn(async () => []),
+        claimManagedConversationProjectMoves: vi.fn(
+          async (claim: { runnerId: string }) => [
+            { ...move, claimedByRunnerId: claim.runnerId }
+          ]
+        ),
+        getManagedConversationProjectMove: vi.fn(async () => move),
+        renewManagedConversationProjectMoveLease: vi.fn(async () => true),
+        failManagedConversationProjectMove: vi.fn(async () => ({
+          ...move,
+          state: "failed" as const
+        })),
+        cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+        releaseManagedConversationRunner: vi.fn(async () => true),
+        completeManagedConversationProjectMove: completeMove,
+        transitionManagedConversationProjectMoveRuntimeBinding: vi.fn(
+          async (_actor: unknown, input: { projectPath: string }) => {
+            binding = {
+              ...binding,
+              sourceProjectPath: input.projectPath,
+              projectPath: input.projectPath,
+              checkoutId: null,
+              checkoutKind: "pending",
+              checkoutLifecycle: "pending",
+              cleanupState: "not_requested",
+              vcsDriver: null,
+              localRepositoryCommonDirectory: null,
+              localGitDirectory: null,
+              repositoryIdentityHash: null,
+              worktreeIdentityHash: null,
+              baseRef: null,
+              baseObjectId: null,
+              branchRef: null,
+              headObjectId: null,
+              creationOperationId: null,
+              localSessionId: null,
+              providerThreadId: null,
+              transcriptPath: null,
+              managedHome: null
+            };
+            return binding;
+          }
+        ),
+        bindManagedConversationExecutionCheckout: vi.fn(
+          async (_actor: unknown, input: Record<string, unknown>) => {
+            binding = {
+              ...binding,
+              ...input,
+              checkoutLifecycle: "ready",
+              cleanupState: "not_requested"
+            } as ManagedConversationRuntimeBindingRecord;
+            return binding;
+          }
+        ),
+        bindManagedConversationLocalRuntime: vi.fn(
+          async (_actor: unknown, input: Record<string, unknown>) => {
+            binding = {
+              ...binding,
+              ...input
+            } as ManagedConversationRuntimeBindingRecord;
+            return binding;
+          }
+        ),
+        upsertManagedConversationRuntimeBinding: vi.fn(),
+        reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+        claimManagedConversationCommands: vi.fn(async () => [])
+      } as unknown as MemorySourceRepository;
+      const service = createManagedConversationService({
+        repository,
+        apiUrl: "http://127.0.0.1:3300",
+        apiToken: "test-token",
+        localOwnerUserId: ownerUserId,
+        appServerBinary: "codex",
+        deviceId,
+        deploymentId,
+        koedHome,
+        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        executionCheckoutDriver: checkoutDriver,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+      });
+      try {
+        const result = await service.processOnce();
+        expect(result).toMatchObject({ completed: 1, failed: 0 });
+        expect(completeMove).toHaveBeenCalledOnce();
+        expect(binding.projectPath).toBe(await realpath(destinationPath));
+        expect(repository.listLcmGraphThreads).not.toHaveBeenCalled();
+        const retained = JSON.parse(
+          await readFile(
+            resolve(koedHome, "run", "retained-workspaces", `${moveId}.json`),
+            "utf8"
+          )
+        );
+        expect(retained).toMatchObject({
+          schemaVersion: 2,
+          moveId,
+          executionId,
+          sourcePath,
+          destinationPath: await realpath(destinationPath),
+          checkoutKind,
+          checkoutIdentity: {
+            ownership: checkoutKind,
+            canonicalPath: sourcePath
+          },
+          reason: retentionReason
+        });
+        expect(retained.sourcePath).toBe(sourcePath);
+        expect(retained.sourcePath).not.toBe(sourceProjectRootPath);
+        expect(await readFile(resolve(sourcePath, "changed.txt"), "utf8")).toBe(
+          "uncommitted source edit"
+        );
+        expect(checkoutDriver.remove).not.toHaveBeenCalled();
+      } finally {
+        await service.stop();
+        start.mockRestore();
+        close.mockRestore();
+        restoreRegistry();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+});
 
 describe("Managed Conversation token usage", () => {
   it("records the current provider context and cumulative processed count once per command", () => {
@@ -231,7 +1100,7 @@ describe("Managed Codex runtime environment", () => {
         }
       });
 
-      expect(environment.CODEX_HOME).toBe(codexHome);
+      expect(environment.CODEX_HOME).toBe(await realpath(codexHome));
       expect(environment.MEMORY_CODEX_APP_SERVER_BINARY).toBe(
         await realpath(process.execPath)
       );
@@ -373,7 +1242,870 @@ const cleanupBindingFixture = (input: {
   };
 };
 
+const configureLocalCodexInstanceRegistry = async (
+  root: string,
+  includeInstance = true
+) => {
+  const registryPath = resolve(root, "ai-client-instances.json");
+  await writeFile(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      instances: includeInstance
+        ? [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              displayName: "Codex",
+              executablePath: process.execPath
+            }
+          ]
+        : []
+    })
+  );
+  const previous = process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+  process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = registryPath;
+  return () => {
+    if (previous === undefined) {
+      delete process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+    } else {
+      process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = previous;
+    }
+  };
+};
+
+const deferredStartRepository = (input: {
+  execution: ManagedConversationExecutionRecord;
+  currentExecution?: ManagedConversationExecutionRecord;
+  projectPath?: string;
+  instancesAvailable?: boolean;
+  localBinding?: ManagedConversationRuntimeBindingRecord | null;
+  initialExecutions?: ManagedConversationExecutionRecord[];
+  failExecutionAfterCheckout?: boolean;
+}) => {
+  let currentBinding = input.localBinding ?? null;
+  let currentExecution = input.currentExecution ?? input.execution;
+  let assignedExecutions = input.initialExecutions ?? [input.execution];
+  const capabilitySnapshot = {
+    instanceId: "codex.default",
+    installationIdentityHash: "identity",
+    authenticationState: "authenticated",
+    healthState: "healthy",
+    expiresAt: "2099-01-01T00:00:00Z",
+    models: [{ id: "gpt-test", supportedReasoningEfforts: ["low"] }],
+    capabilities: {
+      descriptors: {
+        managed_conversation_send: {
+          support: "supported",
+          readiness: "ready"
+        }
+      }
+    }
+  };
+  const repository = {
+    listManagedConversationExecutionsForRunner: vi.fn(
+      async () => assignedExecutions
+    ),
+    listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+      async () => []
+    ),
+    listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+    getManagedConversationExecution: vi.fn(async () => currentExecution),
+    getManagedConversationRuntimeBinding: vi.fn(async () => currentBinding),
+    listLcmGraphThreads: vi.fn(async () =>
+      input.projectPath
+        ? [{ id: input.execution.projectId, path: input.projectPath }]
+        : []
+    ),
+    upsertManagedConversationRuntimeBinding: vi.fn(async (_actor, binding) => {
+      currentBinding = pendingBindingFixture({
+        ownerUserId: input.execution.ownerUserId,
+        executionId: input.execution.id,
+        deploymentId: binding.deploymentId,
+        deviceId: binding.deviceId,
+        sourceProjectPath: binding.projectPath
+      });
+      return currentBinding;
+    }),
+    bindManagedConversationExecutionCheckout: vi.fn(async (_actor, binding) => {
+      currentBinding = {
+        ...currentBinding!,
+        ...binding,
+        checkoutLifecycle: "ready" as const,
+        cleanupState: "not_requested" as const
+      };
+      if (input.failExecutionAfterCheckout) {
+        currentExecution = { ...currentExecution, state: "failed" };
+      }
+      return currentBinding;
+    }),
+    listAiClientInstances: vi.fn(async () =>
+      input.instancesAvailable === false
+        ? []
+        : [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              enabled: true,
+              configIdentityHash: "identity"
+            }
+          ]
+    ),
+    listCurrentAiClientCapabilitySnapshots: vi.fn(async () =>
+      input.instancesAvailable === false ? [] : [capabilitySnapshot]
+    ),
+    releaseManagedConversationStartForRuntimeBinding: vi.fn(async () => true),
+    acknowledgeManagedConversationRuntimeBinding: vi.fn(async () => true),
+    failManagedConversationStartForRuntimeBinding: vi.fn(async () => {
+      currentExecution = { ...currentExecution, state: "failed" };
+      return true;
+    }),
+    clearManagedConversationRuntimeBinding: vi.fn(async () => {
+      currentBinding = null;
+      return true;
+    }),
+    reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+    claimManagedConversationCommands: vi.fn(async () => [])
+  };
+  const checkoutDriver = {
+    select: vi.fn(async ({ path }: { path: string }) => ({
+      checkoutId: randomUUID(),
+      vcsDriver: null,
+      ownership: "non_vcs_directory" as const,
+      canonicalPath: path,
+      localRepositoryCommonDirectory: null,
+      localGitDirectory: null,
+      repositoryIdentityHash: null,
+      worktreeIdentityHash: null,
+      baseRef: null,
+      baseObjectId: null,
+      branchRef: null,
+      headObjectId: null
+    }))
+  } as unknown as GitExecutionCheckoutDriver;
+  const repositoryType = repository as unknown as MemorySourceRepository;
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  return {
+    repository,
+    logger,
+    setAssignedExecutions: (
+      executions: ManagedConversationExecutionRecord[]
+    ) => {
+      assignedExecutions = executions;
+    },
+    createService: (options: {
+      deploymentId: string;
+      deviceId: string;
+      localOwnerUserId: string;
+      koedHome: string;
+    }) =>
+      createManagedConversationService({
+        repository: repositoryType,
+        apiUrl: "http://127.0.0.1:3300",
+        apiToken: "test-token",
+        localOwnerUserId: options.localOwnerUserId,
+        appServerBinary: "codex",
+        deviceId: options.deviceId,
+        deploymentId: options.deploymentId,
+        koedHome: options.koedHome,
+        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        executionCheckoutDriver: checkoutDriver,
+        logger: logger as never
+      })
+  };
+};
+
+describe("deferred Managed Conversation runner starts", () => {
+  it("discovers an assigned start, prepares its local binding, and is idempotent after reconnect", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-deferred-start-"));
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = startingExecutionFixture({
+      ownerUserId,
+      executionId,
+      deploymentId,
+      deviceId
+    });
+    const harness = deferredStartRepository({
+      execution,
+      projectPath: resolve(root, "project")
+    });
+    const serviceOptions = {
+      deploymentId,
+      deviceId,
+      localOwnerUserId: ownerUserId,
+      koedHome: resolve(root, "koed-home")
+    };
+    const service = harness.createService(serviceOptions);
+    try {
+      await service.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.listManagedConversationExecutionsForRunner
+        ).toHaveBeenCalledOnce()
+      );
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.getManagedConversationExecution
+        ).toHaveBeenCalledOnce()
+      );
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.upsertManagedConversationRuntimeBinding
+        ).toHaveBeenCalledOnce()
+      );
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.bindManagedConversationExecutionCheckout
+        ).toHaveBeenCalledOnce()
+      );
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.releaseManagedConversationStartForRuntimeBinding
+        ).toHaveBeenCalledOnce()
+      );
+      expect(
+        harness.repository.upsertManagedConversationRuntimeBinding
+      ).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          executionId,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          projectPath: resolve(root, "project")
+        })
+      );
+      expect(
+        harness.repository.bindManagedConversationExecutionCheckout.mock
+          .invocationCallOrder[0]
+      ).toBeLessThan(
+        harness.repository.releaseManagedConversationStartForRuntimeBinding.mock
+          .invocationCallOrder[0]!
+      );
+      expect(
+        harness.repository.acknowledgeManagedConversationRuntimeBinding
+      ).toHaveBeenCalledWith({
+        ownerUserId,
+        executionId,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      });
+      expect(
+        harness.repository.failManagedConversationStartForRuntimeBinding
+      ).not.toHaveBeenCalled();
+      await service.stop();
+
+      // A reconnect may see the same durable `starting` record before the
+      // authority's next state projection, but the acknowledged local binding
+      // prevents a second checkout preparation or readiness release.
+      const reconnected = harness.createService(serviceOptions);
+      await reconnected.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.listManagedConversationExecutionsForRunner
+        ).toHaveBeenCalledTimes(4)
+      );
+      expect(
+        harness.repository.upsertManagedConversationRuntimeBinding
+      ).toHaveBeenCalledOnce();
+      expect(
+        harness.repository.releaseManagedConversationStartForRuntimeBinding
+      ).toHaveBeenCalledOnce();
+      await reconnected.stop();
+    } finally {
+      await service.stop();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepares an independent hosted execution under KOED_HOME before acknowledgement", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-deferred-independent-"));
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = {
+      ...startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      projectId: null,
+      contextKind: "independent" as const
+    };
+    const koedHome = resolve(root, "koed-home");
+    await mkdir(koedHome, { recursive: true });
+    const harness = deferredStartRepository({ execution });
+    const service = harness.createService({
+      deploymentId,
+      deviceId,
+      localOwnerUserId: ownerUserId,
+      koedHome
+    });
+    try {
+      await service.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.releaseManagedConversationStartForRuntimeBinding
+        ).toHaveBeenCalledOnce()
+      );
+      const projectPath = resolve(
+        await realpath(koedHome),
+        "managed-conversations",
+        "independent",
+        executionId
+      );
+      expect(
+        harness.repository.upsertManagedConversationRuntimeBinding
+      ).toHaveBeenCalledWith(
+        { userId: ownerUserId },
+        expect.objectContaining({
+          executionId,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          projectPath
+        })
+      );
+      expect(harness.repository.listLcmGraphThreads).not.toHaveBeenCalled();
+      expect(
+        harness.repository.acknowledgeManagedConversationRuntimeBinding
+      ).toHaveBeenCalledWith({
+        ownerUserId,
+        executionId,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      });
+      expect((await stat(projectPath)).mode & 0o777).toBe(0o700);
+    } finally {
+      await service.stop();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers a browser start on the next runner wake after startup", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-deferred-start-wake-"));
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = startingExecutionFixture({
+      ownerUserId,
+      executionId,
+      deploymentId,
+      deviceId
+    });
+    const harness = deferredStartRepository({
+      execution,
+      initialExecutions: [],
+      projectPath: resolve(root, "project")
+    });
+    const service = harness.createService({
+      deploymentId,
+      deviceId,
+      localOwnerUserId: ownerUserId,
+      koedHome: resolve(root, "koed-home")
+    });
+    try {
+      await service.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.listManagedConversationExecutionsForRunner
+        ).toHaveBeenCalledTimes(2)
+      );
+      await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+      harness.setAssignedExecutions([execution]);
+
+      await service.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.releaseManagedConversationStartForRuntimeBinding
+        ).toHaveBeenCalledOnce()
+      );
+      expect(
+        harness.repository.listManagedConversationExecutionsForRunner
+      ).toHaveBeenCalledTimes(3);
+    } finally {
+      await service.stop();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips readiness when the execution becomes failed during local checkout preparation", async () => {
+    const root = await mkdtemp(
+      resolve(tmpdir(), "koed-deferred-start-canceled-")
+    );
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = {
+      ...startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      projectId: null,
+      contextKind: "independent" as const
+    };
+    const harness = deferredStartRepository({
+      execution,
+      failExecutionAfterCheckout: true
+    });
+    const service = harness.createService({
+      deploymentId,
+      deviceId,
+      localOwnerUserId: ownerUserId,
+      koedHome: resolve(root, "koed-home")
+    });
+    try {
+      await service.processOnce();
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.bindManagedConversationExecutionCheckout
+        ).toHaveBeenCalledOnce()
+      );
+      await vi.waitFor(() =>
+        expect(
+          harness.repository.getManagedConversationExecution
+        ).toHaveBeenCalledTimes(3)
+      );
+      expect(
+        harness.repository.releaseManagedConversationStartForRuntimeBinding
+      ).not.toHaveBeenCalled();
+      expect(
+        harness.repository.acknowledgeManagedConversationRuntimeBinding
+      ).not.toHaveBeenCalled();
+      expect(
+        harness.repository.failManagedConversationStartForRuntimeBinding
+      ).not.toHaveBeenCalled();
+      expect(harness.repository.listLcmGraphThreads).not.toHaveBeenCalled();
+      expect(
+        harness.repository.acknowledgeManagedConversationRuntimeBinding
+      ).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      unavailable: "Project",
+      instancesAvailable: true,
+      projectPath: undefined
+    },
+    {
+      unavailable: "AI Client",
+      instancesAvailable: true,
+      projectPath: "/local/project",
+      localInstanceConfigured: false
+    },
+    {
+      unavailable: "AI Client settings",
+      instancesAvailable: false,
+      projectPath: "/local/project"
+    }
+  ])(
+    "fails closed when the local $unavailable is unavailable",
+    async ({
+      unavailable,
+      instancesAvailable,
+      projectPath,
+      localInstanceConfigured
+    }) => {
+      const root = await mkdtemp(
+        resolve(tmpdir(), "koed-deferred-start-invalid-")
+      );
+      const restoreRegistry = await configureLocalCodexInstanceRegistry(
+        root,
+        localInstanceConfigured !== false
+      );
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const execution = startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      });
+      const harness = deferredStartRepository({
+        execution,
+        projectPath,
+        instancesAvailable
+      });
+      const service = harness.createService({
+        deploymentId,
+        deviceId,
+        localOwnerUserId: ownerUserId,
+        koedHome: resolve(root, "koed-home")
+      });
+      try {
+        await service.processOnce();
+        await vi.waitFor(() =>
+          expect(
+            harness.repository.failManagedConversationStartForRuntimeBinding
+          ).toHaveBeenCalledOnce()
+        );
+        expect(
+          harness.repository.failManagedConversationStartForRuntimeBinding
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            ownerUserId,
+            executionId,
+            executionGeneration: 1,
+            deploymentId,
+            deviceId,
+            errorCode:
+              unavailable === "Project"
+                ? "ManagedConversationProjectUnavailableError"
+                : unavailable === "AI Client"
+                  ? "ManagedConversationProviderUnavailableError"
+                  : "ManagedConversationSettingsUnavailableError"
+          })
+        );
+        expect(
+          harness.repository.releaseManagedConversationStartForRuntimeBinding
+        ).not.toHaveBeenCalled();
+        expect(
+          harness.repository.acknowledgeManagedConversationRuntimeBinding
+        ).not.toHaveBeenCalled();
+        expect(
+          harness.repository.upsertManagedConversationRuntimeBinding
+        ).not.toHaveBeenCalled();
+      } finally {
+        await service.stop();
+        restoreRegistry();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    {
+      changed: "runner",
+      current: (execution: ManagedConversationExecutionRecord) => ({
+        ...execution,
+        runnerDeviceId: randomUUID()
+      })
+    },
+    {
+      changed: "generation",
+      current: (execution: ManagedConversationExecutionRecord) => ({
+        ...execution,
+        executionGeneration: execution.executionGeneration + 1
+      })
+    }
+  ])(
+    "ignores an assignment whose $changed fence changed before local preparation",
+    async ({ current }) => {
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const execution = startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      });
+      const harness = deferredStartRepository({
+        execution,
+        currentExecution: current(execution),
+        projectPath: "/must-not-be-read"
+      });
+      const service = harness.createService({
+        deploymentId,
+        deviceId,
+        localOwnerUserId: ownerUserId,
+        koedHome: "/tmp/koed-deferred-start-fenced"
+      });
+      try {
+        await service.processOnce();
+        await vi.waitFor(() =>
+          expect(
+            harness.repository.listManagedConversationExecutionsForRunner
+          ).toHaveBeenCalledOnce()
+        );
+        expect(harness.repository.listLcmGraphThreads).not.toHaveBeenCalled();
+        expect(
+          harness.repository.upsertManagedConversationRuntimeBinding
+        ).not.toHaveBeenCalled();
+        expect(
+          harness.repository.releaseManagedConversationStartForRuntimeBinding
+        ).not.toHaveBeenCalled();
+        expect(
+          harness.repository.failManagedConversationStartForRuntimeBinding
+        ).not.toHaveBeenCalled();
+      } finally {
+        await service.stop();
+      }
+    }
+  );
+});
+
 describe("Managed Conversation service lifecycle", () => {
+  it("keeps a recovered accepted prompt pending when transcript reconciliation is unavailable", async () => {
+    const root = await mkdtemp(
+      resolve(tmpdir(), "koed-checkpoint-prompt-recovery-")
+    );
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const providerThreadId = randomUUID();
+    const localSessionId = randomUUID();
+    const sourceGenerationId = randomUUID();
+    const commandId = randomUUID();
+    const leaseToken = randomUUID();
+    const personalAgentJobId = randomUUID();
+    const agentId = randomUUID();
+    const agentIdentityVersionId = randomUUID();
+    const projectPath = resolve(root, "destination");
+    await mkdir(projectPath, { recursive: true });
+    const execution: ManagedConversationExecutionRecord = {
+      ...terminalExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      state: "running",
+      stateVersion: 3,
+      stoppedAt: null,
+      logicalSessionId: localSessionId,
+      providerThreadId,
+      sourceGenerationId,
+      runnerId: randomUUID(),
+      runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const checkoutId = randomUUID();
+    const binding: ManagedConversationRuntimeBindingRecord = {
+      ...pendingBindingFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId,
+        sourceProjectPath: projectPath
+      }),
+      projectPath,
+      checkoutId,
+      checkoutKind: "user_managed_checkout",
+      checkoutLifecycle: "ready",
+      vcsDriver: "git",
+      localRepositoryCommonDirectory: resolve(projectPath, ".git"),
+      localGitDirectory: resolve(projectPath, ".git"),
+      repositoryIdentityHash: "a".repeat(64),
+      worktreeIdentityHash: "b".repeat(64),
+      baseRef: "refs/heads/main",
+      baseObjectId: "c".repeat(40),
+      branchRef: "refs/heads/main",
+      headObjectId: "c".repeat(40),
+      creationOperationId: randomUUID(),
+      localSessionId,
+      providerThreadId,
+      transcriptPath: resolve(root, "transcript.jsonl"),
+      managedHome: resolve(root, "managed-home"),
+      sourceGenerationId
+    };
+    const checkpoint = (
+      sequence: number,
+      kind: "baseline" | "terminal",
+      repositoryIdentityHash: string
+    ): ManagedConversationExecutionCheckpointRecord => ({
+      id: randomUUID(),
+      ownerUserId,
+      executionId,
+      executionGeneration: 1,
+      commandId: randomUUID(),
+      providerTurnId: null,
+      sourceGenerationId,
+      sequence,
+      checkpointKind: kind,
+      checkpointStatus: "ready",
+      failureCode: null,
+      repositoryIdentityHash,
+      worktreeIdentityHash: "b".repeat(64),
+      vcsDriver: "git",
+      checkpointRef: `refs/koed/checkpoints/${executionId}/1/${sequence}/${kind}`,
+      commitObjectId: "d".repeat(40),
+      capturedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const command = {
+      id: commandId,
+      ownerUserId,
+      executionId,
+      executionGeneration: 1,
+      commandKind: "prompt" as const,
+      sequence: 2,
+      attempts: 1,
+      leaseToken,
+      clientUserMessageId: randomUUID(),
+      payload: {
+        prompt: "Continue",
+        personalAgent: {
+          jobId: personalAgentJobId,
+          agentId,
+          agentVersion: 1
+        },
+        personalAgentContext: {
+          schemaVersion: 1,
+          identity: {
+            agentId,
+            version: 1,
+            identityVersionId: agentIdentityVersionId,
+            name: "Test Agent",
+            role: null,
+            soulInstructions: "Answer clearly."
+          },
+          project: { projectId: null, name: null },
+          memory: { searchDomain: "global", evidence: [] }
+        }
+      },
+      result: {
+        phase: "checkpoint_pending",
+        providerTurnId: "turn-2",
+        sourceGenerationId
+      },
+      execution
+    };
+    const checkpoints = [
+      checkpoint(1, "baseline", "c".repeat(64)),
+      {
+        ...checkpoint(2, "baseline", binding.repositoryIdentityHash!),
+        commandId
+      },
+      {
+        ...checkpoint(2, "terminal", binding.repositoryIdentityHash!),
+        commandId
+      }
+    ];
+    const complete = vi.fn(async () => true);
+    const completeAttempt = vi.fn(async () => ({
+      attempt: {},
+      job: {},
+      replayed: false
+    }));
+    const fail = vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: true
+    }));
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => [command]),
+      getManagedConversationExecution: vi.fn(async () => ({
+        ...execution,
+        state: "running",
+        stateVersion: 2
+      })),
+      setManagedConversationExecutionState: vi.fn(async () => true),
+      getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+      listManagedConversationExecutionCheckpoints: vi.fn(
+        async () => checkpoints
+      ),
+      renewManagedConversationCommandLease: vi.fn(async () => true),
+      completeManagedConversationCommand: complete,
+      completePersonalAgentExecutionAttempt: completeAttempt,
+      failManagedConversationCommand: fail,
+      cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+      releaseManagedConversationRunner: vi.fn(async () => true)
+    } as unknown as MemorySourceRepository;
+    const start = vi
+      .spyOn(CodexManagedConversationSession.prototype, "start")
+      .mockRejectedValue(
+        new Error("Transcript storage temporarily unavailable")
+      );
+    const close = vi
+      .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+      .mockResolvedValue();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const checkoutDriver = {
+      verify: vi.fn(async () => ({
+        checkoutId,
+        vcsDriver: "git" as const,
+        ownership: "user_managed_checkout" as const,
+        canonicalPath: projectPath,
+        localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
+        localGitDirectory: binding.localGitDirectory,
+        repositoryIdentityHash: binding.repositoryIdentityHash,
+        worktreeIdentityHash: binding.worktreeIdentityHash,
+        baseRef: binding.baseRef,
+        baseObjectId: binding.baseObjectId,
+        branchRef: binding.branchRef,
+        headObjectId: binding.headObjectId
+      }))
+    } as unknown as GitExecutionCheckoutDriver;
+    const service = createManagedConversationService({
+      repository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: process.execPath,
+      deviceId,
+      deploymentId,
+      koedHome: resolve(root, "koed-home"),
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      executionCheckoutDriver: checkoutDriver,
+      logger: logger as never
+    });
+    try {
+      const processResult = await service.processOnce();
+      expect(processResult).toEqual({ completed: 0, failed: 1 });
+      expect(start).toHaveBeenCalledOnce();
+      expect(complete).not.toHaveBeenCalled();
+      expect(completeAttempt).not.toHaveBeenCalled();
+      expect(fail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId,
+          leaseToken,
+          state: "indeterminate",
+          errorCode: "ExecutionCheckpointRecoveryPendingError"
+        })
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: {
+            name: "worker.managed_conversation.checkpoint_transcript_reconciliation_deferred",
+            category: "managed_conversation"
+          }
+        }),
+        expect.any(String)
+      );
+    } finally {
+      await service.stop();
+      start.mockRestore();
+      close.mockRestore();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("executes rooted file operations independently from provider commands", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "koed-managed-files-"));
     try {
@@ -949,9 +2681,11 @@ describe("Managed Conversation service lifecycle", () => {
       });
 
       await service.processOnce();
-      await vi.waitFor(() => expect(listExecutions).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(listExecutions).toHaveBeenCalled());
       await vi.advanceTimersByTimeAsync(500);
-      await vi.waitFor(() => expect(listExecutions).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(listExecutions.mock.calls.length).toBeGreaterThanOrEqual(2)
+      );
       await service.stop();
     } finally {
       vi.useRealTimers();

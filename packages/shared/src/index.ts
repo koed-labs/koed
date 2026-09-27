@@ -210,6 +210,69 @@ export {
   sanitizeAiClientDiagnostics
 } from "./ai-client-contract.js";
 export {
+  PERSONAL_AGENT_AVATAR_REFERENCE_MAX_LENGTH,
+  PERSONAL_AGENT_CONTRACT_VERSION,
+  PERSONAL_AGENT_MAX_PARTICIPANTS,
+  PERSONAL_AGENT_MODEL_MAX_LENGTH,
+  PERSONAL_AGENT_NAME_MAX_LENGTH,
+  PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH,
+  PERSONAL_AGENT_ROLE_MAX_LENGTH,
+  PERSONAL_AGENT_SOUL_MAX_LENGTH,
+  addPersonalAgentParticipant,
+  assertPersonalAgentAttributionBelongsTo,
+  assertPersonalAgentAttemptRuntimeIdentity,
+  assertPersonalAgentIsActive,
+  assertPersonalAgentOwner,
+  assertPersonalAgentVersionBelongsTo,
+  nextPersonalAgentVersion,
+  parsePersonalAgentConversation,
+  parsePersonalAgentExecutionAttempt,
+  parsePersonalAgentExecutionJob,
+  parsePersonalAgentIdentity,
+  parsePersonalAgentIdentityVersion,
+  personalAgentExecutionContextSchema,
+  personalAgentAttemptCountersSchema,
+  personalAgentAttemptOutcomeSchema,
+  personalAgentAttributionSchema,
+  personalAgentConversationSchema,
+  personalAgentExecutionAttemptSchema,
+  personalAgentExecutionJobSchema,
+  personalAgentIdentitySchema,
+  personalAgentIdentityVersionSchema,
+  personalAgentInstructionSourceSchema,
+  personalAgentLifecycleSchema,
+  personalAgentParticipantSchema,
+  personalAgentRunningAttemptCount,
+  personalAgentTerminalAttemptCount,
+  retirePersonalAgent,
+  setPersonalAgentActiveRespondent
+} from "./personal-agent-contract.js";
+
+export {
+  PERSONAL_AGENT_TEMPLATE_ID_MAX_LENGTH,
+  PERSONAL_AGENT_TEMPLATE_SOUL_MAX_LENGTH,
+  PERSONAL_AGENT_TEMPLATE_TITLE_MAX_LENGTH,
+  personalAgentRoleTemplateSchema,
+  personalAgentTemplateProvenanceSchema,
+  type PersonalAgentRoleTemplate,
+  type PersonalAgentTemplateProvenance
+} from "./personal-agent-template-contract.js";
+export type {
+  PersonalAgentAttribution,
+  PersonalAgentAttemptCounters,
+  PersonalAgentAttemptOutcome,
+  PersonalAgentConversation,
+  PersonalAgentExecutionAttempt,
+  PersonalAgentExecutionContext,
+  PersonalAgentExecutionJob,
+  PersonalAgentIdentity,
+  PersonalAgentIdentityVersion,
+  PersonalAgentInstructionSource,
+  PersonalAgentJobState,
+  PersonalAgentLifecycle,
+  PersonalAgentParticipant
+} from "./personal-agent-contract.js";
+export {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
   MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,
   MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION,
@@ -792,7 +855,9 @@ export {
   isPortableGitRemote,
   mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
+  normalizeProjectDisplayNameOverride,
   normalizeProjectDisplayName,
+  PROJECT_DISPLAY_NAME_MAX_LENGTH,
   safeProjectMetadataForRemote
 } from "./project-metadata.js";
 export {

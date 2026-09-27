@@ -22,6 +22,8 @@ export interface ProjectMetadataV1 {
   lastSeenAt: string;
   localProjectId: string;
   displayName: string;
+  /** Explicit device-local name supplied during project discovery. */
+  displayNameOverride?: string;
   path: {
     cwd: string;
     projectRoot: string | null;
@@ -45,6 +47,24 @@ export interface ProjectMetadataV1 {
     source: "codex";
   };
 }
+
+export const PROJECT_DISPLAY_NAME_MAX_LENGTH = 120;
+
+export const normalizeProjectDisplayNameOverride = (input: string): string => {
+  const name = input.trim();
+  if (!name) {
+    throw new Error("Project name must not be empty.");
+  }
+  if (Array.from(name).length > PROJECT_DISPLAY_NAME_MAX_LENGTH) {
+    throw new Error(
+      `Project name must be ${PROJECT_DISPLAY_NAME_MAX_LENGTH} characters or fewer.`
+    );
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
+    throw new Error("Project name cannot contain control characters.");
+  }
+  return name;
+};
 
 export const normalizeProjectDisplayName = (input: {
   projectRoot?: string | null;

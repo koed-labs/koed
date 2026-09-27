@@ -3,11 +3,27 @@ import { describe, expect, it, vi } from "vitest";
 import {
   consumeDesktopActivation,
   createDesktopWindowActivator,
+  isStudioReviewLaunch,
   shouldQuitAfterAllWindowsClosed,
   type DesktopWindowHandle
 } from "./lifecycle.js";
 
 describe("Desktop window lifecycle", () => {
+  it("accepts Studio review launch only in development", () => {
+    expect(
+      isStudioReviewLaunch({
+        appIsPackaged: false,
+        argv: ["electron", ".", "--studio-review-only"]
+      })
+    ).toBe(true);
+    expect(
+      isStudioReviewLaunch({
+        appIsPackaged: true,
+        argv: ["Koed", "--studio-review-only"]
+      })
+    ).toBe(false);
+  });
+
   it("keeps the app running on Linux so the tray can reopen the window", () => {
     expect(shouldQuitAfterAllWindowsClosed("linux")).toBe(false);
   });

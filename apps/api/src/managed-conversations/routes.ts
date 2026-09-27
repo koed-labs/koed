@@ -37,8 +37,10 @@ import {
   managedConversationTransferScopeHash
 } from "../high-risk/action-grant-protocol.js";
 import { assertUpstreamOperationPathAllowed } from "../local-edge/upstream-routing.js";
+import { buildPersonalAgentTurnContext } from "./personal-agent-context.js";
 
 const localExecutionProfiles = new Set(["developer", "local_personal"]);
+const opaqueLocalProjectId = /^lp_[0-9a-f]{32}$/;
 const loopbackAddresses = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const isLoopbackRequest = (request: FastifyRequest): boolean =>
   loopbackAddresses.has(
@@ -55,7 +57,7 @@ const idempotencyKeySchema = z
 
 const startSchema = z
   .object({
-    projectId: z.string().trim().min(1).max(2_048),
+    projectId: z.string().trim().min(1).max(2_048).nullable(),
     contextKind: z.enum(["project", "independent"]).default("project"),
     provider: z.enum(["codex", "claude", "pi"]),
     aiClientInstanceId: z
@@ -77,6 +79,21 @@ const authorityStartSchema = startSchema
     deferUntilRuntimeBinding: z.literal(true).optional()
   })
   .strict();
+
+const browserStartSchema = startSchema
+  .extend({
+    contextKind: z.enum(["project", "independent"]).default("project"),
+    targetDeviceId: z.string().trim().min(1).max(128),
+    initialPrompt: z.string().trim().min(1).max(256_000).optional()
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.contextKind === "independent"
+        ? input.projectId === null
+        : input.projectId !== null,
+    { message: "Independent Conversations cannot include a Project" }
+  );
 
 const conversationSettingsSchema = startSchema.pick({
   model: true,
@@ -101,7 +118,7 @@ const proxiedStartResponseSchema = z
     execution: z
       .object({
         id: z.uuid(),
-        projectId: z.string().trim().min(1).max(2_048),
+        projectId: z.string().trim().min(1).max(2_048).nullable(),
         provider: z.enum(["codex", "claude", "pi"]),
         aiClientInstanceId: z
           .string()
@@ -122,6 +139,29 @@ const proxiedStartResponseSchema = z
   .passthrough();
 
 const executionParamsSchema = z.object({ executionId: z.uuid() }).strict();
+const promptCancellationParamsSchema = executionParamsSchema
+  .extend({ commandId: z.uuid() })
+  .strict();
+const promptCancellationSchema = z
+  .object({ executionGeneration: z.number().int().safe().positive() })
+  .strict();
+const projectMoveRequestSchema = z
+  .object({
+    executionGeneration: z.number().int().safe().positive(),
+    expectedStateVersion: z.number().int().safe().positive(),
+    destinationProjectId: z.string().trim().min(1).max(512),
+    idempotencyKey: idempotencyKeySchema.min(16).max(160)
+  })
+  .strict();
+const projectMoveParamsSchema = executionParamsSchema
+  .extend({ moveId: z.uuid() })
+  .strict();
+const agentStateQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(20).default(20),
+    before: z.string().min(1).max(512).optional()
+  })
+  .strict();
 
 const terminalParamsSchema = z
   .object({ executionId: z.uuid(), terminalId: z.uuid() })
@@ -208,6 +248,8 @@ const promptSchema = z
     idempotencyKey: idempotencyKeySchema,
     clientUserMessageId: z.uuid(),
     prompt: z.string().trim().min(1).max(256_000),
+    agentId: z.uuid().optional(),
+    expectedAgentVersion: z.number().int().positive().optional(),
     settingsChange: z
       .object({
         expected: conversationSettingsSchema,
@@ -416,7 +458,7 @@ const publicExecutionCheckout = (
 const publicExecution = (
   execution: {
     id: string;
-    projectId: string;
+    projectId: string | null;
     provider: string;
     aiClientInstanceId: string;
     model: string;
@@ -739,6 +781,94 @@ const launchOptions = async (
   ],
   instances: await launchInstances(repository, userId)
 });
+
+const assertDeferredLaunchSelection = async (
+  repository: ManagedCapabilityRepository,
+  userId: string,
+  input: Pick<
+    z.infer<typeof startSchema>,
+    | "provider"
+    | "aiClientInstanceId"
+    | "model"
+    | "reasoningEffort"
+    | "permissionMode"
+  >
+): Promise<void> => {
+  const [instances, snapshots] = await Promise.all([
+    repository.listAiClientInstances({ userId }),
+    repository.listCurrentAiClientCapabilitySnapshots({ userId })
+  ]);
+  const instance = instances.find(
+    (candidate) => candidate.instanceId === input.aiClientInstanceId
+  );
+  if (
+    !instance ||
+    !instance.enabled ||
+    !isSupportedAiClientDriverId(instance.driverId) ||
+    instance.driverId !== input.provider
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected AI Client instance is unavailable"
+    );
+  }
+
+  const snapshot = snapshots.find(
+    (candidate) => candidate.instanceId === input.aiClientInstanceId
+  );
+  if (
+    !snapshot ||
+    typeof instance.configIdentityHash !== "string" ||
+    snapshot.installationIdentityHash !== instance.configIdentityHash
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected AI Client choices are unavailable"
+    );
+  }
+
+  const descriptors = snapshot.capabilities?.descriptors;
+  const startDescriptor =
+    descriptors && typeof descriptors === "object"
+      ? (descriptors as Record<string, unknown>)[
+          aiClientCapabilityIds.managedConversationStart
+        ]
+      : undefined;
+  if (
+    !startDescriptor ||
+    typeof startDescriptor !== "object" ||
+    (startDescriptor as Record<string, unknown>).support !== "supported"
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected AI Client does not support managed Conversations"
+    );
+  }
+
+  const model = snapshot.models.find(
+    (candidate) => modelId(candidate) === input.model
+  );
+  if (!model) {
+    throw managedCapabilityUnavailable(
+      "Selected AI Client model is unavailable"
+    );
+  }
+  if (
+    input.reasoningEffort !== null &&
+    !modelReasoningEfforts(model).includes(input.reasoningEffort)
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected reasoning effort is unavailable for this model"
+    );
+  }
+  if (
+    !aiClientPermissionContractFor(instance.driverId).permissionModes.some(
+      (mode) =>
+        mode.mode === input.permissionMode && mode.support === "supported"
+    )
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected permission mode is unavailable for this AI Client"
+    );
+  }
+};
 
 const assertLocalLaunchSelection = async (
   repository: MemorySourceRepository,
@@ -1376,6 +1506,51 @@ export const registerManagedConversationRoutes = (
     };
   };
 
+  const isHostedBrowserSession = (request: FastifyRequest): boolean =>
+    !localExecutionProfiles.has(context.config.deploymentProfile) &&
+    !/^Koed-Device\s/i.test(request.headers.authorization?.trim() ?? "");
+
+  const assertSessionExecutionOwner = async (
+    repository: ManagedCapabilityRepository &
+      Pick<MemorySourceRepository, "getManagedConversationExecution">,
+    userId: string,
+    executionId: string
+  ) => {
+    const execution = await repository.getManagedConversationExecution(
+      { userId },
+      executionId
+    );
+    if (!execution) {
+      throw Object.assign(new Error("Managed Conversation not found"), {
+        statusCode: 404
+      });
+    }
+    if (!isSupportedAiClientDriverId(execution.provider)) {
+      throw Object.assign(
+        new Error("Managed Conversation AI Client is unavailable"),
+        {
+          statusCode: 409
+        }
+      );
+    }
+    const instances = await repository.listAiClientInstances({ userId });
+    if (
+      !instances.some(
+        (instance) =>
+          instance.instanceId === execution.aiClientInstanceId &&
+          instance.driverId === execution.provider
+      )
+    ) {
+      throw Object.assign(
+        new Error("Managed Conversation AI Client is unavailable"),
+        {
+          statusCode: 409
+        }
+      );
+    }
+    return execution;
+  };
+
   const requestingDeviceId = async (
     request: FastifyRequest
   ): Promise<string | undefined> =>
@@ -1434,6 +1609,9 @@ export const registerManagedConversationRoutes = (
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
+      if (isHostedBrowserSession(request)) {
+        return await browserLaunchOptions(context.requireRepository(), user.id);
+      }
       return await launchOptions(
         context.requireRepository(),
         user.id,
@@ -1489,6 +1667,7 @@ export const registerManagedConversationRoutes = (
     for (const credential of credentials) {
       if (
         credential.deviceInstanceId === currentDeviceId ||
+        credential.revokedAt !== null ||
         !activeMembers.has(credential.deviceInstanceId) ||
         !credential.operationFamilies.includes("sync") ||
         !credential.operationFamilies.includes("managed_execution") ||
@@ -1519,6 +1698,30 @@ export const registerManagedConversationRoutes = (
       )
       .map(([deviceId, target]) => ({ deviceId, ...target }))
       .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
+  };
+
+  const browserLaunchOptions = async (
+    repository: MemorySourceRepository,
+    userId: string
+  ) => {
+    const [devices, instances, projects] = await Promise.all([
+      targetDevices(repository, userId),
+      launchInstances(repository, userId),
+      repository.listLcmGraphThreads({ userId }, { limit: 500, offset: 0 })
+    ]);
+    return {
+      // Membership plus a scoped, unrevoked device credential establishes
+      // eligibility only. It does not report whether the runner is online.
+      runners: devices.map((device) => ({
+        kind: "local_device" as const,
+        deploymentId: device.deploymentId,
+        deviceId: device.deviceId,
+        displayName:
+          device.label ?? `Personal Device ${device.deviceId.slice(0, 8)}`
+      })),
+      instances,
+      projects: projects.map(({ id, name }) => ({ id, name }))
+    };
   };
 
   const requestHandoff = async (
@@ -1649,6 +1852,60 @@ export const registerManagedConversationRoutes = (
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
+      const browserSession = isHostedBrowserSession(request);
+      const repository = context.requireRepository();
+      if (browserSession) {
+        const input = browserStartSchema.parse(request.body);
+        const target = (await targetDevices(repository, user.id)).find(
+          (candidate) => candidate.deviceId === input.targetDeviceId
+        );
+        if (!target) {
+          throw Object.assign(
+            new Error(
+              "Target Personal Device is not eligible for managed execution"
+            ),
+            { statusCode: 403 }
+          );
+        }
+        await assertDeferredLaunchSelection(repository, user.id, input);
+        if (input.contextKind === "project") {
+          const projects = await repository.listLcmGraphThreads(
+            { userId: user.id },
+            { projectId: input.projectId!, limit: 1, offset: 0 }
+          );
+          if (!projects.some((project) => project.id === input.projectId)) {
+            throw Object.assign(
+              new Error("Project is not available to this Personal Memory"),
+              { statusCode: 409 }
+            );
+          }
+        }
+        const created = await repository.createManagedConversation(
+          { userId: user.id },
+          {
+            projectId: input.projectId,
+            contextKind: input.contextKind,
+            provider: input.provider,
+            aiClientInstanceId: input.aiClientInstanceId,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
+            permissionMode: input.permissionMode,
+            runnerKind: input.runnerKind,
+            runnerDeploymentId: target.deploymentId,
+            runnerDeviceId: target.deviceId,
+            idempotencyKey: input.idempotencyKey,
+            initialPrompt: input.initialPrompt,
+            deferUntilRuntimeBinding: true
+          }
+        );
+        return reply.status(202).send({
+          execution: publicExecution(created.execution),
+          command: {
+            id: created.command.id,
+            state: created.command.state
+          }
+        });
+      }
       const input = (
         localExecutionProfiles.has(context.config.deploymentProfile)
           ? startSchema
@@ -1666,7 +1923,6 @@ export const registerManagedConversationRoutes = (
           { statusCode: 403 }
         );
       }
-      const repository = context.requireRepository();
       const runner = await runnerIdentity(request);
       const localExecution = localExecutionProfiles.has(
         context.config.deploymentProfile
@@ -1686,8 +1942,16 @@ export const registerManagedConversationRoutes = (
           { statusCode: 409 }
         );
       }
+      if (!localExecution && !input.projectId) {
+        throw Object.assign(
+          new Error(
+            "Standalone managed execution is unavailable on this runner"
+          ),
+          { statusCode: 409 }
+        );
+      }
       const projects =
-        localExecution || !deferred
+        input.projectId && (localExecution || !deferred)
           ? await repository.listLcmGraphThreads(
               { userId: user.id },
               { projectId: input.projectId, limit: 1 }
@@ -1696,19 +1960,30 @@ export const registerManagedConversationRoutes = (
       const project = projects.find(
         (candidate) => candidate.id === input.projectId
       );
-      const projectPath = localExecution
-        ? ((await localProjectExecutionPath(
-            context.config.koedHome,
-            input.projectId
-          )) ?? project?.path?.trim())
-        : project?.path?.trim();
-      if (!localExecution && !deferred && !project) {
+      const projectPath =
+        localExecution && input.projectId
+          ? ((await localProjectExecutionPath(
+              context.config.koedHome,
+              input.projectId
+            )) ?? project?.path?.trim())
+          : input.projectId
+            ? project?.path?.trim()
+            : null;
+      if (input.contextKind === "project" && !input.projectId) {
+        throw Object.assign(
+          new Error("A Project is required for this context"),
+          {
+            statusCode: 400
+          }
+        );
+      }
+      if (input.projectId && !localExecution && !deferred && !project) {
         throw Object.assign(
           new Error("Project is not available to this Personal Memory"),
           { statusCode: 409 }
         );
       }
-      if (localExecution && !projectPath) {
+      if (localExecution && input.contextKind === "project" && !projectPath) {
         throw Object.assign(
           new Error("Project has no verified local execution path"),
           { statusCode: 409 }
@@ -1759,7 +2034,8 @@ export const registerManagedConversationRoutes = (
           parsed.data.execution.provider !== input.provider ||
           parsed.data.execution.aiClientInstanceId !==
             input.aiClientInstanceId ||
-          !projectPath
+          (!projectPath &&
+            !(localExecution && input.contextKind === "independent"))
         ) {
           throw Object.assign(
             new Error(
@@ -2115,13 +2391,33 @@ export const registerManagedConversationRoutes = (
           : {}
       );
       if (proxied) return reply.status(proxied.status).send(proxied.payload);
-      await assertExecutionCapabilityForAuthorityRequest(
-        request,
-        context.requireRepository(),
-        user.id,
-        executionId,
-        aiClientCapabilityIds.managedConversationSend
-      );
+      const repository = context.requireRepository();
+      const execution = isHostedBrowserSession(request)
+        ? await assertSessionExecutionOwner(repository, user.id, executionId)
+        : await assertExecutionCapabilityForAuthorityRequest(
+            request,
+            repository,
+            user.id,
+            executionId,
+            aiClientCapabilityIds.managedConversationSend
+          );
+      if (isHostedBrowserSession(request) && input.settingsChange) {
+        await assertDeferredLaunchSelection(repository, user.id, {
+          provider: execution.provider as "codex" | "claude" | "pi",
+          aiClientInstanceId: execution.aiClientInstanceId,
+          ...input.settingsChange.next
+        });
+      }
+      const agentContext = input.agentId
+        ? await buildPersonalAgentTurnContext({
+            repository,
+            ownerUserId: user.id,
+            agentId: input.agentId,
+            expectedAgentVersion: input.expectedAgentVersion,
+            projectId: execution.projectId,
+            prompt: input.prompt
+          })
+        : null;
       const terminalContexts = (input.terminalContextReferences ?? []).map(
         (contextReference) =>
           context.managedConversations.terminalRuntime.resolveContext({
@@ -2158,20 +2454,25 @@ export const registerManagedConversationRoutes = (
                 ].join("\n")
               )
               .join("\n\n")}`;
-      const command = await context
-        .requireRepository()
-        .enqueueManagedConversationPrompt(
-          { userId: user.id },
-          {
-            executionId,
-            executionGeneration: input.executionGeneration,
-            idempotencyKey: input.idempotencyKey,
-            clientUserMessageId: input.clientUserMessageId,
-            prompt,
-            fileMentionCommandIds: input.fileMentionCommandIds,
-            settingsChange: input.settingsChange
-          }
-        );
+      const command = await repository.enqueueManagedConversationPrompt(
+        { userId: user.id },
+        {
+          executionId,
+          executionGeneration: input.executionGeneration,
+          idempotencyKey: input.idempotencyKey,
+          clientUserMessageId: input.clientUserMessageId,
+          prompt,
+          ...(agentContext
+            ? {
+                agentId: input.agentId!,
+                expectedAgentVersion: agentContext.expectedAgentVersion,
+                personalAgentContext: agentContext.context
+              }
+            : {}),
+          fileMentionCommandIds: input.fileMentionCommandIds,
+          settingsChange: input.settingsChange
+        }
+      );
       return reply.status(202).send({
         command: {
           id: command.id,
@@ -2179,7 +2480,280 @@ export const registerManagedConversationRoutes = (
           executionId: command.executionId,
           executionGeneration: command.executionGeneration,
           clientUserMessageId: command.clientUserMessageId,
-          createdAt: command.createdAt
+          createdAt: command.createdAt,
+          ...(command.personalAgent
+            ? { personalAgent: command.personalAgent }
+            : {})
+        }
+      });
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/:executionId/start/cancel",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const input = promptCancellationSchema.parse(request.body);
+      const proxied = await proxyManaged(
+        "POST",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/start/cancel`,
+        input
+      );
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+
+      const result = await context
+        .requireRepository()
+        .cancelManagedConversationStart(
+          { userId: user.id },
+          {
+            executionId,
+            executionGeneration: input.executionGeneration
+          }
+        );
+      if (!result) {
+        throw Object.assign(new Error("Managed Conversation start not found"), {
+          statusCode: 404
+        });
+      }
+      return reply.send({
+        command: {
+          id: result.id,
+          state: result.state,
+          canceled: result.state === "canceled"
+        }
+      });
+    }
+  );
+
+  const publicProjectMove = (move: {
+    id: string;
+    executionId: string;
+    executionGeneration: number;
+    sourceProjectId: string | null;
+    destinationProjectId: string;
+    state: string;
+    createdAt: string;
+    updatedAt: string;
+  }) => ({
+    id: move.id,
+    executionId: move.executionId,
+    executionGeneration: move.executionGeneration,
+    sourceProjectId: move.sourceProjectId,
+    destinationProjectId: move.destinationProjectId,
+    state: move.state,
+    createdAt: move.createdAt,
+    updatedAt: move.updatedAt
+  });
+
+  app.post(
+    "/v1/managed-conversations/:executionId/project-moves",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const input = projectMoveRequestSchema.parse(request.body);
+      if (!opaqueLocalProjectId.test(input.destinationProjectId)) {
+        throw Object.assign(
+          new Error(
+            "Register the destination Project before moving this Conversation"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      const path = `/v1/managed-conversations/${encodeURIComponent(executionId)}/project-moves`;
+      const proxied = await proxyManaged("POST", path, input);
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+
+      const repository = context.requireRepository();
+      const execution = await repository.getManagedConversationExecution(
+        { userId: user.id },
+        executionId
+      );
+      if (!execution) {
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      }
+      if (execution.provider !== "codex") {
+        throw Object.assign(
+          new Error("This AI Client has not been verified for Project Move"),
+          { statusCode: 409 }
+        );
+      }
+      if (
+        execution.projectId !== null &&
+        !opaqueLocalProjectId.test(execution.projectId)
+      ) {
+        throw Object.assign(
+          new Error(
+            "Register the source Project before moving this Conversation"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      const localExecution = localExecutionProfiles.has(
+        context.config.deploymentProfile
+      );
+      const destinationAvailable = localExecution
+        ? Boolean(
+            await localProjectExecutionPath(
+              context.config.koedHome,
+              input.destinationProjectId
+            )
+          )
+        : (
+            await repository.listLcmGraphThreads(
+              { userId: user.id },
+              { projectId: input.destinationProjectId, limit: 1 }
+            )
+          ).some((project) => project.id === input.destinationProjectId);
+      if (!destinationAvailable) {
+        throw Object.assign(new Error("Destination Project is unavailable"), {
+          statusCode: 409
+        });
+      }
+      const move = await repository.requestManagedConversationProjectMove(
+        { userId: user.id },
+        { executionId, ...input }
+      );
+      return reply.status(move.state === "pending" ? 202 : 200).send({
+        move: publicProjectMove(move)
+      });
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/:executionId/project-moves/latest",
+    { preHandler: managedConversationReadRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const path = `/v1/managed-conversations/${encodeURIComponent(executionId)}/project-moves/latest`;
+      const proxied = await proxyManaged("GET", path);
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      const repository = context.requireRepository();
+      const execution = await repository.getManagedConversationExecution(
+        { userId: user.id },
+        executionId
+      );
+      if (!execution) {
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      }
+      const move =
+        await repository.getLatestManagedConversationProjectMoveForExecution(
+          { userId: user.id },
+          executionId
+        );
+      return { move: move ? publicProjectMove(move) : null };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/:executionId/project-moves/:moveId",
+    { preHandler: managedConversationReadRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId, moveId } = projectMoveParamsSchema.parse(
+        request.params
+      );
+      const path = `/v1/managed-conversations/${encodeURIComponent(executionId)}/project-moves/${encodeURIComponent(moveId)}`;
+      const proxied = await proxyManaged("GET", path);
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      const move = await context
+        .requireRepository()
+        .getManagedConversationProjectMove({ userId: user.id }, moveId);
+      if (!move || move.executionId !== executionId) {
+        throw Object.assign(new Error("Project Move not found"), {
+          statusCode: 404
+        });
+      }
+      return { move: publicProjectMove(move) };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/:executionId/project-moves/:moveId/cancel",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId, moveId } = projectMoveParamsSchema.parse(
+        request.params
+      );
+      const input = promptCancellationSchema.parse(request.body);
+      const path = `/v1/managed-conversations/${encodeURIComponent(executionId)}/project-moves/${encodeURIComponent(moveId)}/cancel`;
+      const proxied = await proxyManaged("POST", path, input);
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      const repository = context.requireRepository();
+      const move = await repository.getManagedConversationProjectMove(
+        { userId: user.id },
+        moveId
+      );
+      if (!move || move.executionId !== executionId) {
+        throw Object.assign(new Error("Project Move not found"), {
+          statusCode: 404
+        });
+      }
+      const result = await repository.cancelManagedConversationProjectMove(
+        { userId: user.id },
+        { moveId, executionGeneration: input.executionGeneration }
+      );
+      if (!result) {
+        throw Object.assign(new Error("Project Move not found"), {
+          statusCode: 404
+        });
+      }
+      return { move: publicProjectMove(result) };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/:executionId/prompts/:commandId/cancel",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId, commandId } = promptCancellationParamsSchema.parse(
+        request.params
+      );
+      const input = promptCancellationSchema.parse(request.body);
+      const proxied = await proxyManaged(
+        "POST",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/prompts/${encodeURIComponent(commandId)}/cancel`,
+        input
+      );
+      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+
+      const repository = context.requireRepository();
+      const result = await repository.cancelManagedConversationPrompt(
+        { userId: user.id },
+        {
+          executionId,
+          commandId,
+          executionGeneration: input.executionGeneration
+        }
+      );
+      if (!result) {
+        throw Object.assign(
+          new Error("Managed Conversation prompt not found"),
+          {
+            statusCode: 404
+          }
+        );
+      }
+      return reply.send({
+        command: {
+          id: result.id,
+          state: result.state,
+          canceled: result.state === "canceled"
         }
       });
     }
@@ -2602,6 +3176,192 @@ export const registerManagedConversationRoutes = (
       }
     );
   }
+
+  app.get(
+    "/v1/managed-conversations/:executionId/agent-state",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const query = agentStateQuerySchema.parse(request.query);
+      const queryString = new URLSearchParams({ limit: String(query.limit) });
+      if (query.before) queryString.set("before", query.before);
+      const proxied = await proxyManaged(
+        "GET",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/agent-state?${queryString.toString()}`
+      );
+      if (proxied) return proxied.payload;
+
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const execution = await repository.getManagedConversationExecution(
+        actor,
+        executionId
+      );
+      if (!execution) {
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      }
+      const conversation = await repository.getPersonalAgentConversation(
+        actor,
+        {
+          conversationId: executionId
+        }
+      );
+      const jobsPage = await repository.listPersonalAgentExecutionJobs(actor, {
+        conversationId: executionId,
+        limit: query.limit,
+        ...(query.before ? { before: query.before } : {})
+      });
+      const profileCache = new Map<
+        string,
+        Awaited<ReturnType<typeof repository.getPersonalAgentVersion>>
+      >();
+      const messages: Array<{
+        id: string;
+        role: "user" | "assistant";
+        content: string;
+        createdAt: string;
+        truncated: boolean;
+        author?: {
+          agentId: string;
+          agentVersion: number;
+          name: string;
+          avatarReference: string | null;
+        };
+      }> = [];
+      const jobs = [];
+      const clipMessage = (value: string) => {
+        let content = value;
+        while (Buffer.byteLength(content, "utf8") > 16 * 1024) {
+          content = content.slice(0, Math.max(0, content.length - 256));
+        }
+        return { content, truncated: content.length < value.length };
+      };
+      for (const job of jobsPage.jobs) {
+        const command = job.commandId
+          ? await repository.getManagedConversationCommand(actor, job.commandId)
+          : null;
+        const rawPrompt = command?.payload?.prompt;
+        if (typeof rawPrompt === "string") {
+          const content = clipMessage(rawPrompt);
+          messages.push({
+            id: command?.clientUserMessageId ?? command?.id ?? job.id,
+            role: "user",
+            ...content,
+            createdAt: command?.createdAt ?? job.createdAt
+          });
+        }
+        const attribution = job.attribution;
+        if (attribution.kind !== "agent") {
+          jobs.push({
+            id: job.id,
+            title: job.title,
+            projectId: job.projectId,
+            state: job.state,
+            counters: job.counters,
+            version: job.version,
+            lastObservedAt: job.lastObservedAt,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+            observedState: job.state,
+            freshness: "current"
+          });
+          continue;
+        }
+        const profileKey = `${attribution.agentId}:${attribution.agentVersion}`;
+        let version = profileCache.get(profileKey);
+        if (version === undefined) {
+          version = await repository.getPersonalAgentVersion(actor, {
+            agentId: attribution.agentId,
+            version: attribution.agentVersion
+          });
+          profileCache.set(profileKey, version);
+        }
+        const leaseActive = Boolean(
+          command?.state === "dispatching" &&
+          command.leaseExpiresAt &&
+          Date.parse(command.leaseExpiresAt) > Date.now()
+        );
+        const observedState =
+          job.state === "running"
+            ? leaseActive
+              ? "running"
+              : "unknown"
+            : job.state === "queued" &&
+                command &&
+                ["queued", "blocked"].includes(command.state)
+              ? "queued"
+              : job.state;
+        const freshness = observedState === "unknown" ? "stale" : "current";
+        jobs.push({
+          id: job.id,
+          title: job.title,
+          projectId: job.projectId,
+          state: job.state,
+          counters: job.counters,
+          version: job.version,
+          lastObservedAt: job.lastObservedAt,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          observedState,
+          freshness
+        });
+        const outputText = await repository.getPersonalAgentTurnOutput(actor, {
+          jobId: job.id
+        });
+        if (outputText && version) {
+          messages.push({
+            id: `agent:${job.id}`,
+            role: "assistant",
+            ...clipMessage(outputText),
+            createdAt: job.lastObservedAt ?? job.updatedAt,
+            author: {
+              agentId: attribution.agentId,
+              agentVersion: attribution.agentVersion,
+              name: version.name,
+              avatarReference: version.avatarReference
+            }
+          });
+        }
+      }
+      messages.sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+      );
+      const participants = await Promise.all(
+        (conversation?.participants ?? []).map(async (participant) => {
+          const detail = await repository.getPersonalAgent(
+            actor,
+            participant.agentId
+          );
+          return detail
+            ? {
+                agentId: participant.agentId,
+                name: detail.agent.name,
+                role: detail.agent.role,
+                avatarReference: detail.agent.avatarReference,
+                lifecycle: detail.agent.lifecycle,
+                currentVersion: detail.agent.currentVersion
+              }
+            : null;
+        })
+      );
+      return {
+        executionId,
+        activeAgentId: conversation?.activeAgentId ?? null,
+        participants: participants.filter((value) => value !== null),
+        messages,
+        jobs,
+        hasMore: jobsPage.hasMore,
+        nextCursor: jobsPage.nextCursor,
+        snapshotAt: new Date().toISOString(),
+        executionGeneration: execution.executionGeneration,
+        executionState: execution.state
+      };
+    }
+  );
 
   app.get(
     "/v1/managed-conversations/:executionId/runtime",

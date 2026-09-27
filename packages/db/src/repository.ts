@@ -60,6 +60,7 @@ import { createManagedConversationTransferRepository } from "./managed-conversat
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
+import { createPersonalAgentRepository } from "./personal-agent-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
@@ -3956,6 +3957,9 @@ export const createMemorySourceRepository = (
   const db = createDb(pool);
   const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
   const settingsRepository = createSettingsRepository(db);
+  const personalAgentRepository = createPersonalAgentRepository(pool, {
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider
+  });
   const requireEnvelopeEncryptionProvider = (): EnvelopeEncryptionProvider => {
     if (!options.envelopeEncryptionProvider) {
       throw new Error(
@@ -4159,6 +4163,7 @@ export const createMemorySourceRepository = (
     ...createMemoryAnswerTaskRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...personalAgentRepository,
     ...createWorkflowTokenUsageRepository(pool),
 
     health: () => checkDatabase(pool),

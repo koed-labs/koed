@@ -303,6 +303,7 @@ export const resolveApiServerConfig = (
           )
         },
         aiClientControl: { windowMs: 60_000, max: 120 },
+        personalAgentControl: { windowMs: 60_000, max: 120 },
         memoryRecall: {
           windowMs: positiveIntEnv(
             environment,

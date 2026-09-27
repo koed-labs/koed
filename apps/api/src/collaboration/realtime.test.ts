@@ -1952,7 +1952,7 @@ describe("collaboration realtime protocol", () => {
       getManagedConversationExecution: vi.fn(async () => ({
         id: executionId,
         ownerUserId: ownerId,
-        projectId: "/tmp/project",
+        projectId: null,
         provider: "codex",
         state: "running",
         stateVersion: 4,

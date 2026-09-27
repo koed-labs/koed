@@ -17,7 +17,8 @@ const highRiskBrowserWriteFamilies = [
   "/v1/teams",
   "/v1/team-workspaces",
   "/v1/team-invites",
-  "/v1/realtime/transport-tickets"
+  "/v1/realtime/transport-tickets",
+  "/v1/personal-agents"
 ] as const;
 
 const allowedFetchSites = new Set(["same-origin", "same-site", "none"]);
