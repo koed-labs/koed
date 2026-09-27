@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -69,7 +69,10 @@ import type {
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
-import { resolveCodexExecutablePath } from "./ai-client-registry.js";
+import {
+  aiClientRegistryPath,
+  resolveCodexExecutablePath
+} from "./ai-client-registry.js";
 import {
   inspectManagedCodexGuidance,
   resolveCodexGlobalInstructionsPath,
@@ -379,6 +382,57 @@ export const inspectPi = (
   };
 };
 
+const resolveStatusClaudeExecutable = (
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>
+): string => {
+  try {
+    return deps.resolveClaudeExecutable(environment);
+  } catch (discoveryError) {
+    // An explicit environment override has priority. Do not silently run a
+    // different registered installation when that override is invalid.
+    if (environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim()) {
+      throw discoveryError;
+    }
+  }
+
+  try {
+    const target = aiClientRegistryPath(environment);
+    if (lstatSync(target).isSymbolicLink())
+      return deps.resolveClaudeExecutable(environment);
+    const registry = JSON.parse(String(deps.readFileSync(target, "utf8"))) as {
+      version?: unknown;
+      instances?: unknown;
+    };
+    if (registry.version !== 1 || !Array.isArray(registry.instances)) {
+      throw new Error("Claude instance registry is malformed.");
+    }
+    const instance = registry.instances.find(
+      (
+        candidate
+      ): candidate is {
+        instanceId: string;
+        driverId: string;
+        executablePath: string;
+      } =>
+        Boolean(candidate) &&
+        typeof candidate === "object" &&
+        (candidate as { instanceId?: unknown }).instanceId ===
+          "claude.default" &&
+        (candidate as { driverId?: unknown }).driverId === "claude" &&
+        typeof (candidate as { executablePath?: unknown }).executablePath ===
+          "string"
+    );
+    if (!instance) throw new Error("Claude instance is not registered.");
+    return deps.resolveClaudeExecutable({
+      ...environment,
+      KOED_CLAUDE_CODE_EXECUTABLE: instance.executablePath
+    });
+  } catch {
+    throw new Error("Claude Code executable was not found.");
+  }
+};
+
 export const inspectClaudeCode = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
@@ -388,7 +442,7 @@ export const inspectClaudeCode = (
   const detectedFromConfig = deps.existsSync(settingsPath);
   let executable: string;
   try {
-    executable = deps.resolveClaudeExecutable(environment);
+    executable = resolveStatusClaudeExecutable(environment, deps);
   } catch {
     return {
       ...notConfigured(

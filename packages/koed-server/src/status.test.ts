@@ -28,6 +28,8 @@ import {
   statusFromApiReady
 } from "./status.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { aiClientRegistryPath } from "./ai-client-registry.js";
+import { resolveClaudeExecutablePath } from "./claude-setup.js";
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -2177,6 +2179,96 @@ describe("Claude Code integration status", () => {
       state: "not_configured",
       configured: false,
       detected: true
+    });
+  });
+
+  it("uses the validated registered Claude executable when PATH discovery fails", () => {
+    const root = tempDir();
+    const executablePath = "/bin/sh";
+    const environment = {
+      HOME: root,
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      PATH: "/unavailable"
+    };
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      aiClientRegistryPath(environment),
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath
+          }
+        ]
+      })
+    );
+    const resolvedEnvironments: NodeJS.ProcessEnv[] = [];
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: () => false,
+        readFileSync,
+        resolveClaudeExecutable: (input) => {
+          resolvedEnvironments.push(input);
+          return resolveClaudeExecutablePath(input);
+        },
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.281 (Claude Code)\n")
+            : spawnResult("", 1)
+      } as never
+    );
+
+    expect(resolvedEnvironments).toHaveLength(2);
+    expect(resolvedEnvironments[1]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(
+      executablePath
+    );
+    expect(status.details).toMatchObject({ executable: executablePath });
+  });
+
+  it("does not use a registered executable when an explicit override is invalid", () => {
+    const root = tempDir();
+    const environment = {
+      HOME: root,
+      KOED_HOME: root,
+      KOED_CLAUDE_CODE_EXECUTABLE: "/missing/claude"
+    };
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      aiClientRegistryPath(environment),
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath: "/bin/sh"
+          }
+        ]
+      })
+    );
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: () => false,
+        resolveClaudeExecutable: () => {
+          throw new Error("configured Claude executable is missing");
+        }
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: false
     });
   });
 });
