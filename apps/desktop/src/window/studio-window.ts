@@ -103,6 +103,7 @@ export const studioWindowOptions: BrowserWindowConstructorOptions = {
 
 export const createStudioWindowController = (input: {
   allowedRendererOrigins: Set<string>;
+  studioRendererOrigins?: Set<string>;
   createWindow: () => StudioWindowLike;
   getAccess: () => Promise<StudioLocalAccess>;
   defaultApiOrigin: string;
@@ -305,6 +306,7 @@ export const createStudioWindowController = (input: {
     const currentGateway = gateway;
     gateway = null;
     if (studioOrigin) input.allowedRendererOrigins.delete(studioOrigin);
+    if (studioOrigin) input.studioRendererOrigins?.delete(studioOrigin);
     studioOrigin = null;
     await currentGateway?.close();
   };
@@ -370,6 +372,7 @@ export const createStudioWindowController = (input: {
         const origin = desktopRendererOrigin(started.url);
         studioOrigin = origin;
         input.allowedRendererOrigins.add(origin);
+        input.studioRendererOrigins?.add(origin);
         const createdWindow = input.createWindow();
         window = createdWindow;
         createdWindow.webContents.setWindowOpenHandler(({ url }) => {

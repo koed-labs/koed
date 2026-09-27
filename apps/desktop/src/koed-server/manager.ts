@@ -138,6 +138,10 @@ import {
   type ManagedProjectRequest,
   type ManagedProjectResult
 } from "../ipc/managed-project-protocol.js";
+import type {
+  StudioChatRecoveryRequest,
+  StudioChatRecoveryResult
+} from "../ipc/studio-chat-recovery-protocol.js";
 import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 
 export interface DesktopCommandContext {
@@ -251,6 +255,9 @@ export interface KoedServerManager {
     set: (enabled: boolean) => Promise<HardwareAccelerationState>;
   };
   managedConversation: ManagedConversationDesktopHandler;
+  studioChatRecovery: (
+    request: StudioChatRecoveryRequest
+  ) => Promise<StudioChatRecoveryResult>;
   managedProject: ManagedProjectDesktopHandler;
   discoverProject: (cwd: string, name?: string) => Promise<unknown>;
   listProjects: () => Promise<unknown>;
@@ -3112,6 +3119,52 @@ export const createKoedServerManager = ({
     };
   };
 
+  const studioChatRecovery = async (
+    request: StudioChatRecoveryRequest
+  ): Promise<StudioChatRecoveryResult> => {
+    if (!managedConversationDraftStore) {
+      throw new PersonalMemoryBoundaryError("not_ready", false);
+    }
+    const [access, identity] = await Promise.all([
+      personalMemoryAccess(),
+      authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/managed-conversations/access", apiOrigin),
+          init: { method: "GET" }
+        }),
+        64 * 1_024
+      )
+    ]);
+    const user = objectValue(identity.user);
+    if (typeof user?.id !== "string") {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    if (user.id !== request.ownerId) {
+      throw new PersonalMemoryBoundaryError("not_found", false);
+    }
+    const reference = `studio-chat-recovery-${createHash("sha256")
+      .update(
+        JSON.stringify({
+          scope: "studio-chat-recovery",
+          backend: access.apiOrigin,
+          ownerUserId: user.id,
+          executionId: request.executionId
+        })
+      )
+      .digest("hex")}`;
+    if (request.operation === "read") {
+      const stored = await managedConversationDraftStore.get(reference);
+      if (stored === null) return { operation: "read", value: null };
+      return { operation: "read", value: stored };
+    }
+    if (request.operation === "write") {
+      await managedConversationDraftStore.put(reference, request.value);
+      return { operation: "write", ok: true };
+    }
+    await managedConversationDraftStore.delete(reference);
+    return { operation: "delete", ok: true };
+  };
+
   const managedConversation: ManagedConversationDesktopHandler = async (
     request
   ) => {
@@ -5454,6 +5507,7 @@ export const createKoedServerManager = ({
       set: setHardwareAcceleration
     },
     managedConversation,
+    studioChatRecovery,
     managedProject,
     discoverProject: (cwd, name) =>
       runJson(

@@ -110,6 +110,7 @@ const allowedRendererOrigins = new Set([
   `${KOED_APP_SCHEME}://app`,
   ...(devServerUrl ? [desktopRendererOrigin(devServerUrl)] : [])
 ]);
+const studioRendererOrigins = new Set<string>();
 
 app.setName(appName);
 
@@ -191,8 +192,15 @@ const openExternal = createExternalUrlOpener({
 let studioBrowserWindow: BrowserWindow | null = null;
 const studioWindowController = createStudioWindowController({
   allowedRendererOrigins,
+  studioRendererOrigins,
   createWindow: () => {
-    studioBrowserWindow = new BrowserWindow(studioWindowOptions);
+    studioBrowserWindow = new BrowserWindow({
+      ...studioWindowOptions,
+      webPreferences: {
+        ...studioWindowOptions.webPreferences,
+        preload: resolve(appDir, "studio-preload.cjs")
+      }
+    });
     return studioBrowserWindow;
   },
   defaultApiOrigin: "http://127.0.0.1:43300",
@@ -492,6 +500,8 @@ const bootstrap = async () => {
   registerAppProtocol();
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
     allowedRendererOrigins,
+    studioRendererOrigins,
+    studioChatRecovery: server.studioChatRecovery,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,

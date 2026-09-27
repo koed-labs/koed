@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-expect-error -- Node's native test runner imports TypeScript sources directly.
-import { createDeviceManagedChatRecoveryStore } from "./device-managed-chat-recovery.ts";
+import { createDeviceManagedChatRecoveryStore, createLocalManagedChatRecoveryStore } from "./device-managed-chat-recovery.ts";
 
 class MemoryStorage {
   values = new Map<string, string>();
@@ -59,4 +59,99 @@ test("rejects malformed recovery data and clears only the selected scope", () =>
   assert.equal(one.read(), null);
   one.clear();
   assert.equal(two.read()?.draft, "b");
+});
+
+test("Desktop recovery survives a changed loopback origin and preserves scoped send identity", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  const values = new Map<string, string>();
+  const reference = ({ ownerId, executionId }: { ownerId: string; executionId: string }) =>
+    `${ownerId}:${executionId}`;
+  (globalThis as { window?: unknown }).window = {
+    koedStudioChatRecovery: {
+      read: async (scope: { ownerId: string; executionId: string }) =>
+        values.get(reference(scope)) ?? null,
+      write: async (scope: { ownerId: string; executionId: string; value: string }) => {
+        values.set(reference(scope), scope.value);
+      },
+      delete: async (scope: { ownerId: string; executionId: string }) => {
+        values.delete(reference(scope));
+      }
+    }
+  };
+  try {
+    const first = createLocalManagedChatRecoveryStore({ ownerId: "owner-a", backendId: "http://127.0.0.1:58523", executionId: null });
+    const operation = {
+      kind: "start" as const,
+      startIdempotencyKey: "start-key",
+      promptIdempotencyKey: "prompt-key",
+      clientUserMessageId: "message-key",
+      prompt: "Work on this",
+      state: "pending" as const
+    };
+    first.write({ schemaVersion: 1, draft: operation.prompt, pendingOperation: operation });
+    const afterRestart = createLocalManagedChatRecoveryStore({ ownerId: "owner-a", backendId: "http://127.0.0.1:59852", executionId: null });
+    await afterRestart.hydrate?.();
+    assert.deepEqual(afterRestart.read()?.pendingOperation, operation);
+    assert.equal(afterRestart.read()?.draft, operation.prompt);
+    const otherOwner = createLocalManagedChatRecoveryStore({ ownerId: "owner-b", backendId: "http://127.0.0.1:59852", executionId: null });
+    await otherOwner.hydrate?.();
+    assert.equal(otherOwner.read(), null);
+    afterRestart.clear();
+    const cleared = createLocalManagedChatRecoveryStore({ ownerId: "owner-a", backendId: "http://127.0.0.1:59852", executionId: null });
+    await cleared.hydrate?.();
+    assert.equal(cleared.read(), null);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("Desktop send identity flush waits for the encrypted bridge write", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  let releaseWrite: (() => void) | undefined;
+  let completed = false;
+  (globalThis as { window?: unknown }).window = {
+    koedStudioChatRecovery: {
+      read: async () => null,
+      write: async () => {
+        await new Promise<void>((resolve) => { releaseWrite = resolve; });
+        completed = true;
+      },
+      delete: async () => undefined
+    }
+  };
+  try {
+    const store = createLocalManagedChatRecoveryStore({ ownerId: "owner", backendId: "temporary-origin", executionId: null });
+    store.write({ schemaVersion: 1, draft: "Send", pendingOperation: {
+      kind: "start",
+      startIdempotencyKey: "start",
+      promptIdempotencyKey: "prompt",
+      clientUserMessageId: "message",
+      prompt: "Send",
+      state: "pending"
+    } });
+    const flushed = store.flush?.();
+    assert.ok(flushed);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    assert.equal(completed, false);
+    assert.ok(releaseWrite);
+    releaseWrite();
+    await flushed;
+    assert.equal(completed, true);
+  } finally {
+    releaseWrite?.();
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("browser send identity persistence reports storage failure before submit", () => {
+  const storage = {
+    getItem: () => null,
+    setItem: () => { throw new Error("quota unavailable"); },
+    removeItem: () => undefined
+  };
+  const store = createDeviceManagedChatRecoveryStore({ ownerId: "owner", backendId: "backend", executionId: null, storage });
+  assert.ok(store);
+  const record = { schemaVersion: 1 as const, draft: "Send" };
+  assert.doesNotThrow(() => store.write(record));
+  assert.throws(() => store.writeDurably?.(record), /quota unavailable/);
 });

@@ -61,6 +61,12 @@ import {
   type ManagedProjectRequest,
   type ManagedProjectResult
 } from "./managed-project-protocol.js";
+import {
+  parseStudioChatRecoveryRequest,
+  parseStudioChatRecoveryResult,
+  studioChatRecoveryCommandChannel,
+  type StudioChatRecoveryRequest
+} from "./studio-chat-recovery-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -139,6 +145,10 @@ export const registerDesktopCommandHandlers = (
   handlers: Record<DesktopCommandName, DesktopCommandHandler>,
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
+    studioRendererOrigins?: ReadonlySet<string>;
+    studioChatRecovery?: (
+      request: StudioChatRecoveryRequest
+    ) => Promise<unknown>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     managedConversation: (
@@ -418,6 +428,23 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  if (options.studioRendererOrigins && options.studioChatRecovery) {
+    ipcMain.handle(studioChatRecoveryCommandChannel, async (event, value) => {
+      if (!trustedSender(event, options.studioRendererOrigins!)) {
+        throw new Error("Untrusted Studio IPC sender.");
+      }
+      const request = parseStudioChatRecoveryRequest(value);
+      try {
+        return parseStudioChatRecoveryResult(
+          await options.studioChatRecovery!(request)
+        );
+      } catch {
+        // IPC errors deliberately omit backend and storage details.
+        throw new Error("Koed could not access Studio chat recovery data.");
+      }
+    });
+  }
 
   ipcMain.handle(managedProjectCommandChannel, async (event, value) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {

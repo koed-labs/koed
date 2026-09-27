@@ -42,9 +42,14 @@ import {
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
 import {
-  createDeviceManagedChatRecoveryStore,
+  createLocalManagedChatRecoveryStore,
+  type DeviceManagedChatRecoveryRecord,
   type DeviceManagedChatRecoveryStore
 } from "@/lib/device-managed-chat-recovery";
+
+type LocalRecoveryStore = DeviceManagedChatRecoveryStore & {
+  hydrate?: () => Promise<DeviceManagedChatRecoveryRecord | null>;
+};
 
 const terminalCommands = new Set([
   "completed",
@@ -152,7 +157,7 @@ export function LiveAgentChat({
   const runtimeRef = useRef<RuntimeSnapshot | null>(null);
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
-  const recoveryStore = useRef<DeviceManagedChatRecoveryStore | null>(null);
+  const recoveryStore = useRef<LocalRecoveryStore | null>(null);
   const recoveryIdentity = useRef<{ ownerId: string; backendId: string } | null>(null);
   const latestDraft = useRef(initialDraft);
   const operationRef = useRef(false);
@@ -172,7 +177,7 @@ export function LiveAgentChat({
   const activeRecoveryStore = (id: string | null) => {
     const identity = recoveryIdentity.current;
     if (!identity) return null;
-    return createDeviceManagedChatRecoveryStore({
+    return createLocalManagedChatRecoveryStore({
       ...identity,
       executionId: id
     });
@@ -209,7 +214,7 @@ export function LiveAgentChat({
       managedRequest("/launch-options", undefined, controller.signal),
       managedRequest("/access", undefined, controller.signal)
     ])
-      .then(([library, options, access]) => {
+      .then(async ([library, options, access]) => {
         if (controller.signal.aborted) return;
         let recoveringPreviousSend = false;
         const user = record(access.user) ? access.user : null;
@@ -224,14 +229,27 @@ export function LiveAgentChat({
             backendId: `${window.location.origin}:local-managed-gateway`
           };
           recoveryIdentity.current = identity;
-          recoveryStore.current = createDeviceManagedChatRecoveryStore({
+          recoveryStore.current = createLocalManagedChatRecoveryStore({
             ...identity,
             executionId: initialExecutionId ?? null
           });
+          if (recoveryStore.current.hydrate) {
+            await recoveryStore.current.hydrate();
+            if (controller.signal.aborted) return;
+          }
           const recoveryRecord = recoveryStore.current?.read();
-          const draft = recoveryRecord?.draft ?? latestDraft.current;
-          if (!recoveryRecord && draft) {
-            recoveryStore.current?.write({ schemaVersion: 1, draft });
+          const editedDuringLoad = latestDraft.current !== initialDraft;
+          const draft = editedDuringLoad
+            ? latestDraft.current
+            : recoveryRecord?.draft ?? latestDraft.current;
+          if (editedDuringLoad || (!recoveryRecord && draft)) {
+            recoveryStore.current?.write({
+              schemaVersion: 1,
+              draft,
+              ...(recoveryRecord?.pendingOperation
+                ? { pendingOperation: recoveryRecord.pendingOperation }
+                : {})
+            });
           }
           setRecoveredDraft(draft || null);
           if (recoveryRecord?.pendingOperation) {
@@ -252,7 +270,7 @@ export function LiveAgentChat({
             }
             if (operation.kind === "start" || (initialExecutionId && operation.executionGeneration !== undefined)) {
               void managedRequest(`/recovery/lookup?${query}`, undefined, controller.signal)
-                .then((result) => {
+                .then(async (result) => {
                   if (controller.signal.aborted) return;
                   if (result.found !== true) {
                     setStatus("Previous send status is not confirmed.");
@@ -271,6 +289,7 @@ export function LiveAgentChat({
                         draft: recoveryRecord.draft,
                         pendingOperation: { ...operation, state: "reconciling" }
                       });
+                      await executionStore.flush?.();
                       recoveryStore.current?.clear();
                       recoveryStore.current = executionStore;
                     }
@@ -329,7 +348,7 @@ export function LiveAgentChat({
           );
       });
     return () => controller.abort();
-  }, [initialExecutionId, router, settleRecoveredSend]);
+  }, [initialDraft, initialExecutionId, router, settleRecoveredSend]);
 
   const refresh = useCallback(
     async (id: string, signal: AbortSignal) => {
@@ -738,6 +757,8 @@ export function LiveAgentChat({
     const signal = lifecycle.current?.signal;
     if (!signal || signal.aborted)
       throw new Error("The chat is no longer active.");
+    if (!recoveryStore.current)
+      throw new Error("Studio could not establish device recovery for this chat. Nothing was sent.");
     operationRef.current = true;
     setSending(true);
     setError(null);
@@ -795,6 +816,13 @@ export function LiveAgentChat({
           state: "pending"
         }
       });
+      // The idempotency keys must be durable before the first request can
+      // reach the runner; otherwise a process exit could permit a duplicate.
+      try {
+        await recoveryStore.current?.flush?.();
+      } catch {
+        throw new Error("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      }
       let id = executionId ?? request.executionId;
       if (!id) {
         setStatus("Starting the AI Client");
@@ -819,6 +847,7 @@ export function LiveAgentChat({
         if (executionStore) {
           const oldRecord = previousStore?.read();
           if (oldRecord) executionStore.write(oldRecord);
+          await executionStore.flush?.();
           previousStore?.clear();
           recoveryStore.current = executionStore;
         }
@@ -908,6 +937,11 @@ export function LiveAgentChat({
           state: "pending"
         }
       });
+      try {
+        await recoveryStore.current?.flush?.();
+      } catch {
+        throw new Error("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      }
       const result = await managedRequest(
         `/${id}/prompts`,
         {

@@ -13,7 +13,7 @@
     "build": "pnpm build:package",
     "build:studio": "pnpm --filter @koed/studio build && node scripts/stage-studio.mjs",
     "build:package": "pnpm build:studio && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && pnpm build:preload && vite build",
-    "build:preload": "esbuild src/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs && node scripts/verify-preload-bundle.mjs",
+    "build:preload": "esbuild src/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs && esbuild src/studio-preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/studio-preload.cjs && node scripts/verify-preload-bundle.mjs",
     "dev": "vite --host 127.0.0.1",
     "prestart": "pnpm --filter @koed/koed-server build && pnpm -w source-runtime:prepare",
     "package": "pnpm package:mac",

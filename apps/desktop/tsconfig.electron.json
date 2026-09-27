@@ -16,6 +16,7 @@
   "include": [
     "src/main.ts",
     "src/preload.cts",
+    "src/studio-preload.cts",
     "src/pds-*.ts",
     "src/ipc/**/*.ts",
     "src/koed-server/**/*.ts",

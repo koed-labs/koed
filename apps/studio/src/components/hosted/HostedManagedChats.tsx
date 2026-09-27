@@ -854,6 +854,14 @@ export function HostedManagedChats({
       state: "pending"
     };
     const messageId = operation.clientUserMessageId;
+    try {
+      if (!store?.writeDurably) throw new Error("Device recovery storage is unavailable.");
+      store.writeDurably({ schemaVersion: 1, draft: prompt, pendingOperation: operation });
+    } catch {
+      setError("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      setSending(false);
+      return;
+    }
     setRecoveryOperation(operation, store, prompt);
     try {
       const command = await queueHostedConversationPrompt(
@@ -1146,6 +1154,15 @@ export function HostedManagedChats({
       state: "pending"
     };
     newStartOperationRef.current = operation;
+    try {
+      if (!store?.writeDurably) throw new Error("Device recovery storage is unavailable.");
+      store.writeDurably({ schemaVersion: 1, draft: prompt, pendingOperation: operation });
+    } catch {
+      newStartOperationRef.current = null;
+      setError("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      setSending(false);
+      return;
+    }
     setPendingNewStart(operation);
     writeRecovery(store, prompt, operation);
     try {
