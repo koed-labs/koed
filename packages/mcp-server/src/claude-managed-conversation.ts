@@ -944,8 +944,12 @@ export class ClaudeManagedConversationSession {
       sourceEnvironment,
       config.clientName ?? "claude-managed-conversation"
     );
-    this.sdkEnvironment.CLAUDE_CONFIG_DIR =
-      claudeManagedHome(sourceEnvironment);
+    if (sourceEnvironment.CLAUDE_CONFIG_DIR?.trim()) {
+      this.sdkEnvironment.CLAUDE_CONFIG_DIR =
+        claudeManagedHome(sourceEnvironment);
+    } else {
+      delete this.sdkEnvironment.CLAUDE_CONFIG_DIR;
+    }
     this.managedHome = fs.realpathSync(config.managedHome);
     this.sessionStore = createManagedClaudeSessionStore(this.managedHome);
     if (this.sdkEnvironment.ANTHROPIC_API_KEY !== undefined) {

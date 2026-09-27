@@ -141,6 +141,23 @@ const queryOptions = (callIndex = 0): Options => {
 };
 
 describe("ClaudeManagedConversationSession", () => {
+  it("leaves CLAUDE_CONFIG_DIR unset when using Claude's native HOME default", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession(config);
+
+    try {
+      await session.start("Hello");
+
+      expect(queryOptions().env?.HOME).toBe(config.env.HOME);
+      expect(queryOptions().env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
   it("retains main and child transcripts for exact managed resume and capture", async () => {
     const { managedHome } = fixture();
     const store = createManagedClaudeSessionStore(managedHome);
@@ -491,7 +508,7 @@ describe("ClaudeManagedConversationSession", () => {
   });
 
   it("loads the same managed SessionStore when subsequent turns resume", async () => {
-    const { config, cwd, managedHome } = fixture();
+    const { config, managedHome } = fixture();
     const sessionId = randomUUID();
     const loadedEntryCounts: number[] = [];
     sdk.query.mockImplementation(({ options }: { options?: Options }) => {
@@ -525,9 +542,7 @@ describe("ClaudeManagedConversationSession", () => {
     expect(loadedEntryCounts).toEqual([0, 1]);
     expect(queryOptions(1).resume).toBe(sessionId);
     expect(queryOptions(1).sessionStore).toBe(queryOptions(0).sessionStore);
-    expect(queryOptions(1).env?.CLAUDE_CONFIG_DIR).toBe(
-      fs.realpathSync(path.join(cwd, ".claude"))
-    );
+    expect(queryOptions(1).env?.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(
       resolveClaudeManagedConversationSource(sessionId, {
         KOED_CLAUDE_SESSION_STORE_DIR: managedHome
