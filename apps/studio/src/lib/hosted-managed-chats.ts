@@ -38,6 +38,60 @@ export type HostedConversationRecoveryLookup =
       clientUserMessageId: string | null;
     };
 
+export type HostedRecoveryDisposition = Readonly<{
+  kind: "accepted" | "canceled" | "failed" | "uncertain";
+  clearIdentity: boolean;
+  restorePrompt: boolean;
+  showPendingMessage: boolean;
+}>;
+
+/** Preserve send identity when the runner cannot prove the command outcome. */
+export function hostedRecoveryDisposition(
+  commandState: string
+): HostedRecoveryDisposition {
+  if (commandState === "canceled")
+    return {
+      kind: "canceled",
+      clearIdentity: true,
+      restorePrompt: true,
+      showPendingMessage: false
+    };
+  if (commandState === "failed")
+    return {
+      kind: "failed",
+      clearIdentity: false,
+      restorePrompt: true,
+      showPendingMessage: false
+    };
+  if (commandState === "indeterminate")
+    return {
+      kind: "uncertain",
+      clearIdentity: false,
+      restorePrompt: true,
+      showPendingMessage: true
+    };
+  if (["queued", "blocked", "dispatching"].includes(commandState))
+    return {
+      kind: "accepted",
+      clearIdentity: false,
+      restorePrompt: false,
+      showPendingMessage: true
+    };
+  if (commandState === "completed")
+    return {
+      kind: "accepted",
+      clearIdentity: true,
+      restorePrompt: false,
+      showPendingMessage: true
+    };
+  return {
+    kind: "uncertain",
+    clearIdentity: false,
+    restorePrompt: true,
+    showPendingMessage: true
+  };
+}
+
 export type HostedLaunchOptions = {
   runners: Array<{ deviceId: string; displayName: string }>;
   instances: Array<LaunchInstance & { readiness: string; ready: boolean }>;

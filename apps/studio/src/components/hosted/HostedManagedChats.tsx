@@ -23,6 +23,7 @@ import {
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedRecoveryBackendId,
+  hostedRecoveryDisposition,
   queueHostedConversationPrompt,
   requestHostedProjectMove,
   requestHostedConversationControl,
@@ -259,16 +260,38 @@ export function HostedManagedChats({
         );
         if (signal?.aborted) return;
         if (result.found) {
-          const restoredDraft = store?.read()?.draft ?? "";
-          writeRecovery(store, restoredDraft, null);
+          const disposition = hostedRecoveryDisposition(result.commandState);
+          const restoredDraft = disposition.restorePrompt
+            ? operation.prompt
+            : store?.read()?.draft ?? "";
+          if (disposition.kind === "failed") {
+            writeRecovery(store, restoredDraft, {
+              ...operation,
+              state: "rejected"
+            });
+          } else if (disposition.clearIdentity) {
+            writeRecovery(store, restoredDraft, null);
+          } else {
+            writeRecovery(store, restoredDraft, {
+              ...operation,
+              state: "reconciling"
+            });
+          }
           if (selectedIdRef.current === executionId) {
-            recoveryOperationRef.current = null;
-            setPendingRecoveryOperation(null);
+            const preserveOperation = !disposition.clearIdentity && disposition.kind !== "failed";
+            const savedOperation = {
+              ...operation,
+              state: disposition.kind === "failed" ? "rejected" as const : "reconciling" as const
+            };
+            recoveryOperationRef.current = preserveOperation ? savedOperation : null;
+            setPendingRecoveryOperation(preserveOperation ? savedOperation : null);
             draftRef.current = restoredDraft;
             setDraft(restoredDraft);
             setRuntime(value.runtime);
             setMessages(value.state.messages);
-            if (
+            if (!disposition.showPendingMessage) {
+              setPendingMessage(null);
+            } else if (
               !value.state.messages.some(
                 (message) => message.id === operation.clientUserMessageId
               )
@@ -285,11 +308,25 @@ export function HostedManagedChats({
             } else {
               setPendingMessage(null);
             }
-            setStatus(
-              result.commandState === "canceled"
-                ? "The previous continuation was canceled; its persisted state is refreshed."
-                : "The previous continuation was accepted; its persisted state is refreshed."
-            );
+            if (disposition.kind === "canceled") {
+              setStatus("The previous continuation was canceled. Its draft is restored; sending again will create a new attempt.");
+              setError(null);
+            } else if (disposition.kind === "failed") {
+              setStatus("The previous continuation failed. Its draft is restored; sending again will create a new attempt.");
+              setError(null);
+            } else if (disposition.kind === "uncertain") {
+              setStatus("The previous continuation has an uncertain outcome. Its send identity is retained; check status before trying again.");
+              setError("Studio cannot safely retry this continuation until Koed confirms its outcome.");
+            } else {
+              setStatus(
+                result.commandState === "queued" || result.commandState === "blocked"
+                  ? "The previous continuation was accepted and is still pending on its assigned runner."
+                  : result.commandState === "dispatching"
+                    ? "The previous continuation was accepted and the runner has claimed it."
+                    : "The previous continuation completed; its persisted state is refreshed."
+              );
+              setError(null);
+            }
           }
         } else {
           const unresolved = { ...operation, state: "reconciling" as const };
@@ -346,19 +383,89 @@ export function HostedManagedChats({
         );
         if (signal?.aborted) return;
         if (result.found) {
+          const disposition = hostedRecoveryDisposition(result.commandState);
+          if (disposition.kind === "failed" || disposition.kind === "uncertain") {
+            const failed = disposition.kind === "failed";
+            const retained = {
+              ...operation,
+              state: failed ? "rejected" as const : "reconciling" as const
+            };
+            writeRecovery(store, operation.prompt, retained);
+            if (fromNewSlot) {
+              newStartOperationRef.current = failed ? null : retained;
+              setPendingNewStart(failed ? null : retained);
+            } else {
+              recoveryOperationRef.current = failed ? null : retained;
+              setPendingRecoveryOperation(failed ? null : retained);
+            }
+            setInitialPrompt(operation.prompt);
+            if (failed) setNewConversationOpen(true);
+            setStatus(
+              failed
+                ? "The previous Conversation start failed. Its initial prompt is restored; starting again will create a new attempt."
+                : "The previous Conversation start has an uncertain outcome. Its send identity is retained; check status before trying again."
+            );
+            setError(
+              failed
+                ? null
+                : "Studio cannot safely retry this Conversation start until Koed confirms its outcome."
+            );
+            return;
+          }
+          if (disposition.kind === "canceled") {
+            writeRecovery(store, operation.prompt, null);
+            if (fromNewSlot) {
+              newStartOperationRef.current = null;
+              setPendingNewStart(null);
+              setNewConversationOpen(true);
+            } else {
+              recoveryOperationRef.current = null;
+              setPendingRecoveryOperation(null);
+            }
+            draftRef.current = operation.prompt;
+            setDraft(operation.prompt);
+            setInitialPrompt(operation.prompt);
+            setStatus("The previous Conversation start was canceled. Its initial prompt is restored; starting again will create a new attempt.");
+            setError(null);
+            return;
+          }
+          const retainAcceptedIdentity = !disposition.clearIdentity;
+          const retainedOperation = {
+            ...operation,
+            state: "reconciling" as const,
+            commandId: result.commandId
+          };
           if (fromNewSlot && recoveryScope) {
             const conversationStore = createDeviceManagedChatRecoveryStore({
               ...recoveryScope,
               executionId: result.executionId
             });
-            writeRecovery(conversationStore, "", null);
+            writeRecovery(
+              conversationStore,
+              "",
+              retainAcceptedIdentity ? retainedOperation : null
+            );
             store?.clear();
             newStartOperationRef.current = null;
             setPendingNewStart(null);
+            recoveryOperationRef.current = retainAcceptedIdentity
+              ? retainedOperation
+              : null;
+            setPendingRecoveryOperation(
+              retainAcceptedIdentity ? retainedOperation : null
+            );
           } else {
-            writeRecovery(store, "", null);
-            recoveryOperationRef.current = null;
-            setPendingRecoveryOperation(null);
+            writeRecovery(
+              store,
+              "",
+              retainAcceptedIdentity ? retainedOperation : null
+            );
+            recoveryOperationRef.current = retainAcceptedIdentity
+              ? retainedOperation
+              : null;
+            setPendingRecoveryOperation(
+              retainAcceptedIdentity ? retainedOperation : null
+            );
           }
           draftRef.current = "";
           setDraft("");
@@ -378,9 +485,11 @@ export function HostedManagedChats({
             setNewConversationOpen(false);
             setInitialPrompt("");
             setStatus(
-              result.commandState === "canceled"
-                ? "The previous Conversation start was canceled."
-                : "The previous Conversation start was accepted; showing its persisted state."
+              result.commandState === "queued" || result.commandState === "blocked"
+                ? "The previous Conversation start was accepted and is still pending on its assigned runner."
+                : result.commandState === "dispatching"
+                  ? "The previous Conversation start was accepted and the runner has claimed it."
+                  : "The previous Conversation start completed; its persisted state is shown."
             );
           }
         } else {
@@ -543,6 +652,17 @@ export function HostedManagedChats({
     const recovered = newConversationStore?.read();
     const pendingStart = recovered?.pendingOperation;
     if (pendingStart?.kind === "start") {
+      if (pendingStart.state === "rejected") {
+        newStartOperationRef.current = null;
+        queueMicrotask(() => {
+          if (controller.signal.aborted) return;
+          setPendingNewStart(null);
+          setInitialPrompt(pendingStart.prompt);
+          setNewConversationOpen(true);
+          setStatus("The previous Conversation start failed. Its initial prompt is restored; starting again will create a new attempt.");
+        });
+        return () => controller.abort();
+      }
       newStartOperationRef.current = pendingStart;
       queueMicrotask(() => {
         if (controller.signal.aborted) return;
@@ -579,6 +699,20 @@ export function HostedManagedChats({
     draftRef.current = recoveredDraft;
     setDraft(recoveredDraft);
     const operation = recovered?.pendingOperation ?? null;
+    if (operation?.state === "rejected") {
+      recoveryOperationRef.current = null;
+      setPendingRecoveryOperation(null);
+      if (operation.kind === "start") {
+        setInitialPrompt(operation.prompt);
+        setNewConversationOpen(true);
+      }
+      setStatus(
+        operation.kind === "start"
+          ? "The previous Conversation start failed. Its initial prompt is restored; starting again will create a new attempt."
+          : "The previous continuation failed. Its draft is restored; sending again will create a new attempt."
+      );
+      return () => controller.abort();
+    }
     recoveryOperationRef.current = operation;
     setPendingRecoveryOperation(operation);
     if (!operation) return () => controller.abort();

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedRecoveryBackendId, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -565,6 +565,47 @@ test("loads the authenticated recovery scope and looks up stable send identities
   assert.ok(calls[2].includes("executionGeneration=3"));
   assert.ok(calls[2].includes("clientUserMessageId=33333333-3333-4333-8333-333333333333"));
   assert.equal(calls[2].includes("/private/runner/path"), false);
+});
+
+test("retains hosted send identity until terminal state and hides failed or canceled pending messages", () => {
+  assert.deepEqual(hostedRecoveryDisposition("failed"), {
+    kind: "failed",
+    clearIdentity: false,
+    restorePrompt: true,
+    showPendingMessage: false
+  });
+  assert.deepEqual(hostedRecoveryDisposition("indeterminate"), {
+    kind: "uncertain",
+    clearIdentity: false,
+    restorePrompt: true,
+    showPendingMessage: true
+  });
+  assert.deepEqual(hostedRecoveryDisposition("future-state"), {
+    kind: "uncertain",
+    clearIdentity: false,
+    restorePrompt: true,
+    showPendingMessage: true
+  });
+  assert.deepEqual(hostedRecoveryDisposition("canceled"), {
+    kind: "canceled",
+    clearIdentity: true,
+    restorePrompt: true,
+    showPendingMessage: false
+  });
+  for (const state of ["queued", "blocked", "dispatching"]) {
+    assert.deepEqual(hostedRecoveryDisposition(state), {
+      kind: "accepted",
+      clearIdentity: false,
+      restorePrompt: false,
+      showPendingMessage: true
+    });
+  }
+  assert.deepEqual(hostedRecoveryDisposition("completed"), {
+    kind: "accepted",
+    clearIdentity: true,
+    restorePrompt: false,
+    showPendingMessage: true
+  });
 });
 
 test("sends prompt and control mutations with generation and idempotency data", async () => {
