@@ -588,7 +588,6 @@ const fallbackTitle = (
 const metadataFor = async (
   provider: Provider,
   filename: string,
-  projectDirectory: string,
   canonicalRoot: string,
   codexTitles: ReadonlyMap<string, string>
 ): Promise<
@@ -612,13 +611,15 @@ const metadataFor = async (
     if (!header || stringField(metadata, "sessionId") !== id) return undefined;
     const rawCwd = stringField(metadata, "cwd");
     const cwd = rawCwd && path.isAbsolute(rawCwd) ? rawCwd : undefined;
-    // Claude stores the project directory under a lossy path-derived folder.
-    // Hash the folder token so it can group sessions without disclosing it.
     return {
       externalId: id,
       stats: header.stats,
-      projectKey: cwd ? `cwd:${cwd}` : `claude-project:${projectDirectory}`,
-      ...(cwd ? { projectName: path.basename(cwd) || undefined } : {})
+      ...(cwd
+        ? {
+            projectKey: `cwd:${cwd}`,
+            projectName: path.basename(cwd) || undefined
+          }
+        : {})
     };
   }
 
@@ -953,7 +954,6 @@ export const listLocalConversationSources = async (
             const identity = await metadataFor(
               rootSpec.provider,
               ranked.target,
-              path.basename(path.dirname(ranked.target)),
               canonicalRoot,
               codexTitles
             );

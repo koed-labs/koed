@@ -265,6 +265,69 @@ describe("listLocalConversationSources", () => {
     });
   });
 
+  it("keeps Claude sessions without a verified cwd standalone and shares cwd identity across providers", async () => {
+    const home = await makeRoot();
+    const claudeHome = path.join(home, "claude-home");
+    const claudeRoot = path.join(
+      claudeHome,
+      "projects",
+      "private-storage-token"
+    );
+    const codexRoot = path.join(home, "codex", "sessions");
+    const piRoot = path.join(home, "pi", "sessions");
+    const sharedCwd = path.join(home, "work", "shared-project");
+    await Promise.all([
+      mkdir(claudeRoot, { recursive: true }),
+      mkdir(codexRoot, { recursive: true }),
+      mkdir(piRoot, { recursive: true })
+    ]);
+    const standaloneId = "123e4567-e89b-42d3-a456-426614174001";
+    const sharedId = "123e4567-e89b-42d3-a456-426614174002";
+    await Promise.all([
+      writeFile(
+        path.join(claudeRoot, `${standaloneId}.jsonl`),
+        `${JSON.stringify({ sessionId: standaloneId, message: "private transcript" })}\n`
+      ),
+      writeFile(
+        path.join(claudeRoot, `${sharedId}.jsonl`),
+        `${JSON.stringify({ sessionId: sharedId, cwd: sharedCwd })}\n`
+      ),
+      writeFile(
+        path.join(codexRoot, "rollout.jsonl"),
+        `${JSON.stringify({ type: "session_meta", payload: { id: "shared-codex", cwd: sharedCwd } })}\n`
+      ),
+      writeFile(
+        path.join(piRoot, "session.jsonl"),
+        `${JSON.stringify({ type: "session", version: 3, id: "shared-pi", cwd: sharedCwd })}\n`
+      )
+    ]);
+
+    const page = await listLocalConversationSources({
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        CODEX_HOME: path.join(home, "codex"),
+        PI_CODING_AGENT_DIR: path.join(home, "pi")
+      }
+    });
+    const bySourceId = new Map(page.items.map((item) => [item.sourceId, item]));
+    const standalone = bySourceId.get(`claude-code:${standaloneId}`);
+    const claude = bySourceId.get(`claude-code:${sharedId}`);
+    const codex = bySourceId.get("codex:shared-codex");
+    const pi = bySourceId.get("pi:shared-pi");
+
+    expect(standalone).toBeDefined();
+    expect(standalone).not.toHaveProperty("projectId");
+    expect(standalone).not.toHaveProperty("projectName");
+    expect(claude?.projectId).toMatch(/^local-project:/);
+    expect(claude?.projectId).toBe(codex?.projectId);
+    expect(claude?.projectId).toBe(pi?.projectId);
+    expect(claude).toMatchObject({ projectName: "shared-project" });
+    expect(JSON.stringify(page)).not.toContain(home);
+    expect(JSON.stringify(page)).not.toContain("private transcript");
+  });
+
   it("uses the registered project identity for an exact source cwd match", async () => {
     const home = await makeRoot();
     const koedHome = path.join(home, "koed");

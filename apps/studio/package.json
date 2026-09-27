@@ -28,7 +28,7 @@
     "build": "next build",
     "start": "node server/index.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/*.test.mjs src/lib/studio-home.test.ts src/lib/studio-home-demo.test.ts src/lib/studio-build-activity.test.ts src/lib/studio-review.test.ts src/lib/hosted-session.test.ts src/lib/hosted-managed-chats.test.ts src/lib/device-managed-chat-recovery.test.ts src/lib/desktop-collaboration.test.ts src/lib/studio-collaboration-settings.test.ts",
+    "test": "node --test server/*.test.mjs src/lib/studio-home.test.ts src/lib/studio-home-demo.test.ts src/lib/studio-build-activity.test.ts src/lib/studio-review.test.ts src/lib/hosted-session.test.ts src/lib/hosted-managed-chats.test.ts src/lib/device-managed-chat-recovery.test.ts src/lib/desktop-collaboration.test.ts src/lib/studio-collaboration-settings.test.ts src/components/studio/LocalConversationBrowser.projects.test.ts",
     "desktop": "electron .",
     "lint": "eslint",
     "electron:dev": "pnpm build && electron .",

@@ -10,7 +10,7 @@ export function normalizeConversationProvider(
   value: string | null | undefined
 ): LocalConversationProvider | null {
   if (value === "codex" || value === "codex-cli") return "codex";
-  if (value === "claude-code") return "claude-code";
+  if (value === "claude" || value === "claude-code") return "claude-code";
   if (value === "pi") return "pi";
   return null;
 }

@@ -11,7 +11,11 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HomeExecution } from "@/lib/studio-contract";
-import { isSyntheticIndependentProject } from "./LocalConversationBrowser.match";
+import {
+  isSyntheticIndependentProject,
+  normalizeConversationProvider
+} from "./LocalConversationBrowser.match";
+import { deriveProjectBrowserView } from "./LocalConversationBrowser.projects";
 
 type Provider = "codex" | "claude-code" | "pi";
 type LocalSource = {
@@ -664,52 +668,39 @@ export function LocalConversationBrowser({
     };
   }, [fetchRegisteredProjects]);
 
-  const projects = useMemo(() => {
-    const byId = new Map<string, { id: string; name: string }>();
-    for (const item of items) {
-      if (!item.projectId) continue;
-      if (isSyntheticIndependentProject(item.projectId, item.projectName))
-        continue;
-      const existing = byId.get(item.projectId);
-      const name = item.projectName?.trim();
-      if (existing) {
-        if (name && existing.name === "Project") existing.name = name;
-      } else {
-        byId.set(item.projectId, {
-          id: item.projectId,
-          name: name || "Project"
-        });
-      }
-    }
-    for (const project of registeredProjects) {
-      const existing = byId.get(project.id);
-      if (existing) existing.name = project.name.trim() || existing.name;
-      else byId.set(project.id, { id: project.id, name: project.name });
-    }
-    return Array.from(byId.values());
-  }, [items, registeredProjects]);
+  const projectSources = useMemo(
+    () =>
+      items.filter(
+        (item) =>
+          item.projectId &&
+          !isSyntheticIndependentProject(item.projectId, item.projectName)
+      ),
+    [items]
+  );
+  const { projects, activeManagedConversations } = useMemo(
+    () =>
+      deriveProjectBrowserView({
+        items: projectSources,
+        registeredProjects,
+        managedConversations,
+        provider,
+        normalizeProvider: normalizeConversationProvider
+      }),
+    [projectSources, registeredProjects, managedConversations, provider]
+  );
   const projectItems = useMemo(() => {
     const grouped = new Map<string, LocalSource[]>();
-    for (const item of items) {
+    for (const item of projectSources) {
       if (!item.projectId) continue;
-      if (isSyntheticIndependentProject(item.projectId, item.projectName))
-        continue;
       const group = grouped.get(item.projectId) ?? [];
       group.push(item);
       grouped.set(item.projectId, group);
     }
     return grouped;
-  }, [items]);
+  }, [projectSources]);
   const registeredProjectIds = useMemo(
     () => new Set(registeredProjects.map((project) => project.id)),
     [registeredProjects]
-  );
-  const activeManagedConversations = useMemo(
-    () =>
-      managedConversations.filter((item) =>
-        ["running", "ready", "starting"].includes(item.state.toLowerCase())
-      ),
-    [managedConversations]
   );
   const managedSourceIdSet = useMemo(
     () => new Set(managedSourceIds),
@@ -718,7 +709,8 @@ export function LocalConversationBrowser({
   const managedByProject = useMemo(() => {
     const grouped = new Map<string, ManagedConversation[]>();
     for (const item of activeManagedConversations) {
-      if (!item.projectId || !registeredProjectIds.has(item.projectId)) continue;
+      if (!item.projectId || !registeredProjectIds.has(item.projectId))
+        continue;
       const group = grouped.get(item.projectId) ?? [];
       group.push(item);
       grouped.set(item.projectId, group);
