@@ -360,6 +360,55 @@ const listSchema = z
   })
   .strict();
 
+const recoveryLookupSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("start"),
+      idempotencyKey: idempotencyKeySchema
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("prompt"),
+      idempotencyKey: idempotencyKeySchema,
+      clientUserMessageId: z.uuid(),
+      executionId: z.uuid(),
+      executionGeneration: z.coerce.number().int().safe().positive()
+    })
+    .strict()
+]);
+
+const recoveryLookupResponseSchema = z.discriminatedUnion("found", [
+  z.object({ found: z.literal(false) }).strict(),
+  z
+    .object({
+      found: z.literal(true),
+      execution: z
+        .object({ id: z.uuid(), executionGeneration: z.number() })
+        .passthrough(),
+      command: z
+        .object({
+          id: z.uuid(),
+          state: z.enum([
+            "queued",
+            "blocked",
+            "dispatching",
+            "completed",
+            "indeterminate",
+            "failed",
+            "canceled"
+          ]),
+          executionId: z.uuid(),
+          executionGeneration: z.number().int().safe().positive(),
+          commandKind: z.enum(["start", "prompt"]),
+          clientUserMessageId: z.uuid().nullable(),
+          createdAt: z.string()
+        })
+        .strict()
+    })
+    .strict()
+]);
+
 const localProjectStoreSchema = z
   .object({
     schemaVersion: z.literal(3),
@@ -2074,6 +2123,127 @@ export const registerManagedConversationRoutes = (
           state: created.command.state
         }
       });
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/recovery/lookup",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const input = recoveryLookupSchema.parse(request.query);
+      const query = new URLSearchParams({
+        kind: input.kind,
+        idempotencyKey: input.idempotencyKey,
+        ...(input.kind === "prompt"
+          ? {
+              clientUserMessageId: input.clientUserMessageId,
+              executionId: input.executionId,
+              executionGeneration: String(input.executionGeneration)
+            }
+          : {})
+      });
+      const proxied = await proxyManaged(
+        "GET",
+        "/v1/managed-conversations/recovery/lookup",
+        undefined,
+        { query }
+      );
+      if (proxied) {
+        const parsed = recoveryLookupResponseSchema.safeParse(proxied.payload);
+        if (!parsed.success) {
+          throw Object.assign(
+            new Error(
+              "Managed Conversation authority returned invalid recovery state"
+            ),
+            { statusCode: 502 }
+          );
+        }
+        if (!parsed.data.found) return parsed.data;
+        const { execution, command } = parsed.data;
+        if (
+          command.commandKind !== input.kind ||
+          command.executionId !== execution.id ||
+          (input.kind === "prompt" &&
+            (command.clientUserMessageId !== input.clientUserMessageId ||
+              command.executionId !== input.executionId ||
+              command.executionGeneration !== input.executionGeneration))
+        ) {
+          throw Object.assign(
+            new Error(
+              "Managed Conversation authority returned mismatched recovery state"
+            ),
+            { statusCode: 502 }
+          );
+        }
+        const allowedExecutionFields = [
+          "id",
+          "projectId",
+          "provider",
+          "aiClientInstanceId",
+          "model",
+          "reasoningEffort",
+          "permissionMode",
+          "runnerKind",
+          "state",
+          "stateVersion",
+          "executionGeneration",
+          "sessionId",
+          "executionCheckout",
+          "logicalSessionId",
+          "providerThreadId",
+          "providerCliVersion",
+          "lastErrorCode",
+          "createdAt",
+          "updatedAt",
+          "startedAt",
+          "quiescedAt",
+          "stoppedAt"
+        ] as const;
+        const safeExecution = Object.fromEntries(
+          allowedExecutionFields.flatMap((key) =>
+            Object.hasOwn(execution, key) ? [[key, execution[key]]] : []
+          )
+        );
+        return await localizeExecutions(user.id, {
+          found: true,
+          execution: safeExecution,
+          command
+        });
+      }
+
+      const recovery = await context
+        .requireRepository()
+        .getManagedConversationCommandByRecoveryIdentity(
+          { userId: user.id },
+          {
+            commandKind: input.kind,
+            idempotencyKey: input.idempotencyKey,
+            ...(input.kind === "prompt"
+              ? {
+                  clientUserMessageId: input.clientUserMessageId,
+                  executionId: input.executionId,
+                  executionGeneration: input.executionGeneration
+                }
+              : {})
+          }
+        );
+      if (!recovery) return { found: false };
+      const { execution, command } = recovery;
+      return {
+        found: true,
+        execution: await publicExecutionFor(user.id, execution),
+        command: {
+          id: command.id,
+          state: command.state,
+          executionId: command.executionId,
+          executionGeneration: command.executionGeneration,
+          commandKind: command.commandKind,
+          clientUserMessageId: command.clientUserMessageId,
+          createdAt: command.createdAt
+        }
+      };
     }
   );
 

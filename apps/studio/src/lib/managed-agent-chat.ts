@@ -31,9 +31,22 @@ export type RuntimeSnapshot = {
     id: string;
     state: string;
     commandKind: string;
+    clientUserMessageId?: string | null;
     lastErrorCode: string | null;
   } | null;
 };
+
+/** Keep queued cancellation separate from interrupting a runner-claimed turn. */
+export function managedConversationControls(
+  command: RuntimeSnapshot["latestCommand"]
+): { canCancelPendingPrompt: boolean; canInterrupt: boolean } {
+  if (command?.commandKind !== "prompt")
+    return { canCancelPendingPrompt: false, canInterrupt: false };
+  return {
+    canCancelPendingPrompt: ["queued", "pending"].includes(command.state),
+    canInterrupt: ["dispatching", "running"].includes(command.state)
+  };
+}
 export type LaunchInstance = {
   instanceId: string;
   driverId: string;
@@ -265,6 +278,9 @@ export function parseRuntime(
           id: command.id,
           state: command.state,
           commandKind: command.commandKind,
+          ...(typeof command.clientUserMessageId === "string"
+            ? { clientUserMessageId: command.clientUserMessageId }
+            : {}),
           lastErrorCode:
             typeof command.lastErrorCode === "string"
               ? command.lastErrorCode

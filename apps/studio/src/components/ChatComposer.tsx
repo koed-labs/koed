@@ -249,6 +249,7 @@ export function ChatComposer({
     });
 
   const draft = value ?? internalDraft;
+  const draftVersionRef = useRef(0);
   const selectedAgent =
     agents.find((agent) => agent.id === activeAgentId) ?? null;
   const mentionMatches = mentionQuery
@@ -337,6 +338,7 @@ export function ChatComposer({
     !effortIncompatible;
 
   const setDraft = (nextValue: string) => {
+    draftVersionRef.current += 1;
     if (onChange) {
       onChange(nextValue);
       return;
@@ -391,9 +393,10 @@ export function ChatComposer({
       permissionMode: effectiveAccess.id,
       instanceId: selectedCapability?.instanceId
     });
+    const submittedDraftVersion = draftVersionRef.current;
     try {
       await onSend?.(trimmed, selection);
-      setDraft("");
+      if (draftVersionRef.current === submittedDraftVersion) setDraft("");
       setMentionQuery(null);
     } catch {
       // Keep the draft available for retry when the runtime rejects a turn.

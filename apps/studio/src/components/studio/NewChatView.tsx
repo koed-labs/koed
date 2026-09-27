@@ -1,13 +1,13 @@
 "use client";
 
-import { CircleAlert, MessageSquare, X } from "lucide-react";
+import { CircleAlert, MessageSquare, MoreHorizontal, X } from "lucide-react";
 import { useState } from "react";
 import Link from "next/link";
 import {
   DEMO_STANDALONE_BUILD_ACTIVITY,
   type BuildActivity
 } from "@/lib/studio-build-activity";
-import { BuildActivityPanel } from "../BuildActivityPanel";
+import { BuildActivityPanel, type BuildPanelMode } from "../BuildActivityPanel";
 import { AgentAvatarView } from "../AgentAvatarView";
 import {
   ChatComposer,
@@ -69,6 +69,10 @@ export type NewChatRuntime = Readonly<{
   error?: string | null;
   onSend: (text: string, selection: ChatComposerSelection) => Promise<void>;
   onInterrupt?: () => void;
+  canInterrupt?: boolean;
+  canCancelPendingPrompt?: boolean;
+  onCancelPendingPrompt?: () => void;
+  onEndSession?: () => void;
   restoreSelection?: ChatComposerRestoreSelection;
   pendingRequests?: readonly NewChatPendingRequest[];
   onRespond?: (
@@ -83,6 +87,8 @@ export type NewChatViewProps = {
   projectName?: string;
   branch?: string;
   initialDraft?: string;
+  recoveredDraft?: string | null;
+  onDraftChange?: (draft: string) => void;
   initialSelection?: ChatComposerSelection;
   suggestions?: NewChatSuggestion[];
   activity?: BuildActivity | null;
@@ -120,6 +126,8 @@ export function NewChatView({
   projectName = "Standalone chat",
   branch = "No project branch",
   initialDraft = "",
+  recoveredDraft,
+  onDraftChange,
   initialSelection,
   suggestions = DEFAULT_SUGGESTIONS,
   activity,
@@ -131,7 +139,8 @@ export function NewChatView({
   modelOptions,
   runtime
 }: NewChatViewProps) {
-  const [draft, setDraft] = useState(initialDraft);
+  const [editedDraft, setEditedDraft] = useState<string | null>(null);
+  const draft = editedDraft ?? recoveredDraft ?? initialDraft;
   const [pendingSuggestion, setPendingSuggestion] =
     useState<NewChatSuggestion | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -140,6 +149,9 @@ export function NewChatView({
   >({});
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
+  const [endSessionConfirmOpen, setEndSessionConfirmOpen] = useState(false);
+  const [buildPanelMode, setBuildPanelMode] = useState<BuildPanelMode>("compact");
   const visibleMessages = runtime?.messages ?? messages;
   const activeAgent = agents?.find((agent) => agent.id === activeAgentId);
   const activeAgentAvailable = Boolean(
@@ -159,12 +171,14 @@ export function NewChatView({
       setPendingSuggestion(suggestion);
       return;
     }
-    setDraft(suggestion.prompt);
+    setEditedDraft(suggestion.prompt);
+    onDraftChange?.(suggestion.prompt);
   };
 
   const replaceDraft = () => {
     if (!pendingSuggestion) return;
-    setDraft(pendingSuggestion.prompt);
+    setEditedDraft(pendingSuggestion.prompt);
+    onDraftChange?.(pendingSuggestion.prompt);
     setPendingSuggestion(null);
   };
 
@@ -216,8 +230,37 @@ export function NewChatView({
   return (
     <div className="relative flex h-full min-h-0 w-full">
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
-          <p className="text-sm text-foreground no-drag">Personal / New chat</p>
+        <header className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 sm:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}>
+          <p className="flex-1 text-sm text-foreground no-drag">Personal / New chat</p>
+          {runtime?.onEndSession ? (
+            <div className="relative no-drag">
+              <button
+                type="button"
+                aria-label="Chat menu"
+                aria-haspopup="menu"
+                aria-expanded={chatMenuOpen}
+                onClick={() => setChatMenuOpen((open) => !open)}
+                className="rounded-md p-1.5 text-muted hover:bg-surface-hover hover:text-foreground"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {chatMenuOpen ? (
+                <div role="menu" className="absolute right-0 top-full z-30 mt-1 min-w-44 rounded-md border border-border bg-surface p-1 shadow-xl">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setChatMenuOpen(false);
+                      setEndSessionConfirmOpen(true);
+                    }}
+                    className="w-full rounded px-2.5 py-2 text-left text-xs text-danger hover:bg-surface-hover"
+                  >
+                    End session…
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <span className="sr-only">
             <MessageSquare className="h-3 w-3" />
             {mode === "demo" ? "Demo data" : "Live"}
@@ -392,16 +435,25 @@ export function NewChatView({
                         ? "Waiting for the chat runtime…"
                         : (agentGateMessage ?? runtime?.status))}
                   </span>
-                  {runtime?.isSending && runtime.onInterrupt && (
+                  {runtime?.canCancelPendingPrompt && runtime.onCancelPendingPrompt ? (
+                    <button
+                      type="button"
+                      className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
+                      onClick={runtime.onCancelPendingPrompt}
+                      aria-label="Cancel pending continuation"
+                    >
+                      <X className="h-3.5 w-3.5" /> Cancel pending
+                    </button>
+                  ) : runtime?.canInterrupt && runtime.onInterrupt ? (
                     <button
                       type="button"
                       className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
                       onClick={runtime.onInterrupt}
-                      aria-label="Stop waiting"
+                      aria-label="Stop active turn"
                     >
                       <X className="h-3.5 w-3.5" /> Stop
                     </button>
-                  )}
+                  ) : null}
                 </div>
               )}
               {approvalError && (
@@ -608,7 +660,10 @@ export function NewChatView({
                 projectName={projectName}
                 branch={branch}
                 value={draft}
-                onChange={setDraft}
+                onChange={(value) => {
+                  setEditedDraft(value);
+                  onDraftChange?.(value);
+                }}
                 onSend={
                   mode === "demo"
                     ? sendDemoMessage
@@ -660,8 +715,30 @@ export function NewChatView({
 
       <BuildActivityPanel
         activity={resolvedActivity}
+        onModeChange={setBuildPanelMode}
         className="max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:shadow-2xl"
       />
+      {endSessionConfirmOpen && runtime?.onEndSession ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 no-drag" role="presentation">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="end-session-title" className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-2xl">
+            <h2 id="end-session-title" className="text-sm font-semibold text-foreground">End this session?</h2>
+            <p className="mt-2 text-xs leading-relaxed text-muted">This stops the managed session. You can still review its conversation afterward.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setEndSessionConfirmOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary">Keep session</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEndSessionConfirmOpen(false);
+                  runtime.onEndSession?.();
+                }}
+                className="rounded-md bg-danger px-3 py-1.5 text-xs font-medium text-white"
+              >
+                End session
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

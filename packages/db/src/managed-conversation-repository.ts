@@ -501,6 +501,19 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     input: { logicalSessionId: string; providerThreadId: string }
   ): Promise<ManagedConversationExecutionRecord | null>;
+  getManagedConversationCommandByRecoveryIdentity(
+    actor: ActorContext,
+    input: {
+      commandKind: "start" | "prompt";
+      idempotencyKey: string;
+      clientUserMessageId?: string;
+      executionId?: string;
+      executionGeneration?: number;
+    }
+  ): Promise<{
+    execution: ManagedConversationExecutionRecord;
+    command: ManagedConversationCommandRecord;
+  } | null>;
   listManagedConversationExecutions(
     actor: ActorContext,
     input?: { projectId?: string; limit?: number }
@@ -3634,6 +3647,40 @@ export const createManagedConversationRepository = (
         [actor.userId, input.logicalSessionId, input.providerThreadId]
       );
       return result.rows[0] ? mapExecution(result.rows[0]) : null;
+    },
+
+    async getManagedConversationCommandByRecoveryIdentity(actor, input) {
+      const result = await pool.query<
+        CommandRow & { execution_json: ExecutionRow }
+      >(
+        `select command.*,
+                row_to_json(execution.*) as execution_json
+           from managed_conversation_commands command
+           join managed_conversation_executions execution
+             on execution.id = command.execution_id
+            and execution.owner_user_id = command.owner_user_id
+          where command.owner_user_id = $1
+            and command.idempotency_key = $2
+            and command.command_kind = $3
+            and ($4::uuid is null or command.client_user_message_id = $4)
+            and ($5::uuid is null or command.execution_id = $5)
+            and ($6::integer is null or command.execution_generation = $6)
+          limit 1`,
+        [
+          actor.userId,
+          input.idempotencyKey,
+          input.commandKind,
+          input.clientUserMessageId ?? null,
+          input.executionId ?? null,
+          input.executionGeneration ?? null
+        ]
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        execution: mapExecution(row.execution_json),
+        command: mapCommand(row)
+      };
     },
 
     async listManagedConversationExecutions(actor, input = {}) {

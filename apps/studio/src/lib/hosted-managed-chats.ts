@@ -1,7 +1,8 @@
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { parseExecution, parseRuntime, record, validExecutionId, type AgentExecution, type LaunchInstance, type RuntimeSnapshot } from "./managed-agent-chat.ts";
+import { parseExecution, parseRuntime, record, validExecutionId, type AgentExecution, type LaunchInstance, type RuntimeItem, type RuntimeSnapshot } from "./managed-agent-chat.ts";
 import type { AgentModelCapability } from "./agentIdentityEditor";
+import type { PendingChatRequest } from "./managed-chat-requests";
 
 export type HostedManagedExecution = AgentExecution & {
   createdAt: string;
@@ -24,6 +25,18 @@ export type HostedConversationState = {
   executionState: string;
   messages: HostedConversationMessage[];
 };
+
+export type HostedConversationRecoveryLookup =
+  | { found: false }
+  | {
+      found: true;
+      executionId: string;
+      executionGeneration: number;
+      commandId: string;
+      commandState: string;
+      commandKind: "start" | "prompt";
+      clientUserMessageId: string | null;
+    };
 
 export type HostedLaunchOptions = {
   runners: Array<{ deviceId: string; displayName: string }>;
@@ -67,6 +80,141 @@ const assertExecutionId = (id: string) => {
   if (!validExecutionId(id))
     throw new HostedManagedChatError("This Conversation is unavailable.");
 };
+
+const hostedRuntimeText = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value
+    .slice(0, 12_000)
+    .replace(/(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu, "[local path hidden]")
+    .replace(/\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, "$1=[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu, "[redacted]");
+};
+
+const hostedRuntimeValue = (
+  value: unknown,
+  key = "",
+  depth = 0
+): unknown => {
+  if (/api[_ -]?key|token|password|secret|credential|authorization|private[_ -]?key/iu.test(key))
+    return "[redacted]";
+  if (typeof value === "string") return hostedRuntimeText(value);
+  if (Array.isArray(value)) {
+    if (depth >= 5) return "[details omitted]";
+    return value.slice(0, 64).map((entry) => hostedRuntimeValue(entry, key, depth + 1));
+  }
+  if (!record(value)) return value;
+  if (depth >= 5) return "[details omitted]";
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 64)
+      .map(([entryKey, entryValue]) => [
+        hostedRuntimeText(entryKey),
+        hostedRuntimeValue(entryValue, entryKey, depth + 1)
+      ])
+  );
+};
+
+const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
+  const payload: Record<string, unknown> = {};
+  for (const key of [
+    "reason",
+    "toolName",
+    "command",
+    "diff"
+  ] as const) {
+    if (typeof item.payload[key] === "string" || Array.isArray(item.payload[key]))
+      payload[key] = hostedRuntimeValue(item.payload[key], key);
+  }
+  if (record(item.payload.permissions))
+    payload.permissions = hostedRuntimeValue(item.payload.permissions, "permissions");
+  if (record(item.payload.input)) {
+    const input: Record<string, unknown> = {};
+    for (const key of ["command", "cmd", "file_path", "path", "patch", "diff"] as const) {
+      if (item.payload.input[key] !== undefined)
+        input[key] = hostedRuntimeValue(item.payload.input[key], key);
+    }
+    if (Object.keys(input).length > 0) payload.input = input;
+  }
+  if (item.payload.supportsSessionApproval === true)
+    payload.supportsSessionApproval = true;
+  if (Array.isArray(item.payload.questions)) {
+    payload.questions = item.payload.questions.flatMap((value) => {
+      if (!record(value) || typeof value.id !== "string") return [];
+      return [
+        {
+          id: value.id,
+          ...(typeof value.header === "string"
+            ? { header: hostedRuntimeText(value.header) }
+            : {}),
+          ...(typeof value.question === "string"
+            ? { question: hostedRuntimeText(value.question) }
+            : {}),
+          ...(typeof value.required === "boolean"
+            ? { required: value.required }
+            : {}),
+          ...(value.isSecret === true ? { isSecret: true } : {}),
+          ...(value.isOther === true ? { isOther: true } : {}),
+          ...(Array.isArray(value.options)
+            ? {
+                options: value.options.flatMap((option) =>
+                  record(option) && typeof option.label === "string"
+                    ? [
+                        {
+                          label: hostedRuntimeText(option.label),
+                          ...(typeof option.description === "string"
+                            ? {
+                                description: hostedRuntimeText(option.description)
+                              }
+                            : {})
+                        }
+                      ]
+                    : []
+                )
+              }
+            : {})
+        }
+      ];
+    });
+  }
+  return { ...item, payload };
+};
+
+export function hasMeaningfulHostedApprovalDetails(
+  request: PendingChatRequest
+): boolean {
+  if (request.kind === "user_input")
+    return Boolean(
+      request.questions?.some((question) => question.question.trim())
+    );
+  const usefulLabels = new Set([
+    "Command",
+    "Changes",
+    "Permissions",
+    "command",
+    "cmd",
+    "file_path",
+    "path",
+    "patch",
+    "diff"
+  ]);
+  return request.details.some((detail) => {
+    if (!usefulLabels.has(detail.label)) return false;
+    const content = detail.text
+      .replace(/\[(?:local path hidden|redacted)\]/giu, "")
+      .replace(/\b(?:api[_ -]?key|token|password|secret|credential)\s*[:=]?/giu, "")
+      .replace(/[^\p{L}\p{N}]/gu, "");
+    return content.length > 0;
+  });
+}
+
+export function hostedRecoveryBackendId(value: unknown): string | null {
+  if (!record(value) || !record(value.connection)) return null;
+  const backendId = value.connection.backendId;
+  return typeof backendId === "string" && backendId.trim()
+    ? backendId.trim()
+    : null;
+}
 
 const projectExecution = (value: unknown): AgentExecution => {
   const execution = parseExecution(value);
@@ -666,7 +814,7 @@ export async function loadHostedManagedConversation(
   const parsedRuntime = parseRuntime(runtimePayload);
   const runtime: RuntimeSnapshot = {
     execution: projectExecution(runtimePayload.execution),
-    items: [],
+    items: parsedRuntime.items.map(hostedRuntimeItem),
     latestCommand: parsedRuntime.latestCommand
   };
   if (runtime.execution.id !== executionId)
@@ -681,6 +829,132 @@ export async function loadHostedManagedConversation(
       runtime.execution.executionGeneration
     )
   };
+}
+
+export async function loadHostedManagedConversationAccess(
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<{ ownerId: string }> {
+  const payload = await requestJson(
+    "/v1/managed-conversations/access",
+    { signal },
+    fetcher
+  );
+  if (!record(payload.user) || typeof payload.user.id !== "string" || !payload.user.id.trim())
+    throw new HostedManagedChatError("The signed-in Conversation owner is unavailable.");
+  return { ownerId: payload.user.id };
+}
+
+export async function lookupHostedConversationRecovery(
+  input:
+    | { kind: "start"; idempotencyKey: string }
+    | {
+        kind: "prompt";
+        idempotencyKey: string;
+        clientUserMessageId: string;
+        executionId: string;
+        executionGeneration: number;
+      },
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<HostedConversationRecoveryLookup> {
+  if (!input.idempotencyKey.trim())
+    throw new HostedManagedChatError("This Conversation send identity is unavailable.");
+  if (
+    input.kind === "prompt" &&
+    (!validExecutionId(input.clientUserMessageId) ||
+      !validExecutionId(input.executionId) ||
+      !Number.isSafeInteger(input.executionGeneration) ||
+      input.executionGeneration < 1)
+  )
+    throw new HostedManagedChatError("This Conversation send identity is outdated.");
+  const query = new URLSearchParams({
+    kind: input.kind,
+    idempotencyKey: input.idempotencyKey,
+    ...(input.kind === "prompt"
+      ? {
+          clientUserMessageId: input.clientUserMessageId,
+          executionId: input.executionId,
+          executionGeneration: String(input.executionGeneration)
+        }
+      : {})
+  });
+  const payload = await requestJson(
+    `/v1/managed-conversations/recovery/lookup?${query.toString()}`,
+    { signal },
+    fetcher
+  );
+  if (payload.found === false) return { found: false };
+  if (
+    payload.found !== true ||
+    !record(payload.execution) ||
+    !record(payload.command) ||
+    typeof payload.execution.id !== "string" ||
+    !validExecutionId(payload.execution.id) ||
+    !Number.isSafeInteger(payload.execution.executionGeneration) ||
+    typeof payload.command.id !== "string" ||
+    !validExecutionId(payload.command.id) ||
+    payload.command.executionId !== payload.execution.id ||
+    payload.command.executionGeneration !== payload.execution.executionGeneration ||
+    payload.command.commandKind !== input.kind ||
+    typeof payload.command.state !== "string" ||
+    !(payload.command.clientUserMessageId === null || typeof payload.command.clientUserMessageId === "string")
+  )
+    throw new HostedManagedChatError("Koed returned invalid Conversation recovery state.");
+  if (
+    input.kind === "prompt" &&
+    (payload.execution.id !== input.executionId ||
+      payload.execution.executionGeneration !== input.executionGeneration ||
+      payload.command.clientUserMessageId !== input.clientUserMessageId)
+  )
+    throw new HostedManagedChatError("Koed returned mismatched Conversation recovery state.");
+  return {
+    found: true,
+    executionId: payload.execution.id,
+    executionGeneration: Number(payload.execution.executionGeneration),
+    commandId: payload.command.id,
+    commandState: payload.command.state,
+    commandKind: input.kind,
+    clientUserMessageId: payload.command.clientUserMessageId as string | null
+  };
+}
+
+export async function respondToHostedRuntimeItem(
+  execution: Pick<AgentExecution, "id" | "executionGeneration">,
+  item: Pick<RuntimeItem, "id" | "executionGeneration" | "itemKind">,
+  response: {
+    decision?: "accept" | "acceptForSession" | "decline" | "cancel";
+    answers?: Record<string, string[]>;
+  },
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<void> {
+  assertExecutionId(execution.id);
+  if (
+    !validExecutionId(item.id) ||
+    item.executionGeneration !== execution.executionGeneration ||
+    !["command_approval", "file_approval", "permissions_approval", "user_input"].includes(item.itemKind)
+  )
+    throw new HostedManagedChatError(
+      "This Conversation request is outdated. Refresh before responding."
+    );
+  const kind = item.itemKind as
+    | "command_approval"
+    | "file_approval"
+    | "permissions_approval"
+    | "user_input";
+  const body = {
+    kind,
+    executionGeneration: item.executionGeneration,
+    ...(kind === "user_input"
+      ? { answers: response.answers ?? {} }
+      : { decision: response.decision })
+  };
+  await requestJson(
+    `/v1/managed-conversations/${encodeURIComponent(execution.id)}/runtime-items/${encodeURIComponent(item.id)}/respond`,
+    { signal, body },
+    fetcher
+  );
 }
 
 export async function queueHostedConversationPrompt(

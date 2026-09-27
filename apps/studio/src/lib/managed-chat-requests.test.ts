@@ -64,6 +64,7 @@ describe("managed chat requests", () => {
               {
                 id: "key",
                 question: "Enter key",
+                required: false,
                 isSecret: true,
                 isOther: true,
                 options: [{ label: "Skip" }]
@@ -75,6 +76,7 @@ describe("managed chat requests", () => {
     );
     expect(requests[0].questions?.[0]).toMatchObject({
       id: "key",
+      required: false,
       isSecret: true,
       isOther: true,
       options: [{ label: "Skip" }]

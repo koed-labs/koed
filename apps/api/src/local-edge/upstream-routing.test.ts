@@ -762,6 +762,23 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("allows only GET recovery lookup through managed execution routing", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/recovery/lookup"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/managed-conversations/recovery/lookup"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
   it("routes only the Project Move methods required by owner and runner", () => {
     const allowed = [
       ["POST", "/v1/managed-conversations/execution-id/project-moves"],

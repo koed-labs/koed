@@ -314,6 +314,133 @@ describe("managed Conversation capability admission", () => {
     expect(response.body).not.toContain("private instruction");
   });
 
+  it("looks up recovery only by the exact owner-scoped prompt identity", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const clientUserMessageId = randomUUID();
+    const idempotencyKey = `prompt:${randomUUID()}`;
+    const recoveryLookup = vi.fn(async () => ({
+      execution: {
+        id: executionId,
+        ownerUserId: userId,
+        projectId: "project-id",
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        state: "running",
+        stateVersion: 3,
+        executionGeneration: 1,
+        runnerDeploymentId: randomUUID(),
+        runnerDeviceId: randomUUID(),
+        runnerId: null,
+        runnerLeaseExpiresAt: null,
+        logicalSessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        sourceGenerationId: null,
+        lastErrorCode: null,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+        startedAt: null,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      command: {
+        id: commandId,
+        ownerUserId: userId,
+        executionId,
+        idempotencyKey,
+        sequence: 1,
+        commandKind: "prompt" as const,
+        targetDeploymentId: null,
+        targetDeviceId: null,
+        requestDigest: "must-not-leak",
+        clientUserMessageId,
+        executionGeneration: 1,
+        state: "dispatching" as const,
+        blockedOnKind: null,
+        blockedOnId: null,
+        attempts: 1,
+        leaseToken: "must-not-leak",
+        leaseExpiresAt: null,
+        payload: { prompt: "must-not-leak" },
+        result: null,
+        lastErrorCode: null,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+        dispatchingAt: "2026-09-01T00:00:00.000Z",
+        completedAt: null
+      }
+    }));
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-recovery-lookup-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationRuntimeBinding: async () => null,
+        getManagedConversationCommandByRecoveryIdentity: recoveryLookup
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/recovery/lookup?kind=prompt&idempotencyKey=${encodeURIComponent(idempotencyKey)}&clientUserMessageId=${clientUserMessageId}&executionId=${executionId}&executionGeneration=1`
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(recoveryLookup).toHaveBeenCalledWith(
+      { userId },
+      {
+        commandKind: "prompt",
+        idempotencyKey,
+        clientUserMessageId,
+        executionId,
+        executionGeneration: 1
+      }
+    );
+    expect(response.json()).toMatchObject({
+      found: true,
+      execution: { id: executionId, executionGeneration: 1 },
+      command: {
+        id: commandId,
+        commandKind: "prompt",
+        clientUserMessageId,
+        executionId,
+        executionGeneration: 1,
+        state: "dispatching"
+      }
+    });
+    expect(response.body).not.toContain("must-not-leak");
+    expect(response.body).not.toContain("idempotencyKey");
+  });
+
   it("checks next-turn settings against the owning AI Client catalog before enqueue", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();

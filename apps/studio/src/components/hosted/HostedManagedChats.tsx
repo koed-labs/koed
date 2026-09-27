@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LoaderCircle, RefreshCw, Send, Square, X } from "lucide-react";
+import {
+  Check,
+  LoaderCircle,
+  MoreHorizontal,
+  RefreshCw,
+  Send,
+  Square,
+  X
+} from "lucide-react";
 import {
   cancelHostedProjectMove,
   cancelHostedQueuedPrompt,
@@ -11,9 +19,14 @@ import {
   listHostedManagedConversations,
   loadHostedLaunchOptions,
   loadHostedManagedConversation,
+  loadHostedManagedConversationAccess,
+  lookupHostedConversationRecovery,
+  hasMeaningfulHostedApprovalDetails,
+  hostedRecoveryBackendId,
   queueHostedConversationPrompt,
   requestHostedProjectMove,
   requestHostedConversationControl,
+  respondToHostedRuntimeItem,
   startHostedManagedConversation,
   type HostedLaunchOptions,
   type HostedConversationMessage,
@@ -21,6 +34,12 @@ import {
   type HostedProjectMove
 } from "@/lib/hosted-managed-chats";
 import type { RuntimeSnapshot } from "@/lib/managed-agent-chat";
+import { pendingChatRequests } from "@/lib/managed-chat-requests";
+import {
+  createDeviceManagedChatRecoveryStore,
+  type DeviceManagedChatPendingOperation,
+  type DeviceManagedChatRecoveryStore
+} from "@/lib/device-managed-chat-recovery";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
 import {
   dismissProjectMoveNotice,
@@ -35,17 +54,12 @@ const moveNoticeIntentKey = (executionId: string, moveId: string) =>
 const isRegisteredProjectId = (value: string) =>
   /^lp_[0-9a-f]{32}$/iu.test(value);
 
-const terminalCommands = new Set([
-  "completed",
-  "failed",
-  "canceled",
-  "indeterminate"
-]);
-
 type PendingMessage = HostedConversationMessage & {
   commandId: string;
   commandState: string;
 };
+
+type HostedRecoveryScope = { ownerId: string; backendId: string };
 
 const stateLabel = (execution: HostedManagedExecution) => {
   if (execution.state === "running") return "Running";
@@ -68,10 +82,18 @@ export function HostedManagedChats({
     null
   );
   const [draft, setDraft] = useState("");
+  const [recoveryScope, setRecoveryScope] =
+    useState<HostedRecoveryScope | null>(null);
+  const [pendingRecoveryOperation, setPendingRecoveryOperation] =
+    useState<DeviceManagedChatPendingOperation | null>(null);
+  const [pendingNewStart, setPendingNewStart] =
+    useState<DeviceManagedChatPendingOperation | null>(null);
+  const [recoveryChecking, setRecoveryChecking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
+  const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [launchOptions, setLaunchOptions] =
     useState<HostedLaunchOptions | null>(null);
@@ -94,8 +116,58 @@ export function HostedManagedChats({
   const [status, setStatus] = useState<string | null>(null);
   const authLost = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
+  const draftRef = useRef("");
+  const recoveryStoreRef = useRef<DeviceManagedChatRecoveryStore | null>(null);
+  const newStartStoreRef = useRef<DeviceManagedChatRecoveryStore | null>(null);
+  const newStartOperationRef =
+    useRef<DeviceManagedChatPendingOperation | null>(null);
+  const recoveryOperationRef =
+    useRef<DeviceManagedChatPendingOperation | null>(null);
+  const recoverySelectionRef = useRef<string | null | undefined>(undefined);
   const refreshedCompletedMoveRef = useRef<string | null>(null);
   const projectMoveRequestInFlightRef = useRef(false);
+
+  const writeRecovery = useCallback(
+    (
+      store: DeviceManagedChatRecoveryStore | null,
+      draftValue: string,
+      operation: DeviceManagedChatPendingOperation | null
+    ) => {
+      if (!store) return;
+      store.write({
+        schemaVersion: 1,
+        draft: draftValue,
+        ...(operation ? { pendingOperation: operation } : {})
+      });
+    },
+    []
+  );
+
+  const updateDraft = useCallback(
+    (value: string) => {
+      draftRef.current = value;
+      setDraft(value);
+      writeRecovery(
+        recoveryStoreRef.current,
+        value,
+        recoveryOperationRef.current
+      );
+    },
+    [writeRecovery]
+  );
+
+  const setRecoveryOperation = useCallback(
+    (
+      operation: DeviceManagedChatPendingOperation | null,
+      store = recoveryStoreRef.current,
+      draftValue = draftRef.current
+    ) => {
+      recoveryOperationRef.current = operation;
+      setPendingRecoveryOperation(operation);
+      writeRecovery(store, draftValue, operation);
+    },
+    [writeRecovery]
+  );
 
   const handleError = useCallback(
     (cause: unknown) => {
@@ -106,7 +178,15 @@ export function HostedManagedChats({
         setRuntime(null);
         setMessages([]);
         setPendingMessage(null);
+        draftRef.current = "";
         setDraft("");
+        recoveryStoreRef.current = null;
+        newStartStoreRef.current = null;
+        recoveryOperationRef.current = null;
+        newStartOperationRef.current = null;
+        setRecoveryScope(null);
+        setPendingRecoveryOperation(null);
+        setPendingNewStart(null);
         setLaunchOptions(null);
         setLaunchProjectId("");
         setLaunchDeviceId("");
@@ -152,6 +232,197 @@ export function HostedManagedChats({
       setProjectMovePickerOpen(false);
     }
   }, []);
+
+  const reconcilePromptOperation = useCallback(
+    async (
+      operation: DeviceManagedChatPendingOperation,
+      executionId: string,
+      store: DeviceManagedChatRecoveryStore | null,
+      signal?: AbortSignal
+    ) => {
+      setRecoveryChecking(true);
+      try {
+        const value = await loadHostedManagedConversation(executionId, signal);
+        if (value.runtime.execution.id !== executionId)
+          throw new Error("The selected Conversation changed during recovery.");
+        const result = await lookupHostedConversationRecovery(
+          {
+            kind: "prompt",
+            idempotencyKey: operation.promptIdempotencyKey,
+            clientUserMessageId: operation.clientUserMessageId,
+            executionId,
+            executionGeneration:
+              operation.executionGeneration ??
+              value.runtime.execution.executionGeneration
+          },
+          signal
+        );
+        if (signal?.aborted) return;
+        if (result.found) {
+          const restoredDraft = store?.read()?.draft ?? "";
+          writeRecovery(store, restoredDraft, null);
+          if (selectedIdRef.current === executionId) {
+            recoveryOperationRef.current = null;
+            setPendingRecoveryOperation(null);
+            draftRef.current = restoredDraft;
+            setDraft(restoredDraft);
+            setRuntime(value.runtime);
+            setMessages(value.state.messages);
+            if (
+              !value.state.messages.some(
+                (message) => message.id === operation.clientUserMessageId
+              )
+            ) {
+              setPendingMessage({
+                id: operation.clientUserMessageId,
+                role: "user",
+                content: operation.prompt,
+                createdAt: new Date().toISOString(),
+                author: null,
+                commandId: result.commandId,
+                commandState: result.commandState
+              });
+            } else {
+              setPendingMessage(null);
+            }
+            setStatus(
+              result.commandState === "canceled"
+                ? "The previous continuation was canceled; its persisted state is refreshed."
+                : "The previous continuation was accepted; its persisted state is refreshed."
+            );
+          }
+        } else {
+          const unresolved = { ...operation, state: "reconciling" as const };
+          writeRecovery(store, operation.prompt, unresolved);
+          if (selectedIdRef.current === executionId) {
+            recoveryOperationRef.current = unresolved;
+            setPendingRecoveryOperation(unresolved);
+            draftRef.current = operation.prompt;
+            setDraft(operation.prompt);
+            setRuntime(value.runtime);
+            setMessages(value.state.messages);
+            setStatus(
+              "Koed has not found this continuation yet. Its prompt and send identity are retained; Studio will not send it again. Check status again before continuing."
+            );
+          }
+        }
+      } catch (cause) {
+        if (signal?.aborted) return;
+        const unresolved = { ...operation, state: "reconciling" as const };
+        writeRecovery(store, operation.prompt, unresolved);
+        if (selectedIdRef.current === executionId) {
+          recoveryOperationRef.current = unresolved;
+          setPendingRecoveryOperation(unresolved);
+          draftRef.current = operation.prompt;
+          setDraft(operation.prompt);
+          setStatus(
+            "Studio could not verify the previous continuation. Its send identity and prompt are saved; Studio will not send it again."
+          );
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Could not verify the previous continuation."
+          );
+        }
+      } finally {
+        if (!signal?.aborted) setRecoveryChecking(false);
+      }
+    },
+    [writeRecovery]
+  );
+
+  const reconcileStartOperation = useCallback(
+    async (
+      operation: DeviceManagedChatPendingOperation,
+      store: DeviceManagedChatRecoveryStore | null,
+      fromNewSlot: boolean,
+      signal?: AbortSignal
+    ) => {
+      setRecoveryChecking(true);
+      try {
+        const result = await lookupHostedConversationRecovery(
+          { kind: "start", idempotencyKey: operation.startIdempotencyKey },
+          signal
+        );
+        if (signal?.aborted) return;
+        if (result.found) {
+          if (fromNewSlot && recoveryScope) {
+            const conversationStore = createDeviceManagedChatRecoveryStore({
+              ...recoveryScope,
+              executionId: result.executionId
+            });
+            writeRecovery(conversationStore, "", null);
+            store?.clear();
+            newStartOperationRef.current = null;
+            setPendingNewStart(null);
+          } else {
+            writeRecovery(store, "", null);
+            recoveryOperationRef.current = null;
+            setPendingRecoveryOperation(null);
+          }
+          draftRef.current = "";
+          setDraft("");
+          await refreshList(signal);
+          selectedIdRef.current = result.executionId;
+          setSelectedId(result.executionId);
+          const value = await loadHostedManagedConversation(
+            result.executionId,
+            signal
+          );
+          if (
+            !signal?.aborted &&
+            selectedIdRef.current === result.executionId
+          ) {
+            setRuntime(value.runtime);
+            setMessages(value.state.messages);
+            setNewConversationOpen(false);
+            setInitialPrompt("");
+            setStatus(
+              result.commandState === "canceled"
+                ? "The previous Conversation start was canceled."
+                : "The previous Conversation start was accepted; showing its persisted state."
+            );
+          }
+        } else {
+          const unresolved = { ...operation, state: "reconciling" as const };
+          writeRecovery(store, operation.prompt, unresolved);
+          if (fromNewSlot) {
+            newStartOperationRef.current = unresolved;
+            setPendingNewStart(unresolved);
+          } else {
+            recoveryOperationRef.current = unresolved;
+            setPendingRecoveryOperation(unresolved);
+          }
+          setInitialPrompt(operation.prompt);
+          setStatus(
+            "Koed has not found this Conversation start yet. Its initial prompt and send identity are retained; Studio will not start it again. Check status again before continuing."
+          );
+        }
+      } catch (cause) {
+        if (signal?.aborted) return;
+        const unresolved = { ...operation, state: "reconciling" as const };
+        writeRecovery(store, operation.prompt, unresolved);
+        if (fromNewSlot) {
+          newStartOperationRef.current = unresolved;
+          setPendingNewStart(unresolved);
+        } else {
+          recoveryOperationRef.current = unresolved;
+          setPendingRecoveryOperation(unresolved);
+        }
+        setStatus(
+          "Studio could not verify the previous Conversation start. Its send identity and prompt are saved; Studio will not start it again."
+        );
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Could not verify the previous Conversation start."
+        );
+      } finally {
+        if (!signal?.aborted) setRecoveryChecking(false);
+      }
+    },
+    [recoveryScope, refreshList, writeRecovery]
+  );
 
   const applyProjectMoveState = useCallback(
     async (move: HostedProjectMove | null, signal?: AbortSignal) => {
@@ -227,6 +498,104 @@ export function HostedManagedChats({
   }, [handleError, refreshList]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    void Promise.all([
+      loadHostedManagedConversationAccess(controller.signal),
+      fetch("/studio-api/collaboration/session", {
+        credentials: "include",
+        cache: "no-store",
+        signal: controller.signal
+      })
+        .then(async (response) =>
+          response.ok ? ((await response.json()) as unknown) : null
+        )
+        .catch(() => null)
+    ])
+      .then(([access, backend]) => {
+        if (controller.signal.aborted) return;
+        const backendId = hostedRecoveryBackendId(backend);
+        if (!backendId) {
+          setRecoveryScope(null);
+          setError(
+            "Studio cannot restore or send hosted chat drafts until the backend identity is available."
+          );
+          return;
+        }
+        setRecoveryScope({
+          ownerId: access.ownerId,
+          backendId: `${window.location.origin}:${backendId}`
+        });
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted) handleError(cause);
+      });
+    return () => controller.abort();
+  }, [handleError]);
+
+  useEffect(() => {
+    if (!recoveryScope) return;
+    const controller = new AbortController();
+    const newConversationStore = createDeviceManagedChatRecoveryStore({
+      ...recoveryScope,
+      executionId: null
+    });
+    newStartStoreRef.current = newConversationStore;
+    const recovered = newConversationStore?.read();
+    const pendingStart = recovered?.pendingOperation;
+    if (pendingStart?.kind === "start") {
+      newStartOperationRef.current = pendingStart;
+      queueMicrotask(() => {
+        if (controller.signal.aborted) return;
+        void reconcileStartOperation(
+          pendingStart,
+          newConversationStore,
+          true,
+          controller.signal
+        );
+      });
+      return () => controller.abort();
+    }
+    newStartOperationRef.current = null;
+    const recoveredPrompt = recovered?.draft ?? "";
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) setInitialPrompt(recoveredPrompt);
+    });
+    return () => controller.abort();
+  }, [recoveryScope, reconcileStartOperation]);
+
+  useEffect(() => {
+    if (!recoveryScope || !selectedId) return;
+    const controller = new AbortController();
+    const store = createDeviceManagedChatRecoveryStore({
+      ...recoveryScope,
+      executionId: selectedId
+    });
+    recoveryStoreRef.current = store;
+    const recovered = store?.read();
+    const firstSelection = recoverySelectionRef.current === undefined;
+    recoverySelectionRef.current = selectedId;
+    const recoveredDraft =
+      recovered?.draft ?? (firstSelection ? draftRef.current : "");
+    draftRef.current = recoveredDraft;
+    setDraft(recoveredDraft);
+    const operation = recovered?.pendingOperation ?? null;
+    recoveryOperationRef.current = operation;
+    setPendingRecoveryOperation(operation);
+    if (!operation) return () => controller.abort();
+    if (operation.kind === "prompt") {
+      void reconcilePromptOperation(operation, selectedId, store, controller.signal);
+    } else {
+      void reconcileStartOperation(operation, store, false, controller.signal);
+    }
+    return () => controller.abort();
+  }, [
+    recoveryScope,
+    selectedId,
+    reconcilePromptOperation,
+    reconcileStartOperation
+  ]);
+
+  useEffect(() => {
     if (!selectedId) return;
     const controller = new AbortController();
     let timeout = 0;
@@ -271,7 +640,7 @@ export function HostedManagedChats({
   const latestCommand = selectedRuntime?.latestCommand;
   const activePrompt = Boolean(
     latestCommand?.commandKind === "prompt" &&
-    !terminalCommands.has(latestCommand.state)
+    latestCommand.state === "dispatching"
   );
   const pendingControl = Boolean(
     (latestCommand?.commandKind === "stop" ||
@@ -279,10 +648,13 @@ export function HostedManagedChats({
     ["queued", "blocked", "dispatching"].includes(latestCommand.state)
   );
   const canSend =
+    recoveryScope !== null &&
     selectedRuntime?.execution.state === "running" &&
     !activePrompt &&
-    !pendingControl;
-  const canInterrupt = selectedRuntime?.execution.state === "running";
+    !(latestCommand?.commandKind === "prompt" && ["queued", "blocked"].includes(latestCommand.state)) &&
+    !pendingControl &&
+    !recoveryChecking &&
+    pendingRecoveryOperation === null;
   const canStop = selectedRuntime?.execution.state === "running";
   const canCancelQueuedPrompt =
     latestCommand?.commandKind === "prompt" && latestCommand.state === "queued";
@@ -306,6 +678,7 @@ export function HostedManagedChats({
       : launchModel.supportedReasoningEfforts.includes(launchEffort))
   );
   const launchCanStart = Boolean(
+    recoveryScope &&
     launchOptions &&
     launchOptions.runners.some((item) => item.deviceId === launchDeviceId) &&
     (launchProjectId === "" ||
@@ -325,6 +698,10 @@ export function HostedManagedChats({
       return messages;
     return [...messages, pendingMessage];
   }, [messages, pendingMessage, selectedRuntime]);
+  const runtimeRequests = useMemo(
+    () => pendingChatRequests(selectedRuntime),
+    [selectedRuntime]
+  );
 
   const refresh = async () => {
     setRefreshing(true);
@@ -454,18 +831,47 @@ export function HostedManagedChats({
 
   const send = async () => {
     const prompt = draft.trim();
-    if (!selected || !selectedRuntime || !prompt || !canSend || sending) return;
+    if (
+      !selected ||
+      !selectedRuntime ||
+      !prompt ||
+      !canSend ||
+      sending ||
+      pendingRecoveryOperation
+    )
+      return;
     setSending(true);
     setError(null);
     setStatus(null);
-    const messageId = crypto.randomUUID();
+    const store = recoveryStoreRef.current;
+    const operation: DeviceManagedChatPendingOperation = {
+      kind: "prompt",
+      startIdempotencyKey: crypto.randomUUID(),
+      promptIdempotencyKey: crypto.randomUUID(),
+      clientUserMessageId: crypto.randomUUID(),
+      executionGeneration: selectedRuntime.execution.executionGeneration,
+      prompt,
+      state: "pending"
+    };
+    const messageId = operation.clientUserMessageId;
+    setRecoveryOperation(operation, store, prompt);
     try {
       const command = await queueHostedConversationPrompt(
         selectedRuntime.execution,
         prompt,
-        { idempotencyKey: crypto.randomUUID(), clientUserMessageId: messageId }
+        {
+          idempotencyKey: operation.promptIdempotencyKey,
+          clientUserMessageId: messageId
+        }
       );
       if (selectedIdRef.current !== selected.id) return;
+      const acceptedOperation = {
+        ...operation,
+        state: "accepted" as const,
+        commandId: command.commandId
+      };
+      setRecoveryOperation(acceptedOperation, store, "");
+      draftRef.current = "";
       setDraft("");
       setPendingMessage({
         id: messageId,
@@ -481,24 +887,20 @@ export function HostedManagedChats({
           ? "Pending · Koed accepted this message. Pending does not indicate whether the runner is online."
           : "Message accepted · refreshing Conversation status."
       );
-      try {
-        const value = await loadHostedManagedConversation(selected.id);
-        if (selectedIdRef.current !== selected.id) return;
-        setRuntime(value.runtime);
-        setMessages(value.state.messages);
-      } catch (cause) {
-        if (
-          cause instanceof HostedManagedChatError &&
-          [401, 403].includes(cause.status ?? 0)
-        )
-          handleError(cause);
-        else
-          setStatus(
-            "Message accepted · Conversation status is currently unverified."
-          );
-      }
+      await reconcilePromptOperation(
+        acceptedOperation,
+        selected.id,
+        store
+      );
     } catch (cause) {
-      handleError(cause);
+      const unresolved = { ...operation, state: "reconciling" as const };
+      setRecoveryOperation(unresolved, store, prompt);
+      await reconcilePromptOperation(unresolved, selected.id, store);
+      if (
+        cause instanceof HostedManagedChatError &&
+        [401, 403].includes(cause.status ?? 0)
+      )
+        handleError(cause);
     } finally {
       setSending(false);
     }
@@ -522,17 +924,43 @@ export function HostedManagedChats({
       if (selectedIdRef.current !== selected.id) return;
       if (result.canceled || result.state === "canceled") {
         setPendingMessage(null);
-        setStatus("Pending message canceled.");
+        setStatus("Pending message canceled before the runner claimed it.");
       } else {
         setPendingMessage((current) =>
           current ? { ...current, commandState: result.state } : current
         );
         setStatus(
-          `Message is ${result.state}; cancellation was not confirmed.`
+          result.state === "dispatching"
+            ? "The runner claimed this message before cancellation. Use Stop in the composer to interrupt its active turn."
+            : `Message is ${result.state}; cancellation was not confirmed.`
         );
       }
+      const value = await loadHostedManagedConversation(selected.id);
+      if (selectedIdRef.current === selected.id) {
+        setRuntime(value.runtime);
+        setMessages(value.state.messages);
+      }
     } catch (cause) {
-      handleError(cause);
+      if (cause instanceof HostedManagedChatError && cause.status === 409) {
+        try {
+          const value = await loadHostedManagedConversation(selected.id);
+          if (selectedIdRef.current === selected.id) {
+            setRuntime(value.runtime);
+            setMessages(value.state.messages);
+            const command = value.runtime.latestCommand;
+            setStatus(
+              command?.commandKind === "prompt" &&
+                command.state === "dispatching"
+                ? "The runner claimed this message before cancellation. Use Stop in the composer to interrupt its active turn."
+                : `Cancellation lost the race; the persisted message state is ${command?.state ?? "unavailable"}.`
+            );
+          }
+        } catch (refreshCause) {
+          handleError(refreshCause);
+        }
+      } else {
+        handleError(cause);
+      }
     } finally {
       setControlBusy(false);
     }
@@ -550,7 +978,7 @@ export function HostedManagedChats({
       );
       if (selectedIdRef.current !== selectedRuntime.execution.id) return;
       setStatus(
-        `${action === "interrupt" ? "Interrupt" : "Stop"} accepted · waiting for runner status.`
+        `${action === "interrupt" ? "Turn interrupt" : "End session"} accepted · waiting for runner status.`
       );
       try {
         const value = await loadHostedManagedConversation(
@@ -567,6 +995,99 @@ export function HostedManagedChats({
       handleError(cause);
     } finally {
       setControlBusy(false);
+    }
+  };
+
+  const respondToRuntimeRequest = async (
+    itemId: string,
+    response: {
+      decision?: "accept" | "acceptForSession" | "decline" | "cancel";
+      answers?: Record<string, string[]>;
+    }
+  ) => {
+    if (!selectedRuntime || controlBusy) return;
+    const item = selectedRuntime.items.find(
+      (candidate) => candidate.id === itemId
+    );
+    if (!item) return;
+    setControlBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      await respondToHostedRuntimeItem(selectedRuntime.execution, item, response);
+      const value = await loadHostedManagedConversation(
+        selectedRuntime.execution.id
+      );
+      if (selectedIdRef.current === selectedRuntime.execution.id) {
+        setRuntime(value.runtime);
+        setMessages(value.state.messages);
+        setStatus("Response submitted · showing the latest runner request state.");
+      }
+    } catch (cause) {
+      if (
+        cause instanceof HostedManagedChatError &&
+        [404, 409].includes(cause.status ?? 0)
+      ) {
+        try {
+          const value = await loadHostedManagedConversation(
+            selectedRuntime.execution.id
+          );
+          if (selectedIdRef.current === selectedRuntime.execution.id) {
+            setRuntime(value.runtime);
+            setMessages(value.state.messages);
+            setStatus(
+              "This request was answered or changed on another session. Refreshed the persisted request state."
+            );
+          }
+        } catch (refreshCause) {
+          handleError(refreshCause);
+        }
+      } else {
+        handleError(cause);
+      }
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
+  const endConversation = () => {
+    setConversationMenuOpen(false);
+    if (
+      !selectedRuntime ||
+      !canStop ||
+      !window.confirm(
+        "End this session? The active turn will stop and this conversation session will end."
+      )
+    )
+      return;
+    void control("stop");
+  };
+
+  const checkRecoveryStatus = () => {
+    if (recoveryChecking) return;
+    const newStart = newStartOperationRef.current;
+    if (newStart) {
+      void reconcileStartOperation(
+        newStart,
+        newStartStoreRef.current,
+        true
+      );
+      return;
+    }
+    const operation = recoveryOperationRef.current;
+    if (!operation) return;
+    if (operation.kind === "start") {
+      void reconcileStartOperation(
+        operation,
+        recoveryStoreRef.current,
+        false
+      );
+    } else if (selectedIdRef.current) {
+      void reconcilePromptOperation(
+        operation,
+        selectedIdRef.current,
+        recoveryStoreRef.current
+      );
     }
   };
 
@@ -594,10 +1115,39 @@ export function HostedManagedChats({
   };
 
   const createConversation = async () => {
-    if (!launchCanStart || !launchInstance || !launchModel) return;
+    if (
+      !launchCanStart ||
+      !launchInstance ||
+      !launchModel ||
+      !recoveryScope ||
+      pendingNewStart ||
+      recoveryChecking
+    )
+      return;
     setSending(true);
     setError(null);
     setStatus(null);
+    const prompt = initialPrompt.trim();
+    const store =
+      newStartStoreRef.current ??
+      (recoveryScope
+        ? createDeviceManagedChatRecoveryStore({
+            ...recoveryScope,
+            executionId: null
+          })
+        : null);
+    newStartStoreRef.current = store;
+    const operation: DeviceManagedChatPendingOperation = {
+      kind: "start",
+      startIdempotencyKey: crypto.randomUUID(),
+      promptIdempotencyKey: crypto.randomUUID(),
+      clientUserMessageId: crypto.randomUUID(),
+      prompt,
+      state: "pending"
+    };
+    newStartOperationRef.current = operation;
+    setPendingNewStart(operation);
+    writeRecovery(store, prompt, operation);
     try {
       const started = await startHostedManagedConversation({
         projectId: launchProjectId || null,
@@ -608,8 +1158,8 @@ export function HostedManagedChats({
         reasoningEffort: launchEffort || null,
         permissionMode: launchPermission,
         targetDeviceId: launchDeviceId,
-        idempotencyKey: crypto.randomUUID(),
-        ...(initialPrompt.trim() ? { initialPrompt: initialPrompt.trim() } : {})
+        idempotencyKey: operation.startIdempotencyKey,
+        ...(prompt ? { initialPrompt: prompt } : {})
       });
       setNewConversationOpen(false);
       selectedIdRef.current = started.execution.id;
@@ -627,29 +1177,32 @@ export function HostedManagedChats({
       setMessages([]);
       setPendingMessage(null);
       setInitialPrompt("");
+      const acceptedOperation = {
+        ...operation,
+        state: "accepted" as const,
+        commandId: started.commandId
+      };
+      newStartOperationRef.current = acceptedOperation;
+      setPendingNewStart(acceptedOperation);
+      writeRecovery(store, prompt, acceptedOperation);
       setStatus(
         started.commandState === "queued" || started.commandState === "blocked"
           ? "Pending · Koed accepted the Conversation start. Device eligibility does not show whether it is online."
           : "Conversation start accepted · waiting for runner status."
       );
-      try {
-        await refreshList();
-        const value = await loadHostedManagedConversation(started.execution.id);
-        if (selectedIdRef.current === started.execution.id) {
-          setRuntime(value.runtime);
-          setMessages(value.state.messages);
-        }
-      } catch (cause) {
-        if (
-          cause instanceof HostedManagedChatError &&
-          [401, 403].includes(cause.status ?? 0)
-        )
-          handleError(cause);
-      }
+      await reconcileStartOperation(acceptedOperation, store, true);
     } catch (cause) {
       if (cause instanceof HostedManagedChatError && cause.status === 403)
         setLaunchOptions(null);
-      handleError(cause);
+      const unresolved = { ...operation, state: "reconciling" as const };
+      newStartOperationRef.current = unresolved;
+      setPendingNewStart(unresolved);
+      await reconcileStartOperation(unresolved, store, true);
+      if (
+        cause instanceof HostedManagedChatError &&
+        [401, 403].includes(cause.status ?? 0)
+      )
+        handleError(cause);
     } finally {
       setSending(false);
     }
@@ -891,7 +1444,24 @@ export function HostedManagedChats({
                   First message (optional)
                   <textarea
                     value={initialPrompt}
-                    onChange={(event) => setInitialPrompt(event.target.value)}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setInitialPrompt(value);
+                      const store =
+                        newStartStoreRef.current ??
+                        (recoveryScope
+                          ? createDeviceManagedChatRecoveryStore({
+                              ...recoveryScope,
+                              executionId: null
+                            })
+                          : null);
+                      newStartStoreRef.current = store;
+                      writeRecovery(
+                        store,
+                        value,
+                        newStartOperationRef.current
+                      );
+                    }}
                     rows={2}
                     className="mt-1 block w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
                   />
@@ -903,7 +1473,12 @@ export function HostedManagedChats({
                 </p>
                 <button
                   type="submit"
-                  disabled={!launchCanStart || sending}
+                  disabled={
+                    !launchCanStart ||
+                    sending ||
+                    recoveryChecking ||
+                    pendingNewStart !== null
+                  }
                   className="mt-3 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:opacity-50"
                 >
                   {sending ? "Starting…" : "Start Conversation"}
@@ -932,9 +1507,19 @@ export function HostedManagedChats({
         </p>
       )}
       {status && (
-        <p role="status" className="mt-3 text-xs text-muted">
-          {status}
-        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+          <p role="status">{status}</p>
+          {(pendingNewStart || pendingRecoveryOperation) && (
+            <button
+              className="rounded border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+              disabled={recoveryChecking}
+              onClick={checkRecoveryStatus}
+              type="button"
+            >
+              {recoveryChecking ? "Checking…" : "Check send status"}
+            </button>
+          )}
+        </div>
       )}
 
       {loading ? (
@@ -1032,25 +1617,30 @@ export function HostedManagedChats({
                     <X className="h-3 w-3" /> Cancel Start
                   </button>
                 )}
-                {canInterrupt && (
-                  <button
-                    type="button"
-                    onClick={() => void control("interrupt")}
-                    disabled={controlBusy || pendingControl}
-                    className="rounded-md px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-                  >
-                    Interrupt
-                  </button>
-                )}
                 {canStop && (
-                  <button
-                    type="button"
-                    onClick={() => void control("stop")}
-                    disabled={controlBusy || pendingControl}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-                  >
-                    <Square className="h-3 w-3" /> Stop
-                  </button>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      aria-label="Conversation menu"
+                      aria-expanded={conversationMenuOpen}
+                      onClick={() => setConversationMenuOpen((open) => !open)}
+                      className="rounded-md p-1.5 text-foreground-secondary hover:bg-surface-hover"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+                    {conversationMenuOpen && (
+                      <div className="absolute right-0 z-10 mt-1 min-w-36 rounded-md border border-border bg-background p-1 shadow-lg">
+                        <button
+                          type="button"
+                          onClick={endConversation}
+                          disabled={controlBusy || pendingControl}
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+                        >
+                          End session…
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -1186,7 +1776,199 @@ export function HostedManagedChats({
                   )}
                 </article>
               ))}
-              {selectedRuntime && displayMessages.length === 0 && (
+              {runtimeRequests.map((request) => {
+                const item = selectedRuntime?.items.find(
+                  (candidate) => candidate.id === request.id
+                );
+                if (!item) return null;
+                const sessionApproval =
+                  item.payload.supportsSessionApproval === true;
+                const approvalCanBeReviewed =
+                  hasMeaningfulHostedApprovalDetails(request);
+                const visibleDetails = request.details.filter(
+                  (detail) =>
+                    detail.label !== "Working directory" &&
+                    detail.label !== "Grant root"
+                );
+                return (
+                  <article
+                    key={request.id}
+                    className="rounded-lg border border-border bg-surface p-3"
+                    aria-label={
+                      request.kind === "user_input"
+                        ? "Pending agent question"
+                        : "Pending agent permission"
+                    }
+                  >
+                    <p className="text-xs font-semibold text-foreground">
+                      {request.kind === "user_input"
+                        ? "The AI Client needs your input"
+                        : request.kind === "permissions_approval"
+                          ? "Approve permissions?"
+                          : request.kind === "file_approval"
+                            ? "Approve file changes?"
+                            : "Approve command?"}
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground-secondary">
+                      {request.description}
+                    </p>
+                    {visibleDetails.map((detail, index) => (
+                      <div className="mt-2" key={`${detail.label}:${index}`}>
+                        <p className="text-[10px] font-medium text-muted">
+                          {detail.label}
+                        </p>
+                        <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px] leading-4 text-foreground-secondary">
+                          {detail.text}
+                        </pre>
+                      </div>
+                    ))}
+                    {request.kind === "user_input" ? (
+                      request.questions?.length ? <form
+                        className="mt-3 space-y-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const values = new FormData(event.currentTarget);
+                          const answers = Object.fromEntries(
+                            (request.questions ?? []).map((question) => {
+                              const answer = String(
+                                values.get(question.id) ?? ""
+                              );
+                              const options =
+                                question.options?.map((option) => option.label) ??
+                                [];
+                              return [
+                                question.id,
+                                [
+                                  question.isOther &&
+                                  answer &&
+                                  !options.includes(answer)
+                                    ? `user_note: ${answer}`
+                                    : answer
+                                ]
+                              ];
+                            })
+                          );
+                          void respondToRuntimeRequest(request.id, { answers });
+                        }}
+                      >
+                        {(request.questions ?? []).map((question) => (
+                          <label
+                            className="block text-[11px] text-foreground-secondary"
+                            key={question.id}
+                          >
+                            <span>{question.header || question.question}</span>
+                            {question.header && question.question ? (
+                              <span className="mt-0.5 block text-muted">
+                                {question.question}
+                              </span>
+                            ) : null}
+                            {question.options?.length && !question.isOther ? (
+                              <select
+                                className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                name={question.id}
+                                required={question.required !== false}
+                                defaultValue=""
+                              >
+                                <option disabled value="">
+                                  Select an answer
+                                </option>
+                                {question.options.map((option) => (
+                                  <option
+                                    key={option.label}
+                                    value={option.label}
+                                  >
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                name={question.id}
+                                required={question.required !== false}
+                                type={question.isSecret ? "password" : "text"}
+                              />
+                            )}
+                          </label>
+                        ))}
+                        <button
+                          className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                          disabled={controlBusy}
+                          type="submit"
+                        >
+                          <Check className="h-3 w-3" /> Submit answer
+                        </button>
+                      </form> : (
+                        <p className="mt-3 text-[11px] text-muted" role="status">
+                          The latest question details are unavailable. Refresh before responding.
+                        </p>
+                      )
+                    ) : (
+                      approvalCanBeReviewed ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                          disabled={controlBusy}
+                          onClick={() =>
+                            void respondToRuntimeRequest(request.id, {
+                              decision: "decline"
+                            })
+                          }
+                          type="button"
+                        >
+                          Deny
+                        </button>
+                        <button
+                          className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                          disabled={controlBusy}
+                          onClick={() =>
+                            void respondToRuntimeRequest(request.id, {
+                              decision: "cancel"
+                            })
+                          }
+                          type="button"
+                        >
+                          Cancel request
+                        </button>
+                        <button
+                          className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                          disabled={controlBusy}
+                          onClick={() =>
+                            void respondToRuntimeRequest(request.id, {
+                              decision: "accept"
+                            })
+                          }
+                          type="button"
+                        >
+                          Approve
+                        </button>
+                          {sessionApproval ? (
+                          <button
+                            className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                            disabled={controlBusy}
+                            onClick={() =>
+                              void respondToRuntimeRequest(request.id, {
+                                decision: "acceptForSession"
+                              })
+                            }
+                            type="button"
+                          >
+                            Always allow this session
+                          </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-[11px] text-muted" role="status">
+                          Koed did not provide enough safe request detail to review this approval. Refresh before deciding.
+                        </p>
+                      )
+                    )}
+                  </article>
+                );
+              })}
+              {selectedRuntime &&
+                displayMessages.length === 0 &&
+                runtimeRequests.length === 0 && (
                 <p className="text-xs text-muted">
                   No messages in this Conversation yet.
                 </p>
@@ -1196,18 +1978,20 @@ export function HostedManagedChats({
               className="border-t border-border p-3"
               onSubmit={(event) => {
                 event.preventDefault();
-                void send();
+                if (activePrompt) void control("interrupt");
+                else void send();
               }}
             >
               <div className="flex items-end gap-2">
                 <textarea
                   aria-label="Continue Conversation"
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => updateDraft(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
-                      void send();
+                      if (activePrompt) void control("interrupt");
+                      else void send();
                     }
                   }}
                   rows={2}
@@ -1221,16 +2005,24 @@ export function HostedManagedChats({
                 />
                 <button
                   type="submit"
-                  disabled={!canSend || !draft.trim() || sending}
-                  aria-label="Send message"
+                  disabled={
+                    activePrompt
+                      ? selectedRuntime?.execution.state !== "running" ||
+                        controlBusy ||
+                        pendingControl
+                      : !canSend || !draft.trim() || sending
+                  }
+                  aria-label={activePrompt ? "Stop active turn" : "Send message"}
                   className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {sending ? (
                     <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  ) : activePrompt ? (
+                    <Square className="h-3.5 w-3.5" />
                   ) : (
                     <Send className="h-3.5 w-3.5" />
                   )}{" "}
-                  Send
+                  {activePrompt ? "Stop" : "Send"}
                 </button>
               </div>
               <p className="mt-2 text-[10px] text-muted">

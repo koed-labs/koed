@@ -13,6 +13,7 @@ export type PendingChatRequest = {
     id: string;
     header?: string;
     question: string;
+    required?: boolean;
     isSecret?: boolean;
     isOther?: boolean;
     options?: { label: string }[];
@@ -100,6 +101,9 @@ export function pendingChatRequests(
           id: question.id,
           question: bounded(question.question),
           header: bounded(question.header),
+          ...(typeof question.required === "boolean"
+            ? { required: question.required }
+            : {}),
           isSecret: question.isSecret === true,
           isOther: question.isOther === true,
           options: (Array.isArray(question.options)

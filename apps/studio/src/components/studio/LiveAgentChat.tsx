@@ -31,6 +31,7 @@ import type { BuildActivity } from "@/lib/studio-build-activity";
 import {
   acceptRuntimeSnapshot,
   managedRequest,
+  managedConversationControls,
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
@@ -40,6 +41,10 @@ import {
   type LaunchInstance,
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
+import {
+  createDeviceManagedChatRecoveryStore,
+  type DeviceManagedChatRecoveryStore
+} from "@/lib/device-managed-chat-recovery";
 
 const terminalCommands = new Set([
   "completed",
@@ -133,6 +138,8 @@ export function LiveAgentChat({
   const [deletingRetainedWorkspace, setDeletingRetainedWorkspace] =
     useState(false);
   const [sending, setSending] = useState(false);
+  const [recoveryBlocked, setRecoveryBlocked] = useState(false);
+  const [recoveredDraft, setRecoveredDraft] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [restoreSelection, setRestoreSelection] = useState<{
     key: string;
@@ -145,6 +152,9 @@ export function LiveAgentChat({
   const runtimeRef = useRef<RuntimeSnapshot | null>(null);
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
+  const recoveryStore = useRef<DeviceManagedChatRecoveryStore | null>(null);
+  const recoveryIdentity = useRef<{ ownerId: string; backendId: string } | null>(null);
+  const latestDraft = useRef(initialDraft);
   const operationRef = useRef(false);
   const refreshedCompletedMoveRef = useRef<string | null>(null);
   const projectMoveRequestInFlightRef = useRef(false);
@@ -159,19 +169,156 @@ export function LiveAgentChat({
     executionId?: string;
   } | null>(null);
 
+  const activeRecoveryStore = (id: string | null) => {
+    const identity = recoveryIdentity.current;
+    if (!identity) return null;
+    return createDeviceManagedChatRecoveryStore({
+      ...identity,
+      executionId: id
+    });
+  };
+  const persistDraft = (draft: string) => {
+    const store = recoveryStore.current;
+    if (!store) return;
+    const current = store.read();
+    store.write({
+      schemaVersion: 1,
+      draft,
+      ...(current?.pendingOperation
+        ? { pendingOperation: current.pendingOperation }
+        : {})
+    });
+  };
+  const settleRecoveredSend = useCallback((submittedPrompt: string) => {
+    const store = recoveryStore.current;
+    const latest = store?.read()?.draft ?? latestDraft.current;
+    if (latest && latest !== submittedPrompt) {
+      store?.write({ schemaVersion: 1, draft: latest });
+      setRecoveredDraft(latest);
+    } else {
+      store?.clear();
+      setRecoveredDraft(null);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     lifecycle.current = controller;
     Promise.all([
       personalAgentsHttpAdapter.list(controller.signal),
-      managedRequest("/launch-options", undefined, controller.signal)
+      managedRequest("/launch-options", undefined, controller.signal),
+      managedRequest("/access", undefined, controller.signal)
     ])
-      .then(([library, options]) => {
+      .then(([library, options, access]) => {
         if (controller.signal.aborted) return;
+        let recoveringPreviousSend = false;
+        const user = record(access.user) ? access.user : null;
+        recoveryIdentity.current = null;
+        recoveryStore.current = null;
+        if (user && typeof user.id === "string" && user.id.trim()) {
+          // This component uses the Desktop's owner-authenticated loopback
+          // managed gateway. The Team collaboration connection is unrelated
+          // and may be offline while Personal chats still work.
+          const identity = {
+            ownerId: user.id,
+            backendId: `${window.location.origin}:local-managed-gateway`
+          };
+          recoveryIdentity.current = identity;
+          recoveryStore.current = createDeviceManagedChatRecoveryStore({
+            ...identity,
+            executionId: initialExecutionId ?? null
+          });
+          const recoveryRecord = recoveryStore.current?.read();
+          const draft = recoveryRecord?.draft ?? latestDraft.current;
+          if (!recoveryRecord && draft) {
+            recoveryStore.current?.write({ schemaVersion: 1, draft });
+          }
+          setRecoveredDraft(draft || null);
+          if (recoveryRecord?.pendingOperation) {
+            recoveringPreviousSend = true;
+            setRecoveryBlocked(true);
+            setStatus("Checking the previous send status…");
+            const operation = recoveryRecord.pendingOperation;
+            const query = new URLSearchParams({
+              kind: operation.kind,
+              idempotencyKey: operation.kind === "start"
+                ? operation.startIdempotencyKey
+                : operation.promptIdempotencyKey
+            });
+            if (operation.kind === "prompt" && initialExecutionId && operation.executionGeneration !== undefined) {
+              query.set("clientUserMessageId", operation.clientUserMessageId);
+              query.set("executionId", initialExecutionId);
+              query.set("executionGeneration", String(operation.executionGeneration));
+            }
+            if (operation.kind === "start" || (initialExecutionId && operation.executionGeneration !== undefined)) {
+              void managedRequest(`/recovery/lookup?${query}`, undefined, controller.signal)
+                .then((result) => {
+                  if (controller.signal.aborted) return;
+                  if (result.found !== true) {
+                    setStatus("Previous send status is not confirmed.");
+                    setError("Studio kept your draft and send identity. Check the conversation before retrying; no message was sent again automatically.");
+                    return;
+                  }
+                  const execution = parseExecution(result.execution);
+                  const recoveredState = record(result.command) && typeof result.command.state === "string"
+                    ? result.command.state
+                    : "unknown";
+                  if (operation.kind === "start") {
+                    const executionStore = activeRecoveryStore(execution.id);
+                    if (executionStore && initialExecutionId !== execution.id) {
+                      executionStore.write({
+                        schemaVersion: 1,
+                        draft: recoveryRecord.draft,
+                        pendingOperation: { ...operation, state: "reconciling" }
+                      });
+                      recoveryStore.current?.clear();
+                      recoveryStore.current = executionStore;
+                    }
+                    setExecutionId(execution.id);
+                    if (recoveredState === "indeterminate") {
+                      setRecoveryBlocked(true);
+                      setStatus("The previous chat launch has an uncertain outcome.");
+                      setError("Studio retained the draft and send identity. Review the runtime before starting another turn.");
+                    } else {
+                      setRecoveryBlocked(false);
+                      setStatus("Chat launch found; your draft is ready to continue.");
+                    }
+                    router.replace(`/?chat=1&execution=${encodeURIComponent(execution.id)}`);
+                    return;
+                  }
+                  if (execution.id !== initialExecutionId) throw new Error("Recovered send belongs to a different chat.");
+                  if (recoveredState === "indeterminate") {
+                    setRecoveryBlocked(true);
+                    setStatus("The previous continuation has an uncertain outcome.");
+                    setError("Studio retained the draft and send identity. Review the runtime before starting another turn.");
+                    return;
+                  }
+                  if (recoveredState === "failed" || recoveredState === "canceled") {
+                    setRecoveryBlocked(false);
+                    const preservedDraft = recoveryStore.current?.read()?.draft ?? operation.prompt;
+                    recoveryStore.current?.write({ schemaVersion: 1, draft: preservedDraft });
+                    setRecoveredDraft(preservedDraft);
+                    setStatus(`The previous continuation ${recoveredState}. Its draft is retained.`);
+                    return;
+                  }
+                  settleRecoveredSend(operation.prompt);
+                  setRecoveryBlocked(false);
+                  setStatus("Task accepted; reconnecting to its progress.");
+                })
+                .catch(() => {
+                  if (!controller.signal.aborted)
+                    setError("Studio could not check the previous send. Your draft and send identity are retained.");
+                });
+            } else {
+              setStatus("Previous send status is not confirmed.");
+              setError("Studio kept your draft and send identity. Check the conversation before retrying; no message was sent again automatically.");
+            }
+          }
+        }
         setAgents(library);
         setInstances(parseLaunchInstances(options));
         setLoaded(true);
-        setStatus("");
+        if (!recoveringPreviousSend) setStatus("");
       })
       .catch((cause) => {
         if (!controller.signal.aborted)
@@ -182,7 +329,7 @@ export function LiveAgentChat({
           );
       });
     return () => controller.abort();
-  }, []);
+  }, [initialExecutionId, router, settleRecoveredSend]);
 
   const refresh = useCallback(
     async (id: string, signal: AbortSignal) => {
@@ -594,6 +741,8 @@ export function LiveAgentChat({
     operationRef.current = true;
     setSending(true);
     setError(null);
+    const startedNewExecution = !executionId;
+    let navigableExecutionId: string | null = executionId;
     try {
       const selected = agents.find(
         (agent) =>
@@ -607,6 +756,22 @@ export function LiveAgentChat({
       setInstances(latestOptions);
       const settings = resolveLaunchSelection(selection, latestOptions);
       const key = JSON.stringify({ text, selection, projectId });
+      const recovered = recoveryStore.current?.read()?.pendingOperation;
+      if (
+        !pending.current &&
+        recovered &&
+        recovered.prompt === text &&
+        recovered.state !== "accepted" &&
+        recovered.state !== "rejected"
+      ) {
+        pending.current = {
+          key,
+          id: recovered.promptIdempotencyKey,
+          messageId: recovered.clientUserMessageId,
+          startId: recovered.startIdempotencyKey,
+          ...(executionId ? { executionId } : {})
+        };
+      }
       if (!pending.current || pending.current.key !== key)
         pending.current = {
           key,
@@ -615,6 +780,21 @@ export function LiveAgentChat({
           startId: crypto.randomUUID()
         };
       const request = pending.current;
+      recoveryStore.current?.write({
+        schemaVersion: 1,
+        draft: latestDraft.current !== text ? latestDraft.current : text,
+        pendingOperation: {
+          kind: executionId || request.executionId ? "prompt" : "start",
+          startIdempotencyKey: request.startId,
+          promptIdempotencyKey: request.id,
+          clientUserMessageId: request.messageId,
+          ...(executionId && runtimeRef.current?.execution.executionGeneration !== undefined
+            ? { executionGeneration: runtimeRef.current.execution.executionGeneration }
+            : {}),
+          prompt: text,
+          state: "pending"
+        }
+      });
       let id = executionId ?? request.executionId;
       if (!id) {
         setStatus("Starting the AI Client");
@@ -631,9 +811,17 @@ export function LiveAgentChat({
         );
         const execution = parseExecution(started.execution);
         id = execution.id;
+        navigableExecutionId = id;
         request.executionId = id;
         setExecutionId(id);
-        router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
+        const previousStore = recoveryStore.current;
+        const executionStore = activeRecoveryStore(id);
+        if (executionStore) {
+          const oldRecord = previousStore?.read();
+          if (oldRecord) executionStore.write(oldRecord);
+          previousStore?.clear();
+          recoveryStore.current = executionStore;
+        }
       }
       let snapshot = parseRuntime(
         await managedRequest(`/${id}/runtime`, undefined, signal)
@@ -644,6 +832,38 @@ export function LiveAgentChat({
         snapshot = parseRuntime(
           await managedRequest(`/${id}/runtime`, undefined, signal)
         );
+      }
+      if (
+        snapshot.latestCommand?.commandKind === "prompt" &&
+        snapshot.latestCommand.clientUserMessageId === request.messageId
+      ) {
+        if (snapshot.latestCommand.state === "indeterminate") {
+          setRecoveryBlocked(true);
+          throw new Error("The previous continuation has an uncertain outcome. Its draft and send identity are retained; review the runtime before another turn.");
+        }
+        if (["failed", "canceled"].includes(snapshot.latestCommand.state)) {
+          pending.current = null;
+          const preservedDraft = recoveryStore.current?.read()?.draft ?? latestDraft.current;
+          recoveryStore.current?.write({ schemaVersion: 1, draft: preservedDraft });
+          setRecoveredDraft(preservedDraft);
+          throw new Error(`The previous continuation ${snapshot.latestCommand.state}. Its draft is retained.`);
+        }
+        pending.current = null;
+        settleRecoveredSend(text);
+        setError(null);
+        setStatus(
+          snapshot.latestCommand.state === "canceled"
+            ? "The continuation was canceled."
+            : "Task already accepted; reconnecting to its progress."
+        );
+        try {
+          await refresh(id, signal);
+        } catch {
+          // Runtime status will be reconciled on the next periodic refresh.
+        }
+        if (startedNewExecution)
+          router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
+        return;
       }
       if (snapshot.execution.state !== "running")
         throw new Error(
@@ -675,6 +895,19 @@ export function LiveAgentChat({
         reasoningEffort: settings.reasoningEffort,
         permissionMode: settings.permissionMode
       };
+      recoveryStore.current?.write({
+        schemaVersion: 1,
+        draft: latestDraft.current !== text ? latestDraft.current : text,
+        pendingOperation: {
+          kind: "prompt",
+          startIdempotencyKey: request.startId,
+          promptIdempotencyKey: request.id,
+          clientUserMessageId: request.messageId,
+          executionGeneration: current.executionGeneration,
+          prompt: text,
+          state: "pending"
+        }
+      });
       const result = await managedRequest(
         `/${id}/prompts`,
         {
@@ -695,6 +928,8 @@ export function LiveAgentChat({
           "The task was not confirmed. Retry with the same draft."
         );
       pending.current = null;
+      settleRecoveredSend(text);
+      setError(null);
       selectionDirty.current = false;
       setStatus("Task queued");
       // An accepted command must not become a failed submission just because its status refresh failed.
@@ -704,12 +939,26 @@ export function LiveAgentChat({
         if (!signal.aborted)
           setStatus("Task accepted; reconnecting to its progress");
       }
+      if (startedNewExecution)
+        router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
     } catch (cause) {
       const message =
         cause instanceof Error ? cause.message : "Unable to send the task.";
       if (!signal.aborted) {
+        const existing = recoveryStore.current?.read();
+        if (existing?.pendingOperation) {
+          recoveryStore.current?.write({
+            ...existing,
+            pendingOperation: {
+              ...existing.pendingOperation,
+              state: "reconciling"
+            }
+          });
+        }
         setError(message);
         setStatus("");
+        if (startedNewExecution && navigableExecutionId)
+          router.replace(`/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`);
       }
       throw cause;
     } finally {
@@ -726,7 +975,11 @@ export function LiveAgentChat({
   };
 
   const interrupt = async () => {
-    if (!runtime || !executionId) return;
+    if (
+      !runtime ||
+      !executionId ||
+      !managedConversationControls(runtime.latestCommand).canInterrupt
+    ) return;
     try {
       await managedRequest(`/${executionId}/interrupt`, {
         executionGeneration: runtime.execution.executionGeneration,
@@ -739,6 +992,55 @@ export function LiveAgentChat({
           ? cause.message
           : "Cancellation was not confirmed."
       );
+    }
+  };
+  const cancelPendingPrompt = async () => {
+    const latest = runtime?.latestCommand;
+    if (
+      !runtime ||
+      !executionId ||
+      !latest ||
+      latest.commandKind !== "prompt" ||
+      !["queued", "pending"].includes(latest.state)
+    ) return;
+    try {
+      const result = await managedRequest(
+        `/${executionId}/prompts/${latest.id}/cancel`,
+        { executionGeneration: runtime.execution.executionGeneration }
+      );
+      const command = record(result.command) ? result.command : null;
+      const state = command && typeof command.state === "string" ? command.state : "unknown";
+      if (state === "canceled") {
+        setStatus("Pending continuation canceled.");
+        setSending(false);
+      } else {
+        setStatus(
+          `The continuation was not canceled (state: ${state}). If the turn has started, use Stop to interrupt it.`
+        );
+      }
+      await refresh(executionId, lifecycle.current?.signal ?? new AbortController().signal);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not cancel the pending continuation.");
+    }
+  };
+  const endSession = async () => {
+    if (!runtime || !executionId) return;
+    try {
+      await managedRequest(`/${executionId}/stop`, {
+        executionGeneration: runtime.execution.executionGeneration,
+        idempotencyKey: crypto.randomUUID()
+      });
+      setStatus("End session accepted · waiting for the runner to finish.");
+      const updated = await refresh(
+        executionId,
+        lifecycle.current?.signal ?? new AbortController().signal
+      );
+      if (updated.execution.state === "stopped") {
+        setStatus("Session ended.");
+        setSending(false);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Session end was not confirmed.");
     }
   };
   const chooseAgent = (id: string | null) => {
@@ -760,6 +1062,9 @@ export function LiveAgentChat({
   const commandInFlight = Boolean(
     runtime?.latestCommand &&
     !["completed", "failed", "canceled"].includes(runtime.latestCommand.state)
+  );
+  const { canCancelPendingPrompt, canInterrupt } = managedConversationControls(
+    runtime?.latestCommand ?? null
   );
   const moveUnavailableReason = currentExecution
     ? currentExecution.provider !== "codex"
@@ -1043,6 +1348,7 @@ export function LiveAgentChat({
             enabled:
               loaded &&
               instances.length > 0 &&
+              !recoveryBlocked &&
               !failedExecutions.has(runtime?.execution.state ?? ""),
             messages,
             isSending: sending,
@@ -1050,9 +1356,22 @@ export function LiveAgentChat({
             status: [status, historyNotice].filter(Boolean).join(" · "),
             onSend: send,
             onInterrupt: () => void interrupt(),
+            canInterrupt,
+            canCancelPendingPrompt,
+            onCancelPendingPrompt: canCancelPendingPrompt
+              ? () => void cancelPendingPrompt()
+              : undefined,
+            onEndSession: currentExecution
+              ? () => void endSession()
+              : undefined,
             restoreSelection,
             pendingRequests: requests,
             onRespond: respond
+          }}
+          recoveredDraft={recoveredDraft}
+          onDraftChange={(draft) => {
+            latestDraft.current = draft;
+            persistDraft(draft);
           }}
         />
       </div>

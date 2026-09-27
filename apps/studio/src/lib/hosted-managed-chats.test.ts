@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedRecoveryBackendId, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -267,7 +267,67 @@ test("loads runtime and generation-matched live user and agent messages", async 
     if (String(input).endsWith("/runtime"))
       return json({
         execution: { ...execution, path: "/private/device/path" },
-        items: [{ id: "path-item", payload: { path: "/private/path" } }]
+        items: [
+          {
+            id: commandId,
+            executionGeneration: 3,
+            itemKind: "command_approval",
+            state: "pending",
+            payload: {
+              command: "tool --token=abc123 --file /Users/runner/private/secret.txt",
+              credential: "secret",
+              cwd: "/Users/runner/private",
+              reason: "Need approval for /Users/runner/private; token=abc123",
+              input: {
+                file_path: "/Users/runner/private/secret.txt",
+                patch: "--- /Users/runner/private/secret.txt\n+++ /Users/runner/private/secret.txt\n+safe change"
+              },
+              diff: [
+                {
+                  one: {
+                    two: {
+                      three: {
+                        four: { hiddenPath: "/Users/runner/private/deep-secret.txt" }
+                      }
+                    }
+                  }
+                }
+              ],
+              permissions: {
+                filesystem: { read: ["/Users/runner/private"] },
+                network: false
+              }
+            },
+            presentation: { mode: "expanded", renderer: "approval" },
+            answered: false
+          },
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            executionGeneration: 3,
+            itemKind: "user_input",
+            state: "pending",
+            payload: {
+              questions: [
+                {
+                  id: "target-branch",
+                  header: "Target branch",
+                  question: "Which branch should use /Users/runner/project?",
+                  required: false,
+                  options: [{ label: "main" }, { label: "release" }]
+                }
+              ]
+            },
+            presentation: { mode: "expanded", renderer: "user_input" },
+            answered: false
+          },
+          {
+            id: "33333333-3333-4333-8333-333333333333",
+            executionGeneration: 2,
+            itemKind: "command_approval",
+            state: "pending",
+            payload: { command: "stale" }
+          }
+        ]
       });
     return json({
       executionId: id,
@@ -299,7 +359,83 @@ test("loads runtime and generation-matched live user and agent messages", async 
   const loaded = await loadHostedManagedConversation(id, undefined, fetcher);
   assert.equal(loaded.runtime.execution.id, id);
   assert.equal("path" in loaded.runtime.execution, false);
-  assert.deepEqual(loaded.runtime.items, []);
+  assert.deepEqual(loaded.runtime.items.map((item) => item.id), [
+    commandId,
+    "44444444-4444-4444-8444-444444444444"
+  ]);
+  assert.equal("credential" in loaded.runtime.items[0].payload, false);
+  assert.equal("cwd" in loaded.runtime.items[0].payload, false);
+  assert.doesNotMatch(JSON.stringify(loaded.runtime.items[0].payload.diff), /deep-secret\.txt/u);
+  assert.match(JSON.stringify(loaded.runtime.items[0].payload.diff), /details omitted/u);
+  assert.match(String(loaded.runtime.items[0].payload.command), /\[redacted\]/u);
+  assert.doesNotMatch(String(loaded.runtime.items[0].payload.command), /\/Users\//u);
+  assert.equal("credential" in loaded.runtime.items[0].payload, false);
+  assert.equal(
+    loaded.runtime.items[0].payload.reason,
+    "Need approval for [local path hidden] token=[redacted]"
+  );
+  const approval = {
+    id: commandId,
+    kind: "command_approval" as const,
+    description: "Need approval",
+    details: [
+      { label: "Command", text: String(loaded.runtime.items[0].payload.command) },
+      {
+        label: "patch",
+        text: String(
+          (loaded.runtime.items[0].payload.input as Record<string, unknown>).patch
+        )
+      },
+      {
+        label: "Permissions",
+        text: JSON.stringify(loaded.runtime.items[0].payload.permissions)
+      }
+    ]
+  };
+  assert.equal(hasMeaningfulHostedApprovalDetails(approval), true);
+  assert.ok(approval.details.some((detail) => detail.label === "Command"));
+  assert.ok(approval.details.some((detail) => detail.label === "patch"));
+  assert.ok(approval.details.some((detail) => detail.label === "Permissions"));
+  assert.ok(
+    approval.details.every(
+      (detail) => !detail.text.includes("/Users/runner/private")
+    )
+  );
+  const questionItem = loaded.runtime.items[1];
+  const questions = questionItem.payload.questions as Array<{
+    id: string;
+    question: string;
+    required: boolean;
+    options: Array<{ label: string }>;
+  }>;
+  assert.equal(questions[0].id, "target-branch");
+  assert.equal(questions[0].required, false);
+  assert.equal(
+    questions[0].question,
+    "Which branch should use [local path hidden]"
+  );
+  assert.deepEqual(
+    questions[0].options.map((option) => option.label),
+    ["main", "release"]
+  );
+  const questionRequest = {
+    id: questionItem.id,
+    kind: "user_input" as const,
+    description: "The agent needs your input",
+    details: [],
+    questions: questions.map((question) => ({
+      ...question,
+      header: "Target branch"
+    }))
+  };
+  assert.equal(hasMeaningfulHostedApprovalDetails(questionRequest), true);
+  const detailFreeRequest = {
+    id: commandId,
+    kind: "command_approval" as const,
+    description: "The agent needs your approval",
+    details: []
+  };
+  assert.equal(hasMeaningfulHostedApprovalDetails(detailFreeRequest), false);
   assert.deepEqual(
     loaded.state.messages.map((message) => message.role),
     ["user", "assistant"]
@@ -318,6 +454,117 @@ test("loads runtime and generation-matched live user and agent messages", async 
       ),
     /outdated/
   );
+});
+
+test("requires a verified collaboration backend ID for device recovery scope", () => {
+  assert.equal(
+    hostedRecoveryBackendId({ connection: { backendId: "up_team_abc" } }),
+    "up_team_abc"
+  );
+  assert.equal(hostedRecoveryBackendId({ connection: { backendId: null } }), null);
+  assert.equal(hostedRecoveryBackendId({ connection: { backendId: "  " } }), null);
+  assert.equal(hostedRecoveryBackendId({ connection: {} }), null);
+  assert.equal(hostedRecoveryBackendId(null), null);
+});
+
+test("responds to a hosted runtime request with its exact kind and generation", async () => {
+  let call: { url: string; init?: RequestInit } | undefined;
+  await respondToHostedRuntimeItem(
+    execution,
+    {
+      id: commandId,
+      itemKind: "user_input",
+      executionGeneration: 3
+    },
+    { answers: { "question-1": ["yes"] } },
+    undefined,
+    async (input, init) => {
+      call = { url: String(input), init };
+      return json({ accepted: true });
+    }
+  );
+  assert.equal(
+    call?.url,
+    `/v1/managed-conversations/${id}/runtime-items/${commandId}/respond`
+  );
+  assert.deepEqual(JSON.parse(String(call?.init?.body)), {
+    kind: "user_input",
+    executionGeneration: 3,
+    answers: { "question-1": ["yes"] }
+  });
+  await assert.rejects(
+    respondToHostedRuntimeItem(
+      execution,
+      { id: commandId, itemKind: "command_approval", executionGeneration: 2 },
+      { decision: "accept" },
+      undefined,
+      async () => {
+        throw new Error("stale requests must not be sent");
+      }
+    ),
+    /outdated/
+  );
+});
+
+test("loads the authenticated recovery scope and looks up stable send identities", async () => {
+  const calls: string[] = [];
+  const fetcher: typeof fetch = async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "/v1/managed-conversations/access")
+      return json({ user: { id: "owner-id" } });
+    if (url.includes("kind=start")) return json({ found: false });
+    return json({
+      found: true,
+      execution: { id, executionGeneration: 3, path: "/private/runner/path" },
+      command: {
+        id: commandId,
+        state: "queued",
+        executionId: id,
+        executionGeneration: 3,
+        commandKind: "prompt",
+        clientUserMessageId: "33333333-3333-4333-8333-333333333333",
+        createdAt: execution.createdAt,
+        credential: "secret"
+      }
+    });
+  };
+  assert.deepEqual(await loadHostedManagedConversationAccess(undefined, fetcher), {
+    ownerId: "owner-id"
+  });
+  assert.deepEqual(
+    await lookupHostedConversationRecovery(
+      { kind: "start", idempotencyKey: "stable-start-key" },
+      undefined,
+      fetcher
+    ),
+    { found: false }
+  );
+  const found = await lookupHostedConversationRecovery(
+    {
+      kind: "prompt",
+      idempotencyKey: "stable-prompt-key",
+      clientUserMessageId: "33333333-3333-4333-8333-333333333333",
+      executionId: id,
+      executionGeneration: 3
+    },
+    undefined,
+    fetcher
+  );
+  assert.deepEqual(found, {
+    found: true,
+    executionId: id,
+    executionGeneration: 3,
+    commandId,
+    commandState: "queued",
+    commandKind: "prompt",
+    clientUserMessageId: "33333333-3333-4333-8333-333333333333"
+  });
+  assert.ok(calls[1].includes("kind=start"));
+  assert.ok(calls[1].includes("idempotencyKey=stable-start-key"));
+  assert.ok(calls[2].includes("executionGeneration=3"));
+  assert.ok(calls[2].includes("clientUserMessageId=33333333-3333-4333-8333-333333333333"));
+  assert.equal(calls[2].includes("/private/runner/path"), false);
 });
 
 test("sends prompt and control mutations with generation and idempotency data", async () => {
@@ -349,10 +596,21 @@ test("sends prompt and control mutations with generation and idempotency data", 
     { commandId, state: "dispatching" }
   );
   assert.deepEqual(
+    await requestHostedConversationControl(
+      execution,
+      "stop",
+      "stop-key",
+      undefined,
+      fetcher
+    ),
+    { commandId, state: "dispatching" }
+  );
+  assert.deepEqual(
     calls.map((call) => call.url),
     [
       `/v1/managed-conversations/${id}/prompts`,
-      `/v1/managed-conversations/${id}/interrupt`
+      `/v1/managed-conversations/${id}/interrupt`,
+      `/v1/managed-conversations/${id}/stop`
     ]
   );
   const promptBody = JSON.parse(String(calls[0].init?.body));
@@ -363,6 +621,14 @@ test("sends prompt and control mutations with generation and idempotency data", 
     prompt: "hello"
   });
   assert.equal(calls[0].init?.credentials, "include");
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
+    executionGeneration: 3,
+    idempotencyKey: "interrupt-key"
+  });
+  assert.deepEqual(JSON.parse(String(calls[2].init?.body)), {
+    executionGeneration: 3,
+    idempotencyKey: "stop-key"
+  });
   assert.equal(
     "authorization" in (calls[0].init?.headers as Record<string, string>),
     false

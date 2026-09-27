@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptRuntimeSnapshot,
+  managedConversationControls,
   parseLaunchInstances,
   parseRuntime,
   resolveLaunchSelection
@@ -106,5 +107,32 @@ describe("managed agent chat boundary", () => {
         })
       )
     ).toBe(false);
+  });
+});
+
+describe("managed conversation controls", () => {
+  it("offers pending cancellation before claim and Stop only after claim", () => {
+    const command = (state: string) => ({
+      id: "11111111-1111-4111-8111-111111111111",
+      state,
+      commandKind: "prompt",
+      lastErrorCode: null
+    });
+    expect(managedConversationControls(command("queued"))).toEqual({
+      canCancelPendingPrompt: true,
+      canInterrupt: false
+    });
+    expect(managedConversationControls(command("dispatching"))).toEqual({
+      canCancelPendingPrompt: false,
+      canInterrupt: true
+    });
+    expect(managedConversationControls(command("completed"))).toEqual({
+      canCancelPendingPrompt: false,
+      canInterrupt: false
+    });
+    expect(managedConversationControls(null)).toEqual({
+      canCancelPendingPrompt: false,
+      canInterrupt: false
+    });
   });
 });

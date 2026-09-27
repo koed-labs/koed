@@ -51,8 +51,15 @@ export async function handlePersonalAgents({
     send(405, { error: "method_not_allowed" });
     return true;
   }
-  if (url.search) {
+  const recoveryLookup =
+    routeFamily === "managed-conversations" &&
+    suffix === "/recovery/lookup";
+  if (url.search && !recoveryLookup) {
     send(400, { error: "query_not_allowed" });
+    return true;
+  }
+  if (recoveryLookup && !validRecoveryLookupQuery(url.searchParams)) {
+    send(400, { error: "invalid_recovery_lookup" });
     return true;
   }
   try {
@@ -103,7 +110,7 @@ export async function handlePersonalAgents({
       return true;
     }
     const upstream = await fetchImpl(
-      new URL(`/v1/${routeFamily}${suffix}`, base),
+      new URL(`/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`, base),
       {
         method: request.method,
         headers: {
@@ -164,6 +171,7 @@ export async function handlePersonalAgents({
 
 function managedMethods(suffix) {
   if (suffix === "") return ["GET", "POST"];
+  if (suffix === "/recovery/lookup") return ["GET"];
   if (suffix === "/access" || suffix === "/launch-options") return ["GET"];
   if (new RegExp(`^/${uuid}/project-moves$`).test(suffix)) return ["POST"];
   if (new RegExp(`^/${uuid}/project-moves/latest$`).test(suffix)) return ["GET"];
@@ -171,11 +179,43 @@ function managedMethods(suffix) {
     return ["POST"];
   if (new RegExp(`^/${uuid}(?:/runtime|/agent-state)?$`).test(suffix))
     return ["GET"];
+  if (new RegExp(`^/${uuid}/prompts/${uuid}/cancel$`).test(suffix))
+    return ["POST"];
   if (new RegExp(`^/${uuid}/(?:prompts|interrupt|stop)$`).test(suffix))
     return ["POST"];
   if (new RegExp(`^/${uuid}/runtime-items/${uuid}/respond$`).test(suffix))
     return ["POST"];
   return [];
+}
+
+function validRecoveryLookupQuery(params) {
+  const kind = params.get("kind");
+  const keys = [...params.keys()];
+  if (kind === "start") {
+    return keys.length === 2 &&
+      keys.includes("idempotencyKey") &&
+      validIdempotencyKey(params.get("idempotencyKey"));
+  }
+  if (kind === "prompt") {
+    const expected = ["kind", "idempotencyKey", "clientUserMessageId", "executionId", "executionGeneration"];
+    return keys.length === expected.length &&
+      expected.every((key) => keys.includes(key)) &&
+      validIdempotencyKey(params.get("idempotencyKey")) &&
+      validUuid(params.get("clientUserMessageId")) &&
+      validUuid(params.get("executionId")) &&
+      /^[1-9][0-9]*$/.test(params.get("executionGeneration") ?? "");
+  }
+  return false;
+}
+
+function validUuid(value) {
+  return typeof value === "string" && new RegExp(`^${uuid}$`).test(value);
+}
+
+function validIdempotencyKey(value) {
+  return typeof value === "string" &&
+    value.length >= 8 && value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
 }
 
 export function handleManagedConversations(options) {

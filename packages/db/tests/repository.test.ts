@@ -2772,6 +2772,105 @@ describeDb("memory repository visibility", () => {
     ).toBe(legacy.execution.id);
   });
 
+  it("recovers exact owner-scoped start and prompt commands without payload data", async () => {
+    const repository = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 46).toString("base64")
+      )
+    });
+    const owner = await repository.createUser({
+      email: `recovery-owner-${randomUUID()}@example.com`
+    });
+    const stranger = await repository.createUser({
+      email: `recovery-stranger-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const idempotencyKey = randomUUID();
+    const started = await repository.createManagedConversation(actor, {
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      projectId: "recovery-project",
+      runnerDeploymentId: randomUUID(),
+      runnerDeviceId: randomUUID(),
+      idempotencyKey
+    });
+    const startLookup =
+      await repository.getManagedConversationCommandByRecoveryIdentity(actor, {
+        commandKind: "start",
+        idempotencyKey
+      });
+    expect(startLookup).toMatchObject({
+      execution: { id: started.execution.id },
+      command: {
+        id: started.command.id,
+        commandKind: "start",
+        executionGeneration: 1,
+        payload: null
+      }
+    });
+    await expect(
+      repository.getManagedConversationCommandByRecoveryIdentity(
+        { userId: stranger.id },
+        { commandKind: "start", idempotencyKey }
+      )
+    ).resolves.toBeNull();
+
+    const promptKey = randomUUID();
+    const clientUserMessageId = randomUUID();
+    const prompt = await repository.enqueueManagedConversationPrompt(actor, {
+      executionId: started.execution.id,
+      executionGeneration: 1,
+      idempotencyKey: promptKey,
+      clientUserMessageId,
+      prompt: "private prompt"
+    });
+    const promptLookup =
+      await repository.getManagedConversationCommandByRecoveryIdentity(actor, {
+        commandKind: "prompt",
+        idempotencyKey: promptKey,
+        clientUserMessageId,
+        executionId: started.execution.id,
+        executionGeneration: 1
+      });
+    expect(promptLookup).toMatchObject({
+      execution: { id: started.execution.id },
+      command: {
+        id: prompt.id,
+        commandKind: "prompt",
+        clientUserMessageId,
+        executionGeneration: 1,
+        payload: null
+      }
+    });
+    await expect(
+      repository.getManagedConversationCommandByRecoveryIdentity(actor, {
+        commandKind: "start",
+        idempotencyKey: promptKey
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.getManagedConversationCommandByRecoveryIdentity(actor, {
+        commandKind: "prompt",
+        idempotencyKey: promptKey,
+        clientUserMessageId: randomUUID(),
+        executionId: started.execution.id,
+        executionGeneration: 1
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.getManagedConversationCommandByRecoveryIdentity(actor, {
+        commandKind: "prompt",
+        idempotencyKey: promptKey,
+        clientUserMessageId,
+        executionId: randomUUID(),
+        executionGeneration: 1
+      })
+    ).resolves.toBeNull();
+  });
+
   it("admits settings atomically with an idle turn and preserves idempotency and ownership", async () => {
     const settingsRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

@@ -141,6 +141,7 @@ test("caps upstream response size", async () => {
 
 test("managed transport allows only scoped conversation actions", async () => {
   const id = "11111111-1111-4111-8111-111111111111";
+  const commandId = "22222222-2222-4222-8222-222222222222";
   const base = "http://localhost/studio-api/managed-conversations";
   const result = await call({
     routeFamily: "managed-conversations",
@@ -152,6 +153,35 @@ test("managed transport allows only scoped conversation actions", async () => {
     }
   });
   assert.equal(result.status, 202);
+  const cancelRequest = Readable.from([Buffer.from('{"executionGeneration":1}')]);
+  cancelRequest.method = "POST";
+  cancelRequest.headers = { "content-type": "application/json" };
+  const canceled = await call({
+    request: cancelRequest,
+    routeFamily: "managed-conversations",
+    url: new URL(`${base}/${id}/prompts/${commandId}/cancel`),
+    fetchImpl: async (url, init) => {
+      assert.equal(url.pathname, `/v1/managed-conversations/${id}/prompts/${commandId}/cancel`);
+      assert.equal(init.method, "POST");
+      assert.equal(init.body, '{"executionGeneration":1}');
+      assert.equal(init.headers.authorization, "Bearer secret");
+      return Response.json({ command: { id: commandId, state: "canceled", canceled: true } });
+    }
+  });
+  assert.equal(canceled.status, 200);
+  const csrfRequest = Readable.from([Buffer.from('{"executionGeneration":1}')]);
+  csrfRequest.method = "POST";
+  csrfRequest.headers = { "content-type": "application/json" };
+  assert.equal(
+    (await call({
+      request: csrfRequest,
+      routeFamily: "managed-conversations",
+      url: new URL(`${base}/${id}/prompts/${commandId}/cancel`),
+      validCsrf: () => false,
+      fetchImpl: () => assert.fail("CSRF must be required before cancel")
+    })).status,
+    403
+  );
   for (const path of ["/runner/commands", `/${id}/terminals`, `/${id}/files`]) {
     assert.equal(
       (
@@ -175,6 +205,46 @@ test("managed transport allows only scoped conversation actions", async () => {
     ).status,
     403
   );
+});
+
+test("managed recovery lookup forwards only exact read-only identities", async () => {
+  const base = "http://localhost/studio-api/managed-conversations/recovery/lookup";
+  const key = "send-key";
+  const id = "11111111-1111-4111-8111-111111111111";
+  const messageId = "22222222-2222-4222-8222-222222222222";
+  const query = `kind=prompt&idempotencyKey=${key}&clientUserMessageId=${messageId}&executionId=${id}&executionGeneration=1`;
+  const request = Readable.from([]);
+  request.method = "GET";
+  request.headers = {};
+  const result = await call({
+    request,
+    routeFamily: "managed-conversations",
+    url: new URL(`${base}?${query}`),
+    fetchImpl: async (url, init) => {
+      assert.equal(url.pathname, "/v1/managed-conversations/recovery/lookup");
+      assert.equal(url.search.slice(1), query);
+      assert.equal(init.method, "GET");
+      assert.equal(init.headers.authorization, "Bearer secret");
+      return Response.json({ found: false });
+    }
+  });
+  assert.equal(result.status, 200);
+  const invalid = await call({
+    request,
+    routeFamily: "managed-conversations",
+    url: new URL(`${base}?${query}&ownerId=another`),
+    fetchImpl: () => assert.fail("invalid lookup must not reach API")
+  });
+  assert.equal(invalid.status, 400);
+  const write = Readable.from([Buffer.from("{}")]);
+  write.method = "POST";
+  write.headers = { "content-type": "application/json" };
+  assert.equal((await call({
+    request: write,
+    routeFamily: "managed-conversations",
+    url: new URL(`${base}?kind=start&idempotencyKey=${key}`),
+    fetchImpl: () => assert.fail("lookup must be read only")
+  })).status, 405);
 });
 
 test("managed transport forwards scoped Project Move status and cancellation", async () => {
