@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-expect-error -- Node's native test runner imports TypeScript sources directly.
-import { createDeviceManagedChatRecoveryStore, createLocalManagedChatRecoveryStore } from "./device-managed-chat-recovery.ts";
+import { createDeviceManagedChatRecoveryStore, createLocalManagedChatRecoveryStore, managedChatCommandMatchesPendingPrompt, managedChatRecoveryCommandDisposition, managedChatSendRequestFingerprint, reusableManagedChatSendIdentity, settleManagedChatStartRecovery } from "./device-managed-chat-recovery.ts";
 
 class MemoryStorage {
   values = new Map<string, string>();
@@ -38,12 +38,170 @@ test("persists launch and prompt identity without marking it resubmittable", () 
     clientUserMessageId: "stable-client-message-id",
     executionGeneration: 3,
     prompt: "Make a change",
+    requestFingerprint: "same-request",
     state: "reconciling" as const
   };
   store.write({ schemaVersion: 1, draft: "Make a change", pendingOperation: operation });
   const recovered = createDeviceManagedChatRecoveryStore({ ownerId: "owner", backendId: "backend", executionId: null, storage })?.read();
   assert.deepEqual(recovered?.pendingOperation, operation);
   assert.equal(recovered?.draft, "Make a change");
+});
+
+test("retries only the exact retained request with its original idempotency identity", () => {
+  const request = {
+    kind: "prompt" as const,
+    projectId: "project-a",
+    executionId: "execution-a",
+    executionGeneration: 3,
+    agentId: "agent-a",
+    agentVersion: 4,
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-test",
+    reasoningEffort: "high",
+    permissionMode: "supervised",
+    expectedSettings: {
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "supervised"
+    }
+  };
+  const requestFingerprint = managedChatSendRequestFingerprint(request);
+  const operation = {
+    kind: "prompt" as const,
+    startIdempotencyKey: "stable-start-key",
+    promptIdempotencyKey: "stable-command-key",
+    clientUserMessageId: "stable-client-message-id",
+    executionGeneration: 3,
+    prompt: "Make a change",
+    requestFingerprint,
+    state: "reconciling" as const
+  };
+  const record = { schemaVersion: 1 as const, draft: operation.prompt, pendingOperation: operation };
+  assert.deepEqual(reusableManagedChatSendIdentity(record, operation.prompt, requestFingerprint), {
+    promptIdempotencyKey: operation.promptIdempotencyKey,
+    clientUserMessageId: operation.clientUserMessageId,
+    startIdempotencyKey: operation.startIdempotencyKey
+  });
+  assert.equal(reusableManagedChatSendIdentity(record, "A different prompt", requestFingerprint), null);
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      operation.prompt,
+      managedChatSendRequestFingerprint({ ...request, model: "gpt-other" })
+    ),
+    null
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      operation.prompt,
+      managedChatSendRequestFingerprint({ ...request, permissionMode: "full_access" })
+    ),
+    null
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      operation.prompt,
+      managedChatSendRequestFingerprint({ ...request, projectId: "project-b" })
+    ),
+    null
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity({
+      ...record,
+      pendingOperation: { ...operation, state: "accepted" }
+    }, operation.prompt, requestFingerprint),
+    null
+  );
+});
+
+test("settles a confirmed start before sending its retained prompt", () => {
+  const record = {
+    schemaVersion: 1 as const,
+    draft: "Continue after launch",
+    pendingOperation: {
+      kind: "start" as const,
+      startIdempotencyKey: "stable-start-key",
+      promptIdempotencyKey: "unused-prompt-key",
+      clientUserMessageId: "unused-message-id",
+      prompt: "Continue after launch",
+      requestFingerprint: "start-request",
+      state: "reconciling" as const
+    }
+  };
+  assert.deepEqual(settleManagedChatStartRecovery(record, "dispatching"), {
+    schemaVersion: 1,
+    draft: record.draft
+  });
+  assert.deepEqual(settleManagedChatStartRecovery(record, "indeterminate"), record);
+});
+
+test("keeps unrecognized command states uncertain and permits legacy retries only with the saved prompt", () => {
+  assert.equal(managedChatRecoveryCommandDisposition("queued"), "pending");
+  assert.equal(managedChatRecoveryCommandDisposition("completed"), "completed");
+  assert.equal(managedChatRecoveryCommandDisposition("future_state"), "uncertain");
+  assert.equal(managedChatRecoveryCommandDisposition("indeterminate"), "uncertain");
+
+  const operation = {
+    kind: "prompt" as const,
+    startIdempotencyKey: "legacy-start-key",
+    promptIdempotencyKey: "legacy-prompt-key",
+    clientUserMessageId: "legacy-message-id",
+    executionGeneration: 3,
+    prompt: "Keep this exact prompt",
+    state: "reconciling" as const
+  };
+  const record = { schemaVersion: 1 as const, draft: operation.prompt, pendingOperation: operation };
+  assert.deepEqual(
+    reusableManagedChatSendIdentity(record, operation.prompt, "current-settings-fingerprint"),
+    {
+      promptIdempotencyKey: operation.promptIdempotencyKey,
+      clientUserMessageId: operation.clientUserMessageId,
+      startIdempotencyKey: operation.startIdempotencyKey
+    }
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(record, "Changed prompt", "current-settings-fingerprint"),
+    null
+  );
+});
+
+test("reconciles a late runtime command only for the retained prompt identity", () => {
+  const operation = {
+    kind: "prompt" as const,
+    startIdempotencyKey: "start-key",
+    promptIdempotencyKey: "prompt-key",
+    clientUserMessageId: "message-id",
+    executionGeneration: 4,
+    prompt: "Retained prompt",
+    state: "reconciling" as const
+  };
+  assert.equal(
+    managedChatCommandMatchesPendingPrompt(
+      operation,
+      { commandKind: "prompt", clientUserMessageId: "message-id" },
+      4
+    ),
+    true
+  );
+  assert.equal(
+    managedChatCommandMatchesPendingPrompt(
+      operation,
+      { commandKind: "prompt", clientUserMessageId: "another-message" },
+      4
+    ),
+    false
+  );
+  assert.equal(
+    managedChatCommandMatchesPendingPrompt(
+      operation,
+      { commandKind: "prompt", clientUserMessageId: "message-id" },
+      5
+    ),
+    false
+  );
 });
 
 test("rejects malformed recovery data and clears only the selected scope", () => {

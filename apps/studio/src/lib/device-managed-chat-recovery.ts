@@ -12,6 +12,7 @@ export type DeviceManagedChatPendingOperation = Readonly<{
   clientUserMessageId: string;
   executionGeneration?: number;
   prompt: string;
+  requestFingerprint?: string;
   state: "pending" | "reconciling" | "accepted" | "rejected";
   commandId?: string;
 }>;
@@ -21,6 +22,115 @@ export type DeviceManagedChatRecoveryRecord = Readonly<{
   draft: string;
   pendingOperation?: DeviceManagedChatPendingOperation;
 }>;
+
+export type ManagedChatSendRequestIdentity = Readonly<{
+  kind: "start" | "prompt";
+  projectId: string | null;
+  executionId: string | null;
+  executionGeneration: number | null;
+  agentId: string;
+  agentVersion: number;
+  provider: string;
+  aiClientInstanceId: string;
+  model: string;
+  reasoningEffort: string | null;
+  permissionMode: string;
+  expectedSettings: Readonly<{
+    model: string;
+    reasoningEffort: string | null;
+    permissionMode: string;
+  }> | null;
+}>;
+
+export type ManagedChatRecoveryCommandDisposition =
+  | "pending"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "uncertain";
+
+export function managedChatRecoveryCommandDisposition(
+  state: string
+): ManagedChatRecoveryCommandDisposition {
+  if (["queued", "blocked", "dispatching"].includes(state)) return "pending";
+  if (state === "completed") return "completed";
+  if (state === "failed") return "failed";
+  if (state === "canceled") return "canceled";
+  return "uncertain";
+}
+
+export function managedChatCommandMatchesPendingPrompt(
+  operation: DeviceManagedChatPendingOperation | undefined,
+  command: Readonly<{
+    commandKind: string;
+    clientUserMessageId?: string | null;
+  }> | null,
+  executionGeneration: number
+): boolean {
+  return Boolean(
+    operation?.kind === "prompt" &&
+      command?.commandKind === "prompt" &&
+      command.clientUserMessageId === operation.clientUserMessageId &&
+      (operation.executionGeneration === undefined ||
+        operation.executionGeneration === executionGeneration)
+  );
+}
+
+export function managedChatSendRequestFingerprint(
+  identity: ManagedChatSendRequestIdentity
+): string {
+  return JSON.stringify([
+    identity.kind,
+    identity.projectId,
+    identity.executionId,
+    identity.executionGeneration,
+    identity.agentId,
+    identity.agentVersion,
+    identity.provider,
+    identity.aiClientInstanceId,
+    identity.model,
+    identity.reasoningEffort,
+    identity.permissionMode,
+    identity.expectedSettings
+      ? [
+          identity.expectedSettings.model,
+          identity.expectedSettings.reasoningEffort,
+          identity.expectedSettings.permissionMode
+        ]
+      : null
+  ]);
+}
+
+export function settleManagedChatStartRecovery(
+  record: DeviceManagedChatRecoveryRecord,
+  commandState: string
+): DeviceManagedChatRecoveryRecord {
+  if (commandState === "indeterminate") return record;
+  return { schemaVersion: 1, draft: record.draft };
+}
+
+export function reusableManagedChatSendIdentity(
+  record: DeviceManagedChatRecoveryRecord | null,
+  prompt: string,
+  requestFingerprint: string
+): Pick<
+  DeviceManagedChatPendingOperation,
+  "promptIdempotencyKey" | "clientUserMessageId" | "startIdempotencyKey"
+> | null {
+  const operation = record?.pendingOperation;
+  if (
+    !operation ||
+    operation.prompt !== prompt ||
+    (operation.requestFingerprint !== undefined &&
+      operation.requestFingerprint !== requestFingerprint) ||
+    (operation.state !== "pending" && operation.state !== "reconciling")
+  ) return null;
+  return {
+    promptIdempotencyKey: operation.promptIdempotencyKey,
+    clientUserMessageId: operation.clientUserMessageId,
+    startIdempotencyKey: operation.startIdempotencyKey
+  };
+}
 
 export type DeviceManagedChatRecoveryStore = Readonly<{
   read: () => DeviceManagedChatRecoveryRecord | null;
@@ -72,6 +182,9 @@ export function parseRecoveryRecord(value: string | null): DeviceManagedChatReco
           !Number.isSafeInteger(candidate.executionGeneration) ||
           candidate.executionGeneration < 0)) ||
       typeof candidate.prompt !== "string" ||
+      (candidate.requestFingerprint !== undefined &&
+        (typeof candidate.requestFingerprint !== "string" ||
+          candidate.requestFingerprint.length > 8192)) ||
       !["pending", "reconciling", "accepted", "rejected"].includes(String(candidate.state)) ||
       (candidate.commandId !== undefined && typeof candidate.commandId !== "string")
     ) return null;
@@ -87,6 +200,9 @@ export function parseRecoveryRecord(value: string | null): DeviceManagedChatReco
           ? { executionGeneration: candidate.executionGeneration }
           : {}),
         prompt: candidate.prompt,
+        ...(typeof candidate.requestFingerprint === "string"
+          ? { requestFingerprint: candidate.requestFingerprint }
+          : {}),
         state: candidate.state as DeviceManagedChatPendingOperation["state"],
         ...(typeof candidate.commandId === "string" ? { commandId: candidate.commandId } : {})
       }
