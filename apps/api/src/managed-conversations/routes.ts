@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type {
   DeviceCredentialAuthContext,
   ManagedConversationRuntimeBindingRecord,
@@ -1507,7 +1507,7 @@ export const registerManagedConversationRoutes = (
 
       if (body.cwd) {
         const cwd = body.cwd.trim();
-        if (cwd.length === 0 || !cwd.startsWith("/")) {
+        if (cwd.length === 0 || !isAbsolute(cwd)) {
           return {
             operation: "command_discovery",
             status: "unauthorized",
@@ -1519,7 +1519,14 @@ export const registerManagedConversationRoutes = (
       const snapshot = snapshots.find(
         (candidate) => candidate.instanceId === body.aiClientInstanceId
       );
-      if (!snapshot || new Date(snapshot.expiresAt).getTime() <= Date.now()) {
+      const expiresAtMs = snapshot
+        ? new Date(snapshot.expiresAt).getTime()
+        : Number.NaN;
+      if (
+        !snapshot ||
+        !Number.isFinite(expiresAtMs) ||
+        expiresAtMs <= Date.now()
+      ) {
         return {
           operation: "command_discovery",
           status: "unavailable",

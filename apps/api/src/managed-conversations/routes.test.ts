@@ -2622,6 +2622,7 @@ type CommandDiscoveryOptions = {
   instance?: Record<string, unknown> | null;
   snapshot?: Record<string, unknown> | null;
   managedConversationRead?: (...args: unknown[]) => Promise<void>;
+  authenticate?: () => Promise<{ id: string }>;
 };
 
 const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
@@ -2664,10 +2665,20 @@ const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
         }
       : options.snapshot;
   const app = Fastify({ logger: false });
+  app.setErrorHandler((error, _request, reply) => {
+    const typedError = error as Error & { statusCode?: number };
+    reply
+      .status(
+        typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+      )
+      .send({ error: typedError.message });
+  });
   registerManagedConversationRoutes(app, {
     config: { deploymentProfile: "local_personal" },
     encryption: { envelopeEncryptionProvider: {} },
-    auth: { authenticate: async () => ({ id: userId }) },
+    auth: {
+      authenticate: options.authenticate ?? (async () => ({ id: userId }))
+    },
     rateLimit: {
       memoryRead: async () => undefined,
       memoryWrite: async () => undefined,
@@ -2690,6 +2701,88 @@ const commandDiscoveryPayload = {
 };
 
 describe("managed Conversation command discovery route", () => {
+  it("rejects an unsupported AI Client driver", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, aiClientDriverId: "unsupported" }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      operation: "command_discovery",
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects command discovery payloads that fail schema validation", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, unexpected: true }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects unauthenticated command discovery requests", async () => {
+    const { app } = createCommandDiscoveryApp({
+      authenticate: async () => {
+        throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("reports unavailable when capability snapshot expiry is malformed", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: {
+          descriptors: {
+            slash_command_discovery: {
+              support: "supported",
+              readiness: "ready"
+            }
+          }
+        },
+        observedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "not-a-date",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
   it("returns ok for a ready owned instance and capability", async () => {
     const { app } = createCommandDiscoveryApp();
     const response = await app.inject({
