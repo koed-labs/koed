@@ -180,6 +180,54 @@ describe("useSlashCommandDiscovery", () => {
     harness.unmount();
   });
 
+  it.each([
+    ["unauthorized", "Not authorized"],
+    ["stale", "AI Client capability snapshot is stale."]
+  ] as const)(
+    "fails closed for cached commands when response is %s",
+    async (status, expectedError) => {
+      vi.useFakeTimers();
+      const harness = renderDiscoveryHook(mockApi);
+      await settle();
+
+      const restrictedApi = {
+        discoverCommands: vi.fn().mockResolvedValue({
+          status,
+          ...(status === "unauthorized" ? { message: "Not authorized" } : {})
+        })
+      };
+      harness.rerender(restrictedApi);
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(harness.result.current?.commands).toEqual([]);
+      expect(harness.result.current?.error).toBe(expectedError);
+      harness.unmount();
+    }
+  );
+
+  it("passes abort signal and aborts superseded request", () => {
+    vi.useFakeTimers();
+    mockApi.discoverCommands.mockImplementation(
+      () => new Promise(() => undefined)
+    );
+    const harness = renderDiscoveryHook(mockApi);
+    const firstInput = mockApi.discoverCommands.mock.calls[0]?.[0] as
+      | { signal?: AbortSignal }
+      | undefined;
+
+    expect(firstInput?.signal).toBeInstanceOf(AbortSignal);
+    expect(firstInput?.signal?.aborted).toBe(false);
+
+    harness.rerender(mockApi, "/home/other");
+
+    expect(firstInput?.signal?.aborted).toBe(true);
+    harness.unmount();
+  });
+
   it("schedules trailing fetch instead of dropping a request", async () => {
     vi.useFakeTimers();
     const harness = renderDiscoveryHook(mockApi);

@@ -11,6 +11,7 @@ type DiscoverCommandsApi = {
     aiClientInstanceId: string;
     projectId: string;
     cwd?: string;
+    signal?: AbortSignal;
   }) => Promise<unknown>;
 };
 
@@ -103,7 +104,8 @@ export function useSlashCommandDiscovery(
           aiClientDriverId: driverId,
           aiClientInstanceId: instanceId,
           projectId,
-          ...(cwd ? { cwd } : {})
+          ...(cwd ? { cwd } : {}),
+          signal: controller.signal
         })
         .then((result) => {
           if (!isCurrentRequest()) return;
@@ -142,12 +144,14 @@ export function useSlashCommandDiscovery(
             }
             setError(null);
           } else {
-            useStaleOr(
+            setError(
               response.message ??
                 (response.status === "stale"
                   ? "AI Client capability snapshot is stale."
                   : "Command discovery unavailable.")
             );
+            setCommands([]);
+            setLastFetchedAt(null);
           }
         })
         .catch(() => useStaleOr("Command discovery failed."))
@@ -177,17 +181,16 @@ export function useSlashCommandDiscovery(
       if (key !== cacheKey) cachedRef.current.delete(key);
     }
 
-    setCommands([]);
-    setError(null);
-    setLastFetchedAt(null);
-    setLoading(false);
-
-    if (!api?.discoverCommands || !driverId || !instanceId || !projectId) {
+    if (driverId && instanceId && projectId) {
+      setCommands([]);
+      fetchCommands();
+    } else {
+      setCommands([]);
+      setError(null);
+      setLastFetchedAt(null);
+      setLoading(false);
       cachedRef.current.delete(cacheKey);
-      return;
     }
-
-    fetchCommands();
 
     return () => {
       requestIdRef.current += 1;
@@ -195,7 +198,7 @@ export function useSlashCommandDiscovery(
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     };
-  }, [api, cacheKey, driverId, fetchCommands, instanceId, projectId]);
+  }, [api, cacheKey, cwd, driverId, fetchCommands, instanceId, projectId]);
 
   return { commands, loading, error, lastFetchedAt };
 }
