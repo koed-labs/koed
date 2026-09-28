@@ -2132,7 +2132,8 @@ function ManagedConversationComposer({
   const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
 
   // Slash command discovery
-  const resolvedProvider = usage?.provider ?? null;
+  const resolvedProvider =
+    resolvedConversation.executionOwner?.driverId ?? null;
   const resolvedInstanceId =
     resolvedConversation.executionOwner?.instanceId ?? null;
   const resolvedProjectId = project?.id ?? null;
