@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { generateKeyPairSync, type KeyObject } from "node:crypto";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -563,6 +563,7 @@ describe("Personal Sync control client", () => {
   it("persists only redacted backend pairing request IDs", async () => {
     const directory = root();
     const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+    const stableDeviceId = randomUUID();
     const storedSecrets: string[] = [];
     const fetch = async (_url: string | URL, options?: RequestInit) => {
       const request = JSON.parse(String(options?.body)) as Record<
@@ -596,7 +597,7 @@ describe("Personal Sync control client", () => {
           identity: {
             remoteOperationsAllowed: true,
             deploymentId: "local-deployment",
-            deviceInstanceId: "local-device"
+            deviceInstanceId: stableDeviceId
           },
           putSecret: (_reference, secret) => {
             storedSecrets.push(secret);
@@ -609,8 +610,11 @@ describe("Personal Sync control client", () => {
           operation_families: ["pds_relay"]
         }
       });
+      expect((requested.request as { device_id: string }).device_id).toBe(
+        stableDeviceId
+      );
       expect((requested.request as { device_id: string }).device_id).toMatch(
-        /^[A-Za-z0-9_-]{22}$/
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
       );
       expect(storedSecrets).toHaveLength(1);
       expect(storedSecrets[0]).not.toContain("cm_session");
@@ -656,6 +660,7 @@ describe("Personal Sync control client", () => {
       "invitation",
       JSON.stringify(invitation)
     );
+    const stableDeviceId = randomUUID();
     const stored = new Map<string, string>();
     try {
       const result = await runPersonalSyncCommand(
@@ -682,7 +687,7 @@ describe("Personal Sync control client", () => {
           identity: {
             remoteOperationsAllowed: true,
             deploymentId: "joining-deployment",
-            deviceInstanceId: "joining-device"
+            deviceInstanceId: stableDeviceId
           },
           putSecret: (reference, value) => {
             stored.set(reference, value);
@@ -701,8 +706,10 @@ describe("Personal Sync control client", () => {
         }
       });
       expect(Object.keys(result.pairing as object)).toEqual(["challengeId"]);
-      expect((result.request as { device_id: string }).device_id).toMatch(
-        /^[A-Za-z0-9_-]{22}$/
+      const firstDeviceId = (result.request as { device_id: string }).device_id;
+      expect(firstDeviceId).toBe(stableDeviceId);
+      expect(firstDeviceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
       );
       expect(stored.size).toBe(1);
       const pendingSecret = [...stored.values()][0]!;
@@ -722,6 +729,56 @@ describe("Personal Sync control client", () => {
       });
       expect(pendingRuntime.originDeploymentId).toMatch(/^[A-Za-z0-9_-]{22}$/);
       expect(pendingSecret).not.toContain("pairingToken");
+
+      const rotatedIdentityFd = fdFor(
+        directory,
+        "invitation-rotated-identity",
+        JSON.stringify(invitation)
+      );
+      try {
+        await expect(
+          runPersonalSyncCommand(
+            [
+              "join",
+              "request",
+              "--group-id",
+              "pds_one",
+              "--invitation-fd",
+              String(rotatedIdentityFd)
+            ],
+            pathsFor(directory),
+            {
+              PDS_CONTROL_URL: invitation.control_url,
+              PDS_RUNTIME_SECRET_REF: "pds-runtime"
+            },
+            {
+              identity: {
+                remoteOperationsAllowed: true,
+                deploymentId: "joining-deployment",
+                deviceInstanceId: randomUUID()
+              },
+              putSecret: (reference, value) => {
+                stored.set(reference, value);
+              },
+              getSecret: (reference) => stored.get(reference) ?? null
+            }
+          )
+        ).rejects.toThrow("different stable Koed device identity");
+        expect(stored.get([...stored.keys()][0]!)).toBe(pendingSecret);
+      } finally {
+        closeSync(rotatedIdentityFd);
+      }
+
+      // A pending request written by an older build can carry a random PDS
+      // ID. Retrying it must preserve that ID rather than silently rebinding
+      // an already signed enrollment to the current stable Koed identity.
+      const legacyDeviceId = Buffer.alloc(16, 9).toString("base64url");
+      const legacyPending = {
+        ...pendingRuntime,
+        deviceId: legacyDeviceId
+      };
+      const pendingReference = [...stored.keys()][0]!;
+      stored.set(pendingReference, JSON.stringify(legacyPending));
 
       const retryFd = fdFor(
         directory,
@@ -748,7 +805,7 @@ describe("Personal Sync control client", () => {
             identity: {
               remoteOperationsAllowed: true,
               deploymentId: "joining-deployment",
-              deviceInstanceId: "joining-device"
+              deviceInstanceId: randomUUID()
             },
             putSecret: (reference, value) => {
               stored.set(reference, value);
@@ -756,7 +813,42 @@ describe("Personal Sync control client", () => {
             getSecret: (reference) => stored.get(reference) ?? null
           }
         );
-        expect(retry.request).toEqual(result.request);
+        expect(retry.request).toMatchObject({
+          group_id: "pds_one",
+          device_id: legacyDeviceId
+        });
+        expect(
+          (retry.request as { proof: { device_id: string } }).proof.device_id
+        ).toBe(legacyDeviceId);
+        const retryRequest = retry.request as {
+          device_id: string;
+          signing_key_id: string;
+          signing_public_key: string;
+          kem_key_id: string;
+          kem_public_key: string;
+          proof: {
+            challenge_id: string;
+            challenge: string;
+            expires_at: string;
+            signature: string;
+          };
+        };
+        expect(() =>
+          verifyPdsEnrollmentProof({
+            challengeId: retryRequest.proof.challenge_id,
+            challenge: retryRequest.proof.challenge,
+            groupId: "pds_one",
+            deviceId: retryRequest.device_id,
+            deviceSigningKeyId: retryRequest.signing_key_id,
+            deviceSigningPublicKey: retryRequest.signing_public_key,
+            deviceKemKeyId: retryRequest.kem_key_id,
+            deviceKemPublicKey: retryRequest.kem_public_key,
+            browserSubjectId: "browser-user",
+            browserDeploymentId: "browser-deployment",
+            expiresAt: retryRequest.proof.expires_at,
+            signature: retryRequest.proof.signature
+          })
+        ).not.toThrow();
         expect(stored.size).toBe(1);
       } finally {
         closeSync(retryFd);
@@ -824,7 +916,7 @@ describe("Personal Sync control client", () => {
               identity: {
                 remoteOperationsAllowed: true,
                 deploymentId: "joining-deployment",
-                deviceInstanceId: "joining-device"
+                deviceInstanceId: randomUUID()
               },
               putSecret: () => undefined
             }
@@ -844,6 +936,7 @@ describe("Personal Sync control client", () => {
       const passwordFd = fdFor(directory, "password", "recovery password");
       const recoveryKit = resolve(directory, "recovery-kit.json");
       const authority = generateKeyPairSync("ed25519");
+      const stableDeviceId = randomUUID();
       const authorityPublicKey = (
         authority.publicKey.export({ format: "jwk" }) as { x: string }
       ).x;
@@ -870,6 +963,8 @@ describe("Personal Sync control client", () => {
             }
           });
         }
+        if (path.endsWith("/personal-device-sync/groups"))
+          return response({ groups: [] });
         if (path.endsWith("/groups/genesis")) {
           submittedStatement = parseCanonicalPdsJson(
             String(body.statement)
@@ -973,7 +1068,7 @@ describe("Personal Sync control client", () => {
             identity: {
               remoteOperationsAllowed: true,
               deploymentId: "local-deployment",
-              deviceInstanceId: "local-device"
+              deviceInstanceId: stableDeviceId
             },
             putSecret: (reference, value) => {
               stored.push({ reference, value });
@@ -985,9 +1080,19 @@ describe("Personal Sync control client", () => {
           state: "active",
           ...(exportRecovery ? { recoveryKit } : {})
         });
-        expect(result.deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+        expect(result.deviceId).toBe(stableDeviceId);
         expect(submittedStatement).not.toBeNull();
         expect(submittedProof).not.toBeNull();
+        const submittedDraft = submittedStatement!.draft as Record<
+          string,
+          unknown
+        >;
+        const submittedGenesisBody = submittedDraft.body as Record<
+          string,
+          unknown
+        >;
+        expect(submittedGenesisBody.initialDeviceId).toBe(stableDeviceId);
+        expect(submittedProof!.device_id).toBe(stableDeviceId);
         expect(stored).toHaveLength(1);
         expect(stored[0]?.reference).toBe("pds-runtime");
         const storedRuntime = JSON.parse(stored[0]!.value) as {
@@ -1112,10 +1217,13 @@ describe("Personal Sync control client", () => {
     const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
     const passwordFd = fdFor(directory, "password", "recovery password");
     const recoveryKit = resolve(directory, "recovery-kit.json");
+    const stableDeviceId = randomUUID();
     const stored: string[] = [];
     const authorityPublicKey = Buffer.alloc(32, 11).toString("base64url");
     const fetch = async (url: string | URL) => {
       const path = new URL(String(url)).pathname;
+      if (path.endsWith("/personal-device-sync/groups"))
+        return response({ groups: [] });
       if (path.endsWith("/challenges"))
         return response({
           challenge: {
@@ -1157,7 +1265,7 @@ describe("Personal Sync control client", () => {
             identity: {
               remoteOperationsAllowed: true,
               deploymentId: "local-deployment",
-              deviceInstanceId: "local-device"
+              deviceInstanceId: stableDeviceId
             },
             putSecret: (_reference, value) => {
               stored.push(value);
@@ -1175,6 +1283,86 @@ describe("Personal Sync control client", () => {
       closeSync(sessionFd);
     }
   });
+
+  it.each([
+    {
+      label: "invalid device identity",
+      identity: {
+        remoteOperationsAllowed: true,
+        deploymentId: "local-deployment",
+        deviceInstanceId: "not-a-uuid"
+      },
+      existingRuntime: null,
+      existingGroups: [] as unknown[]
+    },
+    {
+      label: "existing runtime secret",
+      identity: {
+        remoteOperationsAllowed: true,
+        deploymentId: "local-deployment",
+        deviceInstanceId: randomUUID()
+      },
+      existingRuntime: "existing-runtime",
+      existingGroups: [] as unknown[]
+    },
+    {
+      label: "existing Personal Device Group",
+      identity: {
+        remoteOperationsAllowed: true,
+        deploymentId: "local-deployment",
+        deviceInstanceId: randomUUID()
+      },
+      existingRuntime: null,
+      existingGroups: [{ group_id: "existing-group" }]
+    }
+  ])(
+    "refuses bootstrap for $label without replacing state",
+    async ({ identity, existingRuntime, existingGroups }) => {
+      const directory = root();
+      const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+      const requests: string[] = [];
+      const fetch = async (url: string | URL) => {
+        const path = new URL(String(url)).pathname;
+        requests.push(path);
+        if (path.endsWith("/personal-device-sync/groups"))
+          return response({ groups: existingGroups });
+        throw new Error(`Unexpected control request ${path}`);
+      };
+      try {
+        await expect(
+          runPersonalSyncCommand(
+            ["group", "bootstrap"],
+            pathsFor(directory),
+            {
+              ...controlEnv(sessionFd),
+              PDS_RUNTIME_SECRET_REF: "pds-runtime"
+            },
+            {
+              fetch: fetch as never,
+              identity,
+              getSecret: () => existingRuntime,
+              putSecret: () => {
+                throw new Error("bootstrap must not replace runtime state");
+              }
+            }
+          )
+        ).rejects.toThrow(
+          identity.deviceInstanceId === "not-a-uuid"
+            ? "healthy Koed device identity"
+            : existingRuntime !== null
+              ? "runtime already exists"
+              : "Personal Device Group already exists"
+        );
+        expect(requests).toEqual(
+          identity.deviceInstanceId === "not-a-uuid" || existingRuntime !== null
+            ? []
+            : ["/v1/personal-device-sync/groups"]
+        );
+      } finally {
+        closeSync(sessionFd);
+      }
+    }
+  );
 
   it("requires signed transition payload from protected FDs; arbitrary device IDs cannot succeed", async () => {
     const directory = root();

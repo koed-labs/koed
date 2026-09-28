@@ -18,7 +18,14 @@ export const PDS_PEER_ROUTE_TTL_MS = 3 * 60_000;
 export const PDS_PEER_ROUTE_REFRESH_MS = 60_000;
 export const PDS_PEER_RECEIPT_WAIT_MS = 15_000;
 
-const peerIdSchema = z.string().regex(/^[A-Za-z0-9_-]{22}$/);
+// Existing PDS installations use 128-bit base64url IDs. Local Koed device
+// identity uses canonical UUIDs, which must remain byte-for-byte stable when
+// the same installation participates in PDS and upstream managed execution.
+const peerIdSchema = z
+  .string()
+  .regex(
+    /^(?:[A-Za-z0-9_-]{22}|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
+  );
 
 export const normalizePdsPeerEndpoint = (value: string): string => {
   if (value.length > 2_048) throw new TypeError("PDS peer endpoint is invalid");

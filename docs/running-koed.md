@@ -412,6 +412,15 @@ locking. Existing Electron OS-store state is not migrated; changing
 `KOED_HOME` requires re-enrollment. Association and Remote Account Links alone
 synchronize nothing.
 
+First-group bootstrap binds the PDS member to the installation's stable Koed
+device-identity UUID. Bootstrap refuses to replace an existing local runtime
+secret or an existing Personal Device Group; use the signed device enrollment
+or explicit recovery flow for established groups. New joining-device requests
+also use that stable UUID. Retries preserve an existing signed pending request;
+a UUID from a different current installation identity fails closed, while a
+legacy 22-character PDS device ID remains unchanged for compatibility. That
+legacy ID is not treated as a mapping to the Koed UUID.
+
 ### Legacy invitation-first Desktop pairing
 
 After first-device Personal Device Group setup, open **Devices** on the

@@ -170,6 +170,11 @@ const isRelayId = (value: unknown): value is string =>
   /^[A-Za-z0-9_-]{22}$/.test(value) &&
   Buffer.from(value, "base64url").length === 16 &&
   Buffer.from(value, "base64url").toString("base64url") === value;
+const isStableDeviceInstanceId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
 const hash = (value: string | Buffer): string =>
   createHash("sha256").update(value).digest("base64url");
 const fingerprint = (value: string): string => hash(value).slice(0, 26);
@@ -1022,7 +1027,8 @@ const pendingEnrollmentSecret = async (
     !Object.entries(value)
       .filter(([key]) => key !== "version")
       .every(([, field]) => strictString(field)) ||
-    !isRelayId(value.originDeploymentId)
+    !isRelayId(value.originDeploymentId) ||
+    (!isRelayId(value.deviceId) && !isStableDeviceInstanceId(value.deviceId))
   )
     fail("PDS pending enrollment secret is invalid.");
   return value;
@@ -1269,18 +1275,39 @@ const bootstrapGroup = async (
     fail(
       "PDS_RUNTIME_SECRET_REF or --runtime-secret-ref is required for bootstrap."
     );
-  const password = recoveryKitPath ? passwordFrom(args) : randomBytes(32);
   const identity =
     deps.identity ?? (await ensureDeviceIdentity(paths, { environment }));
-  if (
-    !identity.remoteOperationsAllowed ||
-    !identity.deploymentId ||
-    !identity.deviceInstanceId
-  ) {
-    password.fill(0);
+  if (!identity.remoteOperationsAllowed || !identity.deploymentId) {
     fail("A healthy Koed device identity is required for bootstrap.");
   }
-  const deviceInstanceId = relayId();
+  const deviceInstanceId = isStableDeviceInstanceId(identity.deviceInstanceId)
+    ? identity.deviceInstanceId
+    : fail("A healthy Koed device identity is required for bootstrap.");
+  const runtimeSecret = await (deps.getSecret ?? getProviderSecret)(
+    runtimeSecretRef,
+    environment
+  );
+  if (runtimeSecret !== null) {
+    fail(
+      "Personal Device Sync runtime already exists; bootstrap cannot replace it."
+    );
+  }
+  const existingGroups = await control({
+    environment,
+    deps: controlDeps,
+    method: "GET",
+    path: "/v1/personal-device-sync/groups"
+  });
+  if (!Array.isArray(existingGroups.groups)) {
+    fail("Personal Device Sync group list is invalid.");
+  }
+  const groups = existingGroups.groups as unknown[];
+  if (groups.length > 0) {
+    fail(
+      "Personal Device Group already exists; bootstrap cannot replace its membership."
+    );
+  }
+  const password = recoveryKitPath ? passwordFrom(args) : randomBytes(32);
   const groupId = relayId();
   const signingKey = generatedKey("ed25519");
   const kemKey = generatedKey("x25519");
@@ -1615,11 +1642,16 @@ const createJoinChallenge = async (
     deps.identity ?? (await ensureDeviceIdentity(paths, { environment }));
   if (
     !identity.remoteOperationsAllowed ||
-    !identity.deviceInstanceId ||
+    !isStableDeviceInstanceId(identity.deviceInstanceId) ||
     !identity.deploymentId
   )
     fail("A healthy Koed device identity is required for enrollment.");
   const deploymentId = identity.deploymentId as string;
+  const stableDeviceInstanceId = isStableDeviceInstanceId(
+    identity.deviceInstanceId
+  )
+    ? identity.deviceInstanceId
+    : fail("A healthy Koed device identity is required for enrollment.");
   const invitationFd = flag(args, "--invitation-fd");
   const suppliedInvitation = invitationFd
     ? readJsonFd(args, "--invitation-fd")
@@ -1658,7 +1690,19 @@ const createJoinChallenge = async (
   ) {
     fail("PDS pending enrollment does not match the pairing invitation.");
   }
-  const deviceInstanceId = existingPending?.deviceId ?? relayId();
+  if (
+    existingPending &&
+    isStableDeviceInstanceId(existingPending.deviceId) &&
+    existingPending.deviceId !== stableDeviceInstanceId
+  ) {
+    fail(
+      "PDS pending enrollment belongs to a different stable Koed device identity."
+    );
+  }
+  // Existing signed pending requests keep their original PDS device ID for
+  // safe retries, including legacy relay IDs. New requests bind to the stable
+  // Koed installation identity so managed-execution enrollment can match it.
+  const deviceInstanceId = existingPending?.deviceId ?? stableDeviceInstanceId;
   const originDeploymentId = existingPending?.originDeploymentId ?? relayId();
   const signingKey = existingPending
     ? {

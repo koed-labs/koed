@@ -37,6 +37,18 @@ const id = (value: unknown, label: string): string => {
   return value;
 };
 
+const deviceId = (value: unknown): string => {
+  if (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  ) {
+    return value;
+  }
+  return id(value, "device ID");
+};
+
 const timestamp = (value: unknown): string => {
   if (
     typeof value !== "string" ||
@@ -127,7 +139,7 @@ export const pdsRelayRequestSigningBytes = (
       bodyDigest: base64(input.bodyDigest, 32, "body digest"),
       timestamp: timestamp(input.timestamp),
       nonce: base64(input.nonce, PDS_RELAY_REQUEST_NONCE_BYTES, "nonce"),
-      deviceId: id(input.deviceId, "device ID"),
+      deviceId: deviceId(input.deviceId),
       deviceSigningKeyId: id(input.deviceSigningKeyId, "signing key ID")
     })}`,
     "utf8"
@@ -160,7 +172,7 @@ export const parsePdsRelayRequestProof = (
     throw new TypeError("PDS relay request protocol is invalid");
   return {
     protocol: PDS_PROTOCOL,
-    deviceId: id(parsed.deviceId, "device ID"),
+    deviceId: deviceId(parsed.deviceId),
     deviceSigningKeyId: id(parsed.deviceSigningKeyId, "signing key ID"),
     timestamp: timestamp(parsed.timestamp),
     nonce: base64(parsed.nonce, PDS_RELAY_REQUEST_NONCE_BYTES, "nonce"),

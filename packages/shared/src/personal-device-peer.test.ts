@@ -1,4 +1,9 @@
-import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import {
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign
+} from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { canonicalizePdsJson } from "./personal-device-sync-jcs.js";
@@ -14,6 +19,7 @@ import {
 import {
   PDS_PEER_PROTOCOL,
   createPdsPeerRouteAdvertisement,
+  pdsPeerRouteRecordSchema,
   selectCompletePdsPeerRouteSet,
   verifyPdsPeerReceipt
 } from "./personal-device-peer.js";
@@ -32,10 +38,9 @@ const rawKeyPair = () => {
   };
 };
 
-const fixture = () => {
+const fixture = (deviceId = randomBytes(16).toString("base64url")) => {
   const key = rawKeyPair();
   const authority = rawKeyPair();
-  const deviceId = randomBytes(16).toString("base64url");
   const signingKeyId = randomBytes(16).toString("base64url");
   const groupId = randomBytes(16).toString("base64url");
   const head = randomBytes(32).toString("base64url");
@@ -78,40 +83,45 @@ const fixture = () => {
   };
 };
 
+const signedRouteRecord = (
+  item: ReturnType<typeof fixture>,
+  now: Date,
+  endpointUrl: string
+) => {
+  const advertisement = createPdsPeerRouteAdvertisement({ endpointUrl, now });
+  const canonicalAdvertisement = canonicalizePdsJson(advertisement);
+  const unsigned = {
+    deviceId: item.deviceId,
+    deviceSigningKeyId: item.signingKeyId,
+    timestamp: now.toISOString(),
+    nonce: randomBytes(32).toString("base64url"),
+    bodyDigest: pdsRelayBodyDigest(Buffer.from(canonicalAdvertisement))
+  };
+  const proof = canonicalizePdsJson({
+    protocol: PDS_PROTOCOL,
+    ...unsigned,
+    signature: sign(
+      null,
+      pdsRelayRequestSigningBytes({
+        ...unsigned,
+        method: "POST",
+        target: "/v1/personal-device-sync/relay/peer-routes"
+      }),
+      pdsEd25519PrivateKey(item.key.privateSeed, item.key.publicKey)
+    ).toString("base64url")
+  });
+  return {
+    deviceId: item.deviceId,
+    canonicalAdvertisement,
+    canonicalRequestProof: proof
+  };
+};
+
 describe("PDS peer transport", () => {
   it("accepts only a complete, current, uniquely bound peer route set", () => {
     const item = fixture();
     const now = new Date("2026-08-19T00:00:00.000Z");
-    const advertisement = createPdsPeerRouteAdvertisement({
-      endpointUrl: "http://192.168.1.20:3310/pds",
-      now
-    });
-    const canonicalAdvertisement = canonicalizePdsJson(advertisement);
-    const unsigned = {
-      deviceId: item.deviceId,
-      deviceSigningKeyId: item.signingKeyId,
-      timestamp: now.toISOString(),
-      nonce: randomBytes(32).toString("base64url"),
-      bodyDigest: pdsRelayBodyDigest(Buffer.from(canonicalAdvertisement))
-    };
-    const proof = canonicalizePdsJson({
-      protocol: PDS_PROTOCOL,
-      ...unsigned,
-      signature: sign(
-        null,
-        pdsRelayRequestSigningBytes({
-          ...unsigned,
-          method: "POST",
-          target: "/v1/personal-device-sync/relay/peer-routes"
-        }),
-        pdsEd25519PrivateKey(item.key.privateSeed, item.key.publicKey)
-      ).toString("base64url")
-    });
-    const record = {
-      deviceId: item.deviceId,
-      canonicalAdvertisement,
-      canonicalRequestProof: proof
-    };
+    const record = signedRouteRecord(item, now, "http://192.168.1.20:3310/pds");
     expect(
       selectCompletePdsPeerRouteSet({
         records: [record],
@@ -211,6 +221,48 @@ describe("PDS peer transport", () => {
         now
       })
     ).toThrow();
+  });
+
+  it("accepts canonical UUID device IDs while preserving signed route binding", () => {
+    const item = fixture(randomUUID());
+    const now = new Date("2026-08-19T00:00:00.000Z");
+    const record = signedRouteRecord(item, now, "http://192.168.1.21:3310/pds");
+    expect(pdsPeerRouteRecordSchema.parse(record).deviceId).toBe(item.deviceId);
+    expect(
+      selectCompletePdsPeerRouteSet({
+        records: [record],
+        intendedRecipientDeviceIds: [item.deviceId],
+        groupId: item.groupId,
+        authorityHead: item.head,
+        currentEpoch: "1",
+        authorityPublicKey: item.authority.publicKey,
+        authorityKeyId: item.authorityKeyId,
+        activeCertificates: [item.certificate],
+        now
+      })?.get(item.deviceId)
+    ).toBe("http://192.168.1.21:3310/pds");
+    expect(() =>
+      pdsPeerRouteRecordSchema.parse({ ...record, deviceId: "not-a-device-id" })
+    ).toThrow();
+    expect(() =>
+      pdsPeerRouteRecordSchema.parse({
+        ...record,
+        deviceId: "00000000-0000-0000-0000-000000000000"
+      })
+    ).toThrow();
+    expect(
+      selectCompletePdsPeerRouteSet({
+        records: [record],
+        intendedRecipientDeviceIds: [randomUUID()],
+        groupId: item.groupId,
+        authorityHead: item.head,
+        currentEpoch: "1",
+        authorityPublicKey: item.authority.publicKey,
+        authorityKeyId: item.authorityKeyId,
+        activeCertificates: [item.certificate],
+        now
+      })
+    ).toBeNull();
   });
 
   it("requires a recipient-signed receipt bound to the exact package", () => {

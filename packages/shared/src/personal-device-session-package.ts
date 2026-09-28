@@ -45,6 +45,8 @@ export const PDS_SESSION_PACKAGE_MAX_JSON_BYTES =
 
 const opaqueIdPattern = /^[\x21-\x7e]{1,240}$/;
 const relayIdPattern = /^[A-Za-z0-9_-]{22}$/;
+const uuidDeviceIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const sourceMetadataKeys = new Set([
   "contentType",
   "parentSourceComponentId",
@@ -452,7 +454,7 @@ const memberFromCertificate = (
       "PDS membership certificate does not bind authority state"
     );
   }
-  const deviceId = requireRelayId(record.deviceId, "membership device ID");
+  const deviceId = requirePdsDeviceId(record.deviceId, "membership device ID");
   const signingKeyId = requireRelayId(
     record.deviceSigningKeyId,
     "membership signing key ID"
@@ -601,13 +603,20 @@ const requireId = (value: unknown, label: string): string => {
   return value;
 };
 
-/** Relay-visible identifiers are exact opaque 16-byte base64url values. */
+/** Non-device relay identifiers are exact opaque 16-byte base64url values. */
 const requireRelayId = (value: unknown, label: string): string => {
   if (typeof value !== "string" || !relayIdPattern.test(value)) {
     throw new TypeError(`PDS ${label} must be an opaque 16-byte ID`);
   }
   decodePdsBase64url(value, 16);
   return value;
+};
+
+const requirePdsDeviceId = (value: unknown, label: string): string => {
+  if (typeof value === "string" && uuidDeviceIdPattern.test(value)) {
+    return value;
+  }
+  return requireRelayId(value, label);
 };
 
 const requireUint64 = (value: unknown, label: string): string => {
@@ -1389,8 +1398,8 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
   ) {
     throw new TypeError("PDS source manifest protocol is invalid");
   }
-  for (const field of ["originDeploymentId", "originDeviceId"])
-    requireRelayId(manifest[field], field);
+  requireRelayId(manifest.originDeploymentId, "originDeploymentId");
+  requirePdsDeviceId(manifest.originDeviceId, "originDeviceId");
   requireHash(manifest.originAuthorityHead, "origin authority head");
   requireIso(manifest.originSignedAt, "origin signed at");
   requireId(manifest.sourceNativeSessionId, "sourceNativeSessionId");
@@ -1543,8 +1552,8 @@ export const validatePdsSessionCheckpointManifest = (
   ) {
     throw new TypeError("PDS checkpoint source profile is invalid");
   }
-  for (const field of ["originDeploymentId", "originDeviceId"])
-    requireRelayId(manifest[field], field);
+  requireRelayId(manifest.originDeploymentId, "originDeploymentId");
+  requirePdsDeviceId(manifest.originDeviceId, "originDeviceId");
   requireHash(manifest.originAuthorityHead, "origin authority head");
   requireIso(manifest.originSignedAt, "origin signed at");
   requireId(manifest.sourceNativeSessionId, "sourceNativeSessionId");
@@ -1821,14 +1830,11 @@ const validateHeaderIdentity = (header: JsonRecord): void => {
   ]) {
     requireHash(header[field], field);
   }
-  for (const field of [
-    "groupId",
-    "originDeviceId",
-    "servingDeviceId",
-    "servingSigningKeyId"
-  ]) {
+  for (const field of ["groupId", "servingSigningKeyId"]) {
     requireRelayId(header[field], field);
   }
+  for (const field of ["originDeviceId", "servingDeviceId"])
+    requirePdsDeviceId(header[field], field);
   for (const field of [
     "contentEpoch",
     "recipientEpoch",
@@ -1856,7 +1862,7 @@ const validateHeaderSnapshot = (header: JsonRecord): void => {
     throw new TypeError("PDS recipient snapshot is invalid");
   }
   const snapshot = header.intendedRecipientSnapshot.map((id) =>
-    requireRelayId(id, "recipient snapshot member")
+    requirePdsDeviceId(id, "recipient snapshot member")
   );
   assertSortedUnique(snapshot, "recipient snapshot");
   if (
@@ -1907,12 +1913,9 @@ const validateEnvelope = (value: unknown): PdsSessionRecipientEnvelope => {
     requireHash(envelope[field], field);
   for (const field of ["contentEpoch", "recipientEpoch"])
     requireUint64(envelope[field], field);
-  for (const field of [
-    "senderDeviceId",
-    "recipientDeviceId",
-    "recipientKemKeyId"
-  ])
-    requireRelayId(envelope[field], field);
+  for (const field of ["senderDeviceId", "recipientDeviceId"])
+    requirePdsDeviceId(envelope[field], field);
+  requireRelayId(envelope.recipientKemKeyId, "recipientKemKeyId");
   requireHash(envelope.ephemeralPublicKey, "ephemeral public key");
   requireHash(envelope.nonce, "envelope nonce", 12);
   requireHash(envelope.ciphertext, "envelope ciphertext", 32);
@@ -2235,7 +2238,7 @@ const packageRecipients = (
     left.deviceId < right.deviceId ? -1 : left.deviceId > right.deviceId ? 1 : 0
   );
   for (const recipient of sorted) {
-    requireRelayId(recipient.deviceId, "recipient device");
+    requirePdsDeviceId(recipient.deviceId, "recipient device");
     requireRelayId(recipient.kemKeyId, "recipient KEM key");
     requireHash(recipient.kemPublicKey, "recipient KEM public key");
     if (recipient.kemKeyId === servingSigningKeyId) {
@@ -2392,7 +2395,7 @@ export const createPdsEncryptedPayloadPackage = (
   requireIso(input.expiresAt, "transport expiry");
   requireHash(input.packageId, "transport package ID");
   requireHash(input.manifestHash, "transport manifest hash");
-  requireRelayId(input.originDeviceId, "transport origin device");
+  requirePdsDeviceId(input.originDeviceId, "transport origin device");
   requireUint64(input.contentEpoch, "transport content epoch");
   const recipients = packageRecipients(
     runtime.recipients.map((recipient) => ({
@@ -2610,7 +2613,7 @@ const verifyOriginMembership = (
     );
   }
   const record = own(certificate, "historical origin certificate");
-  requireRelayId(record.deviceId, "historical origin device ID");
+  requirePdsDeviceId(record.deviceId, "historical origin device ID");
   requireRelayId(record.deviceSigningKeyId, "historical origin signing key ID");
   const signingPublicKey = requireHash(
     record.deviceSigningPublicKey,

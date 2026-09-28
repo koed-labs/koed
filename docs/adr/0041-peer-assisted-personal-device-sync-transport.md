@@ -35,6 +35,11 @@ returns routes only to authenticated members of the same Personal Device Group.
 Recipients independently verify the advertisement, proof, active membership
 certificate, current authority head, and epoch.
 
+Peer-route device identifiers accept both existing 128-bit base64url IDs and
+canonical Koed device-identity UUIDs. The certificate, peer-route record, and
+device-signed proof bind the exact identifier; no translation or alias is
+introduced.
+
 A sender uses direct delivery only when every intended recipient other than
 itself has a valid route. It sends the unchanged signed encrypted package and
 requires a normal recipient-signed materialization acknowledgement from every
