@@ -91,7 +91,7 @@ export function NewConversationComposer({
       const result = await api.start(launch);
       const conversation = result.conversation ?? {
         executionId: result.executionId,
-        projectId: launch.projectId,
+        projectId: contextKind === "independent" ? null : launch.projectId,
         capturedSessionId: result.executionId,
         threadId: result.executionId,
         executionOwner: {
@@ -114,7 +114,7 @@ export function NewConversationComposer({
           } satisfies InitialConversationPrompt);
         initialPromptRef.current = initialPrompt;
         const draftScope = {
-          projectId: launch.projectId,
+          projectId: conversation.projectId,
           capturedSessionId: result.executionId,
           threadId: result.executionId
         };

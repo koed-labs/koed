@@ -169,4 +169,97 @@ describe("first Conversation prompt retries", () => {
       );
     }
   );
+
+  it("keeps local launch selection while scoping standalone drafts to the null Project identity", async () => {
+    const standaloneConversation = {
+      executionId: "execution-independent",
+      projectId: null,
+      capturedSessionId: "session-independent",
+      threadId: "thread-independent",
+      executionOwner: {
+        driverId: "codex" as const,
+        instanceId: "codex.default"
+      }
+    };
+    const start = vi.fn<ManagedConversationDesktopApi["start"]>(async () => ({
+      operation: "start",
+      status: "ready",
+      executionId: standaloneConversation.executionId,
+      conversation: standaloneConversation
+    }));
+    const send = vi.fn<ManagedConversationDesktopApi["send"]>(
+      async (input) => ({
+        operation: "send",
+        status: "queued",
+        conversation: standaloneConversation,
+        idempotencyKey: input.idempotencyKey,
+        clientUserMessageId: input.clientUserMessageId
+      })
+    );
+    const writeDraft = vi.fn(async () => ({
+      operation: "draft_write" as const,
+      ok: true as const
+    }));
+    const api = {
+      start,
+      send,
+      writeDraft,
+      deleteDraft: vi.fn(async () => ({ operation: "draft_delete", ok: true }))
+    } as unknown as ManagedConversationDesktopApi;
+    const onStarted = vi.fn();
+
+    await act(async () =>
+      root.render(
+        <NewConversationComposer
+          api={api}
+          contextKind="independent"
+          options={options}
+          projectId="local-chats-project"
+          selection={{
+            instanceId: "codex.default",
+            model: "model",
+            reasoningEffort: "",
+            permissionMode: "supervised"
+          }}
+          onChange={vi.fn()}
+          onStarted={onStarted}
+          requirePrompt
+        />
+      )
+    );
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!.call(textarea, "A standalone first prompt.");
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Start Conversation"]')!
+        .click()
+    );
+
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "local-chats-project",
+        contextKind: "independent"
+      })
+    );
+    expect(writeDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: null,
+        capturedSessionId: standaloneConversation.executionId,
+        threadId: standaloneConversation.executionId,
+        value: "A standalone first prompt."
+      })
+    );
+    expect(onStarted).toHaveBeenCalledWith(
+      standaloneConversation,
+      "ready",
+      start.mock.calls[0]![0],
+      expect.objectContaining({ status: "queued" })
+    );
+  });
 });

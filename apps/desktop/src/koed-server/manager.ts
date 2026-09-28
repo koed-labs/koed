@@ -3012,7 +3012,7 @@ export const createKoedServerManager = ({
     value: unknown
   ): {
     id: string;
-    projectId: string;
+    projectId: string | null;
     provider: "codex" | "claude" | "pi";
     aiClientInstanceId: string;
     state: string;
@@ -3021,9 +3021,18 @@ export const createKoedServerManager = ({
     providerThreadId: string | null;
   } | null => {
     const execution = objectValue(value);
+    const projectId =
+      execution?.projectId === null
+        ? null
+        : typeof execution?.projectId === "string" &&
+            execution.projectId.length > 0 &&
+            execution.projectId.length <= 2_048 &&
+            execution.projectId.trim() === execution.projectId
+          ? execution.projectId
+          : undefined;
     if (
       typeof execution?.id !== "string" ||
-      typeof execution.projectId !== "string" ||
+      projectId === undefined ||
       typeof execution.state !== "string" ||
       typeof execution.executionGeneration !== "number" ||
       (execution.provider !== "codex" &&
@@ -3035,7 +3044,7 @@ export const createKoedServerManager = ({
     }
     return {
       id: execution.id,
-      projectId: execution.projectId,
+      projectId,
       provider: execution.provider,
       aiClientInstanceId: execution.aiClientInstanceId,
       state: execution.state,
@@ -3296,7 +3305,10 @@ export const createKoedServerManager = ({
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              projectId: request.projectId,
+              projectId:
+                request.contextKind === "independent"
+                  ? null
+                  : request.projectId,
               contextKind: request.contextKind ?? "project",
               provider: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
@@ -3311,7 +3323,9 @@ export const createKoedServerManager = ({
         1 * 1_024 * 1_024
       );
       const execution = managedExecutionFrom(payload.execution);
-      if (!execution) {
+      const expectedProjectId =
+        request.contextKind === "independent" ? null : request.projectId;
+      if (!execution || execution.projectId !== expectedProjectId) {
         throw new PersonalMemoryBoundaryError("invalid_response", false);
       }
       const ready =
@@ -3615,8 +3629,9 @@ export const createKoedServerManager = ({
     const execution =
       request.operation === "send"
         ? await getManagedExecution(request.executionId)
-        : (await listManagedExecutions(request.projectId)).find(
+        : (await listManagedExecutions(request.projectId ?? undefined)).find(
             (candidate) =>
+              candidate.projectId === request.projectId &&
               candidate.sessionId === request.capturedSessionId &&
               candidate.providerThreadId === request.threadId
           );
@@ -3633,7 +3648,7 @@ export const createKoedServerManager = ({
       projectId:
         request.operation === "resume"
           ? request.projectId
-          : (execution?.projectId ?? ""),
+          : (execution?.projectId ?? null),
       capturedSessionId: request.capturedSessionId,
       threadId: request.threadId
     };

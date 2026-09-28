@@ -4817,6 +4817,262 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   });
 
+  it("round-trips standalone execution identity and queues its prompt through the native manager", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-independent-start-")
+    );
+    const configDirectory = resolve(koedHome, "config");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      resolve(configDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "local_app_token" })
+    );
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    let independentResponseProjectId: string | null = null;
+    let projectResponseProjectId = "project-1";
+    const execution = (projectId: string | null) => ({
+      id: "execution-1",
+      projectId,
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      state: "running",
+      stateVersion: 4,
+      executionGeneration: 7,
+      sessionId: "session-1",
+      providerThreadId: "thread-1"
+    });
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ method, path: url.pathname, body });
+      if (method === "GET" && url.pathname === "/v1/managed-conversations") {
+        return new Response(
+          JSON.stringify({ executions: [execution("project-1")] }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (method === "POST" && url.pathname === "/v1/managed-conversations") {
+        const contextKind = (body as { contextKind?: string }).contextKind;
+        return new Response(
+          JSON.stringify({
+            execution: execution(
+              contextKind === "independent"
+                ? independentResponseProjectId
+                : projectResponseProjectId
+            ),
+            command: { id: "start-command-1", state: "blocked" }
+          }),
+          { status: 202, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.pathname === "/v1/managed-conversations/execution-1") {
+        return new Response(JSON.stringify({ execution: execution(null) }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.pathname.endsWith("/prompts")) {
+        return new Response(JSON.stringify({ command: { state: "queued" } }), {
+          status: 202,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ error: "unexpected route" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: {
+                    state: "healthy",
+                    url: "http://127.0.0.1:4170"
+                  }
+                }
+              : { ok: true }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    try {
+      const standaloneStart = await manager.managedConversation({
+        operation: "start",
+        projectId: "local-chats-project",
+        contextKind: "independent",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        idempotencyKey: "standalone-start-1"
+      });
+      expect(standaloneStart).toMatchObject({
+        operation: "start",
+        status: "ready",
+        executionId: "execution-1",
+        conversation: {
+          executionId: "execution-1",
+          projectId: null,
+          capturedSessionId: "session-1",
+          threadId: "thread-1"
+        }
+      });
+
+      const queuedPrompt = await manager.managedConversation({
+        operation: "send",
+        executionId: "execution-1",
+        capturedSessionId: "session-1",
+        threadId: "thread-1",
+        idempotencyKey: "desktop-prompt:message-1",
+        clientUserMessageId: "12345678-1234-4234-8234-123456789012",
+        prompt: "Continue this standalone chat.",
+        fileMentionCommandIds: [],
+        terminalContextReferences: []
+      });
+      expect(queuedPrompt).toMatchObject({
+        operation: "send",
+        status: "queued",
+        conversation: {
+          executionId: "execution-1",
+          projectId: null,
+          capturedSessionId: "session-1",
+          threadId: "thread-1"
+        }
+      });
+
+      const resumedStandalone = await manager.managedConversation({
+        operation: "resume",
+        projectId: null,
+        capturedSessionId: "session-1",
+        threadId: "thread-1"
+      });
+      expect(resumedStandalone).toMatchObject({
+        operation: "resume",
+        status: "read_only",
+        conversation: {
+          executionId: null,
+          projectId: null,
+          capturedSessionId: "session-1",
+          threadId: "thread-1"
+        }
+      });
+      expect(
+        calls.find(
+          (call) =>
+            call.method === "GET" && call.path === "/v1/managed-conversations"
+        )
+      ).toBeDefined();
+
+      const projectStart = await manager.managedConversation({
+        operation: "start",
+        projectId: "project-1",
+        contextKind: "project",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        idempotencyKey: "project-start-1"
+      });
+      expect(projectStart).toMatchObject({
+        operation: "start",
+        status: "ready",
+        conversation: { projectId: "project-1" }
+      });
+      expect(
+        calls.filter((call) => call.path === "/v1/managed-conversations")
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({
+              contextKind: "independent",
+              projectId: null
+            })
+          }),
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({
+              contextKind: "project",
+              projectId: "project-1"
+            })
+          })
+        ])
+      );
+      const startRequest = calls.find(
+        (call) =>
+          call.method === "POST" &&
+          call.path === "/v1/managed-conversations" &&
+          (call.body as { contextKind?: string }).contextKind === "independent"
+      );
+      expect(startRequest?.body).not.toHaveProperty("initialPrompt");
+      expect(
+        calls.find((call) => call.path.endsWith("/prompts"))?.body
+      ).toMatchObject({
+        executionGeneration: 7,
+        clientUserMessageId: "12345678-1234-4234-8234-123456789012",
+        prompt: "Continue this standalone chat."
+      });
+
+      independentResponseProjectId = "unexpected-project";
+      await expect(
+        manager.managedConversation({
+          operation: "start",
+          projectId: "local-chats-project",
+          contextKind: "independent",
+          aiClientDriverId: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "full_access",
+          runnerKind: "local_device",
+          idempotencyKey: "standalone-start-mismatch"
+        })
+      ).rejects.toMatchObject({ code: "invalid_response" });
+
+      projectResponseProjectId = "unexpected-project";
+      await expect(
+        manager.managedConversation({
+          operation: "start",
+          projectId: "project-1",
+          contextKind: "project",
+          aiClientDriverId: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "full_access",
+          runnerKind: "local_device",
+          idempotencyKey: "project-start-mismatch"
+        })
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("uses the encrypted Desktop credential for bounded managed Project reads", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-workspace-"));
     const ownerUserId = "11111111-1111-4111-8111-111111111111";

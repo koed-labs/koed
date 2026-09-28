@@ -100,7 +100,7 @@ export type ManagedConversationLaunchOptionsRequest = {
 };
 
 export type ManagedConversationDraftScope = {
-  projectId: string;
+  projectId: string | null;
   capturedSessionId: string;
   threadId: string;
 };
@@ -120,7 +120,7 @@ export type ManagedConversationRecoveryRequest =
 
 export type ManagedConversationResumeRequest = {
   operation: "resume";
-  projectId: string;
+  projectId: string | null;
   capturedSessionId: string;
   threadId: string;
 };
@@ -223,7 +223,7 @@ export type ManagedConversationRequest =
 
 export type ManagedConversationIdentity = {
   executionId: string | null;
-  projectId: string;
+  projectId: string | null;
   capturedSessionId: string;
   threadId: string;
   executionOwner?: {
@@ -576,7 +576,10 @@ export const parseManagedConversationRequest = (
       throw new TypeError("Managed Conversation draft is invalid.");
     }
     const scope = {
-      projectId: identifier(input.projectId, "Project id"),
+      projectId:
+        input.projectId === null
+          ? null
+          : identifier(input.projectId, "Project id"),
       capturedSessionId: identifier(
         input.capturedSessionId,
         "Captured Session id"
@@ -600,7 +603,10 @@ export const parseManagedConversationRequest = (
     );
     return {
       operation: "resume",
-      projectId: identifier(input.projectId, "Project id"),
+      projectId:
+        input.projectId === null
+          ? null
+          : identifier(input.projectId, "Project id"),
       capturedSessionId: identifier(
         input.capturedSessionId,
         "Captured Session id"
@@ -913,7 +919,10 @@ export const parseManagedConversationIdentity = (
       identity.executionId === null
         ? null
         : identifier(identity.executionId, "Managed Conversation execution id"),
-    projectId: identifier(identity.projectId, "Project id"),
+    projectId:
+      identity.projectId === null
+        ? null
+        : identifier(identity.projectId, "Project id"),
     capturedSessionId: identifier(
       identity.capturedSessionId,
       "Captured Session id"

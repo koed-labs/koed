@@ -399,7 +399,7 @@ const managedValidationLatestCommands = new Map<
 let managedValidationSequence = 100;
 
 const managedDraftKey = (input: {
-  projectId: string;
+  projectId: string | null;
   capturedSessionId: string;
   threadId: string;
 }): string => `${input.projectId}:${input.capturedSessionId}:${input.threadId}`;
