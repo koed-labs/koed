@@ -65,3 +65,16 @@ export const studioRequestMayApply = (input: {
   currentGeneration: number;
   mounted: boolean;
 }): boolean => input.mounted && input.capturedGeneration === input.currentGeneration;
+
+export const describeStudioCommandFailure = (failure: unknown): {
+  revoked: boolean;
+  message: string;
+} => {
+  const value = failure && typeof failure === "object" ? failure as { code?: unknown; message?: unknown } : null;
+  return {
+    revoked: value?.code === "access_revoked",
+    message: typeof value?.message === "string" && value.message.length > 0
+      ? value.message
+      : "Team channel could not be loaded. Try again."
+  };
+};

@@ -2217,6 +2217,15 @@ const teamMessagePage = async (input: {
     throw new TypeError("Invalid message cursor snapshot");
   }
   const boundarySequence = decoded?.boundarySequence ?? 0;
+  const query =
+    input.direction === "older"
+      ? {
+          beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
+          limit: input.limit
+        }
+      : decoded
+        ? { afterSequence: boundarySequence, limit: input.limit }
+        : { beforeSequence: snapshotSequence + 1, limit: input.limit };
   const payload =
     input.prefetchedPage ??
     (await requireRemoteJson(input.fetcher, {
@@ -2226,16 +2235,7 @@ const teamMessagePage = async (input: {
       method: "GET",
       path: queryPath(
         `/v1/collaboration/teams/${encodeURIComponent(input.teamId)}/threads/${encodeURIComponent(input.thread.id)}/messages`,
-        input.direction === "older"
-          ? {
-              beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
-              limit: input.limit
-            }
-          : {
-              afterSequence: boundarySequence,
-              beforeSequence: snapshotSequence + 1,
-              limit: input.limit
-            }
+        query
       )
     }));
   const page = remoteMessagePageSchema.parse(payload);

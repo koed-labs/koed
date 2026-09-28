@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -66,4 +66,13 @@ test("late navigation and create responses cannot apply after Team switch or unm
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: true }), true);
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 5, mounted: true }), false);
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: false }), false);
+});
+
+test("Desktop command rejection becomes visible history status without treating invalid input as revocation", () => {
+  assert.deepEqual(describeStudioCommandFailure({ code: "invalid_input", message: "The page request is invalid." }), {
+    revoked: false,
+    message: "The page request is invalid."
+  });
+  assert.equal(describeStudioCommandFailure({ code: "access_revoked", message: "Access changed." }).revoked, true);
+  assert.equal(describeStudioCommandFailure(new Error("transport failed")).message, "transport failed");
 });

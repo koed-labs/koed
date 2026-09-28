@@ -20,7 +20,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -104,6 +104,7 @@ export function TeamChannelWorkspace({
     setPage(null);
     setDraftText("");
     setPendingSend(null);
+    setLoading(false);
     setHydratedAuthorityKey(null);
     setVisibleRead(null);
     setStatus("Team access changed. Refresh to check your access.");
@@ -113,12 +114,19 @@ export function TeamChannelWorkspace({
   }, []);
   const refreshSnapshot = useCallback(async () => {
     const epoch = snapshotEpoch.current;
-    const result = await run("collaboration.load", { forceRemoteNavigation: true });
-    if (epoch !== snapshotEpoch.current) return;
-    if (result.ok && "snapshot" in result.data) {
-      revokedRef.current = false;
-      setSnapshot(result.data.snapshot);
-    } else if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
+    try {
+      const result = await run("collaboration.load", { forceRemoteNavigation: true });
+      if (epoch !== snapshotEpoch.current) return;
+      if (result.ok && "snapshot" in result.data) {
+        revokedRef.current = false;
+        setSnapshot(result.data.snapshot);
+      } else if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
+    } catch (failure) {
+      if (epoch !== snapshotEpoch.current || revokedRef.current) return;
+      const described = describeStudioCommandFailure(failure);
+      if (described.revoked) clearRevokedView();
+      else setStatus(described.message);
+    }
   }, [clearRevokedView, run]);
   const refreshSnapshotRef = useRef(refreshSnapshot);
   refreshSnapshotRef.current = refreshSnapshot;
@@ -126,27 +134,37 @@ export function TeamChannelWorkspace({
   const loadPage = useCallback(async (id: string, selectedTeamId: string, cursor: string | null = null) => {
     if (!UUID.test(id) || !UUID.test(selectedTeamId)) return;
     setLoading(true);
-    const result = await run("collaboration.load_message_page", {
-      thread: { scope: "team", teamId: selectedTeamId, threadId: id },
-      direction: cursor === null ? "newer" : "older",
-      cursor,
-      limit: 50
-    });
-    const stillSelected = selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id;
-    if (stillSelected && result.ok && "page" in result.data) {
-      const validated = collaborationMessagePageSchema.safeParse(result.data.page);
-      if (validated.success && validated.data.threadId === id) {
-        setPage(validated.data);
-        setMessages((current) => {
-          if (cursor === null && current.length === 0) return validated.data.items;
-          return mergeTeamMessages(current, validated.data.items);
-        });
+    try {
+      const result = await run("collaboration.load_message_page", {
+        thread: { scope: "team", teamId: selectedTeamId, threadId: id },
+        direction: cursor === null ? "newer" : "older",
+        cursor,
+        limit: 50
+      });
+      const stillSelected = selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id;
+      if (stillSelected && result.ok && "page" in result.data) {
+        const validated = collaborationMessagePageSchema.safeParse(result.data.page);
+        if (validated.success && validated.data.threadId === id) {
+          setPage(validated.data);
+          setMessages((current) => {
+            if (cursor === null && current.length === 0) return validated.data.items;
+            return mergeTeamMessages(current, validated.data.items);
+          });
+        }
+      } else if (stillSelected) {
+        if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
+        else setStatus(result.ok ? null : result.error.userMessage);
       }
-    } else if (stillSelected) {
-      if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
-      else setStatus(result.ok ? null : result.error.userMessage);
+    } catch (failure) {
+      const stillSelected = selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id;
+      if (stillSelected && !revokedRef.current) {
+        const described = describeStudioCommandFailure(failure);
+        if (described.revoked) clearRevokedView();
+        else setStatus(described.message);
+      }
+    } finally {
+      if (selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id) setLoading(false);
     }
-    if (stillSelected) setLoading(false);
   }, [clearRevokedView, run]);
   const loadPageRef = useRef(loadPage);
   loadPageRef.current = loadPage;
@@ -278,12 +296,20 @@ export function TeamChannelWorkspace({
   const selectThread = async (thread: CollaborationThread) => {
     if (!activeTeam) return;
     setThreadId(thread.id);
-    await run("collaboration.select", {
-      selection: thread.kind === "team_project_channel"
-        ? { kind: "team_project_channel", teamId: activeTeam.id, teamProjectId: thread.teamProjectId, threadId: thread.id }
-        : { kind: "team_channel", teamId: activeTeam.id, threadId: thread.id },
-      navigationIntent: "foreground"
-    });
+    selectedRef.current = { teamId: activeTeam.id, threadId: thread.id };
+    try {
+      await run("collaboration.select", {
+        selection: thread.kind === "team_project_channel"
+          ? { kind: "team_project_channel", teamId: activeTeam.id, teamProjectId: thread.teamProjectId, threadId: thread.id }
+          : { kind: "team_channel", teamId: activeTeam.id, threadId: thread.id },
+        navigationIntent: "foreground"
+      });
+    } catch (failure) {
+      if (revokedRef.current || !studioSelectionMatches({ teamId: activeTeam.id, threadId: thread.id }, selectedRef.current)) return;
+      const described = describeStudioCommandFailure(failure);
+      if (described.revoked) clearRevokedView();
+      else setStatus(described.message);
+    }
   };
 
   const send = async (body: string) => {

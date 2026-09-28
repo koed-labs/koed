@@ -3722,6 +3722,58 @@ describe("local-edge collaboration command route", () => {
     ).toBe(true);
   });
 
+  it("loads the initial Team channel history page with a single bounded query", async () => {
+    const teamChannel = {
+      ...teamThreadBase,
+      kind: "team_channel" as const,
+      name: "general",
+      topic: null,
+      systemKey: null,
+      latestSequence: 3
+    };
+    const harness = createHarness({
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (
+          path === `/v1/collaboration/teams/${ids.team}/threads/${ids.thread}`
+        ) {
+          return Response.json({ thread: teamChannel });
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load_message_page",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        direction: "newer",
+        cursor: null,
+        limit: 50
+      }
+    } as CollaborationRendererCommand;
+
+    const result = parseResultAs<MessagePageTestResult>(
+      (await injectCommand(harness.app, command)).body
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { page: { items: [{ sequence: 3 }], threadId: ids.thread } }
+    });
+    const pageRequest = harness.calls.find((call) =>
+      new URL(call.url).pathname.endsWith(
+        `/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`
+      )
+    );
+    expect(pageRequest).toBeDefined();
+    const query = new URL(pageRequest!.url).searchParams;
+    expect(query.get("afterSequence")).toBeNull();
+    expect(query.get("beforeSequence")).toBe("4");
+    expect(query.get("limit")).toBe("50");
+  });
+
   it.each(["", localAuthorization, `${desktopAuthorization.slice(0, -1)}c`])(
     "rejects missing, LEC, or tampered DLC for Personal commands",
     async (authorization) => {
