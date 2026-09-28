@@ -1988,6 +1988,185 @@ describe("deferred Managed Conversation runner starts", () => {
 });
 
 describe("Managed Conversation service lifecycle", () => {
+  it.each(["shutdown", "idle lease fence"] as const)(
+    "preserves pending partial output during %s",
+    async (lifecycleEvent) => {
+      const root = await mkdtemp(resolve(tmpdir(), "koed-shutdown-output-"));
+      const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const providerThreadId = randomUUID();
+      const localSessionId = randomUUID();
+      const logicalSessionId = randomUUID();
+      const projectPath = resolve(root, "project");
+      const transcriptPath = resolve(root, "transcript.jsonl");
+      const managedHome = resolve(root, "managed-home");
+      await mkdir(projectPath, { recursive: true });
+      await mkdir(managedHome, { recursive: true });
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({ type: "session_meta", payload: { id: providerThreadId } })}\n`
+      );
+      const execution: ManagedConversationExecutionRecord = {
+        ...terminalExecutionFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId
+        }),
+        state: "running",
+        logicalSessionId,
+        providerThreadId,
+        runnerId: randomUUID(),
+        runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      };
+      const binding: ManagedConversationRuntimeBindingRecord = {
+        ...pendingBindingFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId,
+          sourceProjectPath: projectPath
+        }),
+        projectPath,
+        checkoutId: randomUUID(),
+        checkoutKind: "user_managed_checkout",
+        checkoutLifecycle: "ready",
+        vcsDriver: "git",
+        localRepositoryCommonDirectory: projectPath,
+        localGitDirectory: resolve(projectPath, ".git"),
+        repositoryIdentityHash: "a".repeat(64),
+        worktreeIdentityHash: "b".repeat(64),
+        baseRef: "refs/heads/main",
+        baseObjectId: "c".repeat(40),
+        branchRef: "refs/heads/main",
+        headObjectId: "c".repeat(40),
+        creationOperationId: randomUUID(),
+        localSessionId,
+        providerThreadId,
+        transcriptPath,
+        managedHome
+      };
+      const cancelRuntimeItems = vi.fn(async () => 0);
+      const renewLease = vi.fn(
+        async () => lifecycleEvent !== "idle lease fence"
+      );
+      const repository = {
+        listManagedConversationExecutionsForRunner: vi.fn(async () => [
+          execution
+        ]),
+        getManagedConversationExecution: vi.fn(async () => execution),
+        setManagedConversationExecutionState: vi.fn(async () => execution),
+        getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+        getCapturedSession: vi.fn(async () => ({
+          id: localSessionId,
+          logicalSessionId,
+          externalSessionId: providerThreadId
+        })),
+        acquireManagedConversationExecutionLease: vi.fn(async () => true),
+        renewManagedConversationExecutionLease: renewLease,
+        releaseManagedConversationRunner: vi.fn(async () => true),
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+          async () => []
+        ),
+        listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+        reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+        claimManagedConversationCommands: vi.fn(async () => []),
+        listManagedConversationExecutionCheckpoints: vi.fn(async () => []),
+        cancelManagedConversationRuntimeItems: cancelRuntimeItems
+      };
+      const start = vi
+        .spyOn(CodexManagedConversationSession.prototype, "start")
+        .mockResolvedValue({
+          thread: {
+            id: providerThreadId,
+            path: transcriptPath,
+            cwd: projectPath
+          },
+          sessionId: localSessionId,
+          transcriptPath,
+          codexHome: managedHome
+        } as never);
+      const close = vi
+        .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+        .mockResolvedValue();
+      const checkoutDriver = {
+        verify: vi.fn(async () => ({
+          checkoutId: binding.checkoutId,
+          vcsDriver: "git" as const,
+          ownership: "user_managed_checkout" as const,
+          canonicalPath: projectPath,
+          localRepositoryCommonDirectory:
+            binding.localRepositoryCommonDirectory,
+          localGitDirectory: binding.localGitDirectory,
+          repositoryIdentityHash: binding.repositoryIdentityHash,
+          worktreeIdentityHash: binding.worktreeIdentityHash,
+          baseRef: binding.baseRef,
+          baseObjectId: binding.baseObjectId,
+          branchRef: binding.branchRef,
+          headObjectId: binding.headObjectId
+        }))
+      } as unknown as GitExecutionCheckoutDriver;
+      const service = createManagedConversationService({
+        repository: repository as unknown as MemorySourceRepository,
+        apiUrl: "http://127.0.0.1:3300",
+        apiToken: "test-token",
+        localOwnerUserId: ownerUserId,
+        appServerBinary: process.execPath,
+        deviceId,
+        deploymentId,
+        koedHome: resolve(root, "koed-home"),
+        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        executionCheckoutDriver: checkoutDriver,
+        commandWakePool: {
+          connect: async () => ({
+            query: async () => undefined,
+            on: () => undefined,
+            removeAllListeners: () => undefined,
+            release: () => undefined
+          })
+        },
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+      });
+      try {
+        await service.processOnce();
+        await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+
+        if (lifecycleEvent === "shutdown") {
+          await service.stop();
+        } else {
+          // No prompt is active in this recovered runtime, so the in-memory
+          // activePromptProviderTurns map is empty when lease renewal fails.
+          vi.useFakeTimers();
+          service.start();
+          await vi.advanceTimersByTimeAsync(45_000);
+          await vi.waitFor(() =>
+            expect(cancelRuntimeItems).toHaveBeenCalledOnce()
+          );
+        }
+
+        expect(cancelRuntimeItems).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          {
+            executionId,
+            executionGeneration: execution.executionGeneration,
+            preserveTransientOutput: true
+          }
+        );
+        expect(close).toHaveBeenCalledOnce();
+      } finally {
+        await service.stop();
+        start.mockRestore();
+        close.mockRestore();
+        restoreRegistry();
+        await rm(root, { recursive: true, force: true });
+        vi.useRealTimers();
+      }
+    }
+  );
+
   it.each([
     {
       terminalStatus: "interrupted",

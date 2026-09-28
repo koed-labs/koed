@@ -1937,9 +1937,10 @@ export const createManagedConversationService = (options: {
             {
               executionId,
               executionGeneration: managed.executionGeneration,
-              ...(activePromptProviderTurns.has(executionId)
-                ? { preserveTransientOutput: true }
-                : {})
+              // Losing the execution lease is a transport/lifecycle event. The
+              // latest prompt may have produced partial output before it was
+              // fenced, so keep that output for recovery to reconcile.
+              preserveTransientOutput: true
             }
           )
           .catch(() => 0);
@@ -9867,7 +9868,11 @@ export const createManagedConversationService = (options: {
               { userId: options.localOwnerUserId },
               {
                 executionId,
-                executionGeneration: managed.executionGeneration
+                executionGeneration: managed.executionGeneration,
+                // Shutdown does not establish whether a provider turn completed.
+                // Preserve pending partial output until a later authoritative
+                // completion, interruption, or End command resolves it.
+                preserveTransientOutput: true
               }
             )
             .catch(() => 0)
