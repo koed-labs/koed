@@ -51,6 +51,7 @@ import {
   type DeviceManagedChatRecoveryStore
 } from "@/lib/device-managed-chat-recovery";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
+import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
 import {
   dismissProjectMoveNotice,
   shouldKeepProjectMoveNoticeIntent
@@ -97,8 +98,9 @@ export function HostedManagedChats({
     useState<HostedRecoveryScope | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] =
     useState<DeviceManagedChatPendingOperation | null>(null);
-  const [pendingRecoveryExecutionId, setPendingRecoveryExecutionId] =
-    useState<string | null>(null);
+  const [pendingRecoveryExecutionId, setPendingRecoveryExecutionId] = useState<
+    string | null
+  >(null);
   const [pendingNewStart, setPendingNewStart] =
     useState<DeviceManagedChatPendingOperation | null>(null);
   const [runtimeRequestNotice, setRuntimeRequestNotice] = useState<{
@@ -137,10 +139,12 @@ export function HostedManagedChats({
   const draftRef = useRef("");
   const recoveryStoreRef = useRef<DeviceManagedChatRecoveryStore | null>(null);
   const newStartStoreRef = useRef<DeviceManagedChatRecoveryStore | null>(null);
-  const newStartOperationRef =
-    useRef<DeviceManagedChatPendingOperation | null>(null);
-  const recoveryOperationRef =
-    useRef<DeviceManagedChatPendingOperation | null>(null);
+  const newStartOperationRef = useRef<DeviceManagedChatPendingOperation | null>(
+    null
+  );
+  const recoveryOperationRef = useRef<DeviceManagedChatPendingOperation | null>(
+    null
+  );
   const recoverySelectionRef = useRef<string | null | undefined>(undefined);
   const refreshedCompletedMoveRef = useRef<string | null>(null);
   const projectMoveRequestInFlightRef = useRef(false);
@@ -262,30 +266,33 @@ export function HostedManagedChats({
     [onAuthorizationLost, setScopedPendingRecoveryOperation]
   );
 
-  const refreshList = useCallback(async (signal?: AbortSignal) => {
-    const values = await listHostedManagedConversations(signal);
-    if (signal?.aborted) return;
-    setExecutions(values);
-    const current = selectedIdRef.current;
-    const next =
-      current && values.some((item) => item.id === current)
-        ? current
-        : (values[0]?.id ?? null);
-    if (next !== current) {
-      selectedIdRef.current = next;
-      setSelectedId(next);
-      recoveryOperationRef.current = null;
-      setScopedPendingRecoveryOperation(null, next);
-      setRuntime(null);
-      setMessages([]);
-      setPendingMessage(null);
-      setStatus(null);
-      setLatestProjectMove(null);
-      setProjectMoveLoaded(false);
-      setProjectMoveDialogOpen(false);
-      setProjectMovePickerOpen(false);
-    }
-  }, [setScopedPendingRecoveryOperation]);
+  const refreshList = useCallback(
+    async (signal?: AbortSignal) => {
+      const values = await listHostedManagedConversations(signal);
+      if (signal?.aborted) return;
+      setExecutions(values);
+      const current = selectedIdRef.current;
+      const next =
+        current && values.some((item) => item.id === current)
+          ? current
+          : (values[0]?.id ?? null);
+      if (next !== current) {
+        selectedIdRef.current = next;
+        setSelectedId(next);
+        recoveryOperationRef.current = null;
+        setScopedPendingRecoveryOperation(null, next);
+        setRuntime(null);
+        setMessages([]);
+        setPendingMessage(null);
+        setStatus(null);
+        setLatestProjectMove(null);
+        setProjectMoveLoaded(false);
+        setProjectMoveDialogOpen(false);
+        setProjectMovePickerOpen(false);
+      }
+    },
+    [setScopedPendingRecoveryOperation]
+  );
 
   const reconcilePromptOperation = useCallback(
     async (
@@ -316,7 +323,7 @@ export function HostedManagedChats({
           const disposition = hostedRecoveryDisposition(result.commandState);
           const restoredDraft = disposition.restorePrompt
             ? operation.prompt
-            : store?.read()?.draft ?? "";
+            : (store?.read()?.draft ?? "");
           if (disposition.kind === "failed") {
             writeRecovery(store, restoredDraft, {
               ...operation,
@@ -331,12 +338,18 @@ export function HostedManagedChats({
             });
           }
           if (selectedIdRef.current === executionId) {
-            const preserveOperation = !disposition.clearIdentity && disposition.kind !== "failed";
+            const preserveOperation =
+              !disposition.clearIdentity && disposition.kind !== "failed";
             const savedOperation = {
               ...operation,
-              state: disposition.kind === "failed" ? "rejected" as const : "reconciling" as const
+              state:
+                disposition.kind === "failed"
+                  ? ("rejected" as const)
+                  : ("reconciling" as const)
             };
-            recoveryOperationRef.current = preserveOperation ? savedOperation : null;
+            recoveryOperationRef.current = preserveOperation
+              ? savedOperation
+              : null;
             setScopedPendingRecoveryOperation(
               preserveOperation ? savedOperation : null,
               executionId
@@ -366,17 +379,26 @@ export function HostedManagedChats({
               setPendingMessage(null);
             }
             if (disposition.kind === "canceled") {
-              setStatus("The previous continuation was canceled. Its draft is restored; sending again will create a new attempt.");
+              setStatus(
+                "The previous continuation was canceled. Its draft is restored; sending again will create a new attempt."
+              );
               setError(null);
             } else if (disposition.kind === "failed") {
-              setStatus("The previous continuation failed. Its draft is restored; sending again will create a new attempt.");
+              setStatus(
+                "The previous continuation failed. Its draft is restored; sending again will create a new attempt."
+              );
               setError(null);
             } else if (disposition.kind === "uncertain") {
-              setStatus("The previous continuation has an uncertain outcome. Its send identity is retained; check status before trying again.");
-              setError("Studio cannot safely retry this continuation until Koed confirms its outcome.");
+              setStatus(
+                "The previous continuation has an uncertain outcome. Its send identity is retained; check status before trying again."
+              );
+              setError(
+                "Studio cannot safely retry this continuation until Koed confirms its outcome."
+              );
             } else {
               setStatus(
-                result.commandState === "queued" || result.commandState === "blocked"
+                result.commandState === "queued" ||
+                  result.commandState === "blocked"
                   ? "The previous continuation was accepted and is still pending on its assigned runner."
                   : result.commandState === "dispatching"
                     ? "The previous continuation was accepted and the runner has claimed it."
@@ -452,7 +474,10 @@ export function HostedManagedChats({
         }
         if (result.found) {
           const disposition = hostedRecoveryDisposition(result.commandState);
-          if (disposition.kind === "failed" || disposition.kind === "uncertain") {
+          if (
+            disposition.kind === "failed" ||
+            disposition.kind === "uncertain"
+          ) {
             const failed = disposition.kind === "failed";
             if (failed) {
               setPendingMessage((pending) =>
@@ -461,7 +486,7 @@ export function HostedManagedChats({
             }
             const retained = {
               ...operation,
-              state: failed ? "rejected" as const : "reconciling" as const
+              state: failed ? ("rejected" as const) : ("reconciling" as const)
             };
             writeRecovery(store, operation.prompt, retained);
             if (fromNewSlot) {
@@ -499,24 +524,33 @@ export function HostedManagedChats({
               setNewConversationOpen(true);
             } else {
               recoveryOperationRef.current = null;
-              setScopedPendingRecoveryOperation(
-                null,
-                selectedExecutionAtStart
-              );
+              setScopedPendingRecoveryOperation(null, selectedExecutionAtStart);
             }
             draftRef.current = operation.prompt;
             setDraft(operation.prompt);
             setInitialPrompt(operation.prompt);
-            setStatus("The previous Conversation start was canceled. Its initial prompt is restored; starting again will create a new attempt.");
+            setStatus(
+              "The previous Conversation start was canceled. Its initial prompt is restored; starting again will create a new attempt."
+            );
             setError(null);
             return;
           }
-          if (result.commandState === "completed" && operation.prompt && result.initialPromptCommandId) {
-            const conversationStore = fromNewSlot && recoveryScope
-              ? createDeviceManagedChatRecoveryStore({ ...recoveryScope, executionId: result.executionId })
-              : store;
+          if (
+            result.commandState === "completed" &&
+            operation.prompt &&
+            result.initialPromptCommandId
+          ) {
+            const conversationStore =
+              fromNewSlot && recoveryScope
+                ? createDeviceManagedChatRecoveryStore({
+                    ...recoveryScope,
+                    executionId: result.executionId
+                  })
+                : store;
             const childOperation: DeviceManagedChatPendingOperation = {
-              ...operation, kind: "prompt", state: "reconciling",
+              ...operation,
+              kind: "prompt",
+              state: "reconciling",
               promptIdempotencyKey: `managed-conversation-start-prompt:${result.commandId}`,
               commandId: result.initialPromptCommandId,
               executionGeneration: result.executionGeneration
@@ -541,12 +575,26 @@ export function HostedManagedChats({
             setNewConversationOpen(false);
             setInitialPrompt("");
             await refreshList(signal);
-            await reconcilePromptOperation(childOperation, result.executionId, conversationStore, signal);
+            await reconcilePromptOperation(
+              childOperation,
+              result.executionId,
+              conversationStore,
+              signal
+            );
             return;
           }
-          if (result.commandState === "completed" && operation.prompt && !result.initialPromptCommandId) {
-            const conversationStore = fromNewSlot && recoveryScope
-              ? createDeviceManagedChatRecoveryStore({ ...recoveryScope, executionId: result.executionId }) : store;
+          if (
+            result.commandState === "completed" &&
+            operation.prompt &&
+            !result.initialPromptCommandId
+          ) {
+            const conversationStore =
+              fromNewSlot && recoveryScope
+                ? createDeviceManagedChatRecoveryStore({
+                    ...recoveryScope,
+                    executionId: result.executionId
+                  })
+                : store;
             writeRecovery(conversationStore, operation.prompt, null);
             recoveryStoreRef.current = conversationStore;
             if (fromNewSlot) store?.clear();
@@ -563,7 +611,9 @@ export function HostedManagedChats({
             setPendingMessage(null);
             setNewConversationOpen(false);
             setInitialPrompt("");
-            setStatus("This older Conversation start did not accept its initial message. The message is restored as a draft; send it when you are ready.");
+            setStatus(
+              "This older Conversation start did not accept its initial message. The message is restored as a draft; send it when you are ready."
+            );
             await refreshList(signal);
             return;
           }
@@ -644,7 +694,8 @@ export function HostedManagedChats({
             setNewConversationOpen(false);
             setInitialPrompt("");
             setStatus(
-              result.commandState === "queued" || result.commandState === "blocked"
+              result.commandState === "queued" ||
+                result.commandState === "blocked"
                 ? "The previous Conversation start was accepted and is still pending on its assigned runner."
                 : result.commandState === "dispatching"
                   ? "The previous Conversation start was accepted and the runner has claimed it."
@@ -676,7 +727,8 @@ export function HostedManagedChats({
             selectedExecutionAtStart,
             selectedIdRef.current
           )
-        ) return;
+        )
+          return;
         const unresolved = { ...operation, state: "reconciling" as const };
         writeRecovery(store, operation.prompt, unresolved);
         if (fromNewSlot) {
@@ -801,10 +853,7 @@ export function HostedManagedChats({
   }, [handleError]);
 
   useEffect(() => {
-    if (
-      !recoveryScope ||
-      loading
-    ) return;
+    if (!recoveryScope || loading) return;
     const controller = new AbortController();
     const newConversationStore = createDeviceManagedChatRecoveryStore({
       ...recoveryScope,
@@ -821,7 +870,9 @@ export function HostedManagedChats({
           setPendingNewStart(null);
           setInitialPrompt(pendingStart.prompt);
           setNewConversationOpen(true);
-          setStatus("The previous Conversation start failed. Its initial prompt is restored; starting again will create a new attempt.");
+          setStatus(
+            "The previous Conversation start failed. Its initial prompt is restored; starting again will create a new attempt."
+          );
         });
         return () => controller.abort();
       }
@@ -880,7 +931,12 @@ export function HostedManagedChats({
     setScopedPendingRecoveryOperation(operation, selectedId);
     if (!operation) return () => controller.abort();
     if (operation.kind === "prompt") {
-      void reconcilePromptOperation(operation, selectedId, store, controller.signal);
+      void reconcilePromptOperation(
+        operation,
+        selectedId,
+        store,
+        controller.signal
+      );
     } else {
       void reconcileStartOperation(operation, store, false, controller.signal);
     }
@@ -920,14 +976,30 @@ export function HostedManagedChats({
         const command = value.runtime.latestCommand;
         const commandSettled =
           command?.id === operation?.commandId &&
-          ["completed", "failed", "canceled", "indeterminate"].includes(command?.state ?? "");
-        if (operation && (commandSettled ||
-          (operation.kind === "start" && value.runtime.execution.state === "running"))) {
+          ["completed", "failed", "canceled", "indeterminate"].includes(
+            command?.state ?? ""
+          );
+        if (
+          operation &&
+          (commandSettled ||
+            (operation.kind === "start" &&
+              value.runtime.execution.state === "running"))
+        ) {
           const store = recoveryStoreRef.current;
           if (operation.kind === "start") {
-            await reconcileStartOperation(operation, store, false, controller.signal);
+            await reconcileStartOperation(
+              operation,
+              store,
+              false,
+              controller.signal
+            );
           } else {
-            await reconcilePromptOperation(operation, selectedId, store, controller.signal);
+            await reconcilePromptOperation(
+              operation,
+              selectedId,
+              store,
+              controller.signal
+            );
           }
         }
       } catch (cause) {
@@ -942,7 +1014,13 @@ export function HostedManagedChats({
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [handleError, refreshProjectMove, selectedId, reconcileStartOperation, reconcilePromptOperation]);
+  }, [
+    handleError,
+    refreshProjectMove,
+    selectedId,
+    reconcileStartOperation,
+    reconcilePromptOperation
+  ]);
 
   const selected = useMemo(
     () => executions.find((execution) => execution.id === selectedId) ?? null,
@@ -980,7 +1058,10 @@ export function HostedManagedChats({
     recoveryScope !== null &&
     selectedRuntime?.execution.state === "running" &&
     !activePrompt &&
-    !(latestCommand?.commandKind === "prompt" && ["queued", "blocked"].includes(latestCommand.state)) &&
+    !(
+      latestCommand?.commandKind === "prompt" &&
+      ["queued", "blocked"].includes(latestCommand.state)
+    ) &&
     !hostedPromptOutcomeIsUncertain(selectedRuntime) &&
     !pendingControl &&
     !recoveryGuard.isChecking &&
@@ -1194,10 +1275,17 @@ export function HostedManagedChats({
     };
     const messageId = operation.clientUserMessageId;
     try {
-      if (!store?.writeDurably) throw new Error("Device recovery storage is unavailable.");
-      store.writeDurably({ schemaVersion: 1, draft: prompt, pendingOperation: operation });
+      if (!store?.writeDurably)
+        throw new Error("Device recovery storage is unavailable.");
+      store.writeDurably({
+        schemaVersion: 1,
+        draft: prompt,
+        pendingOperation: operation
+      });
     } catch {
-      setError("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      setError(
+        "Studio could not save the send identity on this device. Nothing was sent; try again."
+      );
       setSending(false);
       return;
     }
@@ -1235,11 +1323,7 @@ export function HostedManagedChats({
           ? "Pending · Koed accepted this message. Pending does not indicate whether the runner is online."
           : "Message accepted · refreshing Conversation status."
       );
-      await reconcilePromptOperation(
-        acceptedOperation,
-        selected.id,
-        store
-      );
+      await reconcilePromptOperation(acceptedOperation, selected.id, store);
     } catch (cause) {
       const unresolved = { ...operation, state: "reconciling" as const };
       setRecoveryOperation(unresolved, store, prompt);
@@ -1362,14 +1446,20 @@ export function HostedManagedChats({
     setError(null);
     setStatus(null);
     try {
-      await respondToHostedRuntimeItem(selectedRuntime.execution, item, response);
+      await respondToHostedRuntimeItem(
+        selectedRuntime.execution,
+        item,
+        response
+      );
       const value = await loadHostedManagedConversation(
         selectedRuntime.execution.id
       );
       if (selectedIdRef.current === selectedRuntime.execution.id) {
         setRuntime(value.runtime);
         setMessages(value.state.messages);
-        setStatus("Response submitted · showing the latest runner request state.");
+        setStatus(
+          "Response submitted · showing the latest runner request state."
+        );
       }
     } catch (cause) {
       if (
@@ -1415,24 +1505,17 @@ export function HostedManagedChats({
     if (
       (newStartOperationRef.current && newStartRecoveryChecking) ||
       (recoveryOperationRef.current && recoveryGuard.isChecking)
-    ) return;
+    )
+      return;
     const newStart = newStartOperationRef.current;
     if (newStart) {
-      void reconcileStartOperation(
-        newStart,
-        newStartStoreRef.current,
-        true
-      );
+      void reconcileStartOperation(newStart, newStartStoreRef.current, true);
       return;
     }
     const operation = recoveryOperationRef.current;
     if (!operation) return;
     if (operation.kind === "start") {
-      void reconcileStartOperation(
-        operation,
-        recoveryStoreRef.current,
-        false
-      );
+      void reconcileStartOperation(operation, recoveryStoreRef.current, false);
     } else if (selectedIdRef.current) {
       void reconcilePromptOperation(
         operation,
@@ -1506,11 +1589,18 @@ export function HostedManagedChats({
     };
     newStartOperationRef.current = operation;
     try {
-      if (!store?.writeDurably) throw new Error("Device recovery storage is unavailable.");
-      store.writeDurably({ schemaVersion: 1, draft: prompt, pendingOperation: operation });
+      if (!store?.writeDurably)
+        throw new Error("Device recovery storage is unavailable.");
+      store.writeDurably({
+        schemaVersion: 1,
+        draft: prompt,
+        pendingOperation: operation
+      });
     } catch {
       newStartOperationRef.current = null;
-      setError("Studio could not save the send identity on this device. Nothing was sent; try again.");
+      setError(
+        "Studio could not save the send identity on this device. Nothing was sent; try again."
+      );
       setSending(false);
       return;
     }
@@ -1527,7 +1617,12 @@ export function HostedManagedChats({
         permissionMode: launchPermission,
         targetDeviceId: launchDeviceId,
         idempotencyKey: operation.startIdempotencyKey,
-        ...(prompt ? { initialPrompt: prompt, initialPromptClientUserMessageId: operation.clientUserMessageId } : {})
+        ...(prompt
+          ? {
+              initialPrompt: prompt,
+              initialPromptClientUserMessageId: operation.clientUserMessageId
+            }
+          : {})
       });
       setNewConversationOpen(false);
       selectedIdRef.current = started.execution.id;
@@ -1852,11 +1947,7 @@ export function HostedManagedChats({
                             })
                           : null);
                       newStartStoreRef.current = store;
-                      writeRecovery(
-                        store,
-                        value,
-                        newStartOperationRef.current
-                      );
+                      writeRecovery(store, value, newStartOperationRef.current);
                     }}
                     rows={2}
                     className="mt-1 block w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
@@ -2185,7 +2276,9 @@ export function HostedManagedChats({
                 <article
                   key={message.id}
                   className={`max-w-[92%] rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "ml-auto bg-accent/10 text-foreground" : "bg-surface text-foreground-secondary"}`}
-                  aria-live={message.id.startsWith("transient:") ? "polite" : undefined}
+                  aria-live={
+                    message.id.startsWith("transient:") ? "polite" : undefined
+                  }
                 >
                   <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted">
                     {message.role === "user"
@@ -2195,6 +2288,9 @@ export function HostedManagedChats({
                   <p className="whitespace-pre-wrap break-words text-xs leading-5">
                     {message.content}
                   </p>
+                  {message.role === "assistant" && message.memory ? (
+                    <MemoryAttributionNote memory={message.memory} />
+                  ) : null}
                   {message.id.startsWith("transient:") && (
                     <p className="mt-1 text-[10px] text-muted">
                       {hostedPromptOutcomeIsUncertain(selectedRuntime)
@@ -2206,7 +2302,9 @@ export function HostedManagedChats({
                     <p className="mt-1 text-[10px] text-muted">
                       {pendingMessage?.commandState === "dispatching"
                         ? "Working · claimed by the assigned computer"
-                        : ["queued", "blocked"].includes(pendingMessage?.commandState ?? "")
+                        : ["queued", "blocked"].includes(
+                              pendingMessage?.commandState ?? ""
+                            )
                           ? "Pending · accepted by Koed"
                           : "Outcome uncertain · check send status"}
                     </p>
@@ -2260,89 +2358,99 @@ export function HostedManagedChats({
                       </div>
                     ))}
                     {request.kind === "user_input" ? (
-                      request.questions?.length ? <form
-                        className="mt-3 space-y-2"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          const values = new FormData(event.currentTarget);
-                          const answers = Object.fromEntries(
-                            (request.questions ?? []).map((question) => {
-                              const answer = String(
-                                values.get(question.id) ?? ""
-                              );
-                              const options =
-                                question.options?.map((option) => option.label) ??
-                                [];
-                              return [
-                                question.id,
-                                [
-                                  question.isOther &&
-                                  answer &&
-                                  !options.includes(answer)
-                                    ? `user_note: ${answer}`
-                                    : answer
-                                ]
-                              ];
-                            })
-                          );
-                          void respondToRuntimeRequest(request.id, { answers });
-                        }}
-                      >
-                        {(request.questions ?? []).map((question) => (
-                          <label
-                            className="block text-[11px] text-foreground-secondary"
-                            key={question.id}
-                          >
-                            <span>{question.header || question.question}</span>
-                            {question.header && question.question ? (
-                              <span className="mt-0.5 block text-muted">
-                                {question.question}
-                              </span>
-                            ) : null}
-                            {question.options?.length && !question.isOther ? (
-                              <select
-                                className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                name={question.id}
-                                required={question.required !== false}
-                                defaultValue=""
-                              >
-                                <option disabled value="">
-                                  Select an answer
-                                </option>
-                                {question.options.map((option) => (
-                                  <option
-                                    key={option.label}
-                                    value={option.label}
-                                  >
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                name={question.id}
-                                required={question.required !== false}
-                                type={question.isSecret ? "password" : "text"}
-                              />
-                            )}
-                          </label>
-                        ))}
-                        <button
-                          className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                          disabled={controlBusy}
-                          type="submit"
+                      request.questions?.length ? (
+                        <form
+                          className="mt-3 space-y-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const values = new FormData(event.currentTarget);
+                            const answers = Object.fromEntries(
+                              (request.questions ?? []).map((question) => {
+                                const answer = String(
+                                  values.get(question.id) ?? ""
+                                );
+                                const options =
+                                  question.options?.map(
+                                    (option) => option.label
+                                  ) ?? [];
+                                return [
+                                  question.id,
+                                  [
+                                    question.isOther &&
+                                    answer &&
+                                    !options.includes(answer)
+                                      ? `user_note: ${answer}`
+                                      : answer
+                                  ]
+                                ];
+                              })
+                            );
+                            void respondToRuntimeRequest(request.id, {
+                              answers
+                            });
+                          }}
                         >
-                          <Check className="h-3 w-3" /> Submit answer
-                        </button>
-                      </form> : (
-                        <p className="mt-3 text-[11px] text-muted" role="status">
-                          The latest question details are unavailable. Refresh before responding.
+                          {(request.questions ?? []).map((question) => (
+                            <label
+                              className="block text-[11px] text-foreground-secondary"
+                              key={question.id}
+                            >
+                              <span>
+                                {question.header || question.question}
+                              </span>
+                              {question.header && question.question ? (
+                                <span className="mt-0.5 block text-muted">
+                                  {question.question}
+                                </span>
+                              ) : null}
+                              {question.options?.length && !question.isOther ? (
+                                <select
+                                  className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                  name={question.id}
+                                  required={question.required !== false}
+                                  defaultValue=""
+                                >
+                                  <option disabled value="">
+                                    Select an answer
+                                  </option>
+                                  {question.options.map((option) => (
+                                    <option
+                                      key={option.label}
+                                      value={option.label}
+                                    >
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                  name={question.id}
+                                  required={question.required !== false}
+                                  type={question.isSecret ? "password" : "text"}
+                                />
+                              )}
+                            </label>
+                          ))}
+                          <button
+                            className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                            disabled={controlBusy}
+                            type="submit"
+                          >
+                            <Check className="h-3 w-3" /> Submit answer
+                          </button>
+                        </form>
+                      ) : (
+                        <p
+                          className="mt-3 text-[11px] text-muted"
+                          role="status"
+                        >
+                          The latest question details are unavailable. Refresh
+                          before responding.
                         </p>
                       )
-                    ) : (
-                      approvalCanBeReviewed ? (
-                        <div className="mt-3 flex flex-wrap gap-2">
+                    ) : approvalCanBeReviewed ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
                           disabled={controlBusy}
@@ -2379,7 +2487,7 @@ export function HostedManagedChats({
                         >
                           Approve
                         </button>
-                          {sessionApproval ? (
+                        {sessionApproval ? (
                           <button
                             className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
                             disabled={controlBusy}
@@ -2392,13 +2500,13 @@ export function HostedManagedChats({
                           >
                             Always allow this session
                           </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[11px] text-muted" role="status">
-                          Koed did not provide enough safe request detail to review this approval. Refresh before deciding.
-                        </p>
-                      )
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-[11px] text-muted" role="status">
+                        Koed did not provide enough safe request detail to
+                        review this approval. Refresh before deciding.
+                      </p>
                     )}
                   </article>
                 );
@@ -2406,10 +2514,10 @@ export function HostedManagedChats({
               {selectedRuntime &&
                 displayMessages.length === 0 &&
                 runtimeRequests.length === 0 && (
-                <p className="text-xs text-muted">
-                  No messages in this Conversation yet.
-                </p>
-              )}
+                  <p className="text-xs text-muted">
+                    No messages in this Conversation yet.
+                  </p>
+                )}
             </div>
             <form
               className="border-t border-border p-3"
@@ -2449,7 +2557,9 @@ export function HostedManagedChats({
                         pendingControl
                       : !canSend || !draft.trim() || sending
                   }
-                  aria-label={activePrompt ? "Stop active turn" : "Send message"}
+                  aria-label={
+                    activePrompt ? "Stop active turn" : "Send message"
+                  }
                   className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {sending ? (

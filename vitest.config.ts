@@ -31,6 +31,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/personal-desktop-contract.ts`
       },
       {
+        find: "@koed/shared/personal-memory-attribution",
+        replacement: `${root}packages/shared/src/personal-memory-attribution.ts`
+      },
+      {
         find: "@koed/shared/private-network",
         replacement: `${root}packages/shared/src/private-network.ts`
       },

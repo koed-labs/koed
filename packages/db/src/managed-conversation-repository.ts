@@ -6,12 +6,14 @@ import {
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
   personalAgentExecutionContextSchema,
+  personalMemoryTurnContextSchema,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ConversationPresentationDecision,
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult,
-  type PersonalAgentExecutionContext
+  type PersonalAgentExecutionContext,
+  type PersonalMemoryTurnContext
 } from "@koed/shared";
 import pg from "pg";
 import {
@@ -362,6 +364,7 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       initialPrompt?: string;
       initialPromptClientUserMessageId?: string;
+      initialPersonalMemoryContext?: PersonalMemoryTurnContext;
       deferUntilRuntimeBinding?: boolean;
     }
   ): Promise<{
@@ -380,6 +383,7 @@ export interface ManagedConversationRepository {
       agentId?: string;
       expectedAgentVersion?: number;
       personalAgentContext?: PersonalAgentExecutionContext;
+      personalMemoryContext?: PersonalMemoryTurnContext;
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
     }
@@ -532,13 +536,17 @@ export interface ManagedConversationRepository {
     input: { executionId: string; limit?: number; before?: string }
   ): Promise<{
     turns: Array<{
-      commandId: string; clientUserMessageId: string | null; prompt: string;
-      createdAt: string; completedAt: string;
+      commandId: string;
+      clientUserMessageId: string | null;
+      prompt: string;
+      createdAt: string;
+      completedAt: string;
       providerTurnId: string | null;
       providerItemId: string | null;
       assistantOutput: { text: string; truncated: boolean } | null;
     }>;
-    hasMore: boolean; nextCursor: string | null;
+    hasMore: boolean;
+    nextCursor: string | null;
   }>;
   getManagedConversationCommand(
     actor: ActorContext,
@@ -1178,7 +1186,11 @@ const mapCommand = (
   attempts: row.attempts,
   leaseToken: row.lease_token,
   leaseExpiresAt: iso(row.lease_expires_at),
-  payload: payload ? Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "assistantOutput")) : null,
+  payload: payload
+    ? Object.fromEntries(
+        Object.entries(payload).filter(([key]) => key !== "assistantOutput")
+      )
+    : null,
   result: row.result,
   lastErrorCode: row.last_error_code,
   createdAt: row.created_at.toISOString(),
@@ -1265,7 +1277,10 @@ const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
 const stableUuidFromSeed = (seed: string): string => {
-  const bytes = createHash("sha256").update(seed, "utf8").digest().subarray(0, 16);
+  const bytes = createHash("sha256")
+    .update(seed, "utf8")
+    .digest()
+    .subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x80;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
@@ -1488,6 +1503,7 @@ export const createManagedConversationRepository = (
       identityVersionId: string;
     };
     personalAgentContext?: PersonalAgentExecutionContext;
+    personalMemoryContext?: PersonalMemoryTurnContext;
   }) =>
     encryptCommandPayload({
       ownerUserId: input.ownerUserId,
@@ -1503,6 +1519,9 @@ export const createManagedConversationRepository = (
         ...(input.personalAgent ? { personalAgent: input.personalAgent } : {}),
         ...(input.personalAgentContext
           ? { personalAgentContext: input.personalAgentContext }
+          : {}),
+        ...(input.personalMemoryContext
+          ? { personalMemoryContext: input.personalMemoryContext }
           : {}),
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
@@ -2247,6 +2266,17 @@ export const createManagedConversationRepository = (
             input.runnerDeviceId
           ]
         );
+        const initialPersonalMemoryContext = input.initialPersonalMemoryContext
+          ? personalMemoryTurnContextSchema.parse(
+              input.initialPersonalMemoryContext
+            )
+          : undefined;
+        if (
+          initialPersonalMemoryContext &&
+          initialPersonalMemoryContext.projectId !== projectId
+        ) {
+          throw statusError("Personal Memory turn context is stale", 409);
+        }
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
               ownerUserId: actor.userId,
@@ -2254,6 +2284,7 @@ export const createManagedConversationRepository = (
               commandId,
               prompt: input.initialPrompt,
               clientUserMessageId: input.initialPromptClientUserMessageId,
+              personalMemoryContext: initialPersonalMemoryContext,
               settings: {
                 model: input.model,
                 reasoningEffort: input.reasoningEffort ?? null,
@@ -2363,6 +2394,15 @@ export const createManagedConversationRepository = (
           current.execution_generation !== input.executionGeneration
         ) {
           throw statusError("Managed Conversation is not writable", 409);
+        }
+        const personalMemoryContext = input.personalMemoryContext
+          ? personalMemoryTurnContextSchema.parse(input.personalMemoryContext)
+          : undefined;
+        if (
+          personalMemoryContext &&
+          personalMemoryContext.projectId !== current.project_id
+        ) {
+          throw statusError("Personal Memory turn context is stale", 409);
         }
         await assertNoPendingManagedConversationProjectMove(
           client,
@@ -2648,7 +2688,8 @@ export const createManagedConversationRepository = (
           fileMentions,
           settings,
           ...(personalAgent ? { personalAgent } : {}),
-          ...(personalAgentContext ? { personalAgentContext } : {})
+          ...(personalAgentContext ? { personalAgentContext } : {}),
+          ...(personalMemoryContext ? { personalMemoryContext } : {})
         });
         const result = await client.query<CommandRow>(
           `insert into managed_conversation_commands (
@@ -3787,7 +3828,10 @@ export const createManagedConversationRepository = (
     async listManagedConversationPromptHistory(actor, input) {
       const limit = Math.min(Math.max(input.limit ?? 20, 1), 20);
       const cursor = input.before?.match(/^prompt:(\d+)$/);
-      if (input.before && (!cursor || !Number.isSafeInteger(Number(cursor[1])))) {
+      if (
+        input.before &&
+        (!cursor || !Number.isSafeInteger(Number(cursor[1])))
+      ) {
         throw statusError("Invalid Conversation history cursor", 400);
       }
       const result = await pool.query<CommandRow>(
@@ -3802,7 +3846,12 @@ export const createManagedConversationRepository = (
             )
           order by sequence desc
           limit $4`,
-        [actor.userId, input.executionId, cursor ? Number(cursor[1]) : null, limit + 1]
+        [
+          actor.userId,
+          input.executionId,
+          cursor ? Number(cursor[1]) : null,
+          limit + 1
+        ]
       );
       const rows = result.rows.slice(0, limit);
       const turns = [];
@@ -3810,25 +3859,44 @@ export const createManagedConversationRepository = (
         const payload = await decryptPayload(row);
         if (typeof payload?.prompt !== "string") continue;
         const output = payload.assistantOutput;
-        const validOutput = output && typeof output === "object" && !Array.isArray(output)
-          ? output as Record<string, unknown> : null;
+        const validOutput =
+          output && typeof output === "object" && !Array.isArray(output)
+            ? (output as Record<string, unknown>)
+            : null;
         turns.push({
-          commandId: row.id, clientUserMessageId: row.client_user_message_id,
-          prompt: payload.prompt, createdAt: requiredIso(row.created_at),
+          commandId: row.id,
+          clientUserMessageId: row.client_user_message_id,
+          prompt: payload.prompt,
+          createdAt: requiredIso(row.created_at),
           completedAt: requiredIso(row.completed_at ?? row.updated_at),
-          providerTurnId: typeof row.result?.turnId === "string"
-            ? row.result.turnId
-            : typeof row.result?.providerTurnId === "string"
-              ? row.result.providerTurnId : null,
-          providerItemId: typeof row.result?.providerItemId === "string"
-            ? row.result.providerItemId : null,
-          assistantOutput: validOutput && typeof validOutput.text === "string"
-            ? { text: validOutput.text, truncated: validOutput.truncated === true } : null
+          providerTurnId:
+            typeof row.result?.turnId === "string"
+              ? row.result.turnId
+              : typeof row.result?.providerTurnId === "string"
+                ? row.result.providerTurnId
+                : null,
+          providerItemId:
+            typeof row.result?.providerItemId === "string"
+              ? row.result.providerItemId
+              : null,
+          assistantOutput:
+            validOutput && typeof validOutput.text === "string"
+              ? {
+                  text: validOutput.text,
+                  truncated: validOutput.truncated === true
+                }
+              : null
         });
       }
       const hasMore = result.rows.length > limit;
-      return { turns: turns.reverse(), hasMore,
-        nextCursor: hasMore && rows.length ? `prompt:${rows[rows.length - 1]!.sequence}` : null };
+      return {
+        turns: turns.reverse(),
+        hasMore,
+        nextCursor:
+          hasMore && rows.length
+            ? `prompt:${rows[rows.length - 1]!.sequence}`
+            : null
+      };
     },
 
     async getManagedConversationCommand(actor, commandId) {
@@ -4844,11 +4912,19 @@ export const createManagedConversationRepository = (
               text = Array.from(text).slice(0, -256).join("");
             }
             const encrypted = await encryptCommandPayload({
-              ownerUserId: row.owner_user_id, executionId: row.execution_id,
-              commandId: row.id, objectClass: "managed_conversation_prompt",
-              value: { ...payload, assistantOutput: {
-                text, truncated: input.assistantOutput.truncated || text.length < original.length
-              } }
+              ownerUserId: row.owner_user_id,
+              executionId: row.execution_id,
+              commandId: row.id,
+              objectClass: "managed_conversation_prompt",
+              value: {
+                ...payload,
+                assistantOutput: {
+                  text,
+                  truncated:
+                    input.assistantOutput.truncated ||
+                    text.length < original.length
+                }
+              }
             });
             await client.query(
               `update managed_conversation_commands set encrypted_payload = $2::jsonb where id = $1`,
@@ -4893,8 +4969,7 @@ export const createManagedConversationRepository = (
                     : stableUuidFromSeed(
                         `managed-conversation-start-prompt:${row.id}:client-user-message`
                       );
-                const idempotencyKey =
-                  `managed-conversation-start-prompt:${row.id}`;
+                const idempotencyKey = `managed-conversation-start-prompt:${row.id}`;
                 const settings: ManagedConversationSettings = {
                   model: current.model,
                   reasoningEffort: current.reasoning_effort,
@@ -4923,7 +4998,15 @@ export const createManagedConversationRepository = (
                   commandId: promptCommandId,
                   prompt,
                   clientUserMessageId,
-                  settings
+                  settings,
+                  ...(startPayload?.personalMemoryContext
+                    ? {
+                        personalMemoryContext:
+                          personalMemoryTurnContextSchema.parse(
+                            startPayload.personalMemoryContext
+                          )
+                      }
+                    : {})
                 });
                 const queued = await client.query<{ id: string }>(
                   `insert into managed_conversation_commands (

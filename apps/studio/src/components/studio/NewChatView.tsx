@@ -16,6 +16,8 @@ import {
   type ChatMentionAgent
 } from "../ChatComposer";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
+import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
+import { MemoryAttributionNote } from "./MemoryAttributionNote";
 
 export type NewChatMode = "demo" | "live";
 
@@ -30,6 +32,7 @@ export type NewChatRuntimeMessage = Readonly<{
   role: "user" | "assistant";
   content: string;
   createdAt: number;
+  memory?: ManagedChatMemoryAttribution;
   author?: Readonly<{
     agentId: string;
     name: string;
@@ -151,7 +154,8 @@ export function NewChatView({
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   const [endSessionConfirmOpen, setEndSessionConfirmOpen] = useState(false);
-  const [buildPanelMode, setBuildPanelMode] = useState<BuildPanelMode>("compact");
+  const [buildPanelMode, setBuildPanelMode] =
+    useState<BuildPanelMode>("compact");
   const visibleMessages = runtime?.messages ?? messages;
   const activeAgent = agents?.find((agent) => agent.id === activeAgentId);
   const activeAgentAvailable = Boolean(
@@ -230,8 +234,12 @@ export function NewChatView({
   return (
     <div className="relative flex h-full min-h-0 w-full">
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 sm:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}>
-          <p className="flex-1 text-sm text-foreground no-drag">Personal / New chat</p>
+        <header
+          className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 sm:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}
+        >
+          <p className="flex-1 text-sm text-foreground no-drag">
+            Personal / New chat
+          </p>
           {runtime?.onEndSession ? (
             <div className="relative no-drag">
               <button
@@ -245,7 +253,10 @@ export function NewChatView({
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {chatMenuOpen ? (
-                <div role="menu" className="absolute right-0 top-full z-30 mt-1 min-w-44 rounded-md border border-border bg-surface p-1 shadow-xl">
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-30 mt-1 min-w-44 rounded-md border border-border bg-surface p-1 shadow-xl"
+                >
                   <button
                     type="button"
                     role="menuitem"
@@ -329,6 +340,9 @@ export function NewChatView({
                           <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground-secondary">
                             {content}
                           </p>
+                          {"memory" in message && message.memory ? (
+                            <MemoryAttributionNote memory={message.memory} />
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -435,7 +449,8 @@ export function NewChatView({
                         ? "Waiting for the chat runtime…"
                         : (agentGateMessage ?? runtime?.status))}
                   </span>
-                  {runtime?.canCancelPendingPrompt && runtime.onCancelPendingPrompt ? (
+                  {runtime?.canCancelPendingPrompt &&
+                  runtime.onCancelPendingPrompt ? (
                     <button
                       type="button"
                       className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
@@ -719,12 +734,34 @@ export function NewChatView({
         className="max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:shadow-2xl"
       />
       {endSessionConfirmOpen && runtime?.onEndSession ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 no-drag" role="presentation">
-          <section role="alertdialog" aria-modal="true" aria-labelledby="end-session-title" className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-2xl">
-            <h2 id="end-session-title" className="text-sm font-semibold text-foreground">End this session?</h2>
-            <p className="mt-2 text-xs leading-relaxed text-muted">This stops the managed session. You can still review its conversation afterward.</p>
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 no-drag"
+          role="presentation"
+        >
+          <section
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="end-session-title"
+            className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-2xl"
+          >
+            <h2
+              id="end-session-title"
+              className="text-sm font-semibold text-foreground"
+            >
+              End this session?
+            </h2>
+            <p className="mt-2 text-xs leading-relaxed text-muted">
+              This stops the managed session. You can still review its
+              conversation afterward.
+            </p>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" onClick={() => setEndSessionConfirmOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary">Keep session</button>
+              <button
+                type="button"
+                onClick={() => setEndSessionConfirmOpen(false)}
+                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary"
+              >
+                Keep session
+              </button>
               <button
                 type="button"
                 onClick={() => {

@@ -142,7 +142,8 @@ test("keeps a delayed new-start recovery result from replacing a newly selected 
         selectedExecutionAtStart,
         selectedExecutionId
       )
-    ) return;
+    )
+      return;
     persistedNewStartIdentity = null;
     selectedExecutionId = recoveredExecutionId;
   };
@@ -156,38 +157,59 @@ test("keeps a delayed new-start recovery result from replacing a newly selected 
 });
 
 test("shows only the active execution generation's approved transient output and reconciles canonical IDs", () => {
-  const history = [{
-    id: "provider:canonical",
-    role: "assistant" as const,
-    content: "Canonical answer",
-    createdAt: "2026-09-01T10:00:02.000Z",
-    author: null,
-    providerTurnId: "turn-1",
-    providerItemId: "item-1"
-  }];
-  const runtime: NonNullable<Parameters<typeof hostedMessagesWithTransientOutput>[1]> = {
-    execution: { ...execution, id, executionGeneration: 3, permissionMode: "supervised" },
+  const history = [
+    {
+      id: "provider:canonical",
+      role: "assistant" as const,
+      content: "Canonical answer",
+      createdAt: "2026-09-01T10:00:02.000Z",
+      author: null,
+      providerTurnId: "turn-1",
+      providerItemId: "item-1"
+    }
+  ];
+  const runtime: NonNullable<
+    Parameters<typeof hostedMessagesWithTransientOutput>[1]
+  > = {
+    execution: {
+      ...execution,
+      id,
+      executionGeneration: 3,
+      permissionMode: "supervised"
+    },
     latestCommand: {
       id: commandId,
       commandKind: "prompt",
       state: "running",
       lastErrorCode: null
     },
-    items: [{
-      id: "runtime-1",
-      executionGeneration: 3,
-      itemKind: "transient_output",
-      state: "pending",
-      providerTurnId: "turn-1",
-      providerItemId: "item-1",
-      createdAt: "2026-09-01T10:00:01.000Z",
-      updatedAt: "2026-09-01T10:00:03.000Z",
-      presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" },
-      payload: { text: "Partial answer" }
-    }]
+    items: [
+      {
+        id: "runtime-1",
+        executionGeneration: 3,
+        itemKind: "transient_output",
+        state: "pending",
+        providerTurnId: "turn-1",
+        providerItemId: "item-1",
+        createdAt: "2026-09-01T10:00:01.000Z",
+        updatedAt: "2026-09-01T10:00:03.000Z",
+        presentation: {
+          mode: "expanded",
+          renderer: "message",
+          policyKey: "transient_output"
+        },
+        payload: { text: "Partial answer" }
+      }
+    ]
   };
-  assert.deepEqual(hostedMessagesWithTransientOutput(id, runtime, history), history);
-  assert.deepEqual(hostedMessagesWithTransientOutput("other-execution", runtime, []), []);
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(id, runtime, history),
+    history
+  );
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput("other-execution", runtime, []),
+    []
+  );
   const uncertainRuntime = {
     ...runtime,
     latestCommand: {
@@ -200,7 +222,26 @@ test("shows only the active execution generation's approved transient output and
   const uncertain = hostedMessagesWithTransientOutput(id, uncertainRuntime, []);
   assert.equal(uncertain.length, 1);
   assert.equal(uncertain[0].content, "Partial answer");
-  assert.deepEqual(hostedMessagesWithTransientOutput(id, uncertainRuntime, history), history);
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(id, uncertainRuntime, history),
+    history
+  );
+  const withheldFooter = hostedMessagesWithTransientOutput(
+    id,
+    {
+      ...uncertainRuntime,
+      items: [
+        {
+          ...uncertainRuntime.items[0]!,
+          payload: {
+            text: "Visible answer\n<!-- koed-memory-attribution:v1:partial"
+          }
+        }
+      ]
+    },
+    []
+  );
+  assert.equal(withheldFooter[0]?.content, "Visible answer");
   const maskedUncertainRuntime = {
     ...runtime,
     hasIndeterminatePrompt: true,
@@ -219,40 +260,105 @@ test("shows only the active execution generation's approved transient output and
   assert.equal(retainedPartial.length, 1);
   assert.equal(retainedPartial[0].content, "Partial answer");
   assert.deepEqual(
-    hostedMessagesWithTransientOutput(id, {
-      ...runtime,
-      latestCommand: {
-        id: commandId,
-        commandKind: "prompt",
-        state: "completed",
-        lastErrorCode: null
-      }
-    }, []),
+    hostedMessagesWithTransientOutput(
+      id,
+      {
+        ...runtime,
+        latestCommand: {
+          id: commandId,
+          commandKind: "prompt",
+          state: "completed",
+          lastErrorCode: null
+        }
+      },
+      []
+    ),
     []
   );
 
-  const visible = hostedMessagesWithTransientOutput(id, {
-    ...runtime,
-    items: [{ ...runtime.items[0], providerTurnId: "turn-2", providerItemId: "item-2", payload: { text: "Partial /Users/jacobo/private.txt token=privatevalue" } }]
-  }, []);
+  const visible = hostedMessagesWithTransientOutput(
+    id,
+    {
+      ...runtime,
+      items: [
+        {
+          ...runtime.items[0],
+          providerTurnId: "turn-2",
+          providerItemId: "item-2",
+          payload: {
+            text: "Partial /Users/jacobo/private.txt token=privatevalue"
+          }
+        }
+      ]
+    },
+    []
+  );
   assert.equal(visible.length, 1);
   assert.equal(visible[0].id, "transient:runtime-1");
-  assert.equal(visible[0].content, "Partial [local path hidden] token=[redacted]");
+  assert.equal(
+    visible[0].content,
+    "Partial [local path hidden] token=[redacted]"
+  );
   assert.equal(visible[0].providerTurnId, "turn-2");
   assert.equal(visible[0].providerItemId, "item-2");
 
-  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
-    ...runtime,
-    items: [{ ...runtime.items[0], executionGeneration: 2, providerTurnId: "old-turn" }]
-  }, []), []);
-  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
-    ...runtime,
-    items: [{ ...runtime.items[0], presentation: { mode: "hidden", renderer: "message", policyKey: "transient_output" } }]
-  }, []), []);
-  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
-    ...runtime,
-    items: [{ ...runtime.items[0], presentation: { mode: "expanded", renderer: "tool", policyKey: "transient_output" } }]
-  }, []), []);
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(
+      id,
+      {
+        ...runtime,
+        items: [
+          {
+            ...runtime.items[0],
+            executionGeneration: 2,
+            providerTurnId: "old-turn"
+          }
+        ]
+      },
+      []
+    ),
+    []
+  );
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(
+      id,
+      {
+        ...runtime,
+        items: [
+          {
+            ...runtime.items[0],
+            presentation: {
+              mode: "hidden",
+              renderer: "message",
+              policyKey: "transient_output"
+            }
+          }
+        ]
+      },
+      []
+    ),
+    []
+  );
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(
+      id,
+      {
+        ...runtime,
+        items: [
+          {
+            ...runtime.items[0],
+            presentation: {
+              mode: "expanded",
+              renderer: "tool",
+              policyKey: "transient_output"
+            }
+          }
+        ]
+      },
+      []
+    ),
+    []
+  );
 });
 
 test("lists only safe execution data using the signed-in same-origin session", async () => {
@@ -505,20 +611,24 @@ test("loads runtime and generation-matched live user and agent messages", async 
             itemKind: "command_approval",
             state: "pending",
             payload: {
-              command: "tool --token=abc123 --file /Users/runner/private/secret.txt",
+              command:
+                "tool --token=abc123 --file /Users/runner/private/secret.txt",
               credential: "secret",
               cwd: "/Users/runner/private",
               reason: "Need approval for /Users/runner/private; token=abc123",
               input: {
                 file_path: "/Users/runner/private/secret.txt",
-                patch: "--- /Users/runner/private/secret.txt\n+++ /Users/runner/private/secret.txt\n+safe change"
+                patch:
+                  "--- /Users/runner/private/secret.txt\n+++ /Users/runner/private/secret.txt\n+safe change"
               },
               diff: [
                 {
                   one: {
                     two: {
                       three: {
-                        four: { hiddenPath: "/Users/runner/private/deep-secret.txt" }
+                        four: {
+                          hiddenPath: "/Users/runner/private/deep-secret.txt"
+                        }
                       }
                     }
                   }
@@ -560,8 +670,14 @@ test("loads runtime and generation-matched live user and agent messages", async 
             state: "pending",
             createdAt: execution.updatedAt,
             updatedAt: execution.updatedAt,
-            payload: { text: "Streaming /Users/runner/private/file.txt token=private" },
-            presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" }
+            payload: {
+              text: "Streaming /Users/runner/private/file.txt token=private"
+            },
+            presentation: {
+              mode: "expanded",
+              renderer: "message",
+              policyKey: "transient_output"
+            }
           },
           {
             id: "unsafe-stream-item",
@@ -569,7 +685,11 @@ test("loads runtime and generation-matched live user and agent messages", async 
             itemKind: "transient_output",
             state: "pending",
             payload: { text: "Should not be exposed" },
-            presentation: { mode: "expanded", renderer: "tool", policyKey: "transient_output" }
+            presentation: {
+              mode: "expanded",
+              renderer: "tool",
+              policyKey: "transient_output"
+            }
           },
           {
             id: "33333333-3333-4333-8333-333333333333",
@@ -611,26 +731,44 @@ test("loads runtime and generation-matched live user and agent messages", async 
   assert.equal(loaded.runtime.execution.id, id);
   assert.equal("path" in loaded.runtime.execution, false);
   assert.equal(loaded.runtime.hasIndeterminatePrompt, true);
-  assert.deepEqual(loaded.runtime.items.map((item) => item.id), [
-    commandId,
-    "44444444-4444-4444-8444-444444444444",
-    "stream-item",
-    "unsafe-stream-item"
-  ]);
+  assert.deepEqual(
+    loaded.runtime.items.map((item) => item.id),
+    [
+      commandId,
+      "44444444-4444-4444-8444-444444444444",
+      "stream-item",
+      "unsafe-stream-item"
+    ]
+  );
   assert.equal("credential" in loaded.runtime.items[0].payload, false);
   assert.equal(
-    loaded.runtime.items.find((item) => item.id === "stream-item")?.payload.text,
+    loaded.runtime.items.find((item) => item.id === "stream-item")?.payload
+      .text,
     "Streaming [local path hidden] token=[redacted]"
   );
   assert.equal(
-    "text" in (loaded.runtime.items.find((item) => item.id === "unsafe-stream-item")?.payload ?? {}),
+    "text" in
+      (loaded.runtime.items.find((item) => item.id === "unsafe-stream-item")
+        ?.payload ?? {}),
     false
   );
   assert.equal("cwd" in loaded.runtime.items[0].payload, false);
-  assert.doesNotMatch(JSON.stringify(loaded.runtime.items[0].payload.diff), /deep-secret\.txt/u);
-  assert.match(JSON.stringify(loaded.runtime.items[0].payload.diff), /details omitted/u);
-  assert.match(String(loaded.runtime.items[0].payload.command), /\[redacted\]/u);
-  assert.doesNotMatch(String(loaded.runtime.items[0].payload.command), /\/Users\//u);
+  assert.doesNotMatch(
+    JSON.stringify(loaded.runtime.items[0].payload.diff),
+    /deep-secret\.txt/u
+  );
+  assert.match(
+    JSON.stringify(loaded.runtime.items[0].payload.diff),
+    /details omitted/u
+  );
+  assert.match(
+    String(loaded.runtime.items[0].payload.command),
+    /\[redacted\]/u
+  );
+  assert.doesNotMatch(
+    String(loaded.runtime.items[0].payload.command),
+    /\/Users\//u
+  );
   assert.equal("credential" in loaded.runtime.items[0].payload, false);
   assert.equal(
     loaded.runtime.items[0].payload.reason,
@@ -641,11 +779,15 @@ test("loads runtime and generation-matched live user and agent messages", async 
     kind: "command_approval" as const,
     description: "Need approval",
     details: [
-      { label: "Command", text: String(loaded.runtime.items[0].payload.command) },
+      {
+        label: "Command",
+        text: String(loaded.runtime.items[0].payload.command)
+      },
       {
         label: "patch",
         text: String(
-          (loaded.runtime.items[0].payload.input as Record<string, unknown>).patch
+          (loaded.runtime.items[0].payload.input as Record<string, unknown>)
+            .patch
         )
       },
       {
@@ -723,10 +865,84 @@ test("requires a verified collaboration backend ID for device recovery scope", (
     hostedRecoveryBackendId({ connection: { backendId: "up_team_abc" } }),
     "up_team_abc"
   );
-  assert.equal(hostedRecoveryBackendId({ connection: { backendId: null } }), null);
-  assert.equal(hostedRecoveryBackendId({ connection: { backendId: "  " } }), null);
+  assert.equal(
+    hostedRecoveryBackendId({ connection: { backendId: null } }),
+    null
+  );
+  assert.equal(
+    hostedRecoveryBackendId({ connection: { backendId: "  " } }),
+    null
+  );
   assert.equal(hostedRecoveryBackendId({ connection: {} }), null);
   assert.equal(hostedRecoveryBackendId(null), null);
+});
+
+test("keeps hosted messages readable when optional memory attribution is malformed", () => {
+  const state = parseHostedConversationState(
+    {
+      executionId: id,
+      executionGeneration: 3,
+      executionState: "running",
+      messages: [
+        {
+          id: "assistant-with-citation",
+          role: "assistant",
+          content: "Answer\n<!-- koed-memory-attribution:v1:malformed -->",
+          createdAt: execution.createdAt,
+          memory: {
+            used: true,
+            status: "available",
+            citations: [{ label: "A source label" }]
+          }
+        },
+        {
+          id: "assistant-with-invalid-citation",
+          role: "assistant",
+          content: "Must remain readable",
+          createdAt: execution.createdAt,
+          memory: {
+            used: true,
+            status: "available",
+            citations: [{ label: 12 }]
+          }
+        },
+        {
+          id: "user-with-memory",
+          role: "user",
+          content: "Must remain readable",
+          createdAt: execution.createdAt,
+          memory: { used: true, status: "available", citations: [] }
+        },
+        {
+          id: "legacy-assistant",
+          role: "assistant",
+          content: "No attribution metadata",
+          createdAt: execution.createdAt
+        }
+      ]
+    },
+    id,
+    3
+  );
+
+  assert.deepEqual(
+    state.messages.map((message) => message.id),
+    [
+      "assistant-with-citation",
+      "assistant-with-invalid-citation",
+      "user-with-memory",
+      "legacy-assistant"
+    ]
+  );
+  assert.deepEqual(state.messages[0].memory, {
+    used: true,
+    status: "available",
+    citations: [{ label: "A source label" }]
+  });
+  assert.equal(state.messages[0].content, "Answer");
+  assert.equal("memory" in state.messages[1], false);
+  assert.equal("memory" in state.messages[2], false);
+  assert.equal("memory" in state.messages[3], false);
 });
 
 test("responds to a hosted runtime request with its exact kind and generation", async () => {
@@ -791,10 +1007,13 @@ test("loads the authenticated recovery scope and looks up stable send identities
       }
     });
   };
-  assert.deepEqual(await loadHostedManagedConversationAccess(undefined, fetcher), {
-    ownerId: "owner-id",
-    backendId: "hosted-deployment"
-  });
+  assert.deepEqual(
+    await loadHostedManagedConversationAccess(undefined, fetcher),
+    {
+      ownerId: "owner-id",
+      backendId: "hosted-deployment"
+    }
+  );
   assert.deepEqual(
     await lookupHostedConversationRecovery(
       { kind: "start", idempotencyKey: "stable-start-key" },
@@ -826,7 +1045,11 @@ test("loads the authenticated recovery scope and looks up stable send identities
   assert.ok(calls[1].includes("kind=start"));
   assert.ok(calls[1].includes("idempotencyKey=stable-start-key"));
   assert.ok(calls[2].includes("executionGeneration=3"));
-  assert.ok(calls[2].includes("clientUserMessageId=33333333-3333-4333-8333-333333333333"));
+  assert.ok(
+    calls[2].includes(
+      "clientUserMessageId=33333333-3333-4333-8333-333333333333"
+    )
+  );
   assert.equal(calls[2].includes("/private/runner/path"), false);
 });
 
@@ -1038,9 +1261,7 @@ test("keeps stale launch choices but hides models for other not-ready states", a
             readiness: "authentication_required",
             models: [{ id: "old-model", supportedReasoningEfforts: ["high"] }],
             capabilities: {
-              permissionModes: [
-                { mode: "supervised", support: "supported" }
-              ]
+              permissionModes: [{ mode: "supervised", support: "supported" }]
             }
           }
         ]
@@ -1325,7 +1546,6 @@ test("rejects a mismatched Project and hosted context before sending", async () 
   assert.equal(requestCount, 0);
 });
 
-
 test("rejects hosted recovery scopes without an authenticated backend identity", async () => {
   for (const backendId of [undefined, null, "", "   "]) {
     await assert.rejects(
@@ -1351,7 +1571,12 @@ test("blocks unresolved prompts even when a later control command masks them or 
   const runtimeWithMaskedPrompt = {
     execution: { ...execution, state: "running" },
     items: [],
-    latestCommand: { id: commandId, commandKind: "interrupt", state: "completed", lastErrorCode: null },
+    latestCommand: {
+      id: commandId,
+      commandKind: "interrupt",
+      state: "completed",
+      lastErrorCode: null
+    },
     hasIndeterminatePrompt: true
   };
   assert.equal(hostedPromptOutcomeIsUncertain(runtimeWithMaskedPrompt), true);
@@ -1359,7 +1584,11 @@ test("blocks unresolved prompts even when a later control command masks them or 
     hostedPromptOutcomeIsUncertain({
       ...runtimeWithMaskedPrompt,
       hasIndeterminatePrompt: false,
-      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "prompt", state: "completed" }
+      latestCommand: {
+        ...runtimeWithMaskedPrompt.latestCommand,
+        commandKind: "prompt",
+        state: "completed"
+      }
     }),
     false
   );
@@ -1367,7 +1596,11 @@ test("blocks unresolved prompts even when a later control command masks them or 
     hostedPromptOutcomeIsUncertain({
       ...runtimeWithMaskedPrompt,
       hasIndeterminatePrompt: false,
-      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "prompt", state: "indeterminate" }
+      latestCommand: {
+        ...runtimeWithMaskedPrompt.latestCommand,
+        commandKind: "prompt",
+        state: "indeterminate"
+      }
     }),
     true
   );
@@ -1375,7 +1608,11 @@ test("blocks unresolved prompts even when a later control command masks them or 
     hostedPromptOutcomeIsUncertain({
       ...runtimeWithMaskedPrompt,
       hasIndeterminatePrompt: false,
-      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "stop", state: "indeterminate" }
+      latestCommand: {
+        ...runtimeWithMaskedPrompt.latestCommand,
+        commandKind: "stop",
+        state: "indeterminate"
+      }
     }),
     false
   );

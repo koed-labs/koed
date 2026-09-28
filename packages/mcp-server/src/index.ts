@@ -104,8 +104,10 @@ export {
   resolveClaudeManagedConversationSource
 } from "./claude-managed-conversation.js";
 export {
+  formatPersonalMemoryManagedPrompt,
   formatPersonalAgentManagedPrompt,
-  managedPromptPersonalAgentContext
+  managedPromptPersonalAgentContext,
+  managedPromptPersonalMemoryContext
 } from "./personal-agent-managed-prompt.js";
 export {
   discoverClaudeHistoricalTranscriptSignals,

@@ -1,6 +1,19 @@
 import { createHash } from "node:crypto";
 
 export {
+  PERSONAL_MEMORY_ATTRIBUTION_FOOTER_PREFIX,
+  parsePersonalMemoryAttributionFooter,
+  personalMemoryAttributionFooter,
+  stripPersonalMemoryAttributionFooter
+} from "./personal-memory-attribution.js";
+export type {
+  ParsedPersonalMemoryAttributionFooter,
+  PersonalMemoryAttributionFooter
+} from "./personal-memory-attribution.js";
+export { personalMemoryTurnContextSchema } from "./personal-memory-context.js";
+export type { PersonalMemoryTurnContext } from "./personal-memory-context.js";
+
+export {
   nodeCliInvocation,
   nodeCliProcessEnvironment,
   type NodeCliInvocation

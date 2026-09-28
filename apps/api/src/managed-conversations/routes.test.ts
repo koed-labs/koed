@@ -314,46 +314,209 @@ describe("managed Conversation capability admission", () => {
     expect(response.body).not.toContain("private instruction");
   });
 
-  it.each([null, { activeAgentId: null, participants: [] }])("returns generic encrypted-history messages without named-agent jobs or duplicate authors (%j)", async (conversation) => {
+  it.each([null, { activeAgentId: null, participants: [] }])(
+    "returns generic encrypted-history messages without named-agent jobs or duplicate authors (%j)",
+    async (conversation) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const messageId = randomUUID();
+      const history = vi.fn(async () => ({
+        turns: [
+          {
+            commandId,
+            clientUserMessageId: messageId,
+            prompt: "Generic prompt",
+            createdAt: "2026-09-28T10:00:00.000Z",
+            completedAt: "2026-09-28T10:00:01.000Z",
+            providerTurnId: "provider-turn",
+            providerItemId: "provider-item",
+            assistantOutput: { text: "Generic final answer", truncated: true }
+          }
+        ],
+        hasMore: true,
+        nextCursor: "prompt:7"
+      }));
+      const jobs = vi.fn();
+      const app = Fastify({ logger: false });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "local_personal" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticate: async () => ({ id: userId }) },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: resolve(
+            mkdtempSync(resolve(tmpdir(), "koed-generic-history-")),
+            "upstreams.json"
+          ),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          getManagedConversationExecution: async () => ({
+            id: executionId,
+            ownerUserId: userId,
+            executionGeneration: 2,
+            state: "running"
+          }),
+          getPersonalAgentConversation: async () => conversation,
+          listManagedConversationPromptHistory: history,
+          listPersonalAgentExecutionJobs: jobs
+        })
+      } as unknown as ApiRouteContext);
+      await app.ready();
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/managed-conversations/${executionId}/agent-state?limit=5&before=prompt:9`
+      });
+      await app.close();
+      expect(response.statusCode).toBe(200);
+      expect(history).toHaveBeenCalledWith(
+        { userId },
+        { executionId, limit: 5, before: "prompt:9" }
+      );
+      expect(jobs).not.toHaveBeenCalled();
+      expect(response.json()).toMatchObject({
+        activeAgentId: null,
+        participants: [],
+        jobs: [],
+        hasMore: true,
+        nextCursor: "prompt:7",
+        messages: [
+          { id: messageId, role: "user", content: "Generic prompt" },
+          {
+            id: `provider:${commandId}`,
+            role: "assistant",
+            content: "Generic final answer",
+            truncated: true,
+            providerTurnId: "provider-turn",
+            providerItemId: "provider-item"
+          }
+        ]
+      });
+      expect(response.json().messages[1]).not.toHaveProperty("author");
+    }
+  );
+
+  it("projects a bound message citation through current owner access after a Project move", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const commandId = randomUUID();
-    const messageId = randomUUID();
-    const history = vi.fn(async () => ({ turns: [{
-      commandId, clientUserMessageId: messageId, prompt: "Generic prompt",
-      createdAt: "2026-09-28T10:00:00.000Z", completedAt: "2026-09-28T10:00:01.000Z",
-      providerTurnId: "provider-turn", providerItemId: "provider-item",
-      assistantOutput: { text: "Generic final answer", truncated: true }
-    }], hasMore: true, nextCursor: "prompt:7" }));
-    const jobs = vi.fn();
+    const nonce = randomUUID();
+    const clientMessageId = randomUUID();
+    const sourceId = randomUUID();
+    const nodeId = randomUUID();
+    const footer = `<!-- koed-memory-attribution:v1:${commandId}:${nonce}:{"used":true,"citationNodeIds":["${nodeId}"]} -->`;
+    const getLcmGraphEvent = vi.fn(async () => ({
+      id: sourceId,
+      visibility: "personal",
+      projectId: "original-project",
+      metadata: { title: "Earlier decision" },
+      threadName: randomUUID(),
+      sourceEventTime: "2026-08-09T13:45:00.000Z",
+      timestamp: "2026-08-09T13:45:00.000Z",
+      capturedAt: "2026-08-09T13:45:00.000Z"
+    }));
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
       config: { deploymentProfile: "local_personal" },
       encryption: { envelopeEncryptionProvider: {} },
       auth: { authenticate: async () => ({ id: userId }) },
-      rateLimit: { memoryRead: async () => undefined, memoryWrite: async () => undefined },
-      localEdge: { upstreamBackendsPath: resolve(mkdtempSync(resolve(tmpdir(), "koed-generic-history-")), "upstreams.json"), resolveUpstreamAuthorization: () => null, fetch: vi.fn() },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-memory-history-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
       requireRepository: () => ({
-        getManagedConversationExecution: async () => ({ id: executionId, ownerUserId: userId, executionGeneration: 2, state: "running" }),
-        getPersonalAgentConversation: async () => conversation,
-        listManagedConversationPromptHistory: history,
-        listPersonalAgentExecutionJobs: jobs
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ownerUserId: userId,
+          executionGeneration: 2,
+          projectId: "destination-project",
+          state: "running"
+        }),
+        getPersonalAgentConversation: async () => null,
+        listManagedConversationPromptHistory: async () => ({
+          turns: [
+            {
+              commandId,
+              clientUserMessageId: clientMessageId,
+              prompt: "What did we decide?",
+              createdAt: "2026-08-09T13:45:00.000Z",
+              completedAt: "2026-08-09T13:46:00.000Z",
+              providerTurnId: null,
+              providerItemId: null,
+              assistantOutput: {
+                text: `We decided to keep it simple.\n${footer}`,
+                truncated: false
+              }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null
+        }),
+        getManagedConversationCommand: async () => ({
+          id: commandId,
+          payload: {
+            personalMemoryContext: {
+              schemaVersion: 1,
+              status: "available",
+              attributionNonce: nonce,
+              searchDomain: "project",
+              projectId: "original-project",
+              evidence: [
+                {
+                  nodeId,
+                  sourceType: "message",
+                  sourceId,
+                  summaryText: "Earlier decision",
+                  citation: { nodeId, sourceId, visibility: "personal" }
+                }
+              ]
+            }
+          }
+        }),
+        getLcmGraphEvent,
+        listPersonalAgentExecutionJobs: async () => ({ jobs: [] })
       })
     } as unknown as ApiRouteContext);
     await app.ready();
-    const response = await app.inject({ method: "GET", url: `/v1/managed-conversations/${executionId}/agent-state?limit=5&before=prompt:9` });
-    await app.close();
-    expect(response.statusCode).toBe(200);
-    expect(history).toHaveBeenCalledWith({ userId }, { executionId, limit: 5, before: "prompt:9" });
-    expect(jobs).not.toHaveBeenCalled();
-    expect(response.json()).toMatchObject({
-      activeAgentId: null, participants: [], jobs: [], hasMore: true, nextCursor: "prompt:7",
-      messages: [
-        { id: messageId, role: "user", content: "Generic prompt" },
-        { id: `provider:${commandId}`, role: "assistant", content: "Generic final answer", truncated: true, providerTurnId: "provider-turn", providerItemId: "provider-item" }
-      ]
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state`
     });
-    expect(response.json().messages[1]).not.toHaveProperty("author");
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().messages).toContainEqual(
+      expect.objectContaining({
+        id: `provider:${commandId}`,
+        role: "assistant",
+        content: "We decided to keep it simple.",
+        memory: {
+          used: true,
+          status: "available",
+          citations: [{ label: "Earlier decision · 2026-08-09" }]
+        }
+      })
+    );
+    expect(getLcmGraphEvent).toHaveBeenCalledWith({ userId }, sourceId, {
+      includeInvalidated: false,
+      includeContent: false
+    });
+    expect(response.body).not.toContain(sourceId);
+    expect(response.body).not.toContain(nodeId);
+    expect(response.body).not.toContain(nonce);
   });
 
   it("looks up recovery only by the exact owner-scoped prompt identity", async () => {
@@ -553,7 +716,7 @@ describe("managed Conversation capability admission", () => {
         url: `/v1/managed-conversations/${executionId}/prompts`,
         payload: input
       });
-      expect(accepted.statusCode).toBe(202);
+      expect(accepted.statusCode, accepted.body).toBe(202);
       expect(enqueue).toHaveBeenCalledWith(
         { userId },
         expect.objectContaining({ settingsChange: input.settingsChange })
@@ -3214,7 +3377,8 @@ describe("managed Conversation routes", () => {
           updatedAt: now
         }
       ],
-      getLatestManagedConversationCommandForExecution: async () => latestCommand,
+      getLatestManagedConversationCommandForExecution: async () =>
+        latestCommand,
       hasIndeterminateManagedConversationPrompt: async (actor, input) => {
         expect(actor).toEqual({ userId });
         expect(input).toEqual({ executionId, executionGeneration: 1 });
@@ -3629,275 +3793,284 @@ describe("managed Conversation routes", () => {
     expect(response.body).not.toContain("must-not-leak");
   });
 
-  it.each(["2099-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z"])("shows safe hosted launch choices and persists an exact offline target without a binding (%s)", async (expiresAt) => {
-    const userId = randomUUID();
-    const deviceId = randomUUID();
-    const secondDeviceId = randomUUID();
-    const deviceCredentialId = randomUUID();
-    const secondDeviceCredentialId = randomUUID();
-    const deploymentId = randomUUID();
-    const secondDeploymentId = randomUUID();
-    const hostedInstanceId = `runner.${"a".repeat(40)}`;
-    const secondHostedInstanceId = `runner.${"b".repeat(40)}`;
-    const executionId = randomUUID();
-    const commandId = randomUUID();
-    const projectId = "lp_hosted_project";
-    const start = vi.fn(async () => ({
-      execution: {
-        id: executionId,
-        projectId,
-        provider: "codex",
-        aiClientInstanceId: "codex.default",
-        model: "gpt-test",
-        reasoningEffort: "low",
-        permissionMode: "full_access",
-        runnerKind: "local_device",
-        state: "starting",
-        stateVersion: 1,
-        executionGeneration: 1,
-        logicalSessionId: null,
-        providerThreadId: null,
-        providerCliVersion: null,
-        lastErrorCode: null,
-        createdAt: "2026-09-25T00:00:00.000Z",
-        updatedAt: "2026-09-25T00:00:00.000Z",
-        startedAt: null,
-        quiescedAt: null,
-        stoppedAt: null
-      },
-      command: { id: commandId, state: "blocked" }
-    }));
-    const upsert = vi.fn();
-    const app = Fastify({ logger: false });
-    app.setErrorHandler((error, _request, reply) => {
-      const typedError = error as Error & { statusCode?: number };
-      reply
-        .status(typedError.statusCode ?? 500)
-        .send({ error: typedError.message });
-    });
-    registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "private_vps" },
-      encryption: { envelopeEncryptionProvider: {} },
-      auth: {
-        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
-      },
-      rateLimit: {
-        memoryRead: async () => undefined,
-        memoryWrite: async () => undefined
-      },
-      localEdge: {
-        upstreamBackendsPath: writeManagedUpstreamRegistry(),
-        resolveUpstreamAuthorization: () => null,
-        fetch: vi.fn()
-      },
-      requireRepository: () => ({
-        ...launchRepository,
-        listAiClientInstances: async () => [
-          {
-            instanceId: "codex.default",
-            hostedInstanceId,
-            sourceDeviceCredentialId: deviceCredentialId,
-            sourceDeviceLabel: "Computer A",
-            driverId: "codex",
-            displayName: "codex",
-            enabled: true,
-            configIdentityHash: "f".repeat(64)
-          },
-          {
-            instanceId: "codex.default",
-            hostedInstanceId: secondHostedInstanceId,
-            sourceDeviceCredentialId: secondDeviceCredentialId,
-            sourceDeviceLabel: "Computer B",
-            driverId: "codex",
-            displayName: "codex",
-            enabled: true,
-            configIdentityHash: "f".repeat(64)
-          }
-        ],
-        listCurrentAiClientCapabilitySnapshots: async (_actor: unknown, options?: { includeExpired?: boolean }) => options?.includeExpired ? [
-          {
-            instanceId: "codex.default",
-            hostedInstanceId,
-            sourceDeviceCredentialId: deviceCredentialId,
-            installationIdentityHash: "f".repeat(64),
-            authenticationState: "authenticated",
-            healthState: "healthy",
-            expiresAt,
-            capabilities: {
-              descriptors: {
-                managed_conversation_start: {
-                  support: "supported",
-                  readiness: "ready"
-                }
-              }
-            },
-            models: [
-              {
-                id: "gpt-test",
-                provenance: "reported",
-                supportedReasoningEfforts: ["low", "high"]
-              }
-            ]
-          },
-          {
-            instanceId: "codex.default",
-            hostedInstanceId: secondHostedInstanceId,
-            sourceDeviceCredentialId: secondDeviceCredentialId,
-            installationIdentityHash: "f".repeat(64),
-            authenticationState: "authenticated",
-            healthState: "healthy",
-            expiresAt,
-            capabilities: {
-              descriptors: {
-                managed_conversation_start: {
-                  support: "supported",
-                  readiness: "ready"
-                }
-              }
-            },
-            models: [
-              {
-                id: "gpt-test",
-                provenance: "reported",
-                supportedReasoningEfforts: ["low", "high"]
-              }
-            ]
-          }
-        ] : [],
-        listPersonalDeviceGroups: async () => [
-          {
-            state: "active",
-            policy: { enabled: true },
-            members: [
-              { status: "active", deviceId },
-              { status: "active", deviceId: secondDeviceId }
-            ]
-          }
-        ],
-        listDeviceCredentials: async () => [
-          {
-            id: deviceCredentialId,
-            deviceInstanceId: deviceId,
-            operationFamilies: ["sync", "managed_execution"],
-            metadata: { protocolDeploymentId: deploymentId },
-            deviceLabel: "Computer A",
-            expiresAt: null,
-            revokedAt: null
-          },
-          {
-            id: secondDeviceCredentialId,
-            deviceInstanceId: secondDeviceId,
-            operationFamilies: ["sync", "managed_execution"],
-            metadata: { protocolDeploymentId: secondDeploymentId },
-            deviceLabel: "Computer B",
-            expiresAt: null,
-            revokedAt: null
-          }
-        ],
-        listLcmGraphThreads: async (_actor, options) =>
-          options.projectId
-            ? [
-                {
-                  id: projectId,
-                  name: "Local Project",
-                  path: "/private/path",
-                  threads: [{ title: "private" }]
-                }
-              ]
-            : [
-                {
-                  id: projectId,
-                  name: "Local Project",
-                  path: "/private/path",
-                  threads: [{ title: "private" }]
-                }
-              ],
-        createManagedConversation: start,
-        upsertManagedConversationRuntimeBinding: upsert
-      })
-    } as unknown as ApiRouteContext);
-    try {
-      const options = await app.inject({
-        method: "GET",
-        url: "/v1/managed-conversations/launch-options"
-      });
-      const response = await app.inject({
-        method: "POST",
-        url: "/v1/managed-conversations",
-        payload: {
+  it.each(["2099-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z"])(
+    "shows safe hosted launch choices and persists an exact offline target without a binding (%s)",
+    async (expiresAt) => {
+      const userId = randomUUID();
+      const deviceId = randomUUID();
+      const secondDeviceId = randomUUID();
+      const deviceCredentialId = randomUUID();
+      const secondDeviceCredentialId = randomUUID();
+      const deploymentId = randomUUID();
+      const secondDeploymentId = randomUUID();
+      const hostedInstanceId = `runner.${"a".repeat(40)}`;
+      const secondHostedInstanceId = `runner.${"b".repeat(40)}`;
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const projectId = "lp_hosted_project";
+      const start = vi.fn(async () => ({
+        execution: {
+          id: executionId,
           projectId,
-          ...launchSelection,
-          aiClientInstanceId: hostedInstanceId,
-          targetDeviceId: deviceId,
-          initialPrompt: "Start on the selected computer when it reconnects.",
-          idempotencyKey: "hosted-offline-start-1"
-        }
-      });
-      const unsafe = await app.inject({
-        method: "POST",
-        url: "/v1/managed-conversations",
-        payload: {
-          projectId,
-          ...launchSelection,
-          aiClientInstanceId: secondHostedInstanceId,
-          targetDeviceId: deviceId,
-          idempotencyKey: "hosted-offline-start-2"
-        }
-      });
-
-      expect(options.statusCode).toBe(200);
-      expect(options.json()).toMatchObject({
-        runners: expect.arrayContaining([
-          {
-            kind: "local_device",
-            deviceId,
-            deploymentId,
-            displayName: "Computer A"
-          },
-          expect.objectContaining({
-            deviceId: secondDeviceId,
-            deploymentId: secondDeploymentId
-          })
-        ]),
-        projects: [{ id: projectId, name: "Local Project" }],
-        instances: expect.arrayContaining([
-          expect.objectContaining({
-            instanceId: hostedInstanceId,
-            runnerDeviceId: deviceId,
-            ready: Date.parse(expiresAt) > Date.now(),
-            readiness: Date.parse(expiresAt) > Date.now() ? "ready" : "stale",
-            deviceLabel: "Computer A",
-            models: [expect.objectContaining({ id: "gpt-test" })]
-          }),
-          expect.objectContaining({
-            instanceId: secondHostedInstanceId,
-            runnerDeviceId: secondDeviceId,
-            deviceLabel: "Computer B"
-          })
-        ])
-      });
-      expect(options.body).not.toContain("/private/path");
-      expect(options.body).not.toContain('private"');
-      expect(options.body).not.toContain("online");
-      expect(response.statusCode).toBe(202);
-      expect(start).toHaveBeenCalledWith(
-        { userId },
-        expect.objectContaining({
-          projectId,
-          runnerDeploymentId: deploymentId,
-          runnerDeviceId: deviceId,
+          provider: "codex",
           aiClientInstanceId: "codex.default",
-          deferUntilRuntimeBinding: true,
-          initialPrompt: "Start on the selected computer when it reconnects."
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "full_access",
+          runnerKind: "local_device",
+          state: "starting",
+          stateVersion: 1,
+          executionGeneration: 1,
+          logicalSessionId: null,
+          providerThreadId: null,
+          providerCliVersion: null,
+          lastErrorCode: null,
+          createdAt: "2026-09-25T00:00:00.000Z",
+          updatedAt: "2026-09-25T00:00:00.000Z",
+          startedAt: null,
+          quiescedAt: null,
+          stoppedAt: null
+        },
+        command: { id: commandId, state: "blocked" }
+      }));
+      const upsert = vi.fn();
+      const app = Fastify({ logger: false });
+      app.setErrorHandler((error, _request, reply) => {
+        const typedError = error as Error & { statusCode?: number };
+        reply
+          .status(typedError.statusCode ?? 500)
+          .send({ error: typedError.message });
+      });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "private_vps" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: {
+          authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: writeManagedUpstreamRegistry(),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          ...launchRepository,
+          listAiClientInstances: async () => [
+            {
+              instanceId: "codex.default",
+              hostedInstanceId,
+              sourceDeviceCredentialId: deviceCredentialId,
+              sourceDeviceLabel: "Computer A",
+              driverId: "codex",
+              displayName: "codex",
+              enabled: true,
+              configIdentityHash: "f".repeat(64)
+            },
+            {
+              instanceId: "codex.default",
+              hostedInstanceId: secondHostedInstanceId,
+              sourceDeviceCredentialId: secondDeviceCredentialId,
+              sourceDeviceLabel: "Computer B",
+              driverId: "codex",
+              displayName: "codex",
+              enabled: true,
+              configIdentityHash: "f".repeat(64)
+            }
+          ],
+          listCurrentAiClientCapabilitySnapshots: async (
+            _actor: unknown,
+            options?: { includeExpired?: boolean }
+          ) =>
+            options?.includeExpired
+              ? [
+                  {
+                    instanceId: "codex.default",
+                    hostedInstanceId,
+                    sourceDeviceCredentialId: deviceCredentialId,
+                    installationIdentityHash: "f".repeat(64),
+                    authenticationState: "authenticated",
+                    healthState: "healthy",
+                    expiresAt,
+                    capabilities: {
+                      descriptors: {
+                        managed_conversation_start: {
+                          support: "supported",
+                          readiness: "ready"
+                        }
+                      }
+                    },
+                    models: [
+                      {
+                        id: "gpt-test",
+                        provenance: "reported",
+                        supportedReasoningEfforts: ["low", "high"]
+                      }
+                    ]
+                  },
+                  {
+                    instanceId: "codex.default",
+                    hostedInstanceId: secondHostedInstanceId,
+                    sourceDeviceCredentialId: secondDeviceCredentialId,
+                    installationIdentityHash: "f".repeat(64),
+                    authenticationState: "authenticated",
+                    healthState: "healthy",
+                    expiresAt,
+                    capabilities: {
+                      descriptors: {
+                        managed_conversation_start: {
+                          support: "supported",
+                          readiness: "ready"
+                        }
+                      }
+                    },
+                    models: [
+                      {
+                        id: "gpt-test",
+                        provenance: "reported",
+                        supportedReasoningEfforts: ["low", "high"]
+                      }
+                    ]
+                  }
+                ]
+              : [],
+          listPersonalDeviceGroups: async () => [
+            {
+              state: "active",
+              policy: { enabled: true },
+              members: [
+                { status: "active", deviceId },
+                { status: "active", deviceId: secondDeviceId }
+              ]
+            }
+          ],
+          listDeviceCredentials: async () => [
+            {
+              id: deviceCredentialId,
+              deviceInstanceId: deviceId,
+              operationFamilies: ["sync", "managed_execution"],
+              metadata: { protocolDeploymentId: deploymentId },
+              deviceLabel: "Computer A",
+              expiresAt: null,
+              revokedAt: null
+            },
+            {
+              id: secondDeviceCredentialId,
+              deviceInstanceId: secondDeviceId,
+              operationFamilies: ["sync", "managed_execution"],
+              metadata: { protocolDeploymentId: secondDeploymentId },
+              deviceLabel: "Computer B",
+              expiresAt: null,
+              revokedAt: null
+            }
+          ],
+          listLcmGraphThreads: async (_actor, options) =>
+            options.projectId
+              ? [
+                  {
+                    id: projectId,
+                    name: "Local Project",
+                    path: "/private/path",
+                    threads: [{ title: "private" }]
+                  }
+                ]
+              : [
+                  {
+                    id: projectId,
+                    name: "Local Project",
+                    path: "/private/path",
+                    threads: [{ title: "private" }]
+                  }
+                ],
+          createManagedConversation: start,
+          upsertManagedConversationRuntimeBinding: upsert
         })
-      );
-      expect(upsert).not.toHaveBeenCalled();
-      expect(unsafe.statusCode).toBe(409);
-      expect(start).toHaveBeenCalledOnce();
-    } finally {
-      await app.close();
+      } as unknown as ApiRouteContext);
+      try {
+        const options = await app.inject({
+          method: "GET",
+          url: "/v1/managed-conversations/launch-options"
+        });
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/managed-conversations",
+          payload: {
+            projectId,
+            ...launchSelection,
+            aiClientInstanceId: hostedInstanceId,
+            targetDeviceId: deviceId,
+            initialPrompt: "Start on the selected computer when it reconnects.",
+            idempotencyKey: "hosted-offline-start-1"
+          }
+        });
+        const unsafe = await app.inject({
+          method: "POST",
+          url: "/v1/managed-conversations",
+          payload: {
+            projectId,
+            ...launchSelection,
+            aiClientInstanceId: secondHostedInstanceId,
+            targetDeviceId: deviceId,
+            idempotencyKey: "hosted-offline-start-2"
+          }
+        });
+
+        expect(options.statusCode).toBe(200);
+        expect(options.json()).toMatchObject({
+          runners: expect.arrayContaining([
+            {
+              kind: "local_device",
+              deviceId,
+              deploymentId,
+              displayName: "Computer A"
+            },
+            expect.objectContaining({
+              deviceId: secondDeviceId,
+              deploymentId: secondDeploymentId
+            })
+          ]),
+          projects: [{ id: projectId, name: "Local Project" }],
+          instances: expect.arrayContaining([
+            expect.objectContaining({
+              instanceId: hostedInstanceId,
+              runnerDeviceId: deviceId,
+              ready: Date.parse(expiresAt) > Date.now(),
+              readiness: Date.parse(expiresAt) > Date.now() ? "ready" : "stale",
+              deviceLabel: "Computer A",
+              models: [expect.objectContaining({ id: "gpt-test" })]
+            }),
+            expect.objectContaining({
+              instanceId: secondHostedInstanceId,
+              runnerDeviceId: secondDeviceId,
+              deviceLabel: "Computer B"
+            })
+          ])
+        });
+        expect(options.body).not.toContain("/private/path");
+        expect(options.body).not.toContain('private"');
+        expect(options.body).not.toContain("online");
+        expect(response.statusCode).toBe(202);
+        expect(start).toHaveBeenCalledWith(
+          { userId },
+          expect.objectContaining({
+            projectId,
+            runnerDeploymentId: deploymentId,
+            runnerDeviceId: deviceId,
+            aiClientInstanceId: "codex.default",
+            deferUntilRuntimeBinding: true,
+            initialPrompt: "Start on the selected computer when it reconnects."
+          })
+        );
+        expect(upsert).not.toHaveBeenCalled();
+        expect(unsafe.statusCode).toBe(409);
+        expect(start).toHaveBeenCalledOnce();
+      } finally {
+        await app.close();
+      }
     }
-  });
+  );
 
   it("accepts a hosted independent Conversation for the selected device without a Project", async () => {
     const userId = randomUUID();
@@ -4066,7 +4239,14 @@ describe("managed Conversation routes", () => {
           aiClientInstanceId: "codex.default",
           deferUntilRuntimeBinding: true,
           idempotencyKey: "hosted-independent-start-1",
-          initialPrompt: "Start a standalone chat on Computer A."
+          initialPrompt: "Start a standalone chat on Computer A.",
+          initialPersonalMemoryContext: expect.objectContaining({
+            schemaVersion: 1,
+            status: expect.stringMatching(/^(available|unavailable)$/u),
+            attributionNonce: expect.any(String),
+            searchDomain: "global",
+            projectId: null
+          })
         })
       );
       expect(listProjects).not.toHaveBeenCalled();
@@ -4237,7 +4417,9 @@ describe("managed Conversation routes", () => {
       credential.operationFamilies = [];
       const missingManagedExecutionScope = await request();
       credential.operationFamilies = ["managed_execution"];
-      const nonDeferred = await request({ deferUntilRuntimeBinding: undefined });
+      const nonDeferred = await request({
+        deferUntilRuntimeBinding: undefined
+      });
       const missingContext = await request({ contextKind: undefined });
       const mismatchedContext = await request({ projectId: "lp_unexpected" });
 

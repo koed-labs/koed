@@ -3,6 +3,7 @@ import {
   acceptRuntimeSnapshot,
   managedConversationControls,
   managedMessagesWithTransientOutput,
+  parseManagedChatMemoryAttribution,
   parseLaunchInstances,
   parseRuntime,
   resolveLaunchSelection,
@@ -44,6 +45,36 @@ const execution = {
 };
 
 describe("managed agent chat boundary", () => {
+  it("strictly parses optional owner-authorized memory attribution", () => {
+    expect(
+      parseManagedChatMemoryAttribution({
+        used: true,
+        status: "available",
+        citations: [{ label: "Source no longer available" }]
+      })
+    ).toEqual({
+      used: true,
+      status: "available",
+      citations: [{ label: "Source no longer available" }]
+    });
+    expect(
+      parseManagedChatMemoryAttribution({
+        used: false,
+        status: "unavailable",
+        citations: []
+      })
+    ).toEqual({ used: false, status: "unavailable", citations: [] });
+    for (const malformed of [
+      { used: "true", status: "available", citations: [] },
+      { used: true, status: "pending", citations: [] },
+      { used: true, status: "available", citations: [{ label: 42 }] },
+      { used: true, status: "available", citations: [{ label: "  " }] },
+      { used: true, status: "available", citations: "Source" },
+      { used: false, status: "available", citations: [{ label: "Source" }] }
+    ]) {
+      expect(parseManagedChatMemoryAttribution(malformed)).toBeNull();
+    }
+  });
   it("resolves the actual instance and preserves explicitly selected permissions", () => {
     expect(resolveLaunchSelection(selection, instances)).toMatchObject({
       permissionMode: "supervised",
@@ -119,15 +150,17 @@ describe("managed agent chat boundary", () => {
     ).toBe(false);
   });
   it("shows only visible active-generation transient output and reconciles provider history", () => {
-    const history = [{
-      id: "provider:answer",
-      role: "assistant" as const,
-      content: "Canonical answer",
-      createdAt: 10,
-      author: null,
-      providerTurnId: "turn-1",
-      providerItemId: "item-1"
-    }];
+    const history = [
+      {
+        id: "provider:answer",
+        role: "assistant" as const,
+        content: "Canonical answer",
+        createdAt: 10,
+        author: null,
+        providerTurnId: "turn-1",
+        providerItemId: "item-1"
+      }
+    ];
     const runtime = parseRuntime({
       execution,
       latestCommand: {
@@ -135,25 +168,37 @@ describe("managed agent chat boundary", () => {
         commandKind: "prompt",
         state: "running"
       },
-      items: [{
-        id: "runtime-1",
-        executionGeneration: execution.executionGeneration,
-        itemKind: "transient_output",
-        state: "pending",
-        providerTurnId: "turn-1",
-        providerItemId: "item-1",
-        updatedAt: new Date(20).toISOString(),
-        presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" },
-        payload: { text: "Partial answer" }
-      }]
+      items: [
+        {
+          id: "runtime-1",
+          executionGeneration: execution.executionGeneration,
+          itemKind: "transient_output",
+          state: "pending",
+          providerTurnId: "turn-1",
+          providerItemId: "item-1",
+          updatedAt: new Date(20).toISOString(),
+          presentation: {
+            mode: "expanded",
+            renderer: "message",
+            policyKey: "transient_output"
+          },
+          payload: { text: "Partial answer" }
+        }
+      ]
     });
-    expect(managedMessagesWithTransientOutput(execution.id, runtime, history)).toEqual(history);
-    expect(managedMessagesWithTransientOutput("other-execution", runtime, [])).toEqual([]);
+    expect(
+      managedMessagesWithTransientOutput(execution.id, runtime, history)
+    ).toEqual(history);
+    expect(
+      managedMessagesWithTransientOutput("other-execution", runtime, [])
+    ).toEqual([]);
     const uncertainRuntime: RuntimeSnapshot = {
       ...runtime,
       latestCommand: { ...runtime.latestCommand!, state: "indeterminate" }
     };
-    expect(managedMessagesWithTransientOutput(execution.id, uncertainRuntime, [])).toEqual([
+    expect(
+      managedMessagesWithTransientOutput(execution.id, uncertainRuntime, [])
+    ).toEqual([
       expect.objectContaining({
         id: "transient:runtime-1",
         content: "Partial answer",
@@ -161,44 +206,147 @@ describe("managed agent chat boundary", () => {
         providerItemId: "item-1"
       })
     ]);
-    expect(managedMessagesWithTransientOutput(execution.id, uncertainRuntime, history)).toEqual(history);
-    expect(managedMessagesWithTransientOutput(execution.id, {
-      ...runtime,
-      latestCommand: { ...runtime.latestCommand!, state: "completed" }
-    }, [])).toEqual([]);
+    expect(
+      managedMessagesWithTransientOutput(
+        execution.id,
+        uncertainRuntime,
+        history
+      )
+    ).toEqual(history);
+    expect(
+      managedMessagesWithTransientOutput(
+        execution.id,
+        {
+          ...runtime,
+          latestCommand: { ...runtime.latestCommand!, state: "completed" }
+        },
+        []
+      )
+    ).toEqual([]);
 
-    const visible = managedMessagesWithTransientOutput(execution.id, parseRuntime({
-      execution,
-      latestCommand: { id: "prompt-1", commandKind: "prompt", state: "dispatching" },
-      items: [{
-        id: "runtime-2",
-        executionGeneration: execution.executionGeneration,
-        itemKind: "transient_output",
-        state: "pending",
+    const visible = managedMessagesWithTransientOutput(
+      execution.id,
+      parseRuntime({
+        execution,
+        latestCommand: {
+          id: "prompt-1",
+          commandKind: "prompt",
+          state: "dispatching"
+        },
+        items: [
+          {
+            id: "runtime-2",
+            executionGeneration: execution.executionGeneration,
+            itemKind: "transient_output",
+            state: "pending",
+            providerTurnId: "turn-2",
+            providerItemId: "item-2",
+            presentation: {
+              mode: "expanded",
+              renderer: "message",
+              policyKey: "transient_output"
+            },
+            payload: {
+              text: "Partial /Users/jacobo/private.txt token=privatevalue"
+            }
+          }
+        ]
+      }),
+      []
+    );
+    expect(visible).toEqual([
+      expect.objectContaining({
+        id: "transient:runtime-2",
+        content: "Partial [local path hidden] token=[redacted]",
         providerTurnId: "turn-2",
-        providerItemId: "item-2",
-        presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" },
-        payload: { text: "Partial /Users/jacobo/private.txt token=privatevalue" }
-      }]
-    }), []);
-    expect(visible).toEqual([expect.objectContaining({
-      id: "transient:runtime-2",
-      content: "Partial [local path hidden] token=[redacted]",
-      providerTurnId: "turn-2",
-      providerItemId: "item-2"
-    })]);
+        providerItemId: "item-2"
+      })
+    ]);
+
+    const withheldFooter = managedMessagesWithTransientOutput(
+      execution.id,
+      parseRuntime({
+        execution,
+        latestCommand: {
+          id: "prompt-1",
+          commandKind: "prompt",
+          state: "dispatching"
+        },
+        items: [
+          {
+            id: "runtime-footer",
+            executionGeneration: execution.executionGeneration,
+            itemKind: "transient_output",
+            state: "pending",
+            providerTurnId: "turn-footer",
+            presentation: {
+              mode: "expanded",
+              renderer: "message",
+              policyKey: "transient_output"
+            },
+            payload: {
+              text: "Visible answer\n<!-- koed-memory-attribution:v1:partial"
+            }
+          }
+        ]
+      }),
+      []
+    );
+    expect(withheldFooter[0]?.content).toBe("Visible answer");
 
     for (const item of [
-      { id: "old", executionGeneration: 1, itemKind: "transient_output", state: "pending", providerTurnId: "old-turn", presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" }, payload: { text: "old generation" } },
-      { id: "hidden", executionGeneration: 2, itemKind: "transient_output", state: "pending", providerTurnId: "hidden-turn", presentation: { mode: "hidden", renderer: "message", policyKey: "transient_output" }, payload: { text: "hidden" } },
-      { id: "tool", executionGeneration: 2, itemKind: "transient_output", state: "pending", providerTurnId: "tool-turn", presentation: { mode: "expanded", renderer: "tool", policyKey: "transient_output" }, payload: { text: "tool details" } }
+      {
+        id: "old",
+        executionGeneration: 1,
+        itemKind: "transient_output",
+        state: "pending",
+        providerTurnId: "old-turn",
+        presentation: {
+          mode: "expanded",
+          renderer: "message",
+          policyKey: "transient_output"
+        },
+        payload: { text: "old generation" }
+      },
+      {
+        id: "hidden",
+        executionGeneration: 2,
+        itemKind: "transient_output",
+        state: "pending",
+        providerTurnId: "hidden-turn",
+        presentation: {
+          mode: "hidden",
+          renderer: "message",
+          policyKey: "transient_output"
+        },
+        payload: { text: "hidden" }
+      },
+      {
+        id: "tool",
+        executionGeneration: 2,
+        itemKind: "transient_output",
+        state: "pending",
+        providerTurnId: "tool-turn",
+        presentation: {
+          mode: "expanded",
+          renderer: "tool",
+          policyKey: "transient_output"
+        },
+        payload: { text: "tool details" }
+      }
     ]) {
       const guarded = parseRuntime({
         execution,
-        latestCommand: { id: "prompt-1", commandKind: "prompt", state: "running" },
+        latestCommand: {
+          id: "prompt-1",
+          commandKind: "prompt",
+          state: "running"
+        },
         items: [item]
       });
-      expect(managedMessagesWithTransientOutput(execution.id, guarded, [])).toEqual([]);
+      expect(
+        managedMessagesWithTransientOutput(execution.id, guarded, [])
+      ).toEqual([]);
     }
   });
 });
@@ -222,7 +370,11 @@ describe("managed conversation controls", () => {
     expect(
       parseRuntime({
         execution,
-        latestCommand: { id: "prompt-1", commandKind: "prompt", state: "queued" }
+        latestCommand: {
+          id: "prompt-1",
+          commandKind: "prompt",
+          state: "queued"
+        }
       }).latestCommand?.canCancelBeforeClaim
     ).toBe(false);
   });

@@ -45,6 +45,9 @@
       "@koed/shared/execution-checkout": [
         "packages/shared/src/execution-checkout.ts"
       ],
+      "@koed/shared/personal-memory-attribution": [
+        "packages/shared/src/personal-memory-attribution.ts"
+      ],
       "@koed/shared/personal-desktop": [
         "packages/shared/src/personal-desktop-contract.ts"
       ],

@@ -1,8 +1,9 @@
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { parseExecution, parseRuntime, record, validExecutionId, type AgentExecution, type LaunchInstance, type RuntimeItem, type RuntimeSnapshot } from "./managed-agent-chat.ts";
+import { parseExecution, parseManagedChatMemoryAttribution, parseRuntime, record, validExecutionId, type AgentExecution, type LaunchInstance, type ManagedChatMemoryAttribution, type RuntimeItem, type RuntimeSnapshot } from "./managed-agent-chat.ts";
 import type { AgentModelCapability } from "./agentIdentityEditor";
 import type { PendingChatRequest } from "./managed-chat-requests";
+import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
 
 export type HostedManagedExecution = AgentExecution & {
   createdAt: string;
@@ -17,18 +18,21 @@ export type HostedConversationMessage = {
   content: string;
   createdAt: string;
   author: { agentId: string; name: string } | null;
+  memory?: ManagedChatMemoryAttribution;
   providerTurnId?: string | null;
   providerItemId?: string | null;
 };
 
 type HostedRuntimeOutputSnapshot = Omit<RuntimeSnapshot, "items"> & {
-  items: Array<RuntimeItem & {
-    createdAt?: string;
-    updatedAt?: string;
-    providerTurnId?: string | null;
-    providerItemId?: string | null;
-    presentation?: RuntimeItem["presentation"] & { policyKey?: string };
-  }>;
+  items: Array<
+    RuntimeItem & {
+      createdAt?: string;
+      updatedAt?: string;
+      providerTurnId?: string | null;
+      providerItemId?: string | null;
+      presentation?: RuntimeItem["presentation"] & { policyKey?: string };
+    }
+  >;
 };
 
 /** Add visible current-generation provider output for active or uncertain prompts. */
@@ -43,13 +47,15 @@ export function hostedMessagesWithTransientOutput(
     (!hostedPromptOutcomeIsUncertain(runtime) &&
       (runtime.latestCommand?.commandKind !== "prompt" ||
         !["dispatching", "running"].includes(runtime.latestCommand.state)))
-  ) return messages;
+  )
+    return messages;
 
   const transient = runtime.items.flatMap((item) => {
     const presentation = item.presentation;
-    const text = typeof item.payload.text === "string"
-      ? hostedRuntimeText(item.payload.text)
-      : "";
+    const text =
+      typeof item.payload.text === "string"
+        ? hostedRuntimeText(item.payload.text)
+        : "";
     const providerTurnId = item.providerTurnId?.trim() || null;
     const providerItemId = item.providerItemId?.trim() || null;
     if (
@@ -61,31 +67,37 @@ export function hostedMessagesWithTransientOutput(
       !presentation.policyKey ||
       !text ||
       (!providerTurnId && !providerItemId)
-    ) return [];
+    )
+      return [];
 
-    return [{
-      id: `transient:${item.id}`,
-      role: "assistant" as const,
-      content: text,
-      createdAt: item.updatedAt ?? item.createdAt ?? "",
-      author: null,
-      providerTurnId,
-      providerItemId
-    }];
+    return [
+      {
+        id: `transient:${item.id}`,
+        role: "assistant" as const,
+        content: text,
+        createdAt: item.updatedAt ?? item.createdAt ?? "",
+        author: null,
+        providerTurnId,
+        providerItemId
+      }
+    ];
   });
 
   if (transient.length === 0) return messages;
-  const unmatched = transient.filter((output) => !messages.some((message) => {
-    if (message.role !== "assistant") return false;
-    if (output.providerItemId && message.providerItemId) {
-      return output.providerItemId === message.providerItemId;
-    }
-    return Boolean(
-      output.providerTurnId &&
-      message.providerTurnId &&
-      output.providerTurnId === message.providerTurnId
-    );
-  }));
+  const unmatched = transient.filter(
+    (output) =>
+      !messages.some((message) => {
+        if (message.role !== "assistant") return false;
+        if (output.providerItemId && message.providerItemId) {
+          return output.providerItemId === message.providerItemId;
+        }
+        return Boolean(
+          output.providerTurnId &&
+          message.providerTurnId &&
+          output.providerTurnId === message.providerTurnId
+        );
+      })
+  );
   return [...messages, ...unmatched].sort((left, right) =>
     left.createdAt.localeCompare(right.createdAt)
   );
@@ -138,9 +150,10 @@ export function hostedPromptOutcomeIsUncertain(
     | null
     | undefined
 ): boolean {
-  return runtime?.hasIndeterminatePrompt === true || (
-    runtime?.latestCommand?.commandKind === "prompt" &&
-    runtime.latestCommand.state === "indeterminate"
+  return (
+    runtime?.hasIndeterminatePrompt === true ||
+    (runtime?.latestCommand?.commandKind === "prompt" &&
+      runtime.latestCommand.state === "indeterminate")
   );
 }
 
@@ -228,7 +241,11 @@ export function hostedRecoveryDisposition(
 export type HostedLaunchOptions = {
   runners: Array<{ deviceId: string; displayName: string }>;
   instances: Array<
-    LaunchInstance & { runnerDeviceId: string; readiness: string; ready: boolean }
+    LaunchInstance & {
+      runnerDeviceId: string;
+      readiness: string;
+      ready: boolean;
+    }
   >;
   projects: Array<{ id: string; name: string }>;
 };
@@ -237,8 +254,9 @@ export const hostedLaunchInstancesForDevice = (
   options: HostedLaunchOptions | null,
   deviceId: string
 ): HostedLaunchOptions["instances"] =>
-  options?.instances.filter((instance) => instance.runnerDeviceId === deviceId) ??
-  [];
+  options?.instances.filter(
+    (instance) => instance.runnerDeviceId === deviceId
+  ) ?? [];
 
 export type HostedLaunchSelection = {
   projectId: string;
@@ -326,25 +344,36 @@ const assertExecutionId = (id: string) => {
 
 const hostedRuntimeText = (value: unknown): string => {
   if (typeof value !== "string") return "";
-  return value
+  return stripPersonalMemoryAttributionFooter(value)
     .slice(0, 12_000)
-    .replace(/(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu, "[local path hidden]")
-    .replace(/\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, "$1=[redacted]")
+    .replace(
+      /(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu,
+      "[local path hidden]"
+    )
+    .replace(
+      /\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+      "$1=[redacted]"
+    )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu, "[redacted]");
+    .replace(
+      /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu,
+      "[redacted]"
+    );
 };
 
-const hostedRuntimeValue = (
-  value: unknown,
-  key = "",
-  depth = 0
-): unknown => {
-  if (/api[_ -]?key|token|password|secret|credential|authorization|private[_ -]?key/iu.test(key))
+const hostedRuntimeValue = (value: unknown, key = "", depth = 0): unknown => {
+  if (
+    /api[_ -]?key|token|password|secret|credential|authorization|private[_ -]?key/iu.test(
+      key
+    )
+  )
     return "[redacted]";
   if (typeof value === "string") return hostedRuntimeText(value);
   if (Array.isArray(value)) {
     if (depth >= 5) return "[details omitted]";
-    return value.slice(0, 64).map((entry) => hostedRuntimeValue(entry, key, depth + 1));
+    return value
+      .slice(0, 64)
+      .map((entry) => hostedRuntimeValue(entry, key, depth + 1));
   }
   if (!record(value)) return value;
   if (depth >= 5) return "[details omitted]";
@@ -360,13 +389,11 @@ const hostedRuntimeValue = (
 
 const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
   const payload: Record<string, unknown> = {};
-  for (const key of [
-    "reason",
-    "toolName",
-    "command",
-    "diff"
-  ] as const) {
-    if (typeof item.payload[key] === "string" || Array.isArray(item.payload[key]))
+  for (const key of ["reason", "toolName", "command", "diff"] as const) {
+    if (
+      typeof item.payload[key] === "string" ||
+      Array.isArray(item.payload[key])
+    )
       payload[key] = hostedRuntimeValue(item.payload[key], key);
   }
   const presentation = item.presentation as
@@ -380,12 +407,23 @@ const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
     typeof presentation.policyKey === "string" &&
     presentation.policyKey.length > 0 &&
     typeof item.payload.text === "string"
-  ) payload.text = hostedRuntimeText(item.payload.text);
+  )
+    payload.text = hostedRuntimeText(item.payload.text);
   if (record(item.payload.permissions))
-    payload.permissions = hostedRuntimeValue(item.payload.permissions, "permissions");
+    payload.permissions = hostedRuntimeValue(
+      item.payload.permissions,
+      "permissions"
+    );
   if (record(item.payload.input)) {
     const input: Record<string, unknown> = {};
-    for (const key of ["command", "cmd", "file_path", "path", "patch", "diff"] as const) {
+    for (const key of [
+      "command",
+      "cmd",
+      "file_path",
+      "path",
+      "patch",
+      "diff"
+    ] as const) {
       if (item.payload.input[key] !== undefined)
         input[key] = hostedRuntimeValue(item.payload.input[key], key);
     }
@@ -419,7 +457,9 @@ const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
                           label: hostedRuntimeText(option.label),
                           ...(typeof option.description === "string"
                             ? {
-                                description: hostedRuntimeText(option.description)
+                                description: hostedRuntimeText(
+                                  option.description
+                                )
                               }
                             : {})
                         }
@@ -457,7 +497,10 @@ export function hasMeaningfulHostedApprovalDetails(
     if (!usefulLabels.has(detail.label)) return false;
     const content = detail.text
       .replace(/\[(?:local path hidden|redacted)\]/giu, "")
-      .replace(/\b(?:api[_ -]?key|token|password|secret|credential)\s*[:=]?/giu, "")
+      .replace(
+        /\b(?:api[_ -]?key|token|password|secret|credential)\s*[:=]?/giu,
+        ""
+      )
       .replace(/[^\p{L}\p{N}]/gu, "");
     return content.length > 0;
   });
@@ -855,6 +898,11 @@ export function parseHostedConversationState(
       typeof value.createdAt !== "string"
     )
       return [];
+    const hasMemory = Object.prototype.hasOwnProperty.call(value, "memory");
+    const memory =
+      hasMemory && value.role === "assistant"
+        ? parseManagedChatMemoryAttribution(value.memory)
+        : undefined;
     const author = record(value.author)
       ? typeof value.author.agentId === "string" &&
         typeof value.author.name === "string"
@@ -866,14 +914,18 @@ export function parseHostedConversationState(
         id: value.id,
         role: value.role as "user" | "assistant",
         content:
-          value.content +
-          (value.truncated === true ? "\n[Output truncated]" : ""),
+          stripPersonalMemoryAttributionFooter(value.content, {
+            mode: "final"
+          }) + (value.truncated === true ? "\n[Output truncated]" : ""),
         createdAt: value.createdAt,
         author,
-        ...(typeof value.providerTurnId === "string" || value.providerTurnId === null
+        ...(memory ? { memory } : {}),
+        ...(typeof value.providerTurnId === "string" ||
+        value.providerTurnId === null
           ? { providerTurnId: value.providerTurnId }
           : {}),
-        ...(typeof value.providerItemId === "string" || value.providerItemId === null
+        ...(typeof value.providerItemId === "string" ||
+        value.providerItemId === null
           ? { providerItemId: value.providerItemId }
           : {})
       }
@@ -1111,10 +1163,18 @@ export async function loadHostedManagedConversationAccess(
     { signal },
     fetcher
   );
-  if (!record(payload.user) || typeof payload.user.id !== "string" || !payload.user.id.trim())
-    throw new HostedManagedChatError("The signed-in Conversation owner is unavailable.");
+  if (
+    !record(payload.user) ||
+    typeof payload.user.id !== "string" ||
+    !payload.user.id.trim()
+  )
+    throw new HostedManagedChatError(
+      "The signed-in Conversation owner is unavailable."
+    );
   if (typeof payload.backendId !== "string" || !payload.backendId.trim())
-    throw new HostedManagedChatError("The Conversation backend identity is unavailable.");
+    throw new HostedManagedChatError(
+      "The Conversation backend identity is unavailable."
+    );
   return { ownerId: payload.user.id, backendId: payload.backendId.trim() };
 }
 
@@ -1132,7 +1192,9 @@ export async function lookupHostedConversationRecovery(
   fetcher: typeof fetch = fetch
 ): Promise<HostedConversationRecoveryLookup> {
   if (!input.idempotencyKey.trim())
-    throw new HostedManagedChatError("This Conversation send identity is unavailable.");
+    throw new HostedManagedChatError(
+      "This Conversation send identity is unavailable."
+    );
   if (
     input.kind === "prompt" &&
     (!validExecutionId(input.clientUserMessageId) ||
@@ -1140,7 +1202,9 @@ export async function lookupHostedConversationRecovery(
       !Number.isSafeInteger(input.executionGeneration) ||
       input.executionGeneration < 1)
   )
-    throw new HostedManagedChatError("This Conversation send identity is outdated.");
+    throw new HostedManagedChatError(
+      "This Conversation send identity is outdated."
+    );
   const query = new URLSearchParams({
     kind: input.kind,
     idempotencyKey: input.idempotencyKey,
@@ -1168,19 +1232,27 @@ export async function lookupHostedConversationRecovery(
     typeof payload.command.id !== "string" ||
     !validExecutionId(payload.command.id) ||
     payload.command.executionId !== payload.execution.id ||
-    payload.command.executionGeneration !== payload.execution.executionGeneration ||
+    payload.command.executionGeneration !==
+      payload.execution.executionGeneration ||
     payload.command.commandKind !== input.kind ||
     typeof payload.command.state !== "string" ||
-    !(payload.command.clientUserMessageId === null || typeof payload.command.clientUserMessageId === "string")
+    !(
+      payload.command.clientUserMessageId === null ||
+      typeof payload.command.clientUserMessageId === "string"
+    )
   )
-    throw new HostedManagedChatError("Koed returned invalid Conversation recovery state.");
+    throw new HostedManagedChatError(
+      "Koed returned invalid Conversation recovery state."
+    );
   if (
     input.kind === "prompt" &&
     (payload.execution.id !== input.executionId ||
       payload.execution.executionGeneration !== input.executionGeneration ||
       payload.command.clientUserMessageId !== input.clientUserMessageId)
   )
-    throw new HostedManagedChatError("Koed returned mismatched Conversation recovery state.");
+    throw new HostedManagedChatError(
+      "Koed returned mismatched Conversation recovery state."
+    );
   return {
     found: true,
     executionId: payload.execution.id,
@@ -1189,7 +1261,15 @@ export async function lookupHostedConversationRecovery(
     commandState: payload.command.state,
     commandKind: input.kind,
     clientUserMessageId: payload.command.clientUserMessageId as string | null,
-    ...(input.kind === "start" ? { initialPromptCommandId: typeof payload.command.initialPromptCommandId === "string" && validExecutionId(payload.command.initialPromptCommandId) ? payload.command.initialPromptCommandId : null } : {})
+    ...(input.kind === "start"
+      ? {
+          initialPromptCommandId:
+            typeof payload.command.initialPromptCommandId === "string" &&
+            validExecutionId(payload.command.initialPromptCommandId)
+              ? payload.command.initialPromptCommandId
+              : null
+        }
+      : {})
   };
 }
 
@@ -1207,7 +1287,12 @@ export async function respondToHostedRuntimeItem(
   if (
     !validExecutionId(item.id) ||
     item.executionGeneration !== execution.executionGeneration ||
-    !["command_approval", "file_approval", "permissions_approval", "user_input"].includes(item.itemKind)
+    ![
+      "command_approval",
+      "file_approval",
+      "permissions_approval",
+      "user_input"
+    ].includes(item.itemKind)
   )
     throw new HostedManagedChatError(
       "This Conversation request is outdated. Refresh before responding."

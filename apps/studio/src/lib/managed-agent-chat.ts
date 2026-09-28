@@ -1,4 +1,5 @@
 import type { AgentModelCapability } from "./agentIdentityEditor";
+import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
 
 export type ExecutionSettings = {
   model: string;
@@ -42,24 +43,67 @@ export type RuntimeSnapshot = {
   } | null;
 };
 
+export type ManagedChatMemoryCitation = Readonly<{ label: string }>;
+export type ManagedChatMemoryAttribution = Readonly<{
+  used: boolean;
+  status: "available" | "unavailable";
+  citations: readonly ManagedChatMemoryCitation[];
+}>;
+
+/** Parse only server-supplied, owner-authorized citation labels. */
+export function parseManagedChatMemoryAttribution(
+  value: unknown
+): ManagedChatMemoryAttribution | null {
+  if (
+    !record(value) ||
+    typeof value.used !== "boolean" ||
+    (value.status !== "available" && value.status !== "unavailable") ||
+    !Array.isArray(value.citations)
+  )
+    return null;
+
+  const citations: ManagedChatMemoryCitation[] = [];
+  for (const citation of value.citations) {
+    if (
+      !record(citation) ||
+      typeof citation.label !== "string" ||
+      citation.label.trim().length === 0
+    )
+      return null;
+    citations.push({ label: citation.label });
+  }
+  if (!value.used && citations.length > 0) return null;
+  return { used: value.used, status: value.status, citations };
+}
+
 export type ManagedChatHistoryMessage = Readonly<{
   id: string;
   role: "user" | "assistant";
   content: string;
   createdAt: number;
   author?: Readonly<{ agentId: string; name: string }> | null;
+  memory?: ManagedChatMemoryAttribution;
   providerTurnId?: string | null;
   providerItemId?: string | null;
 }>;
 
 const managedRuntimeText = (value: unknown): string => {
   if (typeof value !== "string") return "";
-  return value
+  return stripPersonalMemoryAttributionFooter(value)
     .slice(0, 12_000)
-    .replace(/(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu, "[local path hidden]")
-    .replace(/\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, "$1=[redacted]")
+    .replace(
+      /(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu,
+      "[local path hidden]"
+    )
+    .replace(
+      /\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+      "$1=[redacted]"
+    )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu, "[redacted]");
+    .replace(
+      /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu,
+      "[redacted]"
+    );
 };
 
 /** Add only this selected Conversation's active or uncertain approved provider output. */
@@ -72,8 +116,11 @@ export function managedMessagesWithTransientOutput(
     !selectedExecutionId ||
     runtime?.execution.id !== selectedExecutionId ||
     runtime.latestCommand?.commandKind !== "prompt" ||
-    !["dispatching", "running", "indeterminate"].includes(runtime.latestCommand.state)
-  ) return messages;
+    !["dispatching", "running", "indeterminate"].includes(
+      runtime.latestCommand.state
+    )
+  )
+    return messages;
 
   const transient = runtime.items.flatMap((item) => {
     const presentation = item.presentation;
@@ -89,29 +136,35 @@ export function managedMessagesWithTransientOutput(
       !presentation.policyKey ||
       !text ||
       (!providerTurnId && !providerItemId)
-    ) return [];
+    )
+      return [];
 
     const parsedTimestamp = Date.parse(item.updatedAt ?? item.createdAt ?? "");
-    return [{
-      id: `transient:${item.id}`,
-      role: "assistant" as const,
-      content: text,
-      createdAt: Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0,
-      author: null,
-      providerTurnId,
-      providerItemId
-    }];
+    return [
+      {
+        id: `transient:${item.id}`,
+        role: "assistant" as const,
+        content: text,
+        createdAt: Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0,
+        author: null,
+        providerTurnId,
+        providerItemId
+      }
+    ];
   });
-  const unmatched = transient.filter((output) => !messages.some((message) => {
-    if (message.role !== "assistant") return false;
-    if (output.providerItemId && message.providerItemId)
-      return output.providerItemId === message.providerItemId;
-    return Boolean(
-      output.providerTurnId &&
-      message.providerTurnId &&
-      output.providerTurnId === message.providerTurnId
-    );
-  }));
+  const unmatched = transient.filter(
+    (output) =>
+      !messages.some((message) => {
+        if (message.role !== "assistant") return false;
+        if (output.providerItemId && message.providerItemId)
+          return output.providerItemId === message.providerItemId;
+        return Boolean(
+          output.providerTurnId &&
+          message.providerTurnId &&
+          output.providerTurnId === message.providerTurnId
+        );
+      })
+  );
   return unmatched.length ? [...messages, ...unmatched] : messages;
 }
 
@@ -119,9 +172,11 @@ export function managedMessagesWithTransientOutput(
 export function canCancelManagedConversationPrompt(
   command: RuntimeSnapshot["latestCommand"] | undefined
 ): boolean {
-  return command?.commandKind === "prompt" &&
+  return (
+    command?.commandKind === "prompt" &&
     command.state === "queued" &&
-    command.canCancelBeforeClaim === true;
+    command.canCancelBeforeClaim === true
+  );
 }
 
 export function managedConversationControls(

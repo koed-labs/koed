@@ -63,6 +63,10 @@
       "types": "./dist/managed-terminal.d.ts",
       "import": "./dist/managed-terminal.js"
     },
+    "./personal-memory-attribution": {
+      "types": "./dist/personal-memory-attribution.d.ts",
+      "import": "./dist/personal-memory-attribution.js"
+    },
     "./source-control": {
       "types": "./dist/source-control.d.ts",
       "import": "./dist/source-control.js"

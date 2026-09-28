@@ -33,6 +33,7 @@ import {
   managedRequest,
   managedConversationControls,
   managedMessagesWithTransientOutput,
+  parseManagedChatMemoryAttribution,
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
@@ -42,6 +43,7 @@ import {
   type LaunchInstance,
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
+import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
 import {
   createLocalManagedChatRecoveryStore,
   managedChatCommandMatchesPendingPrompt,
@@ -164,7 +166,10 @@ export function LiveAgentChat({
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
   const recoveryStore = useRef<LocalRecoveryStore | null>(null);
-  const recoveryIdentity = useRef<{ ownerId: string; backendId: string } | null>(null);
+  const recoveryIdentity = useRef<{
+    ownerId: string;
+    backendId: string;
+  } | null>(null);
   const latestDraft = useRef(initialDraft);
   const operationRef = useRef(false);
   const refreshedCompletedMoveRef = useRef<string | null>(null);
@@ -247,7 +252,7 @@ export function LiveAgentChat({
           const editedDuringLoad = latestDraft.current !== initialDraft;
           const draft = editedDuringLoad
             ? latestDraft.current
-            : recoveryRecord?.draft ?? latestDraft.current;
+            : (recoveryRecord?.draft ?? latestDraft.current);
           if (editedDuringLoad || (!recoveryRecord && draft)) {
             recoveryStore.current?.write({
               schemaVersion: 1,
@@ -265,17 +270,33 @@ export function LiveAgentChat({
             const operation = recoveryRecord.pendingOperation;
             const query = new URLSearchParams({
               kind: operation.kind,
-              idempotencyKey: operation.kind === "start"
-                ? operation.startIdempotencyKey
-                : operation.promptIdempotencyKey
+              idempotencyKey:
+                operation.kind === "start"
+                  ? operation.startIdempotencyKey
+                  : operation.promptIdempotencyKey
             });
-            if (operation.kind === "prompt" && initialExecutionId && operation.executionGeneration !== undefined) {
+            if (
+              operation.kind === "prompt" &&
+              initialExecutionId &&
+              operation.executionGeneration !== undefined
+            ) {
               query.set("clientUserMessageId", operation.clientUserMessageId);
               query.set("executionId", initialExecutionId);
-              query.set("executionGeneration", String(operation.executionGeneration));
+              query.set(
+                "executionGeneration",
+                String(operation.executionGeneration)
+              );
             }
-            if (operation.kind === "start" || (initialExecutionId && operation.executionGeneration !== undefined)) {
-              void managedRequest(`/recovery/lookup?${query}`, undefined, controller.signal)
+            if (
+              operation.kind === "start" ||
+              (initialExecutionId &&
+                operation.executionGeneration !== undefined)
+            ) {
+              void managedRequest(
+                `/recovery/lookup?${query}`,
+                undefined,
+                controller.signal
+              )
                 .then(async (result) => {
                   if (controller.signal.aborted) return;
                   if (result.found === false) {
@@ -291,14 +312,19 @@ export function LiveAgentChat({
                   if (result.found !== true) {
                     setRecoveryBlocked(true);
                     setStatus("The previous send has an unconfirmed outcome.");
-                    setError("Studio retained the draft and send identity because the status response was not understood.");
+                    setError(
+                      "Studio retained the draft and send identity because the status response was not understood."
+                    );
                     return;
                   }
                   const execution = parseExecution(result.execution);
-                  const recoveredState = record(result.command) && typeof result.command.state === "string"
-                    ? result.command.state
-                    : "unknown";
-                  const disposition = managedChatRecoveryCommandDisposition(recoveredState);
+                  const recoveredState =
+                    record(result.command) &&
+                    typeof result.command.state === "string"
+                      ? result.command.state
+                      : "unknown";
+                  const disposition =
+                    managedChatRecoveryCommandDisposition(recoveredState);
                   if (operation.kind === "start") {
                     const executionStore = activeRecoveryStore(execution.id);
                     if (executionStore && initialExecutionId !== execution.id) {
@@ -314,10 +340,15 @@ export function LiveAgentChat({
                     setExecutionId(execution.id);
                     if (disposition === "uncertain") {
                       setRecoveryBlocked(true);
-                      setStatus("The previous chat launch has an unconfirmed outcome.");
-                      setError("Studio retained the draft and send identity. Review the runtime before starting another turn.");
+                      setStatus(
+                        "The previous chat launch has an unconfirmed outcome."
+                      );
+                      setError(
+                        "Studio retained the draft and send identity. Review the runtime before starting another turn."
+                      );
                     } else {
-                      const currentRecord = recoveryStore.current?.read() ?? recoveryRecord;
+                      const currentRecord =
+                        recoveryStore.current?.read() ?? recoveryRecord;
                       const settledRecord = settleManagedChatStartRecovery(
                         currentRecord,
                         recoveredState
@@ -333,22 +364,37 @@ export function LiveAgentChat({
                           : "Chat launch found; your draft is ready to continue."
                       );
                     }
-                    router.replace(`/?chat=1&execution=${encodeURIComponent(execution.id)}`);
+                    router.replace(
+                      `/?chat=1&execution=${encodeURIComponent(execution.id)}`
+                    );
                     return;
                   }
-                  if (execution.id !== initialExecutionId) throw new Error("Recovered send belongs to a different chat.");
+                  if (execution.id !== initialExecutionId)
+                    throw new Error(
+                      "Recovered send belongs to a different chat."
+                    );
                   if (disposition === "uncertain") {
                     setRecoveryBlocked(true);
-                    setStatus("The previous continuation has an unconfirmed outcome.");
-                    setError("Studio retained the draft and send identity. Review the runtime before starting another turn.");
+                    setStatus(
+                      "The previous continuation has an unconfirmed outcome."
+                    );
+                    setError(
+                      "Studio retained the draft and send identity. Review the runtime before starting another turn."
+                    );
                     return;
                   }
                   if (disposition === "failed" || disposition === "canceled") {
                     setRecoveryBlocked(false);
-                    const preservedDraft = recoveryStore.current?.read()?.draft ?? operation.prompt;
-                    recoveryStore.current?.write({ schemaVersion: 1, draft: preservedDraft });
+                    const preservedDraft =
+                      recoveryStore.current?.read()?.draft ?? operation.prompt;
+                    recoveryStore.current?.write({
+                      schemaVersion: 1,
+                      draft: preservedDraft
+                    });
                     setRecoveredDraft(preservedDraft);
-                    setStatus(`The previous continuation ${disposition}. Its draft is retained.`);
+                    setStatus(
+                      `The previous continuation ${disposition}. Its draft is retained.`
+                    );
                     return;
                   }
                   settleRecoveredSend(operation.prompt);
@@ -362,7 +408,8 @@ export function LiveAgentChat({
                     // Network failures can still be retried explicitly with the
                     // retained idempotency identity.
                     const invalidRecoveryState =
-                      cause instanceof Error && /invalid recovery state/i.test(cause.message);
+                      cause instanceof Error &&
+                      /invalid recovery state/i.test(cause.message);
                     setRecoveryBlocked(invalidRecoveryState);
                     setStatus("Previous send status could not be checked.");
                     setError(
@@ -375,7 +422,9 @@ export function LiveAgentChat({
             } else {
               setStatus("Previous send status is not confirmed.");
               setRecoveryBlocked(false);
-              setError("Retry the retained prompt to continue with the same send identity; no message was sent again automatically.");
+              setError(
+                "Retry the retained prompt to continue with the same send identity; no message was sent again automatically."
+              );
             }
           }
         }
@@ -464,6 +513,14 @@ export function LiveAgentChat({
               typeof message.content !== "string"
             )
               return [];
+            const hasMemory = Object.prototype.hasOwnProperty.call(
+              message,
+              "memory"
+            );
+            const memory =
+              hasMemory && message.role === "assistant"
+                ? parseManagedChatMemoryAttribution(message.memory)
+                : undefined;
             const sourceAuthor = message.author;
             const author =
               record(sourceAuthor) &&
@@ -480,17 +537,22 @@ export function LiveAgentChat({
                 id: message.id,
                 role: message.role as "user" | "assistant",
                 content:
-                  message.content +
+                  stripPersonalMemoryAttributionFooter(message.content, {
+                    mode: "final"
+                  }) +
                   (message.truncated === true ? "\n[Output truncated]" : ""),
                 createdAt:
                   typeof message.createdAt === "string"
                     ? Date.parse(message.createdAt)
                     : 0,
                 author,
-                ...(typeof message.providerTurnId === "string" || message.providerTurnId === null
+                ...(memory ? { memory } : {}),
+                ...(typeof message.providerTurnId === "string" ||
+                message.providerTurnId === null
                   ? { providerTurnId: message.providerTurnId }
                   : {}),
-                ...(typeof message.providerItemId === "string" || message.providerItemId === null
+                ...(typeof message.providerItemId === "string" ||
+                message.providerItemId === null
                   ? { providerItemId: message.providerItemId }
                   : {})
               }
@@ -536,17 +598,27 @@ export function LiveAgentChat({
       ) {
         // A mount-time lookup can race command persistence. Runtime is the
         // authoritative second check for this exact message identity.
-        const disposition = managedChatRecoveryCommandDisposition(command.state);
+        const disposition = managedChatRecoveryCommandDisposition(
+          command.state
+        );
         if (disposition === "uncertain") {
           setRecoveryBlocked(true);
           setStatus("The previous continuation has an unconfirmed outcome.");
-          setError("Studio retained the draft and send identity because the runtime reported an unknown command state.");
+          setError(
+            "Studio retained the draft and send identity because the runtime reported an unknown command state."
+          );
         } else if (disposition === "failed" || disposition === "canceled") {
-          const retainedDraft = recoveryStore.current?.read()?.draft ?? pendingRecovery.prompt;
-          recoveryStore.current?.write({ schemaVersion: 1, draft: retainedDraft });
+          const retainedDraft =
+            recoveryStore.current?.read()?.draft ?? pendingRecovery.prompt;
+          recoveryStore.current?.write({
+            schemaVersion: 1,
+            draft: retainedDraft
+          });
           setRecoveredDraft(retainedDraft);
           setRecoveryBlocked(false);
-          setStatus(`The previous continuation ${disposition}. Its draft is retained.`);
+          setStatus(
+            `The previous continuation ${disposition}. Its draft is retained.`
+          );
           setError(null);
         } else {
           settleRecoveredSend(pendingRecovery.prompt);
@@ -853,7 +925,9 @@ export function LiveAgentChat({
     if (!signal || signal.aborted)
       throw new Error("The chat is no longer active.");
     if (!recoveryStore.current)
-      throw new Error("Studio could not establish device recovery for this chat. Nothing was sent.");
+      throw new Error(
+        "Studio could not establish device recovery for this chat. Nothing was sent."
+      );
     operationRef.current = true;
     setSending(true);
     setError(null);
@@ -873,10 +947,12 @@ export function LiveAgentChat({
       const settings = resolveLaunchSelection(selection, latestOptions);
       const recoveryRecord = recoveryStore.current?.read() ?? null;
       const recovered = recoveryRecord?.pendingOperation;
-      const operationExecutionId = executionId ?? pending.current?.executionId ?? null;
+      const operationExecutionId =
+        executionId ?? pending.current?.executionId ?? null;
       const operationKind = operationExecutionId ? "prompt" : "start";
       const knownExecution =
-        operationExecutionId && runtimeRef.current?.execution.id === operationExecutionId
+        operationExecutionId &&
+        runtimeRef.current?.execution.id === operationExecutionId
           ? runtimeRef.current.execution
           : null;
       const requestFingerprint = managedChatSendRequestFingerprint({
@@ -914,7 +990,9 @@ export function LiveAgentChat({
         (recovered.state === "pending" || recovered.state === "reconciling") &&
         !reusableIdentity
       ) {
-        throw new Error("Studio has not confirmed the previous send. Restore its original prompt, Project, Agent, model, and permission settings before retrying.");
+        throw new Error(
+          "Studio has not confirmed the previous send. Restore its original prompt, Project, Agent, model, and permission settings before retrying."
+        );
       }
       if (reusableIdentity) {
         pending.current = {
@@ -941,8 +1019,12 @@ export function LiveAgentChat({
           startIdempotencyKey: request.startId,
           promptIdempotencyKey: request.id,
           clientUserMessageId: request.messageId,
-          ...(executionId && runtimeRef.current?.execution.executionGeneration !== undefined
-            ? { executionGeneration: runtimeRef.current.execution.executionGeneration }
+          ...(executionId &&
+          runtimeRef.current?.execution.executionGeneration !== undefined
+            ? {
+                executionGeneration:
+                  runtimeRef.current.execution.executionGeneration
+              }
             : {}),
           prompt: text,
           ...(persistedRequestFingerprint
@@ -956,7 +1038,9 @@ export function LiveAgentChat({
       try {
         await recoveryStore.current?.flush?.();
       } catch {
-        throw new Error("Studio could not save the send identity on this device. Nothing was sent; try again.");
+        throw new Error(
+          "Studio could not save the send identity on this device. Nothing was sent; try again."
+        );
       }
       let id = executionId ?? request.executionId;
       if (!id) {
@@ -1003,14 +1087,22 @@ export function LiveAgentChat({
       ) {
         if (snapshot.latestCommand.state === "indeterminate") {
           setRecoveryBlocked(true);
-          throw new Error("The previous continuation has an uncertain outcome. Its draft and send identity are retained; review the runtime before another turn.");
+          throw new Error(
+            "The previous continuation has an uncertain outcome. Its draft and send identity are retained; review the runtime before another turn."
+          );
         }
         if (["failed", "canceled"].includes(snapshot.latestCommand.state)) {
           pending.current = null;
-          const preservedDraft = recoveryStore.current?.read()?.draft ?? latestDraft.current;
-          recoveryStore.current?.write({ schemaVersion: 1, draft: preservedDraft });
+          const preservedDraft =
+            recoveryStore.current?.read()?.draft ?? latestDraft.current;
+          recoveryStore.current?.write({
+            schemaVersion: 1,
+            draft: preservedDraft
+          });
           setRecoveredDraft(preservedDraft);
-          throw new Error(`The previous continuation ${snapshot.latestCommand.state}. Its draft is retained.`);
+          throw new Error(
+            `The previous continuation ${snapshot.latestCommand.state}. Its draft is retained.`
+          );
         }
         pending.current = null;
         settleRecoveredSend(text);
@@ -1073,7 +1165,9 @@ export function LiveAgentChat({
         recovered.requestFingerprint !== undefined &&
         recovered.requestFingerprint !== exactRequestFingerprint
       ) {
-        throw new Error("The previous send settings no longer match this conversation. Its identity is retained; restore the original settings before retrying.");
+        throw new Error(
+          "The previous send settings no longer match this conversation. Its identity is retained; restore the original settings before retrying."
+        );
       }
       const expected = {
         model: current.model,
@@ -1104,7 +1198,9 @@ export function LiveAgentChat({
       try {
         await recoveryStore.current?.flush?.();
       } catch {
-        throw new Error("Studio could not save the send identity on this device. Nothing was sent; try again.");
+        throw new Error(
+          "Studio could not save the send identity on this device. Nothing was sent; try again."
+        );
       }
       const result = await managedRequest(
         `/${id}/prompts`,
@@ -1156,7 +1252,9 @@ export function LiveAgentChat({
         setError(message);
         setStatus("");
         if (startedNewExecution && navigableExecutionId)
-          router.replace(`/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`);
+          router.replace(
+            `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`
+          );
       }
       throw cause;
     } finally {
@@ -1177,7 +1275,8 @@ export function LiveAgentChat({
       !runtime ||
       !executionId ||
       !managedConversationControls(runtime.latestCommand).canInterrupt
-    ) return;
+    )
+      return;
     try {
       await managedRequest(`/${executionId}/interrupt`, {
         executionGeneration: runtime.execution.executionGeneration,
@@ -1200,14 +1299,18 @@ export function LiveAgentChat({
       !latest ||
       latest.commandKind !== "prompt" ||
       !["queued", "pending"].includes(latest.state)
-    ) return;
+    )
+      return;
     try {
       const result = await managedRequest(
         `/${executionId}/prompts/${latest.id}/cancel`,
         { executionGeneration: runtime.execution.executionGeneration }
       );
       const command = record(result.command) ? result.command : null;
-      const state = command && typeof command.state === "string" ? command.state : "unknown";
+      const state =
+        command && typeof command.state === "string"
+          ? command.state
+          : "unknown";
       if (state === "canceled") {
         setStatus("Pending continuation canceled.");
         setSending(false);
@@ -1216,9 +1319,16 @@ export function LiveAgentChat({
           `The continuation was not canceled (state: ${state}). If the turn has started, use Stop to interrupt it.`
         );
       }
-      await refresh(executionId, lifecycle.current?.signal ?? new AbortController().signal);
+      await refresh(
+        executionId,
+        lifecycle.current?.signal ?? new AbortController().signal
+      );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not cancel the pending continuation.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not cancel the pending continuation."
+      );
     }
   };
   const endSession = async () => {
@@ -1238,7 +1348,11 @@ export function LiveAgentChat({
         setSending(false);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Session end was not confirmed.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Session end was not confirmed."
+      );
     }
   };
   const chooseAgent = (id: string | null) => {

@@ -126,7 +126,10 @@ describe("managed Conversation prompt cancellation", () => {
         }
         return { rows: [] };
       }
-      if (sql.includes("select id, state") && sql.includes("managed_conversation_commands")) {
+      if (
+        sql.includes("select id, state") &&
+        sql.includes("managed_conversation_commands")
+      ) {
         return { rows: [{ id: command.id, state: command.state }] };
       }
       return { rows: [] };
@@ -163,7 +166,11 @@ describe("managed Conversation prompt cancellation", () => {
       sql.includes("update managed_conversation_commands")
     )?.[0];
     expect(cancelSql).toContain("and attempts = 0");
-    expect(command).toMatchObject({ state: "queued", attempts: 1, result: checkpoint });
+    expect(command).toMatchObject({
+      state: "queued",
+      attempts: 1,
+      result: checkpoint
+    });
     expect(
       query.mock.calls.some(([sql]) =>
         sql.includes("update personal_agent_execution_jobs")
@@ -185,7 +192,9 @@ describe("managed Conversation prompt cancellation", () => {
     ).resolves.toEqual({ id: commandId, state: "canceled" });
 
     expect(command).toMatchObject({ state: "canceled", attempts: 0 });
-    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(
+      true
+    );
   });
 
   it("returns the persisted dispatching state when a runner claim wins the race", async () => {
@@ -203,7 +212,9 @@ describe("managed Conversation prompt cancellation", () => {
     ).resolves.toEqual({ id: commandId, state: "dispatching" });
 
     expect(command).toMatchObject({ state: "dispatching", attempts: 1 });
-    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(
+      false
+    );
   });
 });
 
@@ -213,6 +224,22 @@ describe("managed Conversation start prompt dispatch", () => {
   const startCommandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
   const leaseToken = "lease-token";
   const clientUserMessageId = "0ebcc84e-1028-493b-8c54-e41f61f76818";
+  const personalMemoryContext = {
+    schemaVersion: 1,
+    status: "available",
+    attributionNonce: "99999999-9999-4999-8999-999999999999",
+    searchDomain: "global",
+    projectId: null,
+    evidence: [
+      {
+        nodeId: "private-node-id",
+        sourceType: "memory_event",
+        sourceId: "private-source-id",
+        summaryText: "Private remembered detail",
+        citation: { nodeId: "private-node-id", visibility: "personal" }
+      }
+    ]
+  };
   const provider = createLocalTestKeyEnvelopeEncryptionProvider(
     Buffer.alloc(32, 7).toString("base64")
   );
@@ -226,9 +253,13 @@ describe("managed Conversation start prompt dispatch", () => {
           model: "claude-test",
           reasoningEffort: null,
           permissionMode: "supervised"
-        }
+        },
+        personalMemoryContext
       }),
-      scope: { tenantId: ownerUserId, objectClass: "managed_conversation_prompt" },
+      scope: {
+        tenantId: ownerUserId,
+        objectClass: "managed_conversation_prompt"
+      },
       provenance: {
         rowFamily: "managed_conversation_commands",
         sourceId: startCommandId
@@ -274,7 +305,10 @@ describe("managed Conversation start prompt dispatch", () => {
           ]
         };
       }
-      if (sql.includes("from managed_conversation_executions") && sql.includes("for update")) {
+      if (
+        sql.includes("from managed_conversation_executions") &&
+        sql.includes("for update")
+      ) {
         return {
           rows: [
             {
@@ -287,7 +321,8 @@ describe("managed Conversation start prompt dispatch", () => {
           ]
         };
       }
-      if (sql.includes("coalesce(max(sequence)")) return { rows: [{ sequence: 4 }] };
+      if (sql.includes("coalesce(max(sequence)"))
+        return { rows: [{ sequence: 4 }] };
       if (sql.includes("insert into managed_conversation_commands")) {
         childInsertParams = params;
         return { rows: [{ id: "child-command-id" }] };
@@ -317,13 +352,22 @@ describe("managed Conversation start prompt dispatch", () => {
       })
     ).resolves.toBe(false);
 
-    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into managed_conversation_commands"))).toHaveLength(1);
-    expect(childInsertParams?.[3]).toBe(`managed-conversation-start-prompt:${startCommandId}`);
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.includes("insert into managed_conversation_commands")
+      )
+    ).toHaveLength(1);
+    expect(childInsertParams?.[3]).toBe(
+      `managed-conversation-start-prompt:${startCommandId}`
+    );
     expect(childInsertParams?.[4]).toBe(4);
     expect(childInsertParams?.[6]).toBe(clientUserMessageId);
     expect(childInsertParams?.[7]).toBe(2);
     const childPayload = JSON.parse(
-      await decryptEnvelopeToUtf8(provider, childInsertParams?.[8] as EncryptedPayloadEnvelope)
+      await decryptEnvelopeToUtf8(
+        provider,
+        childInsertParams?.[8] as EncryptedPayloadEnvelope
+      )
     );
     expect(childPayload).toMatchObject({
       prompt: "Say hello",
@@ -332,8 +376,10 @@ describe("managed Conversation start prompt dispatch", () => {
         model: "claude-current",
         reasoningEffort: "high",
         permissionMode: "auto_edit"
-      }
+      },
+      personalMemoryContext
     });
+    expect(JSON.stringify(childPayload)).toContain("private-node-id");
   });
 
   it("does not dispatch the prompt when a pending start was canceled", async () => {
@@ -350,26 +396,43 @@ describe("managed Conversation start prompt dispatch", () => {
         leaseToken
       })
     ).resolves.toBe(false);
-    expect(query.mock.calls.some(([sql]) => sql.includes("insert into managed_conversation_commands"))).toBe(false);
-    expect(query.mock.calls.some(([sql]) => sql.includes("from managed_conversation_executions"))).toBe(false);
+    expect(
+      query.mock.calls.some(([sql]) =>
+        sql.includes("insert into managed_conversation_commands")
+      )
+    ).toBe(false);
+    expect(
+      query.mock.calls.some(([sql]) =>
+        sql.includes("from managed_conversation_executions")
+      )
+    ).toBe(false);
   });
 });
-
 
 describe("managed provider encrypted history", () => {
   const owner = "owner";
   const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
   const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
-  const provider = createLocalTestKeyEnvelopeEncryptionProvider(Buffer.alloc(32, 8).toString("base64"));
-  const envelope = (value: Record<string, unknown>) => provider.encrypt({
-    plaintext: JSON.stringify(value), scope: { tenantId: owner, objectClass: "managed_conversation_prompt" },
-    provenance: { rowFamily: "managed_conversation_commands", sourceId: commandId },
-    ciphertextLocation: "managed_conversation_commands.encrypted_payload",
-    aad: { ownerUserId: owner, executionId, commandId }
-  });
+  const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+    Buffer.alloc(32, 8).toString("base64")
+  );
+  const envelope = (value: Record<string, unknown>) =>
+    provider.encrypt({
+      plaintext: JSON.stringify(value),
+      scope: { tenantId: owner, objectClass: "managed_conversation_prompt" },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: commandId
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: { ownerUserId: owner, executionId, commandId }
+    });
 
   it("encrypts final output in the same completion transaction and never plaintext result", async () => {
-    const encrypted = await envelope({ prompt: "Private prompt", settings: {} });
+    const encrypted = await envelope({
+      prompt: "Private prompt",
+      settings: {}
+    });
     let saved: unknown;
     const outboxRow = {
       id: "outbox-id",
@@ -392,30 +455,104 @@ describe("managed provider encrypted history", () => {
     };
 
     const query = vi.fn(async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("returning id, owner_user_id")) return { rows: [{ id: commandId, owner_user_id: owner, execution_id: executionId, execution_generation: 1, command_kind: "prompt", encrypted_payload: encrypted }] };
+      if (sql.includes("returning id, owner_user_id"))
+        return {
+          rows: [
+            {
+              id: commandId,
+              owner_user_id: owner,
+              execution_id: executionId,
+              execution_generation: 1,
+              command_kind: "prompt",
+              encrypted_payload: encrypted
+            }
+          ]
+        };
       if (sql.includes("set encrypted_payload")) saved = params[1];
-      if (sql.includes("insert into collaboration_outbox")) return { rows: [outboxRow], rowCount: 1 };
+      if (sql.includes("insert into collaboration_outbox"))
+        return { rows: [outboxRow], rowCount: 1 };
       return { rows: [], rowCount: 0 };
     });
-    const repository = createManagedConversationRepository({ connect: async () => ({ query, release() {} }) } as unknown as pg.Pool, { envelopeEncryptionProvider: provider });
-    await expect(repository.completeManagedConversationCommand({ commandId, leaseToken: "lease", result: { turnId: "turn" }, assistantOutput: { text: "Private final reply", truncated: false } })).resolves.toBe(true);
+    const repository = createManagedConversationRepository(
+      { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool,
+      { envelopeEncryptionProvider: provider }
+    );
+    await expect(
+      repository.completeManagedConversationCommand({
+        commandId,
+        leaseToken: "lease",
+        result: { turnId: "turn" },
+        assistantOutput: { text: "Private final reply", truncated: false }
+      })
+    ).resolves.toBe(true);
     expect(JSON.stringify(saved)).not.toContain("Private final reply");
-    expect(JSON.parse(await decryptEnvelopeToUtf8(provider, saved as EncryptedPayloadEnvelope))).toMatchObject({ prompt: "Private prompt", assistantOutput: { text: "Private final reply", truncated: false } });
-    expect(query.mock.calls.find(([sql]) => sql.includes("returning id, owner_user_id"))?.[1]?.[2]).toEqual({ turnId: "turn" });
+    expect(
+      JSON.parse(
+        await decryptEnvelopeToUtf8(provider, saved as EncryptedPayloadEnvelope)
+      )
+    ).toMatchObject({
+      prompt: "Private prompt",
+      assistantOutput: { text: "Private final reply", truncated: false }
+    });
+    expect(
+      query.mock.calls.find(([sql]) =>
+        sql.includes("returning id, owner_user_id")
+      )?.[1]?.[2]
+    ).toEqual({ turnId: "turn" });
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
   });
 
   it("returns bounded decrypted turns scoped to owner and execution, and rejects invalid cursors", async () => {
-    const encrypted = await envelope({ prompt: "Prompt", assistantOutput: { text: "Final", truncated: false } });
+    const encrypted = await envelope({
+      prompt: "Prompt",
+      assistantOutput: { text: "Final", truncated: false }
+    });
     const now = new Date();
-    const row = { id: commandId, client_user_message_id: commandId, result: { turnId: "provider-turn", providerItemId: "provider-item" }, sequence: 4, created_at: now, completed_at: now, updated_at: now, encrypted_payload: encrypted };
-    const query = vi.fn(async (_sql: string, _params: unknown[] = []) => ({ rows: [row, { ...row, sequence: 3 }] }));
-    const repository = createManagedConversationRepository({ query } as unknown as pg.Pool, { envelopeEncryptionProvider: provider });
-    const history = await repository.listManagedConversationPromptHistory({ userId: owner }, { executionId, limit: 1, before: "prompt:5" });
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("owner_user_id = $1 and execution_id = $2"), [owner, executionId, 5, 2]);
+    const row = {
+      id: commandId,
+      client_user_message_id: commandId,
+      result: { turnId: "provider-turn", providerItemId: "provider-item" },
+      sequence: 4,
+      created_at: now,
+      completed_at: now,
+      updated_at: now,
+      encrypted_payload: encrypted
+    };
+    const query = vi.fn(async (_sql: string, _params: unknown[] = []) => ({
+      rows: [row, { ...row, sequence: 3 }]
+    }));
+    const repository = createManagedConversationRepository(
+      { query } as unknown as pg.Pool,
+      { envelopeEncryptionProvider: provider }
+    );
+    const history = await repository.listManagedConversationPromptHistory(
+      { userId: owner },
+      { executionId, limit: 1, before: "prompt:5" }
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("owner_user_id = $1 and execution_id = $2"),
+      [owner, executionId, 5, 2]
+    );
     expect(query.mock.calls[0]?.[0]).toContain("state = 'completed'");
-    expect(history).toMatchObject({ turns: [{ commandId, prompt: "Prompt", providerTurnId: "provider-turn", providerItemId: "provider-item", assistantOutput: { text: "Final", truncated: false } }], hasMore: true, nextCursor: "prompt:4" });
-    await expect(repository.listManagedConversationPromptHistory({ userId: owner }, { executionId, before: "foreign-cursor" })).rejects.toMatchObject({ statusCode: 400 });
+    expect(history).toMatchObject({
+      turns: [
+        {
+          commandId,
+          prompt: "Prompt",
+          providerTurnId: "provider-turn",
+          providerItemId: "provider-item",
+          assistantOutput: { text: "Final", truncated: false }
+        }
+      ],
+      hasMore: true,
+      nextCursor: "prompt:4"
+    });
+    await expect(
+      repository.listManagedConversationPromptHistory(
+        { userId: owner },
+        { executionId, before: "foreign-cursor" }
+      )
+    ).rejects.toMatchObject({ statusCode: 400 });
     expect(query).toHaveBeenCalledTimes(1);
   });
 });

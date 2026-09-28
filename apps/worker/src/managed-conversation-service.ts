@@ -53,8 +53,10 @@ import {
   destroyManagedClaudeHome,
   environmentForLocalAiClientInstance,
   forkClaudeTranscript,
+  formatPersonalMemoryManagedPrompt,
   formatPersonalAgentManagedPrompt,
   managedPromptPersonalAgentContext,
+  managedPromptPersonalMemoryContext,
   MemoryApiClient,
   MemoryApiError,
   prepareManagedClaudeHome,
@@ -748,7 +750,9 @@ export const startManagedConversationRuntimeSession = async <
     start(): Promise<unknown>;
     closeAndWait(): Promise<void>;
   }
->(session: Session): Promise<Session> => {
+>(
+  session: Session
+): Promise<Session> => {
   try {
     await session.start();
     return session;
@@ -785,7 +789,10 @@ export const createManagedConversationRuntimeSessionSingleflight = (
         await pending;
         continue;
       }
-      const flight = (async (): Promise<{ session: Session; created: boolean }> => {
+      const flight = (async (): Promise<{
+        session: Session;
+        created: boolean;
+      }> => {
         const rechecked = cached();
         if (rechecked) return { session: rechecked.session, created: false };
         const session = await input.create();
@@ -1775,6 +1782,27 @@ export const createManagedConversationService = (options: {
     };
   };
 
+  const formatManagedTurnPrompt = (
+    command: PersonalAgentCommandContext,
+    prompt: string
+  ): string => {
+    const memoryContext = managedPromptPersonalMemoryContext(command.payload);
+    const agentContext = managedPromptPersonalAgentContext(command.payload);
+    if (agentContext !== null) {
+      return memoryContext === null
+        ? formatPersonalAgentManagedPrompt(prompt, agentContext)
+        : formatPersonalAgentManagedPrompt(
+            prompt,
+            agentContext,
+            memoryContext,
+            command.id
+          );
+    }
+    return memoryContext === null
+      ? prompt
+      : formatPersonalMemoryManagedPrompt(prompt, memoryContext, command.id);
+  };
+
   const runningPersonalAgentAttempt = async (
     command: PersonalAgentCommandContext,
     createIfMissing = true
@@ -1885,30 +1913,49 @@ export const createManagedConversationService = (options: {
     turnId?: string | null
   ): Promise<{ text: string; truncated: boolean } | undefined> => {
     if (personalAgentJobFor(command)) return undefined;
-    let text = command.execution.provider === "codex" && turnId
-      ? (await personalAgentTranscriptOutputForTurn(command, turnId))?.text ?? ""
-      : turnId ? managedConversationAssistantOutputForTurn(
-          transientOutputs.entries(), command.executionId, turnId
-        ).map(([, output]) => output.text.trim()).filter(Boolean).join("\n")
-      : "";
+    let text =
+      command.execution.provider === "codex" && turnId
+        ? ((await personalAgentTranscriptOutputForTurn(command, turnId))
+            ?.text ?? "")
+        : turnId
+          ? managedConversationAssistantOutputForTurn(
+              transientOutputs.entries(),
+              command.executionId,
+              turnId
+            )
+              .map(([, output]) => output.text.trim())
+              .filter(Boolean)
+              .join("\n")
+          : "";
     if (!text && turnId && command.execution.provider !== "codex") {
-      const items = await options.repository.listManagedConversationRuntimeItems(
-        { userId: command.ownerUserId }, { executionId: command.executionId }
-      );
-      text = items.filter((item) =>
-        item.itemKind === "transient_output" &&
-        item.executionGeneration === command.executionGeneration &&
-        item.providerTurnId === turnId && typeof item.payload?.text === "string"
-      ).map((item) => item.payload!.text as string).join("\n");
+      const items =
+        await options.repository.listManagedConversationRuntimeItems(
+          { userId: command.ownerUserId },
+          { executionId: command.executionId }
+        );
+      text = items
+        .filter(
+          (item) =>
+            item.itemKind === "transient_output" &&
+            item.executionGeneration === command.executionGeneration &&
+            item.providerTurnId === turnId &&
+            typeof item.payload?.text === "string"
+        )
+        .map((item) => item.payload!.text as string)
+        .join("\n");
     }
     if (!text && turnId && command.execution.provider === "codex") {
-      throw managedConversationError("ManagedConversationTurnOutputRecoveryPendingError");
+      throw managedConversationError(
+        "ManagedConversationTurnOutputRecoveryPendingError"
+      );
     }
     const originalText = text;
     while (Buffer.byteLength(text, "utf8") > 65_536) {
       text = Array.from(text).slice(0, -256).join("");
     }
-    return text ? { text, truncated: text.length < originalText.length } : undefined;
+    return text
+      ? { text, truncated: text.length < originalText.length }
+      : undefined;
   };
 
   const persistPersonalAgentTranscriptOutput = async (input: {
@@ -2839,12 +2886,16 @@ export const createManagedConversationService = (options: {
       (project) => project.id === execution.projectId && project.path?.trim()
     )?.path;
     if (!projectPath) {
-      throw managedConversationError("ManagedConversationProjectUnavailableError");
+      throw managedConversationError(
+        "ManagedConversationProjectUnavailableError"
+      );
     }
     try {
       return await realpath(projectPath);
     } catch {
-      throw managedConversationError("ManagedConversationProjectUnavailableError");
+      throw managedConversationError(
+        "ManagedConversationProjectUnavailableError"
+      );
     }
   };
 
@@ -3345,8 +3396,11 @@ export const createManagedConversationService = (options: {
     if (execution.provider !== "codex") return false;
     // Generic hosted execution has no named-Agent job repository. Its output
     // is retained on the accepted command; do not require the local job API.
-    if (typeof options.repository.listPersonalAgentExecutionJobs !== "function" ||
-        typeof options.repository.getManagedConversationCommand !== "function") return false;
+    if (
+      typeof options.repository.listPersonalAgentExecutionJobs !== "function" ||
+      typeof options.repository.getManagedConversationCommand !== "function"
+    )
+      return false;
     const jobsPage = await options.repository.listPersonalAgentExecutionJobs(
       { userId: execution.ownerUserId },
       { conversationId: execution.id, limit: 100 }
@@ -4906,10 +4960,11 @@ export const createManagedConversationService = (options: {
         configIdentityHash: configuration.configIdentityHash
       },
       create: async () => {
-        let binding = await options.repository.getManagedConversationRuntimeBinding(
-          { userId: execution.ownerUserId },
-          execution.id
-        );
+        let binding =
+          await options.repository.getManagedConversationRuntimeBinding(
+            { userId: execution.ownerUserId },
+            execution.id
+          );
         binding = await recoverLocalRuntimeBinding(execution, binding);
         if (
           execution.state === "running" &&
@@ -4964,7 +5019,10 @@ export const createManagedConversationService = (options: {
         configIdentityHash: configuration.configIdentityHash
       },
       create: async () => {
-        const binding = await runtimeBindingFor(execution, execution.ownerUserId);
+        const binding = await runtimeBindingFor(
+          execution,
+          execution.ownerUserId
+        );
         return createClaudeSession(execution, binding);
       }
     });
@@ -5009,7 +5067,10 @@ export const createManagedConversationService = (options: {
         configIdentityHash: configuration.configIdentityHash
       },
       create: async () => {
-        const binding = await runtimeBindingFor(execution, execution.ownerUserId);
+        const binding = await runtimeBindingFor(
+          execution,
+          execution.ownerUserId
+        );
         if (!binding.providerThreadId || !binding.transcriptPath) {
           throw new Error("ManagedConversationRuntimeRecoveryPendingError");
         }
@@ -5989,7 +6050,8 @@ export const createManagedConversationService = (options: {
   const assertPromptNotStopped = (
     command: ClaimedManagedConversationCommand
   ): void => {
-    if (!promptInterruptLatch.consumeBeforeProviderSubmission(command.id)) return;
+    if (!promptInterruptLatch.consumeBeforeProviderSubmission(command.id))
+      return;
     interruptedPromptDispatches.add(command.id);
     throw new ManagedConversationPromptInterruptedBeforeStartError();
   };
@@ -6024,14 +6086,14 @@ export const createManagedConversationService = (options: {
         options.repository,
         command.execution
       );
-      const currentProjectPath = await assertManagedConversationProjectAvailable(
-        command.execution
-      );
+      const currentProjectPath =
+        await assertManagedConversationProjectAvailable(command.execution);
       if (currentProjectPath) {
-        const binding = await options.repository.getManagedConversationRuntimeBinding(
-          { userId: command.execution.ownerUserId },
-          command.executionId
-        );
+        const binding =
+          await options.repository.getManagedConversationRuntimeBinding(
+            { userId: command.execution.ownerUserId },
+            command.executionId
+          );
         if (
           binding &&
           (await realpath(binding.sourceProjectPath).catch(() => null)) !==
@@ -6425,7 +6487,10 @@ export const createManagedConversationService = (options: {
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
-          assistantOutput: await genericAssistantOutputForTurn(command, pendingCheckpoint.providerTurnId),
+          assistantOutput: await genericAssistantOutputForTurn(
+            command,
+            pendingCheckpoint.providerTurnId
+          ),
           result: {
             ...(pendingCheckpoint.providerTurnId
               ? { turnId: pendingCheckpoint.providerTurnId }
@@ -6445,7 +6510,6 @@ export const createManagedConversationService = (options: {
       if (command.execution.provider === "pi") {
         await ensureTurnBaselineCheckpoint(command, checkpointBinding);
         const session = await sessionForPi(command.execution);
-        const agentContext = managedPromptPersonalAgentContext(command.payload);
         const userPrompt = await promptWithFileMentions(
           command,
           checkpointBinding
@@ -6454,9 +6518,7 @@ export const createManagedConversationService = (options: {
         await withProviderLease(command, "pi", session, async (owned) => {
           assertPromptNotStopped(command);
           const result = await owned.prompt(
-            agentContext === null
-              ? userPrompt
-              : formatPersonalAgentManagedPrompt(userPrompt, agentContext)
+            formatManagedTurnPrompt(command, userPrompt)
           );
           await flushCompletedTransientOutput(
             `${command.executionId}:${result.turnId}:assistant`
@@ -6540,7 +6602,10 @@ export const createManagedConversationService = (options: {
           await options.repository.completeManagedConversationCommand({
             commandId: command.id,
             leaseToken: command.leaseToken!,
-            assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
+            assistantOutput: await genericAssistantOutputForTurn(
+              command,
+              result.turnId
+            ),
             result: { turnId: result.turnId, model: command.execution.model }
           });
           releaseTransientOutputBuffers(command.executionId, result.turnId);
@@ -6571,11 +6636,7 @@ export const createManagedConversationService = (options: {
         command,
         checkpointBinding
       );
-      const agentContext = managedPromptPersonalAgentContext(command.payload);
-      const turnPrompt =
-        agentContext === null
-          ? providerPrompt
-          : formatPersonalAgentManagedPrompt(providerPrompt, agentContext);
+      const turnPrompt = formatManagedTurnPrompt(command, providerPrompt);
       await runningPersonalAgentAttempt(command);
       if (command.execution.provider === "claude") {
         if (providerRuntime.provider !== "claude") {
@@ -6681,7 +6742,10 @@ export const createManagedConversationService = (options: {
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
-          assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
+          assistantOutput: await genericAssistantOutputForTurn(
+            command,
+            result.turnId
+          ),
           result: { model: result.model }
         });
         releaseTransientOutputBuffers(command.executionId, result.turnId);
@@ -6800,7 +6864,10 @@ export const createManagedConversationService = (options: {
       await options.repository.completeManagedConversationCommand({
         commandId: command.id,
         leaseToken: command.leaseToken,
-        assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
+        assistantOutput: await genericAssistantOutputForTurn(
+          command,
+          result.turnId
+        ),
         result: {
           ...(result.turnId ? { turnId: result.turnId } : {})
         }
@@ -9271,7 +9338,8 @@ export const createManagedConversationService = (options: {
           terminalRunnerStartPreparationErrors.has(originalFailureCode);
         const providerTurnInterrupted =
           isPrompt &&
-          (error instanceof ManagedConversationPromptInterruptedBeforeStartError ||
+          (error instanceof
+            ManagedConversationPromptInterruptedBeforeStartError ||
             (command.execution.provider === "codex" &&
               isManagedCodexTurnInterrupted(error)) ||
             (command.execution.provider === "claude" &&
@@ -9553,7 +9621,8 @@ export const createManagedConversationService = (options: {
             let promptCommandId = deferredInterruptTargets.get(command.id);
             if (!promptCommandId) {
               const dispatch = await waitForManagedConversationPromptDispatch({
-                activeCommandId: () => activePromptDispatchId(command.executionId),
+                activeCommandId: () =>
+                  activePromptDispatchId(command.executionId),
                 claimInProgress: () => promptCommandClaimInProgress
               });
               if (dispatch.status === "pending") {
@@ -9581,7 +9650,9 @@ export const createManagedConversationService = (options: {
               }
               result = { interrupted: false };
             } else if (
-              !activePromptDispatches.get(command.executionId)?.includes(promptCommandId)
+              !activePromptDispatches
+                .get(command.executionId)
+                ?.includes(promptCommandId)
             ) {
               result = {
                 interrupted: interruptedPromptDispatches.delete(promptCommandId)
@@ -9591,33 +9662,59 @@ export const createManagedConversationService = (options: {
             } else {
               deferredInterruptTargets.set(command.id, promptCommandId);
               promptInterruptLatch.request(promptCommandId);
-              const interruption = await coordinateManagedConversationInterrupt({
-                dispatchActive: () =>
-                  activePromptDispatches.get(command.executionId)?.includes(promptCommandId) === true,
-                interrupt: async () => {
-                if (provider === "codex") {
-                  const managed = runtimeSessions.get("codex", command.executionId);
-                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
+              const interruption = await coordinateManagedConversationInterrupt(
+                {
+                  dispatchActive: () =>
+                    activePromptDispatches
+                      .get(command.executionId)
+                      ?.includes(promptCommandId) === true,
+                  interrupt: async () => {
+                    if (provider === "codex") {
+                      const managed = runtimeSessions.get(
+                        "codex",
+                        command.executionId
+                      );
+                      if (
+                        !managed ||
+                        managed.executionGeneration !==
+                          command.executionGeneration
+                      ) {
+                        return false;
+                      }
+                      return (await managed.session.interruptActiveTurn())
+                        .interrupted;
+                    }
+                    if (provider === "pi") {
+                      const managed = runtimeSessions.get(
+                        "pi",
+                        command.executionId
+                      );
+                      if (
+                        !managed ||
+                        managed.executionGeneration !==
+                          command.executionGeneration
+                      ) {
+                        return false;
+                      }
+                      await managed.session.cancel();
+                    } else {
+                      const managed = runtimeSessions.get(
+                        "claude",
+                        command.executionId
+                      );
+                      if (
+                        !managed ||
+                        managed.executionGeneration !==
+                          command.executionGeneration
+                      ) {
+                        return false;
+                      }
+                      managed.session.cancel();
+                    }
                     return false;
                   }
-                  return (await managed.session.interruptActiveTurn()).interrupted;
                 }
-                if (provider === "pi") {
-                  const managed = runtimeSessions.get("pi", command.executionId);
-                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
-                    return false;
-                  }
-                  await managed.session.cancel();
-                } else {
-                  const managed = runtimeSessions.get("claude", command.executionId);
-                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
-                    return false;
-                  }
-                  managed.session.cancel();
-                }
-                return false;
-                }
-              });
+              );
               if (interruption === "deferred") {
                 throw new ManagedConversationInterruptDeferredError();
               }

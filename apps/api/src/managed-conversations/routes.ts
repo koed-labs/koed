@@ -23,6 +23,9 @@ import {
   managedTerminalRecordSchema,
   managedTerminalServerFrameSchema,
   MANAGED_TERMINAL_MAX_FRAME_BYTES,
+  parsePersonalMemoryAttributionFooter,
+  personalMemoryTurnContextSchema,
+  stripPersonalMemoryAttributionFooter,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
@@ -30,6 +33,7 @@ import {
   upstreamBackendById,
   verifyDesktopLocalCredentialAuthorization
 } from "@koed/shared";
+import type { PersonalMemoryTurnContext } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -37,7 +41,10 @@ import {
   managedConversationTransferScopeHash
 } from "../high-risk/action-grant-protocol.js";
 import { assertUpstreamOperationPathAllowed } from "../local-edge/upstream-routing.js";
-import { buildPersonalAgentTurnContext } from "./personal-agent-context.js";
+import {
+  buildPersonalAgentTurnContext,
+  buildPersonalMemoryTurnContext
+} from "./personal-agent-context.js";
 
 const localExecutionProfiles = new Set(["developer", "local_personal"]);
 const opaqueLocalProjectId = /^lp_[0-9a-f]{32}$/;
@@ -2191,6 +2198,14 @@ export const registerManagedConversationRoutes = (
             );
           }
         }
+        const initialPersonalMemoryContext = input.initialPrompt?.trim()
+          ? await buildPersonalMemoryTurnContext({
+              repository,
+              ownerUserId: user.id,
+              projectId: input.projectId,
+              prompt: input.initialPrompt
+            })
+          : undefined;
         const created = await repository.createManagedConversation(
           { userId: user.id },
           {
@@ -2206,7 +2221,11 @@ export const registerManagedConversationRoutes = (
             runnerDeviceId: target.deviceId,
             idempotencyKey: input.idempotencyKey,
             initialPrompt: input.initialPrompt,
-            initialPromptClientUserMessageId: input.initialPromptClientUserMessageId,
+            initialPromptClientUserMessageId:
+              input.initialPromptClientUserMessageId,
+            ...(initialPersonalMemoryContext
+              ? { initialPersonalMemoryContext }
+              : {}),
             deferUntilRuntimeBinding: true
           }
         );
@@ -2513,7 +2532,11 @@ export const registerManagedConversationRoutes = (
           executionGeneration: command.executionGeneration,
           commandKind: command.commandKind,
           clientUserMessageId: command.clientUserMessageId,
-          initialPromptCommandId: command.commandKind === "start" && typeof command.result?.initialPromptCommandId === "string" ? command.result.initialPromptCommandId : null,
+          initialPromptCommandId:
+            command.commandKind === "start" &&
+            typeof command.result?.initialPromptCommandId === "string"
+              ? command.result.initialPromptCommandId
+              : null,
           createdAt: command.createdAt
         }
       };
@@ -2861,6 +2884,14 @@ export const registerManagedConversationRoutes = (
             prompt: input.prompt
           })
         : null;
+      const personalMemoryContext =
+        agentContext?.memoryContext ??
+        (await buildPersonalMemoryTurnContext({
+          repository,
+          ownerUserId: user.id,
+          projectId: execution.projectId ?? null,
+          prompt: input.prompt
+        }));
       const terminalContexts = (input.terminalContextReferences ?? []).map(
         (contextReference) =>
           context.managedConversations.terminalRuntime.resolveContext({
@@ -2912,6 +2943,7 @@ export const registerManagedConversationRoutes = (
                 personalAgentContext: agentContext.context
               }
             : {}),
+          personalMemoryContext,
           fileMentionCommandIds: input.fileMentionCommandIds,
           settingsChange: input.settingsChange
         }
@@ -3658,7 +3690,8 @@ export const registerManagedConversationRoutes = (
       );
       const genericHistory = !hasNamedAgentContext
         ? await repository.listManagedConversationPromptHistory(actor, {
-            executionId, limit: query.limit,
+            executionId,
+            limit: query.limit,
             ...(query.before ? { before: query.before } : {})
           })
         : null;
@@ -3681,6 +3714,11 @@ export const registerManagedConversationRoutes = (
         truncated: boolean;
         providerTurnId?: string | null;
         providerItemId?: string | null;
+        memory?: {
+          used: boolean;
+          status: "available" | "unavailable";
+          citations: Array<{ label: string }>;
+        };
         author?: {
           agentId: string;
           agentVersion: number;
@@ -3695,6 +3733,135 @@ export const registerManagedConversationRoutes = (
           content = content.slice(0, Math.max(0, content.length - 256));
         }
         return { content, truncated: content.length < value.length };
+      };
+      const displayMemorySource = async (
+        evidence: PersonalMemoryTurnContext["evidence"][number]
+      ): Promise<string[]> => {
+        const displayFrom = (
+          metadata: Record<string, unknown>,
+          threadName: string | null,
+          sourceTime: string | null
+        ): string => {
+          const safeName = (candidate: unknown): string | null => {
+            if (typeof candidate !== "string") return null;
+            const value = candidate.trim();
+            if (
+              value.length === 0 ||
+              value.length > 160 ||
+              /[\\/]/u.test(value) ||
+              /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu.test(
+                value
+              ) ||
+              /^lp_[0-9a-f]{20,}$/iu.test(value)
+            ) {
+              return null;
+            }
+            return value;
+          };
+          const name =
+            safeName(metadata.title) ??
+            safeName(metadata.conversationTitle) ??
+            safeName(threadName) ??
+            "Personal Memory";
+          const date =
+            sourceTime && Number.isFinite(Date.parse(sourceTime))
+              ? new Date(sourceTime).toISOString().slice(0, 10)
+              : null;
+          return date ? `${name} · ${date}` : name;
+        };
+        try {
+          if (
+            evidence.sourceType === "memory_event" ||
+            evidence.sourceType === "message"
+          ) {
+            const sourceId = evidence.sourceId ?? evidence.nodeId;
+            if (!sourceId) return ["Source no longer available"];
+            const event = await repository.getLcmGraphEvent(actor, sourceId, {
+              includeInvalidated: false,
+              includeContent: false
+            });
+            if (!event || event.visibility !== "personal") {
+              return ["Source no longer available"];
+            }
+            return [
+              displayFrom(
+                event.metadata,
+                event.threadName,
+                event.sourceEventTime ?? event.timestamp ?? event.capturedAt
+              )
+            ];
+          }
+          if (
+            evidence.sourceType !== "memory_node" &&
+            evidence.sourceType !== "curated_memory"
+          ) {
+            return ["Source no longer available"];
+          }
+          const expanded = await repository.expandMemoryNode(
+            evidence.nodeId,
+            actor,
+            {
+              searchDomain: "global"
+            }
+          );
+          const labels = expanded.sources
+            .filter((source) => source.visibility === "personal")
+            .map((source) => {
+              const metadata = source.metadata ?? {};
+              const threadName =
+                typeof metadata.threadName === "string"
+                  ? metadata.threadName
+                  : null;
+              return displayFrom(
+                metadata,
+                threadName,
+                source.createdAt ?? null
+              );
+            });
+          return labels.length > 0
+            ? [...new Set(labels)].slice(0, 5)
+            : ["Source no longer available"];
+        } catch {
+          // A revoked, deleted, or otherwise no-longer-readable source fails closed.
+          return ["Source no longer available"];
+        }
+      };
+      const memoryForOutput = async (
+        output: string,
+        commandId: string,
+        contextValue: unknown
+      ) => {
+        const context = personalMemoryTurnContextSchema.safeParse(contextValue);
+        if (!context.success) return undefined;
+        const memoryContext = context.data;
+        if (memoryContext.status === "unavailable") {
+          return { used: false, status: "unavailable" as const, citations: [] };
+        }
+        const parsed = parsePersonalMemoryAttributionFooter(output, {
+          commandId,
+          nonce: memoryContext.attributionNonce
+        });
+        if (
+          !parsed.attribution?.used ||
+          memoryContext.status !== "available" ||
+          memoryContext.evidence.length === 0
+        ) {
+          return undefined;
+        }
+        const authorized = new Map(
+          memoryContext.evidence.map((item) => [item.nodeId, item])
+        );
+        const selected = parsed.attribution.citationNodeIds
+          .map((nodeId) => authorized.get(nodeId))
+          .filter((item): item is NonNullable<typeof item> => Boolean(item));
+        const labels = (
+          await Promise.all(selected.map(displayMemorySource))
+        ).flat();
+        return {
+          used: true,
+          status: "available" as const,
+          citations: [...new Set(labels)].map((label) => ({ label }))
+        };
       };
       for (const job of jobsPage.jobs) {
         const command = job.commandId
@@ -3769,17 +3936,33 @@ export const registerManagedConversationRoutes = (
           jobId: job.id
         });
         if (outputText && version) {
+          const memory = command
+            ? await memoryForOutput(
+                outputText,
+                command.id,
+                command.payload?.personalMemoryContext
+              )
+            : undefined;
           messages.push({
             id: `agent:${job.id}`,
             role: "assistant",
-            ...clipMessage(outputText),
+            ...clipMessage(
+              stripPersonalMemoryAttributionFooter(outputText, {
+                mode: "final"
+              })
+            ),
+            ...(memory ? { memory } : {}),
             createdAt: job.lastObservedAt ?? job.updatedAt,
-            providerTurnId: typeof command?.result?.turnId === "string"
-              ? command.result.turnId
-              : typeof command?.result?.providerTurnId === "string"
-                ? command.result.providerTurnId : null,
-            providerItemId: typeof command?.result?.providerItemId === "string"
-              ? command.result.providerItemId : null,
+            providerTurnId:
+              typeof command?.result?.turnId === "string"
+                ? command.result.turnId
+                : typeof command?.result?.providerTurnId === "string"
+                  ? command.result.providerTurnId
+                  : null,
+            providerItemId:
+              typeof command?.result?.providerItemId === "string"
+                ? command.result.providerItemId
+                : null,
             author: {
               agentId: attribution.agentId,
               agentVersion: attribution.agentVersion,
@@ -3792,13 +3975,35 @@ export const registerManagedConversationRoutes = (
       for (const turn of genericHistory?.turns ?? []) {
         messages.push({
           id: turn.clientUserMessageId ?? turn.commandId,
-          role: "user", ...clipMessage(turn.prompt), createdAt: turn.createdAt
+          role: "user",
+          ...clipMessage(turn.prompt),
+          createdAt: turn.createdAt
         });
         if (turn.assistantOutput) {
-          const clipped = clipMessage(turn.assistantOutput.text);
+          const command =
+            typeof repository.getManagedConversationCommand === "function"
+              ? await repository.getManagedConversationCommand(
+                  actor,
+                  turn.commandId
+                )
+              : null;
+          const memory = command
+            ? await memoryForOutput(
+                turn.assistantOutput.text,
+                turn.commandId,
+                command.payload?.personalMemoryContext
+              )
+            : undefined;
+          const clipped = clipMessage(
+            stripPersonalMemoryAttributionFooter(turn.assistantOutput.text, {
+              mode: "final"
+            })
+          );
           messages.push({
-            id: `provider:${turn.commandId}`, role: "assistant",
+            id: `provider:${turn.commandId}`,
+            role: "assistant",
             ...clipped,
+            ...(memory ? { memory } : {}),
             truncated: clipped.truncated || turn.assistantOutput.truncated,
             createdAt: turn.completedAt,
             providerTurnId: turn.providerTurnId,
@@ -3834,7 +4039,9 @@ export const registerManagedConversationRoutes = (
         messages,
         jobs,
         hasMore: genericHistory?.hasMore ?? jobsPage.hasMore,
-        nextCursor: genericHistory ? genericHistory.nextCursor : jobsPage.nextCursor,
+        nextCursor: genericHistory
+          ? genericHistory.nextCursor
+          : jobsPage.nextCursor,
         snapshotAt: new Date().toISOString(),
         executionGeneration: execution.executionGeneration,
         executionState: execution.state
