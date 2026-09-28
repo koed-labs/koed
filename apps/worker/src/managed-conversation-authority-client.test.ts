@@ -48,6 +48,51 @@ describe("Managed Conversation authority client", () => {
     expect(remoteClaim).toHaveBeenCalledOnce();
   });
 
+  it("revalidates hosted turns against the execution device's native AI Client catalog", async () => {
+    const instance = {
+      instanceId: "codex.default",
+      configIdentityHash: "native"
+    };
+    const snapshot = {
+      instanceId: "codex.default",
+      installationIdentityHash: "native"
+    };
+    const listAiClientInstances = vi.fn(async () => [instance]);
+    const listCurrentAiClientCapabilitySnapshots = vi.fn(async () => [
+      snapshot
+    ]);
+    const remoteInstances = vi.fn(async () => []);
+    const remoteSnapshots = vi.fn(async () => []);
+    const repository = combineManagedConversationRepositories(
+      {
+        listAiClientInstances,
+        listCurrentAiClientCapabilitySnapshots
+      } as never,
+      {
+        listAiClientInstances: remoteInstances,
+        listCurrentAiClientCapabilitySnapshots: remoteSnapshots
+      } as never,
+      "native-owner"
+    );
+
+    await expect(
+      repository.listAiClientInstances({ userId: "hosted-owner" })
+    ).resolves.toEqual([instance]);
+    await expect(
+      repository.listCurrentAiClientCapabilitySnapshots({
+        userId: "hosted-owner"
+      })
+    ).resolves.toEqual([snapshot]);
+    expect(listAiClientInstances).toHaveBeenCalledWith({
+      userId: "native-owner"
+    });
+    expect(listCurrentAiClientCapabilitySnapshots).toHaveBeenCalledWith({
+      userId: "native-owner"
+    });
+    expect(remoteInstances).not.toHaveBeenCalled();
+    expect(remoteSnapshots).not.toHaveBeenCalled();
+  });
+
   it("sends Project Move claims and completion to authority without local paths", async () => {
     const moveId = "00000000-0000-4000-8000-000000000040";
     const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
