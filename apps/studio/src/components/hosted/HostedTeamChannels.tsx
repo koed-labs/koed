@@ -278,7 +278,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   return <div className="flex h-full min-h-0 min-w-0 flex-1 bg-background">
     <SidebarProvider>
       <TeamChannelNavigation teamName={team.name} channels={activeThreads.map((thread) => ({ id: thread.id, name: thread.name }))} people={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} />
-      <div className="relative flex min-h-0 min-w-0 flex-1">
+      <div className="relative min-h-0 min-w-0 flex-1">
       <TeamShell
         wallpaper
         subheader={<ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} />}
