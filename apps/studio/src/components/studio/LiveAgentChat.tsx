@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { NewChatView, type NewChatRuntimeMessage } from "./NewChatView";
@@ -32,6 +32,7 @@ import {
   acceptRuntimeSnapshot,
   managedRequest,
   managedConversationControls,
+  managedMessagesWithTransientOutput,
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
@@ -452,6 +453,7 @@ export function LiveAgentChat({
           );
         }
       }
+      let hasUncertainPartial = false;
       if (Array.isArray(state.messages)) {
         const retained = state.messages.flatMap(
           (message): NewChatRuntimeMessage[] => {
@@ -484,12 +486,24 @@ export function LiveAgentChat({
                   typeof message.createdAt === "string"
                     ? Date.parse(message.createdAt)
                     : 0,
-                author
+                author,
+                ...(typeof message.providerTurnId === "string" || message.providerTurnId === null
+                  ? { providerTurnId: message.providerTurnId }
+                  : {}),
+                ...(typeof message.providerItemId === "string" || message.providerItemId === null
+                  ? { providerItemId: message.providerItemId }
+                  : {})
               }
             ];
           }
         );
         setMessages(retained);
+        hasUncertainPartial =
+          snapshot.latestCommand?.commandKind === "prompt" &&
+          snapshot.latestCommand.state === "indeterminate" &&
+          managedMessagesWithTransientOutput(id, snapshot, retained).some(
+            (message) => message.id.startsWith("transient:")
+          );
       }
       const command = snapshot.latestCommand;
       const busy = Boolean(
@@ -500,9 +514,11 @@ export function LiveAgentChat({
       setStatus(
         busy
           ? "Working"
-          : snapshot.execution.state === "starting"
-            ? "Starting the AI Client"
-            : ""
+          : hasUncertainPartial
+            ? "Partial response · outcome uncertain"
+            : snapshot.execution.state === "starting"
+              ? "Starting the AI Client"
+              : ""
       );
       if (command && ["failed", "indeterminate"].includes(command.state))
         setError(
@@ -1230,6 +1246,10 @@ export function LiveAgentChat({
     setActiveAgentId(id);
   };
   const requests = pendingChatRequests(runtime);
+  const displayedMessages = useMemo(
+    () => managedMessagesWithTransientOutput(executionId, runtime, messages),
+    [executionId, messages, runtime]
+  );
   const currentExecution = runtime?.execution ?? null;
   const currentProjectId = currentExecution?.projectId ?? null;
   const currentProjectName = registeredProjects.find(
@@ -1532,7 +1552,7 @@ export function LiveAgentChat({
               instances.length > 0 &&
               !recoveryBlocked &&
               !failedExecutions.has(runtime?.execution.state ?? ""),
-            messages,
+            messages: displayedMessages,
             isSending: sending,
             error,
             status: [status, historyNotice].filter(Boolean).join(" · "),

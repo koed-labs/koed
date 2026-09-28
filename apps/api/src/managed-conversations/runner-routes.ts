@@ -232,7 +232,8 @@ const resolveRuntimeItemSchema = z
 const cancelRuntimeItemsSchema = z
   .object({
     executionGeneration: z.number().int().safe().positive(),
-    providerTurnId: z.string().trim().min(1).max(512).optional()
+    providerTurnId: z.string().trim().min(1).max(512).optional(),
+    preserveTransientOutput: z.boolean().optional()
   })
   .strict();
 

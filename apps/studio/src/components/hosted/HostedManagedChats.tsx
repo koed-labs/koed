@@ -395,6 +395,11 @@ export function HostedManagedChats({
           const disposition = hostedRecoveryDisposition(result.commandState);
           if (disposition.kind === "failed" || disposition.kind === "uncertain") {
             const failed = disposition.kind === "failed";
+            if (failed) {
+              setPendingMessage((pending) =>
+                pending?.executionId === result.executionId ? null : pending
+              );
+            }
             const retained = {
               ...operation,
               state: failed ? "rejected" as const : "reconciling" as const
@@ -422,6 +427,9 @@ export function HostedManagedChats({
             return;
           }
           if (disposition.kind === "canceled") {
+            setPendingMessage((pending) =>
+              pending?.executionId === result.executionId ? null : pending
+            );
             writeRecovery(store, operation.prompt, null);
             if (fromNewSlot) {
               newStartOperationRef.current = null;
@@ -549,6 +557,20 @@ export function HostedManagedChats({
           ) {
             setRuntime(value.runtime);
             setMessages(value.state.messages);
+            setPendingMessage(
+              operation.prompt && disposition.showPendingMessage
+                ? {
+                    id: operation.clientUserMessageId,
+                    executionId: result.executionId,
+                    role: "user",
+                    content: operation.prompt,
+                    createdAt: new Date().toISOString(),
+                    author: null,
+                    commandId: result.commandId,
+                    commandState: result.commandState
+                  }
+                : null
+            );
             setNewConversationOpen(false);
             setInitialPrompt("");
             setStatus(
@@ -1405,7 +1427,20 @@ export function HostedManagedChats({
         }
       });
       setMessages([]);
-      setPendingMessage(null);
+      setPendingMessage(
+        prompt
+          ? {
+              id: operation.clientUserMessageId,
+              executionId: started.execution.id,
+              role: "user",
+              content: prompt,
+              createdAt: new Date().toISOString(),
+              author: null,
+              commandId: started.commandId,
+              commandState: started.commandState
+            }
+          : null
+      );
       setInitialPrompt("");
       const acceptedOperation = {
         ...operation,
@@ -2031,7 +2066,12 @@ export function HostedManagedChats({
                     {message.content}
                   </p>
                   {message.id.startsWith("transient:") && (
-                    <p className="mt-1 text-[10px] text-muted">Streaming response</p>
+                    <p className="mt-1 text-[10px] text-muted">
+                      {selectedRuntime?.latestCommand?.commandKind === "prompt" &&
+                      selectedRuntime.latestCommand.state === "indeterminate"
+                        ? "Partial response · outcome uncertain"
+                        : "Streaming response"}
+                    </p>
                   )}
                   {message.id === pendingMessage?.id && (
                     <p className="mt-1 text-[10px] text-muted">

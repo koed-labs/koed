@@ -41,7 +41,7 @@ export function hostedMessagesWithTransientOutput(
     !selectedExecutionId ||
     runtime?.execution.id !== selectedExecutionId ||
     runtime.latestCommand?.commandKind !== "prompt" ||
-    !["dispatching", "running"].includes(runtime.latestCommand.state)
+    !["dispatching", "running", "indeterminate"].includes(runtime.latestCommand.state)
   ) return messages;
 
   const transient = runtime.items.flatMap((item) => {

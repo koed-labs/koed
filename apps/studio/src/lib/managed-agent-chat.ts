@@ -21,7 +21,11 @@ export type RuntimeItem = {
   itemKind: string;
   state: string;
   payload: Record<string, unknown>;
-  presentation?: { mode: string; renderer: string };
+  providerTurnId?: string | null;
+  providerItemId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  presentation?: { mode: string; renderer: string; policyKey?: string };
   answered?: boolean;
 };
 export type RuntimeSnapshot = {
@@ -35,6 +39,79 @@ export type RuntimeSnapshot = {
     lastErrorCode: string | null;
   } | null;
 };
+
+export type ManagedChatHistoryMessage = Readonly<{
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  author?: Readonly<{ agentId: string; name: string }> | null;
+  providerTurnId?: string | null;
+  providerItemId?: string | null;
+}>;
+
+const managedRuntimeText = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value
+    .slice(0, 12_000)
+    .replace(/(?:\/(?:Users|home|private|Volumes|tmp|root|workspace|workspaces|var|mnt|opt|srv|etc)\/|[A-Za-z]:\\)[^\s"']+/gu, "[local path hidden]")
+    .replace(/\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, "$1=[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu, "[redacted]");
+};
+
+/** Add only this selected Conversation's active or uncertain approved provider output. */
+export function managedMessagesWithTransientOutput(
+  selectedExecutionId: string | null,
+  runtime: RuntimeSnapshot | null,
+  messages: ManagedChatHistoryMessage[]
+): ManagedChatHistoryMessage[] {
+  if (
+    !selectedExecutionId ||
+    runtime?.execution.id !== selectedExecutionId ||
+    runtime.latestCommand?.commandKind !== "prompt" ||
+    !["dispatching", "running", "indeterminate"].includes(runtime.latestCommand.state)
+  ) return messages;
+
+  const transient = runtime.items.flatMap((item) => {
+    const presentation = item.presentation;
+    const text = managedRuntimeText(item.payload.text);
+    const providerTurnId = item.providerTurnId?.trim() || null;
+    const providerItemId = item.providerItemId?.trim() || null;
+    if (
+      item.executionGeneration !== runtime.execution.executionGeneration ||
+      item.itemKind !== "transient_output" ||
+      item.state !== "pending" ||
+      presentation?.mode === "hidden" ||
+      presentation?.renderer !== "message" ||
+      !presentation.policyKey ||
+      !text ||
+      (!providerTurnId && !providerItemId)
+    ) return [];
+
+    const parsedTimestamp = Date.parse(item.updatedAt ?? item.createdAt ?? "");
+    return [{
+      id: `transient:${item.id}`,
+      role: "assistant" as const,
+      content: text,
+      createdAt: Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0,
+      author: null,
+      providerTurnId,
+      providerItemId
+    }];
+  });
+  const unmatched = transient.filter((output) => !messages.some((message) => {
+    if (message.role !== "assistant") return false;
+    if (output.providerItemId && message.providerItemId)
+      return output.providerItemId === message.providerItemId;
+    return Boolean(
+      output.providerTurnId &&
+      message.providerTurnId &&
+      output.providerTurnId === message.providerTurnId
+    );
+  }));
+  return unmatched.length ? [...messages, ...unmatched] : messages;
+}
 
 /** Keep queued cancellation separate from interrupting a runner-claimed turn. */
 export function managedConversationControls(

@@ -492,6 +492,8 @@ export interface ManagedConversationRepository {
       executionId: string;
       executionGeneration: number;
       providerTurnId?: string;
+      /** Keep encrypted partial text when a prompt's outcome is uncertain. */
+      preserveTransientOutput?: boolean;
     }
   ): Promise<number>;
   getManagedConversationExecution(
@@ -3638,12 +3640,14 @@ export const createManagedConversationRepository = (
             where owner_user_id = $1 and execution_id = $2
               and execution_generation = $3 and item_kind = 'transient_output'
               and state = 'pending'
-              and ($4::text is null or provider_turn_id = $4)`,
+              and ($4::text is null or provider_turn_id = $4)
+              and not $5::boolean`,
           [
             actor.userId,
             input.executionId,
             input.executionGeneration,
-            input.providerTurnId ?? null
+            input.providerTurnId ?? null,
+            input.preserveTransientOutput === true
           ]
         );
         const updated = await client.query(
@@ -3666,7 +3670,7 @@ export const createManagedConversationRepository = (
           await appendManagedConversationEvent(client, {
             ownerUserId: actor.userId,
             executionId: input.executionId,
-            mutationId: `managed-conversation-runtime:${input.executionGeneration}:canceled`,
+            mutationId: `managed-conversation-runtime:${input.executionGeneration}:canceled:${randomUUID()}`,
             runtimeItemsReset: true
           });
         }

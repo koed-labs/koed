@@ -128,6 +128,19 @@ test("shows only the active execution generation's approved transient output and
   };
   assert.deepEqual(hostedMessagesWithTransientOutput(id, runtime, history), history);
   assert.deepEqual(hostedMessagesWithTransientOutput("other-execution", runtime, []), []);
+  const uncertainRuntime = {
+    ...runtime,
+    latestCommand: {
+      id: commandId,
+      commandKind: "prompt",
+      state: "indeterminate",
+      lastErrorCode: null
+    }
+  };
+  const uncertain = hostedMessagesWithTransientOutput(id, uncertainRuntime, []);
+  assert.equal(uncertain.length, 1);
+  assert.equal(uncertain[0].content, "Partial answer");
+  assert.deepEqual(hostedMessagesWithTransientOutput(id, uncertainRuntime, history), history);
   assert.deepEqual(
     hostedMessagesWithTransientOutput(id, {
       ...runtime,

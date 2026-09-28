@@ -3685,6 +3685,46 @@ describeDb("memory repository visibility", () => {
     });
     await expect(
       protectedRepo.cancelManagedConversationRuntimeItems(
+        { userId: other.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          preserveTransientOutput: true
+        }
+      )
+    ).resolves.toBe(0);
+    await expect(
+      protectedRepo.cancelManagedConversationRuntimeItems(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerTurnId: "turn-1",
+          preserveTransientOutput: true
+        }
+      )
+    ).resolves.toBe(1);
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: owner.id },
+        { executionId: managed.execution.id }
+      )
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: firstTransient.id,
+        state: "pending",
+        payload: { text: "first and second" }
+      })
+    ]);
+    const retainedTransient = await pool.query<{ encrypted_payload: unknown }>(
+      `select encrypted_payload from managed_conversation_runtime_items where id = $1`,
+      [firstTransient.id]
+    );
+    expect(JSON.stringify(retainedTransient.rows[0]?.encrypted_payload)).not.toContain(
+      "first and second"
+    );
+    await expect(
+      protectedRepo.cancelManagedConversationRuntimeItems(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -3692,7 +3732,7 @@ describeDb("memory repository visibility", () => {
           providerTurnId: "turn-1"
         }
       )
-    ).resolves.toBe(2);
+    ).resolves.toBe(1);
     await expect(
       protectedRepo.listManagedConversationRuntimeItems(
         { userId: owner.id },
@@ -3705,6 +3745,15 @@ describeDb("memory repository visibility", () => {
       [firstTransient.id]
     );
     expect(removedTransient.rows[0]?.count).toBe(0);
+    const resetCount = await pool.query<{ count: number }>(
+      `select count(*)::int as count from collaboration_outbox
+        where family = 'managed_conversation_changed'
+          and resource_type = 'managed_conversation_runtime_reset'
+          and resource_id = $1`,
+      [managed.execution.id]
+    );
+    // Preserving partial text and later clearing it each invalidate live views.
+    expect(resetCount.rows[0]?.count).toBe(2);
     const resetEvent = await pool.query<{
       resource_id: string;
       resource_type: string;
