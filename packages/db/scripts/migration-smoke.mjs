@@ -70,9 +70,9 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0047_personal_agent_role_templates";
+const expectedLatestMigrationTag = "0052_dry_nightcrawler";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 47;
+const expectedLatestMigrationIndex = 52;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1105,6 +1105,18 @@ try {
     { folderPrefix: "koed-through-0020-migrations-" }
   );
   temporaryFolders.add(through0020Folder);
+  const ticket06MigrationIndex = journal.entries.findIndex(
+    (entry) => entry.tag === "0050_ai_client_capability_device_binding"
+  );
+  if (ticket06MigrationIndex < 0) {
+    throw new Error("Expected the Ticket06 migration baseline 0050");
+  }
+  const throughTicket06Folder = await createMigrationSlice(
+    journal,
+    ticket06MigrationIndex,
+    { folderPrefix: "koed-through-ticket06-" }
+  );
+  temporaryFolders.add(throughTicket06Folder);
   const preSelectivePiiIndex = journal.entries.findIndex(
     (entry) => entry.tag === expectedPreSelectivePiiTag
   );
@@ -1149,6 +1161,26 @@ try {
   const through0020Records = await migrationRecords(
     through0020Folder,
     journal.entries.slice(0, current0020Index + 1)
+  );
+  const throughTicket06Records = await migrationRecords(
+    throughTicket06Folder,
+    journal.entries.slice(0, ticket06MigrationIndex + 1)
+  );
+  const ticket07EnumIndex = journal.entries.findIndex(
+    (entry) => entry.requiresCommittedBoundaryAfter === true
+  );
+  if (
+    ticket07EnumIndex !== ticket06MigrationIndex + 1 ||
+    journal.entries[ticket07EnumIndex]?.tag !==
+      "0051_collaboration_thread_kinds"
+  ) {
+    throw new Error(
+      "Expected Ticket07 enum values to have an isolated migration boundary after 0050"
+    );
+  }
+  const throughTicket07EnumRecords = await migrationRecords(
+    migrationsFolder,
+    journal.entries.slice(0, ticket07EnumIndex + 1)
   );
   const preSelectivePiiRecords = await migrationRecords(
     preSelectivePiiFolder,
@@ -1423,6 +1455,54 @@ try {
       await assertCurrentSchema(pool);
     });
   });
+
+  await runScenario(
+    "ticket07-t06-upgrade-commits-enums-and-resumes-follow-up",
+    async () => {
+      const target = await createDisposableDatabase("ticket07_t06_upgrade");
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: throughTicket06Folder
+        });
+        await assertMigrationLedger(pool, throughTicket06Records);
+
+        const failedFollowupFolder = await createMigrationSlice(
+          journal,
+          journal.entries.length - 1,
+          {
+            folderPrefix: "koed-ticket07-failed-followup-",
+            transformLastSql: (sql) =>
+              `${sql}\n--> statement-breakpoint\nselect 1 / 0;\n`
+          }
+        );
+        temporaryFolders.add(failedFollowupFolder);
+        const failure = await runDbMigrations(pool, {
+          migrationsFolder: failedFollowupFolder
+        }).then(
+          () => null,
+          (error) => error
+        );
+        if (!errorMessages(failure).includes("division by zero")) {
+          throw new Error(
+            `Expected the deliberate Ticket07 follow-up failure: ${errorMessages(failure)}`
+          );
+        }
+        await assertMigrationLedger(pool, throughTicket07EnumRecords);
+        const partialSchema = await pool.query(
+          `select to_regclass('public.collaboration_team_shared_projects')::text as project_table`
+        );
+        if (partialSchema.rows[0]?.project_table) {
+          throw new Error(
+            "Failed Ticket07 follow-up left partial collaboration schema"
+          );
+        }
+
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+      });
+    }
+  );
 
   await runScenario("privacy-manifest-requires-alpha-reset", async () => {
     const target = await createDisposableDatabase("privacy_manifest_reset");

@@ -178,8 +178,11 @@ Workspace from normal navigation without physically deleting retained content.
 
 ### Team-Wide Chat And Shared Projects
 
-Migration 0051 adds Team-wide channel and Team Project channel kinds plus a
-Team-scoped opaque shared-Project association. The association stores its Team,
+Migration 0051 adds the Team-wide channel and Team Project channel enum values.
+Its explicit commit boundary lets PostgreSQL use those values in migration
+0052, which adds the Team-scoped opaque shared-Project association. The
+migration runner serializes both steps with one session advisory lock; a failed
+second step can be retried without repeating the committed enum migration. The association stores its Team,
 creator, idempotency hash, and timestamps. Project names stay in the encrypted
 channel payload. The hosted record does not store a local path, repository URL,
 branch, or device-local Project identifier. Linking the same local Project to
