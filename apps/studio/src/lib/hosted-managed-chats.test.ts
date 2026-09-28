@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedMessagesForSelection, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -777,7 +777,7 @@ test("rejects unauthorized session and never exposes error response details", as
   );
 });
 
-test("keeps last known launch choices and eligible devices without inferring online status", async () => {
+test("keeps stale launch choices but hides models for other not-ready states", async () => {
   const options = await loadHostedLaunchOptions(undefined, async () =>
     json({
       runners: [
@@ -820,6 +820,40 @@ test("keeps last known launch choices and eligible devices without inferring onl
   assert.deepEqual(options.projects, [
     { id: "project-a", name: "Real Project" }
   ]);
+
+  const authenticationRequired = await loadHostedLaunchOptions(
+    undefined,
+    async () =>
+      json({
+        runners: [
+          {
+            kind: "local_device",
+            deviceId: "device-a",
+            displayName: "Computer A"
+          }
+        ],
+        instances: [
+          {
+            instanceId: "runner.opaque-a",
+            runnerDeviceId: "device-a",
+            driverId: "codex",
+            ready: false,
+            readiness: "authentication_required",
+            models: [{ id: "old-model", supportedReasoningEfforts: ["high"] }],
+            capabilities: {
+              permissionModes: [
+                { mode: "supervised", support: "supported" }
+              ]
+            }
+          }
+        ]
+      })
+  );
+  assert.equal(
+    authenticationRequired.instances[0]?.readiness,
+    "authentication_required"
+  );
+  assert.deepEqual(authenticationRequired.instances[0]?.models, []);
 });
 
 test("keeps model choices on their enrolled runner and rejects unbound instances", async () => {
@@ -860,6 +894,111 @@ test("keeps model choices on their enrolled runner and rejects unbound instances
     ["runner.b"]
   );
   assert.deepEqual(hostedLaunchInstancesForDevice(options, "other"), []);
+});
+
+test("refreshes launch choices without replacing still-valid selections", () => {
+  const options = {
+    runners: [
+      { deviceId: "device-a", displayName: "Computer A" },
+      { deviceId: "device-b", displayName: "Computer B" }
+    ],
+    instances: [
+      {
+        instanceId: "codex.a",
+        runnerDeviceId: "device-a",
+        driverId: "codex",
+        ready: true,
+        readiness: "ready",
+        models: [
+          {
+            id: "model-a",
+            provider: "codex",
+            supportedReasoningEfforts: ["low", "high"]
+          },
+          {
+            id: "model-b",
+            provider: "codex",
+            supportedReasoningEfforts: ["medium"]
+          }
+        ],
+        permissionModes: ["supervised", "full"]
+      },
+      {
+        instanceId: "claude.b",
+        runnerDeviceId: "device-b",
+        driverId: "claude",
+        ready: true,
+        readiness: "ready",
+        models: [
+          {
+            id: "model-c",
+            provider: "claude",
+            supportedReasoningEfforts: []
+          }
+        ],
+        permissionModes: ["read"]
+      }
+    ],
+    projects: [
+      { id: "project-a", name: "Project A" },
+      { id: "project-b", name: "Project B" }
+    ]
+  };
+
+  assert.deepEqual(
+    hostedLaunchSelectionForOptions(options, {
+      projectId: "project-b",
+      deviceId: "device-a",
+      instanceId: "codex.a",
+      modelId: "model-b",
+      effort: "medium",
+      permission: "full"
+    }),
+    {
+      projectId: "project-b",
+      deviceId: "device-a",
+      instanceId: "codex.a",
+      modelId: "model-b",
+      effort: "medium",
+      permission: "full"
+    }
+  );
+  assert.deepEqual(
+    hostedLaunchSelectionForOptions(options, {
+      projectId: "removed-project",
+      deviceId: "removed-device",
+      instanceId: "removed-instance",
+      modelId: "removed-model",
+      effort: "unsupported",
+      permission: "unsupported"
+    }),
+    {
+      projectId: "project-a",
+      deviceId: "device-a",
+      instanceId: "codex.a",
+      modelId: "model-a",
+      effort: "low",
+      permission: "supervised"
+    }
+  );
+  assert.deepEqual(
+    hostedLaunchSelectionForOptions(options, {
+      projectId: "",
+      deviceId: "device-b",
+      instanceId: "claude.b",
+      modelId: "model-c",
+      effort: "",
+      permission: "read"
+    }),
+    {
+      projectId: "",
+      deviceId: "device-b",
+      instanceId: "claude.b",
+      modelId: "model-c",
+      effort: "",
+      permission: "read"
+    }
+  );
 });
 
 test("starts a selected-device Conversation and cancels only by execution generation", async () => {

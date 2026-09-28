@@ -130,6 +130,53 @@ export const hostedLaunchInstancesForDevice = (
   options?.instances.filter((instance) => instance.runnerDeviceId === deviceId) ??
   [];
 
+export type HostedLaunchSelection = {
+  projectId: string;
+  deviceId: string;
+  instanceId: string;
+  modelId: string;
+  effort: string;
+  permission: string;
+};
+
+export const hostedLaunchSelectionForOptions = (
+  options: HostedLaunchOptions,
+  current: HostedLaunchSelection
+): HostedLaunchSelection => {
+  const projectId =
+    current.projectId === "" ||
+    options.projects.some((project) => project.id === current.projectId)
+      ? current.projectId
+      : (options.projects[0]?.id ?? "");
+  const deviceId = options.runners.some(
+    (runner) => runner.deviceId === current.deviceId
+  )
+    ? current.deviceId
+    : (options.runners[0]?.deviceId ?? "");
+  const instances = hostedLaunchInstancesForDevice(options, deviceId);
+  const instance =
+    instances.find((item) => item.instanceId === current.instanceId) ??
+    instances[0];
+  const model =
+    instance?.models.find((item) => item.id === current.modelId) ??
+    instance?.models[0];
+  const effort = model?.supportedReasoningEfforts.includes(current.effort)
+    ? current.effort
+    : (model?.supportedReasoningEfforts[0] ?? "");
+  const permission = instance?.permissionModes.includes(current.permission)
+    ? current.permission
+    : (instance?.permissionModes[0] ?? "");
+
+  return {
+    projectId,
+    deviceId,
+    instanceId: instance?.instanceId ?? "",
+    modelId: model?.id ?? "",
+    effort,
+    permission
+  };
+};
+
 export type HostedProjectMove = {
   id: string;
   executionId: string;
@@ -766,29 +813,35 @@ export async function loadHostedLaunchOptions(
                 : []
             )
           : [];
-        const models: AgentModelCapability[] = Array.isArray(value.models)
-          ? value.models.flatMap((model) => {
-              if (!record(model) || typeof model.id !== "string") return [];
-              return [
-                {
-                  provider: value.driverId as string,
-                  instanceId: value.instanceId as string,
-                  id: model.id,
-                  displayName:
-                    typeof model.displayName === "string"
-                      ? model.displayName
-                      : model.id,
-                  supportedReasoningEfforts: Array.isArray(
-                    model.supportedReasoningEfforts
-                  )
-                    ? model.supportedReasoningEfforts.filter(
-                        (effort): effort is string => typeof effort === "string"
-                      )
-                    : []
-                }
-              ];
-            })
-          : [];
+        const readiness =
+          typeof value.readiness === "string" ? value.readiness : "unknown";
+        const mayUseLastKnownModels =
+          value.ready === true || readiness === "stale";
+        const models: AgentModelCapability[] =
+          mayUseLastKnownModels && Array.isArray(value.models)
+            ? value.models.flatMap((model) => {
+                if (!record(model) || typeof model.id !== "string") return [];
+                return [
+                  {
+                    provider: value.driverId as string,
+                    instanceId: value.instanceId as string,
+                    id: model.id,
+                    displayName:
+                      typeof model.displayName === "string"
+                        ? model.displayName
+                        : model.id,
+                    supportedReasoningEfforts: Array.isArray(
+                      model.supportedReasoningEfforts
+                    )
+                      ? model.supportedReasoningEfforts.filter(
+                          (effort): effort is string =>
+                            typeof effort === "string"
+                        )
+                      : []
+                  }
+                ];
+              })
+            : [];
         return [
           {
             instanceId: value.instanceId,
@@ -797,8 +850,7 @@ export async function loadHostedLaunchOptions(
             models,
             permissionModes,
             ready: value.ready === true,
-            readiness:
-              typeof value.readiness === "string" ? value.readiness : "unknown"
+            readiness
           }
         ];
       })

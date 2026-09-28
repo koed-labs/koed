@@ -25,6 +25,7 @@ import {
   hostedRecoveryDisposition,
   hostedMessagesForSelection,
   hostedLaunchInstancesForDevice,
+  hostedLaunchSelectionForOptions,
   queueHostedConversationPrompt,
   requestHostedProjectMove,
   requestHostedConversationControl,
@@ -132,6 +133,7 @@ export function HostedManagedChats({
   const recoverySelectionRef = useRef<string | null | undefined>(undefined);
   const refreshedCompletedMoveRef = useRef<string | null>(null);
   const projectMoveRequestInFlightRef = useRef(false);
+  const launchOptionsLoadInFlightRef = useRef(false);
 
   const writeRecovery = useCallback(
     (
@@ -1298,26 +1300,31 @@ export function HostedManagedChats({
 
   const openNewConversation = async () => {
     setNewConversationOpen(true);
-    if (launchOptions || launchLoading) return;
+    if (launchOptionsLoadInFlightRef.current) return;
+    launchOptionsLoadInFlightRef.current = true;
     setLaunchLoading(true);
     setError(null);
     try {
       const options = await loadHostedLaunchOptions();
       setLaunchOptions(options);
-      setLaunchProjectId(options.projects[0]?.id ?? "");
-      setLaunchDeviceId(options.runners[0]?.deviceId ?? "");
-      const instance = hostedLaunchInstancesForDevice(
-        options,
-        options.runners[0]?.deviceId ?? ""
-      )[0];
-      setLaunchInstanceId(instance?.instanceId ?? "");
-      const model = instance?.models[0];
-      setLaunchModelId(model?.id ?? "");
-      setLaunchEffort(model?.supportedReasoningEfforts[0] ?? "");
-      setLaunchPermission(instance?.permissionModes[0] ?? "");
+      const selection = hostedLaunchSelectionForOptions(options, {
+        projectId: launchProjectId,
+        deviceId: launchDeviceId,
+        instanceId: launchInstanceId,
+        modelId: launchModelId,
+        effort: launchEffort,
+        permission: launchPermission
+      });
+      setLaunchProjectId(selection.projectId);
+      setLaunchDeviceId(selection.deviceId);
+      setLaunchInstanceId(selection.instanceId);
+      setLaunchModelId(selection.modelId);
+      setLaunchEffort(selection.effort);
+      setLaunchPermission(selection.permission);
     } catch (cause) {
       handleError(cause);
     } finally {
+      launchOptionsLoadInFlightRef.current = false;
       setLaunchLoading(false);
     }
   };
