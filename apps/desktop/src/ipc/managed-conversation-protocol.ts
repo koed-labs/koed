@@ -1,4 +1,5 @@
 import {
+  aiClientIdentifierPattern,
   isSupportedAiClientDriverId,
   parseManagedConversationSettings,
   type AiClientPermissionMode,
@@ -917,14 +918,34 @@ export const parseManagedConversationRequest = (
         "Managed Conversation command discovery driver is invalid."
       );
     }
+    const rawInstanceId = input.aiClientInstanceId;
+    if (
+      typeof rawInstanceId !== "string" ||
+      rawInstanceId.length === 0 ||
+      rawInstanceId.length > 128 ||
+      rawInstanceId.trim() !== rawInstanceId ||
+      !aiClientIdentifierPattern.test(rawInstanceId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery instance id is invalid."
+      );
+    }
+    const rawProjectId = input.projectId;
+    if (
+      typeof rawProjectId !== "string" ||
+      rawProjectId.length === 0 ||
+      rawProjectId.length > 128 ||
+      rawProjectId.trim() !== rawProjectId
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery project id is invalid."
+      );
+    }
     return {
       operation: "command_discovery",
       aiClientDriverId: input.aiClientDriverId,
-      aiClientInstanceId: identifier(
-        input.aiClientInstanceId,
-        "AI Client instance id"
-      ),
-      projectId: identifier(input.projectId, "Project id"),
+      aiClientInstanceId: rawInstanceId,
+      projectId: rawProjectId,
       ...(Object.hasOwn(input, "cwd")
         ? { cwd: identifier(input.cwd as string, "Working directory") }
         : {})
@@ -1845,16 +1866,20 @@ export const parseManagedConversationResult = (
     };
   }
   if (result.operation === "command_discovery") {
+    const status =
+      result.status as ManagedConversationCommandDiscoveryResult["status"];
+    const isOkStatus = status === "ok";
     const hasMessage = result.message !== undefined;
-    const allowedKeys = hasMessage
-      ? ["operation", "status", "commands", "message"]
-      : ["operation", "status", "commands"];
+    const allowedKeys = isOkStatus
+      ? ["operation", "status", "commands"]
+      : hasMessage
+        ? ["operation", "status", "commands", "message"]
+        : ["operation", "status", "commands"];
     exactKeys(
       result,
       allowedKeys,
       "Managed Conversation command discovery result"
     );
-    const status = result.status;
     if (
       status !== "ok" &&
       status !== "unavailable" &&
@@ -1870,7 +1895,12 @@ export const parseManagedConversationResult = (
         "Managed Conversation command discovery commands must be an array."
       );
     }
-    if (status === "ok" && result.commands.length > 128) {
+    if (!isOkStatus && result.commands.length > 0) {
+      throw new TypeError(
+        "Managed Conversation command discovery non-ok results must have empty commands array."
+      );
+    }
+    if (isOkStatus && result.commands.length > 128) {
       throw new TypeError(
         "Managed Conversation command discovery returns too many commands."
       );
@@ -1926,12 +1956,22 @@ export const parseManagedConversationResult = (
         );
       }
     }
+    if (isOkStatus) {
+      return {
+        operation: "command_discovery",
+        status: "ok",
+        commands: result.commands as ManagedConversationSlashCommand[]
+      };
+    }
     return {
       operation: "command_discovery",
-      status,
-      commands: result.commands as ManagedConversationSlashCommand[],
+      status: status as Exclude<
+        ManagedConversationCommandDiscoveryResult["status"],
+        "ok"
+      >,
+      commands: result.commands as [],
       ...(hasMessage ? { message: result.message as string } : {})
-    } as ManagedConversationResult;
+    };
   }
   throw new TypeError("Unsupported Managed Conversation result.");
 };
