@@ -36,6 +36,7 @@ export type HostedConversationRecoveryLookup =
       commandState: string;
       commandKind: "start" | "prompt";
       clientUserMessageId: string | null;
+      initialPromptCommandId?: string | null;
     };
 
 export type HostedRecoveryDisposition = Readonly<{
@@ -804,6 +805,7 @@ export async function startHostedManagedConversation(
     targetDeviceId: string;
     idempotencyKey: string;
     initialPrompt?: string;
+    initialPromptClientUserMessageId?: string;
   },
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch
@@ -983,7 +985,8 @@ export async function lookupHostedConversationRecovery(
     commandId: payload.command.id,
     commandState: payload.command.state,
     commandKind: input.kind,
-    clientUserMessageId: payload.command.clientUserMessageId as string | null
+    clientUserMessageId: payload.command.clientUserMessageId as string | null,
+    ...(input.kind === "start" ? { initialPromptCommandId: typeof payload.command.initialPromptCommandId === "string" && validExecutionId(payload.command.initialPromptCommandId) ? payload.command.initialPromptCommandId : null } : {})
   };
 }
 

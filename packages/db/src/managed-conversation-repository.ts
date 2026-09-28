@@ -361,6 +361,7 @@ export interface ManagedConversationRepository {
       runnerDeviceId: string;
       idempotencyKey: string;
       initialPrompt?: string;
+      initialPromptClientUserMessageId?: string;
       deferUntilRuntimeBinding?: boolean;
     }
   ): Promise<{
@@ -524,6 +525,17 @@ export interface ManagedConversationRepository {
     deviceId: string;
     limit?: number;
   }): Promise<ManagedConversationExecutionRecord[]>;
+  listManagedConversationPromptHistory(
+    actor: ActorContext,
+    input: { executionId: string; limit?: number; before?: string }
+  ): Promise<{
+    turns: Array<{
+      commandId: string; clientUserMessageId: string | null; prompt: string;
+      createdAt: string; completedAt: string;
+      assistantOutput: { text: string; truncated: boolean } | null;
+    }>;
+    hasMore: boolean; nextCursor: string | null;
+  }>;
   getManagedConversationCommand(
     actor: ActorContext,
     commandId: string
@@ -609,6 +621,7 @@ export interface ManagedConversationRepository {
     commandId: string;
     leaseToken: string;
     result?: Record<string, unknown>;
+    assistantOutput?: { text: string; truncated: boolean };
   }): Promise<boolean>;
   markManagedConversationCheckpointPending(input: {
     commandId: string;
@@ -1020,6 +1033,9 @@ const COMMAND_COLUMNS = `
   dispatching_at, completed_at
 `;
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
 const RUNTIME_ITEM_COLUMNS = `
   id, owner_user_id, execution_id, execution_generation,
   provider_request_id, provider_turn_id, provider_item_id, item_kind, state,
@@ -1154,7 +1170,7 @@ const mapCommand = (
   attempts: row.attempts,
   leaseToken: row.lease_token,
   leaseExpiresAt: iso(row.lease_expires_at),
-  payload,
+  payload: payload ? Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "assistantOutput")) : null,
   result: row.result,
   lastErrorCode: row.last_error_code,
   createdAt: row.created_at.toISOString(),
@@ -1240,6 +1256,14 @@ const mapDiff = (
 const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
+const stableUuidFromSeed = (seed: string): string => {
+  const bytes = createHash("sha256").update(seed, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
 const startDigest = (input: {
   projectId: string | null;
   contextKind?: "project" | "independent";
@@ -1252,6 +1276,7 @@ const startDigest = (input: {
   runnerDeploymentId: string;
   runnerDeviceId: string;
   initialPrompt?: string;
+  initialPromptClientUserMessageId?: string;
   deferUntilRuntimeBinding?: boolean;
 }): string =>
   sha256(
@@ -1271,6 +1296,12 @@ const startDigest = (input: {
       runnerDeploymentId: input.runnerDeploymentId,
       runnerDeviceId: input.runnerDeviceId,
       initialPrompt: input.initialPrompt ?? null,
+      ...(input.initialPromptClientUserMessageId !== undefined
+        ? {
+            initialPromptClientUserMessageId:
+              input.initialPromptClientUserMessageId
+          }
+        : {}),
       deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
     })
   );
@@ -1439,6 +1470,7 @@ export const createManagedConversationRepository = (
     executionId: string;
     commandId: string;
     prompt: string;
+    clientUserMessageId?: string;
     fileMentions?: Array<Record<string, unknown>>;
     settings: ManagedConversationSettings;
     personalAgent?: {
@@ -1456,6 +1488,9 @@ export const createManagedConversationRepository = (
       objectClass: "managed_conversation_prompt",
       value: {
         prompt: input.prompt,
+        ...(input.clientUserMessageId
+          ? { clientUserMessageId: input.clientUserMessageId }
+          : {}),
         settings: input.settings,
         ...(input.personalAgent ? { personalAgent: input.personalAgent } : {}),
         ...(input.personalAgentContext
@@ -1468,7 +1503,7 @@ export const createManagedConversationRepository = (
     });
 
   const decryptPayload = async (
-    row: CommandRow
+    row: Pick<CommandRow, "encrypted_payload">
   ): Promise<Record<string, unknown> | null> => {
     if (!row.encrypted_payload) return null;
     const plaintext = await decryptEnvelopeToUtf8(
@@ -2096,6 +2131,9 @@ export const createManagedConversationRepository = (
       if (
         (input.contextKind !== "independent" && !projectId) ||
         (input.contextKind === "independent" && projectId !== null) ||
+        (input.initialPromptClientUserMessageId !== undefined &&
+          (!input.initialPrompt?.trim() ||
+            !UUID_PATTERN.test(input.initialPromptClientUserMessageId))) ||
         !input.provider.trim() ||
         !input.aiClientInstanceId.trim() ||
         !input.model.trim() ||
@@ -2140,6 +2178,8 @@ export const createManagedConversationRepository = (
             runnerDeploymentId: input.runnerDeploymentId,
             runnerDeviceId: input.runnerDeviceId,
             initialPrompt: input.initialPrompt,
+            initialPromptClientUserMessageId:
+              input.initialPromptClientUserMessageId,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
           });
           if (existing.rows[0].request_digest !== expectedDigest) {
@@ -2173,6 +2213,8 @@ export const createManagedConversationRepository = (
           runnerDeploymentId: input.runnerDeploymentId,
           runnerDeviceId: input.runnerDeviceId,
           initialPrompt: input.initialPrompt,
+          initialPromptClientUserMessageId:
+            input.initialPromptClientUserMessageId,
           deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
         });
         const executionResult = await client.query<ExecutionRow>(
@@ -2203,6 +2245,7 @@ export const createManagedConversationRepository = (
               executionId,
               commandId,
               prompt: input.initialPrompt,
+              clientUserMessageId: input.initialPromptClientUserMessageId,
               settings: {
                 model: input.model,
                 reasoningEffort: input.reasoningEffort ?? null,
@@ -2244,7 +2287,17 @@ export const createManagedConversationRepository = (
           execution: mapExecution(executionResult.rows[0]!),
           command: mapCommand(
             commandResult.rows[0]!,
-            input.initialPrompt ? { prompt: input.initialPrompt } : null
+            input.initialPrompt
+              ? {
+                  prompt: input.initialPrompt,
+                  ...(input.initialPromptClientUserMessageId
+                    ? {
+                        clientUserMessageId:
+                          input.initialPromptClientUserMessageId
+                      }
+                    : {})
+                }
+              : null
           ),
           fencingToken
         };
@@ -3720,6 +3773,47 @@ export const createManagedConversationRepository = (
       return result.rows.map(mapExecution);
     },
 
+    async listManagedConversationPromptHistory(actor, input) {
+      const limit = Math.min(Math.max(input.limit ?? 20, 1), 20);
+      const cursor = input.before?.match(/^prompt:(\d+)$/);
+      if (input.before && (!cursor || !Number.isSafeInteger(Number(cursor[1])))) {
+        throw statusError("Invalid Conversation history cursor", 400);
+      }
+      const result = await pool.query<CommandRow>(
+        `select ${COMMAND_COLUMNS}
+           from managed_conversation_commands
+          where owner_user_id = $1 and execution_id = $2
+            and command_kind = 'prompt' and state = 'completed'
+            and ($3::integer is null or sequence < $3)
+            and not exists (
+              select 1 from personal_agent_execution_jobs job
+               where job.command_id = managed_conversation_commands.id
+            )
+          order by sequence desc
+          limit $4`,
+        [actor.userId, input.executionId, cursor ? Number(cursor[1]) : null, limit + 1]
+      );
+      const rows = result.rows.slice(0, limit);
+      const turns = [];
+      for (const row of rows) {
+        const payload = await decryptPayload(row);
+        if (typeof payload?.prompt !== "string") continue;
+        const output = payload.assistantOutput;
+        const validOutput = output && typeof output === "object" && !Array.isArray(output)
+          ? output as Record<string, unknown> : null;
+        turns.push({
+          commandId: row.id, clientUserMessageId: row.client_user_message_id,
+          prompt: payload.prompt, createdAt: requiredIso(row.created_at),
+          completedAt: requiredIso(row.completed_at ?? row.updated_at),
+          assistantOutput: validOutput && typeof validOutput.text === "string"
+            ? { text: validOutput.text, truncated: validOutput.truncated === true } : null
+        });
+      }
+      const hasMore = result.rows.length > limit;
+      return { turns: turns.reverse(), hasMore,
+        nextCursor: hasMore && rows.length ? `prompt:${rows[rows.length - 1]!.sequence}` : null };
+    },
+
     async getManagedConversationCommand(actor, commandId) {
       const result = await pool.query<CommandRow>(
         `select ${COMMAND_COLUMNS}
@@ -4680,10 +4774,12 @@ export const createManagedConversationRepository = (
       try {
         await client.query("begin");
         const result = await client.query<{
+          id: string;
           owner_user_id: string;
           execution_id: string;
           execution_generation: number;
           command_kind: string;
+          encrypted_payload: Record<string, unknown> | null;
         }>(
           `update managed_conversation_commands
             set state = 'completed',
@@ -4694,11 +4790,142 @@ export const createManagedConversationRepository = (
                 last_error_code = null,
                 updated_at = now()
           where id = $1 and lease_token = $2 and state = 'dispatching'
-        returning owner_user_id, execution_id, execution_generation, command_kind`,
+        returning id, owner_user_id, execution_id, execution_generation,
+                  command_kind, encrypted_payload`,
           [input.commandId, input.leaseToken, input.result ?? null]
         );
         const row = result.rows[0];
         if (row) {
+          if (row.command_kind === "prompt" && input.assistantOutput) {
+            const payload = await decryptPayload(row);
+            if (!payload || typeof input.assistantOutput.text !== "string") {
+              throw statusError("Invalid Conversation output", 400);
+            }
+            const original = input.assistantOutput.text;
+            // Bound bytes and preserve whole Unicode codepoints.
+            let text = original;
+            while (Buffer.byteLength(text, "utf8") > 65_536) {
+              text = Array.from(text).slice(0, -256).join("");
+            }
+            const encrypted = await encryptCommandPayload({
+              ownerUserId: row.owner_user_id, executionId: row.execution_id,
+              commandId: row.id, objectClass: "managed_conversation_prompt",
+              value: { ...payload, assistantOutput: {
+                text, truncated: input.assistantOutput.truncated || text.length < original.length
+              } }
+            });
+            await client.query(
+              `update managed_conversation_commands set encrypted_payload = $2::jsonb where id = $1`,
+              [row.id, encrypted]
+            );
+          }
+          let initialPromptCommandQueued = false;
+          if (row.command_kind === "start" && row.encrypted_payload) {
+            const startPayload = await decryptPayload(row);
+            const prompt =
+              typeof startPayload?.prompt === "string"
+                ? startPayload.prompt.trim()
+                : "";
+            if (prompt) {
+              const execution = await client.query<{
+                execution_generation: number;
+                state: ManagedConversationExecutionState;
+                model: string;
+                reasoning_effort: string | null;
+                permission_mode:
+                  | "supervised"
+                  | "auto_edit"
+                  | "auto"
+                  | "full_access";
+              }>(
+                `select execution_generation, state, model,
+                        reasoning_effort, permission_mode
+                   from managed_conversation_executions
+                  where owner_user_id = $1 and id = $2
+                  for update`,
+                [row.owner_user_id, row.execution_id]
+              );
+              const current = execution.rows[0];
+              if (
+                current?.state === "running" &&
+                current.execution_generation === row.execution_generation
+              ) {
+                const clientUserMessageId =
+                  typeof startPayload?.clientUserMessageId === "string" &&
+                  UUID_PATTERN.test(startPayload.clientUserMessageId)
+                    ? startPayload.clientUserMessageId
+                    : stableUuidFromSeed(
+                        `managed-conversation-start-prompt:${row.id}:client-user-message`
+                      );
+                const idempotencyKey =
+                  `managed-conversation-start-prompt:${row.id}`;
+                const settings: ManagedConversationSettings = {
+                  model: current.model,
+                  reasoningEffort: current.reasoning_effort,
+                  permissionMode: current.permission_mode
+                };
+                const requestDigest = sha256(
+                  JSON.stringify({
+                    kind: "prompt",
+                    executionId: row.execution_id,
+                    executionGeneration: current.execution_generation,
+                    clientUserMessageId,
+                    prompt,
+                    fileMentionCommandIds: []
+                  })
+                );
+                const sequence = await client.query<{ sequence: number }>(
+                  `select coalesce(max(sequence), -1) + 1 as sequence
+                     from managed_conversation_commands
+                    where execution_id = $1`,
+                  [row.execution_id]
+                );
+                const promptCommandId = randomUUID();
+                const encryptedPayload = await encryptPrompt({
+                  ownerUserId: row.owner_user_id,
+                  executionId: row.execution_id,
+                  commandId: promptCommandId,
+                  prompt,
+                  clientUserMessageId,
+                  settings
+                });
+                const queued = await client.query<{ id: string }>(
+                  `insert into managed_conversation_commands (
+                     id, owner_user_id, execution_id, idempotency_key, sequence,
+                     command_kind, request_digest, client_user_message_id,
+                     execution_generation, encrypted_payload
+                   ) values ($1, $2, $3, $4, $5, 'prompt', $6, $7, $8, $9::jsonb)
+                   on conflict (owner_user_id, idempotency_key) do nothing
+                   returning id`,
+                  [
+                    promptCommandId,
+                    row.owner_user_id,
+                    row.execution_id,
+                    idempotencyKey,
+                    sequence.rows[0]!.sequence,
+                    requestDigest,
+                    clientUserMessageId,
+                    current.execution_generation,
+                    encryptedPayload
+                  ]
+                );
+                if (queued.rows[0]) {
+                  initialPromptCommandQueued = true;
+                  await client.query(
+                    `update managed_conversation_commands
+                        set result = coalesce(result, '{}'::jsonb) || $2::jsonb
+                      where id = $1`,
+                    [row.id, { initialPromptCommandId: promptCommandId }]
+                  );
+                  await appendManagedConversationEvent(client, {
+                    ownerUserId: row.owner_user_id,
+                    executionId: row.execution_id,
+                    mutationId: `managed-conversation-command:${promptCommandId}:queued`
+                  });
+                }
+              }
+            }
+          }
           // Prompts execute serially. Completion follows canonical capture, so
           // temporary output from this generation must not survive into a new turn.
           const retired =
@@ -4720,6 +4947,9 @@ export const createManagedConversationRepository = (
             mutationId: `managed-conversation-command:${input.commandId}:completed`,
             runtimeItemsReset: (retired?.rowCount ?? 0) > 0
           });
+          if (initialPromptCommandQueued) {
+            await notifyManagedConversationCommand(client, row.execution_id);
+          }
         }
         await client.query("commit");
         return Boolean(row);

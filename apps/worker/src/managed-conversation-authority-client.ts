@@ -866,7 +866,8 @@ export const createManagedConversationAuthorityClient = (options: {
         )}/complete`,
         {
           leaseToken: input.leaseToken,
-          ...(input.result ? { result: input.result } : {})
+          ...(input.result ? { result: input.result } : {}),
+          ...(input.assistantOutput !== undefined ? { assistantOutput: input.assistantOutput } : {})
         }
       );
       return boolean(payload.completed, "command completion result");

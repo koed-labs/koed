@@ -2331,6 +2331,42 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("atomically dispatches a hosted initial prompt and preserves encrypted generic history", async () => {
+    const managedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(Buffer.alloc(32, 47).toString("base64"))
+    });
+    const owner = await managedRepo.createUser({ email: `generic-history-${randomUUID()}@example.com` });
+    const foreign = await managedRepo.createUser({ email: `generic-history-foreign-${randomUUID()}@example.com` });
+    const deploymentId = randomUUID(); const deviceId = randomUUID();
+    const runnerId = "generic-history-runner"; const messageId = randomUUID();
+    const start = await managedRepo.createManagedConversation({ userId: owner.id }, {
+      provider: "codex", aiClientInstanceId: "codex.default", model: "gpt-test",
+      permissionMode: "supervised", runnerKind: "local_device", projectId: "generic-history-project",
+      runnerDeploymentId: deploymentId, runnerDeviceId: deviceId, idempotencyKey: randomUUID(),
+      initialPrompt: "Private hosted initial prompt", initialPromptClientUserMessageId: messageId
+    });
+    const [claimed] = await managedRepo.claimManagedConversationCommands({ ownerUserId: owner.id, runnerId, deploymentId, deviceId, leaseMs: 60_000 });
+    expect(claimed!.commandKind).toBe("start");
+    await managedRepo.bindManagedConversationRuntime({ userId: owner.id }, {
+      executionId: start.execution.id, expectedStateVersion: claimed!.execution.stateVersion,
+      executionGeneration: 1, runnerId, logicalSessionId: randomUUID(), providerThreadId: randomUUID(), providerCliVersion: "test"
+    });
+    expect(await managedRepo.completeManagedConversationCommand({ commandId: claimed!.id, leaseToken: claimed!.leaseToken! })).toBe(true);
+    expect(await managedRepo.completeManagedConversationCommand({ commandId: claimed!.id, leaseToken: claimed!.leaseToken! })).toBe(false);
+    const [prompt] = await managedRepo.claimManagedConversationCommands({ ownerUserId: owner.id, runnerId, deploymentId, deviceId, leaseMs: 60_000 });
+    expect(prompt).toMatchObject({ commandKind: "prompt", clientUserMessageId: messageId, payload: { prompt: "Private hosted initial prompt" } });
+    expect(await managedRepo.completeManagedConversationCommand({ commandId: prompt!.id, leaseToken: prompt!.leaseToken!, result: { turnId: "turn" }, assistantOutput: { text: "Private hosted final answer", truncated: false } })).toBe(true);
+    const history = await managedRepo.listManagedConversationPromptHistory({ userId: owner.id }, { executionId: start.execution.id });
+    expect(history.turns).toHaveLength(1);
+    expect(history.turns[0]).toMatchObject({ commandId: prompt!.id, clientUserMessageId: messageId, prompt: "Private hosted initial prompt", assistantOutput: { text: "Private hosted final answer", truncated: false } });
+    expect((await managedRepo.listManagedConversationPromptHistory({ userId: foreign.id }, { executionId: start.execution.id })).turns).toEqual([]);
+    expect((await managedRepo.getManagedConversationCommand({ userId: owner.id }, prompt!.id))!.payload).not.toHaveProperty("assistantOutput");
+    const raw = await pool.query("select encrypted_payload, result from managed_conversation_commands where id = $1", [prompt!.id]);
+    expect(JSON.stringify(raw.rows)).not.toContain("Private hosted");
+    const count = await pool.query("select count(*)::int as count from managed_conversation_commands where execution_id = $1 and command_kind = 'prompt'", [start.execution.id]);
+    expect(count.rows[0].count).toBe(1);
+  });
+
   it("queues an initial prompt behind a starting managed Conversation", async () => {
     const managedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

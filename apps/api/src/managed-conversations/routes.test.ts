@@ -314,6 +314,47 @@ describe("managed Conversation capability admission", () => {
     expect(response.body).not.toContain("private instruction");
   });
 
+  it("returns generic encrypted-history messages without named-agent jobs or duplicate authors", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const messageId = randomUUID();
+    const history = vi.fn(async () => ({ turns: [{
+      commandId, clientUserMessageId: messageId, prompt: "Generic prompt",
+      createdAt: "2026-09-28T10:00:00.000Z", completedAt: "2026-09-28T10:00:01.000Z",
+      assistantOutput: { text: "Generic final answer", truncated: true }
+    }], hasMore: true, nextCursor: "prompt:7" }));
+    const jobs = vi.fn();
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: { memoryRead: async () => undefined, memoryWrite: async () => undefined },
+      localEdge: { upstreamBackendsPath: resolve(mkdtempSync(resolve(tmpdir(), "koed-generic-history-")), "upstreams.json"), resolveUpstreamAuthorization: () => null, fetch: vi.fn() },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({ id: executionId, ownerUserId: userId, executionGeneration: 2, state: "running" }),
+        getPersonalAgentConversation: async () => null,
+        listManagedConversationPromptHistory: history,
+        listPersonalAgentExecutionJobs: jobs
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({ method: "GET", url: `/v1/managed-conversations/${executionId}/agent-state?limit=5&before=prompt:9` });
+    await app.close();
+    expect(response.statusCode).toBe(200);
+    expect(history).toHaveBeenCalledWith({ userId }, { executionId, limit: 5, before: "prompt:9" });
+    expect(jobs).not.toHaveBeenCalled();
+    expect(response.json()).toMatchObject({
+      activeAgentId: null, participants: [], jobs: [], hasMore: true, nextCursor: "prompt:7",
+      messages: [
+        { id: messageId, role: "user", content: "Generic prompt" },
+        { id: `provider:${commandId}`, role: "assistant", content: "Generic final answer", truncated: true }
+      ]
+    });
+    expect(response.json().messages[1]).not.toHaveProperty("author");
+  });
+
   it("looks up recovery only by the exact owner-scoped prompt identity", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();

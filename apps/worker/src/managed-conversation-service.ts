@@ -1662,6 +1662,39 @@ export const createManagedConversationService = (options: {
     });
   };
 
+  // Generic provider chats use the same turn identity checks as named Agents.
+  // Send text separately from completion metadata so Authority encrypts it.
+  const genericAssistantOutputForTurn = async (
+    command: PersonalAgentCommandContext,
+    turnId?: string | null
+  ): Promise<{ text: string; truncated: boolean } | undefined> => {
+    if (personalAgentJobFor(command)) return undefined;
+    let text = command.execution.provider === "codex" && turnId
+      ? (await personalAgentTranscriptOutputForTurn(command, turnId))?.text ?? ""
+      : turnId ? managedConversationAssistantOutputForTurn(
+          transientOutputs.entries(), command.executionId, turnId
+        ).map(([, output]) => output.text.trim()).filter(Boolean).join("\n")
+      : "";
+    if (!text && turnId && command.execution.provider !== "codex") {
+      const items = await options.repository.listManagedConversationRuntimeItems(
+        { userId: command.ownerUserId }, { executionId: command.executionId }
+      );
+      text = items.filter((item) =>
+        item.itemKind === "transient_output" &&
+        item.executionGeneration === command.executionGeneration &&
+        item.providerTurnId === turnId && typeof item.payload?.text === "string"
+      ).map((item) => item.payload!.text as string).join("\n");
+    }
+    if (!text && turnId && command.execution.provider === "codex") {
+      throw managedConversationError("ManagedConversationTurnOutputRecoveryPendingError");
+    }
+    const originalText = text;
+    while (Buffer.byteLength(text, "utf8") > 65_536) {
+      text = Array.from(text).slice(0, -256).join("");
+    }
+    return text ? { text, truncated: text.length < originalText.length } : undefined;
+  };
+
   const persistPersonalAgentTranscriptOutput = async (input: {
     command: PersonalAgentCommandContext;
     jobId: string;
@@ -3066,6 +3099,10 @@ export const createManagedConversationService = (options: {
     execution: ManagedConversationExecutionRecord
   ): Promise<boolean> => {
     if (execution.provider !== "codex") return false;
+    // Generic hosted execution has no named-Agent job repository. Its output
+    // is retained on the accepted command; do not require the local job API.
+    if (typeof options.repository.listPersonalAgentExecutionJobs !== "function" ||
+        typeof options.repository.getManagedConversationCommand !== "function") return false;
     const jobsPage = await options.repository.listPersonalAgentExecutionJobs(
       { userId: execution.ownerUserId },
       { conversationId: execution.id, limit: 100 }
@@ -3370,6 +3407,7 @@ export const createManagedConversationService = (options: {
       } catch (error) {
         recoveryDeferred = true;
         if (recoveredSession) {
+          runtimeSessions.delete(execution.provider as ManagedConversationProvider, execution.id);
           await recoveredSession.closeAndWait().catch(() => undefined);
         }
         if (acquired) {
@@ -6036,6 +6074,7 @@ export const createManagedConversationService = (options: {
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
+          assistantOutput: await genericAssistantOutputForTurn(command, pendingCheckpoint.providerTurnId),
           result: {
             ...(pendingCheckpoint.providerTurnId
               ? { turnId: pendingCheckpoint.providerTurnId }
@@ -6149,6 +6188,7 @@ export const createManagedConversationService = (options: {
           await options.repository.completeManagedConversationCommand({
             commandId: command.id,
             leaseToken: command.leaseToken!,
+            assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
             result: { turnId: result.turnId, model: command.execution.model }
           });
           releaseTransientOutputBuffers(command.executionId, result.turnId);
@@ -6286,6 +6326,7 @@ export const createManagedConversationService = (options: {
         await options.repository.completeManagedConversationCommand({
           commandId: command.id,
           leaseToken: command.leaseToken,
+          assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
           result: { model: result.model }
         });
         releaseTransientOutputBuffers(command.executionId, result.turnId);
@@ -6402,6 +6443,7 @@ export const createManagedConversationService = (options: {
       await options.repository.completeManagedConversationCommand({
         commandId: command.id,
         leaseToken: command.leaseToken,
+        assistantOutput: await genericAssistantOutputForTurn(command, result.turnId),
         result: {
           ...(result.turnId ? { turnId: result.turnId } : {})
         }

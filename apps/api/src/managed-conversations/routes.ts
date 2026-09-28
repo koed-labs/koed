@@ -84,7 +84,8 @@ const browserStartSchema = startSchema
   .extend({
     contextKind: z.enum(["project", "independent"]).default("project"),
     targetDeviceId: z.string().trim().min(1).max(128),
-    initialPrompt: z.string().trim().min(1).max(256_000).optional()
+    initialPrompt: z.string().trim().min(1).max(256_000).optional(),
+    initialPromptClientUserMessageId: z.string().uuid().optional()
   })
   .strict()
   .refine(
@@ -2188,6 +2189,7 @@ export const registerManagedConversationRoutes = (
             runnerDeviceId: target.deviceId,
             idempotencyKey: input.idempotencyKey,
             initialPrompt: input.initialPrompt,
+            initialPromptClientUserMessageId: input.initialPromptClientUserMessageId,
             deferUntilRuntimeBinding: true
           }
         );
@@ -2490,6 +2492,7 @@ export const registerManagedConversationRoutes = (
           executionGeneration: command.executionGeneration,
           commandKind: command.commandKind,
           clientUserMessageId: command.clientUserMessageId,
+          initialPromptCommandId: command.commandKind === "start" && typeof command.result?.initialPromptCommandId === "string" ? command.result.initialPromptCommandId : null,
           createdAt: command.createdAt
         }
       };
@@ -3629,11 +3632,19 @@ export const registerManagedConversationRoutes = (
           conversationId: executionId
         }
       );
-      const jobsPage = await repository.listPersonalAgentExecutionJobs(actor, {
-        conversationId: executionId,
-        limit: query.limit,
-        ...(query.before ? { before: query.before } : {})
-      });
+      const genericHistory = !conversation
+        ? await repository.listManagedConversationPromptHistory(actor, {
+            executionId, limit: query.limit,
+            ...(query.before ? { before: query.before } : {})
+          })
+        : null;
+      const jobsPage = conversation
+        ? await repository.listPersonalAgentExecutionJobs(actor, {
+            conversationId: executionId,
+            limit: query.limit,
+            ...(query.before ? { before: query.before } : {})
+          })
+        : { jobs: [], hasMore: false, nextCursor: null };
       const profileCache = new Map<
         string,
         Awaited<ReturnType<typeof repository.getPersonalAgentVersion>>
@@ -3746,6 +3757,21 @@ export const registerManagedConversationRoutes = (
           });
         }
       }
+      for (const turn of genericHistory?.turns ?? []) {
+        messages.push({
+          id: turn.clientUserMessageId ?? turn.commandId,
+          role: "user", ...clipMessage(turn.prompt), createdAt: turn.createdAt
+        });
+        if (turn.assistantOutput) {
+          const clipped = clipMessage(turn.assistantOutput.text);
+          messages.push({
+            id: `provider:${turn.commandId}`, role: "assistant",
+            ...clipped,
+            truncated: clipped.truncated || turn.assistantOutput.truncated,
+            createdAt: turn.completedAt
+          });
+        }
+      }
       messages.sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt)
       );
@@ -3773,8 +3799,8 @@ export const registerManagedConversationRoutes = (
         participants: participants.filter((value) => value !== null),
         messages,
         jobs,
-        hasMore: jobsPage.hasMore,
-        nextCursor: jobsPage.nextCursor,
+        hasMore: genericHistory?.hasMore ?? jobsPage.hasMore,
+        nextCursor: genericHistory ? genericHistory.nextCursor : jobsPage.nextCursor,
         snapshotAt: new Date().toISOString(),
         executionGeneration: execution.executionGeneration,
         executionState: execution.state

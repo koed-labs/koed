@@ -429,6 +429,51 @@ export function HostedManagedChats({
             setError(null);
             return;
           }
+          if (result.commandState === "completed" && operation.prompt && result.initialPromptCommandId) {
+            const conversationStore = fromNewSlot && recoveryScope
+              ? createDeviceManagedChatRecoveryStore({ ...recoveryScope, executionId: result.executionId })
+              : store;
+            const childOperation: DeviceManagedChatPendingOperation = {
+              ...operation, kind: "prompt", state: "reconciling",
+              promptIdempotencyKey: `managed-conversation-start-prompt:${result.commandId}`,
+              commandId: result.initialPromptCommandId,
+              executionGeneration: result.executionGeneration
+            };
+            writeRecovery(conversationStore, "", childOperation);
+            if (fromNewSlot) {
+              store?.clear();
+              newStartOperationRef.current = null;
+              setPendingNewStart(null);
+            }
+            recoveryOperationRef.current = childOperation;
+            setPendingRecoveryOperation(childOperation);
+            selectedIdRef.current = result.executionId;
+            setSelectedId(result.executionId);
+            setNewConversationOpen(false);
+            setInitialPrompt("");
+            await refreshList(signal);
+            await reconcilePromptOperation(childOperation, result.executionId, conversationStore, signal);
+            return;
+          }
+          if (result.commandState === "completed" && operation.prompt && !result.initialPromptCommandId) {
+            const conversationStore = fromNewSlot && recoveryScope
+              ? createDeviceManagedChatRecoveryStore({ ...recoveryScope, executionId: result.executionId }) : store;
+            writeRecovery(conversationStore, operation.prompt, null);
+            if (fromNewSlot) store?.clear();
+            newStartOperationRef.current = null;
+            setPendingNewStart(null);
+            recoveryOperationRef.current = null;
+            setPendingRecoveryOperation(null);
+            draftRef.current = operation.prompt;
+            setDraft(operation.prompt);
+            selectedIdRef.current = result.executionId;
+            setSelectedId(result.executionId);
+            setNewConversationOpen(false);
+            setInitialPrompt("");
+            setStatus("This older Conversation start did not accept its initial message. The message is restored as a draft; send it when you are ready.");
+            await refreshList(signal);
+            return;
+          }
           const retainAcceptedIdentity = !disposition.clearIdentity;
           const retainedOperation = {
             ...operation,
@@ -530,7 +575,7 @@ export function HostedManagedChats({
         if (!signal?.aborted) setRecoveryChecking(false);
       }
     },
-    [recoveryScope, refreshList, writeRecovery]
+    [recoveryScope, refreshList, writeRecovery, reconcilePromptOperation]
   );
 
   const applyProjectMoveState = useCallback(
@@ -733,6 +778,20 @@ export function HostedManagedChats({
             : pending
         );
         await refreshProjectMove(selectedId, controller.signal);
+        const operation = recoveryOperationRef.current;
+        const command = value.runtime.latestCommand;
+        const commandSettled =
+          command?.id === operation?.commandId &&
+          ["completed", "failed", "canceled", "indeterminate"].includes(command?.state ?? "");
+        if (operation && (commandSettled ||
+          (operation.kind === "start" && value.runtime.execution.state === "running"))) {
+          const store = recoveryStoreRef.current;
+          if (operation.kind === "start") {
+            await reconcileStartOperation(operation, store, false, controller.signal);
+          } else {
+            await reconcilePromptOperation(operation, selectedId, store, controller.signal);
+          }
+        }
       } catch (cause) {
         if (!controller.signal.aborted && selectedIdRef.current === selectedId)
           handleError(cause);
@@ -745,7 +804,7 @@ export function HostedManagedChats({
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [handleError, refreshProjectMove, selectedId]);
+  }, [handleError, refreshProjectMove, selectedId, reconcileStartOperation, reconcilePromptOperation]);
 
   const selected = useMemo(
     () => executions.find((execution) => execution.id === selectedId) ?? null,
@@ -1298,7 +1357,7 @@ export function HostedManagedChats({
         permissionMode: launchPermission,
         targetDeviceId: launchDeviceId,
         idempotencyKey: operation.startIdempotencyKey,
-        ...(prompt ? { initialPrompt: prompt } : {})
+        ...(prompt ? { initialPrompt: prompt, initialPromptClientUserMessageId: operation.clientUserMessageId } : {})
       });
       setNewConversationOpen(false);
       selectedIdRef.current = started.execution.id;

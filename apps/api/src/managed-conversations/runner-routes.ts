@@ -153,7 +153,11 @@ const releaseExecutionSchema = z
 const completeCommandSchema = z
   .object({
     leaseToken: uuid,
-    result: z.record(z.string(), z.unknown()).optional()
+    result: z.record(z.string(), z.unknown()).optional(),
+    assistantOutput: z.object({
+      text: z.string().max(65_536).refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
+      truncated: z.boolean()
+    }).strict().optional()
   })
   .strict();
 
