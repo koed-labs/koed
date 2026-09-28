@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -93,6 +93,66 @@ test("does not render a pending message from another selected Conversation", () 
       }
     ]
   );
+});
+
+test("scopes recovery blocking to the selected Conversation", () => {
+  const unresolvedExecutionId = "older-indeterminate-execution";
+  const healthyExecutionId = "healthy-execution";
+  const checkingExecutionIds = [unresolvedExecutionId];
+
+  assert.deepEqual(
+    hostedRecoveryGuardForSelection({
+      selectedExecutionId: healthyExecutionId,
+      pendingOperationExecutionId: unresolvedExecutionId,
+      checkingExecutionIds
+    }),
+    { hasPendingOperation: false, isChecking: false }
+  );
+  assert.deepEqual(
+    hostedRecoveryGuardForSelection({
+      selectedExecutionId: unresolvedExecutionId,
+      pendingOperationExecutionId: unresolvedExecutionId,
+      checkingExecutionIds
+    }),
+    { hasPendingOperation: true, isChecking: true }
+  );
+  assert.deepEqual(
+    hostedRecoveryGuardForSelection({
+      selectedExecutionId: healthyExecutionId,
+      pendingOperationExecutionId: null,
+      checkingExecutionIds: []
+    }),
+    { hasPendingOperation: false, isChecking: false }
+  );
+});
+
+test("keeps a delayed new-start recovery result from replacing a newly selected Conversation", async () => {
+  let selectedExecutionId: string | null = "older-execution";
+  let persistedNewStartIdentity: string | null = "accepted-new-start";
+  const selectedExecutionAtStart = selectedExecutionId;
+  let resolveLookup!: (executionId: string) => void;
+  const lookup = new Promise<string>((resolve) => {
+    resolveLookup = resolve;
+  });
+
+  const reconcile = async () => {
+    const recoveredExecutionId = await lookup;
+    if (
+      !hostedRecoverySelectionIsCurrent(
+        selectedExecutionAtStart,
+        selectedExecutionId
+      )
+    ) return;
+    persistedNewStartIdentity = null;
+    selectedExecutionId = recoveredExecutionId;
+  };
+  const pendingReconciliation = reconcile();
+  selectedExecutionId = "healthy-execution";
+  resolveLookup("recovered-new-start-execution");
+  await pendingReconciliation;
+
+  assert.equal(selectedExecutionId, "healthy-execution");
+  assert.equal(persistedNewStartIdentity, "accepted-new-start");
 });
 
 test("shows only the active execution generation's approved transient output and reconciles canonical IDs", () => {

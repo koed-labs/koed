@@ -23,6 +23,8 @@ import {
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedRecoveryDisposition,
+  hostedRecoveryGuardForSelection,
+  hostedRecoverySelectionIsCurrent,
   hostedMessagesForSelection,
   hostedMessagesWithTransientOutput,
   hostedLaunchInstancesForDevice,
@@ -91,12 +93,16 @@ export function HostedManagedChats({
     useState<HostedRecoveryScope | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] =
     useState<DeviceManagedChatPendingOperation | null>(null);
+  const [pendingRecoveryExecutionId, setPendingRecoveryExecutionId] =
+    useState<string | null>(null);
   const [pendingNewStart, setPendingNewStart] =
     useState<DeviceManagedChatPendingOperation | null>(null);
   const [runtimeRequestNotice, setRuntimeRequestNotice] = useState<{
     executionId: string;
   } | null>(null);
-  const [recoveryChecking, setRecoveryChecking] = useState(false);
+  const [recoveryCheckCounts, setRecoveryCheckCounts] = useState<
+    Record<string, number>
+  >({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
@@ -152,6 +158,39 @@ export function HostedManagedChats({
     []
   );
 
+  const setScopedPendingRecoveryOperation = useCallback(
+    (
+      operation: DeviceManagedChatPendingOperation | null,
+      executionId: string | null
+    ) => {
+      setPendingRecoveryExecutionId(executionId);
+      setPendingRecoveryOperation(operation);
+    },
+    []
+  );
+
+  const beginRecoveryCheck = useCallback((executionId: string | null) => {
+    const key = executionId ?? "__new_conversation__";
+    setRecoveryCheckCounts((current) => ({
+      ...current,
+      [key]: (current[key] ?? 0) + 1
+    }));
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      setRecoveryCheckCounts((current) => {
+        const count = current[key] ?? 0;
+        if (count <= 1) {
+          const remaining = { ...current };
+          delete remaining[key];
+          return remaining;
+        }
+        return { ...current, [key]: count - 1 };
+      });
+    };
+  }, []);
+
   const updateDraft = useCallback(
     (value: string) => {
       draftRef.current = value;
@@ -172,10 +211,10 @@ export function HostedManagedChats({
       draftValue = draftRef.current
     ) => {
       recoveryOperationRef.current = operation;
-      setPendingRecoveryOperation(operation);
+      setScopedPendingRecoveryOperation(operation, selectedIdRef.current);
       writeRecovery(store, draftValue, operation);
     },
-    [writeRecovery]
+    [writeRecovery, setScopedPendingRecoveryOperation]
   );
 
   const handleError = useCallback(
@@ -194,7 +233,7 @@ export function HostedManagedChats({
         recoveryOperationRef.current = null;
         newStartOperationRef.current = null;
         setRecoveryScope(null);
-        setPendingRecoveryOperation(null);
+        setScopedPendingRecoveryOperation(null, null);
         setPendingNewStart(null);
         setLaunchOptions(null);
         setLaunchProjectId("");
@@ -216,7 +255,7 @@ export function HostedManagedChats({
         cause instanceof Error ? cause.message : "Conversation request failed."
       );
     },
-    [onAuthorizationLost]
+    [onAuthorizationLost, setScopedPendingRecoveryOperation]
   );
 
   const refreshList = useCallback(async (signal?: AbortSignal) => {
@@ -231,6 +270,8 @@ export function HostedManagedChats({
     if (next !== current) {
       selectedIdRef.current = next;
       setSelectedId(next);
+      recoveryOperationRef.current = null;
+      setScopedPendingRecoveryOperation(null, next);
       setRuntime(null);
       setMessages([]);
       setPendingMessage(null);
@@ -240,7 +281,7 @@ export function HostedManagedChats({
       setProjectMoveDialogOpen(false);
       setProjectMovePickerOpen(false);
     }
-  }, []);
+  }, [setScopedPendingRecoveryOperation]);
 
   const reconcilePromptOperation = useCallback(
     async (
@@ -249,7 +290,7 @@ export function HostedManagedChats({
       store: DeviceManagedChatRecoveryStore | null,
       signal?: AbortSignal
     ) => {
-      setRecoveryChecking(true);
+      const endRecoveryCheck = beginRecoveryCheck(executionId);
       try {
         const value = await loadHostedManagedConversation(executionId, signal);
         if (value.runtime.execution.id !== executionId)
@@ -292,7 +333,10 @@ export function HostedManagedChats({
               state: disposition.kind === "failed" ? "rejected" as const : "reconciling" as const
             };
             recoveryOperationRef.current = preserveOperation ? savedOperation : null;
-            setPendingRecoveryOperation(preserveOperation ? savedOperation : null);
+            setScopedPendingRecoveryOperation(
+              preserveOperation ? savedOperation : null,
+              executionId
+            );
             draftRef.current = restoredDraft;
             setDraft(restoredDraft);
             setRuntime(value.runtime);
@@ -342,7 +386,7 @@ export function HostedManagedChats({
           writeRecovery(store, operation.prompt, unresolved);
           if (selectedIdRef.current === executionId) {
             recoveryOperationRef.current = unresolved;
-            setPendingRecoveryOperation(unresolved);
+            setScopedPendingRecoveryOperation(unresolved, executionId);
             draftRef.current = operation.prompt;
             setDraft(operation.prompt);
             setRuntime(value.runtime);
@@ -358,7 +402,7 @@ export function HostedManagedChats({
         writeRecovery(store, operation.prompt, unresolved);
         if (selectedIdRef.current === executionId) {
           recoveryOperationRef.current = unresolved;
-          setPendingRecoveryOperation(unresolved);
+          setScopedPendingRecoveryOperation(unresolved, executionId);
           draftRef.current = operation.prompt;
           setDraft(operation.prompt);
           setStatus(
@@ -371,10 +415,10 @@ export function HostedManagedChats({
           );
         }
       } finally {
-        if (!signal?.aborted) setRecoveryChecking(false);
+        endRecoveryCheck();
       }
     },
-    [writeRecovery]
+    [beginRecoveryCheck, setScopedPendingRecoveryOperation, writeRecovery]
   );
 
   const reconcileStartOperation = useCallback(
@@ -384,13 +428,24 @@ export function HostedManagedChats({
       fromNewSlot: boolean,
       signal?: AbortSignal
     ) => {
-      setRecoveryChecking(true);
+      const selectedExecutionAtStart = selectedIdRef.current;
+      const endRecoveryCheck = beginRecoveryCheck(
+        fromNewSlot ? null : selectedExecutionAtStart
+      );
       try {
         const result = await lookupHostedConversationRecovery(
           { kind: "start", idempotencyKey: operation.startIdempotencyKey },
           signal
         );
         if (signal?.aborted) return;
+        if (
+          !hostedRecoverySelectionIsCurrent(
+            selectedExecutionAtStart,
+            selectedIdRef.current
+          )
+        ) {
+          return;
+        }
         if (result.found) {
           const disposition = hostedRecoveryDisposition(result.commandState);
           if (disposition.kind === "failed" || disposition.kind === "uncertain") {
@@ -410,7 +465,10 @@ export function HostedManagedChats({
               setPendingNewStart(failed ? null : retained);
             } else {
               recoveryOperationRef.current = failed ? null : retained;
-              setPendingRecoveryOperation(failed ? null : retained);
+              setScopedPendingRecoveryOperation(
+                failed ? null : retained,
+                selectedExecutionAtStart
+              );
             }
             setInitialPrompt(operation.prompt);
             if (failed) setNewConversationOpen(true);
@@ -437,7 +495,10 @@ export function HostedManagedChats({
               setNewConversationOpen(true);
             } else {
               recoveryOperationRef.current = null;
-              setPendingRecoveryOperation(null);
+              setScopedPendingRecoveryOperation(
+                null,
+                selectedExecutionAtStart
+              );
             }
             draftRef.current = operation.prompt;
             setDraft(operation.prompt);
@@ -464,8 +525,11 @@ export function HostedManagedChats({
               setPendingNewStart(null);
             }
             recoveryOperationRef.current = childOperation;
-            setPendingRecoveryOperation(childOperation);
             selectedIdRef.current = result.executionId;
+            setScopedPendingRecoveryOperation(
+              childOperation,
+              result.executionId
+            );
             setSelectedId(result.executionId);
             setRuntime(null);
             setMessages([]);
@@ -485,7 +549,7 @@ export function HostedManagedChats({
             newStartOperationRef.current = null;
             setPendingNewStart(null);
             recoveryOperationRef.current = null;
-            setPendingRecoveryOperation(null);
+            setScopedPendingRecoveryOperation(null, result.executionId);
             draftRef.current = operation.prompt;
             setDraft(operation.prompt);
             selectedIdRef.current = result.executionId;
@@ -522,8 +586,9 @@ export function HostedManagedChats({
             recoveryOperationRef.current = retainAcceptedIdentity
               ? retainedOperation
               : null;
-            setPendingRecoveryOperation(
-              retainAcceptedIdentity ? retainedOperation : null
+            setScopedPendingRecoveryOperation(
+              retainAcceptedIdentity ? retainedOperation : null,
+              result.executionId
             );
           } else {
             writeRecovery(
@@ -535,8 +600,9 @@ export function HostedManagedChats({
             recoveryOperationRef.current = retainAcceptedIdentity
               ? retainedOperation
               : null;
-            setPendingRecoveryOperation(
-              retainAcceptedIdentity ? retainedOperation : null
+            setScopedPendingRecoveryOperation(
+              retainAcceptedIdentity ? retainedOperation : null,
+              result.executionId
             );
           }
           draftRef.current = "";
@@ -589,7 +655,10 @@ export function HostedManagedChats({
             setPendingNewStart(unresolved);
           } else {
             recoveryOperationRef.current = unresolved;
-            setPendingRecoveryOperation(unresolved);
+            setScopedPendingRecoveryOperation(
+              unresolved,
+              selectedExecutionAtStart
+            );
           }
           setInitialPrompt(operation.prompt);
           setStatus(
@@ -597,7 +666,13 @@ export function HostedManagedChats({
           );
         }
       } catch (cause) {
-        if (signal?.aborted) return;
+        if (
+          signal?.aborted ||
+          !hostedRecoverySelectionIsCurrent(
+            selectedExecutionAtStart,
+            selectedIdRef.current
+          )
+        ) return;
         const unresolved = { ...operation, state: "reconciling" as const };
         writeRecovery(store, operation.prompt, unresolved);
         if (fromNewSlot) {
@@ -605,7 +680,10 @@ export function HostedManagedChats({
           setPendingNewStart(unresolved);
         } else {
           recoveryOperationRef.current = unresolved;
-          setPendingRecoveryOperation(unresolved);
+          setScopedPendingRecoveryOperation(
+            unresolved,
+            selectedExecutionAtStart
+          );
         }
         setStatus(
           "Studio could not verify the previous Conversation start. Its send identity and prompt are saved; Studio will not start it again."
@@ -616,10 +694,17 @@ export function HostedManagedChats({
             : "Could not verify the previous Conversation start."
         );
       } finally {
-        if (!signal?.aborted) setRecoveryChecking(false);
+        endRecoveryCheck();
       }
     },
-    [recoveryScope, refreshList, writeRecovery, reconcilePromptOperation]
+    [
+      beginRecoveryCheck,
+      recoveryScope,
+      refreshList,
+      writeRecovery,
+      reconcilePromptOperation,
+      setScopedPendingRecoveryOperation
+    ]
   );
 
   const applyProjectMoveState = useCallback(
@@ -712,7 +797,10 @@ export function HostedManagedChats({
   }, [handleError]);
 
   useEffect(() => {
-    if (!recoveryScope) return;
+    if (
+      !recoveryScope ||
+      loading
+    ) return;
     const controller = new AbortController();
     const newConversationStore = createDeviceManagedChatRecoveryStore({
       ...recoveryScope,
@@ -736,6 +824,7 @@ export function HostedManagedChats({
       newStartOperationRef.current = pendingStart;
       queueMicrotask(() => {
         if (controller.signal.aborted) return;
+        setPendingNewStart(pendingStart);
         void reconcileStartOperation(
           pendingStart,
           newConversationStore,
@@ -751,7 +840,7 @@ export function HostedManagedChats({
       if (!controller.signal.aborted) setInitialPrompt(recoveredPrompt);
     });
     return () => controller.abort();
-  }, [recoveryScope, reconcileStartOperation]);
+  }, [recoveryScope, loading, reconcileStartOperation]);
 
   useEffect(() => {
     if (!recoveryScope || !selectedId) return;
@@ -771,7 +860,7 @@ export function HostedManagedChats({
     const operation = recovered?.pendingOperation ?? null;
     if (operation?.state === "rejected") {
       recoveryOperationRef.current = null;
-      setPendingRecoveryOperation(null);
+      setScopedPendingRecoveryOperation(null, selectedId);
       if (operation.kind === "start") {
         setInitialPrompt(operation.prompt);
         setNewConversationOpen(true);
@@ -784,7 +873,7 @@ export function HostedManagedChats({
       return () => controller.abort();
     }
     recoveryOperationRef.current = operation;
-    setPendingRecoveryOperation(operation);
+    setScopedPendingRecoveryOperation(operation, selectedId);
     if (!operation) return () => controller.abort();
     if (operation.kind === "prompt") {
       void reconcilePromptOperation(operation, selectedId, store, controller.signal);
@@ -796,7 +885,8 @@ export function HostedManagedChats({
     recoveryScope,
     selectedId,
     reconcilePromptOperation,
-    reconcileStartOperation
+    reconcileStartOperation,
+    setScopedPendingRecoveryOperation
   ]);
 
   useEffect(() => {
@@ -855,6 +945,23 @@ export function HostedManagedChats({
     [executions, selectedId]
   );
   const selectedRuntime = runtime?.execution.id === selectedId ? runtime : null;
+  const recoveryGuard = hostedRecoveryGuardForSelection({
+    selectedExecutionId: selectedId,
+    pendingOperationExecutionId: pendingRecoveryOperation
+      ? pendingRecoveryExecutionId
+      : null,
+    checkingExecutionIds: Object.keys(recoveryCheckCounts).filter(
+      (executionId) => executionId !== "__new_conversation__"
+    )
+  });
+  const newStartRecoveryChecking =
+    (recoveryCheckCounts.__new_conversation__ ?? 0) > 0;
+  const currentRecoveryChecking = pendingNewStart
+    ? newStartRecoveryChecking
+    : recoveryGuard.isChecking;
+  const pendingRecoveryForSelection = recoveryGuard.hasPendingOperation
+    ? pendingRecoveryOperation
+    : null;
   const latestCommand = selectedRuntime?.latestCommand;
   const activePrompt = Boolean(
     latestCommand?.commandKind === "prompt" &&
@@ -871,8 +978,8 @@ export function HostedManagedChats({
     !activePrompt &&
     !(latestCommand?.commandKind === "prompt" && ["queued", "blocked"].includes(latestCommand.state)) &&
     !pendingControl &&
-    !recoveryChecking &&
-    pendingRecoveryOperation === null;
+    !recoveryGuard.isChecking &&
+    pendingRecoveryForSelection === null;
   const canStop = selectedRuntime?.execution.state === "running";
   const canCancelQueuedPrompt =
     latestCommand?.commandKind === "prompt" && latestCommand.state === "queued";
@@ -1063,7 +1170,7 @@ export function HostedManagedChats({
       !prompt ||
       !canSend ||
       sending ||
-      pendingRecoveryOperation
+      pendingRecoveryForSelection
     )
       return;
     setSending(true);
@@ -1299,7 +1406,10 @@ export function HostedManagedChats({
   };
 
   const checkRecoveryStatus = () => {
-    if (recoveryChecking) return;
+    if (
+      (newStartOperationRef.current && newStartRecoveryChecking) ||
+      (recoveryOperationRef.current && recoveryGuard.isChecking)
+    ) return;
     const newStart = newStartOperationRef.current;
     if (newStart) {
       void reconcileStartOperation(
@@ -1364,7 +1474,7 @@ export function HostedManagedChats({
       !launchModel ||
       !recoveryScope ||
       pendingNewStart ||
-      recoveryChecking
+      newStartRecoveryChecking
     )
       return;
     setSending(true);
@@ -1415,6 +1525,8 @@ export function HostedManagedChats({
       });
       setNewConversationOpen(false);
       selectedIdRef.current = started.execution.id;
+      recoveryOperationRef.current = null;
+      setScopedPendingRecoveryOperation(null, started.execution.id);
       setSelectedId(started.execution.id);
       setRuntime({
         execution: started.execution,
@@ -1753,7 +1865,7 @@ export function HostedManagedChats({
                   disabled={
                     !launchCanStart ||
                     sending ||
-                    recoveryChecking ||
+                    newStartRecoveryChecking ||
                     pendingNewStart !== null
                   }
                   className="mt-3 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:opacity-50"
@@ -1801,17 +1913,26 @@ export function HostedManagedChats({
           </button>
         </div>
       )}
-      {status && (
+      {(status || pendingNewStart || pendingRecoveryForSelection) && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-          <p role="status">{status}</p>
-          {(pendingNewStart || pendingRecoveryOperation) && (
+          <p role="status">
+            {status ??
+              (pendingNewStart
+                ? "A previous Conversation start is saved. Check its status before starting another."
+                : "A previous continuation is saved. Check its status before sending again.")}
+          </p>
+          {(pendingNewStart || pendingRecoveryForSelection) && (
             <button
               className="rounded border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-              disabled={recoveryChecking}
+              disabled={currentRecoveryChecking}
               onClick={checkRecoveryStatus}
               type="button"
             >
-              {recoveryChecking ? "Checking…" : "Check send status"}
+              {currentRecoveryChecking
+                ? "Checking…"
+                : pendingNewStart
+                  ? "Check start status"
+                  : "Check send status"}
             </button>
           )}
         </div>
@@ -1838,6 +1959,8 @@ export function HostedManagedChats({
                 type="button"
                 onClick={() => {
                   selectedIdRef.current = execution.id;
+                  recoveryOperationRef.current = null;
+                  setScopedPendingRecoveryOperation(null, execution.id);
                   setSelectedId(execution.id);
                   setRuntime(null);
                   setMessages([]);

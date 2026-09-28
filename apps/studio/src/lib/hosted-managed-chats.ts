@@ -112,6 +112,29 @@ export function hostedMessagesForSelection<
   return [...messages, pendingMessage];
 }
 
+export function hostedRecoveryGuardForSelection(input: {
+  selectedExecutionId: string | null;
+  pendingOperationExecutionId: string | null;
+  checkingExecutionIds: readonly string[];
+}): { hasPendingOperation: boolean; isChecking: boolean } {
+  const { selectedExecutionId } = input;
+  if (!selectedExecutionId) {
+    return { hasPendingOperation: false, isChecking: false };
+  }
+  return {
+    hasPendingOperation:
+      input.pendingOperationExecutionId === selectedExecutionId,
+    isChecking: input.checkingExecutionIds.includes(selectedExecutionId)
+  };
+}
+
+export function hostedRecoverySelectionIsCurrent(
+  selectedExecutionAtStart: string | null,
+  selectedExecutionNow: string | null
+): boolean {
+  return selectedExecutionAtStart === selectedExecutionNow;
+}
+
 export type HostedConversationState = {
   executionId: string;
   executionGeneration: number;
