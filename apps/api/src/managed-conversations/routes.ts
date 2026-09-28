@@ -3664,7 +3664,9 @@ export const registerManagedConversationRoutes = (
       if (query.before) queryString.set("before", query.before);
       const proxied = await proxyManaged(
         "GET",
-        `/v1/managed-conversations/${encodeURIComponent(executionId)}/agent-state?${queryString.toString()}`
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/agent-state`,
+        undefined,
+        { query: queryString }
       );
       if (proxied) return proxied.payload;
 
