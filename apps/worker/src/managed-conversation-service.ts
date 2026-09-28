@@ -574,6 +574,35 @@ export const managedCodexRuntimeEnvironment = (input: {
 const managedConversationErrorCodePattern =
   /^(?:ManagedConversation|ExecutionCheckpoint|ExecutionCheckout|ExecutionFile)[A-Za-z0-9_.-]{0,100}$/;
 
+const codexAppServerTurnStatus = (error: unknown): string | null => {
+  const candidate = record(error);
+  if (
+    candidate.name !== "CodexAppServerTurnError" ||
+    typeof candidate.threadId !== "string" ||
+    typeof candidate.turnId !== "string" ||
+    !Array.isArray(candidate.rawEvents)
+  ) {
+    return null;
+  }
+  for (const rawEvent of candidate.rawEvents) {
+    const event = record(rawEvent);
+    if (event.method !== "turn/completed") continue;
+    const params = record(event.params);
+    const turn = record(params.turn);
+    if (
+      params.threadId === candidate.threadId &&
+      turn.id === candidate.turnId &&
+      typeof turn.status === "string"
+    ) {
+      return turn.status;
+    }
+  }
+  return null;
+};
+
+const isManagedCodexTurnInterrupted = (error: unknown): boolean =>
+  codexAppServerTurnStatus(error) === "interrupted";
+
 export const managedConversationFailureCode = (error: unknown): string => {
   const seen = new Set<unknown>();
   let current: unknown = error;
@@ -607,6 +636,11 @@ export const managedConversationFailureCode = (error: unknown): string => {
       return `ManagedConversationMemoryApi${current.status}Error`;
     }
     if (current instanceof Error) {
+      if (current.name === "CodexAppServerTurnError") {
+        return codexAppServerTurnStatus(current) === "interrupted"
+          ? "ManagedConversationTurnInterruptedError"
+          : "ManagedConversationProviderTurnError";
+      }
       if (managedConversationErrorCodePattern.test(current.name)) {
         return current.name;
       }
@@ -2602,6 +2636,27 @@ export const createManagedConversationService = (options: {
         projectPath
       });
     return bindExecutionCheckout(execution, binding);
+  };
+
+  const assertManagedConversationProjectAvailable = async (
+    execution: ManagedConversationExecutionRecord
+  ): Promise<string | null> => {
+    if (!execution.projectId) return null;
+    const projects = await options.repository.listLcmGraphThreads(
+      { userId: execution.ownerUserId },
+      { projectId: execution.projectId, limit: 1 }
+    );
+    const projectPath = projects.find(
+      (project) => project.id === execution.projectId && project.path?.trim()
+    )?.path;
+    if (!projectPath) {
+      throw managedConversationError("ManagedConversationProjectUnavailableError");
+    }
+    try {
+      return await realpath(projectPath);
+    } catch {
+      throw managedConversationError("ManagedConversationProjectUnavailableError");
+    }
   };
 
   const prepareIndependentExecutionPath = async (
@@ -5704,6 +5759,30 @@ export const createManagedConversationService = (options: {
       });
     }
     assertManagedConversationExecutionOwner(command.execution);
+    if (command.commandKind === "start") {
+      await assertManagedConversationTurnSettings(
+        options.repository,
+        command.execution
+      );
+      const currentProjectPath = await assertManagedConversationProjectAvailable(
+        command.execution
+      );
+      if (currentProjectPath) {
+        const binding = await options.repository.getManagedConversationRuntimeBinding(
+          { userId: command.execution.ownerUserId },
+          command.executionId
+        );
+        if (
+          binding &&
+          (await realpath(binding.sourceProjectPath).catch(() => null)) !==
+            currentProjectPath
+        ) {
+          throw managedConversationError(
+            "ManagedConversationProjectUnavailableError"
+          );
+        }
+      }
+    }
     const provider = command.execution.provider as ManagedConversationProvider;
     const current = runtimeSessions.get(provider, command.executionId);
     let configuration: ReturnType<typeof clientConfigurationForOwner> | null =
@@ -8884,12 +8963,23 @@ export const createManagedConversationService = (options: {
           }
         }
         const isPrompt = command.commandKind === "prompt";
+        const originalFailureCode = errorCode(error);
+        const startReadinessRejected =
+          command.commandKind === "start" &&
+          terminalRunnerStartPreparationErrors.has(originalFailureCode);
+        const providerTurnInterrupted =
+          isPrompt &&
+          command.execution.provider === "codex" &&
+          isManagedCodexTurnInterrupted(error);
+        const failureCode = providerTurnInterrupted
+          ? "ManagedConversationTurnInterruptedError"
+          : originalFailureCode;
         const acceptedPromptCheckpointPending =
           isPrompt && pendingCheckpointFor(command) !== null;
         if (isPrompt && !acceptedPromptCheckpointPending) {
           try {
             if (personalAgentJobFor(command)) {
-              const code = errorCode(error).toLowerCase();
+              const code = failureCode.toLowerCase();
               const outcome = code.includes("cancel")
                 ? "canceled"
                 : code.includes("interrupt") || code.includes("lease")
@@ -8920,9 +9010,11 @@ export const createManagedConversationService = (options: {
           isForkLifecycleCommand || command.commandKind === "verify_target";
         const isOneShot = isPrompt || isForkLifecycleCommand;
         const terminal =
-          isOneShot ||
-          error instanceof ManagedConversationLeaseLostError ||
-          command.attempts >= 3;
+          !providerTurnInterrupted &&
+          (isOneShot ||
+            startReadinessRejected ||
+            error instanceof ManagedConversationLeaseLostError ||
+            command.attempts >= 3);
         let promptWasReconciled = false;
         let promptCheckpointRequeued = false;
         if (command.leaseToken) {
@@ -8930,14 +9022,15 @@ export const createManagedConversationService = (options: {
             .failManagedConversationCommand({
               commandId: command.id,
               leaseToken: command.leaseToken,
-              state: settingsRejected
-                ? "failed"
-                : isOneShot
-                  ? "indeterminate"
-                  : terminal
-                    ? "failed"
-                    : "queued",
-              errorCode: errorCode(error)
+              state:
+                settingsRejected || providerTurnInterrupted
+                  ? "failed"
+                  : isOneShot
+                    ? "indeterminate"
+                    : terminal
+                      ? "failed"
+                      : "queued",
+              errorCode: failureCode
             })
             .catch(() => ({
               updated: false,
@@ -9004,6 +9097,29 @@ export const createManagedConversationService = (options: {
         if (settingsRejected) {
           // No provider operation ran. Leave the Conversation writable so the
           // User can refresh capabilities and explicitly submit another turn.
+          continue;
+        }
+        if (providerTurnInterrupted) {
+          await options.repository
+            .cancelManagedConversationRuntimeItems(
+              { userId: command.ownerUserId },
+              {
+                executionId: command.executionId,
+                executionGeneration: command.executionGeneration
+              }
+            )
+            .catch(() => 0);
+          signalRuntimeWake();
+          options.logger.info(
+            {
+              event: {
+                name: "worker.managed_conversation.prompt_interrupted",
+                category: "managed_conversation"
+              },
+              command_id: command.id
+            },
+            "managed Conversation prompt was interrupted by the provider"
+          );
           continue;
         }
         if (terminal && !isCoordinationCommand) {

@@ -911,6 +911,7 @@ describe("managed Conversation Project Move runner safeguards", () => {
       }
     }
   );
+
 });
 
 describe("Managed Conversation token usage", () => {
@@ -1282,6 +1283,7 @@ const deferredStartRepository = (input: {
   localBinding?: ManagedConversationRuntimeBindingRecord | null;
   initialExecutions?: ManagedConversationExecutionRecord[];
   failExecutionAfterCheckout?: boolean;
+  startCommand?: unknown;
 }) => {
   let currentBinding = input.localBinding ?? null;
   let currentExecution = input.currentExecution ?? input.execution;
@@ -1365,7 +1367,17 @@ const deferredStartRepository = (input: {
       return true;
     }),
     reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
-    claimManagedConversationCommands: vi.fn(async () => [])
+    claimManagedConversationCommands: vi.fn(async () =>
+      input.startCommand ? [input.startCommand as never] : []
+    ),
+    renewManagedConversationCommandLease: vi.fn(async () => true),
+    failManagedConversationCommand: vi.fn(async () => ({
+      updated: true,
+      reconciled: false,
+      requeued: false
+    })),
+    cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+    setManagedConversationExecutionState: vi.fn(async () => currentExecution)
   };
   const checkoutDriver = {
     select: vi.fn(async ({ path }: { path: string }) => ({
@@ -1859,10 +1871,136 @@ describe("deferred Managed Conversation runner starts", () => {
       }
     }
   );
+  it.each([
+    {
+      unavailable: "AI Client settings",
+      instancesAvailable: false,
+      projectPath: "/local/project",
+      bindingPath: null,
+      errorCode: "ManagedConversationSettingsUnavailableError"
+    },
+    {
+      unavailable: "Project",
+      instancesAvailable: true,
+      projectPath: undefined,
+      bindingPath: null,
+      errorCode: "ManagedConversationProjectUnavailableError"
+    },
+    {
+      unavailable: "changed Project path",
+      instancesAvailable: true,
+      projectPath: "current",
+      bindingPath: "old",
+      errorCode: "ManagedConversationProjectUnavailableError"
+    }
+  ])(
+    "rechecks $unavailable immediately before starting a queued execution",
+    async ({ unavailable, instancesAvailable, projectPath, bindingPath, errorCode }) => {
+      const root = await mkdtemp(resolve(tmpdir(), "koed-start-recheck-"));
+      const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+      const currentProjectPath = resolve(root, "current-project");
+      const oldProjectPath = resolve(root, "old-project");
+      await mkdir(currentProjectPath);
+      await mkdir(oldProjectPath);
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const execution = startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      });
+      const startCommand = {
+        id: randomUUID(),
+        ownerUserId,
+        executionId,
+        executionGeneration: execution.executionGeneration,
+        commandKind: "start" as const,
+        sequence: 1,
+        attempts: 1,
+        leaseToken: randomUUID(),
+        payload: {},
+        execution
+      };
+      const harness = deferredStartRepository({
+        execution,
+        instancesAvailable,
+        projectPath:
+          projectPath === "current"
+            ? currentProjectPath
+            : projectPath === undefined
+              ? undefined
+              : currentProjectPath,
+        localBinding:
+          bindingPath === "old"
+            ? pendingBindingFixture({
+                ownerUserId,
+                executionId,
+                deploymentId,
+                deviceId,
+                sourceProjectPath: oldProjectPath
+              })
+            : null,
+        initialExecutions: [],
+        startCommand
+      });
+      const start = vi
+        .spyOn(CodexManagedConversationSession.prototype, "start")
+        .mockRejectedValue(new Error("provider must not start"));
+      const service = harness.createService({
+        deploymentId,
+        deviceId,
+        localOwnerUserId: ownerUserId,
+        koedHome: resolve(root, "koed-home")
+      });
+      try {
+        await expect(service.processOnce()).resolves.toEqual({
+          completed: 0,
+          failed: 1
+        });
+        expect(start).not.toHaveBeenCalled();
+        expect(harness.repository.failManagedConversationCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            commandId: startCommand.id,
+            state: "failed",
+            errorCode
+          })
+        );
+        expect(harness.repository.setManagedConversationExecutionState).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          expect.objectContaining({
+            executionId,
+            state: "failed",
+            lastErrorCode: errorCode
+          })
+        );
+      } finally {
+        await service.stop();
+        start.mockRestore();
+        restoreRegistry();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
 });
 
 describe("Managed Conversation service lifecycle", () => {
-  it("recovers a hosted Codex execution without named-Agent repository methods and reuses it for a generic prompt", async () => {
+  it.each([
+    {
+      terminalStatus: "interrupted",
+      expectedCommandState: "failed",
+      expectedErrorCode: "ManagedConversationTurnInterruptedError"
+    },
+    {
+      terminalStatus: "failed",
+      expectedCommandState: "indeterminate",
+      expectedErrorCode: "ManagedConversationProviderTurnError"
+    }
+  ] as const)("Codex turn $terminalStatus is handled safely", async (scenario) => {
+    const { terminalStatus, expectedCommandState, expectedErrorCode } = scenario;
     const root = await mkdtemp(resolve(tmpdir(), "koed-hosted-recovery-"));
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
     const ownerUserId = randomUUID();
@@ -1923,6 +2061,7 @@ describe("Managed Conversation service lifecycle", () => {
     };
     const promptCommandId = randomUUID();
     const clientUserMessageId = randomUUID();
+    const followUpMessageId = randomUUID();
     const promptCommand = {
       id: promptCommandId,
       ownerUserId,
@@ -1935,6 +2074,13 @@ describe("Managed Conversation service lifecycle", () => {
       clientUserMessageId,
       payload: { prompt: "Continue from the hosted chat." },
       execution
+    };
+    const followUpCommand = {
+      ...promptCommand,
+      id: randomUUID(),
+      sequence: 3,
+      clientUserMessageId: followUpMessageId,
+      payload: { prompt: "Follow up after the interrupted turn." }
     };
     const baselineCheckpoint: ManagedConversationExecutionCheckpointRecord = {
       id: randomUUID(),
@@ -1957,6 +2103,12 @@ describe("Managed Conversation service lifecycle", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    const followUpBaselineCheckpoint = {
+      ...baselineCheckpoint,
+      id: randomUUID(),
+      commandId: followUpCommand.id,
+      sequence: 3
+    };
     let claimCount = 0;
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => [execution]),
@@ -1977,10 +2129,14 @@ describe("Managed Conversation service lifecycle", () => {
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => {
         claimCount += 1;
-        return claimCount === 1 ? [] : [promptCommand];
+        return claimCount === 1
+          ? []
+          : terminalStatus === "interrupted"
+            ? [promptCommand, followUpCommand]
+            : [promptCommand];
       }),
       listManagedConversationExecutionCheckpoints: vi.fn(
-        async () => [baselineCheckpoint]
+        async () => [baselineCheckpoint, followUpBaselineCheckpoint]
       ),
       cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
       renewManagedConversationCommandLease: vi.fn(async () => true),
@@ -2000,9 +2156,28 @@ describe("Managed Conversation service lifecycle", () => {
         transcriptPath,
         codexHome: managedHome
       } as never);
+    const turnId = randomUUID();
     const runTurn = vi
       .spyOn(CodexManagedConversationSession.prototype, "runTurn")
-      .mockRejectedValue(new Error("stop after confirming session reuse"));
+      .mockRejectedValueOnce(
+        Object.assign(new Error("private turn detail"), {
+          name: "CodexAppServerTurnError",
+          threadId: providerThreadId,
+          turnId,
+          rawEvents: [
+            {
+              method: "turn/completed",
+              params: {
+                threadId: providerThreadId,
+                turn: { id: turnId, status: terminalStatus }
+              },
+              observedAt: new Date().toISOString(),
+              sequence: 1
+            }
+          ]
+        })
+      )
+      .mockRejectedValueOnce(new Error("stop after follow-up dispatch"));
     const close = vi
       .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
       .mockResolvedValue();
@@ -2044,17 +2219,46 @@ describe("Managed Conversation service lifecycle", () => {
 
       await expect(service.processOnce()).resolves.toEqual({
         completed: 0,
-        failed: 1
+        failed: terminalStatus === "interrupted" ? 2 : 1
       });
-      expect(runTurn).toHaveBeenCalledOnce();
+      expect(
+        runTurn.mock.calls.length,
+        JSON.stringify(
+          logger.warn.mock.calls.map(([context]) =>
+            (context as { error_name?: string }).error_name
+          )
+        )
+      ).toBe(terminalStatus === "interrupted" ? 2 : 1);
       expect(runTurn).toHaveBeenCalledWith(
         "Continue from the hosted chat.",
         expect.any(Number),
         `koed-user-message:${clientUserMessageId}`
       );
       expect(start).toHaveBeenCalledOnce();
-      // The mock turn fails after proving the recovered session was reused;
-      // the normal command failure path then closes that session.
+      expect(repository.failManagedConversationCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: promptCommandId,
+          state: expectedCommandState,
+          errorCode: expectedErrorCode
+        })
+      );
+      if (terminalStatus === "interrupted") {
+        // The next queued prompt reaches the same recovered session without a
+        // second start, proving the interrupted turn did not fence the chat.
+        expect(repository.cancelManagedConversationRuntimeItems).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          {
+            executionId,
+            executionGeneration: execution.executionGeneration
+          }
+        );
+        expect(runTurn).toHaveBeenLastCalledWith(
+          "Follow up after the interrupted turn.",
+          expect.any(Number),
+          `koed-user-message:${followUpMessageId}`
+        );
+        expect(start).toHaveBeenCalledOnce();
+      }
       expect(close).toHaveBeenCalledOnce();
       expect(
         logger.warn.mock.calls.some(([context]) =>
@@ -2062,12 +2266,6 @@ describe("Managed Conversation service lifecycle", () => {
           "worker.managed_conversation.runtime_recovery_deferred"
         )
       ).toBe(false);
-      expect(repository.failManagedConversationCommand).toHaveBeenCalledWith(
-        expect.objectContaining({
-          commandId: promptCommandId,
-          state: "indeterminate"
-        })
-      );
     } finally {
       await service.stop();
       start.mockRestore();
@@ -3771,6 +3969,35 @@ describe("Managed Conversation failure codes", () => {
         })
       )
     ).toBe("ManagedConversationCapacityError");
+  });
+
+  it("classifies only a matching Codex terminal interruption as known", () => {
+    const threadId = randomUUID();
+    const turnId = randomUUID();
+    const makeError = (terminalTurnId: string) =>
+      Object.assign(new Error("private provider detail"), {
+        name: "CodexAppServerTurnError",
+        threadId,
+        turnId,
+        rawEvents: [
+          {
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: terminalTurnId, status: "interrupted" }
+            },
+            observedAt: new Date().toISOString(),
+            sequence: 1
+          }
+        ]
+      });
+
+    expect(managedConversationFailureCode(makeError(turnId))).toBe(
+      "ManagedConversationTurnInterruptedError"
+    );
+    expect(managedConversationFailureCode(makeError(randomUUID()))).toBe(
+      "ManagedConversationProviderTurnError"
+    );
   });
 
   it("preserves source-replica pending as a durable blocking condition", () => {
