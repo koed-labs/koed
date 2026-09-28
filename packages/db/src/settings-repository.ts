@@ -435,7 +435,8 @@ export const createSettingsRepository = (db: KoedDb) => ({
   },
 
   async listCurrentAiClientCapabilitySnapshots(
-    actor: ActorContext
+    actor: ActorContext,
+    options: { includeExpired?: boolean } = {}
   ): Promise<AiClientCapabilitySnapshotRecord[]> {
     const rows = await db
       .select()
@@ -466,7 +467,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
     });
     const now = Date.now();
     return latest
-      .filter((row) => row.expiresAt.getTime() > now)
+      .filter(
+        (row) => options.includeExpired === true || row.expiresAt.getTime() > now
+      )
       .map(mapAiClientCapabilitySnapshotRecord);
   },
 

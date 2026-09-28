@@ -822,7 +822,10 @@ const launchInstances = async (
 ) => {
   const [instances, snapshots, credentials] = await Promise.all([
     repository.listAiClientInstances({ userId }),
-    repository.listCurrentAiClientCapabilitySnapshots({ userId }),
+    repository.listCurrentAiClientCapabilitySnapshots(
+      { userId },
+      { includeExpired: options.browser === true }
+    ),
     options.browser || options.runnerDeviceId
       ? repository.listDeviceCredentials({ userId })
       : Promise.resolve([])
@@ -970,7 +973,10 @@ const assertDeferredLaunchSelection = async (
 ): Promise<void> => {
   const [instances, snapshots] = await Promise.all([
     repository.listAiClientInstances({ userId }),
-    repository.listCurrentAiClientCapabilitySnapshots({ userId })
+    repository.listCurrentAiClientCapabilitySnapshots(
+      { userId },
+      { includeExpired: true }
+    )
   ]);
   const instance = instances.find(
     (candidate) =>
@@ -3658,6 +3664,8 @@ export const registerManagedConversationRoutes = (
         content: string;
         createdAt: string;
         truncated: boolean;
+        providerTurnId?: string | null;
+        providerItemId?: string | null;
         author?: {
           agentId: string;
           agentVersion: number;
@@ -3751,6 +3759,12 @@ export const registerManagedConversationRoutes = (
             role: "assistant",
             ...clipMessage(outputText),
             createdAt: job.lastObservedAt ?? job.updatedAt,
+            providerTurnId: typeof command?.result?.turnId === "string"
+              ? command.result.turnId
+              : typeof command?.result?.providerTurnId === "string"
+                ? command.result.providerTurnId : null,
+            providerItemId: typeof command?.result?.providerItemId === "string"
+              ? command.result.providerItemId : null,
             author: {
               agentId: attribution.agentId,
               agentVersion: attribution.agentVersion,
@@ -3771,7 +3785,9 @@ export const registerManagedConversationRoutes = (
             id: `provider:${turn.commandId}`, role: "assistant",
             ...clipped,
             truncated: clipped.truncated || turn.assistantOutput.truncated,
-            createdAt: turn.completedAt
+            createdAt: turn.completedAt,
+            providerTurnId: turn.providerTurnId,
+            providerItemId: turn.providerItemId
           });
         }
       }

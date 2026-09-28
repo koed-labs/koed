@@ -322,6 +322,7 @@ describe("managed Conversation capability admission", () => {
     const history = vi.fn(async () => ({ turns: [{
       commandId, clientUserMessageId: messageId, prompt: "Generic prompt",
       createdAt: "2026-09-28T10:00:00.000Z", completedAt: "2026-09-28T10:00:01.000Z",
+      providerTurnId: "provider-turn", providerItemId: "provider-item",
       assistantOutput: { text: "Generic final answer", truncated: true }
     }], hasMore: true, nextCursor: "prompt:7" }));
     const jobs = vi.fn();
@@ -349,7 +350,7 @@ describe("managed Conversation capability admission", () => {
       activeAgentId: null, participants: [], jobs: [], hasMore: true, nextCursor: "prompt:7",
       messages: [
         { id: messageId, role: "user", content: "Generic prompt" },
-        { id: `provider:${commandId}`, role: "assistant", content: "Generic final answer", truncated: true }
+        { id: `provider:${commandId}`, role: "assistant", content: "Generic final answer", truncated: true, providerTurnId: "provider-turn", providerItemId: "provider-item" }
       ]
     });
     expect(response.json().messages[1]).not.toHaveProperty("author");
@@ -3573,7 +3574,7 @@ describe("managed Conversation routes", () => {
     expect(response.body).not.toContain("must-not-leak");
   });
 
-  it("shows safe hosted launch choices and persists an exact offline target without a binding", async () => {
+  it.each(["2099-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z"])("shows safe hosted launch choices and persists an exact offline target without a binding (%s)", async (expiresAt) => {
     const userId = randomUUID();
     const deviceId = randomUUID();
     const secondDeviceId = randomUUID();
@@ -3658,7 +3659,7 @@ describe("managed Conversation routes", () => {
             configIdentityHash: "f".repeat(64)
           }
         ],
-        listCurrentAiClientCapabilitySnapshots: async () => [
+        listCurrentAiClientCapabilitySnapshots: async (_actor: unknown, options?: { includeExpired?: boolean }) => options?.includeExpired ? [
           {
             instanceId: "codex.default",
             hostedInstanceId,
@@ -3666,7 +3667,7 @@ describe("managed Conversation routes", () => {
             installationIdentityHash: "f".repeat(64),
             authenticationState: "authenticated",
             healthState: "healthy",
-            expiresAt: "2099-01-01T00:00:00.000Z",
+            expiresAt,
             capabilities: {
               descriptors: {
                 managed_conversation_start: {
@@ -3690,7 +3691,7 @@ describe("managed Conversation routes", () => {
             installationIdentityHash: "f".repeat(64),
             authenticationState: "authenticated",
             healthState: "healthy",
-            expiresAt: "2099-01-01T00:00:00.000Z",
+            expiresAt,
             capabilities: {
               descriptors: {
                 managed_conversation_start: {
@@ -3707,7 +3708,7 @@ describe("managed Conversation routes", () => {
               }
             ]
           }
-        ],
+        ] : [],
         listPersonalDeviceGroups: async () => [
           {
             state: "active",
@@ -3808,6 +3809,8 @@ describe("managed Conversation routes", () => {
           expect.objectContaining({
             instanceId: hostedInstanceId,
             runnerDeviceId: deviceId,
+            ready: Date.parse(expiresAt) > Date.now(),
+            readiness: Date.parse(expiresAt) > Date.now() ? "ready" : "stale",
             deviceLabel: "Computer A",
             models: [expect.objectContaining({ id: "gpt-test" })]
           }),

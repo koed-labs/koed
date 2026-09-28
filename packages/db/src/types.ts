@@ -2479,7 +2479,8 @@ export interface MemorySourceRepository
     }
   ): Promise<AiClientCapabilitySnapshotRecord>;
   listCurrentAiClientCapabilitySnapshots(
-    actor: ActorContext
+    actor: ActorContext,
+    options?: { includeExpired?: boolean }
   ): Promise<AiClientCapabilitySnapshotRecord[]>;
   upsertLocalMemoryAgentSetting(
     actor: ActorContext,

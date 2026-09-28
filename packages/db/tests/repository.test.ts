@@ -26245,7 +26245,7 @@ describeDb("memory repository visibility", () => {
     );
   });
 
-  it("returns the newest unexpired capability snapshot instead of a newer expired snapshot", async () => {
+  it("keeps only the newest capability snapshot and optionally includes expired choices", async () => {
     const user = await repo.createUser({
       email: `capability-snapshot-${randomUUID()}@example.com`
     });
@@ -26379,6 +26379,25 @@ describeDb("memory repository visibility", () => {
         })
       ])
     );
+    const lastKnown = await repo.listCurrentAiClientCapabilitySnapshots(actor, {
+      includeExpired: true
+    });
+    expect(lastKnown.filter((item) => item.instanceId === "codex.work")).toEqual([
+      expect.objectContaining({
+        installationIdentityHash: "b".repeat(64),
+        healthState: "unavailable"
+      })
+    ]);
+    expect(lastKnown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ instanceId: "claude.expired" })
+      ])
+    );
+    expect(
+      (await repo.listCurrentAiClientCapabilitySnapshots(actor)).some(
+        (item) => item.instanceId === "codex.work"
+      )
+    ).toBe(false);
     const diagnostics = await repo.listAiClientCapabilitySnapshots(actor);
     expect(diagnostics).toEqual([
       expect.objectContaining({

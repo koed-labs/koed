@@ -251,13 +251,13 @@ describe("managed provider encrypted history", () => {
   it("returns bounded decrypted turns scoped to owner and execution, and rejects invalid cursors", async () => {
     const encrypted = await envelope({ prompt: "Prompt", assistantOutput: { text: "Final", truncated: false } });
     const now = new Date();
-    const row = { id: commandId, client_user_message_id: commandId, sequence: 4, created_at: now, completed_at: now, updated_at: now, encrypted_payload: encrypted };
+    const row = { id: commandId, client_user_message_id: commandId, result: { turnId: "provider-turn", providerItemId: "provider-item" }, sequence: 4, created_at: now, completed_at: now, updated_at: now, encrypted_payload: encrypted };
     const query = vi.fn(async (_sql: string, _params: unknown[] = []) => ({ rows: [row, { ...row, sequence: 3 }] }));
     const repository = createManagedConversationRepository({ query } as unknown as pg.Pool, { envelopeEncryptionProvider: provider });
     const history = await repository.listManagedConversationPromptHistory({ userId: owner }, { executionId, limit: 1, before: "prompt:5" });
     expect(query).toHaveBeenCalledWith(expect.stringContaining("owner_user_id = $1 and execution_id = $2"), [owner, executionId, 5, 2]);
     expect(query.mock.calls[0]?.[0]).toContain("state = 'completed'");
-    expect(history).toMatchObject({ turns: [{ commandId, prompt: "Prompt", assistantOutput: { text: "Final", truncated: false } }], hasMore: true, nextCursor: "prompt:4" });
+    expect(history).toMatchObject({ turns: [{ commandId, prompt: "Prompt", providerTurnId: "provider-turn", providerItemId: "provider-item", assistantOutput: { text: "Final", truncated: false } }], hasMore: true, nextCursor: "prompt:4" });
     await expect(repository.listManagedConversationPromptHistory({ userId: owner }, { executionId, before: "foreign-cursor" })).rejects.toMatchObject({ statusCode: 400 });
     expect(query).toHaveBeenCalledTimes(1);
   });

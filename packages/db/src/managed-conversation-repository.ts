@@ -532,6 +532,8 @@ export interface ManagedConversationRepository {
     turns: Array<{
       commandId: string; clientUserMessageId: string | null; prompt: string;
       createdAt: string; completedAt: string;
+      providerTurnId: string | null;
+      providerItemId: string | null;
       assistantOutput: { text: string; truncated: boolean } | null;
     }>;
     hasMore: boolean; nextCursor: string | null;
@@ -3805,6 +3807,12 @@ export const createManagedConversationRepository = (
           commandId: row.id, clientUserMessageId: row.client_user_message_id,
           prompt: payload.prompt, createdAt: requiredIso(row.created_at),
           completedAt: requiredIso(row.completed_at ?? row.updated_at),
+          providerTurnId: typeof row.result?.turnId === "string"
+            ? row.result.turnId
+            : typeof row.result?.providerTurnId === "string"
+              ? row.result.providerTurnId : null,
+          providerItemId: typeof row.result?.providerItemId === "string"
+            ? row.result.providerItemId : null,
           assistantOutput: validOutput && typeof validOutput.text === "string"
             ? { text: validOutput.text, truncated: validOutput.truncated === true } : null
         });
