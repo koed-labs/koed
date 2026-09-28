@@ -855,6 +855,124 @@ describe("managed Conversation capability admission", () => {
       )
     ).rejects.toThrow("cannot run");
   });
+
+  it("binds a native instance to both its runner device and deployment", async () => {
+    const ownerId = randomUUID();
+    const deviceId = randomUUID();
+    const deploymentA = randomUUID();
+    const deploymentB = randomUUID();
+    const credentialA = randomUUID();
+    const credentialB = randomUUID();
+    const repository = {
+      listAiClientInstances: async () => [
+        {
+          instanceId: "codex.default",
+          hostedInstanceId: `runner.${"a".repeat(40)}`,
+          sourceDeviceCredentialId: credentialB,
+          driverId: "codex",
+          enabled: true,
+          configIdentityHash: ownerIdentityHash
+        }
+      ],
+      listCurrentAiClientCapabilitySnapshots: async () => [
+        {
+          instanceId: "codex.default",
+          hostedInstanceId: `runner.${"a".repeat(40)}`,
+          sourceDeviceCredentialId: credentialB,
+          installationIdentityHash: ownerIdentityHash,
+          authenticationState: "authenticated" as const,
+          healthState: "healthy" as const,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          }
+        }
+      ],
+      listDeviceCredentials: async () => [
+        {
+          id: credentialA,
+          deviceInstanceId: deviceId,
+          metadata: { protocolDeploymentId: deploymentA },
+          operationFamilies: ["managed_execution"],
+          revokedAt: null,
+          expiresAt: null
+        },
+        {
+          id: credentialB,
+          deviceInstanceId: deviceId,
+          metadata: { protocolDeploymentId: deploymentB },
+          operationFamilies: ["managed_execution"],
+          revokedAt: null,
+          expiresAt: null
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(repository as never, ownerId, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        capability: "managed_conversation_start",
+        runnerDeviceId: deviceId,
+        runnerDeploymentId: deploymentA
+      })
+    ).rejects.toThrow("is unavailable");
+    await expect(
+      assertManagedCapability(repository as never, ownerId, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        capability: "managed_conversation_start",
+        runnerDeviceId: deviceId,
+        runnerDeploymentId: deploymentB
+      })
+    ).resolves.toBeUndefined();
+    const localRepository = {
+      ...repository,
+      listAiClientInstances: async () => [
+        {
+          instanceId: "codex.default",
+          hostedInstanceId: "codex.default",
+          sourceDeviceCredentialId: null,
+          driverId: "codex",
+          enabled: true,
+          configIdentityHash: ownerIdentityHash
+        }
+      ],
+      listCurrentAiClientCapabilitySnapshots: async () => [
+        {
+          instanceId: "codex.default",
+          hostedInstanceId: "codex.default",
+          sourceDeviceCredentialId: null,
+          installationIdentityHash: ownerIdentityHash,
+          authenticationState: "authenticated" as const,
+          healthState: "healthy" as const,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          }
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(localRepository as never, ownerId, {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        capability: "managed_conversation_start",
+        sourceDeviceCredentialId: null,
+        runnerDeviceId: deviceId,
+        runnerDeploymentId: deploymentA
+      })
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe("managed Conversation routes", () => {
@@ -1511,6 +1629,9 @@ describe("managed Conversation routes", () => {
   it("queues a browser prompt for an offline runner without requiring a live snapshot", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
+    const runnerDeviceId = randomUUID();
+    const runnerDeploymentId = randomUUID();
+    const deviceCredentialId = randomUUID();
     const clientUserMessageId = randomUUID();
     const command = {
       id: randomUUID(),
@@ -1549,10 +1670,29 @@ describe("managed Conversation routes", () => {
           projectId: "lp_project",
           provider: "codex",
           aiClientInstanceId: "codex.default",
-          runnerDeviceId: randomUUID()
+          runnerDeviceId,
+          runnerDeploymentId
         }),
-        listAiClientInstances: async () =>
-          launchRepository.listAiClientInstances(),
+        listAiClientInstances: async () => [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            enabled: true,
+            configIdentityHash: ownerIdentityHash,
+            sourceDeviceCredentialId: deviceCredentialId,
+            hostedInstanceId: `runner.${"c".repeat(40)}`
+          }
+        ],
+        listDeviceCredentials: async () => [
+          {
+            id: deviceCredentialId,
+            deviceInstanceId: runnerDeviceId,
+            operationFamilies: ["sync", "managed_execution"],
+            metadata: { protocolDeploymentId: runnerDeploymentId },
+            revokedAt: null,
+            expiresAt: null
+          }
+        ],
         // No current capability snapshot: only the runner can recheck readiness.
         listCurrentAiClientCapabilitySnapshots: async () => [],
         enqueueManagedConversationPrompt: enqueue
@@ -1580,6 +1720,98 @@ describe("managed Conversation routes", () => {
           prompt: "Continue when the selected device is back online."
         })
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not let the same device bypass capability checks from another deployment", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const runnerDeviceId = randomUUID();
+    const executionDeploymentId = randomUUID();
+    const requestingDeploymentId = randomUUID();
+    const deviceCredentialId = randomUUID();
+    const enqueue = vi.fn();
+    const user = {
+      id: userId,
+      email: "alice@example.invalid",
+      displayName: "Alice",
+      passwordHash: null
+    };
+    const credential = {
+      id: deviceCredentialId,
+      deviceInstanceId: runnerDeviceId,
+      operationFamilies: ["managed_execution"],
+      metadata: { protocolDeploymentId: requestingDeploymentId },
+      revokedAt: null,
+      expiresAt: null
+    };
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => user,
+        authenticateDeviceCredential: async () => ({ user, credential })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          projectId: "lp_project",
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          runnerDeviceId,
+          runnerDeploymentId: executionDeploymentId
+        }),
+        listAiClientInstances: async () => [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            enabled: true,
+            configIdentityHash: ownerIdentityHash,
+            sourceDeviceCredentialId: deviceCredentialId,
+            hostedInstanceId: `runner.${"c".repeat(40)}`
+          }
+        ],
+        listDeviceCredentials: async () => [credential],
+        listCurrentAiClientCapabilitySnapshots: async () => [],
+        enqueueManagedConversationPrompt: enqueue
+      })
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        headers: { authorization: "Koed-Device review-credential" },
+        payload: {
+          executionGeneration: 1,
+          idempotencyKey: "wrong-deployment-prompt",
+          clientUserMessageId: randomUUID(),
+          prompt: "This request belongs to another deployment."
+        }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        error: 'AI Client instance "codex.default" is unavailable'
+      });
+      expect(enqueue).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -3191,7 +3423,13 @@ describe("managed Conversation routes", () => {
   it("shows safe hosted launch choices and persists an exact offline target without a binding", async () => {
     const userId = randomUUID();
     const deviceId = randomUUID();
+    const secondDeviceId = randomUUID();
+    const deviceCredentialId = randomUUID();
+    const secondDeviceCredentialId = randomUUID();
     const deploymentId = randomUUID();
+    const secondDeploymentId = randomUUID();
+    const hostedInstanceId = `runner.${"a".repeat(40)}`;
+    const secondHostedInstanceId = `runner.${"b".repeat(40)}`;
     const executionId = randomUUID();
     const commandId = randomUUID();
     const projectId = "lp_hosted_project";
@@ -3245,18 +3483,66 @@ describe("managed Conversation routes", () => {
       },
       requireRepository: () => ({
         ...launchRepository,
+        listAiClientInstances: async () => [
+          {
+            instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
+            sourceDeviceLabel: "Computer A",
+            driverId: "codex",
+            displayName: "codex",
+            enabled: true,
+            configIdentityHash: "f".repeat(64)
+          },
+          {
+            instanceId: "codex.default",
+            hostedInstanceId: secondHostedInstanceId,
+            sourceDeviceCredentialId: secondDeviceCredentialId,
+            sourceDeviceLabel: "Computer B",
+            driverId: "codex",
+            displayName: "codex",
+            enabled: true,
+            configIdentityHash: "f".repeat(64)
+          }
+        ],
         listCurrentAiClientCapabilitySnapshots: async () => [
           {
             instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
             installationIdentityHash: "f".repeat(64),
             authenticationState: "authenticated",
-            healthState: "unavailable",
+            healthState: "healthy",
             expiresAt: "2099-01-01T00:00:00.000Z",
             capabilities: {
               descriptors: {
                 managed_conversation_start: {
                   support: "supported",
-                  readiness: "not_ready"
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "gpt-test",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              }
+            ]
+          },
+          {
+            instanceId: "codex.default",
+            hostedInstanceId: secondHostedInstanceId,
+            sourceDeviceCredentialId: secondDeviceCredentialId,
+            installationIdentityHash: "f".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
                 }
               }
             },
@@ -3273,15 +3559,28 @@ describe("managed Conversation routes", () => {
           {
             state: "active",
             policy: { enabled: true },
-            members: [{ status: "active", deviceId }]
+            members: [
+              { status: "active", deviceId },
+              { status: "active", deviceId: secondDeviceId }
+            ]
           }
         ],
         listDeviceCredentials: async () => [
           {
+            id: deviceCredentialId,
             deviceInstanceId: deviceId,
             operationFamilies: ["sync", "managed_execution"],
             metadata: { protocolDeploymentId: deploymentId },
             deviceLabel: "Computer A",
+            expiresAt: null,
+            revokedAt: null
+          },
+          {
+            id: secondDeviceCredentialId,
+            deviceInstanceId: secondDeviceId,
+            operationFamilies: ["sync", "managed_execution"],
+            metadata: { protocolDeploymentId: secondDeploymentId },
+            deviceLabel: "Computer B",
             expiresAt: null,
             revokedAt: null
           }
@@ -3319,6 +3618,7 @@ describe("managed Conversation routes", () => {
         payload: {
           projectId,
           ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
           targetDeviceId: deviceId,
           initialPrompt: "Start on the selected computer when it reconnects.",
           idempotencyKey: "hosted-offline-start-1"
@@ -3330,27 +3630,40 @@ describe("managed Conversation routes", () => {
         payload: {
           projectId,
           ...launchSelection,
+          aiClientInstanceId: secondHostedInstanceId,
           targetDeviceId: deviceId,
-          projectPath: "/browser/path",
-          credential: "secret",
           idempotencyKey: "hosted-offline-start-2"
         }
       });
 
       expect(options.statusCode).toBe(200);
       expect(options.json()).toMatchObject({
-        runners: [
+        runners: expect.arrayContaining([
           {
             kind: "local_device",
             deviceId,
             deploymentId,
             displayName: "Computer A"
-          }
-        ],
+          },
+          expect.objectContaining({
+            deviceId: secondDeviceId,
+            deploymentId: secondDeploymentId
+          })
+        ]),
         projects: [{ id: projectId, name: "Local Project" }],
-        instances: [
-          { instanceId: "codex.default", models: [{ id: "gpt-test" }] }
-        ]
+        instances: expect.arrayContaining([
+          expect.objectContaining({
+            instanceId: hostedInstanceId,
+            runnerDeviceId: deviceId,
+            deviceLabel: "Computer A",
+            models: [expect.objectContaining({ id: "gpt-test" })]
+          }),
+          expect.objectContaining({
+            instanceId: secondHostedInstanceId,
+            runnerDeviceId: secondDeviceId,
+            deviceLabel: "Computer B"
+          })
+        ])
       });
       expect(options.body).not.toContain("/private/path");
       expect(options.body).not.toContain('private"');
@@ -3362,12 +3675,13 @@ describe("managed Conversation routes", () => {
           projectId,
           runnerDeploymentId: deploymentId,
           runnerDeviceId: deviceId,
+          aiClientInstanceId: "codex.default",
           deferUntilRuntimeBinding: true,
           initialPrompt: "Start on the selected computer when it reconnects."
         })
       );
       expect(upsert).not.toHaveBeenCalled();
-      expect(unsafe.statusCode).not.toBe(202);
+      expect(unsafe.statusCode).toBe(409);
       expect(start).toHaveBeenCalledOnce();
     } finally {
       await app.close();
@@ -3378,6 +3692,8 @@ describe("managed Conversation routes", () => {
     const userId = randomUUID();
     const deviceId = randomUUID();
     const deploymentId = randomUUID();
+    const deviceCredentialId = randomUUID();
+    const hostedInstanceId = `runner.${"d".repeat(40)}`;
     const executionId = randomUUID();
     const commandId = randomUUID();
     const start = vi.fn(async () => ({
@@ -3434,6 +3750,44 @@ describe("managed Conversation routes", () => {
       },
       requireRepository: () => ({
         ...launchRepository,
+        listAiClientInstances: async () => [
+          {
+            instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
+            sourceDeviceLabel: "Computer A",
+            driverId: "codex",
+            displayName: "codex",
+            enabled: true,
+            configIdentityHash: "f".repeat(64)
+          }
+        ],
+        listCurrentAiClientCapabilitySnapshots: async () => [
+          {
+            instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
+            installationIdentityHash: "f".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "gpt-test",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low"]
+              }
+            ]
+          }
+        ],
         listPersonalDeviceGroups: async () => [
           {
             state: "active",
@@ -3443,6 +3797,7 @@ describe("managed Conversation routes", () => {
         ],
         listDeviceCredentials: async () => [
           {
+            id: deviceCredentialId,
             deviceInstanceId: deviceId,
             operationFamilies: ["sync", "managed_execution"],
             metadata: { protocolDeploymentId: deploymentId },
@@ -3464,6 +3819,7 @@ describe("managed Conversation routes", () => {
           projectId: null,
           contextKind: "independent",
           ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
           targetDeviceId: deviceId,
           initialPrompt: "Start a standalone chat on Computer A.",
           idempotencyKey: "hosted-independent-start-1"
@@ -3496,6 +3852,7 @@ describe("managed Conversation routes", () => {
           contextKind: "independent",
           runnerDeploymentId: deploymentId,
           runnerDeviceId: deviceId,
+          aiClientInstanceId: "codex.default",
           deferUntilRuntimeBinding: true,
           idempotencyKey: "hosted-independent-start-1",
           initialPrompt: "Start a standalone chat on Computer A."

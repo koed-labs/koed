@@ -24,6 +24,7 @@ import {
   hasMeaningfulHostedApprovalDetails,
   hostedRecoveryBackendId,
   hostedRecoveryDisposition,
+  hostedLaunchInstancesForDevice,
   queueHostedConversationPrompt,
   requestHostedProjectMove,
   requestHostedConversationControl,
@@ -799,7 +800,11 @@ export function HostedManagedChats({
     latestCommand?.commandKind === "prompt" &&
     ["queued", "blocked"].includes(latestCommand.state);
   const canCancelStart = pendingStart;
-  const launchInstance = launchOptions?.instances.find(
+  const launchDeviceInstances = hostedLaunchInstancesForDevice(
+    launchOptions,
+    launchDeviceId
+  );
+  const launchInstance = launchDeviceInstances.find(
     (item) => item.instanceId === launchInstanceId
   );
   const launchModel = launchInstance?.models.find(
@@ -1243,7 +1248,10 @@ export function HostedManagedChats({
       setLaunchOptions(options);
       setLaunchProjectId(options.projects[0]?.id ?? "");
       setLaunchDeviceId(options.runners[0]?.deviceId ?? "");
-      const instance = options.instances[0];
+      const instance = hostedLaunchInstancesForDevice(
+        options,
+        options.runners[0]?.deviceId ?? ""
+      )[0];
       setLaunchInstanceId(instance?.instanceId ?? "");
       const model = instance?.models[0];
       setLaunchModelId(model?.id ?? "");
@@ -1506,9 +1514,21 @@ export function HostedManagedChats({
                     Device
                     <select
                       value={launchDeviceId}
-                      onChange={(event) =>
-                        setLaunchDeviceId(event.target.value)
-                      }
+                      onChange={(event) => {
+                        const deviceId = event.target.value;
+                        setLaunchDeviceId(deviceId);
+                        const instance = hostedLaunchInstancesForDevice(
+                          launchOptions,
+                          deviceId
+                        )[0];
+                        const model = instance?.models[0];
+                        setLaunchInstanceId(instance?.instanceId ?? "");
+                        setLaunchModelId(model?.id ?? "");
+                        setLaunchEffort(
+                          model?.supportedReasoningEfforts[0] ?? ""
+                        );
+                        setLaunchPermission(instance?.permissionModes[0] ?? "");
+                      }}
                       className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
                     >
                       {launchOptions.runners.map((runner) => (
@@ -1525,7 +1545,7 @@ export function HostedManagedChats({
                       onChange={(event) => {
                         const [instanceId, modelId] =
                           event.target.value.split("::");
-                        const instance = launchOptions.instances.find(
+                        const instance = launchDeviceInstances.find(
                           (item) => item.instanceId === instanceId
                         );
                         const model = instance?.models.find(
@@ -1540,7 +1560,7 @@ export function HostedManagedChats({
                       }}
                       className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
                     >
-                      {launchOptions.instances.flatMap((instance) =>
+                      {launchDeviceInstances.flatMap((instance) =>
                         instance.models.map((model) => (
                           <option
                             key={`${instance.instanceId}:${model.id}`}

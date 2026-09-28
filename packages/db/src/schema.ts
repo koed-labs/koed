@@ -4263,8 +4263,11 @@ export const personalAgentIdentityVersions = pgTable(
         and (${table.defaultReasoningEffort} is null or length(trim(${table.defaultReasoningEffort})) between 1 and 64)
         and ${table.soulInstructions} = '[koed encrypted personal agent soul]'
         and ${table.instructionSource} in ('generated', 'custom')
-        and ((${table.sourceTemplateId} is null) = (${table.sourceTemplateVersion} is null))
         and ${table.requestFingerprint} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "personal_agent_identity_versions_template_source_pair_check",
+      sql`(${table.sourceTemplateId} is null) = (${table.sourceTemplateVersion} is null)`
     ),
     check(
       "personal_agent_identity_versions_number_check",
@@ -12413,6 +12416,10 @@ export const aiClientInstances = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     instanceId: text("instance_id").notNull(),
+    sourceDeviceCredentialId: uuid("source_device_credential_id")
+      .notNull()
+      .default("00000000-0000-0000-0000-000000000000"),
+    sourceDeviceLabel: text("source_device_label"),
     driverId: text("driver_id").notNull(),
     displayName: text("display_name").notNull(),
     configIdentityHash: text("config_identity_hash"),
@@ -12421,7 +12428,13 @@ export const aiClientInstances = pgTable(
     updatedAt: updatedNow()
   },
   (table) => [
-    primaryKey({ columns: [table.ownerUserId, table.instanceId] }),
+    primaryKey({
+      columns: [
+        table.ownerUserId,
+        table.instanceId,
+        table.sourceDeviceCredentialId
+      ]
+    }),
     index("ai_client_instances_owner_driver_idx").on(
       table.ownerUserId,
       table.driverId,
@@ -12446,6 +12459,9 @@ export const aiClientCapabilitySnapshots = pgTable(
     id: id(),
     ownerUserId: uuid("owner_user_id").notNull(),
     instanceId: text("instance_id").notNull(),
+    sourceDeviceCredentialId: uuid("source_device_credential_id")
+      .notNull()
+      .default("00000000-0000-0000-0000-000000000000"),
     installationIdentityHash: text("installation_identity_hash").notNull(),
     clientVersion: text("client_version"),
     authenticationState: text("authentication_state").notNull(),
@@ -12466,16 +12482,22 @@ export const aiClientCapabilitySnapshots = pgTable(
   },
   (table) => [
     foreignKey({
-      columns: [table.ownerUserId, table.instanceId],
+      columns: [
+        table.ownerUserId,
+        table.instanceId,
+        table.sourceDeviceCredentialId
+      ],
       foreignColumns: [
         aiClientInstances.ownerUserId,
-        aiClientInstances.instanceId
+        aiClientInstances.instanceId,
+        aiClientInstances.sourceDeviceCredentialId
       ],
       name: "ai_client_capability_snapshots_instance_fk"
     }).onDelete("cascade"),
     index("ai_client_capability_snapshots_current_idx").on(
       table.ownerUserId,
       table.instanceId,
+      table.sourceDeviceCredentialId,
       table.observedAt.desc()
     ),
     check(

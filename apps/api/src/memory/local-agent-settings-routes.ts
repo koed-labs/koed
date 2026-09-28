@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   aiClientCapabilityIds,
   codeDefaultAssignmentFor,
@@ -5,7 +7,7 @@ import {
   localAiClientFlowKeys
 } from "@koed/shared";
 import type { MemorySourceRepository } from "@koed/db";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -23,12 +25,111 @@ type AiClientInstance = Awaited<
 type CapabilitySnapshot = Awaited<
   ReturnType<MemorySourceRepository["listCurrentAiClientCapabilitySnapshots"]>
 >[number];
+const localPublicationProfiles = new Set(["developer", "local_personal"]);
+const deviceScopedIdentityHash = (
+  sourceDeviceCredentialId: string | null,
+  identityHash: string | null | undefined
+): string | null => {
+  if (identityHash == null || sourceDeviceCredentialId === null) {
+    return identityHash ?? null;
+  }
+  return createHash("sha256")
+    .update(`${sourceDeviceCredentialId}\0${identityHash}`)
+    .digest("hex");
+};
 
 const assignmentUnavailable = (
   message: string
 ): Error & {
   statusCode: number;
 } => Object.assign(new Error(message), { statusCode: 409 });
+
+const parseRequestBody = <Schema extends z.ZodType>(
+  schema: Schema,
+  body: unknown
+): z.infer<Schema> => {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    throw Object.assign(new Error("Request body is invalid"), {
+      statusCode: 400
+    });
+  }
+  return parsed.data;
+};
+
+const authenticateInstancePublisher = async (
+  request: FastifyRequest,
+  context: ApiRouteContext
+): Promise<{
+  userId: string;
+  sourceDeviceCredentialId: string | null;
+  sourceDeviceLabel: string | null;
+}> => {
+  const scheme = request.headers.authorization
+    ?.trim()
+    .split(/\s+/, 1)[0]
+    ?.toLowerCase();
+  if (scheme === "koed-device") {
+    const auth = await context.auth.authenticateDeviceCredential(request);
+    if (
+      !auth.credential.operationFamilies.includes(
+        "ai_client_capability_publish"
+      )
+    ) {
+      throw Object.assign(
+        new Error(
+          "Device credential is not allowed to publish AI Client capabilities"
+        ),
+        { statusCode: 403 }
+      );
+    }
+    return {
+      userId: auth.user.id,
+      sourceDeviceCredentialId: auth.credential.id,
+      sourceDeviceLabel: auth.credential.deviceLabel
+    };
+  }
+  if (!localPublicationProfiles.has(context.config.deploymentProfile)) {
+    throw Object.assign(
+      new Error(
+        "An enrolled device credential is required to publish AI Client capabilities"
+      ),
+      { statusCode: 403 }
+    );
+  }
+  const user = await context.auth.authenticate(request);
+  return {
+    userId: user.id,
+    sourceDeviceCredentialId: null,
+    sourceDeviceLabel: null
+  };
+};
+
+const publicAiClientInstance = <
+  T extends { sourceDeviceCredentialId: unknown }
+>(
+  instance: T
+): Omit<T, "sourceDeviceCredentialId"> => {
+  const {
+    sourceDeviceCredentialId: _sourceDeviceCredentialId,
+    ...publicRecord
+  } = instance;
+  void _sourceDeviceCredentialId;
+  return publicRecord;
+};
+
+const publicCapabilitySnapshot = <
+  T extends { sourceDeviceCredentialId: unknown }
+>(
+  snapshot: T
+): Omit<T, "sourceDeviceCredentialId"> => {
+  const {
+    sourceDeviceCredentialId: _sourceDeviceCredentialId,
+    ...publicRecord
+  } = snapshot;
+  void _sourceDeviceCredentialId;
+  return publicRecord;
+};
 
 const documentedDefaults = () =>
   Object.fromEntries(
@@ -168,8 +269,8 @@ const registerInstanceListRoute = (
         repo.listLocalMemoryAgentSettings(actor)
       ]);
       return {
-        instances,
-        capabilitySnapshots,
+        instances: instances.map(publicAiClientInstance),
+        capabilitySnapshots: capabilitySnapshots.map(publicCapabilitySnapshot),
         settings,
         defaults: documentedDefaults()
       };
@@ -181,30 +282,31 @@ const registerInstanceWriteRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
-  const {
-    requireRepository,
-    auth: { authenticate },
-    rateLimit
-  } = context;
+  const { requireRepository, rateLimit } = context;
   app.put(
     "/v1/memory/ai-client-instances/:instanceId",
     { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
+      const actor = await authenticateInstancePublisher(request, context);
       const params = aiClientInstanceParamsSchema.parse(request.params);
-      const input = aiClientInstanceSchema.parse(request.body);
+      const input = parseRequestBody(aiClientInstanceSchema, request.body);
       const instance = await repo.upsertAiClientInstance(
-        { userId: user.id },
+        { userId: actor.userId },
         {
           instanceId: params.instanceId,
+          sourceDeviceCredentialId: actor.sourceDeviceCredentialId,
+          sourceDeviceLabel: actor.sourceDeviceLabel,
           driverId: input.driver_id,
           displayName: input.display_name,
-          configIdentityHash: input.config_identity_hash,
+          configIdentityHash: deviceScopedIdentityHash(
+            actor.sourceDeviceCredentialId,
+            input.config_identity_hash
+          ),
           enabled: input.enabled
         }
       );
-      return { instance };
+      return { instance: publicAiClientInstance(instance) };
     }
   );
 };
@@ -213,25 +315,26 @@ const registerCapabilitySnapshotRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
-  const {
-    requireRepository,
-    auth: { authenticate },
-    rateLimit
-  } = context;
+  const { requireRepository, rateLimit } = context;
   app.post(
     "/v1/memory/ai-client-instances/:instanceId/capability-snapshots",
     { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
+      const actor = await authenticateInstancePublisher(request, context);
       const params = aiClientInstanceParamsSchema.parse(request.params);
-      const input = aiClientCapabilitySnapshotSchema.parse(request.body);
+      const input = parseRequestBody(
+        aiClientCapabilitySnapshotSchema,
+        request.body
+      );
       const configuredInstances = await repo.listAiClientInstances({
-        userId: user.id
+        userId: actor.userId
       });
       if (
         !configuredInstances.some(
-          (instance) => instance.instanceId === params.instanceId
+          (instance) =>
+            instance.instanceId === params.instanceId &&
+            instance.sourceDeviceCredentialId === actor.sourceDeviceCredentialId
         )
       ) {
         throw Object.assign(
@@ -242,10 +345,14 @@ const registerCapabilitySnapshotRoute = (
         );
       }
       const capabilitySnapshot = await repo.recordAiClientCapabilitySnapshot(
-        { userId: user.id },
+        { userId: actor.userId },
         {
           instanceId: params.instanceId,
-          installationIdentityHash: input.installation_identity_hash,
+          sourceDeviceCredentialId: actor.sourceDeviceCredentialId,
+          installationIdentityHash: deviceScopedIdentityHash(
+            actor.sourceDeviceCredentialId,
+            input.installation_identity_hash
+          )!,
           clientVersion: input.client_version,
           authenticationState: input.authentication_state,
           healthState: input.health_state,
@@ -255,7 +362,9 @@ const registerCapabilitySnapshotRoute = (
           expiresAt: input.expires_at
         }
       );
-      return { capabilitySnapshot };
+      return {
+        capabilitySnapshot: publicCapabilitySnapshot(capabilitySnapshot)
+      };
     }
   );
 };
@@ -283,8 +392,8 @@ const registerSettingsListRoute = (
       ]);
       return {
         settings,
-        instances,
-        capabilitySnapshots,
+        instances: instances.map(publicAiClientInstance),
+        capabilitySnapshots: capabilitySnapshots.map(publicCapabilitySnapshot),
         defaults: documentedDefaults()
       };
     }

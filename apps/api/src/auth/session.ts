@@ -83,6 +83,7 @@ export interface AuthHelpers {
       | "managed_execution"
       | "managed_file_read"
       | "managed_terminal"
+      | "ai_client_capability_publish"
       | "managed_preview"
       | "managed_source_control"
       | "admin",
@@ -300,6 +301,7 @@ export const createAuthHelpers = (
       | "managed_execution"
       | "managed_file_read"
       | "managed_terminal"
+      | "ai_client_capability_publish"
       | "managed_preview"
       | "managed_source_control"
       | "admin",

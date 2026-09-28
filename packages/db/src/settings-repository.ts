@@ -1,4 +1,16 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNull,
+  or,
+  sql
+} from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
@@ -6,6 +18,7 @@ import {
   aiClientInstances,
   auditEvents,
   capturePolicies,
+  deviceCredentials,
   localMemoryAgentSettings,
   sessions
 } from "./schema.js";
@@ -26,6 +39,48 @@ import type {
 
 const timestampIso = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+const LOCAL_AI_CLIENT_DEVICE_ID = "00000000-0000-0000-0000-000000000000";
+
+const hostedInstanceIdFor = (
+  instanceId: string,
+  sourceDeviceCredentialId: string
+): string =>
+  sourceDeviceCredentialId === LOCAL_AI_CLIENT_DEVICE_ID
+    ? instanceId
+    : `runner.${createHash("sha256")
+        .update(`${sourceDeviceCredentialId}\0${instanceId}`)
+        .digest("hex")
+        .slice(0, 40)}`;
+
+const activeAiClientDeviceSource = (
+  db: KoedDb,
+  ownerUserId:
+    | typeof aiClientInstances.ownerUserId
+    | typeof aiClientCapabilitySnapshots.ownerUserId,
+  deviceCredentialId:
+    | typeof aiClientInstances.sourceDeviceCredentialId
+    | typeof aiClientCapabilitySnapshots.sourceDeviceCredentialId
+) =>
+  or(
+    eq(deviceCredentialId, LOCAL_AI_CLIENT_DEVICE_ID),
+    exists(
+      db
+        .select({ id: deviceCredentials.id })
+        .from(deviceCredentials)
+        .where(
+          and(
+            eq(deviceCredentials.id, deviceCredentialId),
+            eq(deviceCredentials.ownerUserId, ownerUserId),
+            isNull(deviceCredentials.revokedAt),
+            or(
+              isNull(deviceCredentials.expiresAt),
+              gt(deviceCredentials.expiresAt, new Date())
+            )
+          )
+        )
+    )
+  );
 
 const mapCapturePolicyRecord = (row: {
   id: string;
@@ -115,6 +170,8 @@ const mapLocalMemoryAgentSettingRecord = (row: {
 const mapAiClientInstanceRecord = (row: {
   ownerUserId: string;
   instanceId: string;
+  sourceDeviceCredentialId: string;
+  sourceDeviceLabel: string | null;
   driverId: string;
   displayName: string;
   configIdentityHash: string | null;
@@ -123,6 +180,14 @@ const mapAiClientInstanceRecord = (row: {
   updatedAt: Date | string;
 }): AiClientInstanceRecord => ({
   ...row,
+  sourceDeviceCredentialId:
+    row.sourceDeviceCredentialId === LOCAL_AI_CLIENT_DEVICE_ID
+      ? null
+      : row.sourceDeviceCredentialId,
+  hostedInstanceId: hostedInstanceIdFor(
+    row.instanceId,
+    row.sourceDeviceCredentialId
+  ),
   createdAt: timestampIso(row.createdAt),
   updatedAt: timestampIso(row.updatedAt)
 });
@@ -131,6 +196,7 @@ const mapAiClientCapabilitySnapshotRecord = (row: {
   id: string;
   ownerUserId: string;
   instanceId: string;
+  sourceDeviceCredentialId: string;
   installationIdentityHash: string;
   clientVersion: string | null;
   authenticationState: string;
@@ -142,6 +208,14 @@ const mapAiClientCapabilitySnapshotRecord = (row: {
   createdAt: Date | string;
 }): AiClientCapabilitySnapshotRecord => ({
   ...row,
+  sourceDeviceCredentialId:
+    row.sourceDeviceCredentialId === LOCAL_AI_CLIENT_DEVICE_ID
+      ? null
+      : row.sourceDeviceCredentialId,
+  hostedInstanceId: hostedInstanceIdFor(
+    row.instanceId,
+    row.sourceDeviceCredentialId
+  ),
   authenticationState: row.authenticationState as
     | "authenticated"
     | "unauthenticated"
@@ -175,8 +249,20 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const rows = await db
       .select()
       .from(aiClientInstances)
-      .where(eq(aiClientInstances.ownerUserId, actor.userId))
-      .orderBy(asc(aiClientInstances.instanceId));
+      .where(
+        and(
+          eq(aiClientInstances.ownerUserId, actor.userId),
+          activeAiClientDeviceSource(
+            db,
+            aiClientInstances.ownerUserId,
+            aiClientInstances.sourceDeviceCredentialId
+          )
+        )
+      )
+      .orderBy(
+        asc(aiClientInstances.instanceId),
+        asc(aiClientInstances.sourceDeviceCredentialId)
+      );
     return rows.map(mapAiClientInstanceRecord);
   },
 
@@ -184,24 +270,34 @@ export const createSettingsRepository = (db: KoedDb) => ({
     actor: ActorContext,
     input: {
       instanceId: string;
+      sourceDeviceCredentialId?: string | null;
+      sourceDeviceLabel?: string | null;
       driverId: string;
       displayName: string;
       configIdentityHash?: string | null;
       enabled?: boolean;
     }
   ): Promise<AiClientInstanceRecord> {
+    const sourceDeviceCredentialId =
+      input.sourceDeviceCredentialId ?? LOCAL_AI_CLIENT_DEVICE_ID;
     const [row] = await db
       .insert(aiClientInstances)
       .values({
         ownerUserId: actor.userId,
         instanceId: input.instanceId,
+        sourceDeviceCredentialId,
+        sourceDeviceLabel: input.sourceDeviceLabel ?? null,
         driverId: input.driverId,
         displayName: input.displayName,
         configIdentityHash: input.configIdentityHash ?? null,
         enabled: input.enabled ?? true
       })
       .onConflictDoUpdate({
-        target: [aiClientInstances.ownerUserId, aiClientInstances.instanceId],
+        target: [
+          aiClientInstances.ownerUserId,
+          aiClientInstances.instanceId,
+          aiClientInstances.sourceDeviceCredentialId
+        ],
         set: {
           driverId: input.driverId,
           displayName: input.displayName,
@@ -209,6 +305,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
             ? { configIdentityHash: input.configIdentityHash }
             : {}),
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.sourceDeviceLabel !== undefined
+            ? { sourceDeviceLabel: input.sourceDeviceLabel }
+            : {}),
           updatedAt: sql`now()`
         }
       })
@@ -220,6 +319,7 @@ export const createSettingsRepository = (db: KoedDb) => ({
     actor: ActorContext,
     input: {
       instanceId: string;
+      sourceDeviceCredentialId?: string | null;
       installationIdentityHash: string;
       clientVersion?: string | null;
       authenticationState: "authenticated" | "unauthenticated" | "unknown";
@@ -230,13 +330,19 @@ export const createSettingsRepository = (db: KoedDb) => ({
       expiresAt: string;
     }
   ): Promise<AiClientCapabilitySnapshotRecord> {
+    const sourceDeviceCredentialId =
+      input.sourceDeviceCredentialId ?? LOCAL_AI_CLIENT_DEVICE_ID;
     const [current] = await db
       .select()
       .from(aiClientCapabilitySnapshots)
       .where(
         and(
           eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
-          eq(aiClientCapabilitySnapshots.instanceId, input.instanceId)
+          eq(aiClientCapabilitySnapshots.instanceId, input.instanceId),
+          eq(
+            aiClientCapabilitySnapshots.sourceDeviceCredentialId,
+            sourceDeviceCredentialId
+          )
         )
       )
       .orderBy(
@@ -276,6 +382,7 @@ export const createSettingsRepository = (db: KoedDb) => ({
       .values({
         ownerUserId: actor.userId,
         instanceId: input.instanceId,
+        sourceDeviceCredentialId,
         installationIdentityHash: input.installationIdentityHash,
         clientVersion: input.clientVersion ?? null,
         authenticationState: input.authenticationState,
@@ -295,9 +402,19 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const rows = await db
       .select()
       .from(aiClientCapabilitySnapshots)
-      .where(eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId))
+      .where(
+        and(
+          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
+          activeAiClientDeviceSource(
+            db,
+            aiClientCapabilitySnapshots.ownerUserId,
+            aiClientCapabilitySnapshots.sourceDeviceCredentialId
+          )
+        )
+      )
       .orderBy(
         asc(aiClientCapabilitySnapshots.instanceId),
+        asc(aiClientCapabilitySnapshots.sourceDeviceCredentialId),
         desc(aiClientCapabilitySnapshots.observedAt),
         desc(aiClientCapabilitySnapshots.createdAt),
         desc(aiClientCapabilitySnapshots.id)
@@ -305,8 +422,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const seen = new Set<string>();
     const now = Date.now();
     return rows.flatMap((row) => {
-      if (seen.has(row.instanceId)) return [];
-      seen.add(row.instanceId);
+      const key = `${row.sourceDeviceCredentialId}:${row.instanceId}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
       return [
         {
           ...mapAiClientCapabilitySnapshotRecord(row),
@@ -322,17 +440,28 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const rows = await db
       .select()
       .from(aiClientCapabilitySnapshots)
-      .where(eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId))
+      .where(
+        and(
+          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
+          activeAiClientDeviceSource(
+            db,
+            aiClientCapabilitySnapshots.ownerUserId,
+            aiClientCapabilitySnapshots.sourceDeviceCredentialId
+          )
+        )
+      )
       .orderBy(
         asc(aiClientCapabilitySnapshots.instanceId),
+        asc(aiClientCapabilitySnapshots.sourceDeviceCredentialId),
         desc(aiClientCapabilitySnapshots.observedAt),
         desc(aiClientCapabilitySnapshots.createdAt),
         desc(aiClientCapabilitySnapshots.id)
       );
     const seen = new Set<string>();
     const latest = rows.flatMap((row) => {
-      if (seen.has(row.instanceId)) return [];
-      seen.add(row.instanceId);
+      const key = `${row.sourceDeviceCredentialId}:${row.instanceId}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
       return [row];
     });
     const now = Date.now();

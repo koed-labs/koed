@@ -32,6 +32,7 @@ export type LocalEdgeOperationFamily =
   | "managed_execution"
   | "managed_file_read"
   | "managed_terminal"
+  | "ai_client_capability_publish"
   | "admin";
 
 export type LocalEdgeRouteMode =
@@ -81,6 +82,7 @@ const operationRoutePolicyKey: Record<
   managed_execution: "managedExecution",
   managed_file_read: "managedExecution",
   managed_terminal: "managedExecution",
+  ai_client_capability_publish: "managedExecution",
   admin: "admin"
 };
 
@@ -98,6 +100,7 @@ const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   managed_execution: "live_upstream_proxy",
   managed_file_read: "live_upstream_proxy",
   managed_terminal: "live_upstream_proxy",
+  ai_client_capability_publish: "live_upstream_proxy",
   admin: "live_upstream_proxy"
 };
 
@@ -391,6 +394,23 @@ export const assertUpstreamOperationPathAllowed = (
       pathname === "/v1/memory/token-usage" ||
       pathname === "/v1/memory/token-usage/rollups" ||
       pathname === "/v1/memory/conversation-items/project"
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "ai_client_capability_publish") {
+    if (
+      parsed.search === "" &&
+      ((method === "PUT" &&
+        /^\/v1\/memory\/ai-client-instances\/[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/.test(
+          pathname
+        )) ||
+        (method === "POST" &&
+          /^\/v1\/memory\/ai-client-instances\/[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}\/capability-snapshots$/.test(
+            pathname
+          )))
     ) {
       return;
     }

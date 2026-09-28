@@ -672,7 +672,8 @@ const assertAvailable = (context: ApiRouteContext): void => {
 type ManagedCapabilityRepository = Pick<
   MemorySourceRepository,
   "listAiClientInstances" | "listCurrentAiClientCapabilitySnapshots"
->;
+> &
+  Partial<Pick<MemorySourceRepository, "listDeviceCredentials">>;
 
 const managedCapabilityUnavailable = (message: string) =>
   Object.assign(new Error(message), { statusCode: 409 });
@@ -680,14 +681,52 @@ const managedCapabilityUnavailable = (message: string) =>
 export const assertManagedCapability = async (
   repository: ManagedCapabilityRepository,
   userId: string,
-  input: { provider: string; aiClientInstanceId: string; capability: string }
+  input: {
+    provider: string;
+    aiClientInstanceId: string;
+    capability: string;
+    sourceDeviceCredentialId?: string | null;
+    runnerDeviceId?: string;
+    runnerDeploymentId?: string;
+  }
 ): Promise<void> => {
-  const [instances, snapshots] = await Promise.all([
+  const [instances, snapshots, credentials] = await Promise.all([
     repository.listAiClientInstances({ userId }),
-    repository.listCurrentAiClientCapabilitySnapshots({ userId })
+    repository.listCurrentAiClientCapabilitySnapshots({ userId }),
+    input.runnerDeviceId && repository.listDeviceCredentials
+      ? repository.listDeviceCredentials({ userId })
+      : Promise.resolve([])
   ]);
+  const runnerCredentialIds = input.runnerDeviceId
+    ? credentials
+        .filter(
+          (credential) =>
+            credential.deviceInstanceId === input.runnerDeviceId &&
+            (!input.runnerDeploymentId ||
+              protocolDeploymentId(credential.metadata) ===
+                input.runnerDeploymentId) &&
+            credential.revokedAt === null &&
+            credential.operationFamilies.includes("managed_execution") &&
+            (credential.expiresAt === null ||
+              Date.parse(credential.expiresAt) > Date.now())
+        )
+        .map((credential) => credential.id)
+    : null;
+  const isSelectedDevice = (
+    sourceDeviceCredentialId: string | null | undefined
+  ) => {
+    const normalizedSourceDeviceCredentialId = sourceDeviceCredentialId ?? null;
+    return input.sourceDeviceCredentialId !== undefined
+      ? normalizedSourceDeviceCredentialId === input.sourceDeviceCredentialId
+      : runnerCredentialIds !== null
+        ? normalizedSourceDeviceCredentialId !== null &&
+          runnerCredentialIds.includes(normalizedSourceDeviceCredentialId)
+        : normalizedSourceDeviceCredentialId === null;
+  };
   const instance = instances.find(
-    (candidate) => candidate.instanceId === input.aiClientInstanceId
+    (candidate) =>
+      candidate.instanceId === input.aiClientInstanceId &&
+      isSelectedDevice(candidate.sourceDeviceCredentialId)
   );
   if (!instance || !instance.enabled) {
     throw managedCapabilityUnavailable(
@@ -700,7 +739,10 @@ export const assertManagedCapability = async (
     );
   }
   const snapshot = snapshots.find(
-    (candidate) => candidate.instanceId === input.aiClientInstanceId
+    (candidate) =>
+      candidate.instanceId === input.aiClientInstanceId &&
+      candidate.hostedInstanceId === instance.hostedInstanceId &&
+      candidate.sourceDeviceCredentialId === instance.sourceDeviceCredentialId
   );
   const descriptors = snapshot?.capabilities?.descriptors;
   const descriptor =
@@ -730,7 +772,8 @@ const assertExecutionCapability = async (
     Pick<MemorySourceRepository, "getManagedConversationExecution">,
   userId: string,
   executionId: string,
-  capability: string
+  capability: string,
+  sourceDeviceCredentialId?: string | null
 ) => {
   const execution = await repository.getManagedConversationExecution(
     { userId },
@@ -744,7 +787,13 @@ const assertExecutionCapability = async (
   await assertManagedCapability(repository, userId, {
     provider: execution.provider,
     aiClientInstanceId: execution.aiClientInstanceId,
-    capability
+    capability,
+    ...(sourceDeviceCredentialId !== undefined
+      ? { sourceDeviceCredentialId }
+      : {
+          runnerDeviceId: execution.runnerDeviceId,
+          runnerDeploymentId: execution.runnerDeploymentId
+        })
   });
   return execution;
 };
@@ -761,16 +810,76 @@ const modelReasoningEfforts = (model: Record<string, unknown>): string[] =>
 
 const launchInstances = async (
   repository: MemorySourceRepository,
-  userId: string
+  userId: string,
+  options: {
+    sourceDeviceCredentialId?: string | null;
+    runnerDeviceId?: string;
+    runnerDeploymentId?: string;
+    browser?: boolean;
+    eligibleRunnerDeviceIds?: Set<string>;
+  } = {}
 ) => {
-  const [instances, snapshots] = await Promise.all([
+  const [instances, snapshots, credentials] = await Promise.all([
     repository.listAiClientInstances({ userId }),
-    repository.listCurrentAiClientCapabilitySnapshots({ userId })
+    repository.listCurrentAiClientCapabilitySnapshots({ userId }),
+    options.browser || options.runnerDeviceId
+      ? repository.listDeviceCredentials({ userId })
+      : Promise.resolve([])
   ]);
   return instances.flatMap((instance) => {
     if (!isSupportedAiClientDriverId(instance.driverId)) return [];
+    const credential = instance.sourceDeviceCredentialId
+      ? credentials.find(
+          (candidate) =>
+            candidate.id === instance.sourceDeviceCredentialId &&
+            (!options.runnerDeviceId ||
+              candidate.deviceInstanceId === options.runnerDeviceId) &&
+            (!options.runnerDeploymentId ||
+              protocolDeploymentId(candidate.metadata) ===
+                options.runnerDeploymentId) &&
+            candidate.revokedAt === null &&
+            candidate.operationFamilies.includes("managed_execution") &&
+            (candidate.expiresAt === null ||
+              Date.parse(candidate.expiresAt) > Date.now())
+        )
+      : null;
+    if (options.browser) {
+      if (
+        !credential ||
+        (options.eligibleRunnerDeviceIds &&
+          !options.eligibleRunnerDeviceIds.has(credential.deviceInstanceId))
+      ) {
+        return [];
+      }
+    } else if (
+      options.sourceDeviceCredentialId !== undefined &&
+      (instance.sourceDeviceCredentialId ?? null) !==
+        options.sourceDeviceCredentialId
+    ) {
+      return [];
+    } else if (
+      !options.browser &&
+      options.sourceDeviceCredentialId === undefined &&
+      options.runnerDeviceId &&
+      (instance.sourceDeviceCredentialId
+        ? !credential
+        : credentials.some(
+            (candidate) =>
+              candidate.deviceInstanceId === options.runnerDeviceId &&
+              candidate.revokedAt === null &&
+              (!options.runnerDeploymentId ||
+                protocolDeploymentId(candidate.metadata) ===
+                  options.runnerDeploymentId) &&
+              (candidate.expiresAt === null ||
+                Date.parse(candidate.expiresAt) > Date.now())
+          ))
+    ) {
+      return [];
+    }
     const snapshot = snapshots.find(
-      (candidate) => candidate.instanceId === instance.instanceId
+      (candidate) =>
+        candidate.hostedInstanceId === instance.hostedInstanceId &&
+        candidate.sourceDeviceCredentialId === instance.sourceDeviceCredentialId
     );
     const descriptors = snapshot?.capabilities?.descriptors;
     const startDescriptor =
@@ -793,7 +902,15 @@ const launchInstances = async (
     );
     return [
       {
-        instanceId: instance.instanceId,
+        instanceId: options.browser
+          ? instance.hostedInstanceId
+          : instance.instanceId,
+        ...(options.browser
+          ? {
+              runnerDeviceId: credential!.deviceInstanceId,
+              deviceLabel: instance.sourceDeviceLabel
+            }
+          : {}),
         driverId: instance.driverId,
         displayName: instance.displayName,
         ready,
@@ -818,7 +935,11 @@ const launchInstances = async (
 const launchOptions = async (
   repository: MemorySourceRepository,
   userId: string,
-  runner: { deploymentId: string; deviceId: string }
+  runner: {
+    deploymentId: string;
+    deviceId: string;
+    sourceDeviceCredentialId: string | null;
+  }
 ) => ({
   runners: [
     {
@@ -828,7 +949,9 @@ const launchOptions = async (
       displayName: "This device"
     }
   ],
-  instances: await launchInstances(repository, userId)
+  instances: await launchInstances(repository, userId, {
+    sourceDeviceCredentialId: runner.sourceDeviceCredentialId
+  })
 });
 
 const assertDeferredLaunchSelection = async (
@@ -841,14 +964,18 @@ const assertDeferredLaunchSelection = async (
     | "model"
     | "reasoningEffort"
     | "permissionMode"
-  >
+  >,
+  sourceDeviceCredentialId?: string | null
 ): Promise<void> => {
   const [instances, snapshots] = await Promise.all([
     repository.listAiClientInstances({ userId }),
     repository.listCurrentAiClientCapabilitySnapshots({ userId })
   ]);
   const instance = instances.find(
-    (candidate) => candidate.instanceId === input.aiClientInstanceId
+    (candidate) =>
+      candidate.instanceId === input.aiClientInstanceId &&
+      (sourceDeviceCredentialId === undefined ||
+        candidate.sourceDeviceCredentialId === sourceDeviceCredentialId)
   );
   if (
     !instance ||
@@ -862,7 +989,11 @@ const assertDeferredLaunchSelection = async (
   }
 
   const snapshot = snapshots.find(
-    (candidate) => candidate.instanceId === input.aiClientInstanceId
+    (candidate) =>
+      candidate.instanceId === input.aiClientInstanceId &&
+      candidate.sourceDeviceCredentialId ===
+        instance.sourceDeviceCredentialId &&
+      candidate.hostedInstanceId === instance.hostedInstanceId
   );
   if (
     !snapshot ||
@@ -922,14 +1053,18 @@ const assertDeferredLaunchSelection = async (
 const assertLocalLaunchSelection = async (
   repository: MemorySourceRepository,
   userId: string,
-  input: z.infer<typeof startSchema>
+  input: z.infer<typeof startSchema>,
+  sourceDeviceCredentialId: string | null
 ) => {
   await assertManagedCapability(repository, userId, {
     provider: input.provider,
     aiClientInstanceId: input.aiClientInstanceId,
-    capability: aiClientCapabilityIds.managedConversationStart
+    capability: aiClientCapabilityIds.managedConversationStart,
+    sourceDeviceCredentialId
   });
-  await assertLocalSettingsSelection(repository, userId, input);
+  await assertLocalSettingsSelection(repository, userId, input, {
+    sourceDeviceCredentialId
+  });
 };
 
 const assertLocalSettingsSelection = async (
@@ -942,9 +1077,16 @@ const assertLocalSettingsSelection = async (
     | "model"
     | "reasoningEffort"
     | "permissionMode"
-  >
+  >,
+  binding: {
+    sourceDeviceCredentialId?: string | null;
+    runnerDeviceId?: string;
+    runnerDeploymentId?: string;
+  } = {}
 ) => {
-  const instances = await launchInstances(repository, userId);
+  const instances = await launchInstances(repository, userId, {
+    ...binding
+  });
   const instance = instances.find(
     (candidate) => candidate.instanceId === input.aiClientInstanceId
   );
@@ -1117,14 +1259,22 @@ export const registerManagedConversationRoutes = (
         repository,
         input.userId,
         input.executionId,
-        input.capability
+        input.capability,
+        localExecutionProfiles.has(context.config.deploymentProfile)
+          ? null
+          : undefined
       );
       if (input.settings)
-        await assertLocalSettingsSelection(repository, input.userId, {
-          ...execution,
-          provider: execution.provider as "codex" | "claude" | "pi",
-          ...input.settings
-        });
+        await assertLocalSettingsSelection(
+          repository,
+          input.userId,
+          {
+            ...execution,
+            provider: execution.provider as "codex" | "claude" | "pi",
+            ...input.settings
+          },
+          { sourceDeviceCredentialId: null }
+        );
       return { backendId: null };
     }
     const executionResponse = await proxyManaged(
@@ -1145,13 +1295,27 @@ export const registerManagedConversationRoutes = (
     await assertManagedCapability(repository, input.userId, {
       provider: execution.provider,
       aiClientInstanceId: execution.aiClientInstanceId,
-      capability: input.capability
+      capability: input.capability,
+      runnerDeviceId:
+        context.deploymentIdentity.inspect().deviceInstanceId ?? undefined,
+      runnerDeploymentId:
+        context.deploymentIdentity.inspect().deploymentId ?? undefined
     });
     if (input.settings)
-      await assertLocalSettingsSelection(repository, input.userId, {
-        ...execution,
-        ...input.settings
-      });
+      await assertLocalSettingsSelection(
+        repository,
+        input.userId,
+        {
+          ...execution,
+          ...input.settings
+        },
+        {
+          runnerDeviceId:
+            context.deploymentIdentity.inspect().deviceInstanceId ?? undefined,
+          runnerDeploymentId:
+            context.deploymentIdentity.inspect().deploymentId ?? undefined
+        }
+      );
     return { backendId: authority.backend.id };
   };
 
@@ -1501,7 +1665,11 @@ export const registerManagedConversationRoutes = (
 
   const runnerIdentity = async (
     request: FastifyRequest
-  ): Promise<{ deploymentId: string; deviceId: string }> => {
+  ): Promise<{
+    deploymentId: string;
+    deviceId: string;
+    sourceDeviceCredentialId: string | null;
+  }> => {
     const authorization = request.headers.authorization?.trim() ?? "";
     if (/^Koed-Device\s/i.test(authorization)) {
       const authenticated =
@@ -1527,7 +1695,8 @@ export const registerManagedConversationRoutes = (
       }
       return {
         deploymentId,
-        deviceId: authenticated.credential.deviceInstanceId
+        deviceId: authenticated.credential.deviceInstanceId,
+        sourceDeviceCredentialId: authenticated.credential.id
       };
     }
     if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
@@ -1551,7 +1720,8 @@ export const registerManagedConversationRoutes = (
     }
     return {
       deploymentId: identity.deploymentId,
-      deviceId: identity.deviceInstanceId
+      deviceId: identity.deviceInstanceId,
+      sourceDeviceCredentialId: null
     };
   };
 
@@ -1582,12 +1752,31 @@ export const registerManagedConversationRoutes = (
         }
       );
     }
-    const instances = await repository.listAiClientInstances({ userId });
+    const [instances, credentials] = await Promise.all([
+      repository.listAiClientInstances({ userId }),
+      repository.listDeviceCredentials?.({ userId }) ?? Promise.resolve([])
+    ]);
+    const runnerCredentialIds = credentials
+      .filter(
+        (credential) =>
+          credential.deviceInstanceId === execution.runnerDeviceId &&
+          protocolDeploymentId(credential.metadata) ===
+            execution.runnerDeploymentId &&
+          credential.revokedAt === null &&
+          credential.operationFamilies.includes("managed_execution") &&
+          (credential.expiresAt === null ||
+            Date.parse(credential.expiresAt) > Date.now())
+      )
+      .map((credential) => credential.id);
     if (
       !instances.some(
         (instance) =>
           instance.instanceId === execution.aiClientInstanceId &&
-          instance.driverId === execution.provider
+          instance.driverId === execution.provider &&
+          (localExecutionProfiles.has(context.config.deploymentProfile)
+            ? (instance.sourceDeviceCredentialId ?? null) === null
+            : instance.sourceDeviceCredentialId !== null &&
+              runnerCredentialIds.includes(instance.sourceDeviceCredentialId))
       )
     ) {
       throw Object.assign(
@@ -1627,17 +1816,25 @@ export const registerManagedConversationRoutes = (
     const isDeviceRequest = /^Koed-Device\s/i.test(
       request.headers.authorization?.trim() ?? ""
     );
+    const requestingRunner = isDeviceRequest
+      ? await runnerIdentity(request)
+      : null;
     if (
       !localExecutionProfiles.has(context.config.deploymentProfile) &&
-      isDeviceRequest &&
-      (await runnerIdentity(request)).deviceId === execution.runnerDeviceId
+      requestingRunner?.deviceId === execution.runnerDeviceId &&
+      requestingRunner.deploymentId === execution.runnerDeploymentId
     ) {
       return execution;
     }
     await assertManagedCapability(repository, userId, {
       provider: execution.provider,
       aiClientInstanceId: execution.aiClientInstanceId,
-      capability
+      capability,
+      runnerDeviceId: execution.runnerDeviceId,
+      runnerDeploymentId: execution.runnerDeploymentId,
+      ...(localExecutionProfiles.has(context.config.deploymentProfile)
+        ? { sourceDeviceCredentialId: null }
+        : {})
     });
     return execution;
   };
@@ -1753,9 +1950,14 @@ export const registerManagedConversationRoutes = (
     repository: MemorySourceRepository,
     userId: string
   ) => {
-    const [devices, instances, projects] = await Promise.all([
-      targetDevices(repository, userId),
-      launchInstances(repository, userId),
+    const devices = await targetDevices(repository, userId);
+    const [instances, projects] = await Promise.all([
+      launchInstances(repository, userId, {
+        browser: true,
+        eligibleRunnerDeviceIds: new Set(
+          devices.map((device) => device.deviceId)
+        )
+      }),
       repository.listLcmGraphThreads({ userId }, { limit: 500, offset: 0 })
     ]);
     return {
@@ -1916,7 +2118,40 @@ export const registerManagedConversationRoutes = (
             { statusCode: 403 }
           );
         }
-        await assertDeferredLaunchSelection(repository, user.id, input);
+        const [instances, credentials] = await Promise.all([
+          repository.listAiClientInstances({ userId: user.id }),
+          repository.listDeviceCredentials({ userId: user.id })
+        ]);
+        const selectedInstance = instances.find(
+          (candidate) =>
+            candidate.hostedInstanceId === input.aiClientInstanceId &&
+            candidate.sourceDeviceCredentialId !== null
+        );
+        const sourceCredential = credentials.find(
+          (credential) =>
+            credential.id === selectedInstance?.sourceDeviceCredentialId &&
+            credential.deviceInstanceId === target.deviceId &&
+            protocolDeploymentId(credential.metadata) === target.deploymentId &&
+            credential.revokedAt === null &&
+            credential.operationFamilies.includes("managed_execution") &&
+            (credential.expiresAt === null ||
+              Date.parse(credential.expiresAt) > Date.now())
+        );
+        if (!selectedInstance || !sourceCredential) {
+          throw managedCapabilityUnavailable(
+            "Selected AI Client instance is not published by the target runner"
+          );
+        }
+        const runnerInput = {
+          ...input,
+          aiClientInstanceId: selectedInstance.instanceId
+        };
+        await assertDeferredLaunchSelection(
+          repository,
+          user.id,
+          runnerInput,
+          sourceCredential.id
+        );
         if (input.contextKind === "project") {
           const projects = await repository.listLcmGraphThreads(
             { userId: user.id },
@@ -1935,7 +2170,7 @@ export const registerManagedConversationRoutes = (
             projectId: input.projectId,
             contextKind: input.contextKind,
             provider: input.provider,
-            aiClientInstanceId: input.aiClientInstanceId,
+            aiClientInstanceId: selectedInstance.instanceId,
             model: input.model,
             reasoningEffort: input.reasoningEffort,
             permissionMode: input.permissionMode,
@@ -1980,7 +2215,12 @@ export const registerManagedConversationRoutes = (
         "deferUntilRuntimeBinding" in input &&
         input.deferUntilRuntimeBinding === true;
       if (localExecution || !deferred) {
-        await assertLocalLaunchSelection(repository, user.id, input);
+        await assertLocalLaunchSelection(
+          repository,
+          user.id,
+          input,
+          runner.sourceDeviceCredentialId
+        );
       } else if (
         input.provider !== "codex" &&
         input.provider !== "claude" &&

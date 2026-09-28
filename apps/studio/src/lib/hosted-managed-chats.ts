@@ -94,9 +94,18 @@ export function hostedRecoveryDisposition(
 
 export type HostedLaunchOptions = {
   runners: Array<{ deviceId: string; displayName: string }>;
-  instances: Array<LaunchInstance & { readiness: string; ready: boolean }>;
+  instances: Array<
+    LaunchInstance & { runnerDeviceId: string; readiness: string; ready: boolean }
+  >;
   projects: Array<{ id: string; name: string }>;
 };
+
+export const hostedLaunchInstancesForDevice = (
+  options: HostedLaunchOptions | null,
+  deviceId: string
+): HostedLaunchOptions["instances"] =>
+  options?.instances.filter((instance) => instance.runnerDeviceId === deviceId) ??
+  [];
 
 export type HostedProjectMove = {
   id: string;
@@ -717,7 +726,9 @@ export async function loadHostedLaunchOptions(
         if (
           !record(value) ||
           typeof value.instanceId !== "string" ||
-          typeof value.driverId !== "string"
+          typeof value.driverId !== "string" ||
+          typeof value.runnerDeviceId !== "string" ||
+          !runners.some((runner) => runner.deviceId === value.runnerDeviceId)
         )
           return [];
         const capabilities = record(value.capabilities)
@@ -758,6 +769,7 @@ export async function loadHostedLaunchOptions(
         return [
           {
             instanceId: value.instanceId,
+            runnerDeviceId: value.runnerDeviceId,
             driverId: value.driverId,
             models,
             permissionModes,

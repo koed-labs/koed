@@ -509,6 +509,7 @@ const routePolicyOperationFamilies = (
     ["managedExecution", "managed_execution"],
     ["managedExecution", "managed_file_read"],
     ["managedExecution", "managed_terminal"],
+    ["managedExecution", "ai_client_capability_publish"],
     ["admin", "action_grant"]
   ];
   return entries
@@ -532,7 +533,8 @@ const localClientOperationFamiliesFor = (operationFamilies: string[]) =>
       family === "share_grant_management" ||
       family === "managed_execution" ||
       family === "managed_file_read" ||
-      family === "managed_terminal"
+      family === "managed_terminal" ||
+      family === "ai_client_capability_publish"
   );
 
 const expiresAtFor = (now: Date): string =>

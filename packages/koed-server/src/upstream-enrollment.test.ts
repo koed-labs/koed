@@ -600,6 +600,30 @@ describe("upstream enrollment orchestration", () => {
     ]);
   });
 
+  it("grants hosted AI Client capability publication only with managed execution", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      managedExecution: "enabled"
+    });
+
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "enroll-ai-client-publication",
+      fetch: enrollmentFetch()
+    });
+
+    expect(started.enrollment?.requestedOperationFamilies).toContain(
+      "ai_client_capability_publish"
+    );
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+        ?.operationFamilies
+    ).toContain("ai_client_capability_publish");
+    expect(started.enrollment?.requestedOperationFamilies).not.toContain(
+      "admin"
+    );
+  });
+
   it("admits shared-memory control locally without copying remote-only authority", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {

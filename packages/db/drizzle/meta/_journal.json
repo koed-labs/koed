@@ -351,6 +351,13 @@
       "when": 1790427490758,
       "tag": "0049_managed_project_move",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790585347485,
+      "tag": "0050_ai_client_capability_device_binding",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ import type {
   AiClientCapabilityDescriptor,
   AiClientModelCapability
 } from "@koed/shared";
+import { storeLocalEdgeClientCredential } from "@koed/shared";
 import { MemoryApiClient } from "../src/index.js";
 import {
   aiClientDriverRegistry,
@@ -54,7 +55,11 @@ const driver = (
         {
           id: `${id}-model`,
           model: `${id}-model`,
-          provenance: "reported" as const
+          provenance: "reported" as const,
+          options: {
+            api_key: "private-model-secret",
+            config_path: "/Users/private/provider.json"
+          }
         } satisfies AiClientModelCapability
       ],
       capabilities: [descriptor()],
@@ -92,6 +97,204 @@ describe("AI Client capability publisher", () => {
     ).resolves.toEqual([]);
     expect(apiClient.upsertAiClientInstance).not.toHaveBeenCalled();
     expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
+  });
+
+  it("publishes safe capability metadata through the enrolled upstream route", async () => {
+    const original = aiClientDriverRegistry.get("codex");
+    const seen: Array<{ instanceId: string; executablePath?: string }> = [];
+    aiClientDriverRegistry.set("codex", driver("codex", seen));
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-upstream-")
+    );
+    roots.push(root);
+    const executablePath = executable(root, "local-secret-path");
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "/Users/private-machine/AI Client",
+            executablePath,
+            configHome: "/Users/private-machine/.codex"
+          }
+        ]
+      })
+    );
+    storeLocalEdgeClientCredential(root, {
+      backendId: "hosted",
+      secret: "local-edge-secret",
+      operationFamilies: ["ai_client_capability_publish"]
+    });
+    fs.mkdirSync(path.join(root, "config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "config", "upstream-backends.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "hosted",
+        backends: [
+          {
+            id: "hosted",
+            baseUrl: "https://hosted.example.test",
+            routePolicy: { managedExecution: "enabled" }
+          }
+        ]
+      })
+    );
+    const upstreamOperations: Array<Record<string, unknown>> = [];
+    const publishUpstream = vi.fn(
+      async (
+        _backendId: string,
+        _authorization: string,
+        operation: Record<string, unknown>
+      ) => {
+        upstreamOperations.push(operation);
+        return {};
+      }
+    );
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(async () => ({})),
+      recordAiClientCapabilitySnapshot: vi.fn(async () => ({})),
+      publishAiClientUpstreamOperation: publishUpstream
+    } as unknown as MemoryApiClient;
+    try {
+      await expect(
+        publishAiClientCapabilities(apiClient, {
+          KOED_HOME: root,
+          KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+        })
+      ).resolves.toMatchObject([
+        { instanceId: "codex.default", published: true }
+      ]);
+    } finally {
+      if (original) aiClientDriverRegistry.set("codex", original);
+      else aiClientDriverRegistry.delete("codex");
+    }
+
+    expect(apiClient.upsertAiClientInstance).toHaveBeenCalledOnce();
+    expect(apiClient.recordAiClientCapabilitySnapshot).toHaveBeenCalledOnce();
+    expect(upstreamOperations).toHaveLength(2);
+    expect(upstreamOperations[0]).toMatchObject({
+      method: "PUT",
+      path: "/v1/memory/ai-client-instances/codex.default",
+      body: { driver_id: "codex", display_name: "codex" }
+    });
+    expect(upstreamOperations[1]).toMatchObject({
+      method: "POST",
+      path: "/v1/memory/ai-client-instances/codex.default/capability-snapshots"
+    });
+    expect(JSON.stringify(upstreamOperations)).not.toContain("private-machine");
+    expect(JSON.stringify(upstreamOperations)).not.toContain(executablePath);
+    expect(JSON.stringify(upstreamOperations)).not.toContain("/Users/");
+    expect(JSON.stringify(upstreamOperations)).not.toContain(
+      "private-model-secret"
+    );
+    expect(JSON.stringify(upstreamOperations)).not.toContain('"options"');
+    publishUpstream.mockRejectedValue(new Error("private upstream detail"));
+    const localStillPublished = await publishAiClientCapabilities(apiClient, {
+      KOED_HOME: root,
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+    });
+    expect(localStillPublished).toMatchObject([
+      {
+        published: true,
+        hostedPublication: "failed"
+      }
+    ]);
+    expect(apiClient.upsertAiClientInstance).toHaveBeenCalledTimes(2);
+    expect(apiClient.recordAiClientCapabilitySnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses only the active managed-execution backend for every refresh", async () => {
+    const original = aiClientDriverRegistry.get("codex");
+    const seen: Array<{ instanceId: string; executablePath?: string }> = [];
+    aiClientDriverRegistry.set("codex", driver("codex", seen));
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-active-backend-")
+    );
+    roots.push(root);
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex",
+            executablePath: executable(root, "codex"),
+            configHome: path.join(root, "codex-home")
+          }
+        ]
+      })
+    );
+    for (const backendId of ["backend-a", "backend-b"]) {
+      storeLocalEdgeClientCredential(root, {
+        backendId,
+        secret: `${backendId}-secret`,
+        operationFamilies: ["ai_client_capability_publish"]
+      });
+    }
+    const upstreamRegistryPath = path.join(
+      root,
+      "config",
+      "upstream-backends.json"
+    );
+    fs.mkdirSync(path.dirname(upstreamRegistryPath), { recursive: true });
+    const setActive = (activeBackendId: string | null) => {
+      fs.writeFileSync(
+        upstreamRegistryPath,
+        JSON.stringify({
+          schemaVersion: 2,
+          activeBackendId,
+          backends: ["backend-a", "backend-b"].map((id) => ({
+            id,
+            baseUrl: `https://${id}.example.test`,
+            routePolicy: { managedExecution: "enabled" }
+          }))
+        })
+      );
+      const future = new Date(Date.now() + 1_000 + Math.random() * 1_000);
+      fs.utimesSync(upstreamRegistryPath, future, future);
+    };
+    const publishedBackendIds: string[] = [];
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(async () => ({})),
+      recordAiClientCapabilitySnapshot: vi.fn(async () => ({})),
+      publishAiClientUpstreamOperation: vi.fn(async (backendId: string) => {
+        publishedBackendIds.push(backendId);
+        return {};
+      })
+    } as unknown as MemoryApiClient;
+    try {
+      for (const selected of ["backend-a", "backend-b", null]) {
+        setActive(selected);
+        await publishAiClientCapabilities(apiClient, {
+          KOED_HOME: root,
+          KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+        });
+      }
+      fs.writeFileSync(upstreamRegistryPath, "{invalid");
+      const future = new Date(Date.now() + 3_000);
+      fs.utimesSync(upstreamRegistryPath, future, future);
+      await publishAiClientCapabilities(apiClient, {
+        KOED_HOME: root,
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+      });
+    } finally {
+      if (original) aiClientDriverRegistry.set("codex", original);
+      else aiClientDriverRegistry.delete("codex");
+    }
+    expect(publishedBackendIds).toEqual([
+      "backend-a",
+      "backend-a",
+      "backend-b",
+      "backend-b"
+    ]);
   });
 
   it.each([false, true])(

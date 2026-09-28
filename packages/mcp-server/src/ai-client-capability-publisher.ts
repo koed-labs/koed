@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 
 import {
+  readLocalEdgeUpstreamRegistry,
   sanitizeAiClientDiagnostics,
+  readLocalEdgeClientCredentialAuthorization,
   type AiClientCapabilityDescriptor
 } from "@koed/shared";
 import {
@@ -16,6 +19,7 @@ import {
   type LocalAiClientInstanceConfiguration
 } from "./ai-client-instance-registry.js";
 import type { MemoryApiClient } from "./index.js";
+import { resolveKoedHome } from "./local-runtime-protocol.js";
 
 const positiveInteger = (
   value: string | undefined,
@@ -27,12 +31,14 @@ const positiveInteger = (
 
 const DEFAULT_REFRESH_MS = 5 * 60_000;
 const DEFAULT_SNAPSHOT_TTL_MS = 10 * 60_000;
+const HOSTED_CAPABILITY_OPERATION_FAMILY = "ai_client_capability_publish";
 
 export interface AiClientCapabilityPublication {
   instanceId: string;
   driverId: string;
   published: boolean;
   error: string | null;
+  hostedPublication: "not_configured" | "published" | "failed";
 }
 
 export interface AiClientCapabilityPublisherHandle {
@@ -88,9 +94,10 @@ const publishDiscovery = async (
   apiClient: MemoryApiClient,
   instance: LocalAiClientInstanceConfiguration,
   discovery: AiClientDriverDiscovery,
+  environment: NodeJS.ProcessEnv,
   now: Date,
   ttlMs: number
-): Promise<void> => {
+): Promise<AiClientCapabilityPublication["hostedPublication"]> => {
   const sanitizedDiagnostics = sanitizeAiClientDiagnostics(
     discovery.diagnostics
   );
@@ -115,7 +122,17 @@ const publishDiscovery = async (
     client_version: discovery.clientVersion,
     authentication_state: discovery.authenticationState,
     health_state: discovery.healthState,
-    models: discovery.models,
+    models: discovery.models.map((model) => ({
+      id: model.id,
+      ...(model.displayName ? { displayName: model.displayName } : {}),
+      ...(model.provider ? { provider: model.provider } : {}),
+      ...(model.model ? { model: model.model } : {}),
+      ...(model.fullId ? { fullId: model.fullId } : {}),
+      provenance: model.provenance,
+      ...(model.supportedReasoningEfforts
+        ? { supportedReasoningEfforts: model.supportedReasoningEfforts }
+        : {})
+    })),
     capabilities: {
       descriptors: capabilitiesRecord(sanitizedCapabilities),
       diagnostics: sanitizedDiagnostics
@@ -123,6 +140,116 @@ const publishDiscovery = async (
     observed_at: now.toISOString(),
     expires_at: new Date(now.getTime() + ttlMs).toISOString()
   });
+
+  const koedHome = resolveKoedHome(environment);
+  let upstreamBackendId: string | null = null;
+  try {
+    const registry = readLocalEdgeUpstreamRegistry(
+      resolve(koedHome, "config", "upstream-backends.json")
+    );
+    const active = registry.backends.find(
+      (backend) => backend.id === registry.activeBackendId
+    );
+    if (active?.routePolicy.managedExecution === "enabled") {
+      upstreamBackendId = active.id;
+    }
+  } catch {
+    // A broken or unreadable registry must stop hosted publication. It must
+    // never reuse an earlier backend selection.
+    return "not_configured";
+  }
+  let localEdgeCredential: ReturnType<
+    typeof readLocalEdgeClientCredentialAuthorization
+  > = null;
+  try {
+    localEdgeCredential = upstreamBackendId
+      ? readLocalEdgeClientCredentialAuthorization(koedHome, upstreamBackendId)
+      : null;
+  } catch {
+    return "not_configured";
+  }
+  if (
+    !upstreamBackendId ||
+    !localEdgeCredential?.operationFamilies.includes(
+      HOSTED_CAPABILITY_OPERATION_FAMILY
+    )
+  ) {
+    return "not_configured";
+  }
+
+  // Do not send local paths, configuration identities, or machine labels to the
+  // hosted registry. The hosted identity is namespaced by the authenticated
+  // device credential at the API boundary. This digest changes with local
+  // installation/configuration changes without exposing either source hash.
+  const hostedIdentityHash = createHash("sha256")
+    .update(`hosted-ai-client-v1\0${identityHash}`)
+    .digest("hex");
+  const safeHostedInstance = {
+    driver_id: instance.driverId,
+    display_name: instance.driverId,
+    config_identity_hash: hostedIdentityHash
+  };
+  const safeHostedDescriptors = discovery.capabilities.map((descriptor) => ({
+    id: descriptor.id,
+    support: descriptor.support,
+    readiness: descriptor.readiness,
+    diagnostics: sanitizeAiClientDiagnostics(descriptor.diagnostics),
+    ...(descriptor.recoveryAction
+      ? {
+          recoveryAction: {
+            id: descriptor.recoveryAction.id,
+            label: descriptor.recoveryAction.label,
+            available: descriptor.recoveryAction.available
+          }
+        }
+      : {})
+  }));
+  const safeHostedSnapshot = {
+    installation_identity_hash: hostedIdentityHash,
+    client_version: discovery.clientVersion,
+    authentication_state: discovery.authenticationState,
+    health_state: discovery.healthState,
+    models: discovery.models.map((model) => ({
+      id: model.id,
+      ...(model.displayName ? { displayName: model.displayName } : {}),
+      ...(model.provider ? { provider: model.provider } : {}),
+      ...(model.model ? { model: model.model } : {}),
+      ...(model.fullId ? { fullId: model.fullId } : {}),
+      provenance: model.provenance,
+      ...(model.supportedReasoningEfforts
+        ? { supportedReasoningEfforts: model.supportedReasoningEfforts }
+        : {})
+    })),
+    capabilities: {
+      descriptors: capabilitiesRecord(safeHostedDescriptors),
+      diagnostics: sanitizedDiagnostics
+    },
+    observed_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + ttlMs).toISOString()
+  };
+  try {
+    await apiClient.publishAiClientUpstreamOperation(
+      upstreamBackendId,
+      localEdgeCredential.authorization,
+      {
+        method: "PUT",
+        path: `/v1/memory/ai-client-instances/${encodeURIComponent(instance.instanceId)}`,
+        body: safeHostedInstance
+      }
+    );
+    await apiClient.publishAiClientUpstreamOperation(
+      upstreamBackendId,
+      localEdgeCredential.authorization,
+      {
+        method: "POST",
+        path: `/v1/memory/ai-client-instances/${encodeURIComponent(instance.instanceId)}/capability-snapshots`,
+        body: safeHostedSnapshot
+      }
+    );
+    return "published";
+  } catch {
+    return "failed";
+  }
 };
 
 const discoverInstance = async (
@@ -191,19 +318,28 @@ export const publishAiClientCapabilities = async (
           `AI Client instance "${instance.instanceId}" changed during capability discovery`
         );
       }
-      await publishDiscovery(apiClient, instance, discovery, now, ttlMs);
+      const hostedPublication = await publishDiscovery(
+        apiClient,
+        instance,
+        discovery,
+        environment,
+        now,
+        ttlMs
+      );
       return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,
         published: true,
-        error: instance.configurationError ?? null
+        error: instance.configurationError ?? null,
+        hostedPublication
       };
     } catch (error) {
       return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,
         published: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        hostedPublication: "not_configured"
       };
     }
   };

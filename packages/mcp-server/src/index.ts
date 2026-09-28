@@ -1029,6 +1029,30 @@ export class MemoryApiClient {
     );
   }
 
+  async publishAiClientUpstreamOperation(
+    upstreamBackendId: string,
+    authorization: string,
+    operation: {
+      method: "PUT" | "POST";
+      path: string;
+      body: Record<string, unknown>;
+    }
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/upstream-operations",
+      {
+        upstream_backend_id: upstreamBackendId,
+        operation_family: "ai_client_capability_publish",
+        requested_mode: "live_upstream_proxy",
+        method: operation.method,
+        path: operation.path,
+        body: operation.body
+      },
+      { authorization }
+    );
+  }
+
   async deleteLocalMemoryAgentSetting(
     flowKey: LocalMemoryAgentFlowKey
   ): Promise<{ flow_key: LocalMemoryAgentFlowKey; reset: boolean }> {

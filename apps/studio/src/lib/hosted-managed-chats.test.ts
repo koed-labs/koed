@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -724,7 +724,8 @@ test("keeps last known launch choices and eligible devices without inferring onl
       ],
       instances: [
         {
-          instanceId: "codex.default",
+          instanceId: "runner.opaque-a",
+          runnerDeviceId: "device-a",
           driverId: "codex",
           displayName: "Codex",
           ready: false,
@@ -753,6 +754,46 @@ test("keeps last known launch choices and eligible devices without inferring onl
   assert.deepEqual(options.projects, [
     { id: "project-a", name: "Real Project" }
   ]);
+});
+
+test("keeps model choices on their enrolled runner and rejects unbound instances", async () => {
+  const instance = {
+    driverId: "codex",
+    ready: true,
+    models: [{ id: "model" }],
+    capabilities: {
+      permissionModes: [{ mode: "supervised", support: "supported" }]
+    }
+  };
+  const options = await loadHostedLaunchOptions(undefined, async () =>
+    json({
+      runners: ["a", "b"].map((deviceId) => ({
+        kind: "local_device",
+        deviceId,
+        displayName: deviceId
+      })),
+      instances: [
+        { ...instance, instanceId: "runner.a", runnerDeviceId: "a" },
+        { ...instance, instanceId: "runner.b", runnerDeviceId: "b" },
+        { ...instance, instanceId: "codex.default" },
+        { ...instance, instanceId: "runner.other", runnerDeviceId: "other" }
+      ]
+    })
+  );
+  assert.equal(options.instances.length, 2);
+  assert.deepEqual(
+    hostedLaunchInstancesForDevice(options, "a").map(
+      (value) => value.instanceId
+    ),
+    ["runner.a"]
+  );
+  assert.deepEqual(
+    hostedLaunchInstancesForDevice(options, "b").map(
+      (value) => value.instanceId
+    ),
+    ["runner.b"]
+  );
+  assert.deepEqual(hostedLaunchInstancesForDevice(options, "other"), []);
 });
 
 test("starts a selected-device Conversation and cancels only by execution generation", async () => {

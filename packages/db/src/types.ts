@@ -1718,6 +1718,9 @@ export interface LocalMemoryAgentSettingRecord {
 export interface AiClientInstanceRecord {
   ownerUserId: string;
   instanceId: string;
+  sourceDeviceCredentialId: string | null;
+  sourceDeviceLabel: string | null;
+  hostedInstanceId: string;
   driverId: string;
   displayName: string;
   configIdentityHash: string | null;
@@ -1730,6 +1733,8 @@ export interface AiClientCapabilitySnapshotRecord {
   id: string;
   ownerUserId: string;
   instanceId: string;
+  sourceDeviceCredentialId: string | null;
+  hostedInstanceId: string;
   installationIdentityHash: string;
   clientVersion: string | null;
   authenticationState: "authenticated" | "unauthenticated" | "unknown";
@@ -2450,6 +2455,8 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       instanceId: string;
+      sourceDeviceCredentialId?: string | null;
+      sourceDeviceLabel?: string | null;
       driverId: string;
       displayName: string;
       configIdentityHash?: string | null;
@@ -2460,6 +2467,7 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       instanceId: string;
+      sourceDeviceCredentialId?: string | null;
       installationIdentityHash: string;
       clientVersion?: string | null;
       authenticationState: "authenticated" | "unauthenticated" | "unknown";

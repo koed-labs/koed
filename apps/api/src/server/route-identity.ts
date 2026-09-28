@@ -1137,14 +1137,14 @@ export const routeIdentityContracts = [
   route(
     "PUT",
     "/v1/memory/ai-client-instances/{instanceId}",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "local_synthesis",
     "Register or update a local AI Client instance."
   ),
   route(
     "POST",
     "/v1/memory/ai-client-instances/{instanceId}/capability-snapshots",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "local_synthesis",
     "Record a local AI Client capability snapshot."
   ),

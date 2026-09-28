@@ -63,6 +63,7 @@ export const localEdgeOperationFamilySchema = z.enum([
   "managed_execution",
   "managed_file_read",
   "managed_terminal",
+  "ai_client_capability_publish",
   "admin"
 ]);
 

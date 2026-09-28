@@ -64,6 +64,18 @@ passes the same credential to the Worker and Local AI Runtime. This includes
 credentials already stored under `KOED_HOME`, not only process-environment or
 newly provisioned credentials.
 
+An enrolled outbound runner may publish its safe AI Client capability read
+model to hosted authority when its upstream `managedExecution` policy grants
+`ai_client_capability_publish`. The Local AI Runtime sends only the public
+driver identity, capability and model metadata, health state, and hashes; it
+does not send local provider configuration, environment values, or filesystem
+paths. The authority binds each publication to the authenticated device
+credential and owner. Hosted instance IDs are opaque per-device IDs, while the
+stored native instance ID remains the runner-local ID used to resolve execution.
+The device label comes from the enrolled credential. Revoking or replacing
+that credential makes its old hosted publications ineligible until the new
+credential publishes its own instance and snapshot.
+
 Managed Codex and Claude Code launches register Koed's packaged stdio MCP Server
 explicitly for the selected `KOED_HOME`; recall does not depend on global AI
 Client configuration. Pi loads the Koed extension explicitly. These connections

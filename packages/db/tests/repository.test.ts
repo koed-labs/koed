@@ -26367,6 +26367,116 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("keeps identical local AI Client IDs separately bound to each publishing device", async () => {
+    const user = await repo.createUser({
+      email: `device-ai-client-${randomUUID()}@example.com`
+    });
+    const actor = { userId: user.id };
+    const enrollDevice = async (label: string) => {
+      const challengeHash = `ai-client-device-${randomUUID()}`;
+      const challenge = await repo.createDeviceEnrollmentChallenge({
+        challengeHash,
+        upstreamBackendId: "team-vps",
+        deviceInstanceId: `instance-${randomUUID()}`,
+        deviceLabel: label,
+        requestedOperationFamilies: ["ai_client_capability_publish"],
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+      const credential = await repo.redeemDeviceEnrollmentChallenge(actor, {
+        challengeHash,
+        credentialKeyId: `device-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: "e".repeat(64)
+      });
+      expect(credential).toBeTruthy();
+      expect(credential!.enrollmentChallengeId).toBe(challenge.id);
+      return credential!;
+    };
+    const credentialA = await enrollDevice("Runner A");
+    const credentialB = await enrollDevice("Runner B");
+    const deviceA = credentialA.id;
+    const deviceB = credentialB.id;
+    const first = await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.default",
+      sourceDeviceCredentialId: deviceA,
+      sourceDeviceLabel: credentialA.deviceLabel,
+      driverId: "codex",
+      displayName: "codex",
+      configIdentityHash: "a".repeat(64)
+    });
+    const second = await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.default",
+      sourceDeviceCredentialId: deviceB,
+      sourceDeviceLabel: credentialB.deviceLabel,
+      driverId: "codex",
+      displayName: "codex",
+      configIdentityHash: "b".repeat(64)
+    });
+    const now = new Date();
+    const snapshot = (sourceDeviceCredentialId: string, hash: string) =>
+      repo.recordAiClientCapabilitySnapshot(actor, {
+        instanceId: "codex.default",
+        sourceDeviceCredentialId,
+        installationIdentityHash: hash.repeat(64),
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [{ id: hash, provenance: "reported" }],
+        capabilities: { descriptors: {} },
+        observedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString()
+      });
+    const firstSnapshot = await snapshot(deviceA, "a");
+    const secondSnapshot = await snapshot(deviceB, "b");
+    const instances = await repo.listAiClientInstances(actor);
+    const snapshots = await repo.listCurrentAiClientCapabilitySnapshots(actor);
+
+    expect(first.hostedInstanceId).not.toBe(second.hostedInstanceId);
+    expect(first).toMatchObject({
+      instanceId: "codex.default",
+      sourceDeviceCredentialId: deviceA,
+      sourceDeviceLabel: "Runner A",
+      configIdentityHash: "a".repeat(64)
+    });
+    expect(second).toMatchObject({
+      instanceId: "codex.default",
+      sourceDeviceCredentialId: deviceB,
+      sourceDeviceLabel: "Runner B",
+      configIdentityHash: "b".repeat(64)
+    });
+    expect(
+      instances.filter((item) => item.instanceId === "codex.default")
+    ).toHaveLength(2);
+    expect(snapshots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceDeviceCredentialId: deviceA,
+          installationIdentityHash: "a".repeat(64)
+        }),
+        expect.objectContaining({
+          sourceDeviceCredentialId: deviceB,
+          installationIdentityHash: "b".repeat(64)
+        })
+      ])
+    );
+    const otherUser = await repo.createUser({
+      email: `device-ai-client-other-${randomUUID()}@example.com`
+    });
+    expect(await repo.listAiClientInstances({ userId: otherUser.id })).toEqual(
+      []
+    );
+    await repo.revokeDeviceCredential(actor, deviceA);
+    expect(
+      (await repo.listAiClientInstances(actor)).filter(
+        (item) => item.instanceId === "codex.default"
+      )
+    ).toEqual([expect.objectContaining({ sourceDeviceCredentialId: deviceB })]);
+    expect(
+      (await repo.listCurrentAiClientCapabilitySnapshots(actor)).filter(
+        (item) => item.instanceId === "codex.default"
+      )
+    ).toEqual([expect.objectContaining({ sourceDeviceCredentialId: deviceB })]);
+  });
+
   it("refreshes identical capability heartbeats without stale freshness regression", async () => {
     const user = await repo.createUser({
       email: `capability-heartbeat-${randomUUID()}@example.com`

@@ -815,4 +815,42 @@ describe("local edge upstream routing", () => {
       )
     ).toThrow("not allowed for operation family");
   });
+
+  it("confines AI Client capability publishing to instance and snapshot writes", () => {
+    const allowed = [
+      ["PUT", "/v1/memory/ai-client-instances/codex.default"],
+      [
+        "POST",
+        "/v1/memory/ai-client-instances/codex.default/capability-snapshots"
+      ]
+    ] as const;
+    for (const [method, path] of allowed) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "ai_client_capability_publish",
+          method,
+          path
+        )
+      ).not.toThrow();
+    }
+    const denied = [
+      ["GET", "/v1/memory/ai-client-instances"],
+      ["DELETE", "/v1/memory/ai-client-instances/codex.default"],
+      ["PUT", "/v1/memory/ai-client-instances/codex.default?owner=other"],
+      [
+        "POST",
+        "/v1/memory/ai-client-instances/codex.default/capability-snapshots/other"
+      ],
+      ["POST", "/v1/memory/ai-client-instances/../teams"]
+    ] as const;
+    for (const [method, path] of denied) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "ai_client_capability_publish",
+          method,
+          path
+        )
+      ).toThrow("not allowed for operation family");
+    }
+  });
 });

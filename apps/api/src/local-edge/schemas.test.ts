@@ -24,6 +24,9 @@ describe("local edge enrollment schemas", () => {
     expect(
       localEdgeOperationFamilySchema.parse("personal_collaboration_write")
     ).toBe("personal_collaboration_write");
+    expect(
+      localEdgeOperationFamilySchema.parse("ai_client_capability_publish")
+    ).toBe("ai_client_capability_publish");
   });
 
   it("requires a non-empty operation-family allowlist", () => {
