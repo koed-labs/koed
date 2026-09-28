@@ -59,6 +59,7 @@ import {
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { DesktopApi } from "../../../types.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { useSlashCommandDiscovery } from "./use-slash-command-discovery.js";
 
 import {
   NativeConversationSurface,
@@ -1595,6 +1596,7 @@ function StoreConversation({
         <ManagedConversationComposer
           api={managedConversations}
           authorizeTransfer={authorizeManagedConversationTransfer}
+          project={project}
           conversation={
             managedDraft?.conversation ?? {
               executionId: null,
@@ -2003,6 +2005,7 @@ function ManagedRuntimeItemView({
 function ManagedConversationComposer({
   api,
   authorizeTransfer,
+  project,
   conversation,
   draftScopeId,
   initialSelection,
@@ -2023,6 +2026,7 @@ function ManagedConversationComposer({
 }: {
   api: ManagedConversationDesktopApi;
   authorizeTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
+  project: PersonalDesktopProject;
   conversation: ManagedConversationIdentity;
   draftScopeId: string | null;
   initialSelection?: Parameters<ManagedConversationDesktopApi["start"]>[0];
@@ -2126,6 +2130,28 @@ function ManagedConversationComposer({
   const [runtime, setRuntime] =
     useState<ManagedConversationRuntimeState | null>(null);
   const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
+
+  // Slash command discovery
+  const resolvedProvider =
+    usage?.provider ?? resolvedConversation.executionOwner?.driverId ?? null;
+  const resolvedInstanceId =
+    resolvedConversation.executionOwner?.instanceId ??
+    initialSelection?.aiClientInstanceId ??
+    null;
+  const resolvedProjectId = project?.id ?? null;
+  const resolvedCwd = project?.path ?? null;
+
+  const {
+    commands: slashCommands,
+    loading: slashLoading,
+    error: slashError
+  } = useSlashCommandDiscovery(
+    api,
+    resolvedProvider,
+    resolvedInstanceId,
+    resolvedProjectId,
+    resolvedCwd
+  );
   const [state, setState] = useState<ComposerState>({
     status: "attaching",
     message: "Confirming local AI Client execution…"
@@ -3062,6 +3088,12 @@ function ManagedConversationComposer({
           }
         }}
         value={draft}
+        autocompleteOptions={slashCommands}
+        autocompleteLoading={slashLoading}
+        autocompleteError={slashError}
+        onAutocompleteSelect={() => {
+          // Command already selected by the input handler, no action needed.
+        }}
       />
       {settingsError && (
         <p className="personal-managed-error" role="alert">
