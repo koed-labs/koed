@@ -64,6 +64,7 @@ const update = (
     executionGeneration: 1,
     commandKind: "prompt",
     state: "dispatching",
+    canCancelBeforeClaim: false,
     lastErrorCode: null,
     updatedAt: now
   },

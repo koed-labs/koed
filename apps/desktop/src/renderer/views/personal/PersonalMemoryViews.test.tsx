@@ -1537,6 +1537,7 @@ describe("PersonalMemoryWorkspace", () => {
         executionGeneration: 1,
         commandKind: "prompt",
         state,
+        canCancelBeforeClaim: false,
         clientUserMessageId: `user-${sequence}`,
         lastErrorCode: null,
         updatedAt: threadLatestAt
@@ -1713,6 +1714,7 @@ describe("PersonalMemoryWorkspace", () => {
         executionGeneration: 1,
         commandKind: "prompt",
         state: "indeterminate",
+        canCancelBeforeClaim: false,
         clientUserMessageId: input.clientUserMessageId,
         lastErrorCode: "ManagedConversationAuthenticationError",
         updatedAt: threadLatestAt
@@ -1834,6 +1836,7 @@ describe("PersonalMemoryWorkspace", () => {
               executionGeneration: 1,
               commandKind: "prompt",
               state: "dispatching",
+              canCancelBeforeClaim: false,
               lastErrorCode: null,
               updatedAt: threadLatestAt
             },
