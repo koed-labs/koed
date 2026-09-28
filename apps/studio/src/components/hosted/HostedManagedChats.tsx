@@ -39,7 +39,10 @@ import {
   type HostedManagedExecution,
   type HostedProjectMove
 } from "@/lib/hosted-managed-chats";
-import type { RuntimeSnapshot } from "@/lib/managed-agent-chat";
+import {
+  canCancelManagedConversationPrompt,
+  type RuntimeSnapshot
+} from "@/lib/managed-agent-chat";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
 import {
   createDeviceManagedChatRecoveryStore,
@@ -982,7 +985,7 @@ export function HostedManagedChats({
     pendingRecoveryForSelection === null;
   const canStop = selectedRuntime?.execution.state === "running";
   const canCancelQueuedPrompt =
-    latestCommand?.commandKind === "prompt" && latestCommand.state === "queued";
+    canCancelManagedConversationPrompt(latestCommand);
   const pendingStart =
     latestCommand?.commandKind === "start" &&
     ["blocked", "queued"].includes(latestCommand.state);
@@ -1535,6 +1538,7 @@ export function HostedManagedChats({
           id: started.commandId,
           state: started.commandState,
           commandKind: "start",
+          canCancelBeforeClaim: false,
           lastErrorCode: null
         }
       });

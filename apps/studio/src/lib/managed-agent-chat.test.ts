@@ -196,18 +196,52 @@ describe("managed agent chat boundary", () => {
 });
 
 describe("managed conversation controls", () => {
-  it("offers pending cancellation before claim and Stop only after claim", () => {
-    const command = (state: string) => ({
+  it("preserves only a valid server cancellation grant and defaults older or malformed DTOs to false", () => {
+    const parseGrant = (value: unknown) =>
+      parseRuntime({
+        execution,
+        latestCommand: {
+          id: "prompt-1",
+          commandKind: "prompt",
+          state: "queued",
+          canCancelBeforeClaim: value
+        }
+      }).latestCommand?.canCancelBeforeClaim;
+    expect(parseGrant(true)).toBe(true);
+    expect(parseGrant(false)).toBe(false);
+    expect(parseGrant("true")).toBe(false);
+    expect(parseGrant({})).toBe(false);
+    expect(
+      parseRuntime({
+        execution,
+        latestCommand: { id: "prompt-1", commandKind: "prompt", state: "queued" }
+      }).latestCommand?.canCancelBeforeClaim
+    ).toBe(false);
+  });
+
+  it("offers cancellation only for a server-authorized queued prompt and Stop only after claim", () => {
+    const command = (state: string, canCancelBeforeClaim?: boolean) => ({
       id: "11111111-1111-4111-8111-111111111111",
       state,
       commandKind: "prompt",
+      ...(canCancelBeforeClaim === undefined ? {} : { canCancelBeforeClaim }),
       lastErrorCode: null
     });
-    expect(managedConversationControls(command("queued"))).toEqual({
+    expect(managedConversationControls(command("queued", true))).toEqual({
       canCancelPendingPrompt: true,
       canInterrupt: false
     });
-    expect(managedConversationControls(command("dispatching"))).toEqual({
+    for (const queued of [command("queued", false), command("queued")]) {
+      expect(managedConversationControls(queued)).toEqual({
+        canCancelPendingPrompt: false,
+        canInterrupt: false
+      });
+    }
+    expect(managedConversationControls(command("running", true))).toEqual({
+      canCancelPendingPrompt: false,
+      canInterrupt: true
+    });
+    expect(managedConversationControls(command("dispatching", true))).toEqual({
       canCancelPendingPrompt: false,
       canInterrupt: true
     });

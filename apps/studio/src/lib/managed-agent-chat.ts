@@ -35,6 +35,7 @@ export type RuntimeSnapshot = {
     id: string;
     state: string;
     commandKind: string;
+    canCancelBeforeClaim?: boolean;
     clientUserMessageId?: string | null;
     lastErrorCode: string | null;
   } | null;
@@ -114,13 +115,21 @@ export function managedMessagesWithTransientOutput(
 }
 
 /** Keep queued cancellation separate from interrupting a runner-claimed turn. */
+export function canCancelManagedConversationPrompt(
+  command: RuntimeSnapshot["latestCommand"] | undefined
+): boolean {
+  return command?.commandKind === "prompt" &&
+    command.state === "queued" &&
+    command.canCancelBeforeClaim === true;
+}
+
 export function managedConversationControls(
   command: RuntimeSnapshot["latestCommand"]
 ): { canCancelPendingPrompt: boolean; canInterrupt: boolean } {
   if (command?.commandKind !== "prompt")
     return { canCancelPendingPrompt: false, canInterrupt: false };
   return {
-    canCancelPendingPrompt: ["queued", "pending"].includes(command.state),
+    canCancelPendingPrompt: canCancelManagedConversationPrompt(command),
     canInterrupt: ["dispatching", "running"].includes(command.state)
   };
 }
@@ -355,6 +364,7 @@ export function parseRuntime(
           id: command.id,
           state: command.state,
           commandKind: command.commandKind,
+          canCancelBeforeClaim: command.canCancelBeforeClaim === true,
           ...(typeof command.clientUserMessageId === "string"
             ? { clientUserMessageId: command.clientUserMessageId }
             : {}),
