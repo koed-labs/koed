@@ -50,6 +50,117 @@ describe("managed Conversation recovery lookup", () => {
   });
 });
 
+describe("managed Conversation prompt cancellation", () => {
+  const ownerUserId = "owner-user-id";
+  const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
+  const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
+  const executionGeneration = 4;
+
+  const repositoryFor = (initial: {
+    state: string;
+    attempts: number;
+    result?: Record<string, unknown>;
+    claimWinsDuringCancel?: boolean;
+  }) => {
+    const command = {
+      id: commandId,
+      state: initial.state,
+      attempts: initial.attempts,
+      result: initial.result
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("update managed_conversation_commands")) {
+        if (initial.claimWinsDuringCancel) {
+          command.state = "dispatching";
+          command.attempts += 1;
+        }
+        if (command.state === "queued" && command.attempts === 0) {
+          command.state = "canceled";
+          return { rows: [{ id: commandId, state: "canceled" }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes("select id, state") && sql.includes("managed_conversation_commands")) {
+        return { rows: [{ id: command.id, state: command.state }] };
+      }
+      return { rows: [] };
+    });
+    const repository = createManagedConversationRepository(
+      {
+        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+      } as unknown as pg.Pool,
+      {}
+    );
+    return { repository, query, command };
+  };
+
+  it("does not cancel a queued prompt already claimed for checkpoint recovery", async () => {
+    const checkpoint = {
+      phase: "checkpoint_pending",
+      providerTurnId: "provider-turn-id",
+      sourceGenerationId: "source-generation-id"
+    };
+    const { repository, query, command } = repositoryFor({
+      state: "queued",
+      attempts: 1,
+      result: checkpoint
+    });
+
+    await expect(
+      repository.cancelManagedConversationPrompt(
+        { userId: ownerUserId },
+        { executionId, commandId, executionGeneration }
+      )
+    ).resolves.toEqual({ id: commandId, state: "queued" });
+
+    const cancelSql = query.mock.calls.find(([sql]) =>
+      sql.includes("update managed_conversation_commands")
+    )?.[0];
+    expect(cancelSql).toContain("and attempts = 0");
+    expect(command).toMatchObject({ state: "queued", attempts: 1, result: checkpoint });
+    expect(
+      query.mock.calls.some(([sql]) =>
+        sql.includes("update personal_agent_execution_jobs")
+      )
+    ).toBe(false);
+  });
+
+  it("cancels a queued prompt that has never been claimed", async () => {
+    const { repository, query, command } = repositoryFor({
+      state: "queued",
+      attempts: 0
+    });
+
+    await expect(
+      repository.cancelManagedConversationPrompt(
+        { userId: ownerUserId },
+        { executionId, commandId, executionGeneration }
+      )
+    ).resolves.toEqual({ id: commandId, state: "canceled" });
+
+    expect(command).toMatchObject({ state: "canceled", attempts: 0 });
+    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(true);
+  });
+
+  it("returns the persisted dispatching state when a runner claim wins the race", async () => {
+    const { repository, query, command } = repositoryFor({
+      state: "queued",
+      attempts: 0,
+      claimWinsDuringCancel: true
+    });
+
+    await expect(
+      repository.cancelManagedConversationPrompt(
+        { userId: ownerUserId },
+        { executionId, commandId, executionGeneration }
+      )
+    ).resolves.toEqual({ id: commandId, state: "dispatching" });
+
+    expect(command).toMatchObject({ state: "dispatching", attempts: 1 });
+    expect(query.mock.calls.some(([sql]) => sql.includes("pg_notify"))).toBe(false);
+  });
+});
+
 describe("managed Conversation start prompt dispatch", () => {
   const ownerUserId = "owner-user-id";
   const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";

@@ -2744,6 +2744,7 @@ export const createManagedConversationRepository = (
               and execution_generation = $4
               and command_kind = 'prompt'
               and state = 'queued'
+              and attempts = 0
           returning id, state`,
           [
             actor.userId,

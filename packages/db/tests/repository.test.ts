@@ -2633,6 +2633,88 @@ describeDb("memory repository visibility", () => {
       })
     ]);
 
+    const checkpointRecovery = await createQueuedPrompt("checkpoint-recovery");
+    const [checkpointClaim] = await repository.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(checkpointClaim).toMatchObject({
+      id: checkpointRecovery.commandId,
+      state: "dispatching",
+      attempts: 1
+    });
+    const sourceGenerationId = randomUUID();
+    await repository.bindManagedConversationSourceGeneration(actor, {
+      executionId: checkpointRecovery.executionId,
+      executionGeneration: 1,
+      runnerId,
+      sourceGenerationId
+    });
+    await expect(
+      repository.markManagedConversationCheckpointPending({
+        commandId: checkpointRecovery.commandId,
+        leaseToken: checkpointClaim!.leaseToken!,
+        sourceGenerationId,
+        providerTurnId: "provider-turn-checkpoint-recovery"
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repository.failManagedConversationCommand({
+        commandId: checkpointRecovery.commandId,
+        leaseToken: checkpointClaim!.leaseToken!,
+        state: "indeterminate",
+        errorCode: "ExecutionCheckpointRecoveryPendingError"
+      })
+    ).resolves.toMatchObject({
+      updated: true,
+      reconciled: false,
+      requeued: true
+    });
+    await expect(
+      repository.cancelManagedConversationPrompt(actor, {
+        ...checkpointRecovery,
+        executionGeneration: 1
+      })
+    ).resolves.toEqual({
+      id: checkpointRecovery.commandId,
+      state: "queued"
+    });
+    const preservedRetry = await repository.getManagedConversationCommand(
+      actor,
+      checkpointRecovery.commandId
+    );
+    expect(preservedRetry).toMatchObject({
+      state: "queued",
+      attempts: 1,
+      result: {
+        phase: "checkpoint_pending",
+        providerTurnId: "provider-turn-checkpoint-recovery",
+        sourceGenerationId
+      }
+    });
+    const [completedRetry] = await repository.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(completedRetry).toMatchObject({
+      id: checkpointRecovery.commandId,
+      state: "dispatching",
+      attempts: 2
+    });
+    await expect(
+      repository.completeManagedConversationCommand({
+        commandId: checkpointRecovery.commandId,
+        leaseToken: completedRetry!.leaseToken!,
+        result: { checkpointRecovered: true }
+      })
+    ).resolves.toBe(true);
+
     const claimWins = await createQueuedPrompt("claim-wins");
     const [claimed] = await repository.claimManagedConversationCommands({
       ownerUserId: owner.id,
