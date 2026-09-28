@@ -363,7 +363,15 @@
       "idx": 51,
       "version": "7",
       "when": 1790626204497,
-      "tag": "0051_dry_nightcrawler",
+      "tag": "0051_collaboration_thread_kinds",
+      "breakpoints": true,
+      "requiresCommittedBoundaryAfter": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790626204498,
+      "tag": "0052_dry_nightcrawler",
       "breakpoints": true
     }
   ]

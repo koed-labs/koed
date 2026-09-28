@@ -1,5 +1,3 @@
-ALTER TYPE "public"."collaboration_thread_kind" ADD VALUE 'team_channel' BEFORE 'workspace_channel';--> statement-breakpoint
-ALTER TYPE "public"."collaboration_thread_kind" ADD VALUE 'team_project_channel' BEFORE 'workspace_channel';--> statement-breakpoint
 CREATE TABLE "collaboration_team_shared_projects" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"team_id" uuid NOT NULL,

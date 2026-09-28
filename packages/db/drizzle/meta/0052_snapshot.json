@@ -1,6 +1,6 @@
 {
-  "id": "1def010d-fe3c-4a9b-9d93-d540d8536d9b",
-  "prevId": "664ce38a-c4ea-4d65-9b10-9198755280e2",
+  "id": "4ad5a652-ffe1-4101-9c3a-c28813968f59",
+  "prevId": "1def010d-fe3c-4a9b-9d93-d540d8536d9b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -189,6 +189,12 @@
           "notNull": true,
           "default": "'00000000-0000-0000-0000-000000000000'"
         },
+        "source_device_label": {
+          "name": "source_device_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "driver_id": {
           "name": "driver_id",
           "type": "text",
@@ -227,12 +233,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "source_device_label": {
-          "name": "source_device_label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -3805,6 +3805,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "team_project_id": {
+          "name": "team_project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "shared_logical_memory_id": {
           "name": "shared_logical_memory_id",
           "type": "uuid",
@@ -3991,6 +3997,88 @@
           "method": "btree",
           "with": {}
         },
+        "collaboration_threads_team_channel_active_unique": {
+          "name": "collaboration_threads_team_channel_active_unique",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "normalized_name_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"collaboration_threads\".\"kind\" = 'team_channel' and \"collaboration_threads\".\"system_key\" is null and \"collaboration_threads\".\"lifecycle\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "collaboration_threads_team_system_key_unique": {
+          "name": "collaboration_threads_team_system_key_unique",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "system_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"collaboration_threads\".\"kind\" = 'team_channel' and \"collaboration_threads\".\"system_key\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "collaboration_threads_team_project_channel_unique": {
+          "name": "collaboration_threads_team_project_channel_unique",
+          "columns": [
+            {
+              "expression": "team_project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"collaboration_threads\".\"kind\" = 'team_project_channel'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "collaboration_threads_team_project_name_active_unique": {
+          "name": "collaboration_threads_team_project_name_active_unique",
+          "columns": [
+            {
+              "expression": "team_project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "normalized_name_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"collaboration_threads\".\"kind\" = 'team_project_channel' and \"collaboration_threads\".\"lifecycle\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "collaboration_threads_workspace_channel_active_unique": {
           "name": "collaboration_threads_workspace_channel_active_unique",
           "columns": [
@@ -4155,6 +4243,15 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
+        "collaboration_threads_project_team_fk": {
+          "name": "collaboration_threads_project_team_fk",
+          "tableFrom": "collaboration_threads",
+          "tableTo": "collaboration_team_shared_projects",
+          "columnsFrom": ["team_project_id", "team_id"],
+          "columnsTo": ["id", "team_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "collaboration_threads_share_scope_fk": {
           "name": "collaboration_threads_share_scope_fk",
           "tableFrom": "collaboration_threads",
@@ -4212,11 +4309,11 @@
       "checkConstraints": {
         "collaboration_threads_shape_check": {
           "name": "collaboration_threads_shape_check",
-          "value": "(\n        \"collaboration_threads\".\"scope\" = 'personal'\n        and \"collaboration_threads\".\"kind\" = 'personal_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is not null\n        and \"collaboration_threads\".\"team_id\" is null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n        and length(\"collaboration_threads\".\"normalized_name_hash\") = 64\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'workspace_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is not null\n        and (\n          (\n            \"collaboration_threads\".\"system_key\" is null\n            and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n            and length(\"collaboration_threads\".\"normalized_name_hash\") = 64\n          )\n          or (\n            \"collaboration_threads\".\"system_key\" = 'workspace.general'\n            and (\n              (\"collaboration_threads\".\"name_marker\" is null and \"collaboration_threads\".\"normalized_name_hash\" is null)\n              or (\"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]' and length(\"collaboration_threads\".\"normalized_name_hash\") = 64)\n            )\n          )\n        )\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" in ('dm', 'group_dm')\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" is null\n        and \"collaboration_threads\".\"topic_marker\" is null\n        and \"collaboration_threads\".\"normalized_name_hash\" is null\n        and length(\"collaboration_threads\".\"participant_key\") = 64\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'shared_session_discussion'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is not null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" is null\n        and \"collaboration_threads\".\"topic_marker\" is null\n        and \"collaboration_threads\".\"normalized_name_hash\" is null\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is not null\n        and \"collaboration_threads\".\"share_grant_id\" is not null\n      )"
+          "value": "(\n        \"collaboration_threads\".\"scope\" = 'personal'\n        and \"collaboration_threads\".\"kind\" = 'personal_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is not null\n        and \"collaboration_threads\".\"team_id\" is null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"team_project_id\" is null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n        and length(\"collaboration_threads\".\"normalized_name_hash\") = 64\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'team_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"team_project_id\" is null\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n        and (\n          (\"collaboration_threads\".\"system_key\" is null\n            and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n            and length(\"collaboration_threads\".\"normalized_name_hash\") = 64)\n          or (\"collaboration_threads\".\"system_key\" = 'team.general'\n            and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n            and length(\"collaboration_threads\".\"normalized_name_hash\") = 64)\n        )\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'team_project_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"team_project_id\" is not null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n        and length(\"collaboration_threads\".\"normalized_name_hash\") = 64\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'workspace_channel'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is not null\n        and \"collaboration_threads\".\"team_project_id\" is null\n        and (\n          (\n            \"collaboration_threads\".\"system_key\" is null\n            and \"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]'\n            and length(\"collaboration_threads\".\"normalized_name_hash\") = 64\n          )\n          or (\n            \"collaboration_threads\".\"system_key\" = 'workspace.general'\n            and (\n              (\"collaboration_threads\".\"name_marker\" is null and \"collaboration_threads\".\"normalized_name_hash\" is null)\n              or (\"collaboration_threads\".\"name_marker\" = '[koed encrypted collaboration name]' and length(\"collaboration_threads\".\"normalized_name_hash\") = 64)\n            )\n          )\n        )\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" in ('dm', 'group_dm')\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is null\n        and \"collaboration_threads\".\"team_project_id\" is null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" is null\n        and \"collaboration_threads\".\"topic_marker\" is null\n        and \"collaboration_threads\".\"normalized_name_hash\" is null\n        and length(\"collaboration_threads\".\"participant_key\") = 64\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is null\n        and \"collaboration_threads\".\"share_grant_id\" is null\n      ) or (\n        \"collaboration_threads\".\"scope\" = 'team'\n        and \"collaboration_threads\".\"kind\" = 'shared_session_discussion'\n        and \"collaboration_threads\".\"personal_owner_user_id\" is null\n        and \"collaboration_threads\".\"team_id\" is not null\n        and \"collaboration_threads\".\"team_workspace_id\" is not null\n        and \"collaboration_threads\".\"team_project_id\" is null\n        and \"collaboration_threads\".\"system_key\" is null\n        and \"collaboration_threads\".\"name_marker\" is null\n        and \"collaboration_threads\".\"topic_marker\" is null\n        and \"collaboration_threads\".\"normalized_name_hash\" is null\n        and \"collaboration_threads\".\"participant_key\" is null\n        and \"collaboration_threads\".\"shared_logical_memory_id\" is not null\n        and \"collaboration_threads\".\"share_grant_id\" is not null\n      )"
         },
         "collaboration_threads_system_key_check": {
           "name": "collaboration_threads_system_key_check",
-          "value": "\"collaboration_threads\".\"system_key\" is null or \"collaboration_threads\".\"system_key\" = 'workspace.general'"
+          "value": "\"collaboration_threads\".\"system_key\" is null or \"collaboration_threads\".\"system_key\" in ('workspace.general', 'team.general')"
         },
         "collaboration_threads_version_check": {
           "name": "collaboration_threads_version_check",
@@ -25978,13 +26075,13 @@
           "name": "personal_agent_identity_versions_text_check",
           "value": "length(trim(\"personal_agent_identity_versions\".\"name\")) between 1 and 128\n        and length(\"personal_agent_identity_versions\".\"role\") <= 512\n        and (\"personal_agent_identity_versions\".\"avatar_reference\" is null or length(\"personal_agent_identity_versions\".\"avatar_reference\") <= 4096)\n        and \"personal_agent_identity_versions\".\"default_provider\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'\n        and length(trim(\"personal_agent_identity_versions\".\"default_model\")) between 1 and 512\n        and (\"personal_agent_identity_versions\".\"default_reasoning_effort\" is null or length(trim(\"personal_agent_identity_versions\".\"default_reasoning_effort\")) between 1 and 64)\n        and \"personal_agent_identity_versions\".\"soul_instructions\" = '[koed encrypted personal agent soul]'\n        and \"personal_agent_identity_versions\".\"instruction_source\" in ('generated', 'custom')\n        and \"personal_agent_identity_versions\".\"request_fingerprint\" ~ '^[0-9a-f]{64}$'"
         },
-        "personal_agent_identity_versions_number_check": {
-          "name": "personal_agent_identity_versions_number_check",
-          "value": "\"personal_agent_identity_versions\".\"version\" > 0"
-        },
         "personal_agent_identity_versions_template_source_pair_check": {
           "name": "personal_agent_identity_versions_template_source_pair_check",
           "value": "(\"personal_agent_identity_versions\".\"source_template_id\" is null) = (\"personal_agent_identity_versions\".\"source_template_version\" is null)"
+        },
+        "personal_agent_identity_versions_number_check": {
+          "name": "personal_agent_identity_versions_number_check",
+          "value": "\"personal_agent_identity_versions\".\"version\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -38859,6 +38956,116 @@
         "team_representation_policies_lifecycle_check": {
           "name": "team_representation_policies_lifecycle_check",
           "value": "\"team_representation_policies\".\"superseded_at\" is null or \"team_representation_policies\".\"superseded_at\" > \"team_representation_policies\".\"effective_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.collaboration_team_shared_projects": {
+      "name": "collaboration_team_shared_projects",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "creation_request_hash": {
+          "name": "creation_request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "collaboration_team_shared_projects_team_created_idx": {
+          "name": "collaboration_team_shared_projects_team_created_idx",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "collaboration_team_shared_projects_team_id_teams_id_fk": {
+          "name": "collaboration_team_shared_projects_team_id_teams_id_fk",
+          "tableFrom": "collaboration_team_shared_projects",
+          "tableTo": "teams",
+          "columnsFrom": ["team_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "collaboration_team_shared_projects_created_by_user_id_users_id_fk": {
+          "name": "collaboration_team_shared_projects_created_by_user_id_users_id_fk",
+          "tableFrom": "collaboration_team_shared_projects",
+          "tableTo": "users",
+          "columnsFrom": ["created_by_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "collaboration_team_shared_projects_id_team_unique": {
+          "name": "collaboration_team_shared_projects_id_team_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "team_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "collaboration_team_shared_projects_request_hash_check": {
+          "name": "collaboration_team_shared_projects_request_hash_check",
+          "value": "length(\"collaboration_team_shared_projects\".\"creation_request_hash\") = 64"
         }
       },
       "isRLSEnabled": false
