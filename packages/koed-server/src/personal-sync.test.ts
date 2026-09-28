@@ -18,13 +18,16 @@ import {
   canonicalizePdsJson,
   storeDesktopLocalCredential,
   createPdsAuthorizedKeyBundle,
+  comparePdsCanonicalIds,
   parseCanonicalPdsJson,
   pdsFinalizedStatementHash,
+  pdsPublicKeyCommitment,
   signPdsGroupDraft,
   signPdsGroupFinal,
   signPdsRecord,
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
+  validatePdsKeyBundle,
   verifyPdsEnrollmentProof
 } from "@koed/shared";
 import {
@@ -232,7 +235,7 @@ const pendingApprovalFixture = () => {
     members: [source, joining],
     recovery: {}
   };
-  return { bundle, group, request, runtime, statement };
+  return { bundle, group, request, runtime, statement, authority };
 };
 
 const pendingApprovalFetch =
@@ -1176,7 +1179,7 @@ describe("Personal Sync control client", () => {
     }
   });
 
-  it("requires signed transition payload from protected FDs; arbitrary device IDs cannot succeed", async () => {
+  it("requires the Authority runtime before a device ID can be revoked", async () => {
     const directory = root();
     const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
     try {
@@ -1193,7 +1196,9 @@ describe("Personal Sync control client", () => {
           pathsFor(directory),
           controlEnv(sessionFd)
         )
-      ).rejects.toThrow("--statement-fd is required.");
+      ).rejects.toThrow(
+        "PDS_RUNTIME_SECRET_REF is required for device removal."
+      );
     } finally {
       closeSync(sessionFd);
     }
@@ -1309,5 +1314,405 @@ describe("Personal Sync control client", () => {
     } finally {
       closeSync(requestFd);
     }
+  });
+
+  it("excludes revoked devices from an add-device key bundle", async () => {
+    const fixture = pendingApprovalFixture();
+    const directory = root();
+    const paths = resolveKoedServerPaths({ KOED_HOME: directory });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runtimeStatePath,
+      JSON.stringify({
+        runtimeMode: "local-personal",
+        apiUrl: "http://127.0.0.1:43300"
+      })
+    );
+    storeDesktopLocalCredential(directory, {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const source = fixture.group.members[0]!;
+    const revokedKeys = testKey("x25519");
+    const revokedDevice = {
+      device_id: "revoked-device",
+      signing_key_id: "revoked-signing-key",
+      signing_public_key: testKey("ed25519").publicKey,
+      kem_key_id: "revoked-kem-key",
+      kem_public_key: revokedKeys.publicKey,
+      operation_families: ["pds_relay"],
+      status: "revoked"
+    };
+    const recoveryKem = testKey("x25519");
+    const currentGroup = {
+      group_id: "pds_one",
+      state: "active",
+      current_epoch: "1",
+      pending_epoch: null,
+      authority_key_id: "authority-key",
+      authority_public_key: fixture.authority.publicKey,
+      head: {
+        sequence: "1",
+        hash: Buffer.alloc(32, 8).toString("base64url")
+      },
+      members: [source, revokedDevice],
+      recovery: {
+        kem_key_id: "recovery-kem",
+        kem_public_key: recoveryKem.publicKey
+      }
+    };
+    let authorizedBundle: Record<string, unknown> | undefined;
+    let finalizedStatement: Record<string, unknown> | undefined;
+    const fetch = async (url: string | URL, options?: RequestInit) => {
+      const parsed = new URL(String(url));
+      if (
+        parsed.pathname.endsWith("/groups/pds_one") &&
+        options?.method === "GET"
+      ) {
+        return response({ group: currentGroup });
+      }
+      if (parsed.pathname.endsWith("/transitions")) {
+        const body = JSON.parse(String(options?.body)) as {
+          statement: string;
+          key_bundle: string;
+        };
+        const statement = JSON.parse(body.statement) as Record<string, unknown>;
+        const bundle = JSON.parse(body.key_bundle) as Record<string, unknown>;
+        const statementDraft = statement.draft as Record<string, unknown>;
+        const statementBody = statementDraft.body as Record<string, unknown>;
+        const joining = fixture.request;
+        const expectedRecipients = [
+          {
+            recipientId: source.device_id,
+            recipientKind: "device" as const,
+            recipientKemKeyId: source.kem_key_id,
+            recipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
+              source.kem_public_key
+            )
+          },
+          {
+            recipientId: String(statementBody.deviceId),
+            recipientKind: "device" as const,
+            recipientKemKeyId: String(statementBody.deviceKemKeyId),
+            recipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
+              String(statementBody.deviceKemPublicKey)
+            )
+          },
+          {
+            recipientId: "recovery-kem",
+            recipientKind: "recovery" as const,
+            recipientKemKeyId: "recovery-kem",
+            recipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
+              recoveryKem.publicKey
+            )
+          }
+        ].sort((left, right) =>
+          comparePdsCanonicalIds(left.recipientId, right.recipientId)
+        );
+        expect(statementBody.deviceId).toBe(joining.device_id);
+        validatePdsKeyBundle(bundle, {
+          authorizationPublicKey: source.signing_public_key,
+          expectedRecipients
+        });
+        authorizedBundle = bundle;
+        finalizedStatement = {
+          ...statement,
+          authority: {
+            keyId: "authority-key",
+            signature: signPdsGroupFinal(
+              statement,
+              fixture.authority.privateKey
+            )
+          }
+        };
+        const finalizedBundle = {
+          ...bundle,
+          authority: {
+            keyId: "authority-key",
+            signature: signPdsTwoStageFinal(
+              "key-bundle",
+              bundle,
+              fixture.authority.privateKey
+            )
+          }
+        };
+        const keyBundleHash = statementBody.keyBundleHash;
+        return response({
+          group: {
+            ...currentGroup,
+            pending_epoch: "2",
+            pending_bundle_hash: keyBundleHash
+          },
+          key_bundle: finalizedBundle
+        });
+      }
+      if (parsed.pathname.endsWith("/epoch-acks"))
+        return response({ activated: false });
+      throw new Error(`Unexpected control request ${parsed.pathname}`);
+    };
+    const requestFd = fdFor(
+      directory,
+      "pairing-request",
+      JSON.stringify({ request: fixture.request })
+    );
+
+    try {
+      const result = await runPersonalSyncCommand(
+        [
+          "active-device",
+          "approve",
+          "--group-id",
+          "pds_one",
+          "--request-fd",
+          String(requestFd)
+        ],
+        paths,
+        {
+          KOED_HOME: directory,
+          PDS_CONTROL_URL: "http://127.0.0.1:43300",
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        },
+        {
+          desktopAuthorization: "Bearer desktop",
+          fetch: fetch as never,
+          getSecret: () => JSON.stringify(fixture.runtime)
+        }
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        state: "pending_joining_device",
+        groupId: "pds_one",
+        deviceId: fixture.request.device_id,
+        epoch: "2"
+      });
+      expect(
+        (authorizedBundle?.draft as Record<string, unknown>).recipientSnapshot
+      ).not.toContain(revokedDevice.device_id);
+      expect(finalizedStatement).toBeDefined();
+    } finally {
+      closeSync(requestFd);
+    }
+  });
+
+  it("revokes a paired device with a signed key rotation that excludes it", async () => {
+    const fixture = pendingApprovalFixture();
+    const directory = root();
+    const paths = resolveKoedServerPaths({ KOED_HOME: directory });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runtimeStatePath,
+      JSON.stringify({
+        runtimeMode: "local-personal",
+        apiUrl: "http://127.0.0.1:43300"
+      })
+    );
+    storeDesktopLocalCredential(directory, {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const groupId = Buffer.alloc(16, 11).toString("base64url");
+    const sourceDeviceId = Buffer.alloc(16, 12).toString("base64url");
+    const targetDeviceId = Buffer.alloc(16, 13).toString("base64url");
+    const sourceSigningKeyId = Buffer.alloc(16, 14).toString("base64url");
+    const sourceKemKeyId = Buffer.alloc(16, 15).toString("base64url");
+    fixture.runtime.groupId = groupId;
+    fixture.runtime.device.id = sourceDeviceId;
+    fixture.runtime.device.signingKeyId = sourceSigningKeyId;
+    fixture.runtime.device.kemKeyId = sourceKemKeyId;
+    fixture.group.members[0]!.device_id = sourceDeviceId;
+    fixture.group.members[0]!.signing_key_id = sourceSigningKeyId;
+    fixture.group.members[0]!.kem_key_id = sourceKemKeyId;
+    fixture.group.members[1]!.device_id = targetDeviceId;
+    const recoveryKem = testKey("x25519");
+    const currentGroup = {
+      group_id: groupId,
+      state: "active",
+      current_epoch: "1",
+      pending_epoch: null,
+      authority_key_id: "authority-key",
+      authority_public_key: fixture.authority.publicKey,
+      head: {
+        sequence: "1",
+        hash: Buffer.alloc(32, 8).toString("base64url")
+      },
+      members: fixture.group.members,
+      recovery: {
+        kem_key_id: "recovery-kem",
+        kem_public_key: recoveryKem.publicKey
+      }
+    };
+    let visibleGroup: Record<string, unknown> = currentGroup;
+    let finalizedBundle: Record<string, unknown> | undefined;
+    let finalizedStatement: Record<string, unknown> | undefined;
+    let transitionDraft: Record<string, unknown> | undefined;
+    let authorizedBundleDraft: Record<string, unknown> | undefined;
+    let storedRuntime: string | undefined;
+    let sourceCertificate: Record<string, unknown> | undefined;
+    const fetch = async (url: string | URL, options?: RequestInit) => {
+      expect(new Headers(options?.headers).get("authorization")).toMatch(
+        /^Koed-Desktop /
+      );
+      const parsed = new URL(String(url));
+      if (
+        parsed.pathname.endsWith(`/groups/${groupId}`) &&
+        options?.method === "GET"
+      ) {
+        return response({ group: visibleGroup });
+      }
+      if (parsed.pathname.endsWith("/transitions")) {
+        const body = JSON.parse(String(options?.body)) as {
+          statement: string;
+          key_bundle: string;
+        };
+        const statement = JSON.parse(body.statement) as Record<string, unknown>;
+        const keyBundle = JSON.parse(body.key_bundle) as Record<
+          string,
+          unknown
+        >;
+        const draft = statement.draft as Record<string, unknown>;
+        const keyBundleHash = (draft.body as Record<string, unknown>)
+          .keyBundleHash;
+        transitionDraft = draft;
+        authorizedBundleDraft = keyBundle.draft as Record<string, unknown>;
+        finalizedStatement = {
+          ...statement,
+          authority: {
+            keyId: "authority-key",
+            signature: signPdsGroupFinal(
+              statement,
+              fixture.authority.privateKey
+            )
+          }
+        };
+        finalizedBundle = {
+          ...keyBundle,
+          authority: {
+            keyId: "authority-key",
+            signature: signPdsTwoStageFinal(
+              "key-bundle",
+              keyBundle,
+              fixture.authority.privateKey
+            )
+          }
+        };
+        visibleGroup = {
+          ...currentGroup,
+          pending_epoch: "2",
+          pending_bundle_hash: keyBundleHash
+        };
+        return response({ group: visibleGroup, key_bundle: finalizedBundle });
+      }
+      if (parsed.pathname.endsWith("/epoch-acks")) {
+        const finalHead = pdsFinalizedStatementHash(finalizedStatement!);
+        const source = fixture.group.members[0]!;
+        const unsignedCertificate = {
+          protocol: "koed/pds/v1",
+          groupId,
+          deviceId: sourceDeviceId,
+          deviceSigningKeyId: source.signing_key_id,
+          deviceSigningPublicKey: source.signing_public_key,
+          deviceKemKeyId: source.kem_key_id,
+          deviceKemPublicKey: source.kem_public_key,
+          epoch: "2",
+          operationFamilies: ["pds_relay"],
+          statementSequence: "2",
+          statementHash: finalHead,
+          issuedAt: new Date(Date.now() - 1_000).toISOString(),
+          expiresAt: new Date(Date.now() + 60 * 60_000).toISOString()
+        };
+        sourceCertificate = {
+          ...unsignedCertificate,
+          authoritySignature: {
+            keyId: "authority-key",
+            signature: signPdsRecord(
+              "membership-certificate",
+              unsignedCertificate,
+              fixture.authority.privateKey
+            )
+          }
+        };
+        visibleGroup = {
+          ...currentGroup,
+          current_epoch: "2",
+          pending_epoch: null,
+          head: { sequence: "2", hash: finalHead },
+          members: [fixture.group.members[0]]
+        };
+        return response({ activated: true, group: visibleGroup });
+      }
+      if (parsed.pathname.endsWith("/key-bundles/2")) {
+        return response({ key_bundle: finalizedBundle });
+      }
+      if (parsed.pathname.endsWith(`/certificates/${sourceDeviceId}`)) {
+        return response({ certificate: sourceCertificate });
+      }
+      throw new Error(
+        `Unexpected control request ${options?.method}:${parsed.pathname}`
+      );
+    };
+
+    const result = await runPersonalSyncCommand(
+      [
+        "device",
+        "revoke",
+        "--group-id",
+        groupId,
+        "--device-id",
+        targetDeviceId
+      ],
+      paths,
+      {
+        KOED_HOME: directory,
+        PDS_CONTROL_URL: "http://127.0.0.1:43300",
+        PDS_RUNTIME_SECRET_REF: "pds-runtime"
+      },
+      {
+        fetch: fetch as never,
+        getSecret: () => JSON.stringify(fixture.runtime),
+        putSecret: (_reference, value) => {
+          storedRuntime = value;
+        },
+        now: () => new Date("2026-09-25T13:00:00.000Z")
+      }
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "removed",
+      groupId,
+      deviceId: targetDeviceId,
+      epoch: "2"
+    });
+    expect(transitionDraft).toMatchObject({
+      kind: "revoke-device",
+      groupId,
+      sequence: "2",
+      body: {
+        deviceId: targetDeviceId,
+        reasonCode: "owner_requested",
+        revokedAt: "2026-09-25T13:00:00.000Z",
+        previousEpoch: "1",
+        nextEpoch: "2"
+      }
+    });
+    expect(authorizedBundleDraft).toMatchObject({
+      transitionKind: "revoke-device",
+      epoch: "2",
+      recipientSnapshot: [sourceDeviceId, "recovery-kem"]
+    });
+    expect(authorizedBundleDraft?.recipientSnapshot as string[]).not.toContain(
+      targetDeviceId
+    );
+    expect(JSON.parse(storedRuntime ?? "{}")).toMatchObject({
+      groupSecrets: { currentEpoch: "2" },
+      authority: { head: pdsFinalizedStatementHash(finalizedStatement!) }
+    });
   });
 });

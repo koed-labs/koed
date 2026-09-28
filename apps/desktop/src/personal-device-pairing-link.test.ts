@@ -9,8 +9,8 @@ const hexadecimalInvitationId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789";
 const link = `http://192.168.1.20:3310/pair/${invitationId}#token=${token}`;
 const tailscaleLink = `http://100.98.6.2:3310/pair/${invitationId}#token=${token}`;
-const relayUrl = "wss://koed-relay.fly.dev/ws";
-const relayInvitation = `https://koed-relay.fly.dev/pair/${invitationId}#token=${token}`;
+const relayUrl = "wss://relay.example/ws";
+const relayInvitation = `https://relay.example/pair/${invitationId}#token=${token}`;
 const deepLink = (url: string) =>
   `koed://pair/redeem?url=${encodeURIComponent(url)}`;
 

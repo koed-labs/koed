@@ -23,9 +23,9 @@ afterEach(async () => {
 
 describe("PDS Paseo relay fetch", () => {
   it("accepts capability only on configured relay origin", () => {
-    const capability = `https://koed-relay.fly.dev/pds/${id}#token=${token}`;
+    const capability = `https://relay.example/pds/${id}#token=${token}`;
     expect(
-      createPdsPaseoRelayFetch(capability, "wss://koed-relay.fly.dev/ws")
+      createPdsPaseoRelayFetch(capability, "wss://relay.example/ws")
     ).toBeTypeOf("function");
     expect(() =>
       createPdsPaseoRelayFetch(capability, "wss://other-relay.fly.dev/ws")
@@ -33,13 +33,13 @@ describe("PDS Paseo relay fetch", () => {
   });
 
   it("rejects requests outside narrow PDS relay route before network access", async () => {
-    const capability = `https://koed-relay.fly.dev/pds/${id}#token=${token}`;
+    const capability = `https://relay.example/pds/${id}#token=${token}`;
     const fetcher = createPdsPaseoRelayFetch(
       capability,
-      "wss://koed-relay.fly.dev/ws"
+      "wss://relay.example/ws"
     )!;
     await expect(
-      fetcher(`https://koed-relay.fly.dev/pds/${id}/v1/health`)
+      fetcher(`https://relay.example/pds/${id}/v1/health`)
     ).rejects.toThrow("escaped its Paseo capability");
   });
 

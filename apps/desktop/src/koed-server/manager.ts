@@ -1564,11 +1564,17 @@ export const createKoedEnvironment = (
 ): NodeJS.ProcessEnv => {
   const valueOr = (key: string, fallback: string): string =>
     environment[key]?.trim() || fallback;
+  const repoEnvironment = loadRepoEnv(repoRoot, environment);
+  const pairingRelayUrl = valueOr(
+    "KOED_PDS_REQUEST_RELAY_URL",
+    repoEnvironment.KOED_PDS_REQUEST_RELAY_URL ?? ""
+  );
   const dependencyMode = options.desktopManagedLocal
     ? valueOr("KOED_DEPENDENCY_MODE", "bundled-local")
     : environment.KOED_DEPENDENCY_MODE?.trim();
   return {
     ...environment,
+    ...(pairingRelayUrl ? { KOED_PDS_REQUEST_RELAY_URL: pairingRelayUrl } : {}),
     ...(!options.packagedDesktop || environment.KOED_REPO_ROOT?.trim()
       ? { KOED_REPO_ROOT: valueOr("KOED_REPO_ROOT", repoRoot) }
       : {}),

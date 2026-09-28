@@ -727,13 +727,17 @@ export const runKoedServerCli = async (
         stderr.write(`${setupNeeded}\n`);
         return 1;
       }
-      let ready = await collectKoedServerStartupStatus();
+      let ready = await collectStartupStatus();
       if (!ready.ok) {
         const started = startDaemon();
         if (!started.ok) throw new Error(started.error ?? started.message);
-        for (let attempt = 0; attempt < 90 && !ready.ok; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          ready = await collectKoedServerStartupStatus();
+        const startupDeadline = Date.now() + 90_000;
+        while (!ready.ok && Date.now() < startupDeadline) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(1000, startupDeadline - Date.now()))
+          );
+          if (Date.now() >= startupDeadline) break;
+          ready = await collectStartupStatus();
         }
       }
       if (!ready.ok)

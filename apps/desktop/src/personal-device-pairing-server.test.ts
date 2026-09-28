@@ -197,7 +197,7 @@ describe("Personal Device LAN pairing server", () => {
     const server = await startPersonalDevicePairingServer({
       port: 0,
       addresses: () => [],
-      relayUrl: "wss://koed-relay.fly.dev/ws",
+      relayUrl: "wss://relay.example/ws",
       persistence: {
         get: async (key) => stored.get(key) ?? null,
         put: async (key, value) => void stored.set(key, value),
@@ -212,7 +212,7 @@ describe("Personal Device LAN pairing server", () => {
       expect(deepLink.protocol).toBe("koed:");
       expect(deepLink.hostname).toBe("pair");
       expect(deepLink.pathname).toBe("/redeem");
-      expect(link.origin).toBe("https://koed-relay.fly.dev");
+      expect(link.origin).toBe("https://relay.example");
       expect(link.pathname).toBe(`/pair/${view.id}`);
       expect(link.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/);
       expect(server.relayUrl).toBeNull();
@@ -422,7 +422,7 @@ describe("Personal Device LAN pairing server", () => {
             {
               id: "11111111-2222-4333-8444-555555555555",
               token: Buffer.alloc(32, 5).toString("base64url"),
-              relayUrl: "wss://koed-relay.fly.dev/ws"
+              relayUrl: "wss://relay.example/ws"
             }
           ]
         })
@@ -431,7 +431,7 @@ describe("Personal Device LAN pairing server", () => {
     const server = await startPersonalDevicePairingServer({
       port: 0,
       addresses: () => [],
-      relayUrl: "wss://koed-relay.fly.dev/ws",
+      relayUrl: "wss://relay.example/ws",
       persistence: {
         get: async (key) => stored.get(key) ?? null,
         put: async (key, value) => void stored.set(key, value),
