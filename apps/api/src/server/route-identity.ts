@@ -1290,6 +1290,46 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/collaboration/teams/{teamId}/channels",
+    "session_or_device_credential",
+    "collaboration",
+    "List Team-wide collaboration channels.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/channels",
+    "session_or_device_credential",
+    "collaboration",
+    "Create a Team-wide collaboration channel.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/projects",
+    "session_or_device_credential",
+    "collaboration",
+    "List Team-specific Shared Projects and channels.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/projects",
+    "session_or_device_credential",
+    "collaboration",
+    "Create a Team-specific Shared Project and channel.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
     "session_or_device_credential",
     "collaboration",

@@ -41,6 +41,7 @@ const ids = {
   team: randomUUID(),
   workspace: randomUUID(),
   thread: randomUUID(),
+  teamProject: randomUUID(),
   logicalThread: randomUUID(),
   actor: randomUUID(),
   participant: randomUUID(),
@@ -927,6 +928,28 @@ const resultPayloadFor = (
   if (command.command === "collaboration.start_group_direct_message") {
     return { thread: groupDirectMessageThread };
   }
+  if (command.command === "collaboration.create_team_channel") {
+    return {
+      thread: {
+        ...teamThreadBase,
+        kind: "team_channel",
+        name: command.input.name,
+        topic: command.input.topic,
+        systemKey: null
+      }
+    };
+  }
+  if (command.command === "collaboration.create_team_shared_project") {
+    return {
+      thread: {
+        ...teamThreadBase,
+        kind: "team_project_channel",
+        name: command.input.name,
+        topic: null,
+        teamProjectId: ids.teamProject
+      }
+    };
+  }
   if (command.command === "collaboration.rename_thread") {
     return { thread: { ...teamThread, name: command.input.name } };
   }
@@ -1533,6 +1556,34 @@ const supportedMappings: Array<{
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
     body: { bodyText: "hello" },
     idempotencyKey: ids.clientMessage
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.create_team_channel",
+      input: {
+        teamId: ids.team,
+        name: "Team Lounge",
+        topic: "All members"
+      }
+    },
+    method: "POST",
+    path: `/koed/v1/collaboration/teams/${ids.team}/channels`,
+    body: { name: "Team Lounge", topic: "All members" },
+    idempotencyKey: ids.request
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.create_team_shared_project",
+      input: { teamId: ids.team, name: "Local Project" }
+    },
+    method: "POST",
+    path: `/koed/v1/collaboration/teams/${ids.team}/projects`,
+    body: { name: "Local Project" },
+    idempotencyKey: ids.request
   }
 ];
 

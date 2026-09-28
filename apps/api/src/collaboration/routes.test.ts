@@ -112,6 +112,7 @@ const createCollaborationFixture = () => {
     string,
     { request: string; threadId: string }
   >();
+  const teamProjectRequestIds = new Map<string, string>();
   const messageRequests = new Map<
     string,
     { bodyText: string; messageId: string }
@@ -131,6 +132,7 @@ const createCollaborationFixture = () => {
     personalOwnerUserId?: string | null;
     teamId?: string | null;
     teamWorkspaceId?: string | null;
+    teamProjectId?: string | null;
     sharedLogicalMemoryId?: string | null;
     shareGrantId?: string | null;
     name?: string | null;
@@ -145,6 +147,7 @@ const createCollaborationFixture = () => {
       personalOwnerUserId: input.personalOwnerUserId ?? null,
       teamId: input.teamId ?? null,
       teamWorkspaceId: input.teamWorkspaceId ?? null,
+      teamProjectId: input.teamProjectId ?? null,
       sharedLogicalMemoryId: input.sharedLogicalMemoryId ?? null,
       shareGrantId: input.shareGrantId ?? null,
       systemKey: null,
@@ -216,13 +219,25 @@ const createCollaborationFixture = () => {
     if (thread.kind === "dm" || thread.kind === "group_dm") {
       return thread.participants.some((item) => item.userId === userId);
     }
+    if (
+      thread.kind === "team_channel" ||
+      thread.kind === "team_project_channel"
+    ) {
+      return true;
+    }
     return workspaceAccess(userId, thread.teamWorkspaceId) !== null;
   };
 
   const canWrite = (userId: string, thread: CollaborationThreadRecord) => {
     if (!canRead(userId, thread)) return false;
     if (thread.scope === "personal") return true;
-    if (thread.kind === "dm" || thread.kind === "group_dm") return true;
+    if (
+      thread.kind === "dm" ||
+      thread.kind === "group_dm" ||
+      thread.kind === "team_channel" ||
+      thread.kind === "team_project_channel"
+    )
+      return true;
     return workspaceAccess(userId, thread.teamWorkspaceId) === "write";
   };
 
@@ -246,7 +261,7 @@ const createCollaborationFixture = () => {
     actor: ActorContext,
     input: CreateCollaborationThreadInput
   ): CollaborationThreadRecord | null => {
-    const requestKey = `${actor.userId}:${input.kind}:${input.idempotencyKey}`;
+    const requestKey = `${actor.userId}:${"teamId" in input ? input.teamId : "personal"}:${input.kind}:${input.idempotencyKey}`;
     const request = JSON.stringify(input);
     const existing = threadRequests.get(requestKey);
     if (existing) {
@@ -283,6 +298,22 @@ const createCollaborationFixture = () => {
         teamId: input.teamId,
         participantUserIds
       });
+    } else if (
+      input.kind === "team_channel" ||
+      input.kind === "team_project_channel"
+    ) {
+      if (!teamMember(actor.userId, input.teamId)) return null;
+      thread = newThread({
+        kind: input.kind,
+        actorUserId: actor.userId,
+        teamId: input.teamId,
+        teamProjectId:
+          input.kind === "team_project_channel" ? input.teamProjectId : null,
+        name: input.name,
+        topic: input.topic
+      });
+      if (input.kind === "team_channel")
+        thread.systemKey = input.systemKey ?? null;
     } else {
       if (!("teamWorkspaceId" in input)) return null;
       if (
@@ -327,6 +358,44 @@ const createCollaborationFixture = () => {
       return [...users.values()]
         .filter((user) => user.roleByTeam.has(teamId))
         .map((user) => participant(user.id));
+    },
+    async ensureTeamGeneralChannel(actor, teamId) {
+      if (!teamMember(actor.userId, teamId)) return null;
+      return createThread(actor, {
+        kind: "team_channel",
+        idempotencyKey: `team-general:${teamId}`,
+        teamId,
+        name: "general",
+        topic: null,
+        systemKey: "team.general"
+      });
+    },
+    async createTeamSharedProject(actor, input) {
+      if (!teamMember(actor.userId, input.teamId)) return null;
+      const requestKey = `${actor.userId}:${input.teamId}:${input.idempotencyKey}`;
+      const projectId = teamProjectRequestIds.get(requestKey) ?? randomUUID();
+      teamProjectRequestIds.set(requestKey, projectId);
+      const thread = createThread(actor, {
+        kind: "team_project_channel",
+        idempotencyKey: `team-project-channel:${input.idempotencyKey}`,
+        teamId: input.teamId,
+        teamProjectId: projectId,
+        name: input.name
+      });
+      return thread ? { id: projectId, teamId: input.teamId, thread } : null;
+    },
+    async listTeamSharedProjects(actor, teamId) {
+      if (!teamMember(actor.userId, teamId)) return null;
+      return [...threads.values()]
+        .filter(
+          (thread) =>
+            thread.kind === "team_project_channel" && thread.teamId === teamId
+        )
+        .map((thread) => ({
+          id: thread.teamProjectId!,
+          teamId,
+          thread
+        }));
     },
     async createThread(actor, input) {
       return createThread(actor, input);
@@ -1349,6 +1418,96 @@ describe("collaboration HTTP routes", () => {
       payload: { name: "Writer channel" }
     });
     expect(writerCreate.statusCode).toBe(201);
+
+    await app.close();
+  });
+
+  it("creates Team channels and Team-specific Project channels with current membership authority", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const channelsUrl = `/v1/collaboration/teams/${fixture.ids.teamA}/channels`;
+    const createChannel = async (name: string, key: string) =>
+      app.inject({
+        method: "POST",
+        url: channelsUrl,
+        headers: sessionHeaders(fixture.ids.bob, {
+          "idempotency-key": key
+        }),
+        payload: { name }
+      });
+    const channel = await createChannel("Team lounge", "team-lounge");
+    const channelRetry = await createChannel("Team lounge", "team-lounge");
+    expect(channel.statusCode).toBe(201);
+    expect(channelRetry.statusCode).toBe(201);
+    const channelThread = jsonBody<{
+      thread: CollaborationThreadRecord;
+    }>(channel).thread;
+    expect(channelThread).toMatchObject({
+      kind: "team_channel",
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: null,
+      name: "Team lounge"
+    });
+    expect(
+      jsonBody<{ thread: CollaborationThreadRecord }>(channelRetry).thread.id
+    ).toBe(channelThread.id);
+
+    const listedChannels = await app.inject({
+      method: "GET",
+      url: channelsUrl,
+      headers: sessionHeaders(fixture.ids.carol)
+    });
+    expect(listedChannels.statusCode).toBe(200);
+    expect(
+      jsonBody<{ threads: CollaborationThreadRecord[] }>(
+        listedChannels
+      ).threads.map((thread) => thread.name)
+    ).toEqual(expect.arrayContaining(["general", "Team lounge"]));
+
+    const createProject = async (teamId: string, key: string) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${teamId}/projects`,
+        headers: sessionHeaders(fixture.ids.alice, {
+          "idempotency-key": key
+        }),
+        payload: { name: "Local Project" }
+      });
+    const [projectA, retryA, projectB] = await Promise.all([
+      createProject(fixture.ids.teamA, "local-project-a"),
+      createProject(fixture.ids.teamA, "local-project-a"),
+      createProject(fixture.ids.teamB, "local-project-a")
+    ]);
+    expect(projectA.statusCode).toBe(201);
+    expect(retryA.statusCode).toBe(201);
+    expect(projectB.statusCode).toBe(201);
+    const createdA = jsonBody<{
+      project: { id: string; teamId: string; name: string };
+      thread: CollaborationThreadRecord;
+    }>(projectA);
+    const retriedA = jsonBody<{
+      project: { id: string };
+      thread: CollaborationThreadRecord;
+    }>(retryA);
+    const createdB = jsonBody<{
+      project: { id: string; teamId: string; name: string };
+      thread: CollaborationThreadRecord;
+    }>(projectB);
+    expect(createdA.project).toMatchObject({
+      teamId: fixture.ids.teamA,
+      name: "Local Project"
+    });
+    expect(createdA.thread).toMatchObject({
+      kind: "team_project_channel",
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: null,
+      teamProjectId: createdA.project.id,
+      name: "Local Project"
+    });
+    expect(retriedA.project.id).toBe(createdA.project.id);
+    expect(retriedA.thread.id).toBe(createdA.thread.id);
+    expect(createdB.project.id).not.toBe(createdA.project.id);
+    expect(createdB.thread.id).not.toBe(createdA.thread.id);
 
     await app.close();
   });

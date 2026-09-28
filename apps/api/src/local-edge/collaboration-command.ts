@@ -209,6 +209,8 @@ function isTeamCommand(command: CollaborationRendererCommand): boolean {
 type SupportedCommand = Extract<
   CollaborationRendererCommand,
   | { command: "collaboration.create_workspace_channel" }
+  | { command: "collaboration.create_team_channel" }
+  | { command: "collaboration.create_team_shared_project" }
   | { command: "collaboration.start_direct_message" }
   | { command: "collaboration.start_group_direct_message" }
   | { command: "collaboration.set_team_presence" }
@@ -285,6 +287,8 @@ const canonicalThreadSchema = z
     scope: z.enum(["personal", "team"]),
     kind: z.enum([
       "personal_channel",
+      "team_channel",
+      "team_project_channel",
       "workspace_channel",
       "dm",
       "group_dm",
@@ -293,9 +297,10 @@ const canonicalThreadSchema = z
     personalOwnerUserId: z.uuid().nullable(),
     teamId: z.uuid().nullable(),
     teamWorkspaceId: z.uuid().nullable(),
+    teamProjectId: z.uuid().nullable().optional(),
     sharedLogicalMemoryId: z.uuid().nullable(),
     shareGrantId: z.uuid().nullable(),
-    systemKey: z.literal("workspace.general").nullable(),
+    systemKey: z.enum(["workspace.general", "team.general"]).nullable(),
     name: z.string().nullable(),
     topic: z.string().nullable(),
     createdByUserId: z.uuid().nullable(),
@@ -1137,6 +1142,24 @@ const targetThreadFrom = (
     archivedAt: thread.archivedAt,
     teamId: thread.teamId
   };
+  if (thread.kind === "team_channel" && thread.teamId) {
+    return {
+      ...base,
+      kind: thread.kind,
+      systemKey: thread.systemKey
+    };
+  }
+  if (
+    thread.kind === "team_project_channel" &&
+    thread.teamId &&
+    thread.teamProjectId
+  ) {
+    return {
+      ...base,
+      kind: thread.kind,
+      teamProjectId: thread.teamProjectId
+    };
+  }
   if (
     thread.kind === "workspace_channel" &&
     thread.teamId &&
@@ -1259,12 +1282,26 @@ const successResult = (
     payload[operation.resultKey]
   );
   if (!teamCollaborationResultMatchesCommand(command, value)) return null;
+  const data =
+    command.command === "collaboration.create_team_shared_project" &&
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+      ? {
+          thread: value,
+          project: {
+            id: (value as Record<string, unknown>).teamProjectId,
+            teamId: (value as Record<string, unknown>).teamId,
+            name: (value as Record<string, unknown>).name
+          }
+        }
+      : { [operation.resultKey]: value };
   const parsed = collaborationCommandResultSchema.safeParse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     requestId: command.requestId,
     command: command.command,
     ok: true,
-    data: { [operation.resultKey]: value }
+    data
   });
   if (
     !parsed.success ||
@@ -1870,6 +1907,23 @@ const loadRemoteTeamNavigation = async (input: {
     const directMessages = threads.filter(
       (thread) => thread.kind === "dm" || thread.kind === "group_dm"
     );
+    const teamChannels = threads.filter(
+      (thread) => thread.kind === "team_channel"
+    );
+    const sharedProjects = threads.flatMap((thread) =>
+      thread.kind === "team_project_channel" &&
+      typeof thread.teamProjectId === "string" &&
+      typeof thread.name === "string"
+        ? [
+            {
+              id: thread.teamProjectId,
+              teamId: team.id,
+              name: thread.name,
+              thread
+            }
+          ]
+        : []
+    );
     const workspaces = entry.workspaces
       .filter(({ teamWorkspace }) => teamWorkspace.teamId === team.id)
       .filter(({ teamWorkspace }) => teamWorkspace.lifecycle === "active");
@@ -1971,6 +2025,8 @@ const loadRemoteTeamNavigation = async (input: {
       ),
       people: people.map(remotePersonFrom),
       directMessages,
+      channels: teamChannels,
+      sharedProjects,
       workspaces: mappedWorkspaces,
       version: team.version
     });
@@ -2314,6 +2370,8 @@ const loadTeamSelection = async (input: {
   }
   if (
     selection.kind === "workspace_channel" ||
+    selection.kind === "team_channel" ||
+    selection.kind === "team_project_channel" ||
     selection.kind === "team_direct_message"
   ) {
     const threadPayload = await requireRemoteJson(input.fetcher, {
@@ -2328,6 +2386,16 @@ const loadTeamSelection = async (input: {
       !thread ||
       thread.id !== selection.threadId ||
       thread.teamId !== selection.teamId
+    ) {
+      return null;
+    }
+    if (selection.kind === "team_channel" && thread.kind !== "team_channel") {
+      return null;
+    }
+    if (
+      selection.kind === "team_project_channel" &&
+      (thread.kind !== "team_project_channel" ||
+        thread.teamProjectId !== selection.teamProjectId)
     ) {
       return null;
     }

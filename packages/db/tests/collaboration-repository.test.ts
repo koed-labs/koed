@@ -2527,6 +2527,285 @@ describeDb("Collaboration repository", () => {
     });
   });
 
+  it("keeps Team-wide channel and Project collaboration separate from Workspace grants", async () => {
+    const fixture = await createTeamFixture();
+    const otherTeam = await createTeamFixture();
+    const generalAsOwner = await repository.ensureTeamGeneralChannel(
+      actor(fixture.ownerUserId),
+      fixture.teamId
+    );
+    const generalAsMember = await repository.ensureTeamGeneralChannel(
+      actor(fixture.secondMemberUserId),
+      fixture.teamId
+    );
+    expect(generalAsMember?.id).toBe(generalAsOwner?.id);
+    expect(generalAsOwner).toMatchObject({
+      kind: "team_channel",
+      name: "general",
+      systemKey: "team.general",
+      teamId: fixture.teamId,
+      teamWorkspaceId: null
+    });
+
+    const channelName = `Team-wide ${randomUUID()}`;
+    const channelKey = `team-channel:${randomUUID()}`;
+    const channel = await repository.createThread(
+      actor(fixture.secondMemberUserId),
+      {
+        kind: "team_channel",
+        idempotencyKey: channelKey,
+        teamId: fixture.teamId,
+        name: channelName
+      }
+    );
+    expect(channel).toMatchObject({
+      kind: "team_channel",
+      teamId: fixture.teamId,
+      teamWorkspaceId: null,
+      name: channelName
+    });
+    const channelRetry = await competingRepository.createThread(
+      actor(fixture.secondMemberUserId),
+      {
+        kind: "team_channel",
+        idempotencyKey: channelKey,
+        teamId: fixture.teamId,
+        name: channelName
+      }
+    );
+    expect(channelRetry?.id).toBe(channel?.id);
+    await expect(
+      repository.createThread(actor(fixture.secondMemberUserId), {
+        kind: "team_channel",
+        idempotencyKey: `reserved-general:${randomUUID()}`,
+        teamId: fixture.teamId,
+        name: "  General  "
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+    await expect(
+      repository.createThread(actor(fixture.secondMemberUserId), {
+        kind: "team_channel",
+        idempotencyKey: channelKey,
+        teamId: fixture.teamId,
+        name: "A different channel"
+      })
+    ).rejects.toBeInstanceOf(CollaborationIdempotencyConflictError);
+    const workspaceGeneral = await repository.createThread(
+      actor(fixture.ownerUserId),
+      {
+        kind: "workspace_channel",
+        idempotencyKey: `workspace-general:${randomUUID()}`,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        name: "general"
+      }
+    );
+    expect(workspaceGeneral).toMatchObject({
+      kind: "workspace_channel",
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      name: "general"
+    });
+    await expect(
+      repository.renameThread(actor(fixture.ownerUserId), {
+        threadId: generalAsOwner!.id,
+        expectedVersion: generalAsOwner!.version,
+        name: "renamed general"
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+    await expect(
+      repository.archiveThread(actor(fixture.ownerUserId), {
+        threadId: generalAsOwner!.id,
+        expectedVersion: generalAsOwner!.version
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+    expect(
+      await repository.createThread(actor(fixture.secondMemberUserId), {
+        kind: "workspace_channel",
+        idempotencyKey: `restricted-workspace:${randomUUID()}`,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        name: `Workspace denied ${randomUUID()}`
+      })
+    ).toBeNull();
+
+    const messageKey = `team-channel-message:${randomUUID()}`;
+    const message = await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: channel!.id,
+      idempotencyKey: messageKey,
+      bodyText: "Ticket07 encrypted Team history sentinel"
+    });
+    const duplicateMessage = await repository.sendMessage(
+      actor(fixture.ownerUserId),
+      {
+        threadId: channel!.id,
+        idempotencyKey: messageKey,
+        bodyText: "Ticket07 encrypted Team history sentinel"
+      }
+    );
+    expect(duplicateMessage?.id).toBe(message?.id);
+    await expect(
+      repository.listMessages(actor(fixture.memberUserId), {
+        threadId: channel!.id
+      })
+    ).resolves.toMatchObject({
+      messages: [expect.objectContaining({ id: message!.id })]
+    });
+
+    const newMemberUserId = await createUser("New Team Member");
+    await pool.query(
+      `insert into team_memberships (team_id,user_id,role,status,accepted_at)
+       values ($1,$2,'member','enabled',now())`,
+      [fixture.teamId, newMemberUserId]
+    );
+    await expect(
+      repository.listMessages(actor(newMemberUserId), {
+        threadId: channel!.id
+      })
+    ).resolves.toMatchObject({
+      messages: [expect.objectContaining({ id: message!.id })]
+    });
+    const newMemberSnapshot = await repository.getAuthorizedSnapshot(
+      actor(newMemberUserId),
+      { scope: "team", teamId: fixture.teamId }
+    );
+    expect(newMemberSnapshot?.threads.map((thread) => thread.id)).toContain(
+      channel!.id
+    );
+    const replay = await repository.replayEvents(actor(newMemberUserId), {
+      scope: "team",
+      teamId: fixture.teamId,
+      afterCursor: 0
+    });
+    expect(replay?.events.some((event) => event.threadId === channel!.id)).toBe(
+      true
+    );
+    const readState = await repository.advanceReadState(
+      actor(newMemberUserId),
+      {
+        threadId: channel!.id,
+        messageId: message!.id
+      }
+    );
+    expect(readState).toMatchObject({
+      threadId: channel!.id,
+      userId: newMemberUserId,
+      lastReadMessageId: message!.id,
+      lastReadSequence: 1,
+      unreadCount: 0
+    });
+    const ciphertextStorage = await pool.query<{
+      body_marker: string;
+      payload_count: string;
+      storage_json: string;
+    }>(
+      `select message.body_marker,
+         (select count(*)::text from encrypted_field_payloads payload
+           where payload.source_table='collaboration_messages'
+             and payload.source_id=message.id and payload.source_column='body') as payload_count,
+         to_jsonb(message)::text as storage_json
+       from collaboration_messages message where message.id=$1`,
+      [message!.id]
+    );
+    expect(ciphertextStorage.rows[0]).toMatchObject({
+      body_marker: "[koed encrypted collaboration message]",
+      payload_count: "1"
+    });
+    expect(ciphertextStorage.rows[0]!.storage_json).not.toContain(
+      "Ticket07 encrypted Team history sentinel"
+    );
+
+    const projectName = `Local Project ${randomUUID()}`;
+    const projectKey = `team-project:${randomUUID()}`;
+    const [projectA, projectARetry] = await Promise.all([
+      repository.createTeamSharedProject(actor(fixture.memberUserId), {
+        teamId: fixture.teamId,
+        idempotencyKey: projectKey,
+        name: projectName
+      }),
+      competingRepository.createTeamSharedProject(actor(fixture.memberUserId), {
+        teamId: fixture.teamId,
+        idempotencyKey: projectKey,
+        name: projectName
+      })
+    ]);
+    expect(projectARetry?.id).toBe(projectA?.id);
+    expect(projectARetry?.thread.id).toBe(projectA?.thread.id);
+    expect(projectA).toMatchObject({
+      teamId: fixture.teamId,
+      thread: {
+        kind: "team_project_channel",
+        teamId: fixture.teamId,
+        teamProjectId: projectA?.id,
+        teamWorkspaceId: null,
+        name: projectName
+      }
+    });
+    const projectB = await repository.createTeamSharedProject(
+      actor(otherTeam.ownerUserId),
+      {
+        teamId: otherTeam.teamId,
+        idempotencyKey: projectKey,
+        name: projectName
+      }
+    );
+    expect(projectB?.id).not.toBe(projectA?.id);
+    expect(projectB?.thread.id).not.toBe(projectA?.thread.id);
+    await expect(
+      repository.getThread(actor(fixture.memberUserId), {
+        threadId: projectB!.thread.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.listTeamSharedProjects(
+        actor(fixture.memberUserId),
+        otherTeam.teamId
+      )
+    ).resolves.toBeNull();
+
+    const encryptedMarkers = await pool.query<{
+      name_marker: string;
+      topic_marker: string | null;
+    }>(
+      `select name_marker,topic_marker from collaboration_threads
+        where id = any($1::uuid[]) order by id`,
+      [[channel!.id, projectA!.thread.id]]
+    );
+    expect(encryptedMarkers.rows).toHaveLength(2);
+    expect(encryptedMarkers.rows.map((row) => row.name_marker)).not.toContain(
+      projectName
+    );
+    expect(encryptedMarkers.rows.map((row) => row.name_marker)).not.toContain(
+      channelName
+    );
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, newMemberUserId]
+    );
+    await expect(
+      repository.listMessages(actor(newMemberUserId), {
+        threadId: channel!.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.getThread(actor(newMemberUserId), { threadId: channel!.id })
+    ).resolves.toBeNull();
+    await expect(
+      repository.getAuthorizedSnapshot(actor(newMemberUserId), {
+        scope: "team",
+        teamId: fixture.teamId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.replayEvents(actor(newMemberUserId), {
+        scope: "team",
+        teamId: fixture.teamId,
+        afterCursor: 0
+      })
+    ).resolves.toBeNull();
+  });
+
   it("replays Team lifecycle invalidations after Workspace access is removed", async () => {
     const fixture = await createTeamFixture();
     const channel = await repository.createThread(actor(fixture.ownerUserId), {

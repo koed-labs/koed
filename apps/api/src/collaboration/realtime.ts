@@ -749,7 +749,25 @@ const rendererThreadFromRecord = (
     };
   } else if (thread.scope === "team" && thread.teamId) {
     const teamBase = { ...base, teamId: thread.teamId };
-    if (
+    if (thread.kind === "team_channel" && thread.name) {
+      candidate = {
+        ...teamBase,
+        kind: thread.kind,
+        name: thread.name,
+        systemKey: thread.systemKey
+      };
+    } else if (
+      thread.kind === "team_project_channel" &&
+      thread.teamProjectId &&
+      thread.name
+    ) {
+      candidate = {
+        ...teamBase,
+        kind: thread.kind,
+        teamProjectId: thread.teamProjectId,
+        name: thread.name
+      };
+    } else if (
       thread.kind === "workspace_channel" &&
       thread.teamWorkspaceId &&
       thread.name

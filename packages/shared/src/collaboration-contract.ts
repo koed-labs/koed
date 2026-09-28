@@ -108,6 +108,8 @@ export const COLLABORATION_DEFAULT_LIMITS = {
 const MAX_TEAMS_PER_SNAPSHOT = 50;
 const MAX_WORKSPACES_PER_TEAM = 20;
 const MAX_CHANNELS_PER_WORKSPACE = 50;
+const MAX_TEAM_CHANNELS = 500;
+const MAX_SHARED_PROJECTS_PER_TEAM = 500;
 const MAX_DIRECT_MESSAGES_PER_TEAM = 100;
 const MAX_SHARED_SESSIONS_PER_WORKSPACE = 100;
 const MAX_PERSONAL_CHANNELS = 100;
@@ -702,6 +704,39 @@ const workspaceChannelThreadSchema = z
   })
   .strict();
 
+const teamChannelThreadSchema = z
+  .object({
+    ...teamThreadBaseShape,
+    kind: z.literal("team_channel"),
+    name: collaborationNameSchema,
+    systemKey: z.literal("team.general").nullable()
+  })
+  .strict();
+
+const teamProjectChannelThreadSchema = z
+  .object({
+    ...teamThreadBaseShape,
+    kind: z.literal("team_project_channel"),
+    name: collaborationNameSchema,
+    teamProjectId: z.uuid()
+  })
+  .strict();
+
+export const collaborationTeamSharedProjectSchema = z
+  .object({
+    id: z.uuid(),
+    teamId: z.uuid(),
+    name: collaborationNameSchema
+  })
+  .strict();
+
+const teamSharedProjectNavigationSchema = z
+  .object({
+    ...collaborationTeamSharedProjectSchema.shape,
+    thread: teamProjectChannelThreadSchema
+  })
+  .strict();
+
 const directMessageThreadSchema = z
   .object({
     ...teamThreadBaseShape,
@@ -734,6 +769,8 @@ const sharedSessionDiscussionThreadSchema = z
 
 export const collaborationThreadSchema = z.discriminatedUnion("kind", [
   personalChannelThreadSchema,
+  teamChannelThreadSchema,
+  teamProjectChannelThreadSchema,
   workspaceChannelThreadSchema,
   directMessageThreadSchema,
   groupDirectMessageThreadSchema,
@@ -1238,6 +1275,21 @@ export const collaborationSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("team_people"), teamId: z.uuid() }).strict(),
   z
     .object({
+      kind: z.literal("team_channel"),
+      teamId: z.uuid(),
+      threadId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("team_project_channel"),
+      teamId: z.uuid(),
+      teamProjectId: z.uuid(),
+      threadId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("workspace_channel"),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
@@ -1316,6 +1368,14 @@ const teamNavigationSchema = z
         z.union([directMessageThreadSchema, groupDirectMessageThreadSchema])
       )
       .max(MAX_DIRECT_MESSAGES_PER_TEAM),
+    channels: z
+      .array(teamChannelThreadSchema)
+      .max(MAX_TEAM_CHANNELS)
+      .default([]),
+    sharedProjects: z
+      .array(teamSharedProjectNavigationSchema)
+      .max(MAX_SHARED_PROJECTS_PER_TEAM)
+      .default([]),
     workspaces: z.array(workspaceNavigationSchema).max(MAX_WORKSPACES_PER_TEAM),
     version: positiveVersionSchema
   })
@@ -1418,6 +1478,35 @@ const collaborationNavigationSchema = z
           code: "custom",
           path: ["teams", teamIndex, "directMessages"],
           message: "Direct messages must belong to their navigation Team"
+        });
+      }
+      if (team.channels.some((thread) => thread.teamId !== team.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["teams", teamIndex, "channels"],
+          message: "Team channels must belong to their navigation Team"
+        });
+      }
+      const projectIds = team.sharedProjects.map((project) => project.id);
+      if (new Set(projectIds).size !== projectIds.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["teams", teamIndex, "sharedProjects"],
+          message: "Shared Project identities must be distinct per Team"
+        });
+      }
+      if (
+        team.sharedProjects.some(
+          (project) =>
+            project.teamId !== team.id ||
+            project.thread.teamId !== team.id ||
+            project.thread.teamProjectId !== project.id
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["teams", teamIndex, "sharedProjects"],
+          message: "Shared Project channels must match their Team and Project"
         });
       }
       for (const [workspaceIndex, workspace] of team.workspaces.entries()) {
@@ -1552,6 +1641,17 @@ export const collaborationSnapshotSchema = z
       (selection.kind === "team_people" &&
         view.kind === "team_people" &&
         view.teamId === selection.teamId) ||
+      (selection.kind === "team_channel" &&
+        view.kind === "thread" &&
+        view.thread.kind === "team_channel" &&
+        view.thread.id === selection.threadId &&
+        view.thread.teamId === selection.teamId) ||
+      (selection.kind === "team_project_channel" &&
+        view.kind === "thread" &&
+        view.thread.kind === "team_project_channel" &&
+        view.thread.id === selection.threadId &&
+        view.thread.teamId === selection.teamId &&
+        view.thread.teamProjectId === selection.teamProjectId) ||
       (selection.kind === "workspace_channel" &&
         view.kind === "thread" &&
         view.thread.kind === "workspace_channel" &&
@@ -2499,6 +2599,15 @@ export const collaborationRendererCommandSchema = z
       name: collaborationNameSchema,
       topic: collaborationTopicDescriptionSchema.nullable()
     }),
+    command("collaboration.create_team_channel", {
+      teamId: z.uuid(),
+      name: collaborationNameSchema,
+      topic: collaborationTopicDescriptionSchema.nullable()
+    }),
+    command("collaboration.create_team_shared_project", {
+      teamId: z.uuid(),
+      name: collaborationNameSchema
+    }),
     command("collaboration.start_direct_message", {
       teamId: z.uuid(),
       participantUserId: z.uuid()
@@ -2875,6 +2984,7 @@ export const collaborationCommandReturnsSnapshot = (
 const threadResultCommands = [
   "collaboration.create_personal_channel",
   "collaboration.create_workspace_channel",
+  "collaboration.create_team_channel",
   "collaboration.start_direct_message",
   "collaboration.start_group_direct_message",
   "collaboration.rename_thread",
@@ -2895,6 +3005,15 @@ const snapshotSuccessSchemas = [
 const threadSuccessSchemas = threadResultCommands.map((name) =>
   successResult(name, z.object({ thread: collaborationThreadSchema }).strict())
 );
+const sharedProjectSuccessSchema = successResult(
+  "collaboration.create_team_shared_project",
+  z
+    .object({
+      project: collaborationTeamSharedProjectSchema,
+      thread: teamProjectChannelThreadSchema
+    })
+    .strict()
+);
 
 const commandNameSchema = z.enum([
   ...collaborationSnapshotResultCommands,
@@ -2903,6 +3022,7 @@ const commandNameSchema = z.enum([
   "collaboration.confirm_action_grant",
   "collaboration.cancel_action_grant",
   ...threadResultCommands,
+  "collaboration.create_team_shared_project",
   "collaboration.send_message",
   "collaboration.retry_message",
   "collaboration.mark_read",
@@ -2954,6 +3074,7 @@ const failureResultSchema = z
 export const collaborationCommandResultSchema = z.union([
   ...snapshotSuccessSchemas,
   ...threadSuccessSchemas,
+  sharedProjectSuccessSchema,
   successResult(
     connectBackendSnapshotResultCommand,
     z
@@ -3778,6 +3899,9 @@ export type CollaborationTeamPerson = z.infer<
   typeof collaborationTeamPersonSchema
 >;
 export type CollaborationThread = z.infer<typeof collaborationThreadSchema>;
+export type CollaborationTeamSharedProject = z.infer<
+  typeof collaborationTeamSharedProjectSchema
+>;
 export type CollaborationMessage = z.infer<typeof collaborationMessageSchema>;
 export type CollaborationDurableSend = z.infer<
   typeof collaborationDurableSendSchema

@@ -49,6 +49,18 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.create_team_channel": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
+  "collaboration.create_team_shared_project": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.start_direct_message": {
     scope: "team",
     desktop: write,
@@ -360,6 +372,49 @@ describe("collaboration command registry", () => {
         topic: "Launch"
       })
     ).toBe(false);
+
+    const createTeamChannel = command("collaboration.create_team_channel", {
+      teamId,
+      name: "Team Lounge",
+      topic: "All members"
+    });
+    expect(teamCollaborationOperationFor(createTeamChannel)).toEqual({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v1/collaboration/teams/${teamId}/channels`,
+      body: { name: "Team Lounge", topic: "All members" },
+      resultKey: "thread",
+      idempotencyKey: requestId
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(createTeamChannel, {
+        kind: "team_channel",
+        teamId,
+        name: "Team Lounge",
+        topic: "All members"
+      })
+    ).toBe(true);
+
+    const createProject = command("collaboration.create_team_shared_project", {
+      teamId,
+      name: "Local Project"
+    });
+    expect(teamCollaborationOperationFor(createProject)).toEqual({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v1/collaboration/teams/${teamId}/projects`,
+      body: { name: "Local Project" },
+      resultKey: "thread",
+      idempotencyKey: requestId
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(createProject, {
+        kind: "team_project_channel",
+        teamId,
+        teamProjectId: threadId,
+        name: "Local Project"
+      })
+    ).toBe(true);
 
     const setPresence = command("collaboration.set_team_presence", {
       teamId,

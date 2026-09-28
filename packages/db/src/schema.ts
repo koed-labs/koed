@@ -176,6 +176,8 @@ export const collaborationScope = pgEnum("collaboration_scope", [
 ]);
 export const collaborationThreadKind = pgEnum("collaboration_thread_kind", [
   "personal_channel",
+  "team_channel",
+  "team_project_channel",
   "workspace_channel",
   "dm",
   "group_dm",
@@ -9114,6 +9116,39 @@ export const teamMemorySemanticVectors3072 = pgTable(
   ]
 );
 
+// This is a Team-specific association to a local Project. It deliberately
+// contains no filesystem locator or globally reusable Project identity.
+export const teamSharedProjects = pgTable(
+  "collaboration_team_shared_projects",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    creationRequestHash: text("creation_request_hash").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("collaboration_team_shared_projects_id_team_unique").on(
+      table.id,
+      table.teamId
+    ),
+    check(
+      "collaboration_team_shared_projects_request_hash_check",
+      sql`length(${table.creationRequestHash}) = 64`
+    ),
+    index("collaboration_team_shared_projects_team_created_idx").on(
+      table.teamId,
+      table.createdAt.desc(),
+      table.id
+    )
+  ]
+);
+
 export const collaborationThreads = pgTable(
   "collaboration_threads",
   {
@@ -9129,6 +9164,7 @@ export const collaborationThreads = pgTable(
       onDelete: "restrict"
     }),
     teamWorkspaceId: uuid("team_workspace_id"),
+    teamProjectId: uuid("team_project_id"),
     sharedLogicalMemoryId: uuid("shared_logical_memory_id").references(
       (): AnyPgColumn => logicalMemories.id,
       { onDelete: "restrict" }
@@ -9189,6 +9225,11 @@ export const collaborationThreads = pgTable(
       name: "collaboration_threads_workspace_team_fk"
     }).onDelete("restrict"),
     foreignKey({
+      columns: [table.teamProjectId, table.teamId],
+      foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
+      name: "collaboration_threads_project_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
       columns: [
         table.shareGrantId,
         table.teamId,
@@ -9210,6 +9251,24 @@ export const collaborationThreads = pgTable(
       .on(table.personalOwnerUserId, table.normalizedNameHash)
       .where(
         sql`${table.kind} = 'personal_channel' and ${table.lifecycle} = 'active'`
+      ),
+    uniqueIndex("collaboration_threads_team_channel_active_unique")
+      .on(table.teamId, table.normalizedNameHash)
+      .where(
+        sql`${table.kind} = 'team_channel' and ${table.systemKey} is null and ${table.lifecycle} = 'active'`
+      ),
+    uniqueIndex("collaboration_threads_team_system_key_unique")
+      .on(table.teamId, table.systemKey)
+      .where(
+        sql`${table.kind} = 'team_channel' and ${table.systemKey} is not null`
+      ),
+    uniqueIndex("collaboration_threads_team_project_channel_unique")
+      .on(table.teamProjectId)
+      .where(sql`${table.kind} = 'team_project_channel'`),
+    uniqueIndex("collaboration_threads_team_project_name_active_unique")
+      .on(table.teamProjectId, table.normalizedNameHash)
+      .where(
+        sql`${table.kind} = 'team_project_channel' and ${table.lifecycle} = 'active'`
       ),
     uniqueIndex("collaboration_threads_workspace_channel_active_unique")
       .on(table.teamWorkspaceId, table.normalizedNameHash)
@@ -9238,6 +9297,38 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is not null
         and ${table.teamId} is null
         and ${table.teamWorkspaceId} is null
+        and ${table.teamProjectId} is null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} = '[koed encrypted collaboration name]'
+        and length(${table.normalizedNameHash}) = 64
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.kind} = 'team_channel'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is null
+        and ${table.teamProjectId} is null
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+        and (
+          (${table.systemKey} is null
+            and ${table.nameMarker} = '[koed encrypted collaboration name]'
+            and length(${table.normalizedNameHash}) = 64)
+          or (${table.systemKey} = 'team.general'
+            and ${table.nameMarker} = '[koed encrypted collaboration name]'
+            and length(${table.normalizedNameHash}) = 64)
+        )
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.kind} = 'team_project_channel'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is null
+        and ${table.teamProjectId} is not null
         and ${table.systemKey} is null
         and ${table.nameMarker} = '[koed encrypted collaboration name]'
         and length(${table.normalizedNameHash}) = 64
@@ -9250,6 +9341,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is not null
+        and ${table.teamProjectId} is null
         and (
           (
             ${table.systemKey} is null
@@ -9273,6 +9365,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is null
+        and ${table.teamProjectId} is null
         and ${table.systemKey} is null
         and ${table.nameMarker} is null
         and ${table.topicMarker} is null
@@ -9286,6 +9379,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is not null
+        and ${table.teamProjectId} is null
         and ${table.systemKey} is null
         and ${table.nameMarker} is null
         and ${table.topicMarker} is null
@@ -9297,7 +9391,7 @@ export const collaborationThreads = pgTable(
     ),
     check(
       "collaboration_threads_system_key_check",
-      sql`${table.systemKey} is null or ${table.systemKey} = 'workspace.general'`
+      sql`${table.systemKey} is null or ${table.systemKey} in ('workspace.general', 'team.general')`
     ),
     check("collaboration_threads_version_check", sql`${table.version} > 0`),
     check(

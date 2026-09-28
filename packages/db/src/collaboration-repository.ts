@@ -41,6 +41,8 @@ export type CollaborationScope = "personal" | "team";
 export type PersonalCollaborationThreadKind = "personal_channel";
 
 export type TeamCollaborationThreadKind =
+  | "team_channel"
+  | "team_project_channel"
   | "workspace_channel"
   | "dm"
   | "group_dm"
@@ -90,9 +92,10 @@ export interface CollaborationThreadRecord {
   personalOwnerUserId: string | null;
   teamId: string | null;
   teamWorkspaceId: string | null;
+  teamProjectId: string | null;
   sharedLogicalMemoryId: string | null;
   shareGrantId: string | null;
-  systemKey: "workspace.general" | null;
+  systemKey: "workspace.general" | "team.general" | null;
   name: string | null;
   topic: string | null;
   createdByUserId: string | null;
@@ -311,6 +314,23 @@ export type CreateCollaborationThreadInput =
       topic?: string | null;
     }
   | {
+      kind: "team_channel";
+      idempotencyKey: string;
+      teamId: string;
+      name: string;
+      topic?: string | null;
+      /** Internal only: used to idempotently ensure the Team general channel. */
+      systemKey?: "team.general";
+    }
+  | {
+      kind: "team_project_channel";
+      idempotencyKey: string;
+      teamId: string;
+      teamProjectId: string;
+      name: string;
+      topic?: string | null;
+    }
+  | {
       kind: "workspace_channel";
       idempotencyKey: string;
       teamId: string;
@@ -344,6 +364,26 @@ export interface CollaborationRepository {
     actor: ActorContext,
     input: CreateCollaborationThreadInput
   ): Promise<CollaborationThreadRecord | null>;
+  ensureTeamGeneralChannel(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<CollaborationThreadRecord | null>;
+  createTeamSharedProject(
+    actor: ActorContext,
+    input: { teamId: string; idempotencyKey: string; name: string }
+  ): Promise<{
+    id: string;
+    teamId: string;
+    thread: CollaborationThreadRecord;
+  } | null>;
+  listTeamSharedProjects(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<Array<{
+    id: string;
+    teamId: string;
+    thread: CollaborationThreadRecord;
+  }> | null>;
   getThread(
     actor: ActorContext,
     input: { threadId: string; includeArchived?: boolean }
@@ -548,9 +588,10 @@ type AuthorizedThreadRow = {
   personal_owner_user_id: string | null;
   team_id: string | null;
   team_workspace_id: string | null;
+  team_project_id: string | null;
   shared_logical_memory_id: string | null;
   share_grant_id: string | null;
-  system_key: "workspace.general" | null;
+  system_key: "workspace.general" | "team.general" | null;
   name_marker: string | null;
   topic_marker: string | null;
   normalized_name_hash: string | null;
@@ -1268,6 +1309,8 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
       and team.entitlement_status in ('active', 'grace')
       and actor_membership.user_id is not null
       and (
+        ct.kind in ('team_channel', 'team_project_channel')
+        or (
         (
           ct.kind in ('dm', 'group_dm')
           and actor_participant.user_id is not null
@@ -1302,6 +1345,7 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
             workspacePolicy: "current_workspace_policy"
           })}
         )
+        )
       )
     )
   )
@@ -1315,6 +1359,7 @@ const selectThreadColumnsSql = `
   ct.personal_owner_user_id,
   ct.team_id,
   ct.team_workspace_id,
+  ct.team_project_id,
   ct.shared_logical_memory_id,
   ct.share_grant_id,
   ct.system_key,
@@ -1417,6 +1462,27 @@ const currentThreadAudienceMembers = async (
         order by participant.user_id
       `,
       [thread.id]
+    );
+    return result.rows.map((row) => row.user_id);
+  }
+  if (
+    thread.kind === "team_channel" ||
+    thread.kind === "team_project_channel"
+  ) {
+    const result = await client.query<{ user_id: string }>(
+      `
+        select membership.user_id
+        from team_memberships membership
+        join users member_user
+          on member_user.id = membership.user_id
+         and member_user.disabled_at is null
+         and member_user.deleted_at is null
+        where membership.team_id = $1
+          and membership.status = 'enabled'
+          and membership.disabled_at is null
+        order by membership.user_id
+      `,
+      [thread.team_id]
     );
     return result.rows.map((row) => row.user_id);
   }
@@ -1609,6 +1675,7 @@ const mapThreadRows = async (
       personalOwnerUserId: row.personal_owner_user_id,
       teamId: row.team_id,
       teamWorkspaceId: row.team_workspace_id,
+      teamProjectId: row.team_project_id,
       sharedLogicalMemoryId: row.shared_logical_memory_id,
       shareGrantId: row.share_grant_id,
       systemKey: row.system_key,
@@ -2863,6 +2930,7 @@ type PreparedThreadCreation = {
   personalOwnerUserId: string | null;
   teamId: string | null;
   teamWorkspaceId: string | null;
+  teamProjectId: string | null;
   sharedLogicalMemoryId: string | null;
   shareGrantId: string | null;
   name: string | null;
@@ -2871,6 +2939,7 @@ type PreparedThreadCreation = {
   participantKey: string | null;
   participantUserIds: string[];
   pendingShareActivation: boolean;
+  systemKey: "team.general" | null;
 };
 
 const prepareThreadCreation = async (
@@ -2887,6 +2956,8 @@ const prepareThreadCreation = async (
   let personalOwnerUserId: string | null = null;
   let teamId: string | null = null;
   let teamWorkspaceId: string | null = null;
+  let teamProjectId: string | null = null;
+  let systemKey: "team.general" | null = null;
   let sharedLogicalMemoryId: string | null = null;
   let shareGrantId: string | null = null;
   let name: string | null = null;
@@ -2899,6 +2970,49 @@ const prepareThreadCreation = async (
     if (!(await activeUser(client, actor))) return null;
     scope = "personal";
     personalOwnerUserId = actor.userId;
+    name = requireBoundedCodePoints(
+      input.name,
+      "name",
+      MAX_THREAD_NAME_CODE_POINTS
+    );
+    normalizedNameHash = hashDomain("thread-name", normalizeName(name));
+    topic =
+      input.topic === undefined || input.topic === null
+        ? null
+        : requireBoundedUtf8(input.topic, "topic", MAX_THREAD_TOPIC_BYTES);
+  } else if (input.kind === "team_channel") {
+    scope = "team";
+    teamId = input.teamId;
+    if (!(await activeTeamMember(client, actor, input.teamId))) return null;
+    name = requireBoundedCodePoints(
+      input.name,
+      "name",
+      MAX_THREAD_NAME_CODE_POINTS
+    );
+    normalizedNameHash = hashDomain("thread-name", normalizeName(name));
+    topic =
+      input.topic === undefined || input.topic === null
+        ? null
+        : requireBoundedUtf8(input.topic, "topic", MAX_THREAD_TOPIC_BYTES);
+    systemKey = input.systemKey ?? null;
+    if (
+      (systemKey === "team.general" && normalizeName(name) !== "general") ||
+      (systemKey === null && normalizeName(name) === "general")
+    ) {
+      throw new CollaborationStateConflictError(
+        "The Team general channel name is reserved"
+      );
+    }
+  } else if (input.kind === "team_project_channel") {
+    scope = "team";
+    teamId = input.teamId;
+    teamProjectId = input.teamProjectId;
+    if (!(await activeTeamMember(client, actor, input.teamId))) return null;
+    const project = await client.query(
+      `select 1 from collaboration_team_shared_projects where id = $1 and team_id = $2`,
+      [input.teamProjectId, input.teamId]
+    );
+    if (project.rowCount !== 1) return null;
     name = requireBoundedCodePoints(
       input.name,
       "name",
@@ -2996,6 +3110,8 @@ const prepareThreadCreation = async (
     personalOwnerUserId,
     teamId,
     teamWorkspaceId,
+    teamProjectId,
+    systemKey,
     sharedLogicalMemoryId,
     shareGrantId,
     normalizedName: name === null ? null : normalizeName(name),
@@ -3028,6 +3144,7 @@ const prepareThreadCreation = async (
     personalOwnerUserId,
     teamId,
     teamWorkspaceId,
+    teamProjectId,
     sharedLogicalMemoryId,
     shareGrantId,
     name,
@@ -3035,6 +3152,7 @@ const prepareThreadCreation = async (
     normalizedNameHash,
     participantKey: participantSetKey,
     participantUserIds: participants,
+    systemKey,
     pendingShareActivation:
       input.kind === "shared_session_discussion" &&
       input.pendingShareActivation === true
@@ -3050,6 +3168,16 @@ const findNaturalThreadId = async (
     result = await client.query(
       `select id from collaboration_threads where kind = 'personal_channel' and personal_owner_user_id = $1 and normalized_name_hash = $2 and lifecycle = 'active' limit 1`,
       [input.personalOwnerUserId, input.normalizedNameHash]
+    );
+  } else if (input.kind === "team_channel") {
+    result = await client.query(
+      `select id from collaboration_threads where kind = 'team_channel' and team_id = $1 and system_key is not distinct from $2 and normalized_name_hash = $3 and lifecycle = 'active' limit 1`,
+      [input.teamId, input.systemKey, input.normalizedNameHash]
+    );
+  } else if (input.kind === "team_project_channel") {
+    result = await client.query(
+      `select id from collaboration_threads where kind = 'team_project_channel' and team_project_id = $1 and normalized_name_hash = $2 and lifecycle = 'active' limit 1`,
+      [input.teamProjectId, input.normalizedNameHash]
     );
   } else if (input.kind === "workspace_channel") {
     result = await client.query(
@@ -3083,9 +3211,11 @@ const existingCreationMatches = async (
     row.personal_owner_user_id !== input.personalOwnerUserId ||
     row.team_id !== input.teamId ||
     row.team_workspace_id !== input.teamWorkspaceId ||
+    row.team_project_id !== input.teamProjectId ||
     row.shared_logical_memory_id !== input.sharedLogicalMemoryId ||
     row.share_grant_id !== input.shareGrantId ||
     row.normalized_name_hash !== input.normalizedNameHash ||
+    row.system_key !== input.systemKey ||
     row.participant_key !== input.participantKey
   ) {
     return false;
@@ -3131,17 +3261,19 @@ const insertThread = async (
         personal_owner_user_id,
         team_id,
         team_workspace_id,
+        team_project_id,
         shared_logical_memory_id,
         share_grant_id,
         name_marker,
         topic_marker,
         normalized_name_hash,
         participant_key,
+        system_key,
         created_by_user_id
       )
       values (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16
       )
       on conflict do nothing
       returning id
@@ -3154,12 +3286,14 @@ const insertThread = async (
       prepared.personalOwnerUserId,
       prepared.teamId,
       prepared.teamWorkspaceId,
+      prepared.teamProjectId,
       prepared.sharedLogicalMemoryId,
       prepared.shareGrantId,
       prepared.name === null ? null : THREAD_NAME_MARKER,
       prepared.topic === null ? null : THREAD_TOPIC_MARKER,
       prepared.normalizedNameHash,
       prepared.participantKey,
+      prepared.systemKey,
       actor.userId
     ]
   );
@@ -3295,9 +3429,19 @@ const updateThreadName = async (
     forUpdate: true
   });
   if (!row) return null;
-  if (row.kind !== "personal_channel" && row.kind !== "workspace_channel") {
+  if (
+    row.kind !== "personal_channel" &&
+    row.kind !== "team_channel" &&
+    row.kind !== "team_project_channel" &&
+    row.kind !== "workspace_channel"
+  ) {
     throw new CollaborationStateConflictError(
       "Only Personal and Workspace channels have mutable names"
+    );
+  }
+  if (row.kind === "team_channel" && row.system_key === "team.general") {
+    throw new CollaborationStateConflictError(
+      "The Team general channel cannot be renamed"
     );
   }
   if (row.version !== expectedVersion) {
@@ -3381,9 +3525,19 @@ const updateThreadTopicValue = async (
     forUpdate: true
   });
   if (!row) return null;
-  if (row.kind !== "personal_channel" && row.kind !== "workspace_channel") {
+  if (
+    row.kind !== "personal_channel" &&
+    row.kind !== "team_channel" &&
+    row.kind !== "team_project_channel" &&
+    row.kind !== "workspace_channel"
+  ) {
     throw new CollaborationStateConflictError(
       "Only Personal and Workspace channels have mutable topics"
+    );
+  }
+  if (row.kind === "team_channel" && row.system_key === "team.general") {
+    throw new CollaborationStateConflictError(
+      "The Team general channel topic cannot be changed"
     );
   }
   if (row.version !== expectedVersion) {
@@ -3452,6 +3606,11 @@ const transitionThreadLifecycle = async (
     forUpdate: true
   });
   if (!row) return null;
+  if (row.kind === "team_channel" && row.system_key === "team.general") {
+    throw new CollaborationStateConflictError(
+      "The Team general channel cannot be archived"
+    );
+  }
   if (row.version !== expectedVersion) {
     throw new CollaborationVersionConflictError();
   }
@@ -4306,6 +4465,126 @@ export const createCollaborationRepository = (
           requireProvider(prepared.scope),
           prepared
         );
+      });
+    },
+
+    async ensureTeamGeneralChannel(actor, teamId) {
+      return withTransaction(pool, async (client) => {
+        const prepared = await prepareThreadCreation(client, actor, {
+          kind: "team_channel",
+          idempotencyKey: `team-general:${teamId}`,
+          teamId,
+          name: "general",
+          topic: null,
+          systemKey: "team.general"
+        });
+        if (!prepared) return null;
+        return insertThread(client, actor, requireProvider("team"), prepared);
+      });
+    },
+
+    async createTeamSharedProject(actor, input) {
+      return withTransaction(pool, async (client) => {
+        if (!(await activeTeamMember(client, actor, input.teamId))) return null;
+        const idempotencyKey = requireBoundedText(
+          input.idempotencyKey,
+          "idempotencyKey",
+          MAX_IDEMPOTENCY_KEY_LENGTH
+        );
+        const name = requireBoundedCodePoints(
+          input.name,
+          "name",
+          MAX_THREAD_NAME_CODE_POINTS
+        );
+        const creationRequestHash = requestHash({
+          teamId: input.teamId,
+          normalizedName: normalizeName(name)
+        });
+        const projectId = uuidFromHash(
+          `koed:team-shared-project-id:v1\n${input.teamId}\n${actor.userId}\n${hashDomain("team-project-idempotency", idempotencyKey)}`
+        );
+        const inserted = await client.query<{ id: string }>(
+          `
+            insert into collaboration_team_shared_projects (
+              id, team_id, created_by_user_id, creation_request_hash
+            ) values ($1, $2, $3, $4)
+            on conflict do nothing
+            returning id
+          `,
+          [projectId, input.teamId, actor.userId, creationRequestHash]
+        );
+        if (inserted.rowCount === 0) {
+          const existing = await client.query<{
+            creation_request_hash: string;
+          }>(
+            `select creation_request_hash from collaboration_team_shared_projects where id = $1 and team_id = $2`,
+            [projectId, input.teamId]
+          );
+          if (
+            !existing.rows[0] ||
+            existing.rows[0].creation_request_hash !== creationRequestHash
+          ) {
+            throw new CollaborationIdempotencyConflictError(
+              "Shared Project request conflicts with an existing Project"
+            );
+          }
+        }
+        const prepared = await prepareThreadCreation(client, actor, {
+          kind: "team_project_channel",
+          idempotencyKey: `team-project-channel:${input.idempotencyKey}`,
+          teamId: input.teamId,
+          teamProjectId: projectId,
+          name
+        });
+        if (!prepared) return null;
+        const thread = await insertThread(
+          client,
+          actor,
+          requireProvider("team"),
+          prepared
+        );
+        return thread ? { id: projectId, teamId: input.teamId, thread } : null;
+      });
+    },
+
+    async listTeamSharedProjects(actor, teamId) {
+      if (!(await activeTeamMember(pool, actor, teamId))) return null;
+      const projects = await pool.query<{
+        id: string;
+        team_id: string;
+        thread_id: string;
+      }>(
+        `
+          select project.id, project.team_id, thread.id as thread_id
+          from collaboration_team_shared_projects project
+          join collaboration_threads thread
+            on thread.team_project_id = project.id
+           and thread.team_id = project.team_id
+           and thread.kind = 'team_project_channel'
+           and thread.lifecycle = 'active'
+          where project.team_id = $1
+          order by project.created_at, project.id
+          limit $2
+        `,
+        [teamId, MAX_SNAPSHOT_THREADS]
+      );
+      const authorized = await listAuthorizedThreadRows(pool, actor, {
+        scope: "team",
+        teamId,
+        kinds: ["team_project_channel"],
+        limit: MAX_SNAPSHOT_THREADS
+      });
+      if (authorized === null) return null;
+      const byId = new Map(
+        (
+          await mapThreadRows(pool, actor, requireProvider("team"), authorized)
+        ).map((thread) => [thread.id, thread])
+      );
+      return projects.rows.flatMap((project) => {
+        const thread = byId.get(project.thread_id);
+        return thread
+          ? [{ id: project.id, teamId: project.team_id, thread }]
+          : [];
       });
     },
 

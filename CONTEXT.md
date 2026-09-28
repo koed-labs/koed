@@ -330,7 +330,9 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Team** may have one or more **Workspaces**
 - A **Workspace** has one stable shared ID for memories
 - A **User** may have **Workspace Access** through a **Team**
-- A **Project** may resolve to one **Workspace**
+- Within one **Team**, a **Project** may resolve to one **Workspace**
+- A **Project** may be shared with multiple **Teams**; each Team has its own **Team Chat Thread**, and its messages are not visible to the other Teams
+- Sharing a **Project** does not automatically share its Personal Conversations or Personal Memory
 - **Cross-Identity Sync** keeps one logical memory lifespan available across
   identities or deployments without creating a fork
 - **Fork/Import** creates a separate memory lifespan only when explicitly

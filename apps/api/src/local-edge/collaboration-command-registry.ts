@@ -313,6 +313,40 @@ export const collaborationCommandRegistry = {
       result.name === command.input.name &&
       result.topic === command.input.topic
   },
+  "collaboration.create_team_channel": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: (command) => ({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/channels`,
+      body: { name: command.input.name, topic: command.input.topic },
+      resultKey: "thread",
+      idempotencyKey: command.requestId
+    }),
+    matchesTeamResult: (command, result) =>
+      result.kind === "team_channel" &&
+      result.teamId === command.input.teamId &&
+      result.name === command.input.name &&
+      result.topic === command.input.topic
+  },
+  "collaboration.create_team_shared_project": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: (command) => ({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/projects`,
+      body: { name: command.input.name },
+      resultKey: "thread",
+      idempotencyKey: command.requestId
+    }),
+    matchesTeamResult: (command, result) =>
+      result.kind === "team_project_channel" &&
+      result.teamId === command.input.teamId &&
+      result.name === command.input.name &&
+      typeof result.teamProjectId === "string"
+  },
   "collaboration.start_direct_message": {
     scope: "team",
     desktopOperationFamily: write,

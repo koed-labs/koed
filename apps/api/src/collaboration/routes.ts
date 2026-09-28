@@ -17,6 +17,7 @@ import {
   collaborationIdempotencyHeadersSchema,
   collaborationThreadParamsSchema,
   createCollaborationChannelSchema,
+  createTeamSharedProjectSchema,
   createCollaborationDmSchema,
   createCollaborationGroupDmSchema,
   createCollaborationMessageSchema,
@@ -396,11 +397,151 @@ export const registerCollaborationRoutes = (
       );
       const { teamId } = teamCollaborationParamsSchema.parse(request.params);
       const query = listCollaborationThreadsQuerySchema.parse(request.query);
-      const threads = await context
-        .requireCollaborationRepository()
-        .listThreads({ userId: user.id }, { scope: "team", teamId, ...query });
+      const repository = context.requireCollaborationRepository();
+      if (
+        !(await repository.ensureTeamGeneralChannel(
+          { userId: user.id },
+          teamId
+        ))
+      ) {
+        throw forbidden();
+      }
+      const threads = await repository.listThreads(
+        { userId: user.id },
+        { scope: "team", teamId, ...query }
+      );
       if (!threads) throw forbidden();
       return { threads: publicTeamThreads(threads) };
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/channels",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const query = listCollaborationThreadsQuerySchema.parse(request.query);
+      const repository = context.requireCollaborationRepository();
+      if (
+        !(await repository.ensureTeamGeneralChannel(
+          { userId: user.id },
+          teamId
+        ))
+      ) {
+        throw forbidden();
+      }
+      const threads = await repository.listThreads(
+        { userId: user.id },
+        {
+          scope: "team",
+          teamId,
+          kinds: ["team_channel"],
+          includeArchived: query.includeArchived,
+          limit: query.limit
+        }
+      );
+      if (!threads) throw forbidden();
+      return { threads: publicTeamThreads(threads) };
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/teams/:teamId/channels",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_write"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const input = createCollaborationChannelSchema.parse(request.body);
+      await enforceCollaborationAdmission(
+        reply,
+        context.admission.admitChannelCreation({ userId: user.id, teamId })
+      );
+      const thread = await context
+        .requireCollaborationRepository()
+        .createThread(
+          { userId: user.id },
+          {
+            kind: "team_channel",
+            idempotencyKey: parseIdempotencyKey(request),
+            teamId,
+            ...input
+          }
+        );
+      if (!thread) throw forbidden();
+      return reply.status(201).send({
+        thread: publicCollaborationThread(thread)
+      });
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/projects",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const projects = await context
+        .requireCollaborationRepository()
+        .listTeamSharedProjects({ userId: user.id }, teamId);
+      if (!projects) throw forbidden();
+      return {
+        projects: projects.map(({ id, teamId: projectTeamId, thread }) => ({
+          id,
+          teamId: projectTeamId,
+          name: thread.name,
+          thread: publicCollaborationThread(thread)
+        }))
+      };
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/teams/:teamId/projects",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_write"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const input = createTeamSharedProjectSchema.parse(request.body);
+      await enforceCollaborationAdmission(
+        reply,
+        context.admission.admitChannelCreation({ userId: user.id, teamId })
+      );
+      const project = await context
+        .requireCollaborationRepository()
+        .createTeamSharedProject(
+          { userId: user.id },
+          {
+            teamId,
+            idempotencyKey: parseIdempotencyKey(request),
+            name: input.name
+          }
+        );
+      if (!project) throw forbidden();
+      return reply.status(201).send({
+        project: {
+          id: project.id,
+          teamId: project.teamId,
+          name: project.thread.name
+        },
+        thread: publicCollaborationThread(project.thread)
+      });
     }
   );
 

@@ -27,6 +27,8 @@ User
 +-- Team
     +-- Team people
     +-- Team-scoped direct messages
+    +-- Team-wide channels
+    +-- Shared Project channels
     +-- Workspace
         +-- Channels
         +-- Team-shared Memory
@@ -40,9 +42,15 @@ User
 - A Team is the membership and member-communication boundary.
 - A Workspace is a stable collaboration and Team-shared Memory subdivision
   within a Team.
-- A Project is local AI-client or code context. It may resolve to a Workspace,
-  but it is not an authorization key.
-- Every Team channel belongs to one Workspace.
+- A local Project is AI-client or code context. A Team-specific shared Project
+  association has an opaque identity and channel; it contains no local path or
+  repository metadata and is not an authorization shortcut to a Workspace.
+- Team-wide channels and Team Project channels belong to a Team, not a
+  Workspace. Workspace channels remain separately scoped and retain their
+  existing access grants.
+- Every enabled Team member may read and post in Team-wide and Team Project
+  channels. Membership does not grant access to restricted Workspace channels
+  or Team-shared Memory.
 - Team direct messages and group direct messages belong to one Team and do not
   belong to a Workspace.
 - Personal Notes and Personal channels belong only to their Personal owner.
@@ -142,7 +150,9 @@ Team Chat Threads express their scope and kind directly.
 | Kind                      | Scope    | Owner | Team | Workspace | Participants                   |
 | ------------------------- | -------- | ----- | ---- | --------- | ------------------------------ |
 | Personal channel          | Personal | yes   | no   | no        | owner                          |
-| Team channel              | Team     | no    | yes  | yes       | current Workspace audience     |
+| Team channel              | Team     | no    | yes  | no        | current enabled Team members   |
+| Team Project channel      | Team     | no    | yes  | no        | current enabled Team members   |
+| Workspace channel         | Team     | no    | yes  | yes       | current Workspace audience     |
 | Direct message            | Team     | no    | yes  | no        | two enabled Team members       |
 | Group direct message      | Team     | no    | yes  | no        | immutable enabled member set   |
 | Shared-session discussion | Team     | no    | yes  | yes       | current shared-source audience |
@@ -150,18 +160,48 @@ Team Chat Threads express their scope and kind directly.
 The data model enforces valid scope combinations and durable identity:
 
 - unique active normalized Personal-channel names per owner;
-- unique active normalized Team-channel names per Workspace;
+- unique active normalized Team-channel names per Team, with reserved `general`;
+- one Team Project identity and channel per Team-specific local Project link;
+- unique active normalized Workspace-channel names per Workspace;
 - one direct-message thread per normalized User pair and Team;
 - one group direct-message thread per immutable normalized participant set and
   Team;
 - one companion discussion per logical shared source and Workspace;
 - same-Team and same-Workspace foreign-key relationships;
+- same-Team Team Project and channel relationships;
 - same-thread read cursors and message references; and
 - immutable shared-source identity and complete summary provenance.
 
 Threads retain stable IDs, normalized keys, lifecycle timestamps, archive
 state, activity time, and optimistic versions. Archive hides a thread or
 Workspace from normal navigation without physically deleting retained content.
+
+### Team-Wide Chat And Shared Projects
+
+Migration 0051 adds Team-wide channel and Team Project channel kinds plus a
+Team-scoped opaque shared-Project association. The association stores its Team,
+creator, idempotency hash, and timestamps. Project names stay in the encrypted
+channel payload. The hosted record does not store a local path, repository URL,
+branch, or device-local Project identifier. Linking the same local Project to
+two Teams creates separate opaque IDs, channels, messages, history, receipts,
+and realtime audience.
+
+`GET` and `POST /v1/collaboration/teams/:teamId/channels` list and create
+Team-wide channels. `GET` and `POST /v1/collaboration/teams/:teamId/projects`
+list and create a Team-specific Project association with its channel. Project
+creation returns the opaque Team Project ID and the channel in one transaction.
+The client keeps any local-Project-to-Team-Project mapping on the device. The
+reserved Team `general` channel is ensured idempotently on authorized Team chat
+bootstrap. It does not rename, promote, or widen an existing Workspace channel.
+
+Team channel creation, Project creation, message access, and receipts use the
+`team_chat_read` or `team_chat_write` operation families and current enabled
+Team membership. Newly enabled members can read prior Team channel and Project
+history. Removal or disablement removes history and live-stream access at the
+next request and on replay. Workspace channel access still requires its
+existing Workspace grant; Team chat authority does not grant Workspace Memory
+recall, sharing, or administration. Team Project channels have no Workspace
+binding in this release.
 
 ### Messages, Unread State, And Receipts
 

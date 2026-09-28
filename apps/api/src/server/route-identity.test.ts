@@ -35,8 +35,7 @@ describe("route identity contract", () => {
       status: "implemented"
     });
     expect(
-      openApiPaths["/v1/managed-conversations/{executionId}/start/cancel"]
-        ?.post
+      openApiPaths["/v1/managed-conversations/{executionId}/start/cancel"]?.post
     ).toMatchObject({
       security: [
         { sessionCookie: [] },
@@ -618,6 +617,10 @@ describe("route identity contract", () => {
         "PATCH /v1/collaboration/personal/notes/{noteId}/body",
         "GET /v1/collaboration/teams/{teamId}/participants",
         "GET /v1/collaboration/teams/{teamId}/threads",
+        "GET /v1/collaboration/teams/{teamId}/channels",
+        "POST /v1/collaboration/teams/{teamId}/channels",
+        "GET /v1/collaboration/teams/{teamId}/projects",
+        "POST /v1/collaboration/teams/{teamId}/projects",
         "GET /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
         "POST /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
         "GET /v1/collaboration/teams/{teamId}/direct-messages",

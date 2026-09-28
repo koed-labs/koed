@@ -124,6 +124,10 @@ export const createCollaborationChannelSchema = z
   })
   .strict();
 
+export const createTeamSharedProjectSchema = z
+  .object({ name: channelNameSchema })
+  .strict();
+
 export const createCollaborationDmSchema = z
   .object({ participantUserId: strictUuidSchema })
   .strict();

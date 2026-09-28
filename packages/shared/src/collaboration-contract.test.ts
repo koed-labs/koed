@@ -22,6 +22,7 @@ import {
   collaborationRendererEventSchema,
   collaborationSnapshotResultCommands,
   collaborationSnapshotSchema,
+  collaborationTeamSharedProjectSchema,
   collaborationTeamPresenceStatusCatalogueSchema,
   collaborationThreadSchema,
   collaborationTeamPersonSchema,
@@ -58,7 +59,8 @@ const ids = {
   membership: "00000000-0000-4000-8000-000000000020",
   consent: "00000000-0000-4000-8000-000000000021",
   mutation: "00000000-0000-4000-8000-000000000022",
-  remoteReplica: "00000000-0000-4000-8000-000000000023"
+  remoteReplica: "00000000-0000-4000-8000-000000000023",
+  project: "00000000-0000-4000-8000-000000000024"
 } as const;
 
 const timestamp = "2026-07-17T08:30:00.000Z";
@@ -136,6 +138,29 @@ const workspaceChannel = () => ({
   workspaceId: ids.workspace,
   name: "general",
   ownerUserId: undefined
+});
+
+const teamThreadBase = () => {
+  const { ownerUserId: _ownerUserId, ...base } = personalChannel();
+  return base;
+};
+
+const teamChannel = () => ({
+  ...teamThreadBase(),
+  scope: "team" as const,
+  teamId: ids.team,
+  kind: "team_channel" as const,
+  name: "general",
+  systemKey: "team.general" as const
+});
+
+const teamProjectChannel = () => ({
+  ...teamThreadBase(),
+  scope: "team" as const,
+  teamId: ids.team,
+  kind: "team_project_channel" as const,
+  name: "Koed",
+  teamProjectId: ids.project
 });
 
 const message = () => ({
@@ -1580,6 +1605,101 @@ describe("collaboration snapshots and DTOs", () => {
         }
       }).success
     ).toBe(false);
+  });
+
+  it("binds Team channels and Shared Projects to one Team-specific thread", () => {
+    const channel = teamChannel();
+    const projectChannel = teamProjectChannel();
+    const project = {
+      id: ids.project,
+      teamId: ids.team,
+      name: "Koed"
+    };
+    const remotePrincipal = {
+      ...participant(ids.otherUser, "Bob"),
+      presence: "available" as const
+    };
+    const teamSnapshot = collaborationSnapshotSchema.parse({
+      ...snapshot(),
+      navigation: {
+        ...snapshot().navigation,
+        teamPrincipal: remotePrincipal,
+        teams: [
+          {
+            id: ids.team,
+            name: "Remote Team",
+            role: "member",
+            lifecycle: "active",
+            unreadCount: 0,
+            people: [
+              {
+                ...remotePrincipal,
+                teamPresence: {
+                  mode: "auto",
+                  manualStatus: "available",
+                  activityLevel: "active",
+                  lastActivityAt: timestamp,
+                  nextTransitionAt: timestamp,
+                  preferenceVersion: 1
+                }
+              }
+            ],
+            directMessages: [],
+            channels: [channel],
+            sharedProjects: [{ ...project, thread: projectChannel }],
+            workspaces: [],
+            version: 1
+          }
+        ]
+      },
+      selection: {
+        kind: "team_project_channel",
+        teamId: ids.team,
+        teamProjectId: ids.project,
+        threadId: ids.thread
+      },
+      view: { kind: "empty" }
+    });
+
+    expect(teamSnapshot.navigation.teams[0]?.channels[0]).toEqual(channel);
+    expect(teamSnapshot.navigation.teams[0]?.sharedProjects[0]).toEqual({
+      ...project,
+      thread: projectChannel
+    });
+    expect(collaborationTeamSharedProjectSchema.parse(project)).toEqual(
+      project
+    );
+    expect(
+      collaborationTeamSharedProjectSchema.safeParse({
+        ...project,
+        localPath: "/private/repository"
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.create_team_channel",
+        input: { teamId: ids.team, name: "general", topic: null }
+      }).success
+    ).toBe(true);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.create_team_shared_project",
+        input: { teamId: ids.team, name: "Koed" }
+      }).success
+    ).toBe(true);
+    expect(
+      collaborationCommandResultSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.create_team_shared_project",
+        ok: true,
+        data: { project, thread: projectChannel }
+      }).success
+    ).toBe(true);
   });
 
   it("returns a versioned Presence catalogue and safely degrades future status keys", () => {
