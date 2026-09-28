@@ -1862,6 +1862,380 @@ describe("deferred Managed Conversation runner starts", () => {
 });
 
 describe("Managed Conversation service lifecycle", () => {
+  it("recovers a hosted Codex execution without named-Agent repository methods and reuses it for a generic prompt", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-hosted-recovery-"));
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const providerThreadId = randomUUID();
+    const localSessionId = randomUUID();
+    const logicalSessionId = randomUUID();
+    const projectPath = resolve(root, "project");
+    const transcriptPath = resolve(root, "transcript.jsonl");
+    const managedHome = resolve(root, "managed-home");
+    await mkdir(projectPath, { recursive: true });
+    await mkdir(managedHome, { recursive: true });
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({ type: "session_meta", payload: { id: providerThreadId } })}\n`
+    );
+    const execution: ManagedConversationExecutionRecord = {
+      ...terminalExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      state: "running",
+      logicalSessionId,
+      providerThreadId,
+      runnerId: randomUUID(),
+      runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const binding: ManagedConversationRuntimeBindingRecord = {
+      ...pendingBindingFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId,
+        sourceProjectPath: projectPath
+      }),
+      projectPath,
+      checkoutId: randomUUID(),
+      checkoutKind: "user_managed_checkout",
+      checkoutLifecycle: "ready",
+      vcsDriver: "git",
+      localRepositoryCommonDirectory: projectPath,
+      localGitDirectory: resolve(projectPath, ".git"),
+      repositoryIdentityHash: "a".repeat(64),
+      worktreeIdentityHash: "b".repeat(64),
+      baseRef: "refs/heads/main",
+      baseObjectId: "c".repeat(40),
+      branchRef: "refs/heads/main",
+      headObjectId: "c".repeat(40),
+      creationOperationId: randomUUID(),
+      localSessionId,
+      providerThreadId,
+      transcriptPath,
+      managedHome
+    };
+    const promptCommandId = randomUUID();
+    const clientUserMessageId = randomUUID();
+    const promptCommand = {
+      id: promptCommandId,
+      ownerUserId,
+      executionId,
+      executionGeneration: 1,
+      commandKind: "prompt" as const,
+      sequence: 2,
+      attempts: 1,
+      leaseToken: randomUUID(),
+      clientUserMessageId,
+      payload: { prompt: "Continue from the hosted chat." },
+      execution
+    };
+    const baselineCheckpoint: ManagedConversationExecutionCheckpointRecord = {
+      id: randomUUID(),
+      ownerUserId,
+      executionId,
+      executionGeneration: 1,
+      commandId: promptCommandId,
+      providerTurnId: null,
+      sourceGenerationId: null,
+      sequence: 2,
+      checkpointKind: "baseline",
+      checkpointStatus: "unsupported",
+      failureCode: null,
+      repositoryIdentityHash: null,
+      worktreeIdentityHash: null,
+      vcsDriver: null,
+      checkpointRef: null,
+      commitObjectId: null,
+      capturedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    let claimCount = 0;
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => [execution]),
+      getManagedConversationExecution: vi.fn(async () => execution),
+      setManagedConversationExecutionState: vi.fn(async () => execution),
+      getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+      getCapturedSession: vi.fn(async () => ({
+        id: localSessionId,
+        logicalSessionId,
+        externalSessionId: providerThreadId
+      })),
+      acquireManagedConversationExecutionLease: vi.fn(async () => true),
+      releaseManagedConversationRunner: vi.fn(async () => true),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => {
+        claimCount += 1;
+        return claimCount === 1 ? [] : [promptCommand];
+      }),
+      listManagedConversationExecutionCheckpoints: vi.fn(
+        async () => [baselineCheckpoint]
+      ),
+      cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
+      renewManagedConversationCommandLease: vi.fn(async () => true),
+      failManagedConversationCommand: vi.fn(async () => ({
+        updated: true,
+        reconciled: false,
+        requeued: false
+      }))
+      // Deliberately omit listPersonalAgentExecutionJobs and
+      // getManagedConversationCommand: this is the hosted combined repository.
+    };
+    const start = vi
+      .spyOn(CodexManagedConversationSession.prototype, "start")
+      .mockResolvedValue({
+        thread: { id: providerThreadId, path: transcriptPath, cwd: projectPath },
+        sessionId: localSessionId,
+        transcriptPath,
+        codexHome: managedHome
+      } as never);
+    const runTurn = vi
+      .spyOn(CodexManagedConversationSession.prototype, "runTurn")
+      .mockRejectedValue(new Error("stop after confirming session reuse"));
+    const close = vi
+      .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+      .mockResolvedValue();
+    const checkoutDriver = {
+      verify: vi.fn(async () => ({
+        checkoutId: binding.checkoutId,
+        vcsDriver: "git" as const,
+        ownership: "user_managed_checkout" as const,
+        canonicalPath: projectPath,
+        localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
+        localGitDirectory: binding.localGitDirectory,
+        repositoryIdentityHash: binding.repositoryIdentityHash,
+        worktreeIdentityHash: binding.worktreeIdentityHash,
+        baseRef: binding.baseRef,
+        baseObjectId: binding.baseObjectId,
+        branchRef: binding.branchRef,
+        headObjectId: binding.headObjectId
+      }))
+    } as unknown as GitExecutionCheckoutDriver;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const service = createManagedConversationService({
+      repository: repository as unknown as MemorySourceRepository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: process.execPath,
+      deviceId,
+      deploymentId,
+      koedHome: resolve(root, "koed-home"),
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      executionCheckoutDriver: checkoutDriver,
+      logger: logger as never
+    });
+    try {
+      await service.processOnce();
+      await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+      // Let startup recovery finish caching the newly resumed native session.
+      await new Promise((resolveTurn) => setImmediate(resolveTurn));
+
+      await expect(service.processOnce()).resolves.toEqual({
+        completed: 0,
+        failed: 1
+      });
+      expect(runTurn).toHaveBeenCalledOnce();
+      expect(runTurn).toHaveBeenCalledWith(
+        "Continue from the hosted chat.",
+        expect.any(Number),
+        `koed-user-message:${clientUserMessageId}`
+      );
+      expect(start).toHaveBeenCalledOnce();
+      // The mock turn fails after proving the recovered session was reused;
+      // the normal command failure path then closes that session.
+      expect(close).toHaveBeenCalledOnce();
+      expect(
+        logger.warn.mock.calls.some(([context]) =>
+          (context as { event?: { name?: string } }).event?.name ===
+          "worker.managed_conversation.runtime_recovery_deferred"
+        )
+      ).toBe(false);
+      expect(repository.failManagedConversationCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: promptCommandId,
+          state: "indeterminate"
+        })
+      );
+    } finally {
+      await service.stop();
+      start.mockRestore();
+      runTurn.mockRestore();
+      close.mockRestore();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("evicts and closes a session cached before a later recovery error", async () => {
+    vi.useFakeTimers();
+    const root = await mkdtemp(resolve(tmpdir(), "koed-late-recovery-error-"));
+    const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const providerThreadId = randomUUID();
+    const localSessionId = randomUUID();
+    const projectPath = resolve(root, "project");
+    const transcriptPath = resolve(root, "transcript.jsonl");
+    const managedHome = resolve(root, "managed-home");
+    await mkdir(projectPath, { recursive: true });
+    await mkdir(managedHome, { recursive: true });
+    await writeFile(transcriptPath, "{}\n");
+    const execution: ManagedConversationExecutionRecord = {
+      ...terminalExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      state: "running",
+      logicalSessionId: randomUUID(),
+      providerThreadId,
+      runnerId: randomUUID(),
+      runnerLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const binding: ManagedConversationRuntimeBindingRecord = {
+      ...pendingBindingFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId,
+        sourceProjectPath: projectPath
+      }),
+      projectPath,
+      checkoutId: randomUUID(),
+      checkoutKind: "user_managed_checkout",
+      checkoutLifecycle: "ready",
+      vcsDriver: "git",
+      localRepositoryCommonDirectory: projectPath,
+      localGitDirectory: resolve(projectPath, ".git"),
+      repositoryIdentityHash: "a".repeat(64),
+      worktreeIdentityHash: "b".repeat(64),
+      baseRef: "refs/heads/main",
+      baseObjectId: "c".repeat(40),
+      branchRef: "refs/heads/main",
+      headObjectId: "c".repeat(40),
+      creationOperationId: randomUUID(),
+      localSessionId,
+      providerThreadId,
+      transcriptPath,
+      managedHome
+    };
+    let recoveryLookupCount = 0;
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => [execution]),
+      getManagedConversationExecution: vi.fn(async () => execution),
+      setManagedConversationExecutionState: vi.fn(async () => execution),
+      getManagedConversationRuntimeBinding: vi.fn(async () => binding),
+      getCapturedSession: vi.fn(async () => ({
+        id: localSessionId,
+        logicalSessionId: execution.logicalSessionId,
+        externalSessionId: providerThreadId
+      })),
+      acquireManagedConversationExecutionLease: vi.fn(async () => true),
+      releaseManagedConversationRunner: vi.fn(async () => true),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => []),
+      getManagedConversationCommand: vi.fn(async () => null),
+      listPersonalAgentExecutionJobs: vi.fn(async () => {
+        recoveryLookupCount += 1;
+        if (recoveryLookupCount === 1) {
+          throw Object.assign(new TypeError("transient recovery lookup error"), {
+            name: "TypeError"
+          });
+        }
+        return { jobs: [], nextCursor: null };
+      }),
+      cancelManagedConversationRuntimeItems: vi.fn(async () => 0)
+    };
+    const start = vi
+      .spyOn(CodexManagedConversationSession.prototype, "start")
+      .mockResolvedValue({
+        thread: { id: providerThreadId, path: transcriptPath, cwd: projectPath },
+        sessionId: localSessionId,
+        transcriptPath,
+        codexHome: managedHome
+      } as never);
+    const close = vi
+      .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
+      .mockResolvedValue();
+    const checkoutDriver = {
+      verify: vi.fn(async () => ({
+        checkoutId: binding.checkoutId,
+        vcsDriver: "git" as const,
+        ownership: "user_managed_checkout" as const,
+        canonicalPath: projectPath,
+        localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
+        localGitDirectory: binding.localGitDirectory,
+        repositoryIdentityHash: binding.repositoryIdentityHash,
+        worktreeIdentityHash: binding.worktreeIdentityHash,
+        baseRef: binding.baseRef,
+        baseObjectId: binding.baseObjectId,
+        branchRef: binding.branchRef,
+        headObjectId: binding.headObjectId
+      }))
+    } as unknown as GitExecutionCheckoutDriver;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const service = createManagedConversationService({
+      repository: repository as unknown as MemorySourceRepository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: process.execPath,
+      deviceId,
+      deploymentId,
+      koedHome: resolve(root, "koed-home"),
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      executionCheckoutDriver: checkoutDriver,
+      logger: logger as never
+    });
+    try {
+      await service.processOnce();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(start).toHaveBeenCalledOnce();
+      expect(repository.releaseManagedConversationRunner).toHaveBeenCalledOnce();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: {
+            name: "worker.managed_conversation.runtime_recovery_deferred",
+            category: "managed_conversation"
+          },
+          error_name: "ManagedConversationFailure"
+        }),
+        expect.any(String)
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+      expect(close).toHaveBeenCalledOnce();
+      expect(recoveryLookupCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      await service.stop();
+      start.mockRestore();
+      close.mockRestore();
+      restoreRegistry();
+      await rm(root, { recursive: true, force: true });
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a recovered accepted prompt pending when transcript reconciliation is unavailable", async () => {
     const root = await mkdtemp(
       resolve(tmpdir(), "koed-checkpoint-prompt-recovery-")
