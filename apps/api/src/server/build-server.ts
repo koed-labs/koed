@@ -1561,6 +1561,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         repository.getManagedConversationRuntimeBinding,
       getLatestManagedConversationCommandForExecution:
         repository.getLatestManagedConversationCommandForExecution,
+      hasIndeterminateManagedConversationPrompt:
+        repository.hasIndeterminateManagedConversationPrompt,
       getManagedConversationRuntimeItem:
         repository.getManagedConversationRuntimeItem
     };

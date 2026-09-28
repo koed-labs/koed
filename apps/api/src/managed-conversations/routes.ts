@@ -3873,8 +3873,17 @@ export const registerManagedConversationRoutes = (
           { userId: user.id },
           executionId
         );
+      const hasIndeterminatePrompt =
+        await repository.hasIndeterminateManagedConversationPrompt(
+          { userId: user.id },
+          {
+            executionId,
+            executionGeneration: execution.executionGeneration
+          }
+        );
       return {
         execution: await publicExecutionFor(user.id, execution),
+        hasIndeterminatePrompt,
         latestCommand: latestCommand
           ? {
               id: latestCommand.id,

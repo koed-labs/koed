@@ -548,6 +548,10 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     executionId: string
   ): Promise<ManagedConversationCommandRecord | null>;
+  hasIndeterminateManagedConversationPrompt(
+    actor: ActorContext,
+    input: { executionId: string; executionGeneration: number }
+  ): Promise<boolean>;
   claimManagedConversationCommands(input: {
     ownerUserId?: string;
     runnerId: string;
@@ -3849,6 +3853,25 @@ export const createManagedConversationRepository = (
         [actor.userId, executionId]
       );
       return result.rows[0] ? mapCommand(result.rows[0]) : null;
+    },
+
+    async hasIndeterminateManagedConversationPrompt(
+      actor,
+      { executionId, executionGeneration }
+    ) {
+      const result = await pool.query<{ exists: boolean }>(
+        `select exists (
+           select 1
+             from managed_conversation_commands
+            where owner_user_id = $1
+              and execution_id = $2
+              and execution_generation = $3
+              and command_kind = 'prompt'
+              and state = 'indeterminate'
+         ) as exists`,
+        [actor.userId, executionId, executionGeneration]
+      );
+      return result.rows[0]?.exists === true;
     },
 
     async claimManagedConversationCommands(input) {

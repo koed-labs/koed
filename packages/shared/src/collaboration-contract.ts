@@ -3333,6 +3333,7 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
         })
         .strict()
         .nullable(),
+      hasIndeterminatePrompt: z.boolean().default(false),
       runtimeItemChange: z
         .discriminatedUnion("kind", [
           z

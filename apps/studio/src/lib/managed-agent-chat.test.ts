@@ -91,6 +91,14 @@ describe("managed agent chat boundary", () => {
       ]
     });
     expect(snapshot.items).toEqual([]);
+    expect(snapshot.hasIndeterminatePrompt).toBe(false);
+    expect(
+      parseRuntime({
+        execution,
+        hasIndeterminatePrompt: true,
+        items: []
+      }).hasIndeterminatePrompt
+    ).toBe(true);
     expect(
       acceptRuntimeSnapshot(
         snapshot,

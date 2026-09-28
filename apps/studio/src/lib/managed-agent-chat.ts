@@ -31,6 +31,7 @@ export type RuntimeItem = {
 export type RuntimeSnapshot = {
   execution: AgentExecution;
   items: RuntimeItem[];
+  hasIndeterminatePrompt?: boolean;
   latestCommand: {
     id: string;
     state: string;
@@ -374,7 +375,12 @@ export function parseRuntime(
               : null
         }
       : null;
-  return { execution, items, latestCommand };
+  return {
+    execution,
+    items,
+    hasIndeterminatePrompt: payload.hasIndeterminatePrompt === true,
+    latestCommand
+  };
 }
 
 export function acceptRuntimeSnapshot(

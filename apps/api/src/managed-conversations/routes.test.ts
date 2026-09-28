@@ -3159,6 +3159,7 @@ describe("managed Conversation routes", () => {
       lastErrorCode: null,
       updatedAt: now
     };
+    let hasIndeterminatePrompt = false;
     const answer = vi.fn(async () => ({ state: "answered" }));
     const repository = {
       getManagedConversationRuntimeBinding: async () => null,
@@ -3214,6 +3215,11 @@ describe("managed Conversation routes", () => {
         }
       ],
       getLatestManagedConversationCommandForExecution: async () => latestCommand,
+      hasIndeterminateManagedConversationPrompt: async (actor, input) => {
+        expect(actor).toEqual({ userId });
+        expect(input).toEqual({ executionId, executionGeneration: 1 });
+        return hasIndeterminatePrompt;
+      },
       getManagedConversationRuntimeItem: async () => ({
         id: itemId,
         executionId,
@@ -3283,10 +3289,25 @@ describe("managed Conversation routes", () => {
         state: "queued",
         canCancelBeforeClaim: true
       },
+      hasIndeterminatePrompt: false,
       items: [{ id: itemId, answered: false }]
     });
     expect(runtime.body).not.toContain("must-not-leak");
     expect(runtime.body).not.toContain("attempts");
+    hasIndeterminatePrompt = true;
+    latestCommand = {
+      ...latestCommand,
+      commandKind: "interrupt",
+      state: "completed"
+    };
+    const maskedPromptRuntime = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/runtime`
+    });
+    expect(maskedPromptRuntime.json()).toMatchObject({
+      latestCommand: { commandKind: "interrupt", state: "completed" },
+      hasIndeterminatePrompt: true
+    });
     expect(response.statusCode).toBe(200);
     expect(answer).toHaveBeenCalledWith(
       { userId },

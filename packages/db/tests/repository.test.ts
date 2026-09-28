@@ -1155,6 +1155,145 @@ describeDb("memory repository visibility", () => {
     await runDbMigrations(pool);
   });
 
+  it("reports current-generation indeterminate prompts behind later commands", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 73).toString("base64")
+      )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `managed-indeterminate-prompt-${randomUUID()}@example.com`
+    });
+    const other = await encryptedRepo.createUser({
+      email: `managed-indeterminate-prompt-other-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `managed-indeterminate-prompt-${randomUUID()}`;
+    const managed = await encryptedRepo.createManagedConversation(actor, {
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      projectId: `managed-indeterminate-${randomUUID()}`,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      idempotencyKey: randomUUID()
+    });
+    const [start] = await encryptedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await encryptedRepo.bindManagedConversationRuntime(actor, {
+      executionId: managed.execution.id,
+      expectedStateVersion: start!.execution.stateVersion,
+      executionGeneration: 1,
+      runnerId,
+      logicalSessionId: randomUUID(),
+      providerThreadId: randomUUID(),
+      providerCliVersion: "test"
+    });
+    await encryptedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const prompt = await encryptedRepo.enqueueManagedConversationPrompt(actor, {
+      executionId: running.id,
+      executionGeneration: 1,
+      idempotencyKey: randomUUID(),
+      clientUserMessageId: randomUUID(),
+      prompt: "An accepted prompt with an unknown outcome"
+    });
+    const [claimedPrompt] = await encryptedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimedPrompt?.id).toBe(prompt.id);
+    await encryptedRepo.failManagedConversationCommand({
+      commandId: prompt.id,
+      leaseToken: claimedPrompt!.leaseToken!,
+      state: "indeterminate",
+      errorCode: "ManagedConversationTurnOutcomeUnknownError"
+    });
+
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
+        executionId: running.id,
+        executionGeneration: 1
+      })
+    ).resolves.toBe(true);
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
+        executionId: running.id,
+        executionGeneration: 2
+      })
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(
+        { userId: other.id },
+        { executionId: running.id, executionGeneration: 1 }
+      )
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
+        executionId: randomUUID(),
+        executionGeneration: 1
+      })
+    ).resolves.toBe(false);
+
+    const interrupt = await encryptedRepo.enqueueManagedConversationControl(actor, {
+      executionId: running.id,
+      executionGeneration: 1,
+      idempotencyKey: randomUUID(),
+      commandKind: "interrupt"
+    });
+    const [claimedInterrupt] =
+      await encryptedRepo.claimManagedConversationControlCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimedInterrupt?.id).toBe(interrupt.id);
+    await encryptedRepo.completeManagedConversationCommand({
+      commandId: interrupt.id,
+      leaseToken: claimedInterrupt!.leaseToken!,
+      result: { interrupted: false }
+    });
+    await expect(
+      encryptedRepo.getLatestManagedConversationCommandForExecution(actor, running.id)
+    ).resolves.toMatchObject({ commandKind: "interrupt", state: "completed" });
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
+        executionId: running.id,
+        executionGeneration: 1
+      })
+    ).resolves.toBe(true);
+
+    await pool.query(
+      `update managed_conversation_commands
+          set state = 'completed', completed_at = now(), updated_at = now()
+        where owner_user_id = $1 and execution_id = $2 and id = $3`,
+      [owner.id, running.id, prompt.id]
+    );
+    await expect(
+      encryptedRepo.hasIndeterminateManagedConversationPrompt(actor, {
+        executionId: running.id,
+        executionGeneration: 1
+      })
+    ).resolves.toBe(false);
+  });
+
   it("runs Personal Device relay cleanup against PostgreSQL", async () => {
     const owner = await repo.createUser({
       email: `pds-peer-cleanup-${randomUUID()}@example.com`

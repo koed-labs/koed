@@ -327,6 +327,7 @@ const createRepositoryFixture = () => {
     getManagedConversationExecution: vi.fn(async () => null),
     getManagedConversationRuntimeBinding: vi.fn(async () => null),
     getLatestManagedConversationCommandForExecution: vi.fn(async () => null),
+    hasIndeterminateManagedConversationPrompt: vi.fn(async () => false),
     getManagedConversationRuntimeItem: vi.fn(async () => null)
   };
 
@@ -1969,6 +1970,7 @@ describe("collaboration realtime protocol", () => {
       lastErrorCode: null,
       updatedAt: iso
     };
+    let hasIndeterminatePrompt = true;
     const repository = {
       getManagedConversationExecution: vi.fn(async () => ({
         id: executionId,
@@ -1992,6 +1994,10 @@ describe("collaboration realtime protocol", () => {
       getLatestManagedConversationCommandForExecution: vi.fn(
         async () => latestCommand
       ),
+      hasIndeterminateManagedConversationPrompt: vi.fn(async (_actor, input) => {
+        expect(input).toEqual({ executionId, executionGeneration: 2 });
+        return hasIndeterminatePrompt;
+      }),
       getManagedConversationRuntimeItem: vi.fn(async () => ({
         id: itemId,
         executionId,
@@ -2031,6 +2037,7 @@ describe("collaboration realtime protocol", () => {
           sequence: 3,
           canCancelBeforeClaim: true
         },
+        hasIndeterminatePrompt: true,
         runtimeItemChange: {
           kind: "upsert",
           item: { id: itemId, revision: 5, payload: { text: "Live output" } }
@@ -2054,6 +2061,23 @@ describe("collaboration realtime protocol", () => {
       });
       expect(JSON.stringify(notCancelable)).not.toContain("attempts");
     }
+    latestCommand = {
+      ...latestCommand,
+      commandKind: "interrupt",
+      state: "completed"
+    };
+    expect(await materialize()).toMatchObject({
+      action: "deliver",
+      update: {
+        latestCommand: { commandKind: "interrupt", state: "completed" },
+        hasIndeterminatePrompt: true
+      }
+    });
+    hasIndeterminatePrompt = false;
+    expect(await materialize()).toMatchObject({
+      action: "deliver",
+      update: { hasIndeterminatePrompt: false }
+    });
   });
 
   it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {

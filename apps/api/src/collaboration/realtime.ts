@@ -189,6 +189,7 @@ export interface CollaborationRealtimeServiceOptions {
           | "getManagedConversationExecution"
           | "getManagedConversationRuntimeBinding"
           | "getLatestManagedConversationCommandForExecution"
+          | "hasIndeterminateManagedConversationPrompt"
           | "getManagedConversationRuntimeItem"
         >)
     | null;
@@ -493,6 +494,7 @@ export type PersonalRealtimeMaterializationRepository =
       | "getManagedConversationExecution"
       | "getManagedConversationRuntimeBinding"
       | "getLatestManagedConversationCommandForExecution"
+      | "hasIndeterminateManagedConversationPrompt"
       | "getManagedConversationRuntimeItem"
     >;
 
@@ -592,6 +594,11 @@ export const materializeManagedConversationChangedEvent = async (
       actor,
       execution.id
     );
+  const hasIndeterminatePrompt =
+    await repository.hasIndeterminateManagedConversationPrompt(actor, {
+      executionId: execution.id,
+      executionGeneration: execution.executionGeneration
+    });
   const runtimeItemChange =
     event.resourceType === "managed_conversation_runtime_reset"
       ? ({ kind: "reset" } as const)
@@ -673,6 +680,7 @@ export const materializeManagedConversationChangedEvent = async (
             updatedAt: latestCommand.updatedAt
           }
         : null,
+      hasIndeterminatePrompt,
       runtimeItemChange
     }
   };

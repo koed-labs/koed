@@ -31,7 +31,7 @@ type HostedRuntimeOutputSnapshot = Omit<RuntimeSnapshot, "items"> & {
   }>;
 };
 
-/** Add only the current owned prompt's visible, policy-approved provider output. */
+/** Add visible current-generation provider output for active or uncertain prompts. */
 export function hostedMessagesWithTransientOutput(
   selectedExecutionId: string | null,
   runtime: HostedRuntimeOutputSnapshot | null,
@@ -40,8 +40,9 @@ export function hostedMessagesWithTransientOutput(
   if (
     !selectedExecutionId ||
     runtime?.execution.id !== selectedExecutionId ||
-    runtime.latestCommand?.commandKind !== "prompt" ||
-    !["dispatching", "running", "indeterminate"].includes(runtime.latestCommand.state)
+    (!hostedPromptOutcomeIsUncertain(runtime) &&
+      (runtime.latestCommand?.commandKind !== "prompt" ||
+        !["dispatching", "running"].includes(runtime.latestCommand.state)))
   ) return messages;
 
   const transient = runtime.items.flatMap((item) => {
@@ -126,6 +127,21 @@ export function hostedRecoveryGuardForSelection(input: {
       input.pendingOperationExecutionId === selectedExecutionId,
     isChecking: input.checkingExecutionIds.includes(selectedExecutionId)
   };
+}
+
+/** An unresolved prompt outcome must never authorize a fresh send. */
+export function hostedPromptOutcomeIsUncertain(
+  runtime:
+    | (Pick<RuntimeSnapshot, "latestCommand"> & {
+        hasIndeterminatePrompt?: boolean;
+      })
+    | null
+    | undefined
+): boolean {
+  return runtime?.hasIndeterminatePrompt === true || (
+    runtime?.latestCommand?.commandKind === "prompt" &&
+    runtime.latestCommand.state === "indeterminate"
+  );
 }
 
 export function hostedRecoverySelectionIsCurrent(
@@ -1069,6 +1085,7 @@ export async function loadHostedManagedConversation(
   const runtime: RuntimeSnapshot = {
     execution: projectExecution(runtimePayload.execution),
     items: parsedRuntime.items.map(hostedRuntimeItem),
+    hasIndeterminatePrompt: parsedRuntime.hasIndeterminatePrompt,
     latestCommand: parsedRuntime.latestCommand
   };
   if (runtime.execution.id !== executionId)

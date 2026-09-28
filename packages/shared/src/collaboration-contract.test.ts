@@ -1810,6 +1810,7 @@ describe("collaboration results and realtime", () => {
         lastErrorCode: null,
         updatedAt: timestamp
       },
+      hasIndeterminatePrompt: true,
       runtimeItemChange: null
     } as const;
     const parsed = collaborationRendererUpdateSchema.parse(update);
@@ -1821,10 +1822,12 @@ describe("collaboration results and realtime", () => {
     expect(canCancelBeforeClaim).toBe(true);
     const legacy = collaborationRendererUpdateSchema.parse({
       ...update,
+      hasIndeterminatePrompt: undefined,
       latestCommand: legacyCommand
     });
     expect(legacy).toMatchObject({
-      latestCommand: { canCancelBeforeClaim: false }
+      latestCommand: { canCancelBeforeClaim: false },
+      hasIndeterminatePrompt: false
     });
     expect(
       collaborationRendererUpdateSchema.safeParse({

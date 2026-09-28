@@ -22,6 +22,7 @@ import {
   loadHostedManagedConversationAccess,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
+  hostedPromptOutcomeIsUncertain,
   hostedRecoveryDisposition,
   hostedRecoveryGuardForSelection,
   hostedRecoverySelectionIsCurrent,
@@ -980,6 +981,7 @@ export function HostedManagedChats({
     selectedRuntime?.execution.state === "running" &&
     !activePrompt &&
     !(latestCommand?.commandKind === "prompt" && ["queued", "blocked"].includes(latestCommand.state)) &&
+    !hostedPromptOutcomeIsUncertain(selectedRuntime) &&
     !pendingControl &&
     !recoveryGuard.isChecking &&
     pendingRecoveryForSelection === null;
@@ -1172,6 +1174,7 @@ export function HostedManagedChats({
       !selectedRuntime ||
       !prompt ||
       !canSend ||
+      hostedPromptOutcomeIsUncertain(selectedRuntime) ||
       sending ||
       pendingRecoveryForSelection
     )
@@ -2194,8 +2197,7 @@ export function HostedManagedChats({
                   </p>
                   {message.id.startsWith("transient:") && (
                     <p className="mt-1 text-[10px] text-muted">
-                      {selectedRuntime?.latestCommand?.commandKind === "prompt" &&
-                      selectedRuntime.latestCommand.state === "indeterminate"
+                      {hostedPromptOutcomeIsUncertain(selectedRuntime)
                         ? "Partial response · outcome uncertain"
                         : "Streaming response"}
                     </p>

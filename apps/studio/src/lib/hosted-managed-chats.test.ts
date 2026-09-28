@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -201,6 +201,23 @@ test("shows only the active execution generation's approved transient output and
   assert.equal(uncertain.length, 1);
   assert.equal(uncertain[0].content, "Partial answer");
   assert.deepEqual(hostedMessagesWithTransientOutput(id, uncertainRuntime, history), history);
+  const maskedUncertainRuntime = {
+    ...runtime,
+    hasIndeterminatePrompt: true,
+    latestCommand: {
+      id: commandId,
+      commandKind: "interrupt",
+      state: "completed",
+      lastErrorCode: null
+    }
+  };
+  const retainedPartial = hostedMessagesWithTransientOutput(
+    id,
+    maskedUncertainRuntime,
+    []
+  );
+  assert.equal(retainedPartial.length, 1);
+  assert.equal(retainedPartial[0].content, "Partial answer");
   assert.deepEqual(
     hostedMessagesWithTransientOutput(id, {
       ...runtime,
@@ -475,6 +492,7 @@ test("loads runtime and generation-matched live user and agent messages", async 
     if (String(input).endsWith("/runtime"))
       return json({
         execution: { ...execution, path: "/private/device/path" },
+        hasIndeterminatePrompt: true,
         latestCommand: {
           id: "55555555-5555-4555-8555-555555555555",
           commandKind: "prompt",
@@ -592,6 +610,7 @@ test("loads runtime and generation-matched live user and agent messages", async 
   const loaded = await loadHostedManagedConversation(id, undefined, fetcher);
   assert.equal(loaded.runtime.execution.id, id);
   assert.equal("path" in loaded.runtime.execution, false);
+  assert.equal(loaded.runtime.hasIndeterminatePrompt, true);
   assert.deepEqual(loaded.runtime.items.map((item) => item.id), [
     commandId,
     "44444444-4444-4444-8444-444444444444",
@@ -1316,4 +1335,48 @@ test("rejects hosted recovery scopes without an authenticated backend identity",
       /backend identity is unavailable/
     );
   }
+});
+
+test("blocks unresolved prompts even when a later control command masks them or local recovery is absent", () => {
+  const localRecovery = hostedRecoveryGuardForSelection({
+    selectedExecutionId: id,
+    pendingOperationExecutionId: null,
+    checkingExecutionIds: []
+  });
+  assert.deepEqual(localRecovery, {
+    hasPendingOperation: false,
+    isChecking: false
+  });
+
+  const runtimeWithMaskedPrompt = {
+    execution: { ...execution, state: "running" },
+    items: [],
+    latestCommand: { id: commandId, commandKind: "interrupt", state: "completed", lastErrorCode: null },
+    hasIndeterminatePrompt: true
+  };
+  assert.equal(hostedPromptOutcomeIsUncertain(runtimeWithMaskedPrompt), true);
+  assert.equal(
+    hostedPromptOutcomeIsUncertain({
+      ...runtimeWithMaskedPrompt,
+      hasIndeterminatePrompt: false,
+      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "prompt", state: "completed" }
+    }),
+    false
+  );
+  assert.equal(
+    hostedPromptOutcomeIsUncertain({
+      ...runtimeWithMaskedPrompt,
+      hasIndeterminatePrompt: false,
+      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "prompt", state: "indeterminate" }
+    }),
+    true
+  );
+  assert.equal(
+    hostedPromptOutcomeIsUncertain({
+      ...runtimeWithMaskedPrompt,
+      hasIndeterminatePrompt: false,
+      latestCommand: { ...runtimeWithMaskedPrompt.latestCommand, commandKind: "stop", state: "indeterminate" }
+    }),
+    false
+  );
 });

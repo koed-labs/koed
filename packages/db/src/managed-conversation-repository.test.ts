@@ -48,6 +48,52 @@ describe("managed Conversation recovery lookup", () => {
     expect(sql).toContain("command.execution_id = $5");
     expect(sql).toContain("command.execution_generation = $6");
   });
+
+  it("checks indeterminate prompts by owner, execution, and generation only", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ exists: true }] })
+      .mockResolvedValueOnce({ rows: [{ exists: false }] });
+    const repository = createManagedConversationRepository(
+      { query } as unknown as pg.Pool,
+      {}
+    );
+
+    await expect(
+      repository.hasIndeterminateManagedConversationPrompt(
+        { userId: "owner-user-id" },
+        {
+          executionId: "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa",
+          executionGeneration: 4
+        }
+      )
+    ).resolves.toBe(true);
+    await expect(
+      repository.hasIndeterminateManagedConversationPrompt(
+        { userId: "other-user-id" },
+        {
+          executionId: "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa",
+          executionGeneration: 3
+        }
+      )
+    ).resolves.toBe(false);
+
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("owner_user_id = $1"),
+      ["owner-user-id", "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa", 4]
+    );
+    const sql = query.mock.calls[0]?.[0] as string;
+    expect(sql).toContain("execution_id = $2");
+    expect(sql).toContain("execution_generation = $3");
+    expect(sql).toContain("command_kind = 'prompt'");
+    expect(sql).toContain("state = 'indeterminate'");
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("owner_user_id = $1"),
+      ["other-user-id", "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa", 3]
+    );
+  });
 });
 
 describe("managed Conversation prompt cancellation", () => {
