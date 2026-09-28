@@ -126,8 +126,9 @@ import {
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import {
+  createManagedConversationLeaseHeartbeat,
   ManagedConversationRuntimeRegistry,
-  runWithManagedConversationLease,
+  type ManagedConversationLeaseHeartbeat,
   type ManagedConversationProvider
 } from "./managed-conversation-provider-runtime.js";
 
@@ -823,6 +824,12 @@ export const createManagedConversationService = (options: {
 }): ManagedConversationService => {
   const runnerId = randomUUID();
   const runtimeSessions = new ManagedConversationRuntimeRegistry();
+  const commandLeaseHeartbeats = new Map<
+    string,
+    ManagedConversationLeaseHeartbeat
+  >();
+  const activeCommandExecutionCounts = new Map<string, number>();
+  const activePromptProviderTurns = new Map<string, string>();
   const claudeCaptureStatePath = resolve(
     options.koedHome,
     "state",
@@ -1908,6 +1915,8 @@ export const createManagedConversationService = (options: {
 
   const renewOwnedRuntimes = async (): Promise<void> => {
     for (const [executionId, managed] of runtimeSessions.entries()) {
+      // An active command heartbeat renews both command and execution leases.
+      if ((activeCommandExecutionCounts.get(executionId) ?? 0) > 0) continue;
       let renewed: boolean;
       try {
         renewed =
@@ -1927,7 +1936,10 @@ export const createManagedConversationService = (options: {
             { userId: options.localOwnerUserId },
             {
               executionId,
-              executionGeneration: managed.executionGeneration
+              executionGeneration: managed.executionGeneration,
+              ...(activePromptProviderTurns.has(executionId)
+                ? { preserveTransientOutput: true }
+                : {})
             }
           )
           .catch(() => 0);
@@ -4938,21 +4950,22 @@ export const createManagedConversationService = (options: {
         "ManagedConversationProviderMismatchError"
       );
     }
-    return runWithManagedConversationLease({
-      session,
-      heartbeatMs: commandHeartbeatMs,
-      renew: () =>
-        options.repository.renewManagedConversationCommandLease({
-          commandId: command.id,
-          leaseToken: command.leaseToken!,
-          runnerId,
-          executionId: command.executionId,
-          leaseMs: commandLeaseMs
-        }),
-      close: (ownedSession) => ownedSession.closeAndWait(),
-      operation,
-      leaseLostError: () => new ManagedConversationLeaseLostError()
-    });
+    const heartbeat = commandLeaseHeartbeats.get(command.id);
+    if (!heartbeat) throw new ManagedConversationLeaseLostError();
+    const isPromptTurn = command.commandKind === "prompt";
+    if (isPromptTurn) {
+      activePromptProviderTurns.set(command.executionId, command.id);
+    }
+    try {
+      return await heartbeat.withSession(session, operation);
+    } finally {
+      if (
+        isPromptTurn &&
+        activePromptProviderTurns.get(command.executionId) === command.id
+      ) {
+        activePromptProviderTurns.delete(command.executionId);
+      }
+    }
   };
 
   const withLease = async <T>(
@@ -4984,32 +4997,53 @@ export const createManagedConversationService = (options: {
     operation: () => Promise<T>
   ): Promise<T> => {
     if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
-    let leaseLost = false;
-    let stoppedHeartbeat = false;
-    const heartbeat = async () => {
-      if (stoppedHeartbeat || leaseLost) return;
-      try {
-        leaseLost =
-          !(await options.repository.renewManagedConversationCommandLease({
-            commandId: command.id,
-            leaseToken: command.leaseToken!,
-            runnerId,
-            executionId: command.executionId,
-            leaseMs: commandLeaseMs
-          }));
-      } catch {
-        leaseLost = true;
-      }
-    };
-    const timer = setInterval(() => void heartbeat(), commandHeartbeatMs);
-    timer.unref?.();
+    const claimedLeaseExpiry = command.leaseExpiresAt
+      ? Date.parse(command.leaseExpiresAt)
+      : Number.NaN;
+    const heartbeat = createManagedConversationLeaseHeartbeat({
+      heartbeatMs: commandHeartbeatMs,
+      leaseMs: commandLeaseMs,
+      ...(Number.isFinite(claimedLeaseExpiry)
+        ? { initialLeaseExpiresAt: claimedLeaseExpiry }
+        : {}),
+      renew: () =>
+        options.repository.renewManagedConversationCommandLease({
+          commandId: command.id,
+          leaseToken: command.leaseToken!,
+          runnerId,
+          executionId: command.executionId,
+          leaseMs: commandLeaseMs
+        }),
+      leaseLostError: () => new ManagedConversationLeaseLostError()
+    });
+    const activeSession = runtimeSessions.get(
+      command.execution.provider as ManagedConversationProvider,
+      command.executionId
+    );
+    if (activeSession) heartbeat.watchSession(activeSession.session);
+    commandLeaseHeartbeats.set(command.id, heartbeat);
+    activeCommandExecutionCounts.set(
+      command.executionId,
+      (activeCommandExecutionCounts.get(command.executionId) ?? 0) + 1
+    );
+    heartbeat.start();
     try {
+      heartbeat.assertCurrent();
       const result = await operation();
-      if (leaseLost) throw new ManagedConversationLeaseLostError();
+      heartbeat.assertCurrent();
       return result;
     } finally {
-      stoppedHeartbeat = true;
-      clearInterval(timer);
+      heartbeat.stop();
+      if (commandLeaseHeartbeats.get(command.id) === heartbeat) {
+        commandLeaseHeartbeats.delete(command.id);
+      }
+      const activeCount =
+        (activeCommandExecutionCounts.get(command.executionId) ?? 1) - 1;
+      if (activeCount > 0) {
+        activeCommandExecutionCounts.set(command.executionId, activeCount);
+      } else {
+        activeCommandExecutionCounts.delete(command.executionId);
+      }
     }
   };
 
@@ -9017,19 +9051,21 @@ export const createManagedConversationService = (options: {
             command.attempts >= 3);
         let promptWasReconciled = false;
         let promptCheckpointRequeued = false;
+        let preserveTransientOutputForUncertainPrompt = false;
         if (command.leaseToken) {
+          const requestedFailureState =
+            settingsRejected || providerTurnInterrupted
+              ? "failed"
+              : isOneShot
+                ? "indeterminate"
+                : terminal
+                  ? "failed"
+                  : "queued";
           const failure = await options.repository
             .failManagedConversationCommand({
               commandId: command.id,
               leaseToken: command.leaseToken,
-              state:
-                settingsRejected || providerTurnInterrupted
-                  ? "failed"
-                  : isOneShot
-                    ? "indeterminate"
-                    : terminal
-                      ? "failed"
-                      : "queued",
+              state: requestedFailureState,
               errorCode: failureCode
             })
             .catch(() => ({
@@ -9039,6 +9075,13 @@ export const createManagedConversationService = (options: {
             }));
           promptWasReconciled = failure.reconciled;
           promptCheckpointRequeued = failure.requeued;
+          // The authority may commit indeterminate and lose its response. Keep
+          // encrypted partial output unless reconciliation proves an outcome.
+          preserveTransientOutputForUncertainPrompt =
+            isPrompt &&
+            requestedFailureState === "indeterminate" &&
+            !failure.reconciled &&
+            !failure.requeued;
         }
         if (promptCheckpointRequeued) {
           failed += 1;
@@ -9146,7 +9189,10 @@ export const createManagedConversationService = (options: {
               { userId: command.ownerUserId },
               {
                 executionId: command.executionId,
-                executionGeneration: command.executionGeneration
+                executionGeneration: command.executionGeneration,
+                ...(preserveTransientOutputForUncertainPrompt
+                  ? { preserveTransientOutput: true }
+                  : {})
               }
             )
             .catch(() => 0);

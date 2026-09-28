@@ -93,6 +93,37 @@ describe("Managed Conversation authority client", () => {
     expect(remoteSnapshots).not.toHaveBeenCalled();
   });
 
+  it("forwards the explicit transient-output retention flag to runtime cleanup", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000099";
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({ canceled: 2 }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await expect(
+      client.cancelManagedConversationRuntimeItems(
+        { userId: ids.session },
+        {
+          executionId,
+          executionGeneration: 3,
+          preserveTransientOutput: true
+        }
+      )
+    ).resolves.toBe(2);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      executionGeneration: 3,
+      preserveTransientOutput: true
+    });
+  });
+
   it("sends Project Move claims and completion to authority without local paths", async () => {
     const moveId = "00000000-0000-4000-8000-000000000040";
     const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {

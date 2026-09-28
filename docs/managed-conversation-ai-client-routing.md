@@ -206,3 +206,7 @@ buffer only after their batch succeeds. This reduces capture requests during
 new launches and recovery without releasing prompts before startup capture.
 Desktop recognises both `agent` capture events and `assistant` message events
 when deciding whether the current response still needs an empty placeholder.
+
+## Runner lease renewal during streamed replies
+
+One controller renews each active managed command lease and protects its provider session. Temporary transport errors, rate limits, and server errors retry within the last confirmed lease deadline. An independent deadline timer closes the session before expiry, even when a renewal request stalls. Explicit authority rejection closes it immediately; a late response cannot restore a lost lease. The runner never retries an accepted provider prompt automatically because lease renewal failed. An uncertain prompt retains its encrypted partial output for the owning User.

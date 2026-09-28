@@ -1992,15 +1992,28 @@ describe("Managed Conversation service lifecycle", () => {
     {
       terminalStatus: "interrupted",
       expectedCommandState: "failed",
-      expectedErrorCode: "ManagedConversationTurnInterruptedError"
+      expectedErrorCode: "ManagedConversationTurnInterruptedError",
+      failureUpdated: true
     },
     {
       terminalStatus: "failed",
       expectedCommandState: "indeterminate",
-      expectedErrorCode: "ManagedConversationProviderTurnError"
+      expectedErrorCode: "ManagedConversationProviderTurnError",
+      failureUpdated: true
+    },
+    {
+      terminalStatus: "failed",
+      expectedCommandState: "indeterminate",
+      expectedErrorCode: "ManagedConversationProviderTurnError",
+      failureUpdated: false
     }
   ] as const)("Codex turn $terminalStatus is handled safely", async (scenario) => {
-    const { terminalStatus, expectedCommandState, expectedErrorCode } = scenario;
+    const {
+      terminalStatus,
+      expectedCommandState,
+      expectedErrorCode,
+      failureUpdated
+    } = scenario;
     const root = await mkdtemp(resolve(tmpdir(), "koed-hosted-recovery-"));
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
     const ownerUserId = randomUUID();
@@ -2141,7 +2154,7 @@ describe("Managed Conversation service lifecycle", () => {
       cancelManagedConversationRuntimeItems: vi.fn(async () => 0),
       renewManagedConversationCommandLease: vi.fn(async () => true),
       failManagedConversationCommand: vi.fn(async () => ({
-        updated: true,
+        updated: failureUpdated,
         reconciled: false,
         requeued: false
       }))
@@ -2258,6 +2271,15 @@ describe("Managed Conversation service lifecycle", () => {
           `koed-user-message:${followUpMessageId}`
         );
         expect(start).toHaveBeenCalledOnce();
+      } else {
+        expect(repository.cancelManagedConversationRuntimeItems).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          {
+            executionId,
+            executionGeneration: execution.executionGeneration,
+            preserveTransientOutput: true
+          }
+        );
       }
       expect(close).toHaveBeenCalledOnce();
       expect(

@@ -713,6 +713,9 @@ export const createManagedConversationAuthorityClient = (options: {
           executionGeneration: input.executionGeneration,
           ...(input.providerTurnId
             ? { providerTurnId: input.providerTurnId }
+            : {}),
+          ...(input.preserveTransientOutput
+            ? { preserveTransientOutput: true }
             : {})
         }
       );
