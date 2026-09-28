@@ -74,11 +74,22 @@ const startSchema = z
   })
   .strict();
 
+const hasValidProjectContext = (input: {
+  projectId: string | null;
+  contextKind: "project" | "independent";
+}): boolean =>
+  input.contextKind === "independent"
+    ? input.projectId === null
+    : input.projectId !== null;
+
 const authorityStartSchema = startSchema
   .extend({
     deferUntilRuntimeBinding: z.literal(true).optional()
   })
-  .strict();
+  .strict()
+  .refine(hasValidProjectContext, {
+    message: "Conversation context and Project selection do not match"
+  });
 
 const browserStartSchema = startSchema
   .extend({
@@ -2248,7 +2259,11 @@ export const registerManagedConversationRoutes = (
           { statusCode: 409 }
         );
       }
-      if (!localExecution && !input.projectId) {
+      if (
+        !localExecution &&
+        !input.projectId &&
+        !(deferred && input.contextKind === "independent")
+      ) {
         throw Object.assign(
           new Error(
             "Standalone managed execution is unavailable on this runner"

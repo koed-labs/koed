@@ -4023,6 +4023,196 @@ describe("managed Conversation routes", () => {
     }
   });
 
+  it("accepts projectless authority starts only for an enrolled deferred runner", async () => {
+    const userId = randomUUID();
+    const deviceId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceCredentialId = randomUUID();
+    const otherDeviceId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const hostedInstanceId = `runner.${"e".repeat(40)}`;
+    const configIdentityHash = "f".repeat(64);
+    const user = {
+      id: userId,
+      email: "alice@example.invalid",
+      displayName: "Alice",
+      passwordHash: null
+    };
+    const credential = {
+      id: deviceCredentialId,
+      deviceInstanceId: deviceId,
+      operationFamilies: ["managed_execution"],
+      metadata: { protocolDeploymentId: deploymentId },
+      revokedAt: null,
+      expiresAt: null
+    };
+    const start = vi.fn(async () => ({
+      execution: {
+        id: executionId,
+        ownerUserId: userId,
+        projectId: null,
+        contextKind: "independent",
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        state: "starting",
+        stateVersion: 1,
+        executionGeneration: 7,
+        logicalSessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        lastErrorCode: null,
+        createdAt: "2026-09-25T00:00:00.000Z",
+        updatedAt: "2026-09-25T00:00:00.000Z",
+        startedAt: null,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      command: { id: commandId, state: "blocked" }
+    }));
+    const listProjects = vi.fn(async () => []);
+    const bind = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "private_vps" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async (request) => {
+          if (!request.headers.authorization?.startsWith("Koed-Device")) {
+            throw Object.assign(new Error("Authentication required"), {
+              statusCode: 401
+            });
+          }
+          return user;
+        },
+        authenticateDeviceCredential: async () => ({ user, credential })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        listAiClientInstances: async () => [
+          {
+            instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
+            driverId: "codex",
+            displayName: "Codex",
+            enabled: true,
+            configIdentityHash
+          }
+        ],
+        listCurrentAiClientCapabilitySnapshots: async () => [
+          {
+            instanceId: "codex.default",
+            hostedInstanceId,
+            sourceDeviceCredentialId: deviceCredentialId,
+            installationIdentityHash: configIdentityHash,
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "gpt-test",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low"]
+              }
+            ]
+          }
+        ],
+        listDeviceCredentials: async () => [credential],
+        listLcmGraphThreads: listProjects,
+        createManagedConversation: start,
+        upsertManagedConversationRuntimeBinding: bind
+      })
+    } as unknown as ApiRouteContext);
+
+    const request = (
+      overrides: Record<string, unknown> = {},
+      options: { authorized?: boolean } = {}
+    ) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        ...(options.authorized === false
+          ? {}
+          : { headers: { authorization: "Koed-Device review-credential" } }),
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          idempotencyKey: `deferred-independent-${randomUUID()}`,
+          deferUntilRuntimeBinding: true,
+          ...overrides
+        }
+      });
+
+    try {
+      const accepted = await request();
+      const sessionOnly = await request({}, { authorized: false });
+      const wrongDevice = await request({ targetDeviceId: otherDeviceId });
+      credential.operationFamilies = [];
+      const missingManagedExecutionScope = await request();
+      credential.operationFamilies = ["managed_execution"];
+      const nonDeferred = await request({ deferUntilRuntimeBinding: undefined });
+      const missingContext = await request({ contextKind: undefined });
+      const mismatchedContext = await request({ projectId: "lp_unexpected" });
+
+      expect(accepted.statusCode).toBe(202);
+      expect(start).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          projectId: null,
+          contextKind: "independent",
+          runnerDeploymentId: deploymentId,
+          runnerDeviceId: deviceId,
+          deferUntilRuntimeBinding: true
+        })
+      );
+      expect(accepted.body).not.toContain("projectPath");
+      expect(listProjects).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+
+      expect(sessionOnly.statusCode).toBe(401);
+      expect(wrongDevice.statusCode).toBe(400);
+      expect(missingManagedExecutionScope.statusCode).toBe(403);
+      expect(nonDeferred.statusCode).toBe(409);
+      expect(missingContext.statusCode).toBe(400);
+      expect(mismatchedContext.statusCode).toBe(400);
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("starts the first Conversation from trusted local Project metadata", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
