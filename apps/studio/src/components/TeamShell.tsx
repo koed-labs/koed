@@ -3,6 +3,7 @@
 import { PanelLeft } from "lucide-react";
 import { useSidebar } from "./SidebarContext";
 import { Tooltip } from "./Tooltip";
+import { useTheme } from "./ThemeProvider";
 
 export function TeamShell({
   crumbs,
@@ -83,13 +84,16 @@ export function TeamShell({
 }
 
 export function ChannelWallpaper({ className = "" }: { className?: string }) {
+  const { resolvedTheme } = useTheme();
   return (
     <div
       aria-hidden="true"
       className={`pointer-events-none absolute inset-0 ${className}`}
       style={{
         opacity: "var(--wallpaper-opacity)",
-        backgroundImage: "var(--wallpaper-image)",
+        backgroundImage: process.env.NEXT_PUBLIC_KOED_STUDIO_HOSTED === "1"
+          ? `url("/studio/chat-wallpaper-${resolvedTheme}.png")`
+          : "var(--wallpaper-image)",
         backgroundRepeat: "repeat",
         backgroundSize: "320px auto"
       }}
