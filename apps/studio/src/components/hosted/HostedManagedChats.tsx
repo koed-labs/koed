@@ -23,6 +23,7 @@ import {
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedRecoveryDisposition,
+  hostedMessagesForSelection,
   hostedLaunchInstancesForDevice,
   queueHostedConversationPrompt,
   requestHostedProjectMove,
@@ -56,6 +57,7 @@ const isRegisteredProjectId = (value: string) =>
   /^lp_[0-9a-f]{32}$/iu.test(value);
 
 type PendingMessage = HostedConversationMessage & {
+  executionId: string;
   commandId: string;
   commandState: string;
 };
@@ -89,6 +91,9 @@ export function HostedManagedChats({
     useState<DeviceManagedChatPendingOperation | null>(null);
   const [pendingNewStart, setPendingNewStart] =
     useState<DeviceManagedChatPendingOperation | null>(null);
+  const [runtimeRequestNotice, setRuntimeRequestNotice] = useState<{
+    executionId: string;
+  } | null>(null);
   const [recoveryChecking, setRecoveryChecking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -298,6 +303,7 @@ export function HostedManagedChats({
             ) {
               setPendingMessage({
                 id: operation.clientUserMessageId,
+                executionId,
                 role: "user",
                 content: operation.prompt,
                 createdAt: new Date().toISOString(),
@@ -440,6 +446,7 @@ export function HostedManagedChats({
               executionGeneration: result.executionGeneration
             };
             writeRecovery(conversationStore, "", childOperation);
+            recoveryStoreRef.current = conversationStore;
             if (fromNewSlot) {
               store?.clear();
               newStartOperationRef.current = null;
@@ -449,6 +456,9 @@ export function HostedManagedChats({
             setPendingRecoveryOperation(childOperation);
             selectedIdRef.current = result.executionId;
             setSelectedId(result.executionId);
+            setRuntime(null);
+            setMessages([]);
+            setPendingMessage(null);
             setNewConversationOpen(false);
             setInitialPrompt("");
             await refreshList(signal);
@@ -459,6 +469,7 @@ export function HostedManagedChats({
             const conversationStore = fromNewSlot && recoveryScope
               ? createDeviceManagedChatRecoveryStore({ ...recoveryScope, executionId: result.executionId }) : store;
             writeRecovery(conversationStore, operation.prompt, null);
+            recoveryStoreRef.current = conversationStore;
             if (fromNewSlot) store?.clear();
             newStartOperationRef.current = null;
             setPendingNewStart(null);
@@ -468,6 +479,9 @@ export function HostedManagedChats({
             setDraft(operation.prompt);
             selectedIdRef.current = result.executionId;
             setSelectedId(result.executionId);
+            setRuntime(null);
+            setMessages([]);
+            setPendingMessage(null);
             setNewConversationOpen(false);
             setInitialPrompt("");
             setStatus("This older Conversation start did not accept its initial message. The message is restored as a draft; send it when you are ready.");
@@ -490,6 +504,7 @@ export function HostedManagedChats({
               "",
               retainAcceptedIdentity ? retainedOperation : null
             );
+            recoveryStoreRef.current = conversationStore;
             store?.clear();
             newStartOperationRef.current = null;
             setPendingNewStart(null);
@@ -505,6 +520,7 @@ export function HostedManagedChats({
               "",
               retainAcceptedIdentity ? retainedOperation : null
             );
+            recoveryStoreRef.current = store;
             recoveryOperationRef.current = retainAcceptedIdentity
               ? retainedOperation
               : null;
@@ -514,9 +530,12 @@ export function HostedManagedChats({
           }
           draftRef.current = "";
           setDraft("");
-          await refreshList(signal);
           selectedIdRef.current = result.executionId;
           setSelectedId(result.executionId);
+          setRuntime(null);
+          setMessages([]);
+          setPendingMessage(null);
+          await refreshList(signal);
           const value = await loadHostedManagedConversation(
             result.executionId,
             signal
@@ -868,14 +887,13 @@ export function HostedManagedChats({
     launchInstance.permissionModes.includes(launchPermission)
   );
   const displayMessages = useMemo(() => {
-    if (!selectedRuntime) return [];
-    if (
-      !pendingMessage ||
-      messages.some((message) => message.id === pendingMessage.id)
-    )
-      return messages;
-    return [...messages, pendingMessage];
-  }, [messages, pendingMessage, selectedRuntime]);
+    return hostedMessagesForSelection(
+      selectedId,
+      selectedRuntime?.execution.id ?? null,
+      messages,
+      pendingMessage
+    );
+  }, [messages, pendingMessage, selectedId, selectedRuntime]);
   const runtimeRequests = useMemo(
     () => pendingChatRequests(selectedRuntime),
     [selectedRuntime]
@@ -1061,6 +1079,7 @@ export function HostedManagedChats({
       setDraft("");
       setPendingMessage({
         id: messageId,
+        executionId: selected.id,
         role: "user",
         content: prompt,
         createdAt: new Date().toISOString(),
@@ -1221,9 +1240,9 @@ export function HostedManagedChats({
           if (selectedIdRef.current === selectedRuntime.execution.id) {
             setRuntime(value.runtime);
             setMessages(value.state.messages);
-            setStatus(
-              "This request was answered or changed on another session. Refreshed the persisted request state."
-            );
+            setRuntimeRequestNotice({
+              executionId: selectedRuntime.execution.id
+            });
           }
         } catch (refreshCause) {
           handleError(refreshCause);
@@ -1715,6 +1734,24 @@ export function HostedManagedChats({
         >
           {error}
         </p>
+      )}
+      {runtimeRequestNotice?.executionId === selectedId && (
+        <div
+          role="alert"
+          className="mt-3 flex items-start justify-between gap-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-foreground"
+        >
+          <p>
+            This request changed before Studio could apply your response. Your
+            response was not applied; the latest request state is shown below.
+          </p>
+          <button
+            type="button"
+            className="shrink-0 text-muted underline underline-offset-2"
+            onClick={() => setRuntimeRequestNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
       )}
       {status && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">

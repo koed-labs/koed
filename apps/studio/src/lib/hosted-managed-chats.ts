@@ -19,6 +19,28 @@ export type HostedConversationMessage = {
   author: { agentId: string; name: string } | null;
 };
 
+export function hostedMessagesForSelection<
+  T extends { id: string },
+  P extends T & { executionId: string }
+>(
+  selectedExecutionId: string | null,
+  runtimeExecutionId: string | null,
+  messages: T[],
+  pendingMessage: P | null
+): Array<T | P> {
+  if (!selectedExecutionId || runtimeExecutionId !== selectedExecutionId) {
+    return [];
+  }
+  if (
+    !pendingMessage ||
+    pendingMessage.executionId !== selectedExecutionId ||
+    messages.some((message) => message.id === pendingMessage.id)
+  ) {
+    return messages;
+  }
+  return [...messages, pendingMessage];
+}
+
 export type HostedConversationState = {
   executionId: string;
   executionGeneration: number;

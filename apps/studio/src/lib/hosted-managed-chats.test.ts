@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedMessagesForSelection, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -29,6 +29,71 @@ const json = (value: unknown, status = 200) =>
     status,
     headers: { "content-type": "application/json" }
   });
+
+test("does not render a pending message from another selected Conversation", () => {
+  const oldMessage = {
+    id: "old-client-message",
+    executionId: "old-execution",
+    role: "user" as const,
+    content: "T05-CLAIM-RACE",
+    createdAt: execution.createdAt,
+    author: null,
+    commandId,
+    commandState: "indeterminate"
+  };
+  const currentMessage = {
+    id: "new-client-message",
+    role: "user" as const,
+    content: "FINAL-START",
+    createdAt: execution.createdAt,
+    author: null
+  };
+
+  assert.deepEqual(
+    hostedMessagesForSelection(
+      "new-execution",
+      "new-execution",
+      [] as Array<{ id: string }>,
+      oldMessage
+    ),
+    []
+  );
+  assert.deepEqual(
+    hostedMessagesForSelection(
+      "new-execution",
+      "old-execution",
+      [currentMessage],
+      {
+        ...currentMessage,
+        executionId: "old-execution",
+        commandId,
+        commandState: "queued"
+      }
+    ),
+    []
+  );
+  assert.deepEqual(
+    hostedMessagesForSelection(
+      "new-execution",
+      "new-execution",
+      [] as Array<{ id: string }>,
+      {
+        ...currentMessage,
+        executionId: "new-execution",
+        commandId,
+        commandState: "queued"
+      }
+    ),
+    [
+      {
+        ...currentMessage,
+        executionId: "new-execution",
+        commandId,
+        commandState: "queued"
+      }
+    ]
+  );
+});
 
 test("lists only safe execution data using the signed-in same-origin session", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
