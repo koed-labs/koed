@@ -419,6 +419,11 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      method === "GET" &&
+      /^\/v1\/managed-conversations\/[^/]+\/agent-state$/.test(pathname)
+    )
+      return;
+    if (
       (method === "POST" &&
         /^\/v1\/managed-conversations\/[^/]+\/project-moves$/.test(pathname)) ||
       (method === "GET" &&

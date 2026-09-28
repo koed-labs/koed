@@ -721,6 +721,24 @@ describe("local edge upstream routing", () => {
     });
   });
 
+  it("allows only owner history reads through managed execution routing", () => {
+    const path =
+      "/v1/managed-conversations/execution-id/agent-state?limit=5&before=prompt%3A9";
+    expect(() =>
+      assertUpstreamOperationPathAllowed("managed_execution", "GET", path)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed("managed_execution", "POST", path)
+    ).toThrow("not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/execution-id/agent-state/extra"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
   it("allows only POST prompt cancellation through managed execution routing", () => {
     expect(() =>
       assertUpstreamOperationPathAllowed(
