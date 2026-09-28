@@ -3327,6 +3327,7 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
           commandKind: z.string().trim().min(1).max(96),
           clientUserMessageId: z.uuid().nullable(),
           state: z.string().trim().min(1).max(96),
+          canCancelBeforeClaim: z.boolean().default(false),
           lastErrorCode: z.string().trim().min(1).max(120).nullable(),
           updatedAt: collaborationTimestampSchema
         })

@@ -1948,6 +1948,27 @@ describe("collaboration realtime protocol", () => {
     eventRecord.messageId = null;
     eventRecord.shareGrantId = null;
     eventRecord.logicalMemoryId = null;
+    let latestCommand: {
+      id: string;
+      sequence: number;
+      executionGeneration: number;
+      commandKind: string;
+      clientUserMessageId: string | null;
+      state: string;
+      attempts: number;
+      lastErrorCode: string | null;
+      updatedAt: string;
+    } = {
+      id: commandId,
+      sequence: 3,
+      executionGeneration: 2,
+      commandKind: "prompt",
+      clientUserMessageId: randomUUID(),
+      state: "queued",
+      attempts: 0,
+      lastErrorCode: null,
+      updatedAt: iso
+    };
     const repository = {
       getManagedConversationExecution: vi.fn(async () => ({
         id: executionId,
@@ -1968,15 +1989,9 @@ describe("collaboration realtime protocol", () => {
         stoppedAt: null
       })),
       getManagedConversationRuntimeBinding: vi.fn(async () => null),
-      getLatestManagedConversationCommandForExecution: vi.fn(async () => ({
-        id: commandId,
-        sequence: 3,
-        executionGeneration: 2,
-        commandKind: "prompt",
-        state: "dispatching",
-        lastErrorCode: null,
-        updatedAt: iso
-      })),
+      getLatestManagedConversationCommandForExecution: vi.fn(
+        async () => latestCommand
+      ),
       getManagedConversationRuntimeItem: vi.fn(async () => ({
         id: itemId,
         executionId,
@@ -1999,24 +2014,46 @@ describe("collaboration realtime protocol", () => {
       }))
     };
 
-    await expect(
+    const materialize = () =>
       materializeManagedConversationChangedEvent(
         { userId: ownerId },
         eventRecord,
         repository as never
-      )
-    ).resolves.toMatchObject({
+      );
+    const update = await materialize();
+    expect(update).toMatchObject({
       action: "deliver",
       update: {
         type: "managed_conversation_upserted",
         execution: { id: executionId, stateVersion: 4 },
-        latestCommand: { id: commandId, sequence: 3 },
+        latestCommand: {
+          id: commandId,
+          sequence: 3,
+          canCancelBeforeClaim: true
+        },
         runtimeItemChange: {
           kind: "upsert",
           item: { id: itemId, revision: 5, payload: { text: "Live output" } }
         }
       }
     });
+    expect(JSON.stringify(update)).not.toContain("attempts");
+
+    for (const candidate of [
+      { commandKind: "stop", state: "queued", attempts: 0 },
+      { commandKind: "prompt", state: "dispatching", attempts: 0 },
+      { commandKind: "prompt", state: "queued", attempts: 1 }
+    ]) {
+      latestCommand = { ...latestCommand, ...candidate };
+      const notCancelable = await materialize();
+      expect(notCancelable).toMatchObject({
+        action: "deliver",
+        update: {
+          latestCommand: { canCancelBeforeClaim: false }
+        }
+      });
+      expect(JSON.stringify(notCancelable)).not.toContain("attempts");
+    }
   });
 
   it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {

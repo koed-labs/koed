@@ -3138,6 +3138,27 @@ describe("managed Conversation routes", () => {
     const executionId = randomUUID();
     const itemId = randomUUID();
     const now = "2026-08-18T05:00:00.000Z";
+    let latestCommand: {
+      id: string;
+      sequence: number;
+      executionGeneration: number;
+      commandKind: string;
+      clientUserMessageId: string;
+      state: string;
+      attempts: number;
+      lastErrorCode: string | null;
+      updatedAt: string;
+    } = {
+      id: randomUUID(),
+      sequence: 3,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: randomUUID(),
+      state: "queued",
+      attempts: 0,
+      lastErrorCode: null,
+      updatedAt: now
+    };
     const answer = vi.fn(async () => ({ state: "answered" }));
     const repository = {
       getManagedConversationRuntimeBinding: async () => null,
@@ -3192,12 +3213,7 @@ describe("managed Conversation routes", () => {
           updatedAt: now
         }
       ],
-      getLatestManagedConversationCommandForExecution: async () => ({
-        commandKind: "prompt",
-        state: "indeterminate",
-        lastErrorCode: "ManagedConversationRunnerInterruptedError",
-        updatedAt: now
-      }),
+      getLatestManagedConversationCommandForExecution: async () => latestCommand,
       getManagedConversationRuntimeItem: async () => ({
         id: itemId,
         executionId,
@@ -3255,8 +3271,6 @@ describe("managed Conversation routes", () => {
         decision: "always"
       }
     });
-    await app.close();
-
     expect(runtime.statusCode).toBe(200);
     expect(runtime.json()).toMatchObject({
       execution: {
@@ -3266,11 +3280,13 @@ describe("managed Conversation routes", () => {
       },
       latestCommand: {
         commandKind: "prompt",
-        state: "indeterminate"
+        state: "queued",
+        canCancelBeforeClaim: true
       },
       items: [{ id: itemId, answered: false }]
     });
     expect(runtime.body).not.toContain("must-not-leak");
+    expect(runtime.body).not.toContain("attempts");
     expect(response.statusCode).toBe(200);
     expect(answer).toHaveBeenCalledWith(
       { userId },
@@ -3282,6 +3298,24 @@ describe("managed Conversation routes", () => {
     );
     expect(malformed.statusCode).toBeGreaterThanOrEqual(400);
     expect(answer).toHaveBeenCalledTimes(1);
+
+    for (const candidate of [
+      { commandKind: "stop", state: "queued", attempts: 0 },
+      { commandKind: "prompt", state: "dispatching", attempts: 0 },
+      { commandKind: "prompt", state: "queued", attempts: 1 }
+    ]) {
+      latestCommand = { ...latestCommand, ...candidate };
+      const notCancelable = await app.inject({
+        method: "GET",
+        url: `/v1/managed-conversations/${executionId}/runtime`
+      });
+      expect(notCancelable.statusCode).toBe(200);
+      expect(notCancelable.json().latestCommand.canCancelBeforeClaim).toBe(
+        false
+      );
+      expect(notCancelable.body).not.toContain("attempts");
+    }
+    await app.close();
   });
 
   it("returns a redacted provider-attributed context snapshot for the owning User", async () => {

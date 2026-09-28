@@ -665,6 +665,10 @@ export const materializeManagedConversationChangedEvent = async (
             commandKind: latestCommand.commandKind,
             clientUserMessageId: latestCommand.clientUserMessageId,
             state: latestCommand.state,
+            canCancelBeforeClaim:
+              latestCommand.commandKind === "prompt" &&
+              latestCommand.state === "queued" &&
+              latestCommand.attempts === 0,
             lastErrorCode: latestCommand.lastErrorCode,
             updatedAt: latestCommand.updatedAt
           }

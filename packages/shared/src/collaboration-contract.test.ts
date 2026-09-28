@@ -18,6 +18,7 @@ import {
   pendingShareSchema,
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
+  collaborationRendererUpdateSchema,
   collaborationRendererEventSchema,
   collaborationSnapshotResultCommands,
   collaborationSnapshotSchema,
@@ -1777,6 +1778,62 @@ describe("collaboration snapshots and DTOs", () => {
 });
 
 describe("collaboration results and realtime", () => {
+  it("normalizes latest-command cancellation eligibility without exposing attempts", () => {
+    const update = {
+      type: "managed_conversation_upserted",
+      execution: {
+        id: ids.request,
+        projectId: null,
+        provider: "codex",
+        state: "running",
+        stateVersion: 1,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        sessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        lastErrorCode: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        startedAt: timestamp,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      latestCommand: {
+        id: ids.otherUser,
+        sequence: 1,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        clientUserMessageId: ids.message,
+        state: "queued",
+        canCancelBeforeClaim: true,
+        lastErrorCode: null,
+        updatedAt: timestamp
+      },
+      runtimeItemChange: null
+    } as const;
+    const parsed = collaborationRendererUpdateSchema.parse(update);
+    expect(parsed).toMatchObject({
+      latestCommand: { canCancelBeforeClaim: true }
+    });
+
+    const { canCancelBeforeClaim, ...legacyCommand } = update.latestCommand;
+    expect(canCancelBeforeClaim).toBe(true);
+    const legacy = collaborationRendererUpdateSchema.parse({
+      ...update,
+      latestCommand: legacyCommand
+    });
+    expect(legacy).toMatchObject({
+      latestCommand: { canCancelBeforeClaim: false }
+    });
+    expect(
+      collaborationRendererUpdateSchema.safeParse({
+        ...update,
+        latestCommand: { ...update.latestCommand, attempts: 0 }
+      }).success
+    ).toBe(false);
+  });
+
   it("accepts command-correlated success and safe failure results", () => {
     expect(
       collaborationCommandResultSchema.safeParse({
