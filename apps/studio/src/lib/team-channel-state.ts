@@ -6,6 +6,9 @@ export const mayPersistTeamDraft = (input: {
   hydratedAuthorityKey: string | null;
 }): boolean => Boolean(input.authorityKey && input.authorityKey === input.hydratedAuthorityKey);
 
+export const mayCompleteDraftHydration = (input: { active: boolean; revoked: boolean }): boolean =>
+  input.active && !input.revoked;
+
 export const confirmedPendingSend = (
   draft: StudioTeamDraft,
   confirmedClientMessageId: string

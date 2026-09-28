@@ -20,7 +20,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -249,17 +249,20 @@ export function TeamChannelWorkspace({
     setPage(null);
     setDraftText("");
     setPendingSend(null);
+    if (!activeThread || !authority) {
+      if (!revokedRef.current) setStatus(null);
+      return;
+    }
     setStatus(null);
-    if (!activeThread || !authority) return;
     let active = true;
     void drafts.loadDraft(authority).then((stored) => {
-      if (!active || revokedRef.current) return;
+      if (!mayCompleteDraftHydration({ active, revoked: revokedRef.current })) return;
       draftByAuthority.current.set(JSON.stringify(authority), { text: stored?.text ?? "", pendingSend: stored?.pendingSend ?? null });
       setDraftText(stored?.text ?? "");
       setPendingSend(stored?.pendingSend ?? null);
       setHydratedAuthorityKey(JSON.stringify(authority));
     }).catch(() => {
-      if (active) {
+      if (mayCompleteDraftHydration({ active, revoked: revokedRef.current })) {
         setStatus("Draft recovery is unavailable on this device.");
         setHydratedAuthorityKey(JSON.stringify(authority));
       }

@@ -233,7 +233,10 @@ export class StudioCollaborationClient {
         await listener(event);
         if (event.connection.state === "access_revoked") {
           subscriptionRevoked = true;
+          const current = subscription;
           subscription = null;
+          resolveSubscriptionReady(null);
+          if (current) releaseSubscription(current.id);
         }
         return;
       }
@@ -281,9 +284,14 @@ export class StudioCollaborationClient {
     const startSubscription = async () => {
       const ready = await streamReady;
       if (!ready || stopped || controller.signal.aborted) { resolveSubscriptionReady(null); return; }
-      while (!stopped && !controller.signal.aborted) {
+      while (!stopped && !subscriptionRevoked && !controller.signal.aborted) {
         try {
           const result = await this.run("collaboration.subscribe", { scope: { scope: "team", teamId } });
+          if (stopped || subscriptionRevoked || controller.signal.aborted) {
+            if (result.ok && result.command === "collaboration.subscribe") releaseSubscription(result.data.subscription.id);
+            resolveSubscriptionReady(null);
+            return;
+          }
           if (!result.ok) {
             if (result.error.retryable) {
               await wait(controller.signal, result.error.retryAfterMs ?? 1_000);

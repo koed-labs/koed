@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
   assert.equal(mayPersistTeamDraft({ authorityKey, hydratedAuthorityKey: null }), false);
   assert.equal(mayPersistTeamDraft({ authorityKey, hydratedAuthorityKey: authorityKey }), true);
+});
+
+test("late draft hydration cannot apply after revocation or authority cleanup", () => {
+  assert.equal(mayCompleteDraftHydration({ active: true, revoked: false }), true);
+  assert.equal(mayCompleteDraftHydration({ active: true, revoked: true }), false);
+  assert.equal(mayCompleteDraftHydration({ active: false, revoked: false }), false);
 });
 
 test("reconciling an accepted send clears only its pending identity and preserves edits", () => {

@@ -266,3 +266,69 @@ test("replayed older snapshots cannot roll back an acknowledged Team subscriptio
   assert.equal(canApplySubscriptionSnapshot({ currentVersion: 3, snapshotVersion: 3, alreadyAcknowledged: false }), true);
   assert.equal(canApplySubscriptionSnapshot({ currentVersion: 3, snapshotVersion: 3, alreadyAcknowledged: true }), false);
 });
+
+test("access revocation releases a subscription whose create response arrives late", async () => {
+  const sessionSnapshot = collaborationSnapshotSchema.parse({
+    contractVersion: COLLABORATION_CONTRACT_VERSION,
+    snapshotRevision: "revision-studio-revocation-0001",
+    generatedAt: timestamp,
+    connection: { state: "live", backendId: "up_team_example", connectedAt: timestamp, retryAt: null, reconnectAttempt: 0, protocolVersion: COLLABORATION_CONTRACT_VERSION },
+    limits: COLLABORATION_DEFAULT_LIMITS,
+    navigation: { personalOwner: { id: memberId, displayName: "Member One", presence: "available", membershipState: "enabled" }, teamPrincipal: null, personal: { memory: [], channels: [] }, teams: [] },
+    selection: { kind: "personal_memory" },
+    view: { kind: "personal_memory", entries: [] }
+  });
+  const subscriptionId = "99999999-9999-4999-8999-999999999999";
+  const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let resolveSubscribe: ((response: Response) => void) | null = null;
+  let resolveSubscribeStarted: (() => void) | null = null;
+  let resolveRevocationSeen: (() => void) | null = null;
+  const subscribeStarted = new Promise<void>((resolve) => { resolveSubscribeStarted = resolve; });
+  const revocationSeen = new Promise<void>((resolve) => { resolveRevocationSeen = resolve; });
+  const subscribeResponse = new Promise<Response>((resolve) => { resolveSubscribe = resolve; });
+  const commands: Array<Record<string, unknown>> = [];
+  const fetcher: typeof fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url.endsWith("/studio-session")) return new Response(JSON.stringify({ snapshot: sessionSnapshot, csrfToken: "csrf-token" }));
+    if (url.endsWith("/events")) return new Response(new ReadableStream<Uint8Array>({ start(controller) { streamControllers.push(controller); } }), { headers: { "content-type": "text/event-stream" } });
+    const command = JSON.parse(String(init.body)) as Record<string, unknown>;
+    commands.push(command);
+    const requestId = command.requestId;
+    if (command.command === "collaboration.subscribe") {
+      resolveSubscribeStarted?.();
+      return await subscribeResponse;
+    }
+    return new Response(JSON.stringify({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: command.command,
+      ok: true,
+      data: command.command === "collaboration.unsubscribe" ? {} : {}
+    }));
+  };
+  const client = new StudioCollaborationClient(fetcher);
+  const unsubscribe = client.subscribe((event) => {
+    if (event.type === "connection" && event.connection.state === "access_revoked") resolveRevocationSeen?.();
+  }, undefined, teamId);
+  await subscribeStarted;
+  const revokedConnection: CollaborationRendererEvent = {
+    contractVersion: COLLABORATION_CONTRACT_VERSION,
+    type: "connection",
+    connection: { ...sessionSnapshot.connection, state: "access_revoked" },
+    error: null
+  };
+  streamControllers[0]!.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(revokedConnection)}\n\n`));
+  await revocationSeen;
+  resolveSubscribe!(new Response(JSON.stringify({
+    contractVersion: COLLABORATION_CONTRACT_VERSION,
+    requestId: commands.find((item) => item.command === "collaboration.subscribe")?.requestId,
+    command: "collaboration.subscribe",
+    ok: true,
+    data: { subscription: { id: subscriptionId, scope: { scope: "team", teamId }, state: "awaiting_snapshot_ack", version: 1, expiresAt: "2026-09-28T13:00:00.000Z" } }
+  })));
+  for (let attempt = 0; attempt < 100 && !commands.some((item) => item.command === "collaboration.unsubscribe"); attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(commands.filter((item) => item.command === "collaboration.subscribe").length, 1);
+  assert.equal(commands.some((item) => item.command === "collaboration.unsubscribe" && (item.input as Record<string, unknown>).subscriptionId === subscriptionId), true);
+  unsubscribe();
+  streamControllers[0]?.close();
+});
