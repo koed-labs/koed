@@ -209,22 +209,56 @@ describe("useSlashCommandDiscovery", () => {
     }
   );
 
-  it("passes abort signal and aborts superseded request", () => {
+  it("does not pass abort signal to discovery API", () => {
     vi.useFakeTimers();
     mockApi.discoverCommands.mockImplementation(
       () => new Promise(() => undefined)
     );
     const harness = renderDiscoveryHook(mockApi);
-    const firstInput = mockApi.discoverCommands.mock.calls[0]?.[0] as
-      | { signal?: AbortSignal }
-      | undefined;
+    const firstInput = mockApi.discoverCommands.mock.calls[0]?.[0];
 
-    expect(firstInput?.signal).toBeInstanceOf(AbortSignal);
-    expect(firstInput?.signal?.aborted).toBe(false);
+    expect(firstInput).toEqual({
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "test-instance",
+      projectId: "test-project",
+      cwd: "/home/test"
+    });
 
-    harness.rerender(mockApi, "/home/other");
+    harness.unmount();
+  });
 
-    expect(firstInput?.signal?.aborted).toBe(true);
+  it("invalidates cached commands after unauthorized response", async () => {
+    vi.useFakeTimers();
+    const harness = renderDiscoveryHook(mockApi);
+    await settle();
+
+    const unauthorizedApi = {
+      discoverCommands: vi.fn().mockResolvedValue({
+        status: "unauthorized",
+        message: "Not authorized"
+      })
+    };
+    harness.rerender(unauthorizedApi);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const unavailableApi = {
+      discoverCommands: vi.fn().mockResolvedValue({
+        status: "unavailable",
+        commands: []
+      })
+    };
+    harness.rerender(unavailableApi);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(harness.result.current?.commands).toEqual([]);
     harness.unmount();
   });
 

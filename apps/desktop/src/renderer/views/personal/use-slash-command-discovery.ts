@@ -11,7 +11,6 @@ type DiscoverCommandsApi = {
     aiClientInstanceId: string;
     projectId: string;
     cwd?: string;
-    signal?: AbortSignal;
   }) => Promise<unknown>;
 };
 
@@ -104,8 +103,7 @@ export function useSlashCommandDiscovery(
           aiClientDriverId: driverId,
           aiClientInstanceId: instanceId,
           projectId,
-          ...(cwd ? { cwd } : {}),
-          signal: controller.signal
+          ...(cwd ? { cwd } : {})
         })
         .then((result) => {
           if (!isCurrentRequest()) return;
@@ -144,6 +142,12 @@ export function useSlashCommandDiscovery(
             }
             setError(null);
           } else {
+            if (
+              response.status === "unauthorized" ||
+              response.status === "stale"
+            ) {
+              cachedRef.current.delete(cacheKey);
+            }
             setError(
               response.message ??
                 (response.status === "stale"
