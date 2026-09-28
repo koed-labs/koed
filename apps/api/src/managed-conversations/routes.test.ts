@@ -1823,6 +1823,16 @@ describe("managed Conversation routes", () => {
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
       encryption: { envelopeEncryptionProvider: {} },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "healthy",
+          deploymentId: "hosted-backend-stable-id",
+          deviceInstanceId: randomUUID(),
+          remoteOperationsAllowed: true,
+          message: "healthy",
+          platformProtection: "verified"
+        })
+      },
       rateLimit: {
         memoryRead: async () => {
           throw Object.assign(new Error("background exhausted"), {
@@ -1858,7 +1868,10 @@ describe("managed Conversation routes", () => {
       };
       const response = await app.inject(request);
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ user: { id: userId } });
+      expect(response.json()).toEqual({
+        user: { id: userId },
+        backendId: "hosted-backend-stable-id"
+      });
       expect(
         (
           await app.inject({
@@ -1871,6 +1884,46 @@ describe("managed Conversation routes", () => {
       const throttled = await app.inject(request);
       expect(throttled.statusCode).toBe(429);
       expect(throttled.headers["retry-after"]).toBe("30");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fails closed when hosted access has no healthy deployment identity", async () => {
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      encryption: { envelopeEncryptionProvider: {} },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "unavailable",
+          deploymentId: null,
+          deviceInstanceId: null,
+          remoteOperationsAllowed: false,
+          message: "identity unavailable",
+          platformProtection: "limited"
+        })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined,
+        managedConversationRead: async () => undefined
+      },
+      auth: {
+        authenticateApiToken: async () => ({
+          id: randomUUID(),
+          passwordHash: null
+        })
+      }
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers: { authorization: "Bearer valid" }
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).not.toHaveProperty("backendId");
+      expect(response.json()).not.toHaveProperty("user");
     } finally {
       await app.close();
     }

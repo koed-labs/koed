@@ -1845,7 +1845,14 @@ export const registerManagedConversationRoutes = (
     async (request) => {
       assertAvailable(context);
       const user = await context.auth.authenticateApiToken(request);
-      return { user: { id: user.id } };
+      const identity = context.deploymentIdentity.inspect();
+      if (identity.health !== "healthy" || !identity.deploymentId) {
+        throw Object.assign(
+          new Error("Hosted backend identity is unavailable"),
+          { statusCode: 503 }
+        );
+      }
+      return { user: { id: user.id }, backendId: identity.deploymentId };
     }
   );
 

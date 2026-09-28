@@ -22,7 +22,6 @@ import {
   loadHostedManagedConversationAccess,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
-  hostedRecoveryBackendId,
   hostedRecoveryDisposition,
   hostedLaunchInstancesForDevice,
   queueHostedConversationPrompt,
@@ -609,31 +608,12 @@ export function HostedManagedChats({
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([
-      loadHostedManagedConversationAccess(controller.signal),
-      fetch("/studio-api/collaboration/session", {
-        credentials: "include",
-        cache: "no-store",
-        signal: controller.signal
-      })
-        .then(async (response) =>
-          response.ok ? ((await response.json()) as unknown) : null
-        )
-        .catch(() => null)
-    ])
-      .then(([access, backend]) => {
+    void loadHostedManagedConversationAccess(controller.signal)
+      .then((access) => {
         if (controller.signal.aborted) return;
-        const backendId = hostedRecoveryBackendId(backend);
-        if (!backendId) {
-          setRecoveryScope(null);
-          setError(
-            "Studio cannot restore or send hosted chat drafts until the backend identity is available."
-          );
-          return;
-        }
         setRecoveryScope({
           ownerId: access.ownerId,
-          backendId: `${window.location.origin}:${backendId}`
+          backendId: `${window.location.origin}:${access.backendId}`
         });
       })
       .catch((cause) => {

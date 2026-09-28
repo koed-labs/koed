@@ -900,7 +900,7 @@ export async function loadHostedManagedConversation(
 export async function loadHostedManagedConversationAccess(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch
-): Promise<{ ownerId: string }> {
+): Promise<{ ownerId: string; backendId: string }> {
   const payload = await requestJson(
     "/v1/managed-conversations/access",
     { signal },
@@ -908,7 +908,9 @@ export async function loadHostedManagedConversationAccess(
   );
   if (!record(payload.user) || typeof payload.user.id !== "string" || !payload.user.id.trim())
     throw new HostedManagedChatError("The signed-in Conversation owner is unavailable.");
-  return { ownerId: payload.user.id };
+  if (typeof payload.backendId !== "string" || !payload.backendId.trim())
+    throw new HostedManagedChatError("The Conversation backend identity is unavailable.");
+  return { ownerId: payload.user.id, backendId: payload.backendId.trim() };
 }
 
 export async function lookupHostedConversationRecovery(

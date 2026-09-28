@@ -512,7 +512,7 @@ test("loads the authenticated recovery scope and looks up stable send identities
     const url = String(input);
     calls.push(url);
     if (url === "/v1/managed-conversations/access")
-      return json({ user: { id: "owner-id" } });
+      return json({ user: { id: "owner-id" }, backendId: "hosted-deployment" });
     if (url.includes("kind=start")) return json({ found: false });
     return json({
       found: true,
@@ -530,7 +530,8 @@ test("loads the authenticated recovery scope and looks up stable send identities
     });
   };
   assert.deepEqual(await loadHostedManagedConversationAccess(undefined, fetcher), {
-    ownerId: "owner-id"
+    ownerId: "owner-id",
+    backendId: "hosted-deployment"
   });
   assert.deepEqual(
     await lookupHostedConversationRecovery(
@@ -921,4 +922,16 @@ test("rejects a mismatched Project and hosted context before sending", async () 
     /Choose either a Project or a standalone Conversation/
   );
   assert.equal(requestCount, 0);
+});
+
+
+test("rejects hosted recovery scopes without an authenticated backend identity", async () => {
+  for (const backendId of [undefined, null, "", "   "]) {
+    await assert.rejects(
+      loadHostedManagedConversationAccess(undefined, async () =>
+        json({ user: { id: "owner-id" }, backendId })
+      ),
+      /backend identity is unavailable/
+    );
+  }
 });
