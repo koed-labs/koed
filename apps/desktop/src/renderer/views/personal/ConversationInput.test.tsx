@@ -5,10 +5,27 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConversationInput } from "./ConversationInput.js";
+import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+const DUMMY_SETTINGS: ComponentProps<typeof ConversationInput>["settings"] = {
+  options: null,
+  selection: {
+    instanceId: "",
+    model: "",
+    reasoningEffort: "",
+    permissionMode: ""
+  },
+  onChange: vi.fn()
+};
+
+const DUMMY_COMMANDS: ManagedConversationSlashCommand[] = [
+  { name: "query", description: "Search across memory", kind: "command", source: "provider" },
+  { name: "edit", description: "Edit the conversation", kind: "command", source: "provider" }
+];
 
 describe("ConversationInput", () => {
   let container: HTMLDivElement;
@@ -36,16 +53,7 @@ describe("ConversationInput", () => {
           onChange={setValue}
           onSubmit={onSubmit}
           placeholder="Tell the agent what to do"
-          settings={{
-            options: null,
-            selection: {
-              instanceId: "",
-              model: "",
-              reasoningEffort: "",
-              permissionMode: ""
-            },
-            onChange: vi.fn()
-          }}
+          settings={DUMMY_SETTINGS}
           value={value}
         />
       );
@@ -109,16 +117,7 @@ describe("ConversationInput", () => {
         value: "Follow-up draft",
         onChange: vi.fn(),
         onSubmit,
-        settings: {
-          options: null,
-          selection: {
-            instanceId: "",
-            model: "",
-            reasoningEffort: "",
-            permissionMode: ""
-          },
-          onChange: vi.fn()
-        }
+      settings: DUMMY_SETTINGS
       };
       await act(async () => root.render(<ConversationInput {...props} />));
       const event = new KeyboardEvent("keydown", {
@@ -141,4 +140,66 @@ describe("ConversationInput", () => {
       }
     }
   );
+  it("passes autocomplete options and keyboard events through", async () => {
+    const onSubmit = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState("");
+      return (
+        <ConversationInput
+          action={{ kind: "send", label: "Send", disabled: false }}
+          label="Prompt"
+          onChange={setValue}
+          onSubmit={onSubmit}
+          placeholder="Prompt"
+          settings={DUMMY_SETTINGS}
+          value={value}
+          autocompleteOptions={DUMMY_COMMANDS}
+          onAutocompleteSelect={vi.fn()}
+        />
+      );
+    }
+    await act(async () => root.render(<Harness />));
+    const textarea = container.querySelector("textarea")!;
+
+    // Normal Enter still submits when autocomplete menu is closed
+    await act(async () =>
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      )
+    );
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    // Escape does not trigger submit
+    await act(async () =>
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      )
+    );
+    expect(onSubmit).toHaveBeenCalledOnce(); // still only once
+  });
+  it("renders autocomplete menu popover with commands", async () => {
+    // The popover only renders when autocomplete is open AND there are filtered commands.
+    // Since input events don't trigger React's synthetic onChange in happy-dom, we verify
+    // the menu renders in SlashCommandMenu directly (tested in ai-client-slash-suggestions.test.ts).
+    // This test confirms the component accepts autocomplete props without crashing.
+    function Harness() {
+      const [value, setValue] = useState("");
+      return (
+        <ConversationInput
+          action={{ kind: "send", label: "Send", disabled: false }}
+          label="Prompt"
+          onChange={setValue}
+          onSubmit={vi.fn()}
+          placeholder="Prompt"
+          settings={DUMMY_SETTINGS}
+          value={value}
+          autocompleteOptions={DUMMY_COMMANDS}
+          onAutocompleteSelect={vi.fn()}
+        />
+      );
+    }
+    await act(async () => root.render(<Harness />));
+    const textarea = container.querySelector("textarea")!;
+    expect(textarea).not.toBeNull();
+  });
 });

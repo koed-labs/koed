@@ -245,3 +245,68 @@
   width: 14px;
   height: 14px;
 }
+
+/* Slash command autocomplete */
+.ai-suggestion-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 50;
+  margin-bottom: 4px;
+  max-width: 320px;
+  width: max-content;
+  background: var(--popover-background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.ai-suggestion-menu {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.ai-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ai-suggestion-item:hover,
+.ai-suggestion-item-selected {
+  background: var(--accent-background);
+}
+
+.ai-suggestion-name {
+  font-weight: 600;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.ai-suggestion-description {
+  color: var(--muted-foreground);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-suggestion-hint {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.ai-suggestion-loading,
+.ai-suggestion-error {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
