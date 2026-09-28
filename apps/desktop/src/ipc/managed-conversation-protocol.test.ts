@@ -17,6 +17,34 @@ const identity = {
   }
 };
 
+const parseRuntimeResult = (latestCommand: Record<string, unknown>) => {
+  const result = parseManagedConversationResult({
+    operation: "runtime",
+    executionId: "execution-1",
+    executionGeneration: 1,
+    executionStateVersion: 1,
+    executionState: "running",
+    executionLastErrorCode: null,
+    vcsDriver: null,
+    latestCommand: {
+      id: "command-1",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: "message-1",
+      state: "queued",
+      lastErrorCode: null,
+      updatedAt: "2026-09-28T12:00:00.000Z",
+      ...latestCommand
+    },
+    items: []
+  });
+  if (result.operation !== "runtime") {
+    throw new Error("Expected a runtime result.");
+  }
+  return result;
+};
+
 describe("Managed Conversation protocol", () => {
   it("preserves projectless identities and start results", () => {
     expect(parseManagedConversationIdentity(identity)).toEqual(identity);
@@ -73,5 +101,28 @@ describe("Managed Conversation protocol", () => {
       capturedSessionId: "captured-1",
       threadId: "thread-1"
     });
+  });
+
+  it("normalizes the optional pre-claim cancel flag and preserves true", () => {
+    expect(parseRuntimeResult({}).latestCommand).toMatchObject({
+      canCancelBeforeClaim: false
+    });
+    expect(
+      parseRuntimeResult({ canCancelBeforeClaim: true }).latestCommand
+    ).toMatchObject({ canCancelBeforeClaim: true });
+    expect(
+      parseRuntimeResult({ canCancelBeforeClaim: false }).latestCommand
+    ).toMatchObject({ canCancelBeforeClaim: false });
+  });
+
+  it("rejects malformed optional cancel flags and unknown command fields", () => {
+    for (const canCancelBeforeClaim of [null, "true", 1]) {
+      expect(() => parseRuntimeResult({ canCancelBeforeClaim })).toThrow(
+        "Managed runtime latest command is invalid."
+      );
+    }
+    expect(() => parseRuntimeResult({ unexpected: true })).toThrow(
+      "Managed runtime latest command has unexpected fields."
+    );
   });
 });

@@ -5073,6 +5073,106 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   });
 
+  it("normalizes optional pre-claim cancel metadata from runtime responses", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-runtime-cancel-metadata-")
+    );
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "local_app_token" })
+    );
+    const latestCommand: Record<string, unknown> = {
+      id: "command-1",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: "message-1",
+      state: "queued",
+      lastErrorCode: null,
+      updatedAt: "2026-09-28T12:00:00.000Z"
+    };
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: { state: "healthy", url: "http://127.0.0.1:4170" }
+                }
+              : { ok: true }
+          ),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch: async (input) => {
+        expect(new URL(String(input)).pathname).toBe(
+          "/v1/managed-conversations/execution-1/runtime"
+        );
+        return new Response(
+          JSON.stringify({
+            execution: {
+              id: "execution-1",
+              executionGeneration: 1,
+              stateVersion: 1,
+              state: "running",
+              lastErrorCode: null,
+              executionCheckout: null
+            },
+            latestCommand,
+            items: []
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+    });
+
+    try {
+      await expect(
+        manager.managedConversation({
+          operation: "runtime",
+          executionId: "execution-1"
+        })
+      ).resolves.toMatchObject({
+        operation: "runtime",
+        latestCommand: { canCancelBeforeClaim: false }
+      });
+
+      latestCommand.canCancelBeforeClaim = true;
+      await expect(
+        manager.managedConversation({
+          operation: "runtime",
+          executionId: "execution-1"
+        })
+      ).resolves.toMatchObject({
+        operation: "runtime",
+        latestCommand: { canCancelBeforeClaim: true }
+      });
+
+      latestCommand.canCancelBeforeClaim = "true";
+      await expect(
+        manager.managedConversation({
+          operation: "runtime",
+          executionId: "execution-1"
+        })
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("uses the encrypted Desktop credential for bounded managed Project reads", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-workspace-"));
     const ownerUserId = "11111111-1111-4111-8111-111111111111";

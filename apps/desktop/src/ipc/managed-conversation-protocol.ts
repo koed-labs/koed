@@ -406,6 +406,7 @@ export type ManagedConversationResult =
         commandKind: string;
         clientUserMessageId: string | null;
         state: string;
+        canCancelBeforeClaim?: boolean;
         lastErrorCode: string | null;
         updatedAt: string;
       } | null;
@@ -1669,6 +1670,9 @@ export const parseManagedConversationResult = (
           "commandKind",
           "clientUserMessageId",
           "state",
+          ...(Object.hasOwn(latestCommand, "canCancelBeforeClaim")
+            ? ["canCancelBeforeClaim"]
+            : []),
           "lastErrorCode",
           "updatedAt"
         ],
@@ -1683,6 +1687,8 @@ export const parseManagedConversationResult = (
         (latestCommand.clientUserMessageId !== null &&
           typeof latestCommand.clientUserMessageId !== "string") ||
         typeof latestCommand.state !== "string" ||
+        (Object.hasOwn(latestCommand, "canCancelBeforeClaim") &&
+          typeof latestCommand.canCancelBeforeClaim !== "boolean") ||
         (latestCommand.lastErrorCode !== null &&
           typeof latestCommand.lastErrorCode !== "string") ||
         typeof latestCommand.updatedAt !== "string" ||
@@ -1715,6 +1721,7 @@ export const parseManagedConversationResult = (
               latestCommand.state,
               "Managed runtime command state"
             ),
+            canCancelBeforeClaim: latestCommand.canCancelBeforeClaim === true,
             clientUserMessageId:
               latestCommand.clientUserMessageId === null
                 ? null

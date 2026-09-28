@@ -3486,6 +3486,8 @@ export const createKoedServerManager = ({
             (latestCommand.clientUserMessageId !== null &&
               typeof latestCommand.clientUserMessageId !== "string") ||
             typeof latestCommand.state !== "string" ||
+            (Object.hasOwn(latestCommand, "canCancelBeforeClaim") &&
+              typeof latestCommand.canCancelBeforeClaim !== "boolean") ||
             (latestCommand.lastErrorCode !== null &&
               typeof latestCommand.lastErrorCode !== "string") ||
             typeof latestCommand.updatedAt !== "string")) ||
