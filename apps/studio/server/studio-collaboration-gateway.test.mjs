@@ -227,6 +227,49 @@ describe("Studio collaboration gateway", () => {
     assert.equal(unsubscribed, true);
   });
 
+  it("admits Origin-less browser event GETs with the session token and rejects supplied invalid origins", async () => {
+    let unsubscribed = false;
+    const service = await start({
+      loadStudioCollaborationSnapshot: snapshot,
+      subscribeStudioCollaborationEvents: () => () => {
+        unsubscribed = true;
+      }
+    });
+    const sessionResponse = await fetch(
+      `${service.url}/studio-api/collaboration/studio-session`
+    );
+    assert.equal(sessionResponse.status, 200);
+    const session = await sessionResponse.json();
+    const abort = new AbortController();
+    const eventsEndpoint = `${service.url}/studio-api/collaboration/events`;
+    const response = await fetch(eventsEndpoint, {
+      headers: { "x-studio-csrf": session.csrfToken },
+      signal: abort.signal
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    assert.match(new TextDecoder().decode(first.value), /retry: 2000/);
+    await reader.cancel();
+    abort.abort();
+    for (let attempt = 0; attempt < 20 && !unsubscribed; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(unsubscribed, true);
+
+    const port = new URL(service.url).port;
+    for (const origin of ["", "not-an-origin", `http://foreign.test:${port}`]) {
+      const denied = await fetch(eventsEndpoint, {
+        headers: {
+          origin,
+          "x-studio-csrf": session.csrfToken
+        }
+      });
+      assert.equal(denied.status, 403);
+      await denied.body?.cancel();
+    }
+  });
+
   it("gates protected Team draft operations with same-origin CSRF and strict authority fields", async () => {
     const calls = [];
     const service = await start({

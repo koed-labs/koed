@@ -1665,7 +1665,13 @@ export const createStudioServer = ({
           sendJson(response, 400, { error: "query_not_allowed" });
           return;
         }
-        const origin = exactRequestOrigin(request);
+        const suppliedOrigin = request.headers.origin;
+        const requestOrigin = exactRequestOrigin(request);
+        const origin =
+          requestOrigin ||
+          (suppliedOrigin === undefined
+            ? `http://${String(request.headers.host ?? "")}`
+            : null);
         if (
           !origin ||
           !validGithubSession(
