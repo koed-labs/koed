@@ -305,6 +305,13 @@ const managedApi = (
     operationId: input.operationId,
     targetDeviceId: input.targetDeviceId
   })),
+  discoverCommands: vi.fn<ManagedConversationDesktopApi["discoverCommands"]>(
+    async () => ({
+      operation: "command_discovery",
+      status: "unavailable",
+      commands: []
+    })
+  ),
   ...overrides
 });
 

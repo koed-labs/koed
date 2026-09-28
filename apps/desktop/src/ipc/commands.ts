@@ -405,7 +405,9 @@ export const registerDesktopCommandHandlers = (
             transfer_status:
               "Koed could not load the managed Conversation transfer status.",
             handoff: "Koed could not move the managed Conversation.",
-            fork: "Koed could not fork the managed Conversation."
+            fork: "Koed could not fork the managed Conversation.",
+            command_discovery:
+              "Koed could not discover managed Conversation commands."
           };
         // IPC errors deliberately omit causes that can contain private provider diagnostics.
         // eslint-disable-next-line preserve-caught-error

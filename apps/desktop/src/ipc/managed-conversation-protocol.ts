@@ -2061,4 +2061,9 @@ export interface ManagedConversationDesktopApi {
   fork: (
     input: Omit<ManagedConversationForkRequest, "operation">
   ) => Promise<Extract<ManagedConversationResult, { operation: "fork" }>>;
+  discoverCommands: (
+    input: Omit<ManagedConversationCommandDiscoveryRequest, "operation">
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "command_discovery" }>
+  >;
 }
