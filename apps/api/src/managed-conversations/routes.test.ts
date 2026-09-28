@@ -314,7 +314,7 @@ describe("managed Conversation capability admission", () => {
     expect(response.body).not.toContain("private instruction");
   });
 
-  it("returns generic encrypted-history messages without named-agent jobs or duplicate authors", async () => {
+  it.each([null, { activeAgentId: null, participants: [] }])("returns generic encrypted-history messages without named-agent jobs or duplicate authors (%j)", async (conversation) => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const commandId = randomUUID();
@@ -334,7 +334,7 @@ describe("managed Conversation capability admission", () => {
       localEdge: { upstreamBackendsPath: resolve(mkdtempSync(resolve(tmpdir(), "koed-generic-history-")), "upstreams.json"), resolveUpstreamAuthorization: () => null, fetch: vi.fn() },
       requireRepository: () => ({
         getManagedConversationExecution: async () => ({ id: executionId, ownerUserId: userId, executionGeneration: 2, state: "running" }),
-        getPersonalAgentConversation: async () => null,
+        getPersonalAgentConversation: async () => conversation,
         listManagedConversationPromptHistory: history,
         listPersonalAgentExecutionJobs: jobs
       })

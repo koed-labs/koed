@@ -3632,13 +3632,16 @@ export const registerManagedConversationRoutes = (
           conversationId: executionId
         }
       );
-      const genericHistory = !conversation
+      const hasNamedAgentContext = Boolean(
+        conversation?.activeAgentId || conversation?.participants.length
+      );
+      const genericHistory = !hasNamedAgentContext
         ? await repository.listManagedConversationPromptHistory(actor, {
             executionId, limit: query.limit,
             ...(query.before ? { before: query.before } : {})
           })
         : null;
-      const jobsPage = conversation
+      const jobsPage = hasNamedAgentContext
         ? await repository.listPersonalAgentExecutionJobs(actor, {
             conversationId: executionId,
             limit: query.limit,
