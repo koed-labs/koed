@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedRecoveryBackendId, hostedRecoveryDisposition, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -93,6 +93,76 @@ test("does not render a pending message from another selected Conversation", () 
       }
     ]
   );
+});
+
+test("shows only the active execution generation's approved transient output and reconciles canonical IDs", () => {
+  const history = [{
+    id: "provider:canonical",
+    role: "assistant" as const,
+    content: "Canonical answer",
+    createdAt: "2026-09-01T10:00:02.000Z",
+    author: null,
+    providerTurnId: "turn-1",
+    providerItemId: "item-1"
+  }];
+  const runtime: NonNullable<Parameters<typeof hostedMessagesWithTransientOutput>[1]> = {
+    execution: { ...execution, id, executionGeneration: 3, permissionMode: "supervised" },
+    latestCommand: {
+      id: commandId,
+      commandKind: "prompt",
+      state: "running",
+      lastErrorCode: null
+    },
+    items: [{
+      id: "runtime-1",
+      executionGeneration: 3,
+      itemKind: "transient_output",
+      state: "pending",
+      providerTurnId: "turn-1",
+      providerItemId: "item-1",
+      createdAt: "2026-09-01T10:00:01.000Z",
+      updatedAt: "2026-09-01T10:00:03.000Z",
+      presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" },
+      payload: { text: "Partial answer" }
+    }]
+  };
+  assert.deepEqual(hostedMessagesWithTransientOutput(id, runtime, history), history);
+  assert.deepEqual(hostedMessagesWithTransientOutput("other-execution", runtime, []), []);
+  assert.deepEqual(
+    hostedMessagesWithTransientOutput(id, {
+      ...runtime,
+      latestCommand: {
+        id: commandId,
+        commandKind: "prompt",
+        state: "completed",
+        lastErrorCode: null
+      }
+    }, []),
+    []
+  );
+
+  const visible = hostedMessagesWithTransientOutput(id, {
+    ...runtime,
+    items: [{ ...runtime.items[0], providerTurnId: "turn-2", providerItemId: "item-2", payload: { text: "Partial /Users/jacobo/private.txt token=privatevalue" } }]
+  }, []);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].id, "transient:runtime-1");
+  assert.equal(visible[0].content, "Partial [local path hidden] token=[redacted]");
+  assert.equal(visible[0].providerTurnId, "turn-2");
+  assert.equal(visible[0].providerItemId, "item-2");
+
+  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
+    ...runtime,
+    items: [{ ...runtime.items[0], executionGeneration: 2, providerTurnId: "old-turn" }]
+  }, []), []);
+  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
+    ...runtime,
+    items: [{ ...runtime.items[0], presentation: { mode: "hidden", renderer: "message", policyKey: "transient_output" } }]
+  }, []), []);
+  assert.deepEqual(hostedMessagesWithTransientOutput(id, {
+    ...runtime,
+    items: [{ ...runtime.items[0], presentation: { mode: "expanded", renderer: "tool", policyKey: "transient_output" } }]
+  }, []), []);
 });
 
 test("lists only safe execution data using the signed-in same-origin session", async () => {
@@ -332,6 +402,11 @@ test("loads runtime and generation-matched live user and agent messages", async 
     if (String(input).endsWith("/runtime"))
       return json({
         execution: { ...execution, path: "/private/device/path" },
+        latestCommand: {
+          id: "55555555-5555-4555-8555-555555555555",
+          commandKind: "prompt",
+          state: "running"
+        },
         items: [
           {
             id: commandId,
@@ -386,6 +461,26 @@ test("loads runtime and generation-matched live user and agent messages", async 
             answered: false
           },
           {
+            id: "stream-item",
+            executionGeneration: 3,
+            providerTurnId: "provider-turn",
+            providerItemId: "provider-item",
+            itemKind: "transient_output",
+            state: "pending",
+            createdAt: execution.updatedAt,
+            updatedAt: execution.updatedAt,
+            payload: { text: "Streaming /Users/runner/private/file.txt token=private" },
+            presentation: { mode: "expanded", renderer: "message", policyKey: "transient_output" }
+          },
+          {
+            id: "unsafe-stream-item",
+            executionGeneration: 3,
+            itemKind: "transient_output",
+            state: "pending",
+            payload: { text: "Should not be exposed" },
+            presentation: { mode: "expanded", renderer: "tool", policyKey: "transient_output" }
+          },
+          {
             id: "33333333-3333-4333-8333-333333333333",
             executionGeneration: 2,
             itemKind: "command_approval",
@@ -426,9 +521,19 @@ test("loads runtime and generation-matched live user and agent messages", async 
   assert.equal("path" in loaded.runtime.execution, false);
   assert.deepEqual(loaded.runtime.items.map((item) => item.id), [
     commandId,
-    "44444444-4444-4444-8444-444444444444"
+    "44444444-4444-4444-8444-444444444444",
+    "stream-item",
+    "unsafe-stream-item"
   ]);
   assert.equal("credential" in loaded.runtime.items[0].payload, false);
+  assert.equal(
+    loaded.runtime.items.find((item) => item.id === "stream-item")?.payload.text,
+    "Streaming [local path hidden] token=[redacted]"
+  );
+  assert.equal(
+    "text" in (loaded.runtime.items.find((item) => item.id === "unsafe-stream-item")?.payload ?? {}),
+    false
+  );
   assert.equal("cwd" in loaded.runtime.items[0].payload, false);
   assert.doesNotMatch(JSON.stringify(loaded.runtime.items[0].payload.diff), /deep-secret\.txt/u);
   assert.match(JSON.stringify(loaded.runtime.items[0].payload.diff), /details omitted/u);

@@ -24,6 +24,7 @@ import {
   hasMeaningfulHostedApprovalDetails,
   hostedRecoveryDisposition,
   hostedMessagesForSelection,
+  hostedMessagesWithTransientOutput,
   hostedLaunchInstancesForDevice,
   hostedLaunchSelectionForOptions,
   queueHostedConversationPrompt,
@@ -889,10 +890,15 @@ export function HostedManagedChats({
     launchInstance.permissionModes.includes(launchPermission)
   );
   const displayMessages = useMemo(() => {
+    const withTransientOutput = hostedMessagesWithTransientOutput(
+      selectedId,
+      selectedRuntime,
+      messages
+    );
     return hostedMessagesForSelection(
       selectedId,
       selectedRuntime?.execution.id ?? null,
-      messages,
+      withTransientOutput,
       pendingMessage
     );
   }, [messages, pendingMessage, selectedId, selectedRuntime]);
@@ -2014,6 +2020,7 @@ export function HostedManagedChats({
                 <article
                   key={message.id}
                   className={`max-w-[92%] rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "ml-auto bg-accent/10 text-foreground" : "bg-surface text-foreground-secondary"}`}
+                  aria-live={message.id.startsWith("transient:") ? "polite" : undefined}
                 >
                   <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted">
                     {message.role === "user"
@@ -2023,6 +2030,9 @@ export function HostedManagedChats({
                   <p className="whitespace-pre-wrap break-words text-xs leading-5">
                     {message.content}
                   </p>
+                  {message.id.startsWith("transient:") && (
+                    <p className="mt-1 text-[10px] text-muted">Streaming response</p>
+                  )}
                   {message.id === pendingMessage?.id && (
                     <p className="mt-1 text-[10px] text-muted">
                       {pendingMessage?.commandState === "dispatching"

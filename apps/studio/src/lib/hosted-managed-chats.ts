@@ -17,7 +17,78 @@ export type HostedConversationMessage = {
   content: string;
   createdAt: string;
   author: { agentId: string; name: string } | null;
+  providerTurnId?: string | null;
+  providerItemId?: string | null;
 };
+
+type HostedRuntimeOutputSnapshot = Omit<RuntimeSnapshot, "items"> & {
+  items: Array<RuntimeItem & {
+    createdAt?: string;
+    updatedAt?: string;
+    providerTurnId?: string | null;
+    providerItemId?: string | null;
+    presentation?: RuntimeItem["presentation"] & { policyKey?: string };
+  }>;
+};
+
+/** Add only the current owned prompt's visible, policy-approved provider output. */
+export function hostedMessagesWithTransientOutput(
+  selectedExecutionId: string | null,
+  runtime: HostedRuntimeOutputSnapshot | null,
+  messages: HostedConversationMessage[]
+): HostedConversationMessage[] {
+  if (
+    !selectedExecutionId ||
+    runtime?.execution.id !== selectedExecutionId ||
+    runtime.latestCommand?.commandKind !== "prompt" ||
+    !["dispatching", "running"].includes(runtime.latestCommand.state)
+  ) return messages;
+
+  const transient = runtime.items.flatMap((item) => {
+    const presentation = item.presentation;
+    const text = typeof item.payload.text === "string"
+      ? hostedRuntimeText(item.payload.text)
+      : "";
+    const providerTurnId = item.providerTurnId?.trim() || null;
+    const providerItemId = item.providerItemId?.trim() || null;
+    if (
+      item.executionGeneration !== runtime.execution.executionGeneration ||
+      item.itemKind !== "transient_output" ||
+      item.state !== "pending" ||
+      presentation?.mode === "hidden" ||
+      presentation?.renderer !== "message" ||
+      !presentation.policyKey ||
+      !text ||
+      (!providerTurnId && !providerItemId)
+    ) return [];
+
+    return [{
+      id: `transient:${item.id}`,
+      role: "assistant" as const,
+      content: text,
+      createdAt: item.updatedAt ?? item.createdAt ?? "",
+      author: null,
+      providerTurnId,
+      providerItemId
+    }];
+  });
+
+  if (transient.length === 0) return messages;
+  const unmatched = transient.filter((output) => !messages.some((message) => {
+    if (message.role !== "assistant") return false;
+    if (output.providerItemId && message.providerItemId) {
+      return output.providerItemId === message.providerItemId;
+    }
+    return Boolean(
+      output.providerTurnId &&
+      message.providerTurnId &&
+      output.providerTurnId === message.providerTurnId
+    );
+  }));
+  return [...messages, ...unmatched].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt)
+  );
+}
 
 export function hostedMessagesForSelection<
   T extends { id: string },
@@ -259,6 +330,18 @@ const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
     if (typeof item.payload[key] === "string" || Array.isArray(item.payload[key]))
       payload[key] = hostedRuntimeValue(item.payload[key], key);
   }
+  const presentation = item.presentation as
+    | (NonNullable<RuntimeItem["presentation"]> & { policyKey?: string })
+    | undefined;
+  if (
+    item.itemKind === "transient_output" &&
+    item.state === "pending" &&
+    presentation?.mode !== "hidden" &&
+    presentation?.renderer === "message" &&
+    typeof presentation.policyKey === "string" &&
+    presentation.policyKey.length > 0 &&
+    typeof item.payload.text === "string"
+  ) payload.text = hostedRuntimeText(item.payload.text);
   if (record(item.payload.permissions))
     payload.permissions = hostedRuntimeValue(item.payload.permissions, "permissions");
   if (record(item.payload.input)) {
@@ -747,7 +830,13 @@ export function parseHostedConversationState(
           value.content +
           (value.truncated === true ? "\n[Output truncated]" : ""),
         createdAt: value.createdAt,
-        author
+        author,
+        ...(typeof value.providerTurnId === "string" || value.providerTurnId === null
+          ? { providerTurnId: value.providerTurnId }
+          : {}),
+        ...(typeof value.providerItemId === "string" || value.providerItemId === null
+          ? { providerItemId: value.providerItemId }
+          : {})
       }
     ];
   });
