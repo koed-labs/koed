@@ -147,6 +147,62 @@ const managedCapabilityRepository = {
 };
 
 describe("managed Conversation capability admission", () => {
+  it("proxies hosted agent-state queries with a clean pathname and preserved search", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const upstreamCalls: URL[] = [];
+    const upstreamPayload = {
+      activeAgentId: null,
+      participants: [],
+      jobs: [],
+      hasMore: false,
+      nextCursor: null,
+      messages: [{ id: "authorized-message", role: "assistant", content: "OK" }]
+    };
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () =>
+          "Koed-Device upstream-key:upstream-secret",
+        fetch: vi.fn(async (input: URL | RequestInfo) => {
+          upstreamCalls.push(new URL(String(input)));
+          return new Response(JSON.stringify(upstreamPayload), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        })
+      },
+      requireRepository: () => {
+        throw new Error("Hosted agent-state should be served by its authority");
+      }
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state?limit=7&before=prompt%3A9`
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(upstreamPayload);
+    expect(upstreamCalls).toHaveLength(1);
+    expect(upstreamCalls[0]!.pathname).toBe(
+      `/koed/v1/managed-conversations/${executionId}/agent-state`
+    );
+    expect(upstreamCalls[0]!.searchParams.get("limit")).toBe("7");
+    expect(upstreamCalls[0]!.searchParams.get("before")).toBe("prompt:9");
+    expect(upstreamCalls[0]!.pathname).not.toContain("?");
+  });
+
   it("returns bounded owner-scoped agent state with immutable message authors", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
@@ -401,7 +457,79 @@ describe("managed Conversation capability admission", () => {
     }
   );
 
-  it("projects a bound message citation through current owner access after a Project move", async () => {
+  it.each([
+    {
+      name: "current source",
+      status: "available",
+      evidencePresent: true,
+      footer: "used-known",
+      sourceReadable: true,
+      expectedMemory: {
+        used: true,
+        status: "available",
+        citations: [{ label: "Earlier decision · 2026-08-09" }]
+      },
+      expectedLookup: true
+    },
+    {
+      name: "deleted or revoked source",
+      status: "available",
+      evidencePresent: true,
+      footer: "used-known",
+      sourceReadable: false,
+      expectedMemory: {
+        used: true,
+        status: "available",
+        citations: [{ label: "Source no longer available" }]
+      },
+      expectedLookup: true
+    },
+    {
+      name: "preloaded hit without a footer",
+      status: "available",
+      evidencePresent: true,
+      footer: "missing",
+      sourceReadable: true,
+      expectedMemory: undefined,
+      expectedLookup: false
+    },
+    {
+      name: "explicit no-use footer",
+      status: "available",
+      evidencePresent: true,
+      footer: "unused",
+      sourceReadable: true,
+      expectedMemory: undefined,
+      expectedLookup: false
+    },
+    {
+      name: "empty retrieval with forged used footer",
+      status: "available",
+      evidencePresent: false,
+      footer: "used-known",
+      sourceReadable: true,
+      expectedMemory: undefined,
+      expectedLookup: false
+    },
+    {
+      name: "unavailable retrieval",
+      status: "unavailable",
+      evidencePresent: false,
+      footer: "unused",
+      sourceReadable: false,
+      expectedMemory: { used: false, status: "unavailable", citations: [] },
+      expectedLookup: false
+    },
+    {
+      name: "used footer with no verifiable selected ID",
+      status: "available",
+      evidencePresent: true,
+      footer: "used-unknown",
+      sourceReadable: true,
+      expectedMemory: { used: true, status: "available", citations: [] },
+      expectedLookup: false
+    }
+  ])("projects Personal Memory attribution for $name", async (testCase) => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const commandId = randomUUID();
@@ -409,17 +537,24 @@ describe("managed Conversation capability admission", () => {
     const clientMessageId = randomUUID();
     const sourceId = randomUUID();
     const nodeId = randomUUID();
-    const footer = `<!-- koed-memory-attribution:v1:${commandId}:${nonce}:{"used":true,"citationNodeIds":["${nodeId}"]} -->`;
-    const getLcmGraphEvent = vi.fn(async () => ({
-      id: sourceId,
-      visibility: "personal",
-      projectId: "original-project",
-      metadata: { title: "Earlier decision" },
-      threadName: randomUUID(),
-      sourceEventTime: "2026-08-09T13:45:00.000Z",
-      timestamp: "2026-08-09T13:45:00.000Z",
-      capturedAt: "2026-08-09T13:45:00.000Z"
-    }));
+    const footer =
+      testCase.footer === "missing"
+        ? ""
+        : `<!-- koed-memory-attribution:v1:${commandId}:${nonce}:{"used":${testCase.footer === "unused" ? "false" : "true"},"citationNodeIds":${testCase.footer === "used-known" ? JSON.stringify([nodeId]) : testCase.footer === "used-unknown" ? JSON.stringify([randomUUID()]) : "[]"}} -->`;
+    const getLcmGraphEvent = vi.fn(async () =>
+      testCase.sourceReadable
+        ? {
+            id: sourceId,
+            visibility: "personal",
+            projectId: "original-project",
+            metadata: { title: "Earlier decision" },
+            threadName: randomUUID(),
+            sourceEventTime: "2026-08-09T13:45:00.000Z",
+            timestamp: "2026-08-09T13:45:00.000Z",
+            capturedAt: "2026-08-09T13:45:00.000Z"
+          }
+        : null
+    );
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
       config: { deploymentProfile: "local_personal" },
@@ -457,7 +592,7 @@ describe("managed Conversation capability admission", () => {
               providerTurnId: null,
               providerItemId: null,
               assistantOutput: {
-                text: `We decided to keep it simple.\n${footer}`,
+                text: `We decided to keep it simple.${footer ? `\n${footer}` : ""}`,
                 truncated: false
               }
             }
@@ -470,19 +605,21 @@ describe("managed Conversation capability admission", () => {
           payload: {
             personalMemoryContext: {
               schemaVersion: 1,
-              status: "available",
+              status: testCase.status,
               attributionNonce: nonce,
               searchDomain: "project",
               projectId: "original-project",
-              evidence: [
-                {
-                  nodeId,
-                  sourceType: "message",
-                  sourceId,
-                  summaryText: "Earlier decision",
-                  citation: { nodeId, sourceId, visibility: "personal" }
-                }
-              ]
+              evidence: testCase.evidencePresent
+                ? [
+                    {
+                      nodeId,
+                      sourceType: "message",
+                      sourceId,
+                      summaryText: "Earlier decision",
+                      citation: { nodeId, sourceId, visibility: "personal" }
+                    }
+                  ]
+                : []
             }
           }
         }),
@@ -498,22 +635,35 @@ describe("managed Conversation capability admission", () => {
     await app.close();
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().messages).toContainEqual(
-      expect.objectContaining({
-        id: `provider:${commandId}`,
-        role: "assistant",
-        content: "We decided to keep it simple.",
-        memory: {
-          used: true,
-          status: "available",
-          citations: [{ label: "Earlier decision · 2026-08-09" }]
-        }
-      })
-    );
-    expect(getLcmGraphEvent).toHaveBeenCalledWith({ userId }, sourceId, {
-      includeInvalidated: false,
-      includeContent: false
+    const assistantMessage = response
+      .json()
+      .messages.find(
+        (message: { id: string }) => message.id === `provider:${commandId}`
+      );
+    expect(assistantMessage).toMatchObject({
+      role: "assistant",
+      content: "We decided to keep it simple."
     });
+    if (testCase.expectedMemory) {
+      expect(assistantMessage).toHaveProperty(
+        "memory",
+        testCase.expectedMemory
+      );
+    } else {
+      expect(assistantMessage).not.toHaveProperty("memory");
+    }
+    if (testCase.expectedLookup) {
+      expect(getLcmGraphEvent).toHaveBeenCalledWith({ userId }, sourceId, {
+        includeInvalidated: false,
+        includeContent: false
+      });
+    } else {
+      expect(getLcmGraphEvent).not.toHaveBeenCalled();
+    }
+    if (testCase.name === "deleted or revoked source") {
+      expect(response.body).not.toContain("Earlier decision");
+      expect(response.body).not.toContain("Personal Memory · 2026-08-09");
+    }
     expect(response.body).not.toContain(sourceId);
     expect(response.body).not.toContain(nodeId);
     expect(response.body).not.toContain(nonce);
