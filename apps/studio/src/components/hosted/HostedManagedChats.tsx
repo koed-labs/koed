@@ -1981,7 +1981,11 @@ export function HostedManagedChats({
                   </p>
                   {message.id === pendingMessage?.id && (
                     <p className="mt-1 text-[10px] text-muted">
-                      Pending · accepted by Koed
+                      {pendingMessage?.commandState === "dispatching"
+                        ? "Working · claimed by the assigned computer"
+                        : ["queued", "blocked"].includes(pendingMessage?.commandState ?? "")
+                          ? "Pending · accepted by Koed"
+                          : "Outcome uncertain · check send status"}
                     </p>
                   )}
                 </article>
