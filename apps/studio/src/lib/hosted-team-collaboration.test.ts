@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner requires the source extension.
 import { HostedTeamCollaborationClient } from "./hosted-team-collaboration.ts";
+// @ts-expect-error -- Node's native TypeScript runner requires the source extension.
+import { StudioCollaborationClient } from "./studio-collaboration-client.ts";
 
 const teamId = "11111111-1111-4111-8111-111111111111";
 const threadId = "22222222-2222-4222-8222-222222222222";
@@ -88,4 +90,17 @@ test("uses the API bodyText shape and preserves the idempotency key for send", a
 test("rejects cross-Team REST records", async () => {
   const client = new HostedTeamCollaborationClient(async () => new Response(JSON.stringify({ threads: [{ ...rawThread, teamId: "77777777-7777-4777-8777-777777777777" }] })));
   await assert.rejects(client.listChannels(teamId), /invalid Team channels/);
+});
+
+test("binds fetch when the browser request function is stored on a client", async () => {
+  const receivers: unknown[] = [];
+  const fetcher = function (this: unknown) {
+    receivers.push(this);
+    return Promise.resolve(new Response(JSON.stringify({ error: "offline" }), { status: 503 }));
+  } as typeof fetch;
+  const hosted = new HostedTeamCollaborationClient(fetcher);
+  const desktop = new StudioCollaborationClient(fetcher);
+  await assert.rejects(hosted.listChannels(teamId));
+  await assert.rejects(desktop.loadSession());
+  assert.deepEqual(receivers, [globalThis, globalThis]);
 });

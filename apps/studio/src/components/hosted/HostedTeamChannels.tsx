@@ -11,7 +11,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import type { HostedTeam, HostedUser } from "@/lib/hosted-session";
 import { HostedTeamCollaborationClient, HostedTeamRequestError } from "@/lib/hosted-team-collaboration";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
-import { mergeTeamMessages, resolvePendingSend, studioSelectionMatches } from "@/lib/team-channel-state";
+import { mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches } from "@/lib/team-channel-state";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 
 const makeAuthority = (teamId: string, threadId: string, userId: string): StudioTeamDraftAuthority => ({
@@ -47,6 +47,9 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const [visibleRead, setVisibleRead] = useState<{ id: string; sequence: number } | null>(null);
   const [readCursor, setReadCursor] = useState(0);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
+  const revokedRef = useRef(false);
+  const navigationGeneration = useRef(0);
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
   const selectedThreadRef = useRef(threadId);
   selectedThreadRef.current = threadId;
@@ -56,10 +59,36 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const authorityKey = authority ? JSON.stringify(authority) : null;
   if (authorityKey && hydratedKey === authorityKey) draftByAuthority.current.set(authorityKey, { text: draftText, pendingSend });
 
+  const handleAuthorizationLost = useCallback(() => {
+    revokedRef.current = true;
+    navigationGeneration.current += 1;
+    setChannels([]);
+    setProjects([]);
+    setThreadId("");
+    selectedThreadRef.current = "";
+    setMessages([]);
+    setBeforeSequence(null);
+    setHasOlder(false);
+    setDraftText("");
+    setPendingSend(null);
+    setHydrated(false);
+    setHydratedKey(null);
+    setVisibleRead(null);
+    setError("Team access changed. Refresh to check your access.");
+    draftByAuthority.current.clear();
+    if (drafts) {
+      void drafts.deleteTeam({ backendId: typeof window === "undefined" ? "" : window.location.origin, principalUserId: user.id, teamId: team.id }).catch(() => undefined);
+    }
+    onAuthorizationLost();
+  }, [drafts, onAuthorizationLost, team.id, user.id]);
+
   const refreshNavigation = useCallback(async () => {
+    const generation = ++navigationGeneration.current;
     setLoading(true);
     try {
       const [nextChannels, nextProjects] = await Promise.all([client.listChannels(team.id), client.listProjects(team.id)]);
+      if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
+      revokedRef.current = false;
       setChannels(nextChannels);
       setProjects(nextProjects);
       setThreadId((current) => current && [...nextChannels, ...nextProjects.map((project) => project.thread)].some((thread) => thread.id === current)
@@ -67,15 +96,16 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         : nextChannels.find((thread) => thread.name === "general")?.id ?? nextChannels[0]?.id ?? nextProjects[0]?.thread.id ?? "");
       setError(null);
     } catch (failure) {
-      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) onAuthorizationLost();
+      if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else setError(failure instanceof Error ? failure.message : "Team channels are unavailable.");
-    } finally { setLoading(false); }
-  }, [client, onAuthorizationLost, team.id]);
+    } finally { if (studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) setLoading(false); }
+  }, [client, handleAuthorizationLost, team.id]);
 
   const loadPage = useCallback(async (id: string, before: number | null = null, prepend = false) => {
     try {
       const page = await client.loadMessages(team.id, id, before, 50);
-      if (selectedThreadRef.current !== id) return;
+      if (!mountedRef.current || selectedThreadRef.current !== id) return;
       setMessages((current) => {
         return mergeTeamMessages(current, page.items);
       });
@@ -83,12 +113,13 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
       setBeforeSequence(page.nextBeforeSequence);
       setError(null);
     } catch (failure) {
-      if (selectedThreadRef.current !== id) return;
-      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) onAuthorizationLost();
+      if (!mountedRef.current || selectedThreadRef.current !== id) return;
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else setError(failure instanceof Error ? failure.message : "Channel history is unavailable.");
     }
-  }, [client, onAuthorizationLost, team.id]);
+  }, [client, handleAuthorizationLost, team.id]);
 
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; navigationGeneration.current += 1; }; }, []);
   useEffect(() => { void refreshNavigation(); }, [refreshNavigation]);
   useEffect(() => {
     if (!drafts) return;
@@ -98,7 +129,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     if (!activeThread || !authority || !drafts) { setHydrated(false); return; }
     if (!allTeams.some((item) => item.id === team.id)) {
       setHydrated(false);
-      onAuthorizationLost();
+      handleAuthorizationLost();
       return;
     }
     let current = true;
@@ -108,7 +139,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     setBeforeSequence(null);
     setHasOlder(false);
     void drafts.retainAuthorizedTeams({ backendId: authority.backendId, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) }).then(() => drafts.load(authority)).then((stored) => {
-      if (!current) return;
+      if (!current || revokedRef.current) return;
       draftByAuthority.current.set(JSON.stringify(authority), { text: stored?.text ?? "", pendingSend: stored?.pendingSend ?? null });
       setDraftText(stored?.text ?? "");
       setPendingSend(stored?.pendingSend ?? null);
@@ -119,31 +150,24 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     });
     void loadPage(activeThread.id);
     return () => { current = false; };
-  }, [activeThread?.id, allTeams, authority?.backendId, authority?.principalUserId, authority?.teamId, drafts, loadPage, onAuthorizationLost, team.id, user.id]);
+  }, [activeThread?.id, allTeams, authority?.backendId, authority?.principalUserId, authority?.teamId, drafts, handleAuthorizationLost, loadPage, team.id, user.id]);
   useEffect(() => {
     if (!drafts || !authority || !hydrated || hydratedKey !== authorityKey) return;
     const value: StudioTeamDraft = { text: draftText, pendingSend, updatedAt: new Date().toISOString() };
-    const timer = window.setTimeout(() => void drafts.save(authority, value).catch(() => setError("Draft could not be encrypted and saved.")), 200);
-    return () => { window.clearTimeout(timer); void drafts.save(authority, value).catch(() => undefined); };
+    const persist = () => revokedRef.current ? Promise.resolve() : drafts.save(authority, value);
+    const timer = window.setTimeout(() => void persist().catch(() => setError("Draft could not be encrypted and saved.")), 200);
+    return () => { window.clearTimeout(timer); void persist().catch(() => undefined); };
   }, [authority?.backendId, authority?.principalUserId, authority?.teamId, authority?.threadId, draftText, drafts, hydrated, hydratedKey, pendingSend]);
   useEffect(() => { setReadCursor(0); setVisibleRead(null); }, [team.id, threadId]);
-  useEffect(() => {
-    if (!pendingSend || !authority || !drafts || !messages.some((message) => message.clientMessageId === pendingSend.clientMessageId)) return;
-    const settled = resolvePendingSend(draftByAuthority.current.get(authorityKey!) ?? { text: draftText, pendingSend }, pendingSend.clientMessageId, "accepted", pendingSend.body);
-    draftByAuthority.current.set(authorityKey!, settled);
-    setPendingSend(null);
-    setDraftText(settled.text);
-    void drafts.save(authority, settled).catch(() => undefined);
-  }, [authority, authorityKey, draftText, drafts, messages, pendingSend]);
   useEffect(() => {
     const unsubscribe = client.subscribeTeam(team.id, async (event) => {
       const resource = event.resource;
       const currentThreadId = selectedThreadRef.current;
       if (resource && typeof resource === "object" && "threadId" in resource && resource.threadId === currentThreadId) await loadPage(currentThreadId);
       await refreshNavigation();
-    }, onAuthorizationLost);
+    }, handleAuthorizationLost);
     return unsubscribe;
-  }, [client, loadPage, onAuthorizationLost, refreshNavigation, team.id]);
+  }, [client, handleAuthorizationLost, loadPage, refreshNavigation, team.id]);
   useEffect(() => {
     if (!activeThread || !visibleRead || !document.hasFocus() || document.visibilityState !== "visible" || visibleRead.sequence <= readCursor || visibleRead.sequence <= 0) return;
     void client.markRead(team.id, activeThread.id, visibleRead.id).then(() => setReadCursor(visibleRead.sequence)).catch(() => undefined);
@@ -161,9 +185,13 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     draftByAuthority.current.set(capturedKey, { text: "", pendingSend: identity });
     setPendingSend(identity);
     setDraftText("");
+    let requestStarted = false;
     try {
       await drafts.save(capturedAuthority, { text: "", pendingSend: identity });
+      if (revokedRef.current || !mountedRef.current) return;
+      requestStarted = true;
       const message = await client.sendMessage(capturedTeamId, capturedThreadId, identity.body, identity.clientMessageId);
+      if (revokedRef.current || !mountedRef.current) return;
       const currentlySelected = studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
       if (currentlySelected) setMessages((current) => [...current.filter((item) => item.id !== message.id), message].slice(-250));
       const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: identity };
@@ -180,16 +208,20 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         setError(null);
       }
     } catch (failure) {
+      if (!mountedRef.current || revokedRef.current) return;
       const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: identity };
-      const settled = resolvePendingSend(latest, identity.clientMessageId, "not-sent", body);
+      const definitiveRejection = failure instanceof HostedTeamRequestError && [400, 404, 422].includes(failure.status);
+      const settled = requestStarted && !definitiveRejection
+        ? retainPendingSendAfterUncertainOutcome(latest, identity)
+        : resolvePendingSend(latest, identity.clientMessageId, "not-sent", body);
       draftByAuthority.current.set(capturedKey, settled);
       await drafts.save(capturedAuthority, settled).catch(() => undefined);
       if (studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) {
         setPendingSend(settled.pendingSend);
         setDraftText(settled.text);
       }
-      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) onAuthorizationLost();
-      else if (studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) setError("Not sent. The draft is saved on this device; reconcile or retry after reconnecting.");
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
+      else if (studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) setError(requestStarted ? "Send status is unknown. Retry the original send identity before sending another message." : "Not sent. The draft is saved on this device; retry after reconnecting.");
     }
   };
 
@@ -201,6 +233,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     const capturedThreadId = activeThread.id;
     try {
       const message = await client.sendMessage(team.id, capturedThreadId, pending.body, pending.clientMessageId);
+      if (revokedRef.current || !mountedRef.current) return;
       const currentlySelected = studioSelectionMatches({ teamId: team.id, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
       if (currentlySelected) setMessages((current) => [...current.filter((item) => item.id !== message.id), message].slice(-250));
       const latest = draftByAuthority.current.get(capturedKey!) ?? { text: draftText, pendingSend: pending };
@@ -217,18 +250,23 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         setError(null);
       }
     } catch (failure) {
-      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) onAuthorizationLost();
+      if (!mountedRef.current || revokedRef.current) return;
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else if (studioSelectionMatches({ teamId: team.id, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) setError("Send status is still unknown. Keep the original send identity and try again.");
     }
   };
 
   const createChannel = async (name: string) => {
+    const generation = navigationGeneration.current;
     try {
       const thread = await client.createChannel(team.id, name, null, crypto.randomUUID());
+      if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
       setChannels((current) => [...current.filter((item) => item.id !== thread.id), thread]);
       setThreadId(thread.id);
       setCreateOpen(false);
     } catch (failure) {
+      if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) { handleAuthorizationLost(); return; }
       setError(failure instanceof Error ? failure.message : "Channel creation failed.");
     }
   };
@@ -237,9 +275,10 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     setDraftText(value);
   };
 
-  return <div className="flex h-full min-h-0 flex-1 bg-background">
+  return <div className="flex h-full min-h-0 min-w-0 flex-1 bg-background">
     <SidebarProvider>
-      <TeamChannelNavigation teamName={team.name} channels={activeThreads.map((thread) => ({ id: thread.id, name: thread.name }))} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} />
+      <TeamChannelNavigation teamName={team.name} channels={activeThreads.map((thread) => ({ id: thread.id, name: thread.name }))} people={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} />
+      <div className="relative flex min-h-0 min-w-0 flex-1">
       <TeamShell
         wallpaper
         subheader={<ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} />}
@@ -250,6 +289,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
       }} />)}</div>
         {error && <p role="status" className="mx-auto w-full max-w-3xl pt-2 text-xs text-warning">{error}</p>}
       </TeamShell>
+      </div>
     </SidebarProvider>
     {createOpen && <CreateChannelModal teamName={team.name} existingNames={activeThreads.map((item) => item.name?.toLowerCase() ?? "")} onClose={() => setCreateOpen(false)} onCreateChat={(name) => void createChannel(name)} projectDisabledReason="Choose a local folder in the Koed Studio desktop app to create a Shared Project channel." />}
   </div>;

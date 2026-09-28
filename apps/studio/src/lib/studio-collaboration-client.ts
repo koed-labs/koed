@@ -64,7 +64,7 @@ export class StudioCollaborationClient {
   private currentSnapshot: CollaborationSnapshot | null = null;
 
   constructor(fetcher: typeof fetch = fetch) {
-    this.fetcher = fetcher;
+    this.fetcher = fetcher.bind(globalThis);
   }
 
   current(): CollaborationSnapshot | null {

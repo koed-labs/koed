@@ -27,6 +27,13 @@ export const resolvePendingSend = (
   };
 };
 
+export const retainPendingSendAfterUncertainOutcome = (
+  draft: StudioTeamDraft,
+  pendingSend: NonNullable<StudioTeamDraft["pendingSend"]>
+): StudioTeamDraft => draft.pendingSend && draft.pendingSend.clientMessageId !== pendingSend.clientMessageId
+  ? draft
+  : { ...draft, pendingSend };
+
 export const visibleReadMayAdvance = (input: {
   messageId: string;
   sequence: number;
@@ -52,3 +59,9 @@ export const studioSelectionMatches = (
   captured: { teamId: string; threadId: string },
   current: { teamId: string; threadId: string }
 ): boolean => captured.teamId === current.teamId && captured.threadId === current.threadId;
+
+export const studioRequestMayApply = (input: {
+  capturedGeneration: number;
+  currentGeneration: number;
+  mounted: boolean;
+}): boolean => input.mounted && input.capturedGeneration === input.currentGeneration;

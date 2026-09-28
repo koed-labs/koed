@@ -162,7 +162,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
         }
       />
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="z-10 flex h-14 shrink-0 items-center justify-between bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
+        {view !== "collaboration" && <header className="z-10 flex h-14 shrink-0 items-center justify-between bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
           <div className="flex min-w-0 items-center gap-3 no-drag">
             {activeTeam && (
               <>
@@ -193,9 +193,9 @@ export function HostedStudio({ view }: HostedStudioProps) {
               <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
             </button>
           </div>
-        </header>
+        </header>}
 
-        <div className={`relative min-h-0 flex-1 ${view === "collaboration" ? "overflow-hidden" : "overflow-y-auto p-4"}`}>
+        <div className={`relative min-h-0 flex-1 ${view === "collaboration" ? "flex overflow-hidden" : "overflow-y-auto p-4"}`}>
           {session === null || (busy && session.status === "unavailable") ? (
             <LoadingState />
           ) : session.status === "signed_out" ? (
@@ -254,7 +254,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
               <HostedOverview teams={session.teams} />
             </>
           ) : activeTeam ? (
-            <HostedTeamChannels team={activeTeam} user={session.user} allTeams={session.teams} onAuthorizationLost={refresh} />
+            <HostedTeamChannels key={`${typeof window === "undefined" ? "" : window.location.origin}:${session.user.id}:${activeTeam.id}`} team={activeTeam} user={session.user} allTeams={session.teams} onAuthorizationLost={refresh} />
           ) : (
             <HostedTeamNavigation teams={session.teams} selectedTeamId={activeTeamId} onSelect={(id) => router.push(`/collaboration?team=${encodeURIComponent(id)}`)} />
           )}

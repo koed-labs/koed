@@ -99,7 +99,7 @@ export class HostedTeamCollaborationClient {
   private readonly fetcher: typeof fetch;
 
   constructor(fetcher: typeof fetch = fetch) {
-    this.fetcher = fetcher;
+    this.fetcher = fetcher.bind(globalThis);
   }
 
   async listChannels(teamId: string): Promise<CollaborationThread[]> {

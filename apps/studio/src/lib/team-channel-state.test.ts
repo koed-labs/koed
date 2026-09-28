@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -29,6 +29,15 @@ test("settling an in-flight send preserves edits and never clears a newer send i
   assert.deepEqual(resolvePendingSend({ text: "draft", pendingSend: newer }, original.clientMessageId, "accepted", original.body), { text: "draft", pendingSend: newer });
 });
 
+test("ambiguous send errors retain the original identity alongside later edits", () => {
+  const original = { clientMessageId: "original-id", body: "exact sent body", createdAt: "2026-09-28T10:00:00.000Z" };
+  assert.deepEqual(retainPendingSendAfterUncertainOutcome({ text: "edited while waiting", pendingSend: null }, original), {
+    text: "edited while waiting", pendingSend: original
+  });
+  const newer = { clientMessageId: "newer-id", body: "next", createdAt: original.createdAt };
+  assert.deepEqual(retainPendingSendAfterUncertainOutcome({ text: "next draft", pendingSend: newer }, original), { text: "next draft", pendingSend: newer });
+});
+
 test("only focused, actually visible incoming messages advance the read cursor", () => {
   const base = { messageId: "m1", sequence: 7, senderId: "member-b", principalUserId: "member-a", lastReportedSequence: 6 };
   assert.equal(visibleReadMayAdvance({ ...base, focused: true }), true);
@@ -51,4 +60,10 @@ test("a realtime newest page merges without dropping the loaded older history", 
 test("late send responses are fenced from a newly selected channel", () => {
   assert.equal(studioSelectionMatches({ teamId: "team-a", threadId: "channel-a" }, { teamId: "team-a", threadId: "channel-a" }), true);
   assert.equal(studioSelectionMatches({ teamId: "team-a", threadId: "channel-a" }, { teamId: "team-b", threadId: "channel-b" }), false);
+});
+
+test("late navigation and create responses cannot apply after Team switch or unmount", () => {
+  assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: true }), true);
+  assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 5, mounted: true }), false);
+  assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: false }), false);
 });

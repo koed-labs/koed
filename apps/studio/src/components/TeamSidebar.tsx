@@ -60,12 +60,14 @@ const ROW_ITEM_INACTIVE =
 export function TeamChannelNavigation({
   teamName,
   channels,
+  people = [],
   selectedId,
   onSelect,
   onCreate
 }: {
   teamName: string;
   channels: Array<{ id: string; name: string | null }>;
+  people?: Array<{ id: string; name: string }>;
   selectedId: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
@@ -81,7 +83,7 @@ export function TeamChannelNavigation({
       id="team-navigation"
       role="navigation"
       aria-label="Team navigation"
-      className="relative flex h-full shrink-0 flex-col border-r border-border bg-surface pt-6"
+      className="relative flex h-full max-w-[calc(100vw-72px)] shrink-0 flex-col border-r border-border bg-surface pt-6 md:max-w-none"
       style={{ width: `${width}px` }}
     >
       <div className="px-3 py-2">
@@ -90,7 +92,20 @@ export function TeamChannelNavigation({
             <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">Team</p>
             <p className="truncate text-sm font-medium text-foreground">{teamName}</p>
           </div>
+          <Tooltip content="Close Sidebar" side="bottom">
+            <button type="button" onClick={toggleSidebar} aria-label="Close team navigation" className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-foreground-secondary">
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          </Tooltip>
         </div>
+      </div>
+      <div className="flex flex-col gap-0.5 px-3 py-2">
+        <button type="button" disabled title="Team activity is unavailable here yet." className={`${NAV_ITEM} w-full ${NAV_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
+          <Bell className="mr-2 h-4 w-4" />For you
+        </button>
+        <button type="button" disabled title="Public Square is unavailable here yet." className={`${NAV_ITEM} w-full ${NAV_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
+          <Globe className="mr-2 h-4 w-4" />Public Square
+        </button>
       </div>
       <nav className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 space-y-0.5">
         {channels.map((channel) => (
@@ -113,6 +128,15 @@ export function TeamChannelNavigation({
           <Plus className="mr-2.5 h-3.5 w-3.5" />
           <span className="text-xs">New channel</span>
         </button>
+        <div className="mt-4 flex items-center px-4 py-1.5 text-sm font-medium text-foreground-secondary">
+          <Users className="mr-2 h-4 w-4 text-subtle" />Colleagues
+        </div>
+        {people.map((person) => (
+          <button key={person.id} type="button" disabled title="Direct messages are unavailable here yet." className={`${ROW_ITEM} ${ROW_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
+            <span className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">{person.name.slice(0, 1).toUpperCase()}</span>
+            <span className="truncate">{person.name}</span>
+          </button>
+        ))}
       </nav>
     </aside>
   );
