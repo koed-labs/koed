@@ -43,14 +43,128 @@ import {
   shouldRequestManagedConversationSourceRestore,
   shouldRecoverForkPreparationFailure,
   gitWorkingTreeEditState,
-  diffExecutionCheckpointsForCheckout
+  diffExecutionCheckpointsForCheckout,
+  createManagedConversationRuntimeSessionSingleflight,
+  startManagedConversationRuntimeSession
 } from "./managed-conversation-service.js";
+import { ManagedConversationRuntimeRegistry } from "./managed-conversation-provider-runtime.js";
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
 import {
   createGitExecutionCheckoutDriver,
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("Managed Conversation runtime session singleflight", () => {
+  it("shares a gated Pi start between recovery and command lookup", async () => {
+    const registry = new ManagedConversationRuntimeRegistry();
+    const getOrCreate =
+      createManagedConversationRuntimeSessionSingleflight(registry);
+    const executionId = randomUUID();
+    const identity = {
+      executionGeneration: 7,
+      aiClientInstanceId: "local-client",
+      configIdentityHash: "config-hash",
+      settingsKey: "settings-key"
+    };
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const start = vi.fn(async () => await startGate);
+    const session = {
+      closeAndWait: vi.fn(async () => undefined),
+      start
+    };
+    const create = vi.fn(async () => {
+      await session.start();
+      return session as never;
+    });
+
+    const recoveryLookup = getOrCreate({
+      provider: "pi",
+      executionId,
+      identity,
+      create
+    });
+    await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+    const promptLookup = getOrCreate({
+      provider: "pi",
+      executionId,
+      identity,
+      create
+    });
+    releaseStart();
+    const [recovery, prompt] = await Promise.all([
+      recoveryLookup,
+      promptLookup
+    ]);
+
+    expect(recovery.session).toBe(prompt.session);
+    expect(recovery.created).toBe(true);
+    expect(prompt.created).toBe(false);
+    expect(create).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(
+      registry.get("pi", executionId, identity)?.session
+    ).toBe(recovery.session);
+  });
+
+  it("closes a late session instead of publishing it after shutdown", async () => {
+    const registry = new ManagedConversationRuntimeRegistry();
+    let serviceActive = true;
+    const getOrCreate = createManagedConversationRuntimeSessionSingleflight(
+      registry,
+      () => serviceActive
+    );
+    const executionId = randomUUID();
+    const identity = {
+      executionGeneration: 1,
+      aiClientInstanceId: "local-client",
+      configIdentityHash: "config-hash",
+      settingsKey: "settings-key"
+    };
+    let releaseCreation!: () => void;
+    const creationGate = new Promise<void>((resolve) => {
+      releaseCreation = resolve;
+    });
+    const session = { closeAndWait: vi.fn(async () => undefined) };
+    const create = vi.fn(async () => {
+      await creationGate;
+      return session as never;
+    });
+    const initializing = getOrCreate({
+      provider: "codex",
+      executionId,
+      identity,
+      create
+    });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    serviceActive = false;
+    releaseCreation();
+
+    await expect(initializing).rejects.toMatchObject({
+      name: "ManagedConversationRuntimeInitializationInvalidatedError"
+    });
+    expect(session.closeAndWait).toHaveBeenCalledOnce();
+    expect(registry.has(executionId)).toBe(false);
+  });
+
+  it("closes a Pi child when initial session startup fails", async () => {
+    const failure = new Error("Pi session startup failed");
+    const session = {
+      start: vi.fn(async () => {
+        throw failure;
+      }),
+      closeAndWait: vi.fn(async () => undefined)
+    };
+
+    await expect(
+      startManagedConversationRuntimeSession(session)
+    ).rejects.toBe(failure);
+    expect(session.closeAndWait).toHaveBeenCalledOnce();
+  });
+});
 
 describe("Managed Conversation assistant output buffers", () => {
   it("recovers only the final answer tied to the exact Codex turn", () => {
@@ -2890,6 +3004,7 @@ describe("Managed Conversation service lifecycle", () => {
       const processResult = await service.processOnce();
       expect(processResult).toEqual({ completed: 0, failed: 1 });
       expect(start).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
       expect(complete).not.toHaveBeenCalled();
       expect(completeAttempt).not.toHaveBeenCalled();
       expect(fail).toHaveBeenCalledWith(

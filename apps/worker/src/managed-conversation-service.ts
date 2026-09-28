@@ -736,6 +736,82 @@ export const managedConversationFailureCode = (error: unknown): string => {
 
 const errorCode = managedConversationFailureCode;
 
+type ManagedConversationRuntimeSessionIdentity = {
+  executionGeneration: number;
+  aiClientInstanceId: string;
+  configIdentityHash: string;
+  settingsKey: string;
+};
+
+export const startManagedConversationRuntimeSession = async <
+  Session extends {
+    start(): Promise<unknown>;
+    closeAndWait(): Promise<void>;
+  }
+>(session: Session): Promise<Session> => {
+  try {
+    await session.start();
+    return session;
+  } catch (error) {
+    await session.closeAndWait().catch(() => undefined);
+    throw error;
+  }
+};
+
+/** Coalesce local runtime construction while recovery and command paths race. */
+export const createManagedConversationRuntimeSessionSingleflight = (
+  registry: ManagedConversationRuntimeRegistry,
+  shouldPublish?: () => boolean
+) => {
+  const flights = new Map<string, Promise<unknown>>();
+  return async <Session extends { closeAndWait(): Promise<void> }>(input: {
+    provider: ManagedConversationProvider;
+    executionId: string;
+    identity: ManagedConversationRuntimeSessionIdentity;
+    shouldPublish?(): boolean;
+    create(): Promise<Session>;
+  }): Promise<{ session: Session; created: boolean }> => {
+    const key = `${input.provider}\0${input.executionId}\0${input.identity.executionGeneration}`;
+    const expected = input.identity;
+    const cached = () =>
+      registry.get(input.provider, input.executionId, expected) as
+        | { session: Session }
+        | undefined;
+    for (;;) {
+      const existing = cached();
+      if (existing) return { session: existing.session, created: false };
+      const pending = flights.get(key);
+      if (pending) {
+        await pending;
+        continue;
+      }
+      const flight = (async (): Promise<{ session: Session; created: boolean }> => {
+        const rechecked = cached();
+        if (rechecked) return { session: rechecked.session, created: false };
+        const session = await input.create();
+        const publicationAllowed = input.shouldPublish ?? shouldPublish;
+        if (publicationAllowed && !publicationAllowed()) {
+          await session.closeAndWait().catch(() => undefined);
+          throw managedConversationError(
+            "ManagedConversationRuntimeInitializationInvalidatedError"
+          );
+        }
+        registry.set(input.provider, input.executionId, {
+          ...input.identity,
+          session
+        } as never);
+        return { session, created: true };
+      })();
+      flights.set(key, flight);
+      try {
+        return await flight;
+      } finally {
+        if (flights.get(key) === flight) flights.delete(key);
+      }
+    }
+  };
+};
+
 const managedConversationError = (name: string, cause?: unknown): Error => {
   const error = new Error(name, cause === undefined ? undefined : { cause });
   error.name = name;
@@ -899,6 +975,12 @@ export const createManagedConversationService = (options: {
 }): ManagedConversationService => {
   const runnerId = randomUUID();
   const runtimeSessions = new ManagedConversationRuntimeRegistry();
+  let stopped = false;
+  const getOrCreateRuntimeSession =
+    createManagedConversationRuntimeSessionSingleflight(
+      runtimeSessions,
+      () => !stopped
+    );
   const commandLeaseHeartbeats = new Map<
     string,
     ManagedConversationLeaseHeartbeat
@@ -939,7 +1021,6 @@ export const createManagedConversationService = (options: {
   let filesPromise: Promise<void> | null = null;
   let filesRunAgain = false;
   let runAgain = false;
-  let stopped = false;
   let wakeClient: CommandWakeClient | null = null;
   let sourceWakeClient: CommandWakeClient | null = null;
   let sourceWakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3383,6 +3464,7 @@ export const createManagedConversationService = (options: {
         | ClaudeManagedConversationSession
         | PiManagedConversationSession
         | null = null;
+      let recoveredSessionCreated = false;
       try {
         const binding =
           await options.repository.getManagedConversationRuntimeBinding(
@@ -3424,18 +3506,25 @@ export const createManagedConversationService = (options: {
               leaseMs: commandLeaseMs
             });
           if (!acquired) continue;
-          recoveredSession = createPiSession(execution, binding);
-          await recoveredSession.start();
-          runtimeSessions.set("pi", execution.id, {
-            executionGeneration: execution.executionGeneration,
-            settingsKey: managedConversationSettingsKey(execution),
-            aiClientInstanceId: execution.aiClientInstanceId,
-            configIdentityHash: clientConfigurationForOwner(
-              "pi",
-              execution.aiClientInstanceId
-            ).configIdentityHash,
-            session: recoveredSession
+          const runtimeSession = await getOrCreateRuntimeSession({
+            provider: "pi",
+            executionId: execution.id,
+            identity: {
+              executionGeneration: execution.executionGeneration,
+              settingsKey: managedConversationSettingsKey(execution),
+              aiClientInstanceId: execution.aiClientInstanceId,
+              configIdentityHash: clientConfigurationForOwner(
+                "pi",
+                execution.aiClientInstanceId
+              ).configIdentityHash
+            },
+            create: async () =>
+              startManagedConversationRuntimeSession(
+                createPiSession(execution, binding)
+              )
           });
+          recoveredSession = runtimeSession.session;
+          recoveredSessionCreated = runtimeSession.created;
           continue;
         }
         if (execution.provider === "claude") {
@@ -3473,23 +3562,29 @@ export const createManagedConversationService = (options: {
               leaseMs: commandLeaseMs
             });
           if (!acquired) continue;
-          recoveredSession = createClaudeSession(execution, binding);
+          const configuration = clientConfigurationForOwner(
+            execution.provider,
+            execution.aiClientInstanceId
+          );
+          const runtimeSession = await getOrCreateRuntimeSession({
+            provider: "claude",
+            executionId: execution.id,
+            identity: {
+              executionGeneration: execution.executionGeneration,
+              settingsKey: managedConversationSettingsKey(execution),
+              aiClientInstanceId: configuration.instanceId,
+              configIdentityHash: configuration.configIdentityHash
+            },
+            create: async () => createClaudeSession(execution, binding)
+          });
+          recoveredSession = runtimeSession.session;
+          recoveredSessionCreated = runtimeSession.created;
           const started = await recoveredSession.start();
           if (started.identity.sessionId !== execution.providerThreadId) {
             throw managedConversationError(
               "ManagedConversationRuntimeRecoveryIdentityError"
             );
           }
-          runtimeSessions.set("claude", execution.id, {
-            executionGeneration: execution.executionGeneration,
-            settingsKey: managedConversationSettingsKey(execution),
-            aiClientInstanceId: execution.aiClientInstanceId,
-            configIdentityHash: clientConfigurationForOwner(
-              execution.provider,
-              execution.aiClientInstanceId
-            ).configIdentityHash,
-            session: recoveredSession
-          });
           continue;
         }
         const recovered = await recoverLocalRuntimeBinding(execution, binding);
@@ -3529,7 +3624,23 @@ export const createManagedConversationService = (options: {
           }
           continue;
         }
-        recoveredSession = createSession(execution, recovered);
+        const configuration = clientConfigurationForOwner(
+          execution.provider,
+          execution.aiClientInstanceId
+        );
+        const runtimeSession = await getOrCreateRuntimeSession({
+          provider: "codex",
+          executionId: execution.id,
+          identity: {
+            executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
+            aiClientInstanceId: configuration.instanceId,
+            configIdentityHash: configuration.configIdentityHash
+          },
+          create: async () => createSession(execution, recovered)
+        });
+        recoveredSession = runtimeSession.session;
+        recoveredSessionCreated = runtimeSession.created;
         const started = await recoveredSession.start();
         if (
           started.thread.id !== execution.providerThreadId ||
@@ -3542,7 +3653,9 @@ export const createManagedConversationService = (options: {
           );
         }
         if (stopped) {
-          await recoveredSession.closeAndWait().catch(() => undefined);
+          if (recoveredSessionCreated) {
+            await recoveredSession.closeAndWait().catch(() => undefined);
+          }
           recoveredSession = null;
           await options.repository
             .releaseManagedConversationRunner({
@@ -3554,24 +3667,23 @@ export const createManagedConversationService = (options: {
           acquired = false;
           return;
         }
-        runtimeSessions.set("codex", execution.id, {
-          executionGeneration: execution.executionGeneration,
-          settingsKey: managedConversationSettingsKey(execution),
-          aiClientInstanceId: execution.aiClientInstanceId,
-          configIdentityHash: clientConfigurationForOwner(
-            execution.provider,
-            execution.aiClientInstanceId
-          ).configIdentityHash,
-          session: recoveredSession
-        });
         recoveryDeferred =
           (await reconcileCompletedPersonalAgentOutputs(execution)) ||
           recoveryDeferred;
       } catch (error) {
         recoveryDeferred = true;
         if (recoveredSession) {
-          runtimeSessions.delete(execution.provider as ManagedConversationProvider, execution.id);
-          await recoveredSession.closeAndWait().catch(() => undefined);
+          const current = runtimeSessions.get(
+            execution.provider as ManagedConversationProvider,
+            execution.id
+          );
+          if (current?.session === recoveredSession) {
+            runtimeSessions.delete(
+              execution.provider as ManagedConversationProvider,
+              execution.id
+            );
+            await recoveredSession.closeAndWait().catch(() => undefined);
+          }
         }
         if (acquired) {
           await options.repository
@@ -4784,30 +4896,32 @@ export const createManagedConversationService = (options: {
       await previous.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete("codex", execution.id);
     }
-    let binding = await options.repository.getManagedConversationRuntimeBinding(
-      { userId: execution.ownerUserId },
-      execution.id
-    );
-    binding = await recoverLocalRuntimeBinding(execution, binding);
-    if (
-      execution.state === "running" &&
-      (!binding.localSessionId ||
-        !binding.providerThreadId ||
-        !binding.transcriptPath ||
-        !binding.managedHome)
-    ) {
-      throw new Error("ManagedConversationRuntimeRecoveryPendingError");
-    }
-    const session = createSession(execution, binding);
-    runtimeSessions.set("codex", execution.id, {
-      executionGeneration: execution.executionGeneration,
-      settingsKey: managedConversationSettingsKey(execution),
-      aiClientInstanceId: execution.aiClientInstanceId,
-      configIdentityHash: clientConfigurationForOwner(
-        execution.provider,
-        execution.aiClientInstanceId
-      ).configIdentityHash,
-      session
+    const { session } = await getOrCreateRuntimeSession({
+      provider: "codex",
+      executionId: execution.id,
+      identity: {
+        executionGeneration: execution.executionGeneration,
+        settingsKey: managedConversationSettingsKey(execution),
+        aiClientInstanceId: configuration.instanceId,
+        configIdentityHash: configuration.configIdentityHash
+      },
+      create: async () => {
+        let binding = await options.repository.getManagedConversationRuntimeBinding(
+          { userId: execution.ownerUserId },
+          execution.id
+        );
+        binding = await recoverLocalRuntimeBinding(execution, binding);
+        if (
+          execution.state === "running" &&
+          (!binding.localSessionId ||
+            !binding.providerThreadId ||
+            !binding.transcriptPath ||
+            !binding.managedHome)
+        ) {
+          throw new Error("ManagedConversationRuntimeRecoveryPendingError");
+        }
+        return createSession(execution, binding);
+      }
     });
     return session;
   };
@@ -4840,17 +4954,19 @@ export const createManagedConversationService = (options: {
       await previous.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete("claude", execution.id);
     }
-    const binding = await runtimeBindingFor(execution, execution.ownerUserId);
-    const session = createClaudeSession(execution, binding);
-    runtimeSessions.set("claude", execution.id, {
-      executionGeneration: execution.executionGeneration,
-      settingsKey: managedConversationSettingsKey(execution),
-      aiClientInstanceId: execution.aiClientInstanceId,
-      configIdentityHash: clientConfigurationForOwner(
-        execution.provider,
-        execution.aiClientInstanceId
-      ).configIdentityHash,
-      session
+    const { session } = await getOrCreateRuntimeSession({
+      provider: "claude",
+      executionId: execution.id,
+      identity: {
+        executionGeneration: execution.executionGeneration,
+        settingsKey: managedConversationSettingsKey(execution),
+        aiClientInstanceId: configuration.instanceId,
+        configIdentityHash: configuration.configIdentityHash
+      },
+      create: async () => {
+        const binding = await runtimeBindingFor(execution, execution.ownerUserId);
+        return createClaudeSession(execution, binding);
+      }
     });
     return session;
   };
@@ -4883,18 +4999,24 @@ export const createManagedConversationService = (options: {
       await previous.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete("pi", execution.id);
     }
-    const binding = await runtimeBindingFor(execution, execution.ownerUserId);
-    if (!binding.providerThreadId || !binding.transcriptPath) {
-      throw new Error("ManagedConversationRuntimeRecoveryPendingError");
-    }
-    const session = createPiSession(execution, binding);
-    await session.start();
-    runtimeSessions.set("pi", execution.id, {
-      executionGeneration: execution.executionGeneration,
-      settingsKey: managedConversationSettingsKey(execution),
-      aiClientInstanceId: execution.aiClientInstanceId,
-      configIdentityHash: configuration.configIdentityHash,
-      session
+    const { session } = await getOrCreateRuntimeSession({
+      provider: "pi",
+      executionId: execution.id,
+      identity: {
+        executionGeneration: execution.executionGeneration,
+        settingsKey: managedConversationSettingsKey(execution),
+        aiClientInstanceId: configuration.instanceId,
+        configIdentityHash: configuration.configIdentityHash
+      },
+      create: async () => {
+        const binding = await runtimeBindingFor(execution, execution.ownerUserId);
+        if (!binding.providerThreadId || !binding.transcriptPath) {
+          throw new Error("ManagedConversationRuntimeRecoveryPendingError");
+        }
+        return startManagedConversationRuntimeSession(
+          createPiSession(execution, binding)
+        );
+      }
     });
     return session;
   };
@@ -6249,17 +6371,29 @@ export const createManagedConversationService = (options: {
           command.execution.provider === "codex" &&
           pendingCheckpoint.providerTurnId
         ) {
+          let session: CodexManagedConversationSession | undefined;
           try {
-            const session = await sessionFor(command.execution);
+            session = await sessionFor(command.execution);
+            const recoveredSession = session;
             await withLease(
               command,
               async (ownedSession) => {
                 await ownedSession.start();
                 await ownedSession.reconcileTranscript();
               },
-              session
+              recoveredSession
             );
           } catch (error) {
+            if (session) {
+              const currentSession = runtimeSessions.get(
+                "codex",
+                command.executionId
+              );
+              if (currentSession?.session === session) {
+                runtimeSessions.delete("codex", command.executionId);
+                await session.closeAndWait().catch(() => undefined);
+              }
+            }
             options.logger.warn(
               {
                 event: {
