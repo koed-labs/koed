@@ -121,6 +121,7 @@ const remoteThreadSchema = z.discriminatedUnion("scope", [
       personalOwnerUserId: z.uuid(),
       teamId: z.null(),
       teamWorkspaceId: z.null(),
+      teamProjectId: z.null(),
       sharedLogicalMemoryId: z.null(),
       shareGrantId: z.null(),
       systemKey: z.null()
@@ -131,6 +132,8 @@ const remoteThreadSchema = z.discriminatedUnion("scope", [
       scope: z.literal("team"),
       kind: z.enum([
         "workspace_channel",
+        "team_channel",
+        "team_project_channel",
         "dm",
         "group_dm",
         "shared_session_discussion"
@@ -138,11 +141,59 @@ const remoteThreadSchema = z.discriminatedUnion("scope", [
       personalOwnerUserId: z.null(),
       teamId: z.uuid(),
       teamWorkspaceId: nullableUuidSchema,
+      teamProjectId: nullableUuidSchema,
       sharedLogicalMemoryId: nullableUuidSchema,
       shareGrantId: nullableUuidSchema,
-      systemKey: z.literal("workspace.general").nullable()
+      systemKey: z.enum(["workspace.general", "team.general"]).nullable()
     })
     .strict()
+    .superRefine((thread, context) => {
+      if (thread.kind === "team_channel") {
+        if (
+          thread.teamWorkspaceId !== null ||
+          thread.teamProjectId !== null ||
+          thread.sharedLogicalMemoryId !== null ||
+          thread.shareGrantId !== null ||
+          (thread.systemKey !== null && thread.systemKey !== "team.general")
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Team channel binding is invalid"
+          });
+        }
+      } else if (thread.kind === "team_project_channel") {
+        if (
+          thread.teamWorkspaceId !== null ||
+          thread.teamProjectId === null ||
+          thread.sharedLogicalMemoryId !== null ||
+          thread.shareGrantId !== null ||
+          thread.systemKey !== null
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Team project channel binding is invalid"
+          });
+        }
+      } else if (
+        thread.kind === "workspace_channel" &&
+        (thread.teamProjectId !== null ||
+          (thread.systemKey !== null &&
+            thread.systemKey !== "workspace.general"))
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Workspace channel binding is invalid"
+        });
+      } else if (
+        thread.kind !== "workspace_channel" &&
+        (thread.teamProjectId !== null || thread.systemKey !== null)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Team thread binding is invalid"
+        });
+      }
+    })
 ]);
 
 const remoteSubscriptionCommonSchema = z.object({

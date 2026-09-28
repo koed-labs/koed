@@ -529,6 +529,7 @@ interface Harness {
 
 interface HarnessOptions {
   remotePersonal?: boolean;
+  snapshotThreads?: Array<Record<string, unknown>>;
   stream?: (init?: RequestInit) => Response;
   ackStatus?: number;
   afterRemoteAck?: () => Promise<void>;
@@ -562,7 +563,10 @@ interface HarnessOptions {
   onRemoteNavigationInvalidated?: (backendId: string) => void;
 }
 
-const snapshotResponse = (teamId: string) => ({
+const snapshotResponse = (
+  teamId: string,
+  threads: Array<Record<string, unknown>> = []
+) => ({
   protocolVersion: COLLABORATION_CONTRACT_VERSION,
   subscription: {
     id: remoteSubscriptionId,
@@ -585,7 +589,7 @@ const snapshotResponse = (teamId: string) => ({
     personalOwnerUserId: null,
     teamId,
     highWaterCursor: snapshotCursor,
-    threads: []
+    threads
   },
   cursor: snapshotCursor
 });
@@ -859,7 +863,10 @@ const createHarness = async (
       return Response.json(
         body?.scope === "personal"
           ? personalSnapshotResponse()
-          : snapshotResponse(String(body?.teamId))
+          : snapshotResponse(
+              String(body?.teamId),
+              options.snapshotThreads ?? []
+            )
       );
     }
     if (pathname.endsWith("/ack")) {
@@ -1174,6 +1181,56 @@ const eventPayload = (stream: string) => {
 };
 
 describe("local collaboration realtime broker", () => {
+  it("accepts Team channel and shared Project threads in a realtime snapshot", async () => {
+    const commonThread = {
+      logicalId: threadId,
+      scope: "team",
+      personalOwnerUserId: null,
+      teamId: teamA,
+      teamWorkspaceId: null,
+      sharedLogicalMemoryId: null,
+      shareGrantId: null,
+      topic: null,
+      createdByUserId: remotePrincipalA,
+      version: 1,
+      lifecycle: "active",
+      latestSequence: 0,
+      lastReadMessageId: null,
+      lastReadSequence: 0,
+      unreadCount: 0,
+      participants: [],
+      createdAt: "2026-07-17T00:00:00.000Z",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+      lastActivityAt: "2026-07-17T00:00:00.000Z",
+      archivedAt: null
+    };
+    const channelThreads = [
+      {
+        ...commonThread,
+        id: threadId,
+        kind: "team_channel",
+        teamProjectId: null,
+        systemKey: "team.general",
+        name: "general"
+      },
+      {
+        ...commonThread,
+        id: "88888888-8888-4888-8888-888888888888",
+        kind: "team_project_channel",
+        teamProjectId: "99999999-9999-4999-8999-999999999998",
+        systemKey: null,
+        name: "Implementation"
+      }
+    ];
+    const harness = await createHarness({ snapshotThreads: channelThreads });
+    harnesses.push(harness);
+
+    const { response, body } = await createSnapshot(harness);
+
+    expect(response.statusCode).toBe(200);
+    expect(body.delivery.snapshot.threads).toEqual(channelThreads);
+  });
+
   it("serves Personal snapshot and stream locally without an upstream backend", async () => {
     const harness = await createHarness({
       upstreamAuthorizationAvailable: false,
