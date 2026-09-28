@@ -1,9 +1,12 @@
 # Handoff: AI Client-Aware Slash Suggestions (In Progress)
 
-Status: Phases 1-2 complete, committed on `feat/ai-client-aware-slash-suggestions` from `main`
+Status: Phases 1-3 complete, Phase 4-5 remaining
 
 Base commit: `ff5c7e1 feat(pds): secure capability-based personal device enrollment (#399)`
 Current branch: `feat/ai-client-aware-slash-suggestions`
+Current HEAD: `8d95713 feat(worker): add command discovery adapter interface and factory (stubbed)`
+
+See also: [Phase 4-5 Handoff](./ai-client-aware-slash-suggestions-phase4-5.md)
 
 ## What's Done
 
@@ -58,9 +61,21 @@ type ActiveSlashCommand = { query: string; range: SlashCommandRange };
 - Renders `<SlashCommandMenu>` inside `.ai-suggestion-popover` when open and filtered commands exist
 - Menu items: listbox with `role="option"`, `aria-selected`, hover highlight via `.ai-suggestion-item-selected`
 
-## What Remains
+## What's Done
 
-### Phase 3: Command Discovery Contract
+### Phase 3: Command Discovery Contract ✅
+
+**All infrastructure wired end-to-end:**
+- IPC protocol: `command_discovery` operation with request/result types and parsers
+- Desktop preload: `discoverCommands()` API method
+- Koed Server manager: `command_discovery` handler routing
+- API route: `POST /v1/managed-conversations/commands` with full scope validation
+- Desktop hook: `useSlashCommandDiscovery()` with debounce, stale-if-error, keyed cache
+- UI integration: ConversationInput wired to hook output via autocomplete props
+- Worker adapter: interface + factory (stubbed per driver)
+- Tests: protocol parser tests, preload tests, hook tests
+
+See [Phase 4-5 Handoff](./ai-client-aware-slash-suggestions-phase4-5.md) for remaining work.
 
 **Goal:** Wire provider-discovered commands into the UI via a typed protocol.
 
@@ -87,47 +102,35 @@ type ActiveSlashCommand = { query: string; range: SlashCommandRange };
 - Discovery response must not affect prompt submission behavior
 - Stale discovery after instance switch must fail closed
 
-### Phase 4: Adapter Implementation
+### Phase 4: Adapter Implementation (REMAINING)
 
-**Goal:** Provider-specific command discovery behind a neutral interface.
+**Goal:** Wire provider-specific command discovery into the API route.
 
-**Files to create/modify:**
-- `apps/worker/src/managed-conversation-service.ts` — dispatch discovery to active runtime
-- Per-adapter discovery:
-  - **Codex:** use its command/skill discovery path
-  - **Claude Code:** preserve root commands vs skills distinction
-  - **Pi:** inspect SDK/runtime capabilities before exposing commands
-- If adapter cannot discover reliably → return empty list with non-fatal diagnostic
+**Current state:** API route validates scope and capability, then returns `{ status: "ok", commands: [] }` — a hardcoded stub.
 
-**Rules:**
-- Validate actual support per adapter
-- Do NOT infer one provider's command protocol for another
-- Provider-neutral interface:
-```ts
-type CommandDiscoveryAdapter = {
-  discoverCommands(args: {
-    aiClientDriverId: SupportedAiClientDriverId;
-    aiClientInstanceId: string;
-    projectId: string;
-    cwd?: string;
-  }): Promise<ManagedConversationSlashCommand[]>;
-};
-```
+**Required changes:**
+1. Wire API route to call `createCommandDiscoveryAdapter()` per driverId
+2. Implement per-adapter discovery:
+   - **Codex:** inspect active process's registered slash commands
+   - **Claude:** read root commands and skills from SDK session state
+   - **Pi:** inspect SDK/runtime capabilities
+3. Handle adapter errors → return `{ status: "unavailable", commands: [] }`
+4. Command field validation (name ≤64 chars, description ≤512 chars)
 
-### Phase 5: Tests and Docs
+See [Phase 4-5 Handoff](./ai-client-aware-slash-suggestions-phase4-5.md) for detailed implementation.
+
+### Phase 5: Tests and Docs (REMAINING)
 
 **Required tests (not yet written):**
-- Stale discovery response after instance switch
-- Unavailable capability and timeout states
-- Provider adapter command normalization
-- API authorization and execution-generation boundaries
-- No prompt submission caused by selecting a suggestion (already partially covered)
-- New vs active Conversation instance identity
-- Wire integration tests for Phase 3/4 protocol
+- API route adapter integration tests
+- Per-adapter factory and implementation tests
+- Wire integration tests (discovery fetch, menu populates, instance switch invalidates)
+- Adapter timeout handling
+- Command field validation tests
 
 **Docs to update:**
-- `docs/managed-conversation-ai-client-routing.md` — add command discovery contract
-- Relevant Desktop UI docs — document provider limitations
+- `docs/managed-conversation-ai-client-routing.md` — add command discovery contract section
+- This handoff — mark all phases complete
 
 **Non-goals (unchanged):**
 - Binary image/file prompt attachments
