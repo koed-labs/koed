@@ -1513,6 +1513,7 @@ describe("PersonalMemoryWorkspace", () => {
       output?: string
     ): ManagedConversationRealtimeUpdate => ({
       type: "managed_conversation_upserted",
+      hasIndeterminatePrompt: false,
       execution: {
         id: "execution-1",
         projectId: "project-1",
@@ -1690,6 +1691,7 @@ describe("PersonalMemoryWorkspace", () => {
     const input = vi.mocked(managed.send).mock.calls[0]![0];
     const update: ManagedConversationRealtimeUpdate = {
       type: "managed_conversation_upserted",
+      hasIndeterminatePrompt: false,
       execution: {
         id: "execution-1",
         projectId: "project-1",
@@ -1811,6 +1813,7 @@ describe("PersonalMemoryWorkspace", () => {
         root.render(
           render(1, {
             type: "managed_conversation_upserted",
+            hasIndeterminatePrompt: false,
             execution: {
               id: "execution-1",
               projectId: "project-1",

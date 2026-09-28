@@ -39,6 +39,7 @@ const update = (
   overrides: Partial<ManagedConversationRealtimeUpdate> = {}
 ): ManagedConversationRealtimeUpdate => ({
   type: "managed_conversation_upserted",
+  hasIndeterminatePrompt: false,
   execution: {
     id: executionId,
     projectId: "/tmp/project",
