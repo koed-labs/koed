@@ -3545,6 +3545,29 @@ export const createKoedServerManager = ({
       });
     }
 
+    if (request.operation === "command_discovery") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/managed-conversations/commands", apiOrigin),
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              aiClientDriverId: request.aiClientDriverId,
+              aiClientInstanceId: request.aiClientInstanceId,
+              projectId: request.projectId,
+              ...(request.cwd ? { cwd: request.cwd } : {})
+            })
+          }
+        }),
+        1 * 1_024 * 1_024
+      );
+      return parseManagedConversationResult({
+        operation: "command_discovery",
+        ...payload
+      });
+    }
+
     if (request.operation !== "resume" && request.operation !== "send") {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
