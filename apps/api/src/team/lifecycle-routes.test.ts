@@ -516,9 +516,56 @@ describe("Team lifecycle routes", () => {
     await fixture.app.close();
   });
 
-  it("requires both Team Workspace and Team Chat read scopes for aggregate navigation", async () => {
+  it("serves Team chat navigation without exposing Workspace or Memory to chat-only credentials", async () => {
+    const createdAt = now();
+    const teamChannel = {
+      id: randomUUID(),
+      logicalId: randomUUID(),
+      scope: "team" as const,
+      kind: "team_channel" as const,
+      personalOwnerUserId: null,
+      teamId,
+      teamWorkspaceId: null,
+      teamProjectId: null,
+      sharedLogicalMemoryId: null,
+      shareGrantId: null,
+      systemKey: null,
+      name: "general",
+      topic: null,
+      createdByUserId: user.id,
+      version: 1,
+      lifecycle: "active" as const,
+      latestSequence: 0,
+      lastReadMessageId: null,
+      lastReadSequence: 0,
+      unreadCount: 0,
+      participants: [],
+      createdAt,
+      updatedAt: createdAt,
+      lastActivityAt: createdAt,
+      archivedAt: null
+    };
+    const restrictedMemoryThread = {
+      ...teamChannel,
+      id: randomUUID(),
+      logicalId: randomUUID(),
+      kind: "shared_session_discussion" as const,
+      teamWorkspaceId: workspaceId,
+      sharedLogicalMemoryId: randomUUID(),
+      shareGrantId: randomUUID(),
+      name: null
+    };
     const fixture = await createFixture({
-      deviceOperationFamilies: ["team_workspace_read"]
+      deviceOperationFamilies: ["team_chat_read"],
+      repository: {
+        getAuthorizedSnapshot: vi.fn(async () => ({
+          scope: "team" as const,
+          personalOwnerUserId: null,
+          teamId,
+          highWaterCursor: 0,
+          threads: [teamChannel, restrictedMemoryThread]
+        }))
+      }
     });
     const response = await fixture.app.inject({
       method: "GET",
@@ -526,7 +573,16 @@ describe("Team lifecycle routes", () => {
       headers: { authorization: "Koed-Device device-key:secret" }
     });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().teams[0]).toMatchObject({
+      threads: [{ id: teamChannel.id, kind: "team_channel" }],
+      workspaces: []
+    });
+    expect(response.json().teams[0].threads).not.toContainEqual(
+      expect.objectContaining({ id: restrictedMemoryThread.id })
+    );
+    expect(fixture.repository.listTeamWorkspaces).not.toHaveBeenCalled();
+    expect(fixture.repository.listWorkspaceGrants).not.toHaveBeenCalled();
     await fixture.app.close();
   });
 

@@ -251,6 +251,7 @@ interface TeamReadContext {
     | "share_grant_management"
     | "managed_execution"
   >;
+  localOperationFamilies: ReadonlySet<string>;
   principal: z.infer<typeof remotePrincipalSchema>;
 }
 
@@ -1865,7 +1866,7 @@ const loadRemoteTeamNavigation = async (input: {
     await requireRemoteJson(input.fetcher, {
       backend: input.context.backend,
       upstreamAuthorization: input.context.upstreamAuthorization,
-      operationFamily: "team_workspace_read",
+      operationFamily: "team_chat_read",
       method: "GET",
       path: "/v1/teams/navigation"
     })
@@ -1880,6 +1881,9 @@ const loadRemoteTeamNavigation = async (input: {
   }
   const principal = remotePrincipalPersonFrom(payload.principal);
   const navigationTeams: Record<string, unknown>[] = [];
+  const localWorkspaceReadAuthorized = input.context.localOperationFamilies.has(
+    "team_workspace_read"
+  );
 
   for (const entry of payload.teams) {
     const { team, membership } = entry;
@@ -1903,7 +1907,13 @@ const loadRemoteTeamNavigation = async (input: {
     const threads = entry.threads
       .map(threadDtoFromRemote)
       .filter((thread): thread is Record<string, unknown> => thread !== null)
-      .filter((thread) => thread.teamId === team.id);
+      .filter(
+        (thread) =>
+          thread.teamId === team.id &&
+          (localWorkspaceReadAuthorized ||
+            (thread.kind !== "workspace_channel" &&
+              thread.kind !== "shared_session_discussion"))
+      );
     const directMessages = threads.filter(
       (thread) => thread.kind === "dm" || thread.kind === "group_dm"
     );
@@ -1924,9 +1934,11 @@ const loadRemoteTeamNavigation = async (input: {
           ]
         : []
     );
-    const workspaces = entry.workspaces
-      .filter(({ teamWorkspace }) => teamWorkspace.teamId === team.id)
-      .filter(({ teamWorkspace }) => teamWorkspace.lifecycle === "active");
+    const workspaces = localWorkspaceReadAuthorized
+      ? entry.workspaces
+          .filter(({ teamWorkspace }) => teamWorkspace.teamId === team.id)
+          .filter(({ teamWorkspace }) => teamWorkspace.lifecycle === "active")
+      : [];
     const mappedWorkspaces: Record<string, unknown>[] = [];
     for (const {
       teamWorkspace: workspace,
@@ -3121,6 +3133,7 @@ export const registerCollaborationCommandRoute = (
       upstreamAuthorization,
       upstreamDeviceCredentialId: parsedStatus.credential.id,
       operationFamilies,
+      localOperationFamilies: new Set(locallyAllowedFamilies),
       principal: parsedStatus.user
     };
   };
@@ -3152,7 +3165,9 @@ export const registerCollaborationCommandRoute = (
     const key = [
       input.context.backendId,
       input.context.principal.id,
-      input.credential.credentialKeyId
+      input.credential.credentialKeyId,
+      [...input.context.operationFamilies].sort().join(","),
+      [...input.context.localOperationFamilies].sort().join(",")
     ].join(":");
     const now = Date.now();
     const cached = remoteNavigationCache.get(key);
@@ -3300,7 +3315,7 @@ export const registerCollaborationCommandRoute = (
             unavailableBackendId = registeredBackend.id;
             try {
               const context = await resolveTeamReadContext(
-                "team_workspace_read",
+                "team_chat_read",
                 registeredBackend.id
               );
               if (context) {
@@ -3761,8 +3776,15 @@ export const registerCollaborationCommandRoute = (
       const operation = teamCollaborationOperationFor(input.command);
       if (!operation) {
         if (input.command.command === "collaboration.select") {
+          const selection = input.command.input.selection;
+          const operationFamily =
+            selection.kind === "team_channel" ||
+            selection.kind === "team_project_channel" ||
+            selection.kind === "team_direct_message"
+              ? "team_chat_read"
+              : "team_workspace_read";
           const context = await resolveTeamReadContext(
-            "team_workspace_read",
+            operationFamily,
             input.upstream_backend_id
           );
           if (!context) {

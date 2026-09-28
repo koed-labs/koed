@@ -852,3 +852,8 @@ profile is enabled. Browser and native clients fall back to the next advertised
 adapter only for unsupported, disabled, or network-path failures;
 authentication, authorization, revocation, schema, and protocol-integrity
 failures stop closed.
+
+
+### Chat-only navigation
+
+Team navigation requires Team Chat read permission. Workspace names, grants, Workspace channels, and shared Memory discussion threads require separate Workspace read permission. The local edge also applies the local client's permissions when an upstream credential has broader permissions. Its navigation cache keys include both permission sets. Team channel and shared Project channel selection uses Chat read permission; Workspace selection uses Workspace read permission.

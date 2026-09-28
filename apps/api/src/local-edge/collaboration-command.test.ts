@@ -2608,6 +2608,132 @@ describe("local-edge collaboration command route", () => {
     }
   });
 
+  it("loads Team channel navigation with chat-read authority alone", async () => {
+    const teamChannel = {
+      ...teamThreadBase,
+      id: randomUUID(),
+      logicalId: randomUUID(),
+      kind: "team_channel" as const,
+      name: "general",
+      topic: null,
+      systemKey: null
+    };
+    const harness = createHarness({
+      localFamilies: ["team_chat_read"],
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        return path === "/v1/teams/navigation"
+          ? Response.json(
+              remoteNavigationPayload({
+                threads: [
+                  teamChannel,
+                  directMessageThread,
+                  teamThread,
+                  sharedDiscussionThread
+                ],
+                workspaces: [remoteNavigationPayload().teams[0]!.workspaces[0]!]
+              })
+            )
+          : remoteCompositionResponse(call);
+      }
+    });
+    const command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load",
+      input: {}
+    } as CollaborationRendererCommand;
+
+    const response = await injectPersonalCommand(harness.app, command);
+    const result = parseResultAs<LoadTestResult>(response.body);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        snapshot: {
+          connection: { state: "live", backendId: "team-vps" },
+          navigation: { teams: [{ channels: [{ kind: "team_channel" }] }] }
+        }
+      }
+    });
+    if (!result.ok || result.command !== "collaboration.load") {
+      throw new Error("Expected collaboration.load success");
+    }
+    expect(result.data.snapshot.navigation.teams[0]?.workspaces).toEqual([]);
+    expect(
+      harness.calls.some(
+        (call) =>
+          new URL(call.url).pathname === "/koed/v1/teams/navigation" &&
+          call.init.method === "GET"
+      )
+    ).toBe(true);
+  });
+
+  it("selects Team channel history with chat-read authority alone", async () => {
+    const teamChannel = {
+      ...teamThreadBase,
+      kind: "team_channel" as const,
+      name: "general",
+      topic: null,
+      systemKey: "team.general" as const
+    };
+    const harness = createHarness({
+      localFamilies: ["team_chat_read"],
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path === "/v1/teams/navigation") {
+          return Response.json(
+            remoteNavigationPayload({
+              threads: [teamChannel],
+              workspaces: []
+            })
+          );
+        }
+        if (
+          path === `/v1/collaboration/teams/${ids.team}/threads/${ids.thread}`
+        ) {
+          return Response.json({ thread: teamChannel });
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const command = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.select",
+      input: {
+        selection: {
+          kind: "team_channel",
+          teamId: ids.team,
+          threadId: ids.thread
+        }
+      }
+    } as CollaborationRendererCommand;
+
+    const result = parseResultAs<LoadTestResult>(
+      (await injectCommand(harness.app, command)).body
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        snapshot: {
+          connection: { state: "live", backendId: "team-vps" },
+          selection: {
+            kind: "team_channel",
+            teamId: ids.team,
+            threadId: ids.thread
+          },
+          view: {
+            kind: "thread",
+            thread: { kind: "team_channel", id: ids.thread },
+            messages: { items: [{ threadId: ids.thread }] }
+          }
+        }
+      }
+    });
+  });
+
   it("keeps a future remote Presence status from invalidating Team navigation", async () => {
     const harness = createHarness({
       response: (call) => {
@@ -3011,7 +3137,7 @@ describe("local-edge collaboration command route", () => {
     );
   });
 
-  it("keeps load useful as Personal-only when a registered Team backend cannot be read", async () => {
+  it("loads Team navigation with a chat-only registered Team credential", async () => {
     const harness = createHarness({
       localFamilies: ["team_chat_read", "team_chat_write"],
       response: remoteCompositionResponse
@@ -3030,16 +3156,19 @@ describe("local-edge collaboration command route", () => {
       ok: true,
       data: {
         snapshot: {
-          connection: { state: "unavailable", backendId: "team-vps" },
+          connection: { state: "live", backendId: "team-vps" },
           navigation: {
             personalOwner: { id: ids.actor },
-            teamPrincipal: null,
-            teams: []
+            teamPrincipal: { id: ids.remotePrincipal }
           }
         }
       }
     });
-    expect(harness.calls).toHaveLength(0);
+    expect(
+      harness.calls.some(
+        ({ url }) => new URL(url).pathname === "/koed/v1/teams/navigation"
+      )
+    ).toBe(true);
   });
 
   it("revalidates Team selections through upstream authority instead of trusting renderer IDs", async () => {

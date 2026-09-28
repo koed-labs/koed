@@ -215,6 +215,39 @@ export const registerTeamRoutes = (
     return workspaceUser;
   };
 
+  const authenticateTeamChatNavigationRead = async (
+    request: FastifyRequest
+  ) => {
+    rejectApiToken(request);
+    const user = await authenticateSessionOrDeviceCredential(
+      request,
+      "team_chat_read"
+    );
+    let workspaceUser: Awaited<
+      ReturnType<typeof authenticateSessionOrDeviceCredential>
+    > | null = null;
+    try {
+      workspaceUser = await authenticateSessionOrDeviceCredential(
+        request,
+        "team_workspace_read"
+      );
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "statusCode" in error &&
+        error.statusCode === 403
+      ) {
+        return { user, workspaceReadAuthorized: false };
+      }
+      throw error;
+    }
+    if (workspaceUser && workspaceUser.id !== user.id) {
+      throw forbidden("Team navigation identity is inconsistent");
+    }
+    return { user, workspaceReadAuthorized: workspaceUser !== null };
+  };
+
   const requireFreshSession = async (request: FastifyRequest) => {
     rejectApiToken(request);
     const session = await authenticateSessionContext(request);
@@ -363,7 +396,8 @@ export const registerTeamRoutes = (
     "/v1/teams/navigation",
     { preHandler: memoryReadRateLimit },
     async (request) => {
-      const user = await authenticateTeamNavigationRead(request);
+      const { user, workspaceReadAuthorized } =
+        await authenticateTeamChatNavigationRead(request);
       const repository = requireRepository();
       const actor = { userId: user.id };
       const teams = (await repository.listTeams(actor)).slice(0, 50);
@@ -373,11 +407,13 @@ export const registerTeamRoutes = (
             await Promise.all([
               repository.getTeamMembership(actor, team.id),
               repository.listTeamRoster(actor, team.id),
-              repository.listTeamWorkspaces(actor, {
-                teamId: team.id,
-                includeArchived: true,
-                limit: 20
-              }),
+              workspaceReadAuthorized
+                ? repository.listTeamWorkspaces(actor, {
+                    teamId: team.id,
+                    includeArchived: true,
+                    limit: 20
+                  })
+                : Promise.resolve([]),
               repository.getAuthorizedSnapshot(actor, {
                 scope: "team",
                 teamId: team.id,
@@ -470,7 +506,14 @@ export const registerTeamRoutes = (
             team,
             membership,
             members: members.map((member) => publicTeamRosterMember(member)),
-            threads: snapshot.threads.map(publicCollaborationThread),
+            threads: snapshot.threads
+              .filter(
+                (thread) =>
+                  workspaceReadAuthorized ||
+                  (thread.kind !== "workspace_channel" &&
+                    thread.kind !== "shared_session_discussion")
+              )
+              .map(publicCollaborationThread),
             highWaterCursor: snapshot.highWaterCursor,
             workspaces
           };
