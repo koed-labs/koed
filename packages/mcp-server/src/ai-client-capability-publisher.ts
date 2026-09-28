@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { resolve } from "node:path";
-
+import { promisify } from "node:util";
 import {
   readLocalEdgeUpstreamRegistry,
   sanitizeAiClientDiagnostics,
   readLocalEdgeClientCredentialAuthorization,
+  type LocalEdgeUpstreamBackend,
   type AiClientCapabilityDescriptor
 } from "@koed/shared";
 import {
@@ -32,6 +34,68 @@ const positiveInteger = (
 const DEFAULT_REFRESH_MS = 5 * 60_000;
 const DEFAULT_SNAPSHOT_TTL_MS = 10 * 60_000;
 const HOSTED_CAPABILITY_OPERATION_FAMILY = "ai_client_capability_publish";
+const upstreamCapabilityRefreshes = new Map<string, Promise<boolean>>();
+const execFileAsync = promisify(execFile);
+
+type UpstreamCapabilityRefresher = (
+  backendId: string,
+  environment: NodeJS.ProcessEnv
+) => Promise<boolean>;
+
+const refreshUpstreamCapabilitiesWithServerCli: UpstreamCapabilityRefresher =
+  async (backendId, environment) => {
+    const serverCliPath = environment.KOED_SERVER_CLI_PATH?.trim();
+    if (!serverCliPath) return false;
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [serverCliPath, "upstream", "refresh", "--id", backendId, "--json"],
+        {
+          env: environment,
+          encoding: "utf8",
+          timeout: 120_000,
+          maxBuffer: 1024 * 1024
+        }
+      );
+      const result = JSON.parse(stdout) as {
+        ok?: unknown;
+        state?: unknown;
+      };
+      return result.ok === true && result.state === "validated";
+    } catch {
+      // CLI stderr may contain upstream details, so keep it out of status/logs.
+      return false;
+    }
+  };
+
+const upstreamCapabilitiesAreFresh = (
+  backend: LocalEdgeUpstreamBackend,
+  now = Date.now()
+): boolean => {
+  if (backend.capabilities?.state !== "validated") return false;
+  const expiresAt = backend.capabilities.expiresAt;
+  return !expiresAt || Date.parse(expiresAt) > now;
+};
+
+const ensureUpstreamCapabilitiesFresh = async (
+  backend: LocalEdgeUpstreamBackend,
+  environment: NodeJS.ProcessEnv,
+  refresh: UpstreamCapabilityRefresher
+): Promise<boolean> => {
+  if (upstreamCapabilitiesAreFresh(backend)) return true;
+  const key = `${resolveKoedHome(environment)}\0${backend.id}`;
+  const existing = upstreamCapabilityRefreshes.get(key);
+  if (existing) return existing;
+  const pending = refresh(backend.id, environment).catch(() => false);
+  upstreamCapabilityRefreshes.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (upstreamCapabilityRefreshes.get(key) === pending) {
+      upstreamCapabilityRefreshes.delete(key);
+    }
+  }
+};
 
 export interface AiClientCapabilityPublication {
   instanceId: string;
@@ -96,7 +160,8 @@ const publishDiscovery = async (
   discovery: AiClientDriverDiscovery,
   environment: NodeJS.ProcessEnv,
   now: Date,
-  ttlMs: number
+  ttlMs: number,
+  refreshUpstream: UpstreamCapabilityRefresher
 ): Promise<AiClientCapabilityPublication["hostedPublication"]> => {
   const sanitizedDiagnostics = sanitizeAiClientDiagnostics(
     discovery.diagnostics
@@ -143,6 +208,7 @@ const publishDiscovery = async (
 
   const koedHome = resolveKoedHome(environment);
   let upstreamBackendId: string | null = null;
+  let activeUpstreamBackend: LocalEdgeUpstreamBackend | null = null;
   try {
     const registry = readLocalEdgeUpstreamRegistry(
       resolve(koedHome, "config", "upstream-backends.json")
@@ -151,6 +217,7 @@ const publishDiscovery = async (
       (backend) => backend.id === registry.activeBackendId
     );
     if (active?.routePolicy.managedExecution === "enabled") {
+      activeUpstreamBackend = active;
       upstreamBackendId = active.id;
     }
   } catch {
@@ -170,10 +237,43 @@ const publishDiscovery = async (
   }
   if (
     !upstreamBackendId ||
+    !activeUpstreamBackend ||
     !localEdgeCredential?.operationFamilies.includes(
       HOSTED_CAPABILITY_OPERATION_FAMILY
     )
   ) {
+    return "not_configured";
+  }
+  if (
+    !(await ensureUpstreamCapabilitiesFresh(
+      activeUpstreamBackend,
+      environment,
+      refreshUpstream
+    ))
+  ) {
+    return "failed";
+  }
+  try {
+    const refreshedRegistry = readLocalEdgeUpstreamRegistry(
+      resolve(koedHome, "config", "upstream-backends.json")
+    );
+    const refreshedActive = refreshedRegistry.backends.find(
+      (backend) => backend.id === refreshedRegistry.activeBackendId
+    );
+    const refreshedCredential = readLocalEdgeClientCredentialAuthorization(
+      koedHome,
+      upstreamBackendId
+    );
+    if (
+      refreshedActive?.id !== upstreamBackendId ||
+      refreshedActive.routePolicy.managedExecution !== "enabled" ||
+      !refreshedCredential?.operationFamilies.includes(
+        HOSTED_CAPABILITY_OPERATION_FAMILY
+      )
+    ) {
+      return "not_configured";
+    }
+  } catch {
     return "not_configured";
   }
 
@@ -299,6 +399,7 @@ export const publishAiClientCapabilities = async (
     now?: () => Date;
     snapshotTtlMs?: number;
     isActive?: () => boolean;
+    refreshUpstreamCapabilities?: UpstreamCapabilityRefresher;
   } = {}
 ): Promise<AiClientCapabilityPublication[]> => {
   const now = (options.now ?? (() => new Date()))();
@@ -324,7 +425,9 @@ export const publishAiClientCapabilities = async (
         discovery,
         environment,
         now,
-        ttlMs
+        ttlMs,
+        options.refreshUpstreamCapabilities ??
+          refreshUpstreamCapabilitiesWithServerCli
       );
       return {
         instanceId: instance.instanceId,

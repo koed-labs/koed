@@ -16,6 +16,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assertKoedAppRuntimeAvailable,
   resolveKoedAppRuntime
@@ -1380,6 +1381,10 @@ export const startKoedServer = async ({
         {
           ...appProcessEnvironment(refreshedEnv),
           KOED_HOME: paths.koedHome,
+          KOED_SERVER_CLI_PATH: resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            "cli.js"
+          ),
           MEMORY_API_URL: apiUrl,
           MEMORY_API_TOKEN: finalApiToken,
           MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
