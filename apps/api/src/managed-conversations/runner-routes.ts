@@ -998,6 +998,10 @@ export const registerManagedConversationRunnerRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  // Runner control traffic must remain available when memory ingestion or
+  // streaming runtime writes consume the general memory-write budget.
+  const managedConversationWriteRateLimit =
+    context.rateLimit.managedConversationWrite ?? context.rateLimit.memoryWrite;
   app.get(
     "/v1/managed-conversation-runner/executions",
     { preHandler: context.rateLimit.memoryRead },
@@ -1017,7 +1021,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/claim",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const input = claimSchema.parse(request.body);
@@ -1037,7 +1041,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/project-moves/claim",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const input = claimSchema.parse(request.body);
@@ -1057,7 +1061,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/project-moves/:moveId/lease",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { moveId } = projectMoveParamsSchema.parse(request.params);
@@ -1080,7 +1084,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/project-moves/:moveId/complete",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { moveId } = projectMoveParamsSchema.parse(request.params);
@@ -1103,7 +1107,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/project-moves/:moveId/fail",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { moveId } = projectMoveParamsSchema.parse(request.params);
@@ -1125,7 +1129,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/claim-controls",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const input = claimSchema.parse(request.body);
@@ -1145,7 +1149,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/claim-files",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(
         request,
@@ -1169,8 +1173,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/runtime-items",
-    { preHandler: context.rateLimit.memoryWrite },
-    async (request) => {
+    async (request, reply) => {
       const auth = await authenticateRunner(request, context);
       const input = putRuntimeItemSchema.parse(request.body);
       const execution = await requireExecutionForRunner(
@@ -1186,6 +1189,13 @@ export const registerManagedConversationRunnerRoutes = (
           }
         );
       }
+      // Streaming output is high-volume payload traffic; interactive requests
+      // are control traffic and must not be starved by output publication.
+      const rateLimit =
+        input.itemKind === "transient_output"
+          ? context.rateLimit.memoryWrite
+          : managedConversationWriteRateLimit;
+      await rateLimit(request, reply);
       return {
         item: await context
           .requireRepository()
@@ -1224,7 +1234,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/runtime-items/:itemId/resolve",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { itemId } = runtimeItemParamsSchema.parse(request.params);
@@ -1263,7 +1273,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/runtime-items/cancel",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -1282,7 +1292,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/reconcile-abandoned",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       if (
@@ -1524,7 +1534,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/prepare",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1545,7 +1555,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/attest",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1581,7 +1591,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/source-download-authorization",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       requireSyncRunner(auth);
@@ -1625,7 +1635,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/verify",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1648,7 +1658,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/commit",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1667,7 +1677,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/restore",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1690,7 +1700,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/restore-lease",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1710,7 +1720,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/handoffs/:handoffId/complete",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { handoffId } = handoffParamsSchema.parse(request.params);
@@ -1900,7 +1910,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/prepare-source",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { forkId } = forkParamsSchema.parse(request.params);
@@ -1921,7 +1931,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/attest",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { forkId } = forkParamsSchema.parse(request.params);
@@ -1957,7 +1967,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/source-download-authorization",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       requireSyncRunner(auth);
@@ -1989,7 +1999,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/prepare-child",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { forkId } = forkParamsSchema.parse(request.params);
@@ -2006,7 +2016,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/complete",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { forkId } = forkParamsSchema.parse(request.params);
@@ -2025,7 +2035,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/forks/:forkId/fail",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { forkId } = forkParamsSchema.parse(request.params);
@@ -2128,7 +2138,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/lease",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { commandId } = commandParamsSchema.parse(request.params);
@@ -2152,7 +2162,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/acquire",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2185,7 +2195,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/lease",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2200,7 +2210,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/release",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2216,7 +2226,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/complete",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { commandId } = commandParamsSchema.parse(request.params);
@@ -2231,7 +2241,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/checkpoint-pending",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { commandId } = commandParamsSchema.parse(request.params);
@@ -2279,7 +2289,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/file-fail",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(
         request,
@@ -2308,7 +2318,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/fail",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { commandId } = commandParamsSchema.parse(request.params);
@@ -2322,7 +2332,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/block-on-source",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { commandId } = commandParamsSchema.parse(request.params);
@@ -2338,7 +2348,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/source-replicas/release",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const input = releaseSourceDependencySchema.parse(request.body);
@@ -2379,7 +2389,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/runtime-binding-ready",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2416,7 +2426,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/runtime-binding-failed",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2454,7 +2464,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/runtime",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2473,7 +2483,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/source-generation",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);
@@ -2492,7 +2502,7 @@ export const registerManagedConversationRunnerRoutes = (
 
   app.post(
     "/v1/managed-conversation-runner/executions/:executionId/state",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const { executionId } = executionParamsSchema.parse(request.params);

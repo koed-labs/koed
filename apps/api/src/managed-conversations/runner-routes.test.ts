@@ -40,6 +40,7 @@ const buildServer = async (options?: {
   operationFamilies?: string[];
   protocolDeploymentId?: string | null;
   repository?: Record<string, unknown>;
+  rateLimit?: Partial<ApiRouteContext["rateLimit"]>;
 }) => {
   const repository = {
     claimManagedConversationCommands: vi.fn(async () => []),
@@ -132,7 +133,9 @@ const buildServer = async (options?: {
     },
     rateLimit: {
       memoryRead: async () => undefined,
-      memoryWrite: async () => undefined
+      memoryWrite: async () => undefined,
+      managedConversationWrite: async () => undefined,
+      ...options?.rateLimit
     },
     encryption: {},
     managedConversations: { commandWakePool: null }
@@ -146,6 +149,159 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
+  it("keeps command control available when memory writes are exhausted and enforces the control quota", async () => {
+    const memoryWrite = vi.fn(async () => {
+      throw Object.assign(new Error("Memory write budget exhausted"), {
+        statusCode: 429
+      });
+    });
+    let controlWriteCount = 0;
+    const managedConversationWrite = vi.fn(async () => {
+      controlWriteCount += 1;
+      if (controlWriteCount > 6) {
+        throw Object.assign(new Error("Managed control budget exhausted"), {
+          statusCode: 429
+        });
+      }
+    });
+    const claim = vi.fn(async () => []);
+    const renewCommandLease = vi.fn(async () => true);
+    const completeCommand = vi.fn(async () => true);
+    const failCommand = vi.fn(async () => ({ updated: true }));
+    const reconcile = vi.fn(async () => 0);
+    const putRuntimeItem = vi.fn(async (_actor, input) => ({
+      id: randomUUID(),
+      ...input
+    }));
+    const fixture = await buildServer({
+      rateLimit: { memoryWrite, managedConversationWrite },
+      repository: {
+        claimManagedConversationCommands: claim,
+        getManagedConversationCommand: vi.fn(async () => ({
+          id: ids.command,
+          executionId: ids.execution
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 1,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        putManagedConversationRuntimeItem: putRuntimeItem,
+        renewManagedConversationCommandLease: renewCommandLease,
+        completeManagedConversationCommand: completeCommand,
+        failManagedConversationCommand: failCommand,
+        reconcileAbandonedManagedConversationCommands: reconcile
+      }
+    });
+    try {
+      const streamedRuntimeOutput = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/runtime-items",
+        headers: runnerHeaders,
+        payload: {
+          executionId: ids.execution,
+          executionGeneration: 1,
+          providerRequestId: "provider:stream-1",
+          itemKind: "transient_output",
+          payload: { text: "partial" }
+        }
+      });
+      const interactiveApproval = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/runtime-items",
+        headers: runnerHeaders,
+        payload: {
+          executionId: ids.execution,
+          executionGeneration: 1,
+          providerRequestId: "provider:approval-1",
+          itemKind: "command_approval",
+          payload: { command: "printf safe" }
+        }
+      });
+      const invalidRuntimeKind = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/runtime-items",
+        headers: {
+          ...runnerHeaders,
+          "x-rate-limit-policy": "managedConversationWrite"
+        },
+        payload: {
+          executionId: ids.execution,
+          executionGeneration: 1,
+          providerRequestId: "provider:invalid-1",
+          itemKind: "managedConversationWrite",
+          payload: {}
+        }
+      });
+      const commandsClaimed = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/commands/claim",
+        headers: runnerHeaders,
+        payload: { runnerId: "runner", limit: 1, leaseMs: 30_000 }
+      });
+      const commandLease = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/commands/${ids.command}/lease`,
+        headers: runnerHeaders,
+        payload: {
+          leaseToken: ids.credential,
+          runnerId: "runner",
+          executionId: ids.execution,
+          leaseMs: 30_000
+        }
+      });
+      const completed = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/commands/${ids.command}/complete`,
+        headers: runnerHeaders,
+        payload: { leaseToken: ids.credential }
+      });
+      const failed = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/commands/${ids.command}/fail`,
+        headers: runnerHeaders,
+        payload: {
+          leaseToken: ids.credential,
+          state: "indeterminate",
+          errorCode: "ProviderUnavailable"
+        }
+      });
+      const reconciled = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/commands/reconcile-abandoned",
+        headers: runnerHeaders,
+        payload: {}
+      });
+      const overQuota = await fixture.app.inject({
+        method: "POST",
+        url: "/v1/managed-conversation-runner/commands/claim",
+        headers: runnerHeaders,
+        payload: { runnerId: "runner", limit: 1, leaseMs: 30_000 }
+      });
+
+      expect(streamedRuntimeOutput.statusCode).toBe(429);
+      expect(interactiveApproval.statusCode).toBe(200);
+      expect(invalidRuntimeKind.statusCode).toBe(400);
+      expect(commandsClaimed.statusCode).toBe(200);
+      expect(commandLease.statusCode).toBe(200);
+      expect(completed.statusCode).toBe(200);
+      expect(failed.statusCode).toBe(200);
+      expect(reconciled.statusCode).toBe(200);
+      expect(overQuota.statusCode).toBe(429);
+      expect(memoryWrite).toHaveBeenCalledOnce();
+      expect(managedConversationWrite).toHaveBeenCalledTimes(7);
+      expect(claim).toHaveBeenCalledOnce();
+      expect(renewCommandLease).toHaveBeenCalledOnce();
+      expect(completeCommand).toHaveBeenCalledOnce();
+      expect(failCommand).toHaveBeenCalledOnce();
+      expect(reconcile).toHaveBeenCalledOnce();
+      expect(putRuntimeItem).toHaveBeenCalledOnce();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("lists and records checkpoints only for the assigned execution runner", async () => {
     const digest = "a".repeat(64);
     const objectId = "b".repeat(40);
