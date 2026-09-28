@@ -2616,3 +2616,305 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[0]?.pathname).not.toContain("%3F");
   });
 });
+
+type CommandDiscoveryOptions = {
+  userId?: string;
+  instance?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+  managedConversationRead?: (...args: unknown[]) => Promise<void>;
+};
+
+const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
+  const userId = options.userId ?? randomUUID();
+  const instance =
+    options.instance === undefined
+      ? {
+          ownerUserId: userId,
+          instanceId: "codex.default",
+          driverId: "codex",
+          displayName: "Codex",
+          configIdentityHash: null,
+          enabled: true,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        }
+      : options.instance;
+  const snapshot =
+    options.snapshot === undefined
+      ? {
+          id: randomUUID(),
+          ownerUserId: userId,
+          instanceId: "codex.default",
+          installationIdentityHash: "installation-hash",
+          clientVersion: "1.0.0",
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          models: [],
+          capabilities: {
+            descriptors: {
+              slash_command_discovery: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          },
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }
+      : options.snapshot;
+  const app = Fastify({ logger: false });
+  registerManagedConversationRoutes(app, {
+    config: { deploymentProfile: "local_personal" },
+    encryption: { envelopeEncryptionProvider: {} },
+    auth: { authenticate: async () => ({ id: userId }) },
+    rateLimit: {
+      memoryRead: async () => undefined,
+      memoryWrite: async () => undefined,
+      managedConversationRead: options.managedConversationRead
+    },
+    requireRepository: () => ({
+      listAiClientInstances: async () => (instance ? [instance] : []),
+      listCurrentAiClientCapabilitySnapshots: async () =>
+        snapshot ? [snapshot] : []
+    })
+  } as unknown as ApiRouteContext);
+  return { app, userId };
+};
+
+const commandDiscoveryPayload = {
+  aiClientDriverId: "codex",
+  aiClientInstanceId: "codex.default",
+  projectId: "project-1",
+  cwd: "/workspace/project"
+};
+
+describe("managed Conversation command discovery route", () => {
+  it("returns ok for a ready owned instance and capability", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      operation: "command_discovery",
+      status: "ok",
+      commands: []
+    });
+  });
+
+  it("rejects an instance owned by another User", async () => {
+    const { app } = createCommandDiscoveryApp({
+      instance: {
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        driverId: "codex",
+        displayName: "Codex",
+        configIdentityHash: null,
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      operation: "command_discovery",
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects a missing instance", async () => {
+    const { app } = createCommandDiscoveryApp({ instance: null });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects an instance with a different driver", async () => {
+    const userId = randomUUID();
+    const { app } = createCommandDiscoveryApp({
+      userId,
+      instance: {
+        ownerUserId: userId,
+        instanceId: "codex.default",
+        driverId: "claude",
+        displayName: "Claude",
+        configIdentityHash: null,
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects a disabled instance", async () => {
+    const userId = randomUUID();
+    const { app } = createCommandDiscoveryApp({
+      userId,
+      instance: {
+        ownerUserId: userId,
+        instanceId: "codex.default",
+        driverId: "codex",
+        displayName: "Codex",
+        configIdentityHash: null,
+        enabled: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when no capability snapshot exists", async () => {
+    const { app } = createCommandDiscoveryApp({ snapshot: null });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when capability snapshot is expired", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: {
+          descriptors: {
+            slash_command_discovery: {
+              support: "supported",
+              readiness: "ready"
+            }
+          }
+        },
+        observedAt: "2020-01-01T00:00:00.000Z",
+        expiresAt: "2020-01-01T00:00:00.000Z",
+        createdAt: "2020-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when slash command discovery is not ready", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: { descriptors: {} },
+        observedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("rejects relative cwd paths", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, cwd: "relative/path" }
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("applies managed conversation read rate limiting", async () => {
+    const { app } = createCommandDiscoveryApp({
+      managedConversationRead: async () => {
+        throw Object.assign(new Error("rate limit"), { statusCode: 429 });
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(429);
+  });
+});

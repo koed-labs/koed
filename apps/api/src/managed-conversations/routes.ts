@@ -53,6 +53,20 @@ const idempotencyKeySchema = z
   .max(255)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 
+const managedConversationCommandsRequestSchema = z
+  .object({
+    aiClientDriverId: z.string().min(1).max(64),
+    aiClientInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
+    projectId: z.string().trim().min(1).max(128),
+    cwd: z.string().trim().min(1).max(256).optional()
+  })
+  .strict();
+
 const startSchema = z
   .object({
     projectId: z.string().trim().min(1).max(2_048),
@@ -1439,6 +1453,101 @@ export const registerManagedConversationRoutes = (
         user.id,
         await runnerIdentity(request)
       );
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/commands",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+
+      const rawBody = request.body as Record<string, unknown>;
+      const body = managedConversationCommandsRequestSchema.parse(rawBody);
+
+      if (!isSupportedAiClientDriverId(body.aiClientDriverId)) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+
+      const repository = context.requireRepository();
+      const [instances, snapshots] = await Promise.all([
+        repository.listAiClientInstances({ userId: user.id }),
+        repository.listCurrentAiClientCapabilitySnapshots({ userId: user.id })
+      ]);
+      const instance = instances.find(
+        (candidate) => candidate.instanceId === body.aiClientInstanceId
+      );
+
+      if (!instance || !instance.enabled) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+      if (instance.ownerUserId !== user.id) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+      if (instance.driverId !== body.aiClientDriverId) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+
+      if (body.cwd) {
+        const cwd = body.cwd.trim();
+        if (cwd.length === 0 || !cwd.startsWith("/")) {
+          return {
+            operation: "command_discovery",
+            status: "unauthorized",
+            commands: []
+          };
+        }
+      }
+
+      const snapshot = snapshots.find(
+        (candidate) => candidate.instanceId === body.aiClientInstanceId
+      );
+      if (!snapshot || new Date(snapshot.expiresAt).getTime() <= Date.now()) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      const descriptors = snapshot.capabilities?.descriptors;
+      const descriptor =
+        descriptors && typeof descriptors === "object"
+          ? (descriptors as Record<string, unknown>)[
+              aiClientCapabilityIds.slashCommandDiscovery
+            ]
+          : undefined;
+      const isReady =
+        descriptor &&
+        typeof descriptor === "object" &&
+        (descriptor as Record<string, unknown>).support === "supported" &&
+        (descriptor as Record<string, unknown>).readiness === "ready";
+      if (!isReady) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      return { operation: "command_discovery", status: "ok", commands: [] };
     }
   );
 
