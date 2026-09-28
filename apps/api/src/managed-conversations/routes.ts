@@ -1844,7 +1844,9 @@ export const registerManagedConversationRoutes = (
     { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
-      const user = await context.auth.authenticateApiToken(request);
+      const user = request.headers.authorization?.trim()
+        ? await context.auth.authenticateApiToken(request)
+        : await context.auth.authenticateSession(request);
       const identity = context.deploymentIdentity.inspect();
       if (identity.health !== "healthy" || !identity.deploymentId) {
         throw Object.assign(

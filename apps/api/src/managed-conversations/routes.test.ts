@@ -1929,6 +1929,65 @@ describe("managed Conversation routes", () => {
     }
   });
 
+  it("allows a signed-in hosted browser session to read managed access", async () => {
+    const user = { id: randomUUID() };
+    const authenticateSession = vi.fn(async () => user);
+    const authenticateApiToken = vi.fn(async () => {
+      throw Object.assign(new Error("Bearer API token required"), {
+        statusCode: 401
+      });
+    });
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      encryption: { envelopeEncryptionProvider: {} },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "healthy",
+          deploymentId: "hosted-backend-stable-id",
+          deviceInstanceId: randomUUID(),
+          remoteOperationsAllowed: true,
+          message: "healthy",
+          platformProtection: "verified"
+        })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined,
+        managedConversationRead: async () => undefined
+      },
+      auth: { authenticateSession, authenticateApiToken }
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers: { cookie: "koed_session=valid" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        user: { id: user.id },
+        backendId: "hosted-backend-stable-id"
+      });
+      expect(authenticateSession).toHaveBeenCalledTimes(1);
+      expect(authenticateApiToken).not.toHaveBeenCalled();
+
+      const invalidBearer = await app.inject({
+        method: "GET",
+        url: "/v1/managed-conversations/access",
+        headers: {
+          cookie: "koed_session=valid",
+          authorization: "Bearer invalid"
+        }
+      });
+      expect(invalidBearer.statusCode).toBe(401);
+      expect(authenticateApiToken).toHaveBeenCalledTimes(1);
+      expect(authenticateSession).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns only the owning User's server-derived execution diff", async () => {
     const ownerUserId = randomUUID();
     const strangerUserId = randomUUID();
