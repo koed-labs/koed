@@ -86,6 +86,26 @@ const localApiBase = (value) => {
   }
 };
 
+const validatePairedLocalApiAccess = (access) => {
+  if (
+    !access ||
+    typeof access.apiToken !== "string" ||
+    !access.apiToken ||
+    !localApiBase(access.apiOrigin)
+  ) {
+    throw new Error("invalid_local_api_access");
+  }
+  const parsedOrigin = new URL(access.apiOrigin);
+  if (
+    parsedOrigin.pathname !== "/" ||
+    parsedOrigin.search ||
+    parsedOrigin.hash
+  ) {
+    throw new Error("invalid_local_api_access");
+  }
+  return { apiOrigin: parsedOrigin.origin, apiToken: access.apiToken };
+};
+
 const redactedMessage = (message, fallback) => {
   if (!message || typeof message !== "string") return fallback;
   const clean = message
@@ -171,13 +191,32 @@ const mapApiFailure = (error, status) => ({
 });
 
 const makeFetch =
-  ({ fetchImpl, apiBase, token, maxBodyBytes = MAX_BODY_BYTES }) =>
+  ({
+    fetchImpl,
+    apiBase,
+    token,
+    resolveAccess,
+    maxBodyBytes = MAX_BODY_BYTES
+  }) =>
   async (path, query, signal) => {
-    if (!localApiBase(apiBase)) throw new Error("invalid_local_api_base");
-    const url = requestUrl(apiBase, path, query);
+    let apiOrigin;
+    let apiToken;
+    if (typeof resolveAccess === "function") {
+      const access = validatePairedLocalApiAccess(await resolveAccess());
+      apiOrigin = access.apiOrigin;
+      apiToken = access.apiToken;
+    } else {
+      if (!localApiBase(apiBase)) throw new Error("invalid_local_api_base");
+      apiOrigin = apiBase;
+      apiToken = token;
+    }
+    const url = requestUrl(apiOrigin, path, query);
     const response = await fetchImpl(url, {
       method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${apiToken}`
+      },
       signal,
       redirect: "error"
     });
@@ -406,16 +445,35 @@ export const readHomeSnapshot = async ({
   fetchImpl = globalThis.fetch,
   apiBase = DEFAULT_API_URL,
   token,
+  resolveAccess,
   now = () => new Date()
 } = {}) => {
   const fetchedAt = now().toISOString();
-  if (!token)
+  if (!token && typeof resolveAccess !== "function")
     return unavailableSnapshot(
       fetchedAt,
       "Koed authorization is not configured.",
       true
     );
-  const fetchApi = makeFetch({ fetchImpl, apiBase, token });
+  let localAccess;
+  try {
+    localAccess =
+      typeof resolveAccess === "function"
+        ? validatePairedLocalApiAccess(await resolveAccess())
+        : { apiOrigin: apiBase, apiToken: token };
+  } catch (error) {
+    const failure = mapApiFailure(error, error?.status);
+    return unavailableSnapshot(
+      fetchedAt,
+      failure.message,
+      failure.unauthorized
+    );
+  }
+  const fetchApi = makeFetch({
+    fetchImpl,
+    apiBase: localAccess.apiOrigin,
+    token: localAccess.apiToken
+  });
   let scopeKey = null;
   try {
     const access = await withTimeout((signal) =>
@@ -423,7 +481,7 @@ export const readHomeSnapshot = async ({
     );
     scopeKey =
       typeof access?.user?.id === "string"
-        ? scopeKeyFor(apiBase, access.user.id)
+        ? scopeKeyFor(localAccess.apiOrigin, access.user.id)
         : null;
   } catch (error) {
     const failure = mapApiFailure(error, error?.status);
@@ -537,7 +595,8 @@ export const resolveLocalConversationCapture = async ({
   sourceId,
   fetchImpl = globalThis.fetch,
   apiBase = DEFAULT_API_URL,
-  token
+  token,
+  resolveAccess
 } = {}) => {
   if (typeof sourceId !== "string" || sourceId.length > 1024) {
     return { state: "invalid" };
@@ -556,9 +615,10 @@ export const resolveLocalConversationCapture = async ({
   if (!nativeId || nativeId.length > 512 || /[\u0000-\u001f]/.test(nativeId)) {
     return { state: "invalid" };
   }
-  if (!token) return { state: "unauthorized" };
+  if (!token && typeof resolveAccess !== "function")
+    return { state: "unauthorized" };
   try {
-    const fetchApi = makeFetch({ fetchImpl, apiBase, token });
+    const fetchApi = makeFetch({ fetchImpl, apiBase, token, resolveAccess });
     const payload = await withTimeout((signal) =>
       fetchApi(
         "/v1/memory/graph/threads",
@@ -1022,6 +1082,7 @@ export const createStudioServer = ({
   apiBase = process.env.STUDIO_API_URL?.trim() || DEFAULT_API_URL,
   token,
   resolveToken: providedResolveToken,
+  resolveAccess: providedResolveAccess,
   environment = process.env,
   staticDir = DEFAULT_STATIC_DIR,
   fetchImpl = globalThis.fetch,
@@ -1113,6 +1174,9 @@ export const createStudioServer = ({
       : token === undefined
         ? readCredential({ environment, readFile })
         : Promise.resolve(token);
+  const resolveAccess = async () => {
+    return validatePairedLocalApiAccess(await providedResolveAccess());
+  };
   const resolvePrAgentContext = async ({
     agentId,
     expectedAgentVersion,
@@ -1121,15 +1185,25 @@ export const createStudioServer = ({
     pullRequest,
     files
   }) => {
-    if (!localApiBase(apiBase)) throw new Error("agent_context_unavailable");
-    const credential = await resolveToken();
-    if (!credential) throw new Error("agent_context_unavailable");
+    let access;
+    try {
+      if (providedResolveAccess) {
+        access = await resolveAccess();
+      } else {
+        if (!localApiBase(apiBase)) throw new Error("invalid_local_api_base");
+        const apiToken = await resolveToken();
+        if (!apiToken) throw new Error("missing_local_api_token");
+        access = { apiOrigin: apiBase, apiToken };
+      }
+    } catch {
+      throw new Error("agent_context_unavailable");
+    }
     const headers = {
       accept: "application/json",
-      authorization: `Bearer ${credential}`
+      authorization: `Bearer ${access.apiToken}`
     };
     const agentUrl = requestUrl(
-      apiBase,
+      access.apiOrigin,
       `/v1/personal-agents/${encodeURIComponent(agentId)}`
     );
     const agentResponse = await fetchImpl(agentUrl, {
@@ -1162,7 +1236,7 @@ export const createStudioServer = ({
         .join(", ")}`
     ].join("\n");
     const memoryResponse = await fetchImpl(
-      requestUrl(apiBase, "/v1/memory/search"),
+      requestUrl(access.apiOrigin, "/v1/memory/search"),
       {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
@@ -1239,6 +1313,7 @@ export const createStudioServer = ({
         apiBase,
         fetchImpl,
         resolveToken,
+        resolveAccess: providedResolveAccess ? resolveAccess : undefined,
         validCsrf: (incoming) => {
           const origin = exactRequestOrigin(incoming);
           return Boolean(
@@ -1786,7 +1861,9 @@ export const createStudioServer = ({
           const snapshot = await readHomeSnapshot({
             fetchImpl,
             apiBase,
-            token: await resolveToken(),
+            ...(providedResolveAccess
+              ? { resolveAccess }
+              : { token: await resolveToken() }),
             now
           });
           sendJson(response, 200, snapshot);
@@ -1878,7 +1955,9 @@ export const createStudioServer = ({
           sourceId: requestUrlObject.searchParams.get("sourceId"),
           fetchImpl,
           apiBase,
-          token: await resolveToken()
+          ...(providedResolveAccess
+            ? { resolveAccess }
+            : { token: await resolveToken() })
         });
         sendJson(response, result.state === "invalid" ? 400 : 200, result);
         return;

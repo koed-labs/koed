@@ -999,6 +999,42 @@ describe("Studio Home gateway", () => {
     );
   });
 
+  it("uses paired local access for conversation capture resolution", async () => {
+    let called = false;
+    const captured = await resolveLocalConversationCapture({
+      sourceId: "codex:native-old",
+      apiBase: "http://127.0.0.1:43300",
+      resolveAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:59451",
+        apiToken: "capture-paired-token"
+      }),
+      fetchImpl: async (url, init) => {
+        called = true;
+        assert.equal(new URL(url).origin, "http://127.0.0.1:59451");
+        assert.equal(init.headers.authorization, "Bearer capture-paired-token");
+        return response({
+          projects: [
+            {
+              name: "Example",
+              threads: [
+                {
+                  id: "native-old",
+                  sessionId: uuid,
+                  threadKind: "conversation",
+                  sourceAiClient: "codex-cli",
+                  name: "Old conversation",
+                  projectName: "Example"
+                }
+              ]
+            }
+          ]
+        });
+      }
+    });
+    assert.equal(called, true);
+    assert.equal(captured.state, "captured");
+  });
+
   it("scopes Home state to backend origin and user, without the token", async () => {
     const fetchImpl = async (url) => {
       const pathname = new URL(url).pathname;
@@ -1022,5 +1058,114 @@ describe("Studio Home gateway", () => {
     assert.equal(second.scopeKey, "http://127.0.0.1:43301|owner");
     assert.equal(first.scopeKey?.includes("secret"), false);
     assert.equal(second.scopeKey?.includes("secret"), false);
+  });
+
+  it("keeps one paired access for the full Home snapshot", async () => {
+    let accessCalls = 0;
+    const requests = [];
+    const snapshot = await readHomeSnapshot({
+      apiBase: "http://127.0.0.1:43300",
+      resolveAccess: async () => {
+        accessCalls += 1;
+        return accessCalls === 1
+          ? {
+              apiOrigin: "http://127.0.0.1:59451",
+              apiToken: "first-paired-token"
+            }
+          : {
+              apiOrigin: "http://127.0.0.1:59452",
+              apiToken: "next-paired-token"
+            };
+      },
+      fetchImpl: async (url, init) => {
+        const parsed = new URL(url);
+        requests.push({
+          origin: parsed.origin,
+          token: init.headers.authorization
+        });
+        if (parsed.pathname.endsWith("/access"))
+          return response({ user: { id: "owner" } });
+        if (parsed.pathname.endsWith("/managed-conversations"))
+          return response({ executions: [] });
+        return response({ projects: [] });
+      }
+    });
+
+    assert.equal(accessCalls, 1);
+    assert.equal(snapshot.scopeKey, "http://127.0.0.1:59451|owner");
+    assert.deepEqual(requests, [
+      {
+        origin: "http://127.0.0.1:59451",
+        token: "Bearer first-paired-token"
+      },
+      {
+        origin: "http://127.0.0.1:59451",
+        token: "Bearer first-paired-token"
+      },
+      {
+        origin: "http://127.0.0.1:59451",
+        token: "Bearer first-paired-token"
+      }
+    ]);
+  });
+
+  it("recovers paired local access without restarting the gateway or using its fallback origin", async () => {
+    staticDir = await mkdtemp(join(tmpdir(), "koed-studio-access-test-"));
+    await writeFile(join(staticDir, "index.html"), "Studio is ready");
+    let accessState = "unavailable";
+    const requests = [];
+    started = await startStudioServer({
+      port: 0,
+      staticDir,
+      apiBase: "http://127.0.0.1:43300",
+      resolveAccess: async () => {
+        if (accessState === "unavailable") throw new Error("not_ready");
+        return accessState === "invalid"
+          ? {
+              apiOrigin: "https://example.invalid",
+              apiToken: "private-token"
+            }
+          : {
+              apiOrigin: "http://127.0.0.1:59451",
+              apiToken: "private-token"
+            };
+      },
+      fetchImpl: async (url, init) => {
+        requests.push({
+          url: new URL(url),
+          authorization: init.headers.authorization
+        });
+        return response({ executions: [] });
+      }
+    });
+
+    assert.equal((await get(`${started.url}/`)).body, "Studio is ready");
+    assert.equal(requests.length, 0, "static routes do not require backend access");
+
+    const unavailable = await get(
+      `${started.url}/studio-api/managed-conversations`
+    );
+    assert.equal(unavailable.status, 503);
+    assert.equal(
+      requests.length,
+      0,
+      "readiness failure must not contact the fallback"
+    );
+
+    accessState = "healthy";
+    const recovered = await get(
+      `${started.url}/studio-api/managed-conversations`
+    );
+    assert.equal(recovered.status, 200);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url.origin, "http://127.0.0.1:59451");
+    assert.equal(requests[0].authorization, "Bearer private-token");
+
+    accessState = "invalid";
+    const invalid = await get(
+      `${started.url}/studio-api/managed-conversations`
+    );
+    assert.equal(invalid.status, 503);
+    assert.equal(requests.length, 1, "invalid origins must not receive the token");
   });
 });

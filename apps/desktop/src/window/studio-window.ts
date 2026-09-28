@@ -58,6 +58,7 @@ export interface StudioGatewayOptions {
   apiBase: string;
   staticDir: string;
   resolveToken: () => Promise<string>;
+  resolveAccess?: () => Promise<StudioLocalAccess>;
   listLocalSources: (input: Record<string, unknown>) => Promise<unknown>;
   listProjects: () => Promise<unknown>;
   chooseProjectDirectory: () => Promise<string | null>;
@@ -350,6 +351,7 @@ export const createStudioWindowController = (input: {
         apiBase: access?.apiOrigin ?? input.defaultApiOrigin,
         staticDir: paths.staticDir,
         resolveToken: async () => (await input.getAccess()).apiToken,
+        resolveAccess: input.getAccess,
         listLocalSources: input.listLocalSources,
         listProjects: input.listProjects,
         chooseProjectDirectory: async () => {

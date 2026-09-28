@@ -9,6 +9,7 @@ export async function handlePersonalAgents({
   url,
   validCsrf,
   resolveToken,
+  resolveAccess,
   apiBase,
   fetchImpl,
   send,
@@ -63,15 +64,13 @@ export async function handlePersonalAgents({
     return true;
   }
   try {
-    const base = new URL(apiBase);
-    if (
-      !["http:", "https:"].includes(base.protocol) ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(base.hostname) ||
-      base.username ||
-      base.password
-    ) {
-      send(503, { error: "invalid_local_api_base" });
-      return true;
+    let base;
+    if (typeof resolveAccess !== "function") {
+      base = validLocalApiBase(apiBase);
+      if (!base) {
+        send(503, { error: "invalid_local_api_base" });
+        return true;
+      }
     }
     let body;
     if (request.method !== "GET") {
@@ -104,10 +103,27 @@ export async function handlePersonalAgents({
         return true;
       }
     }
-    const token = await resolveToken();
-    if (!token) {
-      send(401, { error: "Koed authorization is unavailable." });
-      return true;
+    let token;
+    if (typeof resolveAccess === "function") {
+      let access;
+      try {
+        access = await resolveAccess();
+      } catch {
+        send(503, { error: "Koed is unavailable right now." });
+        return true;
+      }
+      base = validLocalApiBase(access?.apiOrigin, { requireOrigin: true });
+      if (!base || typeof access?.apiToken !== "string" || !access.apiToken) {
+        send(503, { error: "invalid_local_api_access" });
+        return true;
+      }
+      token = access.apiToken;
+    } else {
+      token = await resolveToken();
+      if (!token) {
+        send(401, { error: "Koed authorization is unavailable." });
+        return true;
+      }
     }
     const upstream = await fetchImpl(
       new URL(`/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`, base),
@@ -167,6 +183,25 @@ export async function handlePersonalAgents({
     });
   }
   return true;
+}
+
+function validLocalApiBase(value, { requireOrigin = false } = {}) {
+  try {
+    const base = new URL(value);
+    if (
+      !["http:", "https:"].includes(base.protocol) ||
+      !["localhost", "127.0.0.1", "[::1]"].includes(base.hostname) ||
+      base.username ||
+      base.password ||
+      (requireOrigin &&
+        (base.pathname !== "/" || base.search || base.hash))
+    ) {
+      return null;
+    }
+    return requireOrigin ? new URL(base.origin) : base;
+  } catch {
+    return null;
+  }
 }
 
 function managedMethods(suffix) {

@@ -90,6 +90,62 @@ test("preserves conflict status so stale edits cannot masquerade as saved", asyn
   );
 });
 
+test("uses paired local access for each route family and never falls back after readiness failure", async () => {
+  const cases = [
+    ["personal-agents", "/studio-api/personal-agents"],
+    [
+      "personal-agent-role-templates",
+      "/studio-api/personal-agent-role-templates"
+    ],
+    ["managed-conversations", "/studio-api/managed-conversations"]
+  ];
+  for (const [routeFamily, pathname] of cases) {
+    const request = Readable.from([]);
+    request.method = "GET";
+    request.headers = {};
+    const result = await call({
+      request,
+      routeFamily,
+      url: new URL(`http://localhost${pathname}`),
+      resolveAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:59451",
+        apiToken: "paired-secret"
+      }),
+      fetchImpl: async (url, init) => {
+        assert.equal(new URL(url).origin, "http://127.0.0.1:59451");
+        assert.equal(init.headers.authorization, "Bearer paired-secret");
+        return Response.json({ agents: [], templates: [], executions: [] });
+      }
+    });
+    assert.equal(result.status, 200, routeFamily);
+  }
+
+  for (const access of [
+    async () => {
+      throw new Error("not_ready");
+    },
+    async () => ({
+      apiOrigin: "https://example.invalid",
+      apiToken: "must-not-be-sent"
+    })
+  ]) {
+    for (const [routeFamily, pathname] of cases) {
+      const request = Readable.from([]);
+      request.method = "GET";
+      request.headers = {};
+      const result = await call({
+        request,
+        routeFamily,
+        url: new URL(`http://localhost${pathname}`),
+        resolveAccess: access,
+        fetchImpl: () => assert.fail("must not contact any API origin")
+      });
+      assert.equal(result.status, 503, routeFamily);
+      assert.equal(JSON.stringify(result).includes("must-not-be-sent"), false);
+    }
+  }
+});
+
 test("role template catalogue is a read-only authenticated API proxy", async () => {
   let result;
   const request = Readable.from([]);

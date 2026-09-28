@@ -229,8 +229,13 @@ describe("Studio window controller", () => {
 
   it("opens against the safe default API origin while Koed access is unavailable", async () => {
     const fake = makeWindow();
+    let backendReady = false;
     const getAccess = vi.fn(async () => {
-      throw new Error("local services are still starting");
+      if (!backendReady) throw new Error("local services are still starting");
+      return {
+        apiOrigin: "http://127.0.0.1:59451",
+        apiToken: "paired-token"
+      };
     });
     let gatewayOptions: StudioGatewayOptions | undefined;
     const controller = createStudioWindowController({
@@ -257,7 +262,15 @@ describe("Studio window controller", () => {
     await expect(gatewayOptions?.resolveToken()).rejects.toThrow(
       "local services are still starting"
     );
-    expect(getAccess).toHaveBeenCalledTimes(2);
+    await expect(gatewayOptions?.resolveAccess?.()).rejects.toThrow(
+      "local services are still starting"
+    );
+    backendReady = true;
+    await expect(gatewayOptions?.resolveAccess?.()).resolves.toEqual({
+      apiOrigin: "http://127.0.0.1:59451",
+      apiToken: "paired-token"
+    });
+    expect(getAccess).toHaveBeenCalledTimes(4);
     await controller.close();
   });
 
