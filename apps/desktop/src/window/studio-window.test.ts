@@ -103,6 +103,8 @@ const collaborationSnapshot = (
                   }
                 ],
                 directMessages: [],
+                channels: [],
+                sharedProjects: [],
                 workspaces: [],
                 version: 1
               }
@@ -141,6 +143,47 @@ const actionResult = (
         }
       : { snapshot }
 });
+
+const channelSnapshot = () => {
+  const snapshot = collaborationSnapshot();
+  const threadId = "44444444-4444-4444-8444-444444444444";
+  const teamId = snapshot.navigation.teams[0]!.id;
+  const at = snapshot.generatedAt;
+  return {
+    ...snapshot,
+    navigation: {
+      ...snapshot.navigation,
+      teams: [
+        {
+          ...snapshot.navigation.teams[0]!,
+          channels: [
+            {
+              id: threadId,
+              logicalId: threadId,
+              scope: "team",
+              teamId,
+              kind: "team_channel",
+              name: "general",
+              topic: null,
+              systemKey: "team.general",
+              version: 1,
+              lifecycle: "active",
+              canPost: true,
+              latestSequence: 0,
+              unreadCount: 0,
+              lastReadMessageId: null,
+              lastReadSequence: 0,
+              createdAt: at,
+              updatedAt: at,
+              lastActivityAt: at,
+              archivedAt: null
+            }
+          ]
+        }
+      ]
+    }
+  };
+};
 
 describe("Studio window controller", () => {
   it("stages the production export and gateway under app resources", () => {
@@ -483,6 +526,98 @@ describe("Studio window controller", () => {
       teams: []
     });
     expect(JSON.stringify(snapshot)).not.toContain("credential=private");
+    await controller.close();
+  });
+  it("authorizes protected draft access against fresh Team navigation and erases revoked drafts", async () => {
+    let snapshot = channelSnapshot();
+    let options!: StudioGatewayOptions;
+    const fake = makeWindow();
+    const store = {
+      retainAuthorizedTeams: vi.fn(async () => 0),
+      load: vi.fn(async () => ({ text: "Private draft", pendingSend: null })),
+      save: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      deleteTeam: vi.fn(async () => undefined)
+    };
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "t"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async (value) => {
+        options = value;
+        return { url: "http://127.0.0.1:49827", close: async () => undefined };
+      },
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async (command) =>
+        loadResult(String(command.requestId), snapshot),
+      getTeamDraftStore: async () => store,
+      openExternal: async () => undefined
+    });
+    const authority = {
+      backendId: "up_team_example",
+      principalUserId: "22222222-2222-4222-8222-222222222222",
+      teamId: "33333333-3333-4333-8333-333333333333",
+      threadId: "44444444-4444-4444-8444-444444444444"
+    };
+    await controller.open();
+    await expect(
+      options.runStudioCollaborationCommand!({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "66666666-6666-4666-8666-666666666666",
+        command: "collaboration.connect_backend",
+        input: { remoteUrl: "https://other.example.test" }
+      })
+    ).rejects.toThrow("command is unavailable");
+    await expect(
+      options.loadStudioTeamDraft!({
+        ...authority,
+        teamId: "55555555-5555-4555-8555-555555555555"
+      })
+    ).rejects.toThrow("access");
+    expect(store.load).not.toHaveBeenCalled();
+    await expect(
+      options.loadStudioTeamDraft!(authority)
+    ).resolves.toMatchObject({ text: "Private draft" });
+    let releaseDraft!: (draft: { text: string; pendingSend: null }) => void;
+    store.load.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseDraft = resolve;
+        })
+    );
+    const pendingLoad = options.loadStudioTeamDraft!(authority);
+    const deniedAfterRevocation = expect(pendingLoad).rejects.toThrow("access");
+    await vi.waitFor(() => expect(store.load).toHaveBeenCalledTimes(2));
+    snapshot = {
+      ...snapshot,
+      navigation: { ...snapshot.navigation, teams: [] }
+    };
+    await expect(options.loadStudioTeamDraft!(authority)).rejects.toThrow(
+      "access"
+    );
+    releaseDraft({ text: "Private draft", pendingSend: null });
+    await deniedAfterRevocation;
+    expect(store.load).toHaveBeenCalledTimes(2);
+    expect(store.deleteTeam).toHaveBeenCalledWith({
+      backendId: authority.backendId,
+      principalUserId: authority.principalUserId,
+      teamId: authority.teamId
+    });
+    await expect(
+      options.saveStudioTeamDraft!({
+        authority,
+        draft: { text: "revoked", pendingSend: null }
+      })
+    ).rejects.toThrow("access");
+    expect(store.save).not.toHaveBeenCalled();
     await controller.close();
   });
 });

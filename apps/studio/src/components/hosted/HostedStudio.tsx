@@ -31,6 +31,7 @@ import {
   type HostedUser
 } from "@/lib/hosted-session";
 import { HostedManagedChats } from "./HostedManagedChats";
+import { HostedTeamChannels } from "./HostedTeamChannels";
 
 type HostedStudioProps = { view: "home" | "collaboration" };
 
@@ -42,8 +43,6 @@ export function HostedStudio({ view }: HostedStudioProps) {
   const searchParams = useSearchParams();
   const [session, setSession] = useState<HostedSessionResult | null>(null);
   const [busy, setBusy] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const previousUser = useRef<HostedUser | null>(null);
   const requestSequence = useRef(0);
@@ -162,58 +161,11 @@ export function HostedStudio({ view }: HostedStudioProps) {
           router.push(`/collaboration?team=${encodeURIComponent(id)}`)
         }
       />
-      {activeTeam && sidebarOpen && (
-        <div className="hidden md:block">
-          <HostedContextSidebar
-            id="team-navigation"
-            team={activeTeam}
-            onClose={() => setSidebarOpen(false)}
-          />
-        </div>
-      )}
-      {activeTeam && mobileSidebarOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close team navigation"
-            className="fixed inset-0 z-30 bg-black/35 md:hidden"
-            onClick={() => setMobileSidebarOpen(false)}
-          />
-          <div className="fixed inset-y-0 left-[72px] z-40 max-w-[calc(100vw-72px)] md:hidden">
-            <HostedContextSidebar
-              id="team-navigation-mobile"
-              team={activeTeam}
-              onClose={() => setMobileSidebarOpen(false)}
-            />
-          </div>
-        </>
-      )}
-
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="z-10 flex h-14 shrink-0 items-center justify-between bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
           <div className="flex min-w-0 items-center gap-3 no-drag">
             {activeTeam && (
               <>
-                {!sidebarOpen && (
-                  <button
-                    type="button"
-                    onClick={() => setSidebarOpen(true)}
-                    aria-label="Open team navigation"
-                    aria-controls="team-navigation"
-                    className="hidden rounded-md p-1.5 text-muted hover:bg-surface-hover hover:text-foreground md:inline-flex"
-                  >
-                    <PanelLeft className="h-4 w-4" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setMobileSidebarOpen(true)}
-                  aria-label="Open team navigation"
-                  aria-controls="team-navigation-mobile"
-                  className="rounded-md p-1.5 text-muted hover:bg-surface-hover hover:text-foreground md:hidden"
-                >
-                  <PanelLeft className="h-4 w-4" />
-                </button>
               </>
             )}
             <div className="truncate text-sm text-muted">
@@ -243,7 +195,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
           </div>
         </header>
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto p-4">
+        <div className={`relative min-h-0 flex-1 ${view === "collaboration" ? "overflow-hidden" : "overflow-y-auto p-4"}`}>
           {session === null || (busy && session.status === "unavailable") ? (
             <LoadingState />
           ) : session.status === "signed_out" ? (
@@ -301,14 +253,10 @@ export function HostedStudio({ view }: HostedStudioProps) {
               />
               <HostedOverview teams={session.teams} />
             </>
+          ) : activeTeam ? (
+            <HostedTeamChannels team={activeTeam} user={session.user} allTeams={session.teams} onAuthorizationLost={refresh} />
           ) : (
-            <HostedTeamNavigation
-              teams={session.teams}
-              selectedTeamId={activeTeamId}
-              onSelect={(id) =>
-                router.push(`/collaboration?team=${encodeURIComponent(id)}`)
-              }
-            />
+            <HostedTeamNavigation teams={session.teams} selectedTeamId={activeTeamId} onSelect={(id) => router.push(`/collaboration?team=${encodeURIComponent(id)}`)} />
           )}
         </div>
       </main>

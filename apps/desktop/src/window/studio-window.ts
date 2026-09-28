@@ -6,7 +6,12 @@ import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationSnapshotSchema,
-  type CollaborationSnapshot
+  collaborationThreadSchema,
+  collaborationRendererEventSchema,
+  type CollaborationSnapshot,
+  type CollaborationRendererCommand,
+  type CollaborationCommandResult,
+  type CollaborationRendererEvent
 } from "@koed/shared";
 import type { DesktopCommandContext } from "../koed-server/manager.js";
 import { desktopRendererOrigin } from "../ipc/protocol.js";
@@ -52,6 +57,38 @@ export interface StudioGateway {
   close(): Promise<void>;
 }
 
+export interface StudioTeamDraftAuthority {
+  backendId: string;
+  principalUserId: string;
+  teamId: string;
+  threadId: string;
+}
+export interface StudioTeamDraft {
+  text: string;
+  pendingSend: {
+    clientMessageId: string;
+    body: string;
+    createdAt: string;
+  } | null;
+  updatedAt?: string;
+}
+export interface StudioTeamDraftStore {
+  retainAuthorizedTeams(input: {
+    backendId: string;
+    principalUserId: string;
+    teamIds: string[];
+  }): Promise<number>;
+  load(authority: StudioTeamDraftAuthority): Promise<StudioTeamDraft | null>;
+  save(input: {
+    authority: StudioTeamDraftAuthority;
+    draft: StudioTeamDraft;
+  }): Promise<void>;
+  delete(authority: StudioTeamDraftAuthority): Promise<void>;
+  deleteTeam(
+    authority: Omit<StudioTeamDraftAuthority, "threadId">
+  ): Promise<void>;
+}
+
 export interface StudioGatewayOptions {
   host: "127.0.0.1";
   port: 0;
@@ -69,6 +106,17 @@ export interface StudioGatewayOptions {
   ) => Promise<StudioCollaborationSnapshot>;
   reconnectCollaborationBackend?: () => Promise<StudioCollaborationSnapshot>;
   disconnectCollaborationBackend?: () => Promise<StudioCollaborationSnapshot>;
+  loadStudioCollaborationSnapshot?: () => Promise<CollaborationSnapshot>;
+  loadStudioTeamDraft?: StudioTeamDraftStore["load"];
+  saveStudioTeamDraft?: StudioTeamDraftStore["save"];
+  deleteStudioTeamDraft?: StudioTeamDraftStore["delete"];
+  deleteStudioTeamDraftsForTeam?: StudioTeamDraftStore["deleteTeam"];
+  runStudioCollaborationCommand?: (
+    command: CollaborationRendererCommand
+  ) => Promise<CollaborationCommandResult>;
+  subscribeStudioCollaborationEvents?: (
+    listener: (event: CollaborationRendererEvent) => void
+  ) => () => void;
 }
 
 export const resolveStudioPaths = (input: {
@@ -118,6 +166,7 @@ export const createStudioWindowController = (input: {
     args: Record<string, unknown>,
     context: DesktopCommandContext
   ) => unknown;
+  getTeamDraftStore?: () => Promise<StudioTeamDraftStore>;
   openExternal: (url: string) => Promise<unknown>;
 }): { open: () => Promise<void>; close: () => Promise<void> } => {
   let window: StudioWindowLike | null = null;
@@ -127,6 +176,299 @@ export const createStudioWindowController = (input: {
   let studioOrigin: string | null = null;
   let collaborationLifecycle: AbortController | null = null;
   let collaborationOwnerId: string | null = null;
+
+  let verifiedSnapshot: CollaborationSnapshot | null = null;
+  const rememberSnapshot = async (
+    snapshot: CollaborationSnapshot
+  ): Promise<void> => {
+    if (snapshot.connection.state !== "live") return;
+    const previous = verifiedSnapshot;
+    verifiedSnapshot = snapshot;
+    if (
+      snapshot.connection.backendId &&
+      snapshot.navigation.teamPrincipal &&
+      input.getTeamDraftStore
+    ) {
+      const store = await input.getTeamDraftStore();
+      if (verifiedSnapshot !== snapshot) return;
+      await store.retainAuthorizedTeams({
+        backendId: snapshot.connection.backendId,
+        principalUserId: snapshot.navigation.teamPrincipal.id,
+        teamIds: snapshot.navigation.teams.map((team) => team.id)
+      });
+    }
+    if (
+      previous &&
+      previous.connection.backendId === snapshot.connection.backendId &&
+      previous.navigation.teamPrincipal?.id ===
+        snapshot.navigation.teamPrincipal?.id &&
+      input.getTeamDraftStore
+    ) {
+      const removed = previous.navigation.teams.filter(
+        (team) =>
+          !snapshot.navigation.teams.some((current) => current.id === team.id)
+      );
+      if (
+        removed.length &&
+        previous.connection.backendId &&
+        previous.navigation.teamPrincipal
+      ) {
+        const store = await input.getTeamDraftStore();
+        for (const team of removed)
+          await store.deleteTeam({
+            backendId: previous.connection.backendId,
+            principalUserId: previous.navigation.teamPrincipal.id,
+            teamId: team.id
+          });
+      }
+    }
+  };
+  const forgetRevokedDrafts = async (): Promise<void> => {
+    const previous = verifiedSnapshot;
+    verifiedSnapshot = null;
+    if (
+      !previous?.connection.backendId ||
+      !previous.navigation.teamPrincipal ||
+      !input.getTeamDraftStore
+    )
+      return;
+    const store = await input.getTeamDraftStore();
+    for (const team of previous.navigation.teams)
+      await store.deleteTeam({
+        backendId: previous.connection.backendId,
+        principalUserId: previous.navigation.teamPrincipal.id,
+        teamId: team.id
+      });
+  };
+  const assertDraftAuthority = (authority: StudioTeamDraftAuthority): void => {
+    const snapshot = verifiedSnapshot;
+    if (
+      !snapshot ||
+      snapshot.connection.backendId !== authority.backendId ||
+      snapshot.navigation.teamPrincipal?.id !== authority.principalUserId
+    )
+      throw new Error("Team draft authority is unavailable.");
+    const team = snapshot.navigation.teams.find(
+      (item) => item.id === authority.teamId
+    );
+    if (!team) throw new Error("Team draft access is unavailable.");
+    let found = false;
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item);
+        return;
+      }
+      const parsed = collaborationThreadSchema.safeParse(value);
+      if (
+        parsed.success &&
+        parsed.data.scope === "team" &&
+        parsed.data.teamId === authority.teamId &&
+        parsed.data.id === authority.threadId
+      )
+        found = true;
+      for (const item of Object.values(value)) visit(item);
+    };
+    visit(team);
+    if (!found) throw new Error("Team draft channel is unavailable.");
+  };
+  const draftStore = async () => {
+    if (!input.getTeamDraftStore)
+      throw new Error("Protected Team drafts are unavailable.");
+    return input.getTeamDraftStore();
+  };
+  const subscriptionTeams = new Map<string, string>();
+  const collaborationListeners = new Set<
+    (event: CollaborationRendererEvent) => void
+  >();
+  const emitCollaborationEvent = (event: CollaborationRendererEvent): void => {
+    if (collaborationLifecycle?.signal.aborted || !collaborationOwnerId) return;
+    const parsed = collaborationRendererEventSchema.safeParse(event);
+    if (!parsed.success) return;
+    event = parsed.data;
+    if (
+      event.type === "snapshot" &&
+      event.subscription.scope.scope === "team"
+    ) {
+      subscriptionTeams.set(
+        event.subscription.id,
+        event.subscription.scope.teamId
+      );
+      if (
+        event.snapshot.scope === "team" &&
+        verifiedSnapshot &&
+        event.snapshot.teamPrincipal.id ===
+          verifiedSnapshot.navigation.teamPrincipal?.id
+      ) {
+        const teamSnapshot = event.snapshot;
+        verifiedSnapshot = {
+          ...verifiedSnapshot,
+          navigation: {
+            ...verifiedSnapshot.navigation,
+            teams: verifiedSnapshot.navigation.teams.map((team) =>
+              team.id === teamSnapshot.teamId ? teamSnapshot.team : team
+            )
+          }
+        };
+      }
+    }
+    if (
+      event.type === "update" &&
+      event.update.type === "navigation_snapshot" &&
+      verifiedSnapshot
+    ) {
+      void rememberSnapshot({
+        ...verifiedSnapshot,
+        navigation: event.update.navigation,
+        selection: event.update.selection,
+        view: event.update.view
+      }).catch(() => undefined);
+    }
+    if (
+      event.type === "connection" &&
+      event.connection.state === "access_revoked"
+    ) {
+      void forgetRevokedDrafts().catch(() => undefined);
+    }
+    if (event.type === "control" && event.reason === "access_revoked") {
+      const teamId = subscriptionTeams.get(event.subscriptionId);
+      const previous = verifiedSnapshot;
+      if (
+        teamId &&
+        previous?.connection.backendId &&
+        previous.navigation.teamPrincipal
+      ) {
+        verifiedSnapshot = {
+          ...previous,
+          navigation: {
+            ...previous.navigation,
+            teams: previous.navigation.teams.filter(
+              (team) => team.id !== teamId
+            )
+          }
+        };
+        if (input.getTeamDraftStore)
+          void input
+            .getTeamDraftStore()
+            .then((store) =>
+              store.deleteTeam({
+                backendId: previous.connection.backendId!,
+                principalUserId: previous.navigation.teamPrincipal!.id,
+                teamId
+              })
+            )
+            .catch(() => undefined);
+      }
+      subscriptionTeams.delete(event.subscriptionId);
+    }
+    for (const listener of collaborationListeners) {
+      try {
+        listener(event);
+      } catch {
+        /* A closed view must not interrupt broker delivery. */
+      }
+    }
+  };
+  const studioChannelCommands = new Set([
+    "collaboration.load",
+    "collaboration.select",
+    "collaboration.create_team_channel",
+    "collaboration.create_team_shared_project",
+    "collaboration.send_message",
+    "collaboration.retry_message",
+    "collaboration.load_message_page",
+    "collaboration.mark_read",
+    "collaboration.mark_delivered",
+    "collaboration.subscribe",
+    "collaboration.unsubscribe",
+    "collaboration.acknowledge_delivery"
+  ]);
+  const runStudioCollaborationCommand = async (
+    args: CollaborationRendererCommand
+  ): Promise<CollaborationCommandResult> => {
+    const command = collaborationRendererCommandSchema.parse(args);
+    if (!studioChannelCommands.has(command.command))
+      throw new Error("Studio channel command is unavailable.");
+    if (
+      command.command === "collaboration.select" &&
+      !("teamId" in command.input.selection)
+    ) {
+      throw new Error("Studio channel selection requires a Team.");
+    }
+    if (
+      command.command === "collaboration.subscribe" &&
+      command.input.scope.scope !== "team"
+    ) {
+      throw new Error("Studio channel subscription requires a Team.");
+    }
+    if ("thread" in command.input && command.input.thread.scope !== "team") {
+      throw new Error("Studio channel messages require a Team.");
+    }
+    const lifecycle = collaborationLifecycle;
+    const ownerId = collaborationOwnerId;
+    if (!lifecycle || lifecycle.signal.aborted || !ownerId)
+      throw new Error("Studio collaboration is unavailable.");
+    const result = collaborationCommandResultSchema.parse(
+      await input.collaboration(command, {
+        ownerId,
+        signal: lifecycle.signal,
+        emitCollaborationEvent: (event) => {
+          if (
+            lifecycle === collaborationLifecycle &&
+            ownerId === collaborationOwnerId
+          )
+            emitCollaborationEvent(event);
+        }
+      })
+    );
+    if (
+      lifecycle !== collaborationLifecycle ||
+      lifecycle.signal.aborted ||
+      result.requestId !== command.requestId ||
+      result.command !== command.command
+    ) {
+      throw new Error(
+        "Studio collaboration response did not match its request."
+      );
+    }
+    if (
+      result.ok &&
+      result.command === "collaboration.subscribe" &&
+      result.data.subscription.scope.scope === "team"
+    )
+      subscriptionTeams.set(
+        result.data.subscription.id,
+        result.data.subscription.scope.teamId
+      );
+    if (result.ok && result.command === "collaboration.unsubscribe")
+      subscriptionTeams.delete(
+        command.command === "collaboration.unsubscribe"
+          ? command.input.subscriptionId
+          : ""
+      );
+    if (result.ok && "snapshot" in result.data)
+      await rememberSnapshot(
+        collaborationSnapshotSchema.parse(result.data.snapshot)
+      );
+    if (!result.ok && result.error.code === "access_revoked")
+      await forgetRevokedDrafts();
+    return result;
+  };
+  const loadStudioCollaborationSnapshot =
+    async (): Promise<CollaborationSnapshot> => {
+      const result = await runStudioCollaborationCommand({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: { forceRemoteNavigation: true }
+      });
+      if (!result.ok || result.command !== "collaboration.load")
+        throw new Error("Studio collaboration is unavailable.");
+      const snapshot = collaborationSnapshotSchema.parse(result.data.snapshot);
+      if (snapshot.connection.state !== "live")
+        throw new Error("Studio collaboration is unavailable.");
+      return snapshot;
+    };
 
   const runCollaborationCommand = async (
     commandName:
@@ -149,7 +491,13 @@ export const createStudioWindowController = (input: {
     const context: DesktopCommandContext = {
       ownerId,
       signal: lifecycle.signal,
-      emitCollaborationEvent: () => undefined
+      emitCollaborationEvent: (event) => {
+        if (
+          lifecycle === collaborationLifecycle &&
+          ownerId === collaborationOwnerId
+        )
+          emitCollaborationEvent(event);
+      }
     };
     const result = collaborationCommandResultSchema.parse(
       await input.collaboration(command, context)
@@ -191,6 +539,9 @@ export const createStudioWindowController = (input: {
       throw new Error("Studio collaboration response was invalid.");
     }
     const snapshot = collaborationSnapshotSchema.parse(result.data.snapshot);
+    if (commandName === "collaboration.disconnect_backend")
+      verifiedSnapshot = null;
+    else await rememberSnapshot(snapshot);
     return {
       connection: snapshot.connection,
       teams:
@@ -240,7 +591,13 @@ export const createStudioWindowController = (input: {
       const context: DesktopCommandContext = {
         ownerId,
         signal: lifecycle.signal,
-        emitCollaborationEvent: () => undefined
+        emitCollaborationEvent: (event) => {
+          if (
+            lifecycle === collaborationLifecycle &&
+            ownerId === collaborationOwnerId
+          )
+            emitCollaborationEvent(event);
+        }
       };
       let result: ReturnType<typeof collaborationCommandResultSchema.parse>;
       try {
@@ -260,6 +617,7 @@ export const createStudioWindowController = (input: {
       }
       if (!result.ok) {
         if (result.error.code === "access_revoked") {
+          await forgetRevokedDrafts();
           return {
             connection: {
               state: "access_revoked",
@@ -278,6 +636,7 @@ export const createStudioWindowController = (input: {
         throw new Error("Studio collaboration response was invalid.");
       }
       const snapshot = collaborationSnapshotSchema.parse(result.data.snapshot);
+      await rememberSnapshot(snapshot);
       return {
         connection: snapshot.connection,
         teams:
@@ -304,6 +663,9 @@ export const createStudioWindowController = (input: {
     collaborationLifecycle?.abort();
     collaborationLifecycle = null;
     collaborationOwnerId = null;
+    collaborationListeners.clear();
+    subscriptionTeams.clear();
+    verifiedSnapshot = null;
     const currentGateway = gateway;
     gateway = null;
     if (studioOrigin) input.allowedRendererOrigins.delete(studioOrigin);
@@ -360,6 +722,42 @@ export const createStudioWindowController = (input: {
         },
         registerProject: input.registerProject,
         loadCollaborationSnapshot,
+        runStudioCollaborationCommand,
+        loadStudioCollaborationSnapshot,
+        loadStudioTeamDraft: async (authority) => {
+          await loadStudioCollaborationSnapshot();
+          assertDraftAuthority(authority);
+          const store = await draftStore();
+          assertDraftAuthority(authority);
+          const draft = await store.load(authority);
+          assertDraftAuthority(authority);
+          return draft;
+        },
+        saveStudioTeamDraft: async (request) => {
+          assertDraftAuthority(request.authority);
+          const store = await draftStore();
+          assertDraftAuthority(request.authority);
+          await store.save(request);
+        },
+        deleteStudioTeamDraft: async (authority) => {
+          assertDraftAuthority(authority);
+          await (await draftStore()).delete(authority);
+        },
+        deleteStudioTeamDraftsForTeam: async (authority) => {
+          if (
+            verifiedSnapshot?.connection.backendId !== authority.backendId ||
+            verifiedSnapshot.navigation.teamPrincipal?.id !==
+              authority.principalUserId
+          )
+            throw new Error("Team draft authority is unavailable.");
+          await (await draftStore()).deleteTeam(authority);
+        },
+        subscribeStudioCollaborationEvents: (listener) => {
+          collaborationListeners.add(listener);
+          return () => {
+            collaborationListeners.delete(listener);
+          };
+        },
         connectCollaborationBackend: (remoteUrl) =>
           runCollaborationCommand("collaboration.connect_backend", {
             remoteUrl
@@ -408,6 +806,9 @@ export const createStudioWindowController = (input: {
         collaborationLifecycle?.abort();
         collaborationLifecycle = null;
         collaborationOwnerId = null;
+        collaborationListeners.clear();
+        subscriptionTeams.clear();
+        verifiedSnapshot = null;
         throw error;
       })
       .finally(() => {

@@ -456,8 +456,11 @@ const selectionIdentity = (selection: CollaborationSelection): string => {
       return `${selection.kind}:${selection.threadId}`;
     case "team_people":
       return `${selection.kind}:${selection.teamId}`;
+    case "team_channel":
     case "team_direct_message":
       return `${selection.kind}:${selection.teamId}:${selection.threadId}`;
+    case "team_project_channel":
+      return `${selection.kind}:${selection.teamId}:${selection.teamProjectId}:${selection.threadId}`;
     case "workspace_shared_memory":
       return `${selection.kind}:${selection.teamId}:${selection.workspaceId}`;
     case "workspace_channel":
@@ -558,6 +561,29 @@ const optimisticSelection = (
         }
       : null;
   }
+  if (
+    selection.kind === "team_channel" ||
+    selection.kind === "team_project_channel"
+  ) {
+    const thread =
+      selection.kind === "team_channel"
+        ? team.channels.find((candidate) => candidate.id === selection.threadId)
+        : team.sharedProjects.find(
+            (project) =>
+              project.id === selection.teamProjectId &&
+              project.thread.id === selection.threadId
+          )?.thread;
+    return thread
+      ? {
+          selection,
+          view: {
+            kind: "thread",
+            thread,
+            messages: emptyMessagePage(snapshot, thread)
+          }
+        }
+      : null;
+  }
   const workspace = team.workspaces.find(
     (candidate) => candidate.id === selection.workspaceId
   );
@@ -634,6 +660,22 @@ const selectionAuthorityFingerprint = (
     const thread = team.directMessages.find(
       (candidate) => candidate.id === selection.threadId
     );
+    return thread
+      ? `${teamAuthority}:${thread.lifecycle}:${thread.canPost}`
+      : null;
+  }
+  if (
+    selection.kind === "team_channel" ||
+    selection.kind === "team_project_channel"
+  ) {
+    const thread =
+      selection.kind === "team_channel"
+        ? team.channels.find((candidate) => candidate.id === selection.threadId)
+        : team.sharedProjects.find(
+            (project) =>
+              project.id === selection.teamProjectId &&
+              project.thread.id === selection.threadId
+          )?.thread;
     return thread
       ? `${teamAuthority}:${thread.lifecycle}:${thread.canPost}`
       : null;
@@ -722,6 +764,19 @@ const selectionForThread = (
   switch (thread.kind) {
     case "personal_channel":
       return { kind: "personal_channel", threadId: thread.id };
+    case "team_channel":
+      return {
+        kind: "team_channel",
+        teamId: thread.teamId,
+        threadId: thread.id
+      };
+    case "team_project_channel":
+      return {
+        kind: "team_project_channel",
+        teamId: thread.teamId,
+        teamProjectId: thread.teamProjectId,
+        threadId: thread.id
+      };
     case "workspace_channel":
       return {
         kind: "workspace_channel",
@@ -760,6 +815,16 @@ const mapThread = (
     directMessages: team.directMessages.map((thread) =>
       thread.id === threadId ? (update(thread) as typeof thread) : thread
     ),
+    channels: team.channels.map((thread) =>
+      thread.id === threadId ? (update(thread) as typeof thread) : thread
+    ),
+    sharedProjects: team.sharedProjects.map((project) => ({
+      ...project,
+      thread:
+        project.thread.id === threadId
+          ? (update(project.thread) as typeof project.thread)
+          : project.thread
+    })),
     workspaces: team.workspaces.map((workspace) => ({
       ...workspace,
       channels: workspace.channels.map((thread) =>
@@ -804,6 +869,11 @@ const withRecomputedTeamUnreadCounts = (
       unreadCount:
         team.directMessages.reduce(
           (total, thread) => total + thread.unreadCount,
+          0
+        ) +
+        team.channels.reduce((total, thread) => total + thread.unreadCount, 0) +
+        team.sharedProjects.reduce(
+          (total, project) => total + project.thread.unreadCount,
           0
         ) +
         team.workspaces.reduce(
@@ -883,6 +953,27 @@ const upsertThread = (
       ...snapshot.navigation,
       teams: snapshot.navigation.teams.map((team) => {
         if (team.id !== thread.teamId) return team;
+        if (thread.kind === "team_channel") {
+          return {
+            ...team,
+            channels: [
+              ...team.channels.filter(
+                (candidate) => candidate.id !== thread.id
+              ),
+              thread
+            ]
+          };
+        }
+        if (thread.kind === "team_project_channel") {
+          return {
+            ...team,
+            sharedProjects: team.sharedProjects.map((project) =>
+              project.id === thread.teamProjectId
+                ? { ...project, thread }
+                : project
+            )
+          };
+        }
         if (thread.kind === "dm" || thread.kind === "group_dm") {
           return {
             ...team,
@@ -958,6 +1049,10 @@ const removeThread = (
         ...team,
         directMessages: team.directMessages.filter(
           (thread) => thread.id !== threadId
+        ),
+        channels: team.channels.filter((thread) => thread.id !== threadId),
+        sharedProjects: team.sharedProjects.filter(
+          (project) => project.thread.id !== threadId
         ),
         workspaces: team.workspaces.map((workspace) => ({
           ...workspace,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Suspense } from "react";
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import { CollabSessionProvider } from "@/components/CollabSessionContext";
@@ -10,6 +10,7 @@ import {
   DesktopCollaborationRecoveryRail,
   DesktopCollaborationStudio
 } from "@/components/desktop-collaboration/DesktopCollaborationStudio";
+import { TeamChannelWorkspace } from "@/components/desktop-collaboration/TeamChannelWorkspace";
 import { GlobalNav } from "@/components/GlobalNav";
 import { SidebarProvider } from "@/components/SidebarContext";
 import {
@@ -17,10 +18,8 @@ import {
   WorkspaceProvider
 } from "@/components/WorkspaceProvider";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
-import {
-  loadDesktopCollaboration,
-  type DesktopCollaborationLoadResult
-} from "@/lib/desktop-collaboration";
+import { StudioCollaborationClient, StudioCollaborationRequestError } from "@/lib/studio-collaboration-client";
+import type { CollaborationSnapshot } from "@koed/shared/collaboration";
 
 function CollaborationPreview() {
   const { activeTeamId, hydrated, setActiveTeamId, workspace } = useWorkspace();
@@ -58,10 +57,12 @@ export default function CollaborationPage() {
 }
 
 type CollaborationRouteState =
-  | DesktopCollaborationLoadResult
+  | { mode: "studio"; snapshot: CollaborationSnapshot }
+  | { mode: "preview" | "unavailable" }
   | { mode: "loading" };
 
 function CollaborationRuntime() {
+  const client = useMemo(() => new StudioCollaborationClient(), []);
   const [route, setRoute] = useState<CollaborationRouteState>({
     mode: "loading"
   });
@@ -73,29 +74,27 @@ function CollaborationRuntime() {
     const sequence = ++requestSequence.current;
     routeRef.current = { mode: "loading" };
     setRoute(routeRef.current);
-    const result = await loadDesktopCollaboration();
+    let result: CollaborationRouteState;
+    try {
+      result = { mode: "studio", snapshot: await client.loadSession() };
+    } catch (error) {
+      result = error instanceof StudioCollaborationRequestError && error.status === 404
+        ? { mode: "preview" }
+        : { mode: "unavailable" };
+    }
     if (sequence !== requestSequence.current) return;
     routeRef.current = result;
     setRoute(result);
-  }, []);
+  }, [client]);
 
   useEffect(() => {
     void refresh();
     const onFocus = () => {
       if (document.visibilityState === "visible") void refresh();
     };
-    const interval = window.setInterval(() => {
-      if (
-        document.visibilityState === "visible" &&
-        routeRef.current.mode !== "preview"
-      ) {
-        void refresh();
-      }
-    }, 30_000);
     window.addEventListener("focus", onFocus);
     return () => {
       requestSequence.current += 1;
-      window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
   }, [refresh]);
@@ -111,12 +110,14 @@ function CollaborationRuntime() {
       </WorkspaceProvider>
     );
   }
-  if (route.mode === "desktop") {
+  if (route.mode === "studio") {
     return (
-      <DesktopCollaborationStudio
+      <TeamChannelWorkspace
         key={route.snapshot.connection.backendId ?? "no-backend"}
         snapshot={route.snapshot}
-        onRetry={refresh}
+        client={client}
+        drafts={client}
+        onRefresh={refresh}
       />
     );
   }

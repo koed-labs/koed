@@ -56,6 +56,68 @@ const ROW_ITEM_ACTIVE = "bg-surface-hover text-foreground";
 const ROW_ITEM_INACTIVE =
   "text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary";
 
+/** Shared live Team channel navigation, styled with the prototype sidebar rows. */
+export function TeamChannelNavigation({
+  teamName,
+  channels,
+  selectedId,
+  onSelect,
+  onCreate
+}: {
+  teamName: string;
+  channels: Array<{ id: string; name: string | null }>;
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
+}) {
+  const { isOpen, toggleSidebar, width } = useSidebar();
+  if (!isOpen) return null;
+  const openMobileDestination = (callback: () => void) => {
+    callback();
+    if (window.matchMedia("(max-width: 767px)").matches) toggleSidebar();
+  };
+  return (
+    <aside
+      id="team-navigation"
+      role="navigation"
+      aria-label="Team navigation"
+      className="relative flex h-full shrink-0 flex-col border-r border-border bg-surface pt-6"
+      style={{ width: `${width}px` }}
+    >
+      <div className="px-3 py-2">
+        <div className="mb-1 flex items-center gap-2">
+          <div className="min-w-0 flex-1 px-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">Team</p>
+            <p className="truncate text-sm font-medium text-foreground">{teamName}</p>
+          </div>
+        </div>
+      </div>
+      <nav className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 space-y-0.5">
+        {channels.map((channel) => (
+          <button
+            key={channel.id}
+            type="button"
+            aria-current={channel.id === selectedId ? "page" : undefined}
+            onClick={() => openMobileDestination(() => onSelect(channel.id))}
+            className={`${NAV_ITEM} w-full ${channel.id === selectedId ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE}`}
+          >
+            <Hash className="mr-2 h-4 w-4 flex-shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-left">{channel.name ?? "Shared Project"}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={onCreate}
+          className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-subtle transition-colors hover:bg-surface-hover/30 hover:text-foreground-secondary"
+        >
+          <Plus className="mr-2.5 h-3.5 w-3.5" />
+          <span className="text-xs">New channel</span>
+        </button>
+      </nav>
+    </aside>
+  );
+}
+
 export function TeamSidebar() {
   const { isOpen, toggleSidebar, width, isResizing, startResizing } =
     useSidebar();

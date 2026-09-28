@@ -281,6 +281,8 @@ const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
       return { kind: "personal-chat", threadId: selection.threadId };
     case "team_people":
       return { kind: "team-people", teamId: selection.teamId };
+    case "team_channel":
+    case "team_project_channel":
     case "team_direct_message":
       return {
         kind: "team-direct-message",

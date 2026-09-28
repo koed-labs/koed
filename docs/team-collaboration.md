@@ -182,7 +182,8 @@ Migration 0051 adds the Team-wide channel and Team Project channel enum values.
 Its explicit commit boundary lets PostgreSQL use those values in migration
 0052, which adds the Team-scoped opaque shared-Project association. The
 migration runner serializes both steps with one session advisory lock; a failed
-second step can be retried without repeating the committed enum migration. The association stores its Team,
+second step can be retried without repeating the committed enum migration.
+The association stores its Team,
 creator, idempotency hash, and timestamps. Project names stay in the encrypted
 channel payload. The hosted record does not store a local path, repository URL,
 branch, or device-local Project identifier. Linking the same local Project to
@@ -193,7 +194,8 @@ and realtime audience.
 Team-wide channels. `GET` and `POST /v1/collaboration/teams/:teamId/projects`
 list and create a Team-specific Project association with its channel. Project
 creation returns the opaque Team Project ID and the channel in one transaction.
-The client keeps any local-Project-to-Team-Project mapping on the device. The
+Local folder registration stays on the device; this release does not grant
+Team access to those files or bind a Team Project channel to a Workspace. The
 reserved Team `general` channel is ensured idempotently on authorized Team chat
 bootstrap. It does not rename, promote, or widen an existing Workspace channel.
 
@@ -205,6 +207,30 @@ next request and on replay. Workspace channel access still requires its
 existing Workspace grant; Team chat authority does not grant Workspace Memory
 recall, sharing, or administration. Team Project channels have no Workspace
 binding in this release.
+
+### Device-Local Team Drafts
+
+Studio keeps unsent Team drafts and uncertain-send identities on the device
+where they were typed. These records are separate from server message history;
+reconnecting does not send them automatically. Retry preserves the original
+message ID and body while retaining later edits as a separate draft.
+
+Desktop uses the existing AES-GCM application secret store in its user-data
+directory. A protected Team index permits cleanup after a restart. Cleanup
+deletes encrypted records before removing their index entries, so interrupted
+cleanup can be retried. Store mutations are serialized for the same directory.
+
+Web Studio uses IndexedDB with a nonextractable Web Crypto key and encrypted
+draft records. A transaction updates the key, ciphertext, and authorized Team
+index together. Revocation removes that authorization and the affected records;
+a stale key generation cannot overwrite or delete a newer authorized draft.
+
+Restore requires current Team authorization. Detected access loss removes
+stored drafts and pending-send identities for that Team. Offline Studio cannot
+detect revocation immediately and cannot restore a draft using cached permission
+alone. Decrypted Team history is held in bounded memory rather than a persistent
+message cache. Read state advances only for messages viewed in the focused
+channel, after the server accepts the cursor.
 
 ### Messages, Unread State, And Receipts
 

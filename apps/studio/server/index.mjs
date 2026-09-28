@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes as nodeRandomBytes } from "node:crypto";
+import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
 import {
   listLocalConversationSources,
   listProjectMetadata,
@@ -11,6 +11,12 @@ import {
 } from "@koed/koed-server";
 import { RetainedWorkspaceCatalog } from "@koed/koed-server/retained-workspace-catalog";
 import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import {
+  collaborationCommandResultSchema,
+  collaborationRendererCommandSchema,
+  collaborationRendererEventSchema,
+  collaborationSnapshotSchema
+} from "@koed/shared/collaboration";
 import { createGithubConnector } from "./github.mjs";
 import { createPrChatRuntime } from "./pr-chat.mjs";
 import { handlePrChat } from "./pr-chat-http.mjs";
@@ -37,6 +43,8 @@ const SCAN_CONCURRENCY = 4;
 const UPSTREAM_TIMEOUT_MS = 8_000;
 const GITHUB_BODY_MAX_BYTES = 4 * 1024;
 const COLLABORATION_ACTION_BODY_MAX_BYTES = 3 * 1024;
+const STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES = 96 * 1024;
+const STUDIO_TEAM_DRAFT_BODY_MAX_BYTES = 192 * 1024;
 const GITHUB_SESSION_TTL_MS = 10 * 60 * 1_000;
 const GITHUB_SESSION_MAX = 64;
 const PROJECT_SELECTION_TTL_MS = 10 * 60 * 1_000;
@@ -921,6 +929,125 @@ const readCollaborationActionBody = async (request) => {
   return { action: parsed.action, requestId: parsed.requestId };
 };
 
+const readStudioCollaborationCommand = async (request) => {
+  const contentLength = Number(request.headers["content-length"] ?? "");
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES
+  ) {
+    throw Object.assign(new Error("body_too_large"), { statusCode: 413 });
+  }
+  const chunks = [];
+  let total = 0;
+  await new Promise((resolveBody, rejectBody) => {
+    request.on("data", (chunk) => {
+      total += chunk.byteLength;
+      if (total <= STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES) chunks.push(chunk);
+    });
+    request.on("end", resolveBody);
+    request.on("error", rejectBody);
+  });
+  if (total > STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES) {
+    throw Object.assign(new Error("body_too_large"), { statusCode: 413 });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw Object.assign(new Error("invalid_json"), { statusCode: 400 });
+  }
+  const command = collaborationRendererCommandSchema.safeParse(parsed);
+  if (!command.success) {
+    throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+  }
+  return command.data;
+};
+
+const readStudioTeamDraftAction = async (request) => {
+  const contentLength = Number(request.headers["content-length"] ?? "");
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > STUDIO_TEAM_DRAFT_BODY_MAX_BYTES
+  ) {
+    throw Object.assign(new Error("body_too_large"), { statusCode: 413 });
+  }
+  const chunks = [];
+  let total = 0;
+  await new Promise((resolveBody, rejectBody) => {
+    request.on("data", (chunk) => {
+      total += chunk.byteLength;
+      if (total <= STUDIO_TEAM_DRAFT_BODY_MAX_BYTES) chunks.push(chunk);
+    });
+    request.on("end", resolveBody);
+    request.on("error", rejectBody);
+  });
+  if (total > STUDIO_TEAM_DRAFT_BODY_MAX_BYTES) {
+    throw Object.assign(new Error("body_too_large"), { statusCode: 413 });
+  }
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw Object.assign(new Error("invalid_json"), { statusCode: 400 });
+  }
+  if (!isRecord(payload) || Object.getPrototypeOf(payload) !== Object.prototype) {
+    throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+  }
+  const keys = Object.keys(payload).sort().join(",");
+  const hasDraft = payload.action === "save";
+  if (
+    keys !== (hasDraft ? "action,authority,draft" : "action,authority") ||
+    !["load", "save", "delete"].includes(payload.action) ||
+    !isRecord(payload.authority) ||
+    Object.keys(payload.authority).sort().join(",") !==
+      "backendId,principalUserId,teamId,threadId" ||
+    typeof payload.authority.backendId !== "string" ||
+    payload.authority.backendId.length < 1 ||
+    payload.authority.backendId.length > 240 ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.authority.principalUserId
+    ) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.authority.teamId
+    ) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.authority.threadId
+    )
+  ) {
+    throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+  }
+  if (hasDraft) {
+    const draft = payload.draft;
+    if (
+      !isRecord(draft) ||
+      Object.keys(draft).some(
+        (key) => !["text", "pendingSend", "updatedAt"].includes(key)
+      ) ||
+      typeof draft.text !== "string" ||
+      Buffer.byteLength(draft.text, "utf8") > 128 * 1024 ||
+      !(draft.pendingSend === null || isRecord(draft.pendingSend))
+    ) {
+      throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+    }
+    if (draft.pendingSend !== null) {
+      const pending = draft.pendingSend;
+      if (
+        Object.keys(pending).sort().join(",") !== "body,clientMessageId,createdAt" ||
+        typeof pending.body !== "string" ||
+        Buffer.byteLength(pending.body, "utf8") > 128 * 1024 ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          pending.clientMessageId
+        ) ||
+        typeof pending.createdAt !== "string" ||
+        !Number.isFinite(Date.parse(pending.createdAt))
+      ) {
+        throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+      }
+    }
+  }
+  return payload;
+};
+
 const projectDto = (value) => {
   if (!isRecord(value) || !/^lp_[0-9a-f]{32}$/.test(value.localProjectId ?? ""))
     return null;
@@ -1097,6 +1224,13 @@ export const createStudioServer = ({
   openRetainedWorkspaceFolder,
   deleteRetainedManagedWorktree,
   loadCollaborationSnapshot,
+  loadStudioCollaborationSnapshot,
+  loadStudioTeamDraft,
+  saveStudioTeamDraft,
+  deleteStudioTeamDraft,
+  deleteStudioTeamDraftsForTeam,
+  runStudioCollaborationCommand,
+  subscribeStudioCollaborationEvents,
   connectCollaborationBackend,
   reconnectCollaborationBackend,
   disconnectCollaborationBackend,
@@ -1153,10 +1287,10 @@ export const createStudioServer = ({
     pruneGithubSessions(timestamp);
     return githubSessions.get(token)?.origin === origin;
   };
-  const consumeCollaborationRequestId = (requestId, origin) => {
+  const consumeCollaborationRequestId = (requestId, origin, options = {}) => {
     const timestamp = requestNowMs(now);
-    for (const [key, expiresAt] of collaborationRequestIds) {
-      if (expiresAt <= timestamp) collaborationRequestIds.delete(key);
+    for (const [key, value] of collaborationRequestIds) {
+      if (value.expiresAt <= timestamp) collaborationRequestIds.delete(key);
     }
     while (collaborationRequestIds.size >= 2_048) {
       const oldest = collaborationRequestIds.keys().next().value;
@@ -1164,8 +1298,20 @@ export const createStudioServer = ({
       collaborationRequestIds.delete(oldest);
     }
     const key = `${origin}\n${requestId}`;
-    if (collaborationRequestIds.has(key)) return false;
-    collaborationRequestIds.set(key, timestamp + GITHUB_SESSION_TTL_MS);
+    const fingerprint = options.fingerprint ?? null;
+    const previous = collaborationRequestIds.get(key);
+    if (previous) {
+      return Boolean(
+        options.allowExactCreateReplay === true &&
+        previous.allowExactCreateReplay === true &&
+        fingerprint && previous.fingerprint === fingerprint
+      );
+    }
+    collaborationRequestIds.set(key, {
+      expiresAt: timestamp + GITHUB_SESSION_TTL_MS,
+      fingerprint,
+      allowExactCreateReplay: options.allowExactCreateReplay === true
+    });
     return true;
   };
   const resolveToken = () =>
@@ -1326,6 +1472,243 @@ export const createStudioServer = ({
         },
         send: (status, body) => sendJson(response, status, body)
       };
+      if (
+        requestUrlObject.pathname ===
+        "/studio-api/collaboration/studio-session"
+      ) {
+        if (typeof loadStudioCollaborationSnapshot !== "function") {
+          sendJson(response, 404, { error: "not_found" });
+          return;
+        }
+        if (request.method !== "GET") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (requestUrlObject.search) {
+          sendJson(response, 400, { error: "query_not_allowed" });
+          return;
+        }
+        const requestOrigin = exactRequestOrigin(request);
+        if (request.headers.origin && !requestOrigin) {
+          sendJson(response, 403, { error: "forbidden" });
+          return;
+        }
+        const origin =
+          requestOrigin || `http://${String(request.headers.host ?? "")}`;
+        try {
+          const snapshot = collaborationSnapshotSchema.parse(
+            await loadStudioCollaborationSnapshot()
+          );
+          sendJson(response, 200, {
+            snapshot,
+            csrfToken: issueGithubSession(origin)
+          });
+        } catch {
+          sendJson(response, 503, { error: "collaboration_unavailable" });
+        }
+        return;
+      }
+      if (
+        requestUrlObject.pathname ===
+        "/studio-api/collaboration/team-draft"
+      ) {
+        if (
+          typeof loadStudioTeamDraft !== "function" ||
+          typeof saveStudioTeamDraft !== "function" ||
+          typeof deleteStudioTeamDraft !== "function" ||
+          typeof deleteStudioTeamDraftsForTeam !== "function"
+        ) {
+          sendJson(response, 404, { error: "not_found" });
+          return;
+        }
+        if (request.method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (requestUrlObject.search) {
+          sendJson(response, 400, { error: "query_not_allowed" });
+          return;
+        }
+        const origin = exactRequestOrigin(request);
+        if (
+          !origin ||
+          !validGithubSession(
+            String(request.headers["x-studio-csrf"] ?? ""),
+            origin
+          )
+        ) {
+          sendJson(response, 403, { error: "forbidden" });
+          return;
+        }
+        if (
+          String(request.headers["content-type"] ?? "").toLowerCase() !==
+          "application/json"
+        ) {
+          sendJson(response, 415, { error: "unsupported_media_type" });
+          return;
+        }
+        let action;
+        try {
+          action = await readStudioTeamDraftAction(request);
+        } catch (error) {
+          sendJson(response, error?.statusCode ?? 400, {
+            error:
+              error?.statusCode === 413 ? "body_too_large" : "invalid_request"
+          });
+          return;
+        }
+        try {
+          if (action.action === "load") {
+            const draft = await loadStudioTeamDraft(action.authority);
+            sendJson(response, 200, { draft: draft ?? null });
+          } else if (action.action === "save") {
+            await saveStudioTeamDraft({
+              authority: action.authority,
+              draft: action.draft
+            });
+            sendJson(response, 200, { saved: true });
+          } else {
+            await deleteStudioTeamDraft(action.authority);
+            sendJson(response, 200, { deleted: true });
+          }
+        } catch (error) {
+          const revoked = error?.code === "access_revoked";
+          sendJson(response, revoked ? 403 : 503, {
+            error: revoked ? "access_revoked" : "draft_unavailable"
+          });
+        }
+        return;
+      }
+      if (
+        requestUrlObject.pathname ===
+        "/studio-api/collaboration/command"
+      ) {
+        if (typeof runStudioCollaborationCommand !== "function") {
+          sendJson(response, 404, { error: "not_found" });
+          return;
+        }
+        if (request.method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (requestUrlObject.search) {
+          sendJson(response, 400, { error: "query_not_allowed" });
+          return;
+        }
+        const origin = exactRequestOrigin(request);
+        if (
+          !origin ||
+          !validGithubSession(
+            String(request.headers["x-studio-csrf"] ?? ""),
+            origin
+          )
+        ) {
+          sendJson(response, 403, { error: "forbidden" });
+          return;
+        }
+        if (
+          String(request.headers["content-type"] ?? "").toLowerCase() !==
+          "application/json"
+        ) {
+          sendJson(response, 415, { error: "unsupported_media_type" });
+          return;
+        }
+        let command;
+        try {
+          command = await readStudioCollaborationCommand(request);
+        } catch (error) {
+          sendJson(response, error?.statusCode ?? 400, {
+            error:
+              error?.statusCode === 413 ? "body_too_large" : "invalid_request"
+          });
+          return;
+        }
+        const idempotentCreate = command.command === "collaboration.create_team_channel" ||
+          command.command === "collaboration.create_team_shared_project";
+        const fingerprint = idempotentCreate
+          ? createHash("sha256").update(JSON.stringify({ command: command.command, input: command.input })).digest("hex")
+          : null;
+        if (!consumeCollaborationRequestId(command.requestId, origin, {
+          allowExactCreateReplay: idempotentCreate,
+          fingerprint
+        })) {
+          sendJson(response, 409, { error: "request_replayed" });
+          return;
+        }
+        try {
+          const result = collaborationCommandResultSchema.parse(
+            await runStudioCollaborationCommand(command)
+          );
+          if (result.requestId !== command.requestId) {
+            sendJson(response, 502, { error: "invalid_collaboration_result" });
+            return;
+          }
+          sendJson(response, 200, result);
+        } catch {
+          sendJson(response, 503, { error: "collaboration_unavailable" });
+        }
+        return;
+      }
+      if (
+        requestUrlObject.pathname ===
+        "/studio-api/collaboration/events"
+      ) {
+        if (typeof subscribeStudioCollaborationEvents !== "function") {
+          sendJson(response, 404, { error: "not_found" });
+          return;
+        }
+        if (request.method !== "GET") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (requestUrlObject.search) {
+          sendJson(response, 400, { error: "query_not_allowed" });
+          return;
+        }
+        const origin = exactRequestOrigin(request);
+        if (
+          !origin ||
+          !validGithubSession(
+            String(request.headers["x-studio-csrf"] ?? ""),
+            origin
+          )
+        ) {
+          sendJson(response, 403, { error: "forbidden" });
+          return;
+        }
+        response.writeHead(200, {
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "content-type": "text/event-stream; charset=utf-8",
+          "x-content-type-options": "nosniff"
+        });
+        response.write("retry: 2000\n\n");
+        let unsubscribe = () => {};
+        let closed = false;
+        const onClose = () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe();
+        };
+        request.on("aborted", onClose);
+        response.on("close", onClose);
+        try {
+          const stop = subscribeStudioCollaborationEvents((event) => {
+            if (closed || response.destroyed) return;
+            const parsed = collaborationRendererEventSchema.safeParse(event);
+            if (!parsed.success) return;
+            const payload = JSON.stringify(parsed.data);
+            if (Buffer.byteLength(payload, "utf8") > MAX_BODY_BYTES) return;
+            response.write(`data: ${payload}\n\n`);
+          });
+          if (typeof stop === "function") unsubscribe = stop;
+          if (closed) unsubscribe();
+        } catch {
+          response.end();
+          onClose();
+        }
+        return;
+      }
       if (requestUrlObject.pathname === "/studio-api/collaboration/snapshot") {
         if (typeof loadCollaborationSnapshot !== "function") {
           sendJson(response, 404, { error: "not_found" });

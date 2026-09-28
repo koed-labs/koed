@@ -190,6 +190,9 @@ const openExternal = createExternalUrlOpener({
 });
 
 let studioBrowserWindow: BrowserWindow | null = null;
+let studioTeamDraftStore:
+  | import("./window/studio-window.js").StudioTeamDraftStore
+  | null = null;
 const studioWindowController = createStudioWindowController({
   allowedRendererOrigins,
   studioRendererOrigins,
@@ -214,6 +217,27 @@ const studioWindowController = createStudioWindowController({
       repoRoot,
       resourcesPath: process.resourcesPath
     }),
+  getTeamDraftStore: async () => {
+    if (!studioTeamDraftStore) {
+      const { gatewayPath } = resolveStudioPaths({
+        appIsPackaged: app.isPackaged,
+        repoRoot,
+        resourcesPath: process.resourcesPath
+      });
+      const module = await import(
+        pathToFileURL(
+          resolve(
+            dirname(gatewayPath),
+            "../main/team-collaboration-draft-store.mjs"
+          )
+        ).href
+      );
+      studioTeamDraftStore = module.createStudioTeamDraftStore({
+        userDataPath: app.getPath("userData")
+      });
+    }
+    return studioTeamDraftStore!;
+  },
   startGateway: async (options) => {
     const { gatewayPath } = resolveStudioPaths({
       appIsPackaged: app.isPackaged,

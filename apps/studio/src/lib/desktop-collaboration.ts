@@ -1,3 +1,8 @@
+import {
+  collaborationSnapshotSchema,
+  type CollaborationSnapshot
+} from "@koed/shared/collaboration";
+
 export type DesktopCollaborationConnectionState =
   | "disconnected"
   | "connecting"
@@ -31,6 +36,12 @@ export type DesktopCollaborationLoadResult =
   | { mode: "desktop"; snapshot: DesktopCollaborationSnapshot }
   | { mode: "preview" }
   | { mode: "unavailable" };
+
+export type DesktopStudioCollaborationSession = {
+  mode: "desktop";
+  snapshot: CollaborationSnapshot;
+  csrfToken: string;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -161,6 +172,36 @@ export async function loadDesktopCollaboration(
     const payload: unknown = await response.json();
     const snapshot = parseSnapshot(payload);
     return snapshot ? { mode: "desktop", snapshot } : { mode: "unavailable" };
+  } catch {
+    return { mode: "unavailable" };
+  }
+}
+
+export async function loadDesktopStudioCollaborationSession(
+  fetcher: typeof fetch = fetch
+): Promise<DesktopStudioCollaborationSession | { mode: "unavailable" | "preview" }> {
+  try {
+    const response = await fetcher(
+      "/studio-api/collaboration/studio-session",
+      {
+        method: "GET",
+        headers: { accept: "application/json" },
+        cache: "no-store",
+        credentials: "same-origin"
+      }
+    );
+    if (response.status === 404) return { mode: "preview" };
+    if (!response.ok) return { mode: "unavailable" };
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { mode: "unavailable" };
+    }
+    const body = payload as { snapshot?: unknown; csrfToken?: unknown };
+    const snapshot = collaborationSnapshotSchema.safeParse(body.snapshot);
+    if (!snapshot.success || typeof body.csrfToken !== "string") {
+      return { mode: "unavailable" };
+    }
+    return { mode: "desktop", snapshot: snapshot.data, csrfToken: body.csrfToken };
   } catch {
     return { mode: "unavailable" };
   }

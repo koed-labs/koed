@@ -1,4 +1,4 @@
-import { cp, mkdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rm, stat, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,17 +6,22 @@ const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const studioRoot = resolve(desktopRoot, "../studio");
 const staticSource = resolve(studioRoot, "out");
 const serverSource = resolve(studioRoot, "server");
+const mainSource = resolve(studioRoot, "main");
 const stageRoot = resolve(desktopRoot, ".studio-stage");
 const serverFiles = [
   "index.mjs",
   "github.mjs",
   "pr-chat.mjs",
   "pr-chat-http.mjs",
-  "personal-agents-http.mjs"
+  "personal-agents-http.mjs",
+  "retained-workspaces-http.mjs"
 ];
+const mainFiles = ["team-collaboration-draft-store.mjs"];
 
 await stat(resolve(staticSource, "index.html"));
 await stat(resolve(serverSource, "index.mjs"));
+for (const file of serverFiles) await stat(resolve(serverSource, file));
+for (const file of mainFiles) await stat(resolve(mainSource, file));
 await rm(stageRoot, { recursive: true, force: true });
 await mkdir(stageRoot, { recursive: true });
 await cp(staticSource, resolve(stageRoot, "out"), { recursive: true });
@@ -24,4 +29,11 @@ await mkdir(resolve(stageRoot, "server"), { recursive: true });
 for (const file of serverFiles) {
   await cp(resolve(serverSource, file), resolve(stageRoot, "server", file));
 }
-process.stdout.write("Staged Studio static export and gateway modules.\n");
+await mkdir(resolve(stageRoot, "main"), { recursive: true });
+for (const file of mainFiles) {
+  await cp(resolve(mainSource, file), resolve(stageRoot, "main", file));
+}
+// Studio is an Electron extraResource beside the packaged Koed runtime. Keep
+// its bare workspace imports resolvable without copying another dependency tree.
+await symlink("../koed-runtime/node_modules", resolve(stageRoot, "node_modules"), "dir");
+process.stdout.write("Staged Studio static export, gateway, and Desktop modules.\n");

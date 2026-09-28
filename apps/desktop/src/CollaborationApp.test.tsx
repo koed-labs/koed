@@ -567,6 +567,11 @@ const viewFor = (
       };
       break;
     }
+    case "team_channel":
+    case "team_project_channel":
+      throw new Error(
+        "This legacy UI fixture does not contain Team-wide channels."
+      );
     case "workspace_channel":
       view = {
         kind: "thread",

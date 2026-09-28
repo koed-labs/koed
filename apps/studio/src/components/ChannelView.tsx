@@ -71,7 +71,7 @@ function buildFeed(messages: ChannelMessage[]): FeedEntry[] {
   return entries;
 }
 
-function ChannelHeader({
+export function ChannelHeader({
   channelName,
   project,
   agents,

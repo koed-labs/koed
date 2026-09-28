@@ -1282,6 +1282,82 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it.each(["team_channel", "team_project_channel"] as const)(
+    "selects %s without requiring Workspace access",
+    async (kind) => {
+      const base = fixture();
+      const { workspaceId: _workspaceId, ...baseThread } = channel();
+      const thread =
+        kind === "team_channel"
+          ? { ...baseThread, kind, systemKey: "team.general" }
+          : { ...baseThread, kind, teamProjectId: ids.workspace };
+      const selection =
+        kind === "team_channel"
+          ? { kind, teamId: ids.team, threadId: thread.id }
+          : {
+              kind,
+              teamId: ids.team,
+              teamProjectId: ids.workspace,
+              threadId: thread.id
+            };
+      const initial = collaborationSnapshotSchema.parse({
+        ...base,
+        navigation: {
+          ...base.navigation,
+          teams: [
+            {
+              ...base.navigation.teams[0],
+              workspaces: [],
+              channels: kind === "team_channel" ? [thread] : [],
+              sharedProjects:
+                kind === "team_project_channel"
+                  ? [
+                      {
+                        id: ids.workspace,
+                        teamId: ids.team,
+                        name: "Shared",
+                        thread
+                      }
+                    ]
+                  : []
+            }
+          ]
+        }
+      });
+      const authoritative = collaborationSnapshotSchema.parse({
+        ...initial,
+        selection,
+        view: { kind: "thread", thread, messages: emptyPage(thread.id) }
+      });
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const versions = new Map<string, number>();
+      const bridge: CollaborationRendererBridge = {
+        command: vi.fn(async (command) => {
+          if (command.command === "collaboration.select") {
+            await blocked;
+            return success(command, authoritative, versions);
+          }
+          return success(command, initial, versions);
+        }),
+        subscribe: () => () => undefined
+      };
+      const client = createCollaborationRendererClient(bridge);
+      await client.load();
+      const selected = client.select(authoritative.selection);
+      expect(client.currentSelection()).toEqual(authoritative.selection);
+      expect(client.current()?.view).toMatchObject({
+        kind: "thread",
+        thread: { id: thread.id, kind }
+      });
+      release();
+      await selected;
+      client.dispose();
+    }
+  );
+
   it("obtains an approved one-use Action Grant before creating a Team", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);
