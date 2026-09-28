@@ -5,6 +5,7 @@ import {
   type ManagedConversationSettingsChange,
   type SupportedAiClientDriverId
 } from "@koed/shared/ai-client-contract";
+import type { ManagedConversationSlashCommand } from "../renderer/views/personal/ai-client-slash-suggestions.js";
 
 export const managedConversationCommandChannel =
   "koed:managed-conversation:command";
@@ -204,6 +205,14 @@ export type ManagedConversationForkRequest = {
     | "independent_work";
 };
 
+export type ManagedConversationCommandDiscoveryRequest = {
+  operation: "command_discovery";
+  aiClientDriverId: SupportedAiClientDriverId;
+  aiClientInstanceId: string;
+  projectId: string;
+  cwd?: string;
+};
+
 export type ManagedConversationRequest =
   | ManagedConversationStartRequest
   | ManagedConversationLaunchOptionsRequest
@@ -219,7 +228,8 @@ export type ManagedConversationRequest =
   | ManagedConversationControlRequest
   | ManagedConversationTransferStatusRequest
   | ManagedConversationHandoffRequest
-  | ManagedConversationForkRequest;
+  | ManagedConversationForkRequest
+  | ManagedConversationCommandDiscoveryRequest;
 
 export type ManagedConversationIdentity = {
   executionId: string | null;
@@ -332,6 +342,19 @@ export type ManagedConversationLaunchOptions = {
   }>;
 };
 
+export type ManagedConversationCommandDiscoveryResult =
+  | {
+      operation: "command_discovery";
+      status: "ok";
+      commands: ManagedConversationSlashCommand[];
+    }
+  | {
+      operation: "command_discovery";
+      status: "unavailable" | "stale" | "unauthorized";
+      commands: [];
+      message?: string;
+    };
+
 export type ManagedConversationResult =
   | {
       operation: "launch_options";
@@ -443,7 +466,8 @@ export type ManagedConversationResult =
       executionId: string;
       operationId: string;
       targetDeviceId: string;
-    };
+    }
+  | ManagedConversationCommandDiscoveryResult;
 
 export const parseManagedConversationRequest = (
   value: unknown
