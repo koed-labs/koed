@@ -897,6 +897,39 @@ export const parseManagedConversationRequest = (
       reason: input.reason
     };
   }
+  if (input.operation === "command_discovery") {
+    exactKeys(
+      input,
+      [
+        "operation",
+        "aiClientDriverId",
+        "aiClientInstanceId",
+        "projectId",
+        ...(Object.hasOwn(input, "cwd") ? ["cwd"] : [])
+      ],
+      "Managed Conversation command discovery"
+    );
+    if (
+      typeof input.aiClientDriverId !== "string" ||
+      !isSupportedAiClientDriverId(input.aiClientDriverId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery driver is invalid."
+      );
+    }
+    return {
+      operation: "command_discovery",
+      aiClientDriverId: input.aiClientDriverId,
+      aiClientInstanceId: identifier(
+        input.aiClientInstanceId,
+        "AI Client instance id"
+      ),
+      projectId: identifier(input.projectId, "Project id"),
+      ...(Object.hasOwn(input, "cwd")
+        ? { cwd: identifier(input.cwd as string, "Working directory") }
+        : {})
+    };
+  }
   throw new TypeError("Unsupported Managed Conversation operation.");
 };
 
@@ -1810,6 +1843,95 @@ export const parseManagedConversationResult = (
       operationId: identifier(result.operationId, "Transfer operation id"),
       targetDeviceId: identifier(result.targetDeviceId, "Target device id")
     };
+  }
+  if (result.operation === "command_discovery") {
+    const hasMessage = result.message !== undefined;
+    const allowedKeys = hasMessage
+      ? ["operation", "status", "commands", "message"]
+      : ["operation", "status", "commands"];
+    exactKeys(
+      result,
+      allowedKeys,
+      "Managed Conversation command discovery result"
+    );
+    const status = result.status;
+    if (
+      status !== "ok" &&
+      status !== "unavailable" &&
+      status !== "stale" &&
+      status !== "unauthorized"
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery status is invalid."
+      );
+    }
+    if (!Array.isArray(result.commands)) {
+      throw new TypeError(
+        "Managed Conversation command discovery commands must be an array."
+      );
+    }
+    if (status === "ok" && result.commands.length > 128) {
+      throw new TypeError(
+        "Managed Conversation command discovery returns too many commands."
+      );
+    }
+    for (const cmd of result.commands) {
+      const command = record(cmd, "Managed Conversation slash command");
+      exactKeys(
+        command,
+        [
+          "name",
+          "description",
+          ...(Object.hasOwn(command, "argumentHint") ? ["argumentHint"] : []),
+          "kind",
+          "source"
+        ],
+        "Managed Conversation slash command"
+      );
+      if (
+        typeof command.name !== "string" ||
+        command.name.length === 0 ||
+        command.name.length > 64 ||
+        command.name.trim() !== command.name
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command name is invalid."
+        );
+      }
+      if (
+        typeof command.description !== "string" ||
+        command.description.length > 512
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command description is invalid."
+        );
+      }
+      if (command.kind !== "command" && command.kind !== "skill") {
+        throw new TypeError(
+          "Managed Conversation command discovery command kind is invalid."
+        );
+      }
+      if (command.source !== "provider") {
+        throw new TypeError(
+          "Managed Conversation command discovery command source is invalid."
+        );
+      }
+      if (
+        command.argumentHint !== undefined &&
+        (typeof command.argumentHint !== "string" ||
+          command.argumentHint.length > 64)
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command argument hint is invalid."
+        );
+      }
+    }
+    return {
+      operation: "command_discovery",
+      status,
+      commands: result.commands as ManagedConversationSlashCommand[],
+      ...(hasMessage ? { message: result.message as string } : {})
+    } as ManagedConversationResult;
   }
   throw new TypeError("Unsupported Managed Conversation result.");
 };
