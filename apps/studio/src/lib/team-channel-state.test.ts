@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -44,6 +44,31 @@ test("only focused, actually visible incoming messages advance the read cursor",
   assert.equal(visibleReadMayAdvance({ ...base, focused: false }), false);
   assert.equal(visibleReadMayAdvance({ ...base, senderId: "member-a", focused: true }), false);
   assert.equal(visibleReadMayAdvance({ ...base, focused: true, lastReportedSequence: 7 }), false);
+});
+
+test("read cursors stay scoped to each Team channel", () => {
+  const positions = new Map<string, number>();
+  rememberReadSequence(positions, "team-a/channel-a", 60);
+  assert.equal(readSequenceFor(positions, "team-a/channel-a"), 60);
+  assert.equal(readSequenceFor(positions, "team-b/channel-b"), 0);
+  assert.equal(visibleReadMayAdvance({ messageId: "b-first", sequence: 1, senderId: "member-b", principalUserId: "member-a", focused: true, lastReportedSequence: readSequenceFor(positions, "team-b/channel-b") }), true);
+  rememberReadSequence(positions, "team-b/channel-b", 1);
+  rememberReadSequence(positions, "team-b/channel-b", 0);
+  assert.equal(readSequenceFor(positions, "team-b/channel-b"), 1);
+});
+
+test("a mark-read response cannot update the cursor after switching channels", () => {
+  assert.equal(readCompletionMayApply("team-a/channel-a", "team-a/channel-a"), true);
+  assert.equal(readCompletionMayApply("team-a/channel-a", "team-b/channel-b"), false);
+  assert.equal(readCompletionMayApply("team-a/channel-a", null), false);
+});
+
+test("stale same-Team history can ACK after navigation refresh, while current-channel failures cannot", () => {
+  const base = { eventTeamId: "team-a", eventThreadId: "channel-a", currentTeamId: "team-a", historyApplied: false, snapshotApplied: true };
+  assert.equal(realtimeUpdateMayAcknowledge({ ...base, currentThreadId: "channel-a" }), false);
+  assert.equal(realtimeUpdateMayAcknowledge({ ...base, currentThreadId: "channel-b" }), true);
+  assert.equal(realtimeUpdateMayAcknowledge({ ...base, currentTeamId: "team-b", currentThreadId: "channel-b" }), false);
+  assert.equal(realtimeUpdateMayAcknowledge({ ...base, currentThreadId: "channel-b", snapshotApplied: false }), false);
 });
 
 test("a realtime newest page merges without dropping the loaded older history", () => {

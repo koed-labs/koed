@@ -46,6 +46,29 @@ export const visibleReadMayAdvance = (input: {
   Number.isSafeInteger(input.sequence) && input.sequence > input.lastReportedSequence
 );
 
+export const readSequenceFor = (positions: ReadonlyMap<string, number>, authorityKey: string): number =>
+  positions.get(authorityKey) ?? 0;
+
+export const rememberReadSequence = (positions: Map<string, number>, authorityKey: string, sequence: number): number => {
+  const next = Math.max(readSequenceFor(positions, authorityKey), sequence);
+  positions.set(authorityKey, next);
+  return next;
+};
+
+export const readCompletionMayApply = (capturedAuthorityKey: string, currentAuthorityKey: string | null): boolean =>
+  capturedAuthorityKey === currentAuthorityKey;
+
+export const realtimeUpdateMayAcknowledge = (input: {
+  eventTeamId: string;
+  eventThreadId: string | null;
+  currentTeamId: string;
+  currentThreadId: string;
+  historyApplied: boolean;
+  snapshotApplied: boolean;
+}): boolean => input.eventTeamId === input.currentTeamId &&
+  input.snapshotApplied &&
+  (input.historyApplied || (input.eventThreadId !== null && input.currentThreadId !== input.eventThreadId));
+
 export const mergeTeamMessages = (
   current: CollaborationMessage[],
   incoming: CollaborationMessage[],

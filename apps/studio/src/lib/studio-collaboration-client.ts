@@ -9,7 +9,8 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
-  type CollaborationSnapshot
+  type CollaborationSnapshot,
+  type CollaborationSubscription
 } from "@koed/shared/collaboration";
 
 export type StudioTeamDraftAuthority = {
@@ -32,12 +33,14 @@ export type StudioTeamDraft = {
 export class StudioCollaborationRequestError extends Error {
   readonly status: number;
   readonly code: string | null;
+  readonly retryable: boolean;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(message: string, status: number, code: string | null = null, retryable = status === 429 || status >= 500) {
     super(message);
     this.name = "StudioCollaborationRequestError";
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
   }
 }
 
@@ -48,15 +51,22 @@ const wait = (signal: AbortSignal, duration = 1_000) =>
   new Promise<void>((resolve) => {
     if (signal.aborted) return resolve();
     const finish = () => {
-      window.clearTimeout(timer);
+      globalThis.clearTimeout(timer);
       signal.removeEventListener("abort", finish);
       resolve();
     };
-    const timer = window.setTimeout(finish, duration);
+    const timer = globalThis.setTimeout(finish, duration);
     signal.addEventListener("abort", finish, { once: true });
   });
 
 const MAX_EVENT_FRAME_BYTES = 2 * 1024 * 1024;
+
+export const canApplySubscriptionSnapshot = (input: {
+  currentVersion: number | null;
+  snapshotVersion: number;
+  alreadyAcknowledged: boolean;
+}): boolean => !input.alreadyAcknowledged &&
+  (input.currentVersion === null || input.snapshotVersion >= input.currentVersion);
 
 export class StudioCollaborationClient {
   private readonly fetcher: typeof fetch;
@@ -154,7 +164,8 @@ export class StudioCollaborationClient {
       throw new StudioCollaborationRequestError(
         failure.error.userMessage,
         409,
-        failure.error.code
+        failure.error.code,
+        failure.error.retryable
       );
     }
     if ("snapshot" in result.data.data) {
@@ -177,13 +188,135 @@ export class StudioCollaborationClient {
   }
 
   subscribe(
-    listener: (event: CollaborationRendererEvent) => void,
-    onSnapshot?: (snapshot: CollaborationSnapshot) => void
+    listener: (event: CollaborationRendererEvent) => void | boolean | Promise<void | boolean>,
+    onSnapshot: ((snapshot: CollaborationSnapshot) => void | Promise<void>) | undefined,
+    teamId: string
   ): () => void {
     const controller = new AbortController();
+    let resolveStreamReady!: (ready: boolean) => void;
+    const streamReady = new Promise<boolean>((resolve) => { resolveStreamReady = resolve; });
+    let resolveSubscriptionReady!: (subscription: CollaborationSubscription | null) => void;
+    let subscriptionReady: Promise<CollaborationSubscription | null>;
+    const resetSubscriptionReady = () => {
+      subscriptionReady = new Promise<CollaborationSubscription | null>((resolve) => { resolveSubscriptionReady = resolve; });
+    };
+    resetSubscriptionReady();
+    let subscription: CollaborationSubscription | null = null;
+    let stopped = false;
+    let subscriptionRevoked = false;
+    let eventTail: Promise<void> = Promise.resolve();
+    const seenDeliveries = new Set<string>();
+    const deliveryOrder: string[] = [];
+    let streamOpenedBefore = false;
+    const releaseSubscription = (id: string) => {
+      void this.run("collaboration.unsubscribe", { subscriptionId: id }).catch(() => undefined);
+    };
+    const acknowledge = async (event: Extract<CollaborationRendererEvent, { type: "snapshot" | "update" }>) => {
+      if (!subscription) return;
+      const subscriptionId = subscription.id;
+      const result = await this.run("collaboration.acknowledge_delivery", {
+        subscriptionId,
+        deliveryId: event.deliveryId,
+        eventId: event.eventId,
+        expectedSubscriptionVersion: event.type === "snapshot" ? event.subscription.version : subscription.version
+      });
+      if (result.ok && result.command === "collaboration.acknowledge_delivery" && result.data.subscriptionId === subscriptionId && subscription?.id === subscriptionId) {
+        subscription = { ...subscription, state: "active", version: result.data.subscriptionVersion };
+        seenDeliveries.add(event.deliveryId);
+        deliveryOrder.push(event.deliveryId);
+        while (deliveryOrder.length > 512) seenDeliveries.delete(deliveryOrder.shift()!);
+      }
+    };
+    const deliver = async (event: CollaborationRendererEvent) => {
+      if (stopped || controller.signal.aborted) return;
+      if (event.type === "connection") {
+        await listener(event);
+        if (event.connection.state === "access_revoked") {
+          subscriptionRevoked = true;
+          subscription = null;
+        }
+        return;
+      }
+      if (event.type === "control") {
+        const current = subscription;
+        if (!current || event.subscriptionId !== current.id) return;
+        try { await listener(event); } catch { /* Renewal must proceed even if the UI could not refresh. */ }
+        if (event.reason === "access_revoked") {
+          subscriptionRevoked = true;
+          subscription = null;
+          resolveSubscriptionReady(null);
+          return;
+        }
+        if (event.reason === "requires_snapshot" || event.reason === "backpressure") {
+          subscription = null;
+          releaseSubscription(current.id);
+          resetSubscriptionReady();
+          void startSubscription();
+        }
+        return;
+      }
+      const activeSubscription = await subscriptionReady;
+      if (!activeSubscription || stopped || subscriptionRevoked || controller.signal.aborted || subscription?.id !== activeSubscription.id) return;
+      if (event.type === "snapshot") {
+        if (event.subscription.id !== activeSubscription.id || event.subscription.scope.scope !== "team" || event.subscription.scope.teamId !== teamId) return;
+        if (!canApplySubscriptionSnapshot({ currentVersion: subscription?.version ?? null, snapshotVersion: event.subscription.version, alreadyAcknowledged: seenDeliveries.has(event.deliveryId) })) return;
+        subscription = event.subscription;
+      } else if (event.type === "update") {
+        if (event.subscriptionId !== activeSubscription.id || !subscription || subscription.state !== "active") return;
+      } else {
+        await listener(event);
+        return;
+      }
+      if (seenDeliveries.has(event.deliveryId)) return;
+      const applied = await listener(event);
+      if (applied === false) return;
+      if (stopped || controller.signal.aborted) return;
+      await acknowledge(event);
+    };
     const dispatch = (event: unknown) => {
       const parsed = collaborationRendererEventSchema.safeParse(event);
-      if (parsed.success) listener(parsed.data);
+      if (!parsed.success) return;
+      eventTail = eventTail.then(() => deliver(parsed.data)).catch(() => undefined);
+    };
+    const startSubscription = async () => {
+      const ready = await streamReady;
+      if (!ready || stopped || controller.signal.aborted) { resolveSubscriptionReady(null); return; }
+      while (!stopped && !controller.signal.aborted) {
+        try {
+          const result = await this.run("collaboration.subscribe", { scope: { scope: "team", teamId } });
+          if (!result.ok) {
+            if (result.error.retryable) {
+              await wait(controller.signal, result.error.retryAfterMs ?? 1_000);
+              continue;
+            }
+            resolveSubscriptionReady(null);
+            return;
+          }
+          if (result.command !== "collaboration.subscribe" || result.data.subscription.scope.scope !== "team" || result.data.subscription.scope.teamId !== teamId) {
+            resolveSubscriptionReady(null);
+            return;
+          }
+          const created = result.data.subscription;
+          if (stopped || controller.signal.aborted) {
+            releaseSubscription(created.id);
+            resolveSubscriptionReady(null);
+            return;
+          }
+          subscription = created;
+          resolveSubscriptionReady(created);
+          return;
+        } catch (failure) {
+          const retryable = !(failure instanceof StudioCollaborationRequestError) || failure.retryable;
+          if (!retryable) {
+            resolveSubscriptionReady(null);
+            const snapshot = await this.loadSession().catch(() => null);
+            if (snapshot && !stopped) await onSnapshot?.(snapshot);
+            return;
+          }
+          await wait(controller.signal);
+        }
+      }
+      resolveSubscriptionReady(null);
     };
     const connect = async () => {
       while (!controller.signal.aborted) {
@@ -204,6 +337,14 @@ export class StudioCollaborationClient {
             await wait(controller.signal);
             continue;
           }
+          if (streamOpenedBefore && !controller.signal.aborted) {
+            const snapshot = await this.loadSession().catch(() => null);
+            if (snapshot && !stopped) {
+              try { await onSnapshot?.(snapshot); } catch { /* The next reconnect or durable delivery can retry catch-up. */ }
+            }
+          }
+          streamOpenedBefore = true;
+          resolveStreamReady(true);
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
@@ -245,17 +386,23 @@ export class StudioCollaborationClient {
             }
           }
           await reader.cancel().catch(() => undefined);
-          if (!controller.signal.aborted) {
-            const snapshot = await this.loadSession().catch(() => null);
-            if (snapshot) onSnapshot?.(snapshot);
-          }
         } catch {
           if (!controller.signal.aborted) await wait(controller.signal);
         }
       }
     };
     void connect();
-    return () => controller.abort();
+    void startSubscription();
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      controller.abort();
+      resolveStreamReady(false);
+      resolveSubscriptionReady(null);
+      const active = subscription;
+      subscription = null;
+      if (active) releaseSubscription(active.id);
+    };
   }
 
   async loadDraft(authority: StudioTeamDraftAuthority): Promise<StudioTeamDraft | null> {

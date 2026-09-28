@@ -20,7 +20,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -63,8 +63,10 @@ export function TeamChannelWorkspace({
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
   const [hydratedAuthorityKey, setHydratedAuthorityKey] = useState<string | null>(null);
-  const [visibleRead, setVisibleRead] = useState<{ id: string; sequence: number; senderId: string } | null>(null);
+  const [visibleRead, setVisibleRead] = useState<{ id: string; sequence: number; senderId: string; teamId: string; threadId: string } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const readReported = useRef(new Map<string, number>());
+  const readPending = useRef(new Map<string, number>());
   const saveSequence = useRef(0);
   const snapshotEpoch = useRef(0);
   const revokedRef = useRef(false);
@@ -81,6 +83,8 @@ export function TeamChannelWorkspace({
     ? { backendId: snapshot.connection.backendId, principalUserId: snapshot.navigation.teamPrincipal.id, teamId, threadId }
     : null;
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  const authorityKeyRef = useRef<string | null>(authorityKey);
+  authorityKeyRef.current = authorityKey;
   if (!revokedRef.current && authorityKey && authorityKey === hydratedAuthorityKey) {
     draftByAuthority.current.set(authorityKey, { text: draftText, pendingSend });
   }
@@ -111,28 +115,35 @@ export function TeamChannelWorkspace({
     setCreateChannelOpen(false);
     setCreateProjectOpen(false);
     draftByAuthority.current.clear();
+    readReported.current.clear();
+    readPending.current.clear();
   }, []);
-  const refreshSnapshot = useCallback(async () => {
+  const refreshSnapshot = useCallback(async (): Promise<boolean> => {
     const epoch = snapshotEpoch.current;
     try {
       const result = await run("collaboration.load", { forceRemoteNavigation: true });
-      if (epoch !== snapshotEpoch.current) return;
+      if (epoch !== snapshotEpoch.current) return false;
       if (result.ok && "snapshot" in result.data) {
         revokedRef.current = false;
         setSnapshot(result.data.snapshot);
-      } else if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
+        return true;
+      }
+      if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
+      else if (!result.ok) setStatus(result.error.userMessage);
+      return false;
     } catch (failure) {
-      if (epoch !== snapshotEpoch.current || revokedRef.current) return;
+      if (epoch !== snapshotEpoch.current || revokedRef.current) return false;
       const described = describeStudioCommandFailure(failure);
       if (described.revoked) clearRevokedView();
       else setStatus(described.message);
+      return false;
     }
   }, [clearRevokedView, run]);
   const refreshSnapshotRef = useRef(refreshSnapshot);
   refreshSnapshotRef.current = refreshSnapshot;
 
-  const loadPage = useCallback(async (id: string, selectedTeamId: string, cursor: string | null = null) => {
-    if (!UUID.test(id) || !UUID.test(selectedTeamId)) return;
+  const loadPage = useCallback(async (id: string, selectedTeamId: string, cursor: string | null = null): Promise<boolean> => {
+    if (!UUID.test(id) || !UUID.test(selectedTeamId)) return false;
     setLoading(true);
     try {
       const result = await run("collaboration.load_message_page", {
@@ -150,11 +161,14 @@ export function TeamChannelWorkspace({
             if (cursor === null && current.length === 0) return validated.data.items;
             return mergeTeamMessages(current, validated.data.items);
           });
+          return true;
         }
-      } else if (stillSelected) {
+      }
+      if (stillSelected) {
         if (!result.ok && result.error.code === "access_revoked") clearRevokedView();
         else setStatus(result.ok ? null : result.error.userMessage);
       }
+      return false;
     } catch (failure) {
       const stillSelected = selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id;
       if (stillSelected && !revokedRef.current) {
@@ -162,6 +176,7 @@ export function TeamChannelWorkspace({
         if (described.revoked) clearRevokedView();
         else setStatus(described.message);
       }
+      return false;
     } finally {
       if (selectedRef.current.teamId === selectedTeamId && selectedRef.current.threadId === id) setLoading(false);
     }
@@ -170,32 +185,55 @@ export function TeamChannelWorkspace({
   loadPageRef.current = loadPage;
 
   useEffect(() => {
-    readReported.current = 0;
-    readPending.current = null;
     setVisibleRead(null);
   }, [teamId, threadId]);
 
   useEffect(() => {
     void refreshSnapshot();
-    return client.subscribe((event) => {
+    if (!teamId) return;
+    return client.subscribe(async (event) => {
       if (event.type === "update") {
         const selected = selectedRef.current;
-        const changedThread = event.resource.scope === "team" && event.resource.teamId === selected.teamId
-          ? event.resource.threadId
-          : null;
-        if (changedThread) {
-          if (changedThread === selected.threadId && selected.teamId) void loadPageRef.current(changedThread, selected.teamId);
-          void refreshSnapshotRef.current();
-        }
+        if (selected.teamId !== teamId) return false;
+        if (event.resource.scope !== "team" || event.resource.teamId !== teamId) return true;
+        const changedThread = event.resource.threadId;
+        const historyApplied = changedThread && changedThread === selected.threadId
+          ? await loadPageRef.current(changedThread, selected.teamId)
+          : true;
+        const snapshotApplied = await refreshSnapshotRef.current();
+        const current = selectedRef.current;
+        return realtimeUpdateMayAcknowledge({
+          eventTeamId: teamId,
+          eventThreadId: changedThread,
+          currentTeamId: current.teamId,
+          currentThreadId: current.threadId,
+          historyApplied,
+          snapshotApplied
+        });
       } else if (event.type === "connection" && event.connection.state === "access_revoked") {
         clearRevokedView();
       } else if (event.type === "control" && event.reason === "access_revoked") {
         clearRevokedView();
-      } else if (event.type === "snapshot" || event.type === "control") {
-        void refreshSnapshotRef.current();
+      } else if (event.type === "snapshot" || event.type === "control" || event.type === "connection") {
+        if (selectedRef.current.teamId !== teamId) return false;
+        const snapshotApplied = await refreshSnapshotRef.current();
+        if (!snapshotApplied) return false;
+        const selected = selectedRef.current;
+        if (selected.teamId === teamId && selected.threadId) return await loadPageRef.current(selected.threadId, teamId);
+        return true;
       }
-    }, (next) => { if (!revokedRef.current) setSnapshot(next); });
-  }, [client, clearRevokedView]);
+      return true;
+    }, async (next) => {
+      if (revokedRef.current || selectedRef.current.teamId !== teamId) return;
+      if (!next.navigation.teams.some((team) => team.id === teamId)) {
+        clearRevokedView();
+        return;
+      }
+      setSnapshot(next);
+      const selected = selectedRef.current;
+      if (selected.threadId) await loadPageRef.current(selected.threadId, teamId);
+    }, teamId);
+  }, [client, clearRevokedView, teamId]);
 
   useEffect(() => {
     if (teamId && !threads.some((thread) => thread.id === threadId)) {
@@ -206,6 +244,7 @@ export function TeamChannelWorkspace({
 
   useEffect(() => {
     setHydratedAuthorityKey(null);
+    setVisibleRead(null);
     setMessages([]);
     setPage(null);
     setDraftText("");
@@ -258,34 +297,41 @@ export function TeamChannelWorkspace({
     };
   }, [authorityKey, hydratedAuthorityKey, draftText, pendingSend, drafts]);
 
-  const readReported = useRef(0);
-  const readPending = useRef<number | null>(null);
   useEffect(() => {
     const focusedVisible = document.visibilityState === "visible" && document.hasFocus();
     const visible = visibleRead;
-    if (!focusedVisible || !activeThread || !visible || !authority || readPending.current === visible.sequence || !visibleReadMayAdvance({
+    if (!focusedVisible || !activeThread || !visible || !authority || !authorityKey || !studioSelectionMatches({ teamId: visible.teamId, threadId: visible.threadId }, selectedRef.current) || readPending.current.get(authorityKey) === visible.sequence || !visibleReadMayAdvance({
       messageId: visible.id,
       sequence: visible.sequence,
       senderId: visible.senderId,
       principalUserId: authority.principalUserId,
       focused: focusedVisible,
-      lastReportedSequence: readReported.current
+      lastReportedSequence: readSequenceFor(readReported.current, authorityKey)
     })) return;
-    readPending.current = visible.sequence;
+    const capturedKey = authorityKey;
+    const capturedTeamId = visible.teamId;
+    const capturedThreadId = visible.threadId;
+    readPending.current.set(capturedKey, visible.sequence);
     void run("collaboration.mark_read", {
-      thread: { scope: "team", teamId, threadId: activeThread.id },
+      thread: { scope: "team", teamId: capturedTeamId, threadId: capturedThreadId },
       messageId: visible.id
     }).then((result) => {
-      if (result.ok) readReported.current = Math.max(readReported.current, visible.sequence);
-      if (readPending.current === visible.sequence) readPending.current = null;
-    }).catch(() => { if (readPending.current === visible.sequence) readPending.current = null; });
-  }, [activeThread, authority, run, teamId, visibleRead]);
+      if (result.ok && readCompletionMayApply(capturedKey, authorityKeyRef.current)) {
+        rememberReadSequence(readReported.current, capturedKey, visible.sequence);
+      }
+      if (readPending.current.get(capturedKey) === visible.sequence) readPending.current.delete(capturedKey);
+    }).catch(() => { if (readPending.current.get(capturedKey) === visible.sequence) readPending.current.delete(capturedKey); });
+  }, [activeThread, authority, authorityKey, run, teamId, visibleRead]);
   useEffect(() => {
     const update = () => {
       if (document.visibilityState === "visible" && document.hasFocus()) {
         const visible = [...(bodyRef.current?.querySelectorAll<HTMLElement>("[data-message-visible='true']") ?? [])]
           .sort((left, right) => Number(right.dataset.sequence) - Number(left.dataset.sequence))[0];
-        if (visible) setVisibleRead({ id: visible.dataset.messageId ?? "", sequence: Number(visible.dataset.sequence), senderId: visible.dataset.senderId ?? "" });
+        const visibleTeamId = visible?.dataset.teamId;
+        const visibleThreadId = visible?.dataset.threadId;
+        if (visible && visibleTeamId && visibleThreadId && studioSelectionMatches({ teamId: visibleTeamId, threadId: visibleThreadId }, selectedRef.current)) {
+          setVisibleRead({ id: visible.dataset.messageId ?? "", sequence: Number(visible.dataset.sequence), senderId: visible.dataset.senderId ?? "", teamId: visibleTeamId, threadId: visibleThreadId });
+        }
       }
     };
     window.addEventListener("focus", update);
@@ -436,7 +482,7 @@ export function TeamChannelWorkspace({
   };
 
   const onMessageVisibility = useCallback((message: CollaborationMessage, visible: boolean) => {
-    if (!visible || !authority || !visibleReadMayAdvance({
+    if (!visible || !authority || !message.teamId || !studioSelectionMatches({ teamId: message.teamId, threadId: message.threadId }, selectedRef.current) || !visibleReadMayAdvance({
       messageId: message.id,
       sequence: message.sequence,
       senderId: message.sender.id,
@@ -445,7 +491,7 @@ export function TeamChannelWorkspace({
       lastReportedSequence: -1
     })) return;
     setVisibleRead((current) => !current || message.sequence > current.sequence
-      ? { id: message.id, sequence: message.sequence, senderId: message.sender.id }
+      ? { id: message.id, sequence: message.sequence, senderId: message.sender.id, teamId: message.teamId!, threadId: message.threadId }
       : current);
   }, [authority?.principalUserId]);
   const changeDraftText = (text: string) => {
@@ -548,7 +594,7 @@ export function TeamChannelWorkspace({
         <TeamShell
           wallpaper
           subheader={<ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))} />}
-          footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl">{pendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<ChatComposer placeholder={`Message #${activeThread?.name ?? "channel"}`} projectName={activeThread?.name ?? "Team"} branch="shared" value={draftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={pendingSend ? "Resolve the earlier send before sending this edit." : "Message everyone in this channel."} /></div></footer>}
+          footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl">{pendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<fieldset disabled={!activeThread || hydratedAuthorityKey !== authorityKey} className="m-0 min-w-0 border-0 p-0"><ChatComposer placeholder={`Message #${activeThread?.name ?? "channel"}`} projectName={activeThread?.name ?? "Team"} branch="shared" value={draftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={pendingSend ? "Resolve the earlier send before sending this edit." : "Message everyone in this channel."} /></fieldset></div></footer>}
         >
           <div ref={bodyRef} className="mx-auto max-w-3xl space-y-3 pt-4">
             {page?.hasOlder && <button type="button" onClick={loadOlder} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
@@ -590,5 +636,5 @@ function MessageRow({ message, onVisibility }: { message: CollaborationMessage; 
     document.addEventListener("visibilitychange", checkOnFocus);
     return () => { observer.disconnect(); window.removeEventListener("focus", checkOnFocus); document.removeEventListener("visibilitychange", checkOnFocus); };
   }, [message, onVisibility]);
-  return <article ref={rowRef} data-message-visible="false" data-message-id={message.id} data-sequence={message.sequence} data-sender-id={message.sender.id} className="flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{name.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{name}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p>{message.delivery === "failed" && <p className="text-xs text-warning">Not sent</p>}</div></article>;
+  return <article ref={rowRef} data-message-visible="false" data-message-id={message.id} data-sequence={message.sequence} data-sender-id={message.sender.id} data-team-id={message.teamId ?? ""} data-thread-id={message.threadId} className="flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{name.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{name}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p>{message.delivery === "failed" && <p className="text-xs text-warning">Not sent</p>}</div></article>;
 }
