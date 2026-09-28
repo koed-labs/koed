@@ -45,6 +45,7 @@ import {
   checkClaudeCodeAvailability,
   checkPiAvailability,
   claudeAgentSdkTokenUsage,
+  ClaudeManagedConversationCancelledError,
   ClaudeManagedConversationSession,
   CodexManagedConversationIdentityError,
   CodexManagedConversationSession,
@@ -435,6 +436,80 @@ class ManagedConversationLeaseLostError extends Error {
     this.name = "ManagedConversationLeaseLostError";
   }
 }
+
+class ManagedConversationInterruptDeferredError extends Error {
+  constructor() {
+    super("Managed Conversation interrupt is waiting for its prompt to start");
+    this.name = "ManagedConversationInterruptDeferredError";
+  }
+}
+
+class ManagedConversationPromptInterruptedBeforeStartError extends Error {
+  constructor() {
+    super("Managed Conversation prompt was stopped before provider submission");
+    this.name = "ManagedConversationPromptInterruptedBeforeStartError";
+  }
+}
+
+type ManagedConversationWait = () => Promise<void>;
+
+const waitManagedConversationRetry: ManagedConversationWait = () =>
+  new Promise((resolve) => setTimeout(resolve, 25));
+
+export const createManagedConversationPromptInterruptLatch = () => {
+  const requested = new Set<string>();
+  return {
+    request(commandId: string): void {
+      requested.add(commandId);
+    },
+    hasRequest(commandId: string): boolean {
+      return requested.has(commandId);
+    },
+    consumeBeforeProviderSubmission(commandId: string): boolean {
+      return requested.delete(commandId);
+    },
+    clear(commandId: string): void {
+      requested.delete(commandId);
+    }
+  };
+};
+
+export const waitForManagedConversationPromptDispatch = async (input: {
+  activeCommandId: () => string | undefined;
+  claimInProgress: () => boolean;
+  wait?: ManagedConversationWait;
+  maxAttempts?: number;
+}): Promise<
+  | { status: "found"; commandId: string }
+  | { status: "none" }
+  | { status: "pending" }
+> => {
+  const wait = input.wait ?? waitManagedConversationRetry;
+  for (let attempt = 0; attempt < (input.maxAttempts ?? 200); attempt += 1) {
+    const commandId = input.activeCommandId();
+    if (commandId) return { status: "found", commandId };
+    if (!input.claimInProgress()) return { status: "none" };
+    await wait();
+  }
+  const commandId = input.activeCommandId();
+  if (commandId) return { status: "found", commandId };
+  return input.claimInProgress() ? { status: "pending" } : { status: "none" };
+};
+
+export const coordinateManagedConversationInterrupt = async (input: {
+  dispatchActive: () => boolean;
+  interrupt: () => Promise<boolean>;
+  wait?: ManagedConversationWait;
+  maxAttempts?: number;
+}): Promise<"interrupted" | "finished" | "deferred"> => {
+  const wait = input.wait ?? waitManagedConversationRetry;
+  for (let attempt = 0; attempt < (input.maxAttempts ?? 200); attempt += 1) {
+    if (!input.dispatchActive()) return "finished";
+    if (await input.interrupt()) return "interrupted";
+    await wait();
+  }
+  return input.dispatchActive() ? "deferred" : "finished";
+};
 
 export class ManagedConversationSourceReplicaPendingError extends Error {
   constructor(
@@ -830,6 +905,13 @@ export const createManagedConversationService = (options: {
   >();
   const activeCommandExecutionCounts = new Map<string, number>();
   const activePromptProviderTurns = new Map<string, string>();
+  const activePromptDispatches = new Map<string, string[]>();
+  const deferredInterruptTargets = new Map<string, string>();
+  const awaitingPromptDispatchControls = new Map<string, Set<string>>();
+  const activePromptDispatchId = (executionId: string): string | undefined =>
+    activePromptDispatches.get(executionId)?.[0];
+  const promptInterruptLatch = createManagedConversationPromptInterruptLatch();
+  const interruptedPromptDispatches = new Set<string>();
   const claudeCaptureStatePath = resolve(
     options.koedHome,
     "state",
@@ -851,6 +933,8 @@ export const createManagedConversationService = (options: {
   let controlsRunning = false;
   let controlsPromise: Promise<void> | null = null;
   let controlsRunAgain = false;
+  let controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let promptCommandClaimInProgress = false;
   let filesRunning = false;
   let filesPromise: Promise<void> | null = null;
   let filesRunAgain = false;
@@ -1561,6 +1645,16 @@ export const createManagedConversationService = (options: {
     await flushTransientOutput(key).catch(() => undefined);
   };
 
+  const flushTransientOutputsForExecution = async (
+    executionId: string
+  ): Promise<void> => {
+    const prefix = `${executionId}:`;
+    const keys = [...transientOutputs.keys()].filter((key) =>
+      key.startsWith(prefix)
+    );
+    await Promise.all(keys.map(flushCompletedTransientOutput));
+  };
+
   type PersonalAgentCommandContext = Pick<
     ClaimedManagedConversationCommand,
     | "id"
@@ -1931,6 +2025,8 @@ export const createManagedConversationService = (options: {
       }
       if (!renewed) {
         runtimeSessions.deleteAny(executionId);
+        await managed.session.closeAndWait().catch(() => undefined);
+        await flushTransientOutputsForExecution(executionId);
         await options.repository
           .cancelManagedConversationRuntimeItems(
             { userId: options.localOwnerUserId },
@@ -1945,7 +2041,6 @@ export const createManagedConversationService = (options: {
           )
           .catch(() => 0);
         signalRuntimeWake();
-        await managed.session.closeAndWait().catch(() => undefined);
         options.logger.warn(
           {
             event: {
@@ -5769,6 +5864,14 @@ export const createManagedConversationService = (options: {
     return fork;
   };
 
+  const assertPromptNotStopped = (
+    command: ClaimedManagedConversationCommand
+  ): void => {
+    if (!promptInterruptLatch.consumeBeforeProviderSubmission(command.id)) return;
+    interruptedPromptDispatches.add(command.id);
+    throw new ManagedConversationPromptInterruptedBeforeStartError();
+  };
+
   const runCommand = async (
     command: ClaimedManagedConversationCommand
   ): Promise<void> => {
@@ -6215,6 +6318,7 @@ export const createManagedConversationService = (options: {
         );
         await runningPersonalAgentAttempt(command);
         await withProviderLease(command, "pi", session, async (owned) => {
+          assertPromptNotStopped(command);
           const result = await owned.prompt(
             agentContext === null
               ? userPrompt
@@ -6347,7 +6451,10 @@ export const createManagedConversationService = (options: {
         }
         const result = await withClaudeLease(
           command,
-          (session) => session.prompt(turnPrompt),
+          (session) => {
+            assertPromptNotStopped(command);
+            return session.prompt(turnPrompt);
+          },
           providerRuntime.session
         );
         await flushCompletedTransientOutput(
@@ -6453,12 +6560,14 @@ export const createManagedConversationService = (options: {
       }
       const result = await withLease(
         command,
-        (session) =>
-          session.runTurn(
+        (session) => {
+          assertPromptNotStopped(command);
+          return session.runTurn(
             turnPrompt,
             turnTimeoutMs,
             `koed-user-message:${clientUserMessageId}`
-          ),
+          );
+        },
         providerRuntime.session
       );
       const binding = checkpointBinding;
@@ -8905,14 +9014,38 @@ export const createManagedConversationService = (options: {
     const moved = await processProjectMovesOnce();
     completed += moved.completed;
     failed += moved.failed;
-    const claims = await options.repository.claimManagedConversationCommands({
-      runnerId,
-      deviceId: options.deviceId,
-      deploymentId: options.deploymentId,
-      limit: 8,
-      leaseMs: commandLeaseMs
-    });
+    let claims: ClaimedManagedConversationCommand[];
+    promptCommandClaimInProgress = true;
+    try {
+      claims = await options.repository.claimManagedConversationCommands({
+        runnerId,
+        deviceId: options.deviceId,
+        deploymentId: options.deploymentId,
+        limit: 8,
+        leaseMs: commandLeaseMs
+      });
+    } finally {
+      promptCommandClaimInProgress = false;
+    }
     for (const command of claims) {
+      if (command.commandKind !== "prompt") continue;
+      const dispatches = activePromptDispatches.get(command.executionId) ?? [];
+      dispatches.push(command.id);
+      activePromptDispatches.set(command.executionId, dispatches);
+      const waitingControls = awaitingPromptDispatchControls.get(
+        command.executionId
+      );
+      if (waitingControls) {
+        for (const controlId of waitingControls) {
+          if (!deferredInterruptTargets.has(controlId)) {
+            deferredInterruptTargets.set(controlId, command.id);
+          }
+        }
+        awaitingPromptDispatchControls.delete(command.executionId);
+      }
+    }
+    for (const command of claims) {
+      const tracksPromptDispatch = command.commandKind === "prompt";
       try {
         await withCommandHeartbeat(command, () => runCommand(command));
         completed += 1;
@@ -9004,8 +9137,20 @@ export const createManagedConversationService = (options: {
           terminalRunnerStartPreparationErrors.has(originalFailureCode);
         const providerTurnInterrupted =
           isPrompt &&
-          command.execution.provider === "codex" &&
-          isManagedCodexTurnInterrupted(error);
+          (error instanceof ManagedConversationPromptInterruptedBeforeStartError ||
+            (command.execution.provider === "codex" &&
+              isManagedCodexTurnInterrupted(error)) ||
+            (command.execution.provider === "claude" &&
+              error instanceof ClaudeManagedConversationCancelledError) ||
+            (command.execution.provider === "pi" &&
+              error instanceof Error &&
+              error.message === "Pi managed turn canceled."));
+        if (
+          providerTurnInterrupted &&
+          promptInterruptLatch.hasRequest(command.id)
+        ) {
+          interruptedPromptDispatches.add(command.id);
+        }
         const failureCode = providerTurnInterrupted
           ? "ManagedConversationTurnInterruptedError"
           : originalFailureCode;
@@ -9233,6 +9378,19 @@ export const createManagedConversationService = (options: {
           },
           "managed Conversation command failed"
         );
+      } finally {
+        if (tracksPromptDispatch) {
+          const dispatches = activePromptDispatches.get(command.executionId);
+          if (dispatches) {
+            const remaining = dispatches.filter((id) => id !== command.id);
+            if (remaining.length) {
+              activePromptDispatches.set(command.executionId, remaining);
+            } else {
+              activePromptDispatches.delete(command.executionId);
+            }
+          }
+          promptInterruptLatch.clear(command.id);
+        }
       }
     }
     return { completed, failed };
@@ -9258,36 +9416,94 @@ export const createManagedConversationService = (options: {
           if (command.commandKind === "interrupt") {
             const provider = command.execution
               .provider as ManagedConversationProvider;
-            const managed = runtimeSessions.get(provider, command.executionId);
-            if (
-              !managed ||
-              managed.executionGeneration !== command.executionGeneration
-            ) {
-              throw new Error("ManagedConversationRuntimeUnavailableError");
+            let promptCommandId = deferredInterruptTargets.get(command.id);
+            if (!promptCommandId) {
+              const dispatch = await waitForManagedConversationPromptDispatch({
+                activeCommandId: () => activePromptDispatchId(command.executionId),
+                claimInProgress: () => promptCommandClaimInProgress
+              });
+              if (dispatch.status === "pending") {
+                const waitingControls =
+                  awaitingPromptDispatchControls.get(command.executionId) ??
+                  new Set<string>();
+                waitingControls.add(command.id);
+                awaitingPromptDispatchControls.set(
+                  command.executionId,
+                  waitingControls
+                );
+                throw new ManagedConversationInterruptDeferredError();
+              }
+              promptCommandId =
+                dispatch.status === "found" ? dispatch.commandId : undefined;
             }
             let result: Record<string, unknown>;
-            if (provider === "codex") {
-              result = await runtimeSessions
-                .get("codex", command.executionId)!
-                .session.interruptActiveTurn();
-            } else {
-              if (provider === "pi")
-                await runtimeSessions
-                  .get("pi", command.executionId)!
-                  .session.cancel();
-              else
-                runtimeSessions
-                  .get("claude", command.executionId)!
-                  .session.cancel();
-              await options.repository.cancelManagedConversationRuntimeItems(
-                { userId: command.ownerUserId },
-                {
-                  executionId: command.executionId,
-                  executionGeneration: command.executionGeneration
-                }
+            if (!promptCommandId) {
+              const waitingControls = awaitingPromptDispatchControls.get(
+                command.executionId
               );
-              signalRuntimeWake();
-              result = { interrupted: true };
+              waitingControls?.delete(command.id);
+              if (waitingControls?.size === 0) {
+                awaitingPromptDispatchControls.delete(command.executionId);
+              }
+              result = { interrupted: false };
+            } else if (
+              !activePromptDispatches.get(command.executionId)?.includes(promptCommandId)
+            ) {
+              result = {
+                interrupted: interruptedPromptDispatches.delete(promptCommandId)
+              };
+              promptInterruptLatch.clear(promptCommandId);
+              deferredInterruptTargets.delete(command.id);
+            } else {
+              deferredInterruptTargets.set(command.id, promptCommandId);
+              promptInterruptLatch.request(promptCommandId);
+              const interruption = await coordinateManagedConversationInterrupt({
+                dispatchActive: () =>
+                  activePromptDispatches.get(command.executionId)?.includes(promptCommandId) === true,
+                interrupt: async () => {
+                if (provider === "codex") {
+                  const managed = runtimeSessions.get("codex", command.executionId);
+                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
+                    return false;
+                  }
+                  return (await managed.session.interruptActiveTurn()).interrupted;
+                }
+                if (provider === "pi") {
+                  const managed = runtimeSessions.get("pi", command.executionId);
+                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
+                    return false;
+                  }
+                  await managed.session.cancel();
+                } else {
+                  const managed = runtimeSessions.get("claude", command.executionId);
+                  if (!managed || managed.executionGeneration !== command.executionGeneration) {
+                    return false;
+                  }
+                  managed.session.cancel();
+                }
+                return false;
+                }
+              });
+              if (interruption === "deferred") {
+                throw new ManagedConversationInterruptDeferredError();
+              }
+              const providerConfirmedInterrupted =
+                interruptedPromptDispatches.delete(promptCommandId);
+              const interrupted =
+                interruption === "interrupted" || providerConfirmedInterrupted;
+              result = { interrupted };
+              promptInterruptLatch.clear(promptCommandId);
+              deferredInterruptTargets.delete(command.id);
+              if (interrupted) {
+                await options.repository.cancelManagedConversationRuntimeItems(
+                  { userId: command.ownerUserId },
+                  {
+                    executionId: command.executionId,
+                    executionGeneration: command.executionGeneration
+                  }
+                );
+                signalRuntimeWake();
+              }
             }
             await options.repository.completeManagedConversationCommand({
               commandId: command.id,
@@ -9358,6 +9574,26 @@ export const createManagedConversationService = (options: {
           });
         });
       } catch (error) {
+        if (error instanceof ManagedConversationInterruptDeferredError) {
+          if (command.leaseToken) {
+            await options.repository
+              .failManagedConversationCommand({
+                commandId: command.id,
+                leaseToken: command.leaseToken,
+                state: "queued",
+                errorCode: error.name
+              })
+              .catch(() => undefined);
+          }
+          if (!stopped && !controlRetryTimer) {
+            controlRetryTimer = setTimeout(() => {
+              controlRetryTimer = null;
+              requestControlProcessing();
+            }, 250);
+            controlRetryTimer.unref?.();
+          }
+          continue;
+        }
         if (command.leaseToken) {
           await options.repository
             .failManagedConversationCommand({
@@ -9816,7 +10052,8 @@ export const createManagedConversationService = (options: {
       for (const transient of transientOutputs.values()) {
         if (transient.timer) clearTimeout(transient.timer);
       }
-      transientOutputs.clear();
+      if (controlRetryTimer) clearTimeout(controlRetryTimer);
+      controlRetryTimer = null;
       if (wakeReconnectTimer) clearTimeout(wakeReconnectTimer);
       wakeReconnectTimer = null;
       if (sourceWakeReconnectTimer) clearTimeout(sourceWakeReconnectTimer);
@@ -9862,6 +10099,19 @@ export const createManagedConversationService = (options: {
       ]);
       const owned = [...runtimeSessions.entries()];
       await Promise.all(
+        owned.map(([, { session }]) =>
+          session.closeAndWait().catch(() => undefined)
+        )
+      );
+      await Promise.all(
+        owned.map(([executionId]) =>
+          flushTransientOutputsForExecution(executionId)
+        )
+      );
+      for (const [executionId] of owned) {
+        releaseTransientOutputBuffers(executionId, null);
+      }
+      await Promise.all(
         owned.map(([executionId, managed]) =>
           options.repository
             .cancelManagedConversationRuntimeItems(
@@ -9876,11 +10126,6 @@ export const createManagedConversationService = (options: {
               }
             )
             .catch(() => 0)
-        )
-      );
-      await Promise.all(
-        owned.map(([, { session }]) =>
-          session.closeAndWait().catch(() => undefined)
         )
       );
       await Promise.all(

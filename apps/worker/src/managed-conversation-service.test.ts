@@ -2050,6 +2050,11 @@ describe("Managed Conversation service lifecycle", () => {
         managedHome
       };
       const cancelRuntimeItems = vi.fn(async () => 0);
+      const persistedOutputTexts: string[] = [];
+      const lifecycleOrder: string[] = [];
+      let emitDelta:
+        | ((event: { turnId: string; delta: string }) => void)
+        | undefined;
       const renewLease = vi.fn(
         async () => lifecycleEvent !== "idle lease fence"
       );
@@ -2075,23 +2080,49 @@ describe("Managed Conversation service lifecycle", () => {
         reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
         claimManagedConversationCommands: vi.fn(async () => []),
         listManagedConversationExecutionCheckpoints: vi.fn(async () => []),
-        cancelManagedConversationRuntimeItems: cancelRuntimeItems
+        cancelManagedConversationRuntimeItems: vi.fn(async (...args) => {
+          lifecycleOrder.push("cancel");
+          return cancelRuntimeItems(...args);
+        }),
+        putManagedConversationRuntimeItem: vi.fn(async (_actor, input) => {
+          lifecycleOrder.push("persist");
+          persistedOutputTexts.push(input.payload.text);
+          return { id: randomUUID() };
+        })
       };
       const start = vi
         .spyOn(CodexManagedConversationSession.prototype, "start")
-        .mockResolvedValue({
-          thread: {
-            id: providerThreadId,
-            path: transcriptPath,
-            cwd: projectPath
-          },
-          sessionId: localSessionId,
-          transcriptPath,
-          codexHome: managedHome
-        } as never);
+        .mockImplementation(async function (this: CodexManagedConversationSession) {
+          const config = (
+            this as unknown as {
+              config: {
+                appServer: {
+                  onAgentMessageDelta?: (event: {
+                    turnId: string;
+                    delta: string;
+                  }) => void;
+                };
+              };
+            }
+          ).config;
+          emitDelta = config.appServer.onAgentMessageDelta;
+          return {
+            thread: {
+              id: providerThreadId,
+              path: transcriptPath,
+              cwd: projectPath
+            },
+            sessionId: localSessionId,
+            transcriptPath,
+            codexHome: managedHome
+          } as never;
+        });
       const close = vi
         .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
-        .mockResolvedValue();
+        .mockImplementation(async () => {
+          lifecycleOrder.push("close");
+          emitDelta?.({ turnId: "partial-turn", delta: "-tail" });
+        });
       const checkoutDriver = {
         verify: vi.fn(async () => ({
           checkoutId: binding.checkoutId,
@@ -2132,7 +2163,11 @@ describe("Managed Conversation service lifecycle", () => {
       });
       try {
         await service.processOnce();
-        await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(start).toHaveBeenCalled());
+        emitDelta?.({ turnId: "partial-turn", delta: "prefix" });
+        await vi.waitFor(() =>
+          expect(persistedOutputTexts).toContain("prefix")
+        );
 
         if (lifecycleEvent === "shutdown") {
           await service.stop();
@@ -2156,6 +2191,10 @@ describe("Managed Conversation service lifecycle", () => {
           }
         );
         expect(close).toHaveBeenCalledOnce();
+        expect(persistedOutputTexts.at(-1)).toBe("prefix-tail");
+        expect(lifecycleOrder.lastIndexOf("close")).toBeLessThan(
+          lifecycleOrder.lastIndexOf("cancel")
+        );
       } finally {
         await service.stop();
         start.mockRestore();
