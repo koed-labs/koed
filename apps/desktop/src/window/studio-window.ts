@@ -571,7 +571,35 @@ export const createStudioWindowController = (input: {
       const awaited = await actionCommand("collaboration.await_action_grant", {
         actionGrant: status.actionGrant
       });
-      if (!awaited.ok || awaited.command !== "collaboration.await_action_grant") {
+      if (!awaited.ok) {
+        if (
+          awaited.command !== "collaboration.await_action_grant" ||
+          !awaited.error.retryable
+        ) {
+          throw new Error("Native Action Grant wait failed.");
+        }
+        const retryRemainingMs = Date.parse(status.expiresAt) - Date.now();
+        if (!Number.isFinite(retryRemainingMs) || retryRemainingMs <= 0) {
+          throw new Error("Native Action Grant expired.");
+        }
+        const retryDelayMs = Math.min(
+          Math.max(awaited.error.retryAfterMs ?? 1_500, 250),
+          retryRemainingMs
+        );
+        await new Promise<void>((resolveDelay) =>
+          setTimeout(resolveDelay, retryDelayMs)
+        );
+        if (
+          lifecycle !== collaborationLifecycle ||
+          lifecycle.signal.aborted ||
+          ownerId !== collaborationOwnerId
+        ) {
+          throw new Error("Studio collaboration authority changed during the request.");
+        }
+        assertAuthorityCurrent();
+        continue;
+      }
+      if (awaited.command !== "collaboration.await_action_grant") {
         throw new Error("Native Action Grant wait failed.");
       }
       status = awaited.data.status;

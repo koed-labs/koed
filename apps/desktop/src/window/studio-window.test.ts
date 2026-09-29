@@ -596,16 +596,22 @@ describe("Studio window controller", () => {
       confirmLabel: "Revoke access",
       details: [{ label: "Team", value: teamId }]
     };
-    const status = (state: "review_required" | "approved") => ({
+    let expiresAt = new Date(Date.now() + 30_000).toISOString();
+    const status = (state: "review_required" | "pending" | "approved") => ({
       version: 1 as const,
       actionGrant: grantReference,
-      approvalTier: "native_review" as const,
+      approvalTier:
+        state === "pending" ? ("step_up" as const) : ("native_review" as const),
       review: nativeReview,
       state,
-      activationUrl: null,
-      expiresAt: "2026-09-25T12:05:00.000Z"
+      activationUrl:
+        state === "pending"
+          ? "https://team.example.test/koed/high-risk/browser-activations/77777777-7777-4777-8777-777777777777"
+          : null,
+      expiresAt
     });
     const sent: CollaborationRendererCommand[] = [];
+    let awaitCount = 0;
     const originalRequestId = "88888888-8888-4888-8888-888888888888";
     const controller = createStudioWindowController({
       allowedRendererOrigins: new Set(),
@@ -638,6 +644,31 @@ describe("Studio window controller", () => {
         }
         if (parsed.command === "collaboration.confirm_action_grant") {
           expect(parsed.input).toEqual({ actionGrant: grantReference, decision: "approve" });
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: true,
+            data: { status: status("pending") }
+          };
+        }
+        if (parsed.command === "collaboration.await_action_grant") {
+          awaitCount += 1;
+          expect(parsed.input).toEqual({ actionGrant: grantReference });
+          if (awaitCount === 1) {
+            return {
+              contractVersion: COLLABORATION_CONTRACT_VERSION,
+              requestId: parsed.requestId,
+              command: parsed.command,
+              ok: false,
+              error: {
+                code: "temporarily_unavailable",
+                userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+                retryable: true,
+                retryAfterMs: 0
+              }
+            };
+          }
           return {
             contractVersion: COLLABORATION_CONTRACT_VERSION,
             requestId: parsed.requestId,
@@ -687,6 +718,7 @@ describe("Studio window controller", () => {
       }
     });
     expect(result).toMatchObject({ ok: false, command: "collaboration.revoke_shared_memory" });
+    expect(awaitCount).toBe(2);
     const requested = sent.find((command) => command.command === "collaboration.request_action_grant");
     expect(requested).toMatchObject({
       input: {
@@ -702,6 +734,31 @@ describe("Studio window controller", () => {
       requestId: originalRequestId,
       input: { actionGrant: grantReference }
     });
+
+    expiresAt = new Date(Date.now() - 1).toISOString();
+    const awaitCountBeforeExpiry = awaitCount;
+    const mutationCountBeforeExpiry = sent.filter(
+      (command) => command.command === "collaboration.revoke_shared_memory"
+    ).length;
+    await expect(
+      gatewayOptions!.runStudioCollaborationCommand!({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command: "collaboration.revoke_shared_memory",
+        input: {
+          mutationId: crypto.randomUUID(),
+          teamId,
+          workspaceId: "44444444-4444-4444-8444-444444444444",
+          shareGrantId: "55555555-5555-4555-8555-555555555555",
+          expectedGrantVersion: 3,
+          reasonCode: "owner_revoked"
+        }
+      })
+    ).rejects.toThrow("Native Action Grant expired");
+    expect(awaitCount).toBe(awaitCountBeforeExpiry);
+    expect(
+      sent.filter((command) => command.command === "collaboration.revoke_shared_memory")
+    ).toHaveLength(mutationCountBeforeExpiry);
 
     await expect(
       gatewayOptions!.runStudioCollaborationCommand!({
@@ -742,7 +799,7 @@ describe("Studio window controller", () => {
     await controller.close();
   });
 
-  it("stops a pending native mutation when the active principal changes during review", async () => {
+  it("stops a pending native mutation when the active principal changes during a retry wait", async () => {
     const fake = makeWindow();
     let gatewayOptions: StudioGatewayOptions | undefined;
     let activeSnapshot: ReturnType<typeof collaborationSnapshot> = collaborationSnapshot();
@@ -765,9 +822,10 @@ describe("Studio window controller", () => {
       review,
       state: "review_required" as const,
       activationUrl: null,
-      expiresAt: "2026-09-25T12:05:00.000Z"
+      expiresAt: new Date(Date.now() + 30_000).toISOString()
     };
     const sent: CollaborationRendererCommand[] = [];
+    let awaitCount = 0;
     const controller = createStudioWindowController({
       allowedRendererOrigins: new Set(),
       createWindow: () => fake.window,
@@ -793,6 +851,61 @@ describe("Studio window controller", () => {
             command: parsed.command,
             ok: true,
             data: { status: nativeStatus }
+          };
+        }
+        if (parsed.command === "collaboration.confirm_action_grant") {
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: true,
+            data: {
+              status: {
+                ...nativeStatus,
+                state: "pending",
+                approvalTier: "step_up",
+                activationUrl:
+                  "https://team.example.test/koed/high-risk/browser-activations/77777777-7777-4777-8777-777777777777"
+              }
+            }
+          };
+        }
+        if (parsed.command === "collaboration.await_action_grant") {
+          awaitCount += 1;
+          activeSnapshot = {
+            ...activeSnapshot,
+            navigation: {
+              ...activeSnapshot.navigation,
+              teamPrincipal: {
+                ...activeSnapshot.navigation.teamPrincipal!,
+                id: "66666666-6666-4666-8666-666666666666"
+              },
+              teams: activeSnapshot.navigation.teams.map((team) => ({
+                ...team,
+                people: team.people.map((person) => ({
+                  ...person,
+                  id: "66666666-6666-4666-8666-666666666666"
+                }))
+              }))
+            }
+          };
+          await gatewayOptions!.runStudioCollaborationCommand!({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: crypto.randomUUID(),
+            command: "collaboration.load",
+            input: {}
+          });
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: false,
+            error: {
+              code: "temporarily_unavailable",
+              userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+              retryable: true,
+              retryAfterMs: 0
+            }
           };
         }
         return {
@@ -836,31 +949,9 @@ describe("Studio window controller", () => {
       }
     });
     await reviewShown;
-    activeSnapshot = {
-      ...activeSnapshot,
-      navigation: {
-        ...activeSnapshot.navigation,
-        teamPrincipal: {
-          ...activeSnapshot.navigation.teamPrincipal!,
-          id: "66666666-6666-4666-8666-666666666666"
-        },
-        teams: activeSnapshot.navigation.teams.map((team) => ({
-          ...team,
-          people: team.people.map((person) => ({
-            ...person,
-            id: "66666666-6666-4666-8666-666666666666"
-          }))
-        }))
-      }
-    };
-    await gatewayOptions!.runStudioCollaborationCommand!({
-      contractVersion: COLLABORATION_CONTRACT_VERSION,
-      requestId: crypto.randomUUID(),
-      command: "collaboration.load",
-      input: {}
-    });
     releaseReview(true);
-    await expect(pending).rejects.toThrow("account, or selected source changed");
+    await expect(pending).rejects.toThrow("Team, account, or selected source changed");
+    expect(awaitCount).toBe(1);
     expect(sent.some((command) => command.command === "collaboration.revoke_shared_memory")).toBe(false);
     await controller.close();
   });
