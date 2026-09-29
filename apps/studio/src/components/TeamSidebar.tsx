@@ -16,6 +16,7 @@ import {
   X,
   Users
 } from "lucide-react";
+import type { CollaborationThread } from "@koed/shared/collaboration";
 import {
   CURRENT_USER_ID,
   isDmUnread,
@@ -33,6 +34,7 @@ import { useSidebar } from "./SidebarContext";
 import { Tooltip } from "./Tooltip";
 import { useWorkspace } from "./WorkspaceProvider";
 import { useActionItems } from "./useActionItems";
+import { NewDirectMessageModal } from "./NewDirectMessageModal";
 
 // The whole team-side sidebar is flat now: no project folders, no
 // drill-down that hides every project but the one you clicked into. A
@@ -61,18 +63,25 @@ export function TeamChannelNavigation({
   teamName,
   channels,
   people = [],
+  principalUserId,
+  directMessages = [],
   selectedId,
   onSelect,
-  onCreate
+  onCreate,
+  onNewDirectMessage
 }: {
   teamName: string;
   channels: Array<{ id: string; name: string | null }>;
   people?: Array<{ id: string; name: string }>;
+  principalUserId: string;
+  directMessages?: Array<Extract<CollaborationThread, { kind: "dm" | "group_dm" }>>;
   selectedId: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onNewDirectMessage: (participantUserIds: string[]) => Promise<void>;
 }) {
   const { isOpen, toggleSidebar, width } = useSidebar();
+  const [newDmOpen, setNewDmOpen] = useState(false);
   if (!isOpen) return null;
   const openMobileDestination = (callback: () => void) => {
     callback();
@@ -128,16 +137,22 @@ export function TeamChannelNavigation({
           <Plus className="mr-2.5 h-3.5 w-3.5" />
           <span className="text-xs">New channel</span>
         </button>
-        <div className="mt-4 flex items-center px-4 py-1.5 text-sm font-medium text-foreground-secondary">
-          <Users className="mr-2 h-4 w-4 text-subtle" />Colleagues
+        <div className="mt-4 flex items-center justify-between px-4 py-1.5">
+          <span className="flex items-center text-sm font-medium text-foreground-secondary"><Users className="mr-2 h-4 w-4 text-subtle" />Colleagues</span>
+          <Tooltip content="New direct message" side="bottom"><button type="button" aria-label="New direct message" onClick={() => setNewDmOpen(true)} className="rounded-md p-1 text-subtle transition-colors hover:bg-surface-hover hover:text-foreground-secondary"><Plus className="h-3.5 w-3.5" /></button></Tooltip>
         </div>
-        {people.map((person) => (
-          <button key={person.id} type="button" disabled title="Direct messages are unavailable here yet." className={`${ROW_ITEM} ${ROW_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
-            <span className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">{person.name.slice(0, 1).toUpperCase()}</span>
-            <span className="truncate">{person.name}</span>
-          </button>
-        ))}
+        {directMessages.slice().sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)).map((thread) => {
+          const others = thread.participants.filter((person) => person.id !== principalUserId);
+          const name = others.map((person) => person.displayName).join(", ") || "Direct message";
+          const unread = thread.unreadCount > 0;
+          return <button key={thread.id} type="button" aria-current={thread.id === selectedId ? "page" : undefined} aria-label={name} onClick={() => openMobileDestination(() => onSelect(thread.id))} className={`${ROW_ITEM} ${unread ? "font-semibold" : ""} ${thread.id === selectedId ? ROW_ITEM_ACTIVE : ROW_ITEM_INACTIVE}`}>
+            <span className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">{thread.kind === "group_dm" ? <Users className="h-3.5 w-3.5" /> : name.slice(0, 1).toUpperCase()}</span>
+            <span className="min-w-0 flex-1 truncate text-left">{name}</span>
+            {unread && <span aria-label={`${thread.unreadCount} unread`} className="ml-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+          </button>;
+        })}
       </nav>
+      {newDmOpen && <NewDirectMessageModal members={people} principalUserId={principalUserId} onClose={() => setNewDmOpen(false)} onStart={onNewDirectMessage} />}
     </aside>
   );
 }

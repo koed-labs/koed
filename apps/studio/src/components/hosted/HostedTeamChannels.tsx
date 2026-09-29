@@ -4,14 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CollaborationMessage, CollaborationThread } from "@koed/shared/collaboration";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ChannelHeader } from "@/components/ChannelView";
+import { TeamDirectMessageBubble, directMessageTitle } from "@/components/TeamDirectMessage";
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { SidebarProvider } from "@/components/SidebarContext";
 import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import type { HostedTeam, HostedUser } from "@/lib/hosted-session";
 import { HostedTeamCollaborationClient, HostedTeamRequestError } from "@/lib/hosted-team-collaboration";
+import type { HostedTeamPerson } from "@/lib/hosted-team-collaboration";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
-import { mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches } from "@/lib/team-channel-state";
+import { directMessageAttemptKey, directMessageParticipantsAreEligible, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches } from "@/lib/team-channel-state";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 
 const makeAuthority = (teamId: string, threadId: string, userId: string): StudioTeamDraftAuthority => ({
@@ -33,8 +35,13 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   }, []);
   const [channels, setChannels] = useState<CollaborationThread[]>([]);
   const [projects, setProjects] = useState<Array<{ id: string; name: string; thread: CollaborationThread }>>([]);
+  const [people, setPeople] = useState<HostedTeamPerson[]>([]);
+  const [directMessages, setDirectMessages] = useState<CollaborationThread[]>([]);
+  const [navigationLoadedOwner, setNavigationLoadedOwner] = useState("");
   const [threadId, setThreadId] = useState("");
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [messageSelection, setMessageSelection] = useState<{ teamId: string; threadId: string } | null>(null);
+  const [loadedPage, setLoadedPage] = useState<{ teamId: string; threadId: string } | null>(null);
   const [beforeSequence, setBeforeSequence] = useState<number | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [draftText, setDraftText] = useState("");
@@ -44,19 +51,34 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [visibleRead, setVisibleRead] = useState<{ id: string; sequence: number } | null>(null);
+  const [visibleRead, setVisibleRead] = useState<{ id: string; sequence: number; teamId: string; threadId: string } | null>(null);
   const [readCursor, setReadCursor] = useState(0);
   const messagesRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const revokedRef = useRef(false);
   const navigationGeneration = useRef(0);
+  const directMessageRequestIds = useRef(new Map<string, string>());
+  const navigationOwner = useRef("");
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
   const selectedThreadRef = useRef(threadId);
   selectedThreadRef.current = threadId;
-  const activeThreads = useMemo(() => [...channels, ...projects.map((project) => project.thread)], [channels, projects]);
+  const ownerKey = `${user.id}:${team.id}`;
+  const navigationReady = navigationLoadedOwner === ownerKey;
+  const visibleChannels = useMemo(() => navigationReady ? channels : [], [channels, navigationReady]);
+  const visibleProjects = useMemo(() => navigationReady ? projects : [], [navigationReady, projects]);
+  const visiblePeople = useMemo(() => navigationReady ? people : [], [navigationReady, people]);
+  const visibleDirectMessages = useMemo(() => navigationReady ? directMessages : [], [directMessages, navigationReady]);
+  const activeThreads = useMemo(() => [...visibleChannels, ...visibleProjects.map((project) => project.thread), ...visibleDirectMessages], [visibleChannels, visibleDirectMessages, visibleProjects]);
   const activeThread = activeThreads.find((thread) => thread.id === threadId) ?? null;
+  const messageViewReady = Boolean(navigationReady && activeThread && messageSelection?.teamId === team.id && messageSelection.threadId === activeThread.id);
+  const visibleMessages = messageViewReady ? messages : [];
+  const visiblePage = messageViewReady && loadedPage?.teamId === team.id && loadedPage.threadId === activeThread?.id;
+  const activeDirectMessage = activeThread?.kind === "dm" || activeThread?.kind === "group_dm" ? activeThread : null;
+  const activeDirectMessageTitle = activeDirectMessage ? directMessageTitle(activeDirectMessage, user.id) : "";
   const authority = activeThread ? makeAuthority(team.id, activeThread.id, user.id) : null;
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  const visibleDraftText = authorityKey && hydratedKey === authorityKey ? draftText : "";
+  const visiblePendingSend = authorityKey && hydratedKey === authorityKey ? pendingSend : null;
   if (authorityKey && hydratedKey === authorityKey) draftByAuthority.current.set(authorityKey, { text: draftText, pendingSend });
 
   const handleAuthorizationLost = useCallback(() => {
@@ -64,9 +86,14 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     navigationGeneration.current += 1;
     setChannels([]);
     setProjects([]);
+    setPeople([]);
+    setDirectMessages([]);
+    setNavigationLoadedOwner("");
     setThreadId("");
     selectedThreadRef.current = "";
     setMessages([]);
+    setMessageSelection(null);
+    setLoadedPage(null);
     setBeforeSequence(null);
     setHasOlder(false);
     setDraftText("");
@@ -84,40 +111,82 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
 
   const refreshNavigation = useCallback(async () => {
     const generation = ++navigationGeneration.current;
+    const ownerKey = `${user.id}:${team.id}`;
+    const preserveSelection = navigationOwner.current === ownerKey;
+    const priorThreadId = preserveSelection ? selectedThreadRef.current : "";
+    if (!preserveSelection) {
+      navigationOwner.current = ownerKey;
+      setChannels([]);
+      setProjects([]);
+      setPeople([]);
+      setDirectMessages([]);
+      setThreadId("");
+      selectedThreadRef.current = "";
+      setMessages([]);
+      setDraftText("");
+      setPendingSend(null);
+      setHydrated(false);
+      setHydratedKey(null);
+      setVisibleRead(null);
+      draftByAuthority.current.clear();
+    }
     setLoading(true);
     try {
-      const [nextChannels, nextProjects] = await Promise.all([client.listChannels(team.id), client.listProjects(team.id)]);
+      const [nextChannels, nextProjects, nextPeople, nextDirectMessages] = await Promise.all([
+        client.listChannels(team.id), client.listProjects(team.id), client.listPeople(team.id), client.listDirectMessages(team.id)
+      ]);
       if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
       revokedRef.current = false;
       setChannels(nextChannels);
       setProjects(nextProjects);
-      setThreadId((current) => current && [...nextChannels, ...nextProjects.map((project) => project.thread)].some((thread) => thread.id === current)
-        ? current
-        : nextChannels.find((thread) => thread.name === "general")?.id ?? nextChannels[0]?.id ?? nextProjects[0]?.thread.id ?? "");
+      setPeople(nextPeople);
+      setDirectMessages(nextDirectMessages);
+      setNavigationLoadedOwner(ownerKey);
+      const availableThreads = [...nextChannels, ...nextProjects.map((project) => project.thread), ...nextDirectMessages];
+      const initialThreadId = availableThreads.some((thread) => thread.id === priorThreadId)
+        ? priorThreadId
+        : nextChannels.find((thread) => thread.name === "general")?.id ?? nextChannels[0]?.id ?? nextProjects[0]?.thread.id ?? nextDirectMessages[0]?.id ?? "";
+      if (priorThreadId && priorThreadId !== initialThreadId) {
+        setMessages([]);
+        setMessageSelection(null);
+        setLoadedPage(null);
+        setBeforeSequence(null);
+        setHasOlder(false);
+        setDraftText("");
+        setPendingSend(null);
+        setHydrated(false);
+        setHydratedKey(null);
+        setVisibleRead(null);
+      }
+      setThreadId(initialThreadId);
+      selectedThreadRef.current = initialThreadId;
       setError(null);
     } catch (failure) {
       if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) return;
       if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else setError(failure instanceof Error ? failure.message : "Team channels are unavailable.");
     } finally { if (studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current })) setLoading(false); }
-  }, [client, handleAuthorizationLost, team.id]);
+  }, [client, handleAuthorizationLost, team.id, user.id]);
 
   const loadPage = useCallback(async (id: string, before: number | null = null, prepend = false) => {
+    const ownerKey = `${user.id}:${team.id}`;
     try {
       const page = await client.loadMessages(team.id, id, before, 50);
-      if (!mountedRef.current || selectedThreadRef.current !== id) return;
+      if (!mountedRef.current || navigationOwner.current !== ownerKey || selectedThreadRef.current !== id) return;
       setMessages((current) => {
         return mergeTeamMessages(current, page.items);
       });
+      setMessageSelection({ teamId: team.id, threadId: id });
+      setLoadedPage({ teamId: team.id, threadId: id });
       setHasOlder(page.hasOlder);
       setBeforeSequence(page.nextBeforeSequence);
       setError(null);
     } catch (failure) {
-      if (!mountedRef.current || selectedThreadRef.current !== id) return;
+      if (!mountedRef.current || navigationOwner.current !== ownerKey || selectedThreadRef.current !== id) return;
       if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else setError(failure instanceof Error ? failure.message : "Channel history is unavailable.");
     }
-  }, [client, handleAuthorizationLost, team.id]);
+  }, [client, handleAuthorizationLost, team.id, user.id]);
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; navigationGeneration.current += 1; }; }, []);
   useEffect(() => { void refreshNavigation(); }, [refreshNavigation]);
@@ -136,21 +205,44 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     setHydrated(false);
     setHydratedKey(null);
     setMessages([]);
+    setMessageSelection(null);
+    setLoadedPage(null);
     setBeforeSequence(null);
     setHasOlder(false);
-    void drafts.retainAuthorizedTeams({ backendId: authority.backendId, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) }).then(() => drafts.load(authority)).then((stored) => {
+    const authorize = activeThread.kind === "dm" || activeThread.kind === "group_dm"
+      ? client.listDirectMessages(team.id).then((threads) => threads.some((thread) => thread.id === activeThread.id && (thread.kind === "dm" || thread.kind === "group_dm")))
+      : Promise.resolve(true);
+    void authorize.then((authorized) => {
+      if (!current || revokedRef.current) return null;
+      if (!authorized) {
+        setMessages([]);
+        setDraftText("");
+        setPendingSend(null);
+        setError("This direct message is no longer available to your account.");
+        const fallback = channels.find((thread) => thread.name === "general")?.id ?? channels[0]?.id ?? projects[0]?.thread.id ?? "";
+        selectedThreadRef.current = fallback;
+        setThreadId(fallback);
+        return null;
+      }
+      void loadPage(activeThread.id);
+      return drafts.retainAuthorizedTeams({ backendId: authority.backendId, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) }).then(() => drafts.load(authority));
+    }).then((stored) => {
+      if (!stored) return;
       if (!current || revokedRef.current) return;
       draftByAuthority.current.set(JSON.stringify(authority), { text: stored?.text ?? "", pendingSend: stored?.pendingSend ?? null });
       setDraftText(stored?.text ?? "");
       setPendingSend(stored?.pendingSend ?? null);
       setHydrated(true);
       setHydratedKey(JSON.stringify(authority));
-    }).catch(() => {
-      if (current) setError("Encrypted draft recovery is unavailable in this browser.");
+    }).catch((failure: unknown) => {
+      if (!current || revokedRef.current) return;
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
+      else setError(activeThread.kind === "dm" || activeThread.kind === "group_dm"
+        ? "Direct message access could not be checked. Try again."
+        : "Encrypted draft recovery is unavailable in this browser.");
     });
-    void loadPage(activeThread.id);
     return () => { current = false; };
-  }, [activeThread?.id, allTeams, authority?.backendId, authority?.principalUserId, authority?.teamId, drafts, handleAuthorizationLost, loadPage, team.id, user.id]);
+  }, [activeThread?.id, activeThread?.kind, allTeams, authority?.backendId, authority?.principalUserId, authority?.teamId, channels, client, drafts, handleAuthorizationLost, loadPage, projects, team.id, user.id]);
   useEffect(() => {
     if (!drafts || !authority || !hydrated || hydratedKey !== authorityKey) return;
     const value: StudioTeamDraft = { text: draftText, pendingSend, updatedAt: new Date().toISOString() };
@@ -169,9 +261,13 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     return unsubscribe;
   }, [client, handleAuthorizationLost, loadPage, refreshNavigation, team.id]);
   useEffect(() => {
-    if (!activeThread || !visibleRead || !document.hasFocus() || document.visibilityState !== "visible" || visibleRead.sequence <= readCursor || visibleRead.sequence <= 0) return;
-    void client.markRead(team.id, activeThread.id, visibleRead.id).then(() => setReadCursor(visibleRead.sequence)).catch(() => undefined);
-  }, [activeThread, client, readCursor, team.id, visibleRead]);
+    if (!navigationReady || !activeThread || !visibleRead || visibleRead.teamId !== team.id || visibleRead.threadId !== activeThread.id || !document.hasFocus() || document.visibilityState !== "visible" || visibleRead.sequence <= readCursor || visibleRead.sequence <= 0) return;
+    const capturedOwnerKey = `${user.id}:${team.id}`;
+    const capturedThreadId = activeThread.id;
+    void client.markRead(team.id, capturedThreadId, visibleRead.id).then(() => {
+      if (navigationOwner.current === capturedOwnerKey && selectedThreadRef.current === capturedThreadId) setReadCursor(visibleRead.sequence);
+    }).catch(() => undefined);
+  }, [activeThread, client, navigationReady, readCursor, team.id, user.id, visibleRead]);
 
   const send = async (body: string) => {
     if (!activeThread || !authority || !drafts || !hydrated) return;
@@ -179,6 +275,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     const capturedAuthority = authority;
     const capturedKey = authorityKey;
     const capturedTeamId = team.id;
+    const capturedOwnerKey = `${user.id}:${team.id}`;
     const capturedThreadId = activeThread.id;
     if (!capturedKey) return;
     const identity = { clientMessageId: crypto.randomUUID(), body, createdAt: new Date().toISOString() };
@@ -188,11 +285,11 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     let requestStarted = false;
     try {
       await drafts.save(capturedAuthority, { text: "", pendingSend: identity });
-      if (revokedRef.current || !mountedRef.current) return;
+      if (revokedRef.current || !mountedRef.current || navigationOwner.current !== capturedOwnerKey) return;
       requestStarted = true;
       const message = await client.sendMessage(capturedTeamId, capturedThreadId, identity.body, identity.clientMessageId);
-      if (revokedRef.current || !mountedRef.current) return;
-      const currentlySelected = studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
+      if (revokedRef.current || !mountedRef.current || navigationOwner.current !== capturedOwnerKey) return;
+      const currentlySelected = navigationOwner.current === capturedOwnerKey && studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
       if (currentlySelected) setMessages((current) => [...current.filter((item) => item.id !== message.id), message].slice(-250));
       const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: identity };
       const settled = resolvePendingSend(latest, identity.clientMessageId, "accepted", identity.body);
@@ -208,7 +305,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         setError(null);
       }
     } catch (failure) {
-      if (!mountedRef.current || revokedRef.current) return;
+      if (!mountedRef.current || revokedRef.current || navigationOwner.current !== capturedOwnerKey) return;
       const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: identity };
       const definitiveRejection = failure instanceof HostedTeamRequestError && [400, 404, 422].includes(failure.status);
       const settled = requestStarted && !definitiveRejection
@@ -216,7 +313,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         : resolvePendingSend(latest, identity.clientMessageId, "not-sent", body);
       draftByAuthority.current.set(capturedKey, settled);
       await drafts.save(capturedAuthority, settled).catch(() => undefined);
-      if (studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) {
+      if (navigationOwner.current === capturedOwnerKey && studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) {
         setPendingSend(settled.pendingSend);
         setDraftText(settled.text);
       }
@@ -231,10 +328,11 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     const capturedAuthority = authority;
     const capturedKey = authorityKey;
     const capturedThreadId = activeThread.id;
+    const capturedOwnerKey = `${user.id}:${team.id}`;
     try {
       const message = await client.sendMessage(team.id, capturedThreadId, pending.body, pending.clientMessageId);
-      if (revokedRef.current || !mountedRef.current) return;
-      const currentlySelected = studioSelectionMatches({ teamId: team.id, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
+      if (revokedRef.current || !mountedRef.current || navigationOwner.current !== capturedOwnerKey) return;
+      const currentlySelected = navigationOwner.current === capturedOwnerKey && studioSelectionMatches({ teamId: team.id, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current });
       if (currentlySelected) setMessages((current) => [...current.filter((item) => item.id !== message.id), message].slice(-250));
       const latest = draftByAuthority.current.get(capturedKey!) ?? { text: draftText, pendingSend: pending };
       const settled = resolvePendingSend(latest, pending.clientMessageId, "accepted", pending.body);
@@ -250,7 +348,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         setError(null);
       }
     } catch (failure) {
-      if (!mountedRef.current || revokedRef.current) return;
+      if (!mountedRef.current || revokedRef.current || navigationOwner.current !== capturedOwnerKey) return;
       if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
       else if (studioSelectionMatches({ teamId: team.id, threadId: capturedThreadId }, { teamId: team.id, threadId: selectedThreadRef.current }) && authorityKey === capturedKey) setError("Send status is still unknown. Keep the original send identity and try again.");
     }
@@ -270,6 +368,32 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
       setError(failure instanceof Error ? failure.message : "Channel creation failed.");
     }
   };
+
+  const startDirectMessage = async (participantUserIds: string[]) => {
+    const generation = navigationGeneration.current;
+    const ownerKey = `${user.id}:${team.id}`;
+    const enabledMemberIds = new Set(people.filter((person) => person.membershipState === "enabled").map((person) => person.id));
+    const participants = participantUserIds.slice().sort();
+    if (!directMessageParticipantsAreEligible({ principalUserId: user.id, participantUserIds: participants, enabledMemberIds })) throw new Error("Choose an enabled teammate to message.");
+    const requestKey = directMessageAttemptKey(team.id, user.id, participants);
+    const requestId = directMessageRequestIds.current.get(requestKey) ?? crypto.randomUUID();
+    directMessageRequestIds.current.set(requestKey, requestId);
+    try {
+      const thread = participants.length === 1
+        ? await client.startDirectMessage(team.id, participants[0], requestId)
+        : await client.startGroupDirectMessage(team.id, participants, requestId);
+      if (!studioRequestMayApply({ capturedGeneration: generation, currentGeneration: navigationGeneration.current, mounted: mountedRef.current }) || ownerKey !== `${user.id}:${team.id}` || revokedRef.current) return;
+      directMessageRequestIds.current.delete(requestKey);
+      setDirectMessages((current) => [...current.filter((item) => item.id !== thread.id), thread]);
+      setThreadId(thread.id);
+      selectedThreadRef.current = thread.id;
+      setError(null);
+    } catch (failure) {
+      if (failure instanceof HostedTeamRequestError && [400, 404, 422].includes(failure.status)) directMessageRequestIds.current.delete(requestKey);
+      if (failure instanceof HostedTeamRequestError && [401, 403].includes(failure.status)) handleAuthorizationLost();
+      throw failure;
+    }
+  };
   const updateDraft = (value: string) => {
     if (authorityKey && hydratedKey === authorityKey) draftByAuthority.current.set(authorityKey, { text: value, pendingSend });
     setDraftText(value);
@@ -277,16 +401,23 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
 
   return <div className="flex h-full min-h-0 min-w-0 flex-1 bg-background">
     <SidebarProvider>
-      <TeamChannelNavigation teamName={team.name} channels={activeThreads.map((thread) => ({ id: thread.id, name: thread.name }))} people={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} />
+      <TeamChannelNavigation teamName={team.name} channels={activeThreads.filter((thread) => thread.kind !== "dm" && thread.kind !== "group_dm").map((thread) => ({ id: thread.id, name: thread.name }))} people={visiblePeople.map((person) => ({ id: person.id, name: person.displayName }))} principalUserId={user.id} directMessages={visibleDirectMessages.filter((thread): thread is Extract<CollaborationThread, { kind: "dm" | "group_dm" }> => thread.kind === "dm" || thread.kind === "group_dm")} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} onNewDirectMessage={startDirectMessage} />
       <div className="relative min-h-0 min-w-0 flex-1">
       <TeamShell
-        wallpaper
-        subheader={<ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={team.members.map((member) => ({ id: member.id, name: member.name ?? "Team member" }))} />}
-        footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl">{pendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Reconcile before retrying.</span><button type="button" onClick={() => void reconcile()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<ChatComposer placeholder={`Message #${activeThread?.name ?? "channel"}`} projectName={activeThread?.name ?? team.name} branch="shared" value={draftText} onChange={updateDraft} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && drafts && hydrated && hydratedKey === authorityKey)} footer={pendingSend ? "Resolve the previous send before sending this edit." : "Message everyone in this channel."} /></div></footer>}
+        wallpaper={!activeDirectMessage}
+        crumbs={activeDirectMessage ? [team.name, activeDirectMessageTitle] : undefined}
+        subheader={!activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={people.filter((person) => person.membershipState === "enabled").map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
+        footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Reconcile before retrying.</span><button type="button" onClick={() => void reconcile()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? team.name : activeThread?.name ?? team.name} branch="shared" value={visibleDraftText} onChange={updateDraft} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && drafts && hydrated && hydratedKey === authorityKey)} footer={visiblePendingSend ? "Resolve the previous send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></div></div></footer>}
       >
-        <div ref={messagesRef} className="mx-auto max-w-3xl space-y-3">{hasOlder && beforeSequence && <button type="button" onClick={() => activeThread && void loadPage(activeThread.id, beforeSequence, true)} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}{messages.length === 0 && <p className="pt-8 text-sm text-subtle">No messages yet. Start the conversation.</p>}{messages.map((message) => <HostedMessage key={message.id} message={message} onVisible={() => {
-        if (message.sender.id !== user.id) setVisibleRead((current) => !current || message.sequence > current.sequence ? { id: message.id, sequence: message.sequence } : current);
-      }} />)}</div>
+        <div ref={messagesRef} className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}>
+          {visiblePage && hasOlder && beforeSequence && <button type="button" onClick={() => activeThread && void loadPage(activeThread.id, beforeSequence, true)} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
+          {visibleMessages.length === 0 && <p className="text-sm text-subtle">{activeDirectMessage ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.` : "No messages yet. Start the conversation."}</p>}
+          {visibleMessages.map((message) => <HostedMessage key={message.id} message={message} directMessagePrincipalUserId={activeDirectMessage ? user.id : undefined} onVisible={() => {
+            if (message.sender.id !== user.id && activeThread?.id === message.threadId && selectedThreadRef.current === message.threadId && message.teamId === team.id && document.visibilityState === "visible" && document.hasFocus()) {
+              setVisibleRead((current) => !current || message.sequence > current.sequence ? { id: message.id, sequence: message.sequence, teamId: team.id, threadId: message.threadId } : current);
+            }
+          }} />)}
+        </div>
         {error && <p role="status" className="mx-auto w-full max-w-3xl pt-2 text-xs text-warning">{error}</p>}
       </TeamShell>
       </div>
@@ -295,7 +426,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   </div>;
 }
 
-function HostedMessage({ message, onVisible }: { message: CollaborationMessage; onVisible: () => void }) {
+function HostedMessage({ message, onVisible, directMessagePrincipalUserId }: { message: CollaborationMessage; onVisible: () => void; directMessagePrincipalUserId?: string }) {
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     const element = ref.current;
@@ -312,5 +443,9 @@ function HostedMessage({ message, onVisible }: { message: CollaborationMessage; 
     document.addEventListener("visibilitychange", focused);
     return () => { observer.disconnect(); window.removeEventListener("focus", focused); document.removeEventListener("visibilitychange", focused); };
   }, [onVisible]);
-  return <article ref={ref} className="flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{message.sender.displayName.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{message.sender.displayName}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p></div></article>;
+  const isDirectMessage = directMessagePrincipalUserId !== undefined;
+  const isYou = isDirectMessage && message.sender.id === directMessagePrincipalUserId;
+  return <article ref={ref} className={isDirectMessage ? isYou ? "flex justify-end" : "flex justify-start" : "flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"}>{isDirectMessage
+    ? <TeamDirectMessageBubble message={message} principalUserId={directMessagePrincipalUserId ?? ""} />
+    : <><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{message.sender.displayName.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{message.sender.displayName}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p></div></>}</article>;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -97,6 +97,16 @@ test("late navigation and create responses cannot apply after Team switch or unm
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: true }), true);
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 5, mounted: true }), false);
   assert.equal(studioRequestMayApply({ capturedGeneration: 4, currentGeneration: 4, mounted: false }), false);
+});
+
+test("direct-message retries use a stable participant-set key and reject self or disabled members", () => {
+  assert.equal(directMessageAttemptKey("team", "owner", ["b", "a"]), directMessageAttemptKey("team", "owner", ["a", "b"]));
+  assert.notEqual(directMessageAttemptKey("team", "owner", ["a", "b"]), directMessageAttemptKey("team", "other-owner", ["a", "b"]));
+  const enabledMemberIds = new Set(["a", "b"]);
+  assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["a"], enabledMemberIds }), true);
+  assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["me"], enabledMemberIds }), false);
+  assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["disabled"], enabledMemberIds }), false);
+  assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["a", "a"], enabledMemberIds }), false);
 });
 
 test("Desktop command rejection becomes visible history status without treating invalid input as revocation", () => {

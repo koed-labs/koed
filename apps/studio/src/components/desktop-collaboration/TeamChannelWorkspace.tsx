@@ -15,12 +15,13 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { ChannelHeader } from "@/components/ChannelView";
+import { TeamDirectMessageBubble, directMessageTitle } from "@/components/TeamDirectMessage";
 import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -54,6 +55,7 @@ export function TeamChannelWorkspace({
     return team?.channels.find((thread) => thread.name === "general")?.id ?? team?.channels[0]?.id ?? team?.sharedProjects[0]?.thread.id ?? "";
   });
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [messageSelection, setMessageSelection] = useState<{ teamId: string; threadId: string } | null>(null);
   const [page, setPage] = useState<CollaborationMessagePage | null>(null);
   const [draftText, setDraftText] = useState("");
   const [pendingSend, setPendingSend] = useState<StudioTeamDraft["pendingSend"]>(null);
@@ -72,17 +74,29 @@ export function TeamChannelWorkspace({
   const revokedRef = useRef(false);
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
   const projectRequestIds = useRef(new Map<string, { requestId: string; name: string }>());
+  const directMessageRequestIds = useRef(new Map<string, string>());
+  const threadSelectionGeneration = useRef(0);
   const localProjectRegistrations = useRef(new Map<string, Promise<{ id: string; name: string; lastSeenAt: string | null }>>());
   const activeTeam = snapshot?.navigation.teams.find((team) => team.id === teamId) ?? null;
   const threads = useMemo(() => [
     ...(snapshot ? teamChannels(snapshot, teamId) : []),
-    ...(snapshot ? projectChannels(snapshot, teamId).map((project) => project.thread) : [])
+    ...(snapshot ? projectChannels(snapshot, teamId).map((project) => project.thread) : []),
+    ...(snapshot?.navigation.teams.find((team) => team.id === teamId)?.directMessages ?? [])
   ], [snapshot, teamId]);
   const activeThread = threads.find((thread) => thread.id === threadId) ?? null;
+  const activeDirectMessage = activeThread?.kind === "dm" || activeThread?.kind === "group_dm" ? activeThread : null;
+  const activeDirectMessageTitle = activeDirectMessage && snapshot?.navigation.teamPrincipal
+    ? directMessageTitle(activeDirectMessage, snapshot.navigation.teamPrincipal.id)
+    : "";
   const authority: DraftAuthority | null = snapshot && snapshot.navigation.teamPrincipal && snapshot.connection.backendId && teamId && threadId
     ? { backendId: snapshot.connection.backendId, principalUserId: snapshot.navigation.teamPrincipal.id, teamId, threadId }
     : null;
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  const messagesMatchSelection = Boolean(activeThread && messageSelection?.teamId === teamId && messageSelection.threadId === activeThread.id);
+  const visibleMessages = messagesMatchSelection ? messages : [];
+  const visiblePage = messagesMatchSelection ? page : null;
+  const visibleDraftText = authorityKey && hydratedAuthorityKey === authorityKey ? draftText : "";
+  const visiblePendingSend = authorityKey && hydratedAuthorityKey === authorityKey ? pendingSend : null;
   const authorityKeyRef = useRef<string | null>(authorityKey);
   authorityKeyRef.current = authorityKey;
   if (!revokedRef.current && authorityKey && authorityKey === hydratedAuthorityKey) {
@@ -105,6 +119,7 @@ export function TeamChannelWorkspace({
     setTeamId("");
     setThreadId("");
     setMessages([]);
+    setMessageSelection(null);
     setPage(null);
     setDraftText("");
     setPendingSend(null);
@@ -157,6 +172,7 @@ export function TeamChannelWorkspace({
         const validated = collaborationMessagePageSchema.safeParse(result.data.page);
         if (validated.success && validated.data.threadId === id) {
           setPage(validated.data);
+          setMessageSelection({ teamId: selectedTeamId, threadId: id });
           setMessages((current) => {
             if (cursor === null && current.length === 0) return validated.data.items;
             return mergeTeamMessages(current, validated.data.items);
@@ -246,6 +262,7 @@ export function TeamChannelWorkspace({
     setHydratedAuthorityKey(null);
     setVisibleRead(null);
     setMessages([]);
+    setMessageSelection(null);
     setPage(null);
     setDraftText("");
     setPendingSend(null);
@@ -303,7 +320,7 @@ export function TeamChannelWorkspace({
   useEffect(() => {
     const focusedVisible = document.visibilityState === "visible" && document.hasFocus();
     const visible = visibleRead;
-    if (!focusedVisible || !activeThread || !visible || !authority || !authorityKey || !studioSelectionMatches({ teamId: visible.teamId, threadId: visible.threadId }, selectedRef.current) || readPending.current.get(authorityKey) === visible.sequence || !visibleReadMayAdvance({
+    if (!focusedVisible || !activeThread || !visible || !authority || !authorityKey || !messagesMatchSelection || !studioSelectionMatches({ teamId: visible.teamId, threadId: visible.threadId }, selectedRef.current) || readPending.current.get(authorityKey) === visible.sequence || !visibleReadMayAdvance({
       messageId: visible.id,
       sequence: visible.sequence,
       senderId: visible.senderId,
@@ -324,7 +341,7 @@ export function TeamChannelWorkspace({
       }
       if (readPending.current.get(capturedKey) === visible.sequence) readPending.current.delete(capturedKey);
     }).catch(() => { if (readPending.current.get(capturedKey) === visible.sequence) readPending.current.delete(capturedKey); });
-  }, [activeThread, authority, authorityKey, run, teamId, visibleRead]);
+  }, [activeThread, authority, authorityKey, messagesMatchSelection, run, teamId, visibleRead]);
   useEffect(() => {
     const update = () => {
       if (document.visibilityState === "visible" && document.hasFocus()) {
@@ -343,22 +360,71 @@ export function TeamChannelWorkspace({
   }, []);
 
   const selectThread = async (thread: CollaborationThread) => {
-    if (!activeTeam) return;
-    setThreadId(thread.id);
-    selectedRef.current = { teamId: activeTeam.id, threadId: thread.id };
+    if (!activeTeam) return false;
+    const generation = ++threadSelectionGeneration.current;
+    const selectedTeamId = activeTeam.id;
     try {
-      await run("collaboration.select", {
+      const result = await run("collaboration.select", {
         selection: thread.kind === "team_project_channel"
           ? { kind: "team_project_channel", teamId: activeTeam.id, teamProjectId: thread.teamProjectId, threadId: thread.id }
-          : { kind: "team_channel", teamId: activeTeam.id, threadId: thread.id },
+          : thread.kind === "dm" || thread.kind === "group_dm"
+            ? { kind: "team_direct_message", teamId: activeTeam.id, threadId: thread.id }
+            : { kind: "team_channel", teamId: activeTeam.id, threadId: thread.id },
         navigationIntent: "foreground"
       });
+      if (generation !== threadSelectionGeneration.current || selectedRef.current.teamId !== selectedTeamId) return false;
+      if (!result.ok) {
+        if (result.error.code === "access_revoked") clearRevokedView();
+        else setStatus(result.error.userMessage);
+        return false;
+      }
+      selectedRef.current = { teamId: selectedTeamId, threadId: thread.id };
+      setThreadId(thread.id);
+      return true;
     } catch (failure) {
-      if (revokedRef.current || !studioSelectionMatches({ teamId: activeTeam.id, threadId: thread.id }, selectedRef.current)) return;
+      if (revokedRef.current || generation !== threadSelectionGeneration.current || selectedRef.current.teamId !== selectedTeamId) return false;
       const described = describeStudioCommandFailure(failure);
       if (described.revoked) clearRevokedView();
       else setStatus(described.message);
+      return false;
     }
+  };
+
+  const startDirectMessage = async (participantUserIds: string[]) => {
+    if (!activeTeam || !snapshot?.navigation.teamPrincipal) throw new Error("Team access changed. Refresh to check your access.");
+    const selectedTeamId = activeTeam.id;
+    const principalId = snapshot.navigation.teamPrincipal.id;
+    const principalUserId = snapshot.navigation.teamPrincipal.id;
+    const enabledMemberIds = new Set(activeTeam.people.filter((person) => person.membershipState === "enabled").map((person) => person.id));
+    const participants = participantUserIds.slice().sort();
+    if (!directMessageParticipantsAreEligible({ principalUserId, participantUserIds: participants, enabledMemberIds })) throw new Error("Choose an enabled teammate to message.");
+    const key = directMessageAttemptKey(activeTeam.id, principalUserId, participants);
+    const requestId = directMessageRequestIds.current.get(key) ?? crypto.randomUUID();
+    directMessageRequestIds.current.set(key, requestId);
+    const result = participants.length === 1
+      ? await run("collaboration.start_direct_message", { teamId: activeTeam.id, participantUserId: participants[0] }, requestId)
+      : await run("collaboration.start_group_direct_message", { teamId: activeTeam.id, participantUserIds: participants }, requestId);
+    if (revokedRef.current || selectedRef.current.teamId !== selectedTeamId || snapshot?.navigation.teamPrincipal?.id !== principalId) throw new Error("Team access changed. Refresh to check your access.");
+    if (!result.ok) {
+      if (!result.error.retryable) directMessageRequestIds.current.delete(key);
+      if (result.error.code === "access_revoked") clearRevokedView();
+      throw new Error(result.error.userMessage);
+    }
+    if (!("thread" in result.data) || (result.data.thread.kind !== "dm" && result.data.thread.kind !== "group_dm")) {
+      throw new Error("Koed returned an invalid direct message.");
+    }
+    const createdThread = result.data.thread;
+    directMessageRequestIds.current.delete(key);
+    setSnapshot((current) => current && ({
+      ...current,
+      navigation: {
+        ...current.navigation,
+        teams: current.navigation.teams.map((team) => team.id === activeTeam.id
+          ? { ...team, directMessages: [...team.directMessages.filter((item) => item.id !== createdThread.id), createdThread] }
+          : team)
+      }
+    }));
+    if (!await selectThread(createdThread)) throw new Error("The direct message was created, but it could not be opened. Refresh to check your access.");
   };
 
   const send = async (body: string) => {
@@ -567,8 +633,8 @@ export function TeamChannelWorkspace({
   };
 
   const loadOlder = () => {
-    if (!activeThread || !page?.hasOlder || !page.olderCursor) return;
-    void loadPage(activeThread.id, teamId, page.olderCursor);
+    if (!activeThread || !visiblePage?.hasOlder || !visiblePage.olderCursor) return;
+    void loadPage(activeThread.id, teamId, visiblePage.olderCursor);
   };
 
   if (!snapshot || !activeTeam) return <div className="flex h-full min-h-0 w-full bg-background text-foreground"><nav aria-label="Workspace navigation" className="flex h-full w-[72px] shrink-0 flex-col items-center border-r border-border bg-sidebar py-4 pt-10"><Link href="/" aria-label="Personal Workspace" title="Personal Workspace" className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-foreground"><User className="h-5 w-5" /></Link><div className="mt-auto"><Link href="/settings" aria-label="Settings" title="Settings" className="flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-surface-hover"><Settings className="h-5 w-5" /></Link></div></nav><div className="flex flex-1 items-center justify-center text-sm text-muted"><div className="text-center">{status ?? "No Team access is available."}<button type="button" onClick={onRefresh} className="ml-3 underline">Refresh</button></div></div></div>;
@@ -579,43 +645,50 @@ export function TeamChannelWorkspace({
         <Link href="/" aria-label="Personal Workspace" title="Personal Workspace" className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-foreground transition-colors hover:bg-surface-active"><User className="h-5 w-5" /></Link>
         <div className="my-2 h-px w-8 bg-surface-hover" />
         {snapshot.navigation.teams.map((team, index) => <button key={team.id} type="button" aria-label={team.name} aria-current={team.id === teamId ? "page" : undefined} title={team.name} onClick={() => {
+          threadSelectionGeneration.current += 1;
           setTeamId(team.id);
           const next = snapshot.navigation.teams.find((item) => item.id === team.id);
-          setThreadId(next?.channels.find((thread) => thread.name === "general")?.id ?? next?.channels[0]?.id ?? next?.sharedProjects[0]?.thread.id ?? "");
+          const initialThreadId = next?.channels.find((thread) => thread.name === "general")?.id ?? next?.channels[0]?.id ?? next?.sharedProjects[0]?.thread.id ?? "";
+          selectedRef.current = { teamId: team.id, threadId: initialThreadId };
+          setThreadId(initialThreadId);
         }} className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl border text-sm font-semibold ${team.id === teamId ? "border-accent/50 bg-surface-hover text-foreground ring-2 ring-accent" : "border-border bg-surface text-muted hover:bg-surface-hover"}`}>{team.name.slice(0, 1).toUpperCase() || index + 1}</button>)}
         <Link href="/settings" aria-label="Settings" title="Settings" className="mt-auto flex h-10 w-10 items-center justify-center rounded-xl text-muted transition-colors hover:bg-surface-hover hover:text-foreground"><Settings className="h-5 w-5" /></Link>
       </aside>
       <TeamChannelNavigation
         teamName={activeTeam.name}
-        channels={threads.map((thread) => ({ id: thread.id, name: thread.name }))}
-        people={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))}
+        channels={threads.filter((thread) => thread.kind !== "dm" && thread.kind !== "group_dm").map((thread) => ({ id: thread.id, name: thread.name }))}
+        people={activeTeam.people.filter((person) => person.membershipState === "enabled").map((person) => ({ id: person.id, name: person.displayName }))}
+        principalUserId={snapshot.navigation.teamPrincipal?.id ?? ""}
+        directMessages={activeTeam.directMessages}
         selectedId={threadId}
         onSelect={(id) => { const thread = threads.find((item) => item.id === id); if (thread) void selectThread(thread); }}
         onCreate={() => { setChannelError(null); setCreateChannelOpen(true); }}
+        onNewDirectMessage={startDirectMessage}
       />
       <section className="relative flex min-w-0 flex-1 flex-col">
         <TeamShell
-          wallpaper
-          subheader={<ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))} />}
-          footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl">{pendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<fieldset disabled={!activeThread || hydratedAuthorityKey !== authorityKey} className="m-0 min-w-0 border-0 p-0"><ChatComposer placeholder={`Message #${activeThread?.name ?? "channel"}`} projectName={activeThread?.name ?? "Team"} branch="shared" value={draftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={pendingSend ? "Resolve the earlier send before sending this edit." : "Message everyone in this channel."} /></fieldset></div></footer>}
+          wallpaper={!activeDirectMessage}
+          crumbs={activeDirectMessage ? [activeTeam.name, activeDirectMessageTitle] : undefined}
+          subheader={!activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
+          footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<fieldset disabled={!activeThread || hydratedAuthorityKey !== authorityKey} className="m-0 min-w-0 border-0 p-0"><ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? activeTeam.name : activeThread?.name ?? "Team"} branch="shared" value={visibleDraftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={visiblePendingSend ? "Resolve the earlier send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></fieldset></div></div></footer>}
         >
-          <div ref={bodyRef} className="mx-auto max-w-3xl space-y-3 pt-4">
-            {page?.hasOlder && <button type="button" onClick={loadOlder} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
-            {messages.length === 0 && !loading && <p className="pt-8 text-sm text-subtle">No messages yet. Start the conversation.</p>}
-            {messages.map((message) => <MessageRow key={message.id} message={message} onVisibility={onMessageVisibility} />)}
+          <div ref={bodyRef} className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}>
+            {visiblePage?.hasOlder && <button type="button" onClick={loadOlder} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
+            {visibleMessages.length === 0 && !loading && <p className="pt-8 text-sm text-subtle">{activeDirectMessage ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.` : "No messages yet. Start the conversation."}</p>}
+            {visibleMessages.map((message) => <MessageRow key={message.id} message={message} onVisibility={onMessageVisibility} directMessagePrincipalUserId={activeDirectMessage ? snapshot.navigation.teamPrincipal?.id ?? "" : undefined} />)}
             {status && <p role="status" className="text-xs text-warning">{status}</p>}
           </div>
         </TeamShell>
       </section>
       </SidebarProvider>
-      {createChannelOpen && <CreateChannelModal teamName={activeTeam.name} existingNames={threads.map((thread) => thread.name.toLowerCase())} onClose={() => setCreateChannelOpen(false)} onCreateChat={(name) => void createChannel(name)} onChooseProject={() => { setCreateChannelOpen(false); setCreateProjectOpen(true); }} />}
+      {createChannelOpen && <CreateChannelModal teamName={activeTeam.name} existingNames={threads.filter((thread) => thread.kind !== "dm" && thread.kind !== "group_dm").map((thread) => thread.name.toLowerCase())} onClose={() => setCreateChannelOpen(false)} onCreateChat={(name) => void createChannel(name)} onChooseProject={() => { setCreateChannelOpen(false); setCreateProjectOpen(true); }} />}
       {createProjectOpen && <CreateProjectModal teams={[{ id: activeTeam.id, name: activeTeam.name }]} forceTeamId={activeTeam.id} onChooseFolder={chooseLocalProjectFolder} onClose={() => setCreateProjectOpen(false)} onBack={() => { setCreateProjectOpen(false); setCreateChannelOpen(true); }} onCreate={createProject} />}
       {channelError && <div role="alert" className="fixed bottom-5 right-5 z-[110] rounded-lg border border-border bg-surface px-4 py-3 text-sm shadow-xl">{channelError}</div>}
     </div>
   );
 }
 
-function MessageRow({ message, onVisibility }: { message: CollaborationMessage; onVisibility: (message: CollaborationMessage, visible: boolean) => void }) {
+function MessageRow({ message, onVisibility, directMessagePrincipalUserId }: { message: CollaborationMessage; onVisibility: (message: CollaborationMessage, visible: boolean) => void; directMessagePrincipalUserId?: string }) {
   const name = message.sender.displayName ?? "Team member";
   const rowRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -639,5 +712,10 @@ function MessageRow({ message, onVisibility }: { message: CollaborationMessage; 
     document.addEventListener("visibilitychange", checkOnFocus);
     return () => { observer.disconnect(); window.removeEventListener("focus", checkOnFocus); document.removeEventListener("visibilitychange", checkOnFocus); };
   }, [message, onVisibility]);
-  return <article ref={rowRef} data-message-visible="false" data-message-id={message.id} data-sequence={message.sequence} data-sender-id={message.sender.id} data-team-id={message.teamId ?? ""} data-thread-id={message.threadId} className="flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{name.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{name}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p>{message.delivery === "failed" && <p className="text-xs text-warning">Not sent</p>}</div></article>;
+  const isDirectMessage = directMessagePrincipalUserId !== undefined;
+  const isYou = isDirectMessage && message.sender.id === directMessagePrincipalUserId;
+  return <article ref={rowRef} data-message-visible="false" data-message-id={message.id} data-sequence={message.sequence} data-sender-id={message.sender.id} data-team-id={message.teamId ?? ""} data-thread-id={message.threadId} className={isDirectMessage ? isYou ? "flex justify-end" : "flex justify-start" : "flex gap-3 rounded-lg px-2 py-2 hover:bg-surface-hover/30"}>{isDirectMessage
+    ? <TeamDirectMessageBubble message={message} principalUserId={directMessagePrincipalUserId} />
+    : <><div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">{name.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex items-baseline gap-2"><span className="text-sm font-medium">{name}</span><time className="text-[10px] text-subtle">{new Date(message.createdAt).toLocaleString()}</time></div><p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">{message.body}</p>{message.delivery === "failed" && <p className="text-xs text-warning">Not sent</p>}</div></>}
+  </article>;
 }

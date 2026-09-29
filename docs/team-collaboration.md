@@ -857,3 +857,28 @@ failures stop closed.
 ### Chat-only navigation
 
 Team navigation requires Team Chat read permission. Workspace names, grants, Workspace channels, and shared Memory discussion threads require separate Workspace read permission. The local edge also applies the local client's permissions when an upstream credential has broader permissions. Its navigation cache keys include both permission sets. Team channel and shared Project channel selection uses Chat read permission; Workspace selection uses Workspace read permission.
+
+### Private chats in Studio
+
+The Colleagues picker opens direct or group messages with enabled members of
+the selected Team. It does not require a Project or Workspace. Studio reuses
+the existing Team Chat Thread, message history, read state and realtime
+services through the Desktop gateway or authenticated hosted API.
+
+Only participants with enabled Team Membership may see a private thread.
+A Team owner or admin who is not a participant has no access. Selecting the
+same participants in the same Team reopens their existing thread. A different
+participant set has a separate thread and does not receive the original
+history. The same participants in another Team also have a separate thread.
+
+Leaving or being removed from a Team revokes private-chat access. The other
+authorized participants retain their history. Rejoining with the same account
+restores access to existing threads in which that User remains a participant.
+Historical participant metadata reports current membership and account state;
+it does not imply that a former participant may read or post.
+
+Human chats use formatting controls. Unsent drafts remain protected on the
+device where they were typed and are restored only under the authorized
+account, Team and thread. A reconnect does not send a draft automatically.
+Unread state comes from the backend; viewing a thread advances its read cursor
+only through messages that were actually visible in the focused view.

@@ -92,6 +92,17 @@ export const studioRequestMayApply = (input: {
   mounted: boolean;
 }): boolean => input.mounted && input.capturedGeneration === input.currentGeneration;
 
+export const directMessageAttemptKey = (teamId: string, principalUserId: string, participantUserIds: string[]): string =>
+  `${teamId}:${principalUserId}:${[...new Set(participantUserIds)].sort().join(",")}`;
+
+export const directMessageParticipantsAreEligible = (input: {
+  principalUserId: string;
+  participantUserIds: string[];
+  enabledMemberIds: ReadonlySet<string>;
+}): boolean => input.participantUserIds.length > 0 &&
+  new Set(input.participantUserIds).size === input.participantUserIds.length &&
+  input.participantUserIds.every((userId) => userId !== input.principalUserId && input.enabledMemberIds.has(userId));
+
 export const describeStudioCommandFailure = (failure: unknown): {
   revoked: boolean;
   message: string;
