@@ -2774,7 +2774,9 @@ const refreshActiveDevice = async (
     recipientKemPublicKey: responseString(member, "kem_public_key"),
     recipientKemPrivateSeed: runtime.device.kemPrivateSeed
   });
-  const members = groupMembers(group);
+  const members = groupMembers(group).filter(
+    (candidate) => candidate.status === "active"
+  );
   const certificates = await Promise.all(
     members.map(async (activeMember) => {
       const response = await control({

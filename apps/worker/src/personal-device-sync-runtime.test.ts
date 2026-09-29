@@ -18,6 +18,7 @@ import {
 import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
   deliverPdsPackageDirect,
+  fetchPdsLifecycleWithCertificateRefresh,
   materializePdsSession,
   pdsCheckpointMaterializationSource,
   rewrapPdsCheckpointSourceEnvelope,
@@ -181,6 +182,68 @@ describe("PDS direct package delivery", () => {
       ).resolves.toBe(false);
     }
   );
+});
+
+describe("PDS lifecycle certificate refresh", () => {
+  it("refreshes the certificate once when the Authority head changes before lifecycle auth", async () => {
+    let authorityHead = "head-before-revoke";
+    const fetchCertificate = vi.fn(async () => ({
+      certificate: { authorityHead }
+    }));
+    const lifecycleRequests: string[] = [];
+    const createClient = vi.fn((certificate: unknown) => {
+      const cert = certificate as { authorityHead: string };
+      return {
+        async lifecycle() {
+          lifecycleRequests.push(cert.authorityHead);
+          if (cert.authorityHead !== authorityHead) {
+            const error = new Error("404");
+            error.name = "PdsRelayNotFoundError";
+            throw error;
+          }
+          return { authority_head: authorityHead };
+        }
+      };
+    });
+    // The head advances after certificate retrieval and before lifecycle auth.
+    fetchCertificate.mockImplementationOnce(async () => {
+      const certificate = { authorityHead };
+      authorityHead = "head-after-revoke";
+      return { certificate };
+    });
+
+    await expect(
+      fetchPdsLifecycleWithCertificateRefresh({
+        fetchCertificate,
+        createClient
+      })
+    ).resolves.toEqual({ authority_head: "head-after-revoke" });
+    expect(lifecycleRequests).toEqual([
+      "head-before-revoke",
+      "head-after-revoke"
+    ]);
+    expect(fetchCertificate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry when the member cannot obtain an active certificate", async () => {
+    const revoked = Object.assign(new Error("404"), {
+      name: "PdsRelayNotFoundError"
+    });
+    const fetchCertificate = vi
+      .fn()
+      .mockResolvedValueOnce({ certificate: { authorityHead: "stale" } })
+      .mockRejectedValueOnce(revoked);
+    const lifecycle = vi.fn().mockRejectedValue(revoked);
+
+    await expect(
+      fetchPdsLifecycleWithCertificateRefresh({
+        fetchCertificate,
+        createClient: () => ({ lifecycle })
+      })
+    ).rejects.toBe(revoked);
+    expect(fetchCertificate).toHaveBeenCalledTimes(2);
+    expect(lifecycle).toHaveBeenCalledOnce();
+  });
 });
 
 describe("PDS checkpoint transport rewrap", () => {

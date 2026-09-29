@@ -1555,6 +1555,7 @@ describe("Personal Sync control client", () => {
     let authorizedBundleDraft: Record<string, unknown> | undefined;
     let storedRuntime: string | undefined;
     let sourceCertificate: Record<string, unknown> | undefined;
+    const certificateLookups: string[] = [];
     const fetch = async (url: string | URL, options?: RequestInit) => {
       expect(new Headers(options?.headers).get("authorization")).toMatch(
         /^Koed-Desktop /
@@ -1643,14 +1644,25 @@ describe("Personal Sync control client", () => {
           current_epoch: "2",
           pending_epoch: null,
           head: { sequence: "2", hash: finalHead },
-          members: [fixture.group.members[0]]
+          members: [
+            fixture.group.members[0],
+            { ...fixture.group.members[1], status: "revoked" }
+          ]
         };
         return response({ activated: true, group: visibleGroup });
       }
       if (parsed.pathname.endsWith("/key-bundles/2")) {
         return response({ key_bundle: finalizedBundle });
       }
-      if (parsed.pathname.endsWith(`/certificates/${sourceDeviceId}`)) {
+      if (parsed.pathname.includes("/certificates/")) {
+        const certificateDeviceId = parsed.pathname.split("/").at(-1)!;
+        certificateLookups.push(certificateDeviceId);
+        if (certificateDeviceId === targetDeviceId)
+          return response({ error: "revoked member has no certificate" }, 404);
+        if (certificateDeviceId !== sourceDeviceId)
+          throw new Error(
+            `Unexpected certificate lookup: ${certificateDeviceId}`
+          );
         return response({ certificate: sourceCertificate });
       }
       throw new Error(
@@ -1714,5 +1726,7 @@ describe("Personal Sync control client", () => {
       groupSecrets: { currentEpoch: "2" },
       authority: { head: pdsFinalizedStatementHash(finalizedStatement!) }
     });
+    expect(certificateLookups).toEqual([sourceDeviceId]);
+    expect(certificateLookups).not.toContain(targetDeviceId);
   });
 });

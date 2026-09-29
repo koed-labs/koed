@@ -213,11 +213,6 @@ export const createPdsLocalSyncService = (input: {
       const stagedArtifacts =
         (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
       needsDrain ||= stagedArtifacts >= 50;
-      const incomingPackages = await input.secureRuntime.poll();
-      needsDrain ||= incomingPackages.length >= 50;
-      for (const incoming of incomingPackages) {
-        await input.repository.receivePdsInbox(incoming);
-      }
       const outbox = await input.repository.claimPdsOutbox({ workerId });
       needsDrain ||= outbox.length >= 10;
       for (const entry of outbox) {
@@ -423,6 +418,14 @@ export const createPdsLocalSyncService = (input: {
             outboxId: entry.id
           });
         }
+      }
+      // Relay mailbox reconciliation is independent of local publication. Keep
+      // it after durable outbound claims so a failing inbound poll cannot starve
+      // a pending checkpoint before the worker even attempts to claim it.
+      const incomingPackages = await input.secureRuntime.poll();
+      needsDrain ||= incomingPackages.length >= 50;
+      for (const incoming of incomingPackages) {
+        await input.repository.receivePdsInbox(incoming);
       }
       const inbox = await input.repository.claimPdsInbox({ workerId });
       needsDrain ||= inbox.length >= 10;

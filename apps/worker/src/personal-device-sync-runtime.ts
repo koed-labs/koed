@@ -1229,14 +1229,21 @@ const createPdsWorkerRuntimeFromSecret = (
       async pollLifecycle() {
         // Control endpoint permits prior-head active certificate only to recover
         // current Authority binding; content endpoints remain fail-closed.
-        const refreshed = record(await relay.certificate(), "certificate");
-        const certificate = record(refreshed.certificate, "certificate");
-        relay = new PdsRelayClient({
-          baseUrl: relayBaseUrl,
-          identity: relayIdentity(canonicalizePdsJson(certificate)),
-          ...(relayFetch ? { fetch: relayFetch } : {})
+        let lifecycleCertificate = "";
+        const lifecycleValue = await fetchPdsLifecycleWithCertificateRefresh({
+          fetchCertificate: () => relay.certificate(),
+          createClient: (certificate) => {
+            const parsedCertificate = record(certificate, "certificate");
+            lifecycleCertificate = canonicalizePdsJson(parsedCertificate);
+            relay = new PdsRelayClient({
+              baseUrl: relayBaseUrl,
+              identity: relayIdentity(lifecycleCertificate),
+              ...(relayFetch ? { fetch: relayFetch } : {})
+            });
+            return relay;
+          }
         });
-        const lifecycle = record(await relay.lifecycle(), "lifecycle");
+        const lifecycle = record(lifecycleValue, "lifecycle");
         const head = record(lifecycle.authority_head, "authority head");
         if (
           typeof head.sequence !== "string" ||
@@ -1313,8 +1320,10 @@ const createPdsWorkerRuntimeFromSecret = (
           else validatePdsConflictResolution(tombstone, validation);
           const statement = record(control.statement, "lifecycle statement");
           validatePdsGroupStatement(statement as never, {
-            authorizationPublicKey:
-              certificate.deviceSigningPublicKey as string,
+            authorizationPublicKey: record(
+              parseCanonicalPdsJson(lifecycleCertificate),
+              "certificate"
+            ).deviceSigningPublicKey as string,
             authorityPublicKey: secret.authority.publicKey,
             expectedGroupId: secret.groupId
           });
@@ -1763,6 +1772,30 @@ const createPdsWorkerRuntimeFromSecret = (
   } catch {
     return null;
   }
+};
+
+/** Refresh once when an Authority head transition races certificate auth. */
+export const fetchPdsLifecycleWithCertificateRefresh = async <T>(input: {
+  fetchCertificate: () => Promise<unknown>;
+  createClient: (certificate: unknown) => { lifecycle: () => Promise<T> };
+}): Promise<T> => {
+  const createFreshClient = async () => {
+    const refreshed = record(await input.fetchCertificate(), "certificate");
+    const certificate = record(refreshed.certificate, "certificate");
+    return input.createClient(certificate);
+  };
+  let client = await createFreshClient();
+  try {
+    return await client.lifecycle();
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "PdsRelayNotFoundError")
+      throw error;
+  }
+  // The member may have been revoked while the first certificate was in use.
+  // A failed certificate refresh still rejects; lifecycle is retried only with
+  // a newly issued active certificate, so revocation cannot be bypassed.
+  client = await createFreshClient();
+  return await client.lifecycle();
 };
 
 /** Operator-managed or Desktop-bridge runtime. Secret bytes never enter worker configuration. */

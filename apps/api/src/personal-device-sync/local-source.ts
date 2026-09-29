@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   PdsConversationSourceItem,
   PdsSessionCheckpointManifest,
@@ -107,6 +108,92 @@ const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+
+/** Rehydrate only the explicit v2 transport envelope, never arbitrary raw JSON. */
+const restoreTransportChunks = (
+  items: PdsClosureSource["items"]
+): PdsClosureSource["items"] => {
+  const groups = new Map<string, PdsClosureSource["items"]>();
+  for (const item of items) {
+    if (item.transportChunkCount == null) continue;
+    const key = item.logicalSourceId;
+    if (!key) throw new TypeError("PDS transport chunk identity is incomplete");
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const consumed = new Set<string>();
+  const restored: PdsClosureSource["items"] = [];
+  for (const item of items) {
+    const key = item.logicalSourceId;
+    if (key && groups.has(key)) {
+      if (consumed.has(key)) continue;
+      consumed.add(key);
+      const group = groups.get(key)!;
+      const count = item.transportChunkCount;
+      if (
+        count == null ||
+        item.transportChunkEncoding !== "conversation-item-json-v2" ||
+        group.length !== count
+      )
+        throw new TypeError("PDS transport chunk group is incomplete");
+      const ordered = [...group].sort(
+        (a, b) => (a.transportChunkIndex ?? -1) - (b.transportChunkIndex ?? -1)
+      );
+      const firstMarker = record(ordered[0]?.rawJson);
+      if (
+        ordered.some((chunk, index) => {
+          const marker = record(chunk.rawJson);
+          return (
+            chunk.transportChunkCount !== count ||
+            chunk.transportChunkEncoding !== item.transportChunkEncoding ||
+            chunk.transportChunkIndex !== index ||
+            typeof chunk.transportChunkText !== "string" ||
+            marker?.transportChunk !== true ||
+            marker.chunkCount !== count ||
+            marker.chunkIndex !== index ||
+            marker.sourceItemHash !== firstMarker?.sourceItemHash ||
+            marker.transportChunkGroupId !==
+              firstMarker?.transportChunkGroupId ||
+            chunk.externalItemId !== item.externalItemId ||
+            typeof chunk.sourceHash !== "string" ||
+            chunk.sourceHash !==
+              createHash("sha256")
+                .update(
+                  JSON.stringify({
+                    version: 2,
+                    transportChunkGroupId: marker.transportChunkGroupId,
+                    chunkIndex: index,
+                    chunkCount: count,
+                    chunk: chunk.transportChunkText
+                  })
+                )
+                .digest("hex")
+          );
+        })
+      )
+        throw new TypeError("PDS transport chunk group is invalid");
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(
+          ordered.map((chunk) => chunk.transportChunkText!).join("")
+        );
+      } catch {
+        throw new TypeError("PDS transport chunk envelope is invalid");
+      }
+      const decoded = record(envelope);
+      if (!decoded || !Object.hasOwn(decoded, "rawJson"))
+        throw new TypeError("PDS transport chunk envelope is invalid");
+      restored.push({
+        ...item,
+        rawJson: decoded.rawJson,
+        rawText: typeof decoded.rawText === "string" ? decoded.rawText : null,
+        metadata: { ...item.metadata, ...(record(decoded.metadata) ?? {}) }
+      });
+      continue;
+    }
+    restored.push(item);
+  }
+  return restored;
+};
 
 const textValue = (value: unknown): string | null => {
   const direct = boundedText(value);
@@ -274,7 +361,7 @@ const sourceMetadata = (metadata: Record<string, unknown>, actor: string) => {
 export const pdsConversationItemsForClosure = (
   source: PdsClosureSource
 ): PdsConversationSourceItem[] =>
-  source.items.map((item, index) => {
+  restoreTransportChunks(source.items).map((item, index) => {
     const actor = semanticActor(item);
     return {
       sourceNativeItemId: item.externalItemId,

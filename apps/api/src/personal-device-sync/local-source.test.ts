@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { pdsConversationItemsForClosure } from "./local-source.js";
 
@@ -252,6 +253,94 @@ describe("PDS source closure sanitizer", () => {
 
     expect(items.map((item) => item.content)).toEqual(["Pi answer", "", ""]);
     expect(JSON.stringify(items)).not.toContain("private summary");
+  });
+
+  it("reconstructs only a complete Pi tool result from the v2 transport envelope", () => {
+    const sourceRecord = {
+      type: "message",
+      id: "tool-result",
+      message: {
+        role: "toolResult",
+        content: [{ type: "text", text: "exact tool output" }]
+      }
+    };
+    const serialized = JSON.stringify({
+      rawJson: {
+        type: "pi_session_record",
+        sourceRecord,
+        contentBlock: { type: "text", text: "exact tool output" }
+      },
+      rawText: null,
+      metadata: {}
+    });
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      sourceRuntime: "pi",
+      sourceAdapter: "pi",
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          sourceKind: "pi",
+          sourceRecordType: "message",
+          sourceEventType: "tool_result",
+          rawJson: {
+            transportChunk: true,
+            chunkCount: 1,
+            chunkIndex: 0,
+            sourceItemHash: "a".repeat(64),
+            transportChunkGroupId: "b".repeat(64)
+          },
+          logicalSourceId: "logical-tool-result",
+          transportChunkIndex: 0,
+          transportChunkCount: 1,
+          transportChunkText: serialized,
+          transportChunkEncoding: "conversation-item-json-v2",
+          sourceHash: createHash("sha256")
+            .update(
+              JSON.stringify({
+                version: 2,
+                transportChunkGroupId: "b".repeat(64),
+                chunkIndex: 0,
+                chunkCount: 1,
+                chunk: serialized
+              })
+            )
+            .digest("hex"),
+          metadata: { canonicalConversationItemActor: "tool" }
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("exact tool output");
+    expect(JSON.stringify(item)).not.toContain("transportChunk");
+  });
+
+  it("exports normal Pi tool results from their captured source record", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      sourceRuntime: "pi",
+      sourceAdapter: "pi",
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          sourceKind: "pi",
+          sourceRecordType: "message",
+          sourceEventType: "tool_result",
+          rawJson: {
+            type: "pi_session_record",
+            sourceRecord: {
+              type: "message",
+              message: { role: "toolResult", content: "normal tool output" }
+            }
+          },
+          metadata: { canonicalConversationItemActor: "tool" }
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("normal tool output");
   });
 
   it("exports a Claude completion control as contentless provenance", () => {

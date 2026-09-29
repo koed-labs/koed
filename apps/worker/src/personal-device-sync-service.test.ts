@@ -218,6 +218,66 @@ describe("Personal Device Sync service", () => {
     }
   });
 
+  it("claims and publishes a pending checkpoint even when inbound relay polling fails", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([
+        {
+          id: "checkpoint-outbox",
+          groupId: "group",
+          closureId: "checkpoint-closure",
+          packageId: "checkpoint-package",
+          sourceManifestHash: "checkpoint-manifest",
+          attemptCount: 1
+        }
+      ]),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(true),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      poll: vi.fn().mockRejectedValue(new Error("inbound relay unavailable")),
+      publish: vi.fn().mockResolvedValue({
+        state: "committed",
+        transportId: "checkpoint-transport"
+      }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(repository.claimPdsOutbox).toHaveBeenCalledOnce();
+    expect(repository.beginPdsOutboxNetworkAction).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox"
+    });
+    expect(secureRuntime.publish).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox",
+      closureId: "checkpoint-closure",
+      packageId: "checkpoint-package",
+      sourceManifestHash: "checkpoint-manifest"
+    });
+    expect(repository.completePdsOutbox).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox",
+      state: "committed",
+      transportId: "checkpoint-transport"
+    });
+  });
+
   it("completes inbound materialization only after the relay ACK succeeds", async () => {
     const calls: string[] = [];
     const repository = {

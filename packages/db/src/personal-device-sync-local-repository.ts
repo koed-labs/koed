@@ -42,6 +42,12 @@ export interface PdsClosureSource {
     observedAt: string;
     rawJson: unknown;
     rawText: string | null;
+    logicalSourceId?: string | null;
+    transportChunkIndex?: number | null;
+    transportChunkCount?: number | null;
+    transportChunkText?: string | null;
+    transportChunkEncoding?: string | null;
+    sourceHash?: string | null;
     sourceKind: string;
     sourceRecordType: string;
     sourceEventType: string | null;
@@ -2331,6 +2337,12 @@ async function publishPdsSource(
       observed_at: Date;
       raw_json: unknown;
       raw_text: string | null;
+      logical_source_id: string | null;
+      transport_chunk_index: number | null;
+      transport_chunk_count: number | null;
+      transport_chunk_text: string | null;
+      transport_chunk_encoding: string | null;
+      source_hash: string | null;
       source_kind: string;
       source_adapter_version: string;
       source_record_type: string;
@@ -2338,6 +2350,8 @@ async function publishPdsSource(
       metadata: unknown;
     }>(
       `select id,external_item_id,event_time,observed_at,raw_json,raw_text,
+                logical_source_id,transport_chunk_index,transport_chunk_count,
+                transport_chunk_text,transport_chunk_encoding,source_hash,
                 source_kind,source_adapter_version,source_record_type,source_event_type,metadata
          from conversation_items where owner_user_id=$1 and session_id=$2
            and visibility='personal' and personal_deleted_at is null
@@ -2399,6 +2413,12 @@ async function publishPdsSource(
         observedAt: iso(item.observed_at),
         rawJson: item.raw_json,
         rawText: item.raw_text,
+        logicalSourceId: item.logical_source_id,
+        transportChunkIndex: item.transport_chunk_index,
+        transportChunkCount: item.transport_chunk_count,
+        transportChunkText: item.transport_chunk_text,
+        transportChunkEncoding: item.transport_chunk_encoding,
+        sourceHash: item.source_hash,
         sourceKind: item.source_kind,
         sourceRecordType: item.source_record_type,
         sourceEventType: item.source_event_type,
