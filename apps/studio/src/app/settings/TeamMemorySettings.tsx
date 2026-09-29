@@ -49,6 +49,7 @@ function NativeTeamMemorySettings() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [ownedSharesNextCursor, setOwnedSharesNextCursor] = useState<string | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [sessionGeneration, setSessionGeneration] = useState(0);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [removePrompt, setRemovePrompt] = useState<RetainedItem | null>(null);
@@ -101,6 +102,7 @@ function NativeTeamMemorySettings() {
         authorityKeyRef.current = authorityKey;
         lastAuthorityKeyRef.current = authorityKey;
         setSnapshot(value);
+        setSessionGeneration((generation) => generation + 1);
         setTeamId(nextTeamId);
         setState("ready");
         setError(null);
@@ -203,10 +205,11 @@ function NativeTeamMemorySettings() {
     };
     void load();
     return () => { active = false; };
-  // Session refreshes invalidate in-flight reads via loadSequence. Include the
-  // accepted snapshot so a same-authority refresh starts a replacement read
-  // even when state, tab, Team, and role did not change.
-  }, [canManage, client, snapshot, state, tab, teamId]);
+  // Session refreshes invalidate in-flight reads via loadSequence. Key on the
+  // accepted session generation so a same-authority refresh starts a
+  // replacement read even when the snapshot object and Team selection are
+  // referentially stable.
+  }, [canManage, client, sessionGeneration, snapshot, state, tab, teamId]);
 
   useEffect(() => {
     if (state !== "ready") return;
