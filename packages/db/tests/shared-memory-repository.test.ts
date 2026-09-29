@@ -7606,9 +7606,10 @@ describeDb("Shared Memory repository", () => {
         sourceRevision: 2
       })
     ).resolves.toEqual({ advanced: 3 });
+    await flushSanitizedSemanticPublication();
     const persisted = await pool.query<{
       retention_enabled: boolean;
-      source_revision: number;
+      source_revision: string;
       member_retention_version: number;
     }>(
       `select retention_enabled,source_revision,member_retention_version
@@ -7617,8 +7618,17 @@ describeDb("Shared Memory repository", () => {
     );
     expect(persisted.rows[0]).toEqual({
       retention_enabled: false,
-      source_revision: 2,
+      source_revision: "2",
       member_retention_version: 2
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.id,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({
+      freshness: "fresh",
+      representation: { sourceRevision: 2, state: "available" }
     });
   });
 
