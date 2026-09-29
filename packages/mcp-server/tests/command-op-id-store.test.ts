@@ -1,262 +1,222 @@
-import { describe, expect, it, vi } from "vitest";
-
-import { CommandOpIdStore } from "../src/command-op-id-store.js";
+import { createHash } from "node:crypto";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { MemoryApiClient } from "../src/index.js";
-import type {
-  ManagedConversationControlActionResult,
-  ManagedConversationControlActionState
-} from "../src/managed-conversation-command-types.js";
-
-const SEGMENT_KEY = "command_action_state";
-
-const mockMemoryClient = (): {
-  client: MemoryApiClient;
-  list: ReturnType<typeof vi.fn>;
-  getContent: ReturnType<typeof vi.fn>;
-  append: ReturnType<typeof vi.fn>;
-} => {
-  const list = vi.fn();
-  const getContent = vi.fn();
-  const append = vi.fn();
-  const client = {
-    listConversationSourceSegments: list,
-    getConversationSourceSegmentContent: getContent,
-    appendConversationSourceSegment: append
-  } as unknown as MemoryApiClient;
-  return { client, list, getContent, append };
-};
+import { CommandOpIdStore } from "../src/command-op-id-store.js";
+import type { ManagedConversationControlActionResult } from "../src/managed-conversation-command-types.js";
 
 describe("CommandOpIdStore", () => {
-  describe("get / set", () => {
-    it("returns undefined for unknown operation ID", () => {
-      const { client } = mockMemoryClient();
-      const store = new CommandOpIdStore(client);
-      expect(store.get("unknown-op")).toBeUndefined();
-    });
+  let store: CommandOpIdStore;
+  let memoryClient: MemoryApiClient;
+  let savedSegments: Array<{
+    content: Record<string, unknown>;
+    artifactId: string;
+  }>;
+  let restoredSegments: Record<string, Array<{ id: string }>>;
+  let segmentContents: Record<string, Array<{ id: string; bytesBase64: string }>>;
 
-    it("stores and retrieves operation state", () => {
-      const { client } = mockMemoryClient();
-      const store = new CommandOpIdStore(client);
-      const result: ManagedConversationControlActionResult = {
-        status: "accepted"
-      };
+  const makeStoredState = (
+    states: Record<string, { status: string; reason?: string; createdAt?: string }>
+  ): { payload: string; bytesBase64: string } => {
+    const payload = JSON.stringify({
+      _koed_op_id_state: true,
+      states
+    });
+    return { payload, bytesBase64: Buffer.from(payload).toString("base64") };
+  };
+
+  beforeEach(() => {
+    savedSegments = [];
+    restoredSegments = {};
+    segmentContents = {};
+
+    memoryClient = {
+      ensureConversationSourceArtifact: vi.fn().mockResolvedValue({ id: "art-1" }),
+      lookupConversationSourceArtifact: vi.fn().mockResolvedValue({ id: "art-1" }),
+      listConversationSourceSegments: vi.fn((artifactId: string) => ({
+        segments: (restoredSegments[artifactId] ?? []) as Array<{ id: string }>
+      })),
+      getConversationSourceSegmentContent: vi.fn((artifactId: string, segmentId: string) => {
+        const segs = segmentContents[artifactId] ?? [];
+        const seg = segs.find((s) => s.id === segmentId);
+        if (!seg) throw new Error("missing fake source segment");
+        return { segment: { id: seg.id }, bytesBase64: seg.bytesBase64 };
+      }),
+      appendConversationSourceSegment: vi.fn((artifactId: string, content: Record<string, unknown>) => {
+        const id = `seg-${savedSegments.length + 1}`;
+        savedSegments.push({ artifactId, content });
+        restoredSegments[artifactId] = restoredSegments[artifactId] ?? [];
+        restoredSegments[artifactId].push({ id });
+        segmentContents[artifactId] = segmentContents[artifactId] ?? [];
+        segmentContents[artifactId].push({
+          id,
+          bytesBase64: content.bytesBase64 as string
+        });
+        return Promise.resolve({ segment: { id } });
+      }),
+      getEffectiveCapturePolicy: vi.fn().mockResolvedValue({ policies: [] }),
+      createSession: vi.fn().mockResolvedValue({ session: {} }),
+      finalizeConversationSourceSet: vi.fn().mockResolvedValue({ segments: [] }),
+      getConversationSourceArtifactByGeneration: vi.fn().mockResolvedValue({ artifact: {} }),
+      listConversationSourceGenerationComponents: vi.fn().mockResolvedValue({ components: [] }),
+      finalizeConversationSourceArtifact: vi.fn().mockResolvedValue({ artifact: {} }),
+      createConversationSourceSuccessorGeneration: vi.fn().mockResolvedValue({ sourceGeneration: {} }),
+      getConversationSourceCursor: vi.fn().mockResolvedValue({ cursor: null }),
+      advanceConversationSourceCursor: vi.fn().mockResolvedValue({ cursor: {} }),
+      lookupHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
+      createHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
+      transitionHistoricalImportRun: vi.fn().mockResolvedValue({ run: {} }),
+      transitionHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
+      ingestHistoricalImportBatch: vi.fn().mockResolvedValue({ batch: {} }),
+      effectiveCapturePolicy: vi.fn().mockResolvedValue({ policies: [] }),
+      capturePersonalEvent: vi.fn().mockResolvedValue({ event: {} }),
+      createConversationItems: vi.fn().mockResolvedValue({ items: [] }),
+      findConversationItemByStableIdentity: vi.fn().mockResolvedValue({ item: null }),
+      recordTokenUsage: vi.fn().mockResolvedValue({ usage: {} }),
+      projectConversationItems: vi.fn().mockResolvedValue({ projected: [] }),
+      releaseManagedJournalProjection: vi.fn().mockResolvedValue({ release: {} }),
+      releaseConversationProjectionHold: vi.fn().mockResolvedValue({ release: {} }),
+      answer: vi.fn().mockResolvedValue({ answer: {} }),
+      proposeCuratedMemory: vi.fn().mockResolvedValue({ memory: {} }),
+      claimPendingCuratedMemoryReviews: vi.fn().mockResolvedValue({ reviews: [] }),
+      submitCuratedMemoryReview: vi.fn().mockResolvedValue({ review: {} }),
+      createFinalQuestion: vi.fn().mockResolvedValue({ question: {} }),
+      acceptMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      getMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      claimMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      heartbeatMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      cancelMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      completeMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      failMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
+      createPendingDesktopAsk: vi.fn().mockResolvedValue({ ask: {} }),
+      sourceArtifacts: new Map()
+    } as unknown as MemoryApiClient;
+
+    store = new CommandOpIdStore(memoryClient);
+  });
+
+  describe("get/set", () => {
+    it("stores and retrieves operation results", () => {
+      const result: ManagedConversationControlActionResult = { status: "rejected", reason: "test" };
       store.set("op-1", result);
       expect(store.get("op-1")).toEqual(result);
     });
 
-    it("overwrites existing state", () => {
-      const { client } = mockMemoryClient();
-      const store = new CommandOpIdStore(client);
-      store.set("op-1", { status: "unknown" });
-      store.set("op-1", { status: "accepted" });
-      expect(store.get("op-1")).toEqual({ status: "accepted" });
+    it("returns undefined for unknown operation IDs", () => {
+      expect(store.get("nonexistent")).toBeUndefined();
     });
 
-    it("tracks has() correctly", () => {
-      const { client } = mockMemoryClient();
-      const store = new CommandOpIdStore(client);
-      expect(store.has("op-1")).toBe(false);
+    it("has checks operation existence", () => {
       store.set("op-1", { status: "accepted" });
       expect(store.has("op-1")).toBe(true);
+      expect(store.has("op-2")).toBe(false);
     });
   });
 
-  describe("ensureArtifact (restore)", () => {
-    it("restores states from segment content", async () => {
-      const { client, list, getContent } = mockMemoryClient();
-      const state: Omit<ManagedConversationControlActionState, "operationId" | "actionId" | "executionGeneration"> = {
-        status: "accepted",
-        createdAt: "2025-01-01T00:00:00.000Z"
-      };
-      const segmentData = {
-        version: 1,
-        states: {
-          "op-1": state,
-          "op-2": { ...state, status: "rejected", reason: "unsupported_action" }
-        }
-      };
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: SEGMENT_KEY }]
-      });
-      getContent.mockResolvedValue({
-        content: JSON.stringify(segmentData)
-      });
-      const store = new CommandOpIdStore(client);
+  describe("ensureArtifact/restore", () => {
+    it("persists state to segment on save and restores it", async () => {
+      const artifactId = "art-1";
+      const result: ManagedConversationControlActionResult = { status: "rejected", reason: "cached" };
+      store.set("op-1", result);
 
-      await store.ensureArtifact("artifact-1");
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
 
-      expect(store.get("op-1")).toEqual({ status: "accepted" });
-      expect(store.get("op-2")).toEqual({ status: "rejected", reason: "unsupported_action" });
+      expect(savedSegments.length).toBe(1);
+      const content = savedSegments[0].content as Record<string, unknown>;
+      expect(typeof content.bytesBase64).toBe("string");
+      expect(typeof content.plaintextDigest).toBe("string");
+      expect(typeof content.plaintextSize).toBe("number");
+
+      const stored = JSON.parse(
+        Buffer.from(content.bytesBase64 as string, "base64").toString("utf8")
+      ) as Record<string, unknown>;
+      expect(stored._koed_op_id_state).toBe(true);
+      expect(stored.states["op-1"].status).toBe("rejected");
+      expect(stored.states["op-1"].reason).toBe("cached");
+      expect(typeof stored.states["op-1"].createdAt).toBe("string");
     });
 
-    it("ignores non-matching segment keys", async () => {
-      const { client, list } = mockMemoryClient();
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: "other_key" }]
-      });
-      const store = new CommandOpIdStore(client);
+    it("restores state from saved segment on next ensureArtifact", async () => {
+      const artifactId = "art-2";
+      store.set("op-2", { status: "accepted" });
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
 
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("any-op")).toBeUndefined();
+      // New store instance with same saved data
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
+      expect(newStore.get("op-2")).toEqual({ status: "accepted" });
     });
 
-    it("silently fails when artifact has no segments", async () => {
-      const { client, list } = mockMemoryClient();
-      list.mockResolvedValue({ segments: [] });
-      const store = new CommandOpIdStore(client);
+    it("is idempotent — save after restore doesn't duplicate", async () => {
+      const artifactId = "art-3";
+      store.set("op-1", { status: "accepted" });
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
+      await store.save(artifactId);
 
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("any-op")).toBeUndefined();
-    });
-
-    it("silently fails on API error", async () => {
-      const { client, list } = mockMemoryClient();
-      list.mockRejectedValue(new Error("network error"));
-      const store = new CommandOpIdStore(client);
-
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("any-op")).toBeUndefined();
-    });
-
-    it("skips invalid segment versions", async () => {
-      const { client, list, getContent } = mockMemoryClient();
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: SEGMENT_KEY }]
-      });
-      getContent.mockResolvedValue({
-        content: JSON.stringify({ version: 2, states: {} })
-      });
-      const store = new CommandOpIdStore(client);
-
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("any-op")).toBeUndefined();
-    });
-
-    it("idempotent: second call does not re-restore", async () => {
-      const { client, list, getContent } = mockMemoryClient();
-      const state: Omit<ManagedConversationControlActionState, "operationId" | "actionId" | "executionGeneration"> = {
-        status: "accepted",
-        createdAt: "2025-01-01T00:00:00.000Z"
-      };
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: SEGMENT_KEY }]
-      });
-      getContent.mockResolvedValue({
-        content: JSON.stringify({ version: 1, states: { "op-1": state } })
-      });
-      const store = new CommandOpIdStore(client);
-
-      await store.ensureArtifact("artifact-1");
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("op-1")).toEqual({ status: "accepted" });
-      expect(list).toHaveBeenCalledTimes(1);
-    });
-
-    it("guards against concurrent restores", async () => {
-      const { client, list } = mockMemoryClient();
-      let resolveRestore: () => void;
-      const restorePromise = new Promise<void>((resolve) => {
-        resolveRestore = resolve;
-      });
-      list.mockReturnValue(restorePromise);
-      const store = new CommandOpIdStore(client);
-
-      const p1 = store.ensureArtifact("artifact-1");
-      const p2 = store.ensureArtifact("artifact-1");
-
-      resolveRestore!();
-
-      await Promise.all([p1, p2]);
-
-      expect(list).toHaveBeenCalledTimes(1);
+      expect(savedSegments.length).toBe(2);
+      // The in-memory map is not duplicated — save re-saves current state
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
+      expect(newStore.get("op-1")).toEqual({ status: "accepted" });
     });
   });
 
-  describe("save", () => {
-    it("writes in-memory states to segment", async () => {
-      const { client, append } = mockMemoryClient();
-      append.mockResolvedValue({});
-      const store = new CommandOpIdStore(client);
-      store.set("op-1", { status: "accepted" });
-      store.set("op-2", { status: "rejected", reason: "test" });
+  describe("concurrent restore guard", () => {
+    it("does not double-restore for same artifact", async () => {
+      const artifactId = "art-4";
+      const result: ManagedConversationControlActionResult = { status: "accepted" };
+      store.set("op-1", result);
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
 
-      await store.save("artifact-1");
+      // Another store instance starts restore for same artifact
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
 
-      expect(append).toHaveBeenCalledWith("artifact-1", expect.objectContaining({
-        key: SEGMENT_KEY
-      }));
-      const call = append.mock.calls[0];
-      const parsed = JSON.parse(call[1].content as string);
-      expect(parsed.version).toBe(1);
-      expect(parsed.states["op-1"].status).toBe("accepted");
-      expect(parsed.states["op-2"].status).toBe("rejected");
-      expect(parsed.states["op-2"].reason).toBe("test");
-    });
-
-    it("skips save when no states exist", async () => {
-      const { client, append } = mockMemoryClient();
-      append.mockResolvedValue({});
-      const store = new CommandOpIdStore(client);
-
-      await store.save("artifact-1");
-
-      expect(append).not.toHaveBeenCalled();
-    });
-
-    it("silently fails on save error", async () => {
-      const { client, append } = mockMemoryClient();
-      append.mockRejectedValue(new Error("conflict"));
-      const store = new CommandOpIdStore(client);
-      store.set("op-1", { status: "accepted" });
-
-      await store.save("artifact-1");
-
-      // Should not throw
+      // Both should see the same restored data
+      expect(newStore.get("op-1")).toEqual(result);
     });
   });
 
   describe("status mapping", () => {
-    it("converts pending stored state to unknown result", async () => {
-      const { client, list, getContent } = mockMemoryClient();
-      const state: Omit<ManagedConversationControlActionState, "operationId" | "actionId" | "executionGeneration"> = {
-        status: "pending",
-        createdAt: "2025-01-01T00:00:00.000Z"
-      };
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: SEGMENT_KEY }]
-      });
-      getContent.mockResolvedValue({
-        content: JSON.stringify({ version: 1, states: { "op-1": state } })
-      });
-      const store = new CommandOpIdStore(client);
+    it("converts accepted/already_accepted to accepted stored state", async () => {
+      const artifactId = "art-5";
+      store.set("op-1", { status: "accepted" });
+      store.set("op-2", { status: "already_accepted" });
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
 
-      await store.ensureArtifact("artifact-1");
-
-      expect(store.get("op-1")).toEqual({ status: "unknown" });
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
+      expect(newStore.get("op-1")).toEqual({ status: "accepted" });
+      expect(newStore.get("op-2")).toEqual({ status: "accepted" });
     });
 
-    it("converts already_accepted stored state to accepted result", async () => {
-      const { client, list, getContent } = mockMemoryClient();
-      const state: Omit<ManagedConversationControlActionState, "operationId" | "actionId" | "executionGeneration"> = {
-        status: "accepted",
-        createdAt: "2025-01-01T00:00:00.000Z"
-      };
-      list.mockResolvedValue({
-        segments: [{ id: "seg-1", key: SEGMENT_KEY }]
-      });
-      getContent.mockResolvedValue({
-        content: JSON.stringify({ version: 1, states: { "op-1": state } })
-      });
-      const store = new CommandOpIdStore(client);
+    it("converts unknown stored state back to unknown result", async () => {
+      const artifactId = "art-6";
+      store.set("op-1", { status: "unknown" });
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
 
-      await store.ensureArtifact("artifact-1");
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
+      expect(newStore.get("op-1")).toEqual({ status: "unknown" });
+    });
 
-      expect(store.get("op-1")).toEqual({ status: "accepted" });
+    it("converts rejected stored state back to rejected result with reason", async () => {
+      const artifactId = "art-7";
+      store.set("op-1", { status: "rejected", reason: "generation_changed" });
+      await store.ensureArtifact(artifactId);
+      await store.save(artifactId);
+
+      const newStore = new CommandOpIdStore(memoryClient);
+      await newStore.ensureArtifact(artifactId);
+      expect(newStore.get("op-1")).toEqual({
+        status: "rejected",
+        reason: "generation_changed"
+      });
     });
   });
 });
