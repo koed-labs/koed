@@ -493,6 +493,87 @@ describe("Studio window controller", () => {
     await controller.close();
   });
 
+  it("allows native direct-message create commands through the Studio channel gateway", async () => {
+    const fake = makeWindow();
+    const commands: Record<string, unknown>[] = [];
+    let gatewayOptions: StudioGatewayOptions | undefined;
+    const teamId = "33333333-3333-4333-8333-333333333333";
+    const ownerId = "11111111-1111-4111-8111-111111111111";
+    const firstMemberId = "22222222-2222-4222-8222-222222222222";
+    const secondMemberId = "44444444-4444-4444-8444-444444444444";
+    const makeThread = (kind: "dm" | "group_dm") => ({
+      id: "55555555-5555-4555-8555-555555555555",
+      logicalId: "66666666-6666-4666-8666-666666666666",
+      scope: "team" as const,
+      teamId,
+      kind,
+      name: kind === "dm" ? null : "Group",
+      topic: null,
+      participants: [ownerId, firstMemberId, ...(kind === "group_dm" ? [secondMemberId] : [])].map((id) => ({
+        id,
+        displayName: "Team member",
+        membershipState: "enabled" as const
+      })),
+      version: 1,
+      lifecycle: "active" as const,
+      canPost: true,
+      latestSequence: 0,
+      unreadCount: 0,
+      lastReadMessageId: null,
+      lastReadSequence: 0,
+      createdAt: "2026-09-25T12:00:00.000Z",
+      updatedAt: "2026-09-25T12:00:00.000Z",
+      lastActivityAt: "2026-09-25T12:00:00.000Z",
+      archivedAt: null
+    });
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async (options) => {
+        gatewayOptions = options;
+        return { url: "http://127.0.0.1:49828", close: async () => undefined };
+      },
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async (command) => {
+        commands.push(command);
+        if (command.command === "collaboration.load") return loadResult(command.requestId, collaborationSnapshot());
+        return {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: { thread: makeThread(command.command === "collaboration.start_direct_message" ? "dm" : "group_dm") }
+        };
+      },
+      openExternal: async () => undefined
+    });
+
+    await controller.open();
+    for (const [command, input] of [
+      ["collaboration.start_direct_message", { teamId, participantUserId: firstMemberId }],
+      ["collaboration.start_group_direct_message", { teamId, participantUserIds: [firstMemberId, secondMemberId] }]
+    ] as const) {
+      const result = await gatewayOptions!.runStudioCollaborationCommand!({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command,
+        input
+      });
+      expect(result).toMatchObject({ ok: true, command });
+    }
+    expect(commands.map(({ command }) => command)).toEqual([
+      "collaboration.start_direct_message",
+      "collaboration.start_group_direct_message"
+    ]);
+    await controller.close();
+  });
+
   it("shows an unavailable status without exposing broker errors", async () => {
     const fake = makeWindow();
     let gatewayOptions: StudioGatewayOptions | undefined;

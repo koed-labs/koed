@@ -374,6 +374,8 @@ export const createStudioWindowController = (input: {
     "collaboration.select",
     "collaboration.create_team_channel",
     "collaboration.create_team_shared_project",
+    "collaboration.start_direct_message",
+    "collaboration.start_group_direct_message",
     "collaboration.send_message",
     "collaboration.retry_message",
     "collaboration.load_message_page",

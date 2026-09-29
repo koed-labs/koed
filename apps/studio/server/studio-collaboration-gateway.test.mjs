@@ -177,6 +177,76 @@ describe("Studio collaboration gateway", () => {
     assert.equal(calls.length, 2);
   });
 
+  it("reexecutes direct-message create commands only for the same Team and participant set", async () => {
+    const calls = [];
+    const teamId = "33333333-3333-4333-8333-333333333333";
+    const memberOne = "77777777-7777-4777-8777-777777777777";
+    const memberTwo = "88888888-8888-4888-8888-888888888888";
+    const memberThree = "99999999-9999-4999-8999-999999999999";
+    const threadFor = (command) => {
+      const kind = command.command === "collaboration.start_direct_message" ? "dm" : "group_dm";
+      const participantIds = kind === "dm"
+        ? [ownerId, command.input.participantUserId]
+        : [ownerId, ...command.input.participantUserIds];
+      return {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        logicalId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        scope: "team",
+        teamId: command.input.teamId,
+        kind,
+        name: kind === "dm" ? null : "Team group",
+        topic: null,
+        participants: participantIds.map((id) => ({ id, displayName: "Team member", membershipState: "enabled" })),
+        version: 1,
+        lifecycle: "active",
+        canPost: true,
+        latestSequence: 0,
+        unreadCount: 0,
+        lastReadMessageId: null,
+        lastReadSequence: 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastActivityAt: timestamp,
+        archivedAt: null
+      };
+    };
+    const service = await start({
+      loadStudioCollaborationSnapshot: snapshot,
+      runStudioCollaborationCommand: async (command) => {
+        calls.push(command);
+        return {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: { thread: threadFor(command) }
+        };
+      }
+    });
+    const session = await (await fetch(`${service.url}/studio-api/collaboration/studio-session`, { headers: { origin: service.url } })).json();
+    const endpoint = `${service.url}/studio-api/collaboration/command`;
+    const headers = { origin: service.url, "x-studio-csrf": session.csrfToken };
+    const dm = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      command: "collaboration.start_direct_message",
+      input: { teamId, participantUserId: memberOne }
+    };
+    assert.equal((await postJson(endpoint, dm, headers)).status, 200);
+    assert.equal((await postJson(endpoint, dm, headers)).status, 200);
+    assert.equal((await postJson(endpoint, { ...dm, input: { ...dm.input, participantUserId: memberTwo } }, headers)).status, 409);
+    const group = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      command: "collaboration.start_group_direct_message",
+      input: { teamId, participantUserIds: [memberOne, memberTwo] }
+    };
+    assert.equal((await postJson(endpoint, group, headers)).status, 200);
+    assert.equal((await postJson(endpoint, { ...group, input: { ...group.input, participantUserIds: [memberTwo, memberOne] } }, headers)).status, 200);
+    assert.equal((await postJson(endpoint, { ...group, input: { ...group.input, participantUserIds: [memberOne, memberThree] } }, headers)).status, 409);
+    assert.equal(calls.length, 4);
+  });
+
   it("streams only valid typed broker events and releases the listener on close", async () => {
     let listener;
     let unsubscribed = false;

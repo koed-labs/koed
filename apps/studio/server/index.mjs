@@ -1624,9 +1624,14 @@ export const createStudioServer = ({
           return;
         }
         const idempotentCreate = command.command === "collaboration.create_team_channel" ||
-          command.command === "collaboration.create_team_shared_project";
+          command.command === "collaboration.create_team_shared_project" ||
+          command.command === "collaboration.start_direct_message" ||
+          command.command === "collaboration.start_group_direct_message";
+        const fingerprintInput = command.command === "collaboration.start_group_direct_message"
+          ? { ...command.input, participantUserIds: [...command.input.participantUserIds].sort() }
+          : command.input;
         const fingerprint = idempotentCreate
-          ? createHash("sha256").update(JSON.stringify({ command: command.command, input: command.input })).digest("hex")
+          ? createHash("sha256").update(JSON.stringify({ command: command.command, input: fingerprintInput })).digest("hex")
           : null;
         if (!consumeCollaborationRequestId(command.requestId, origin, {
           allowExactCreateReplay: idempotentCreate,
