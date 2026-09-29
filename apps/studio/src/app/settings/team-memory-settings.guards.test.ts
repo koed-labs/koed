@@ -17,6 +17,7 @@ test("rejects settings results after unmount, account change, Team change, or ne
   assert.equal(mayApplyTeamMemoryResult(request), true);
   assert.equal(mayApplyTeamMemoryResult({ ...request, active: false }), false);
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentGeneration: 5 }), false);
+  assert.equal(mayApplyTeamMemoryResult({ ...request, requestGeneration: 5, currentGeneration: 5 }), true);
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentAuthority: "backend:user-b" }), false);
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentTeamId: "team-b" }), false);
 });

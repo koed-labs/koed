@@ -278,7 +278,11 @@ export function HostedTeamMemorySettings() {
       }
     })();
     return () => { dataSequence.current += 1; };
-  }, [canManage, client, sessionGeneration, state, tab, teamId]);
+  // A refreshed hosted navigation snapshot must restart the selected Team's
+  // load even when its authority, role, tab, and Team id are unchanged. The
+  // session sequence invalidates older reads as soon as a refresh starts, so
+  // key this effect to the accepted snapshot as well as the selection.
+  }, [canManage, client, navigation, sessionGeneration, state, tab, teamId]);
 
   useEffect(() => {
     if (state !== "ready") return;
