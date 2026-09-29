@@ -1011,6 +1011,147 @@ describeDb("Collaboration repository", () => {
     ).resolves.toBeNull();
   });
 
+  it("creates an idempotent Team memory destination and versions member retention settings", async () => {
+    const fixture = await createTeamFixture();
+    const teamAccess = createTeamAccessRepository(pool);
+
+    const initial = await teamAccess.getTeamMemberMemoryRetentionSetting(
+      actor(fixture.memberUserId),
+      { teamId: fixture.teamId, userId: fixture.memberUserId }
+    );
+    expect(initial).toMatchObject({ enabled: true, version: 1 });
+    await expect(
+      teamAccess.getTeamMemberMemoryRetentionSetting(
+        actor(fixture.outsiderUserId),
+        { teamId: fixture.teamId, userId: fixture.memberUserId }
+      )
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    const first = await teamAccess.ensureTeamMemoryDestination(
+      actor(fixture.ownerUserId),
+      { teamId: fixture.teamId }
+    );
+    const joinerUserId = await createUser("Late Joiner");
+    const joinerEmail = await pool.query<{ email: string }>(
+      `select email from users where id=$1`,
+      [joinerUserId]
+    );
+    const backendOriginHash = hash(`origin:${randomUUID()}`);
+    const tokenHash = hash(`token:${randomUUID()}`);
+    const invite = await teamAccess.createTeamInvite(actor(fixture.ownerUserId), {
+      teamId: fixture.teamId,
+      defaultTeamWorkspaceId: fixture.teamWorkspaceId,
+      defaultWorkspaceAccess: "read",
+      email: joinerEmail.rows[0]!.email,
+      role: "member",
+      backendOriginHash,
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    expect(invite).not.toBeNull();
+    const accepted = await teamAccess.acceptTeamInvite({
+      tokenHash,
+      userId: joinerUserId,
+      expectedVersion: invite!.version,
+      expectedBackendOriginHash: backendOriginHash
+    });
+    expect(accepted).not.toBeNull();
+    const restrictedWorkspaceGrantsBefore = await pool.query<{ count: string }>(
+      `select count(*)::text as count from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2`,
+      [fixture.teamId, fixture.teamWorkspaceId]
+    );
+    await expect(
+      teamAccess.getTeamMemberMemoryRetentionSetting(
+        actor(joinerUserId),
+        { teamId: fixture.teamId, userId: joinerUserId }
+      )
+    ).resolves.toMatchObject({ enabled: true, version: 1 });
+    const joinerAccess = await pool.query<{ access: string; can_share_owned_memory: boolean }>(
+      `select access,can_share_owned_memory from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2 and user_id=$3 and disabled_at is null`,
+      [fixture.teamId, first.teamWorkspaceId, joinerUserId]
+    );
+    expect(joinerAccess.rows[0]).toMatchObject({
+      access: "write",
+      can_share_owned_memory: true
+    });
+    const joinerRestrictedAccess = await pool.query<{
+      access: string;
+      can_share_owned_memory: boolean;
+    }>(
+      `select access,can_share_owned_memory from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2 and user_id=$3 and disabled_at is null`,
+      [fixture.teamId, fixture.teamWorkspaceId, joinerUserId]
+    );
+    expect(joinerRestrictedAccess.rows[0]).toEqual({
+      access: "read",
+      can_share_owned_memory: false
+    });
+    const second = await teamAccess.ensureTeamMemoryDestination(
+      actor(fixture.memberUserId),
+      { teamId: fixture.teamId }
+    );
+    expect(second).toEqual(first);
+
+    const grants = await pool.query<{ user_id: string; version: number }>(
+      `select user_id,version from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2 and disabled_at is null
+        order by user_id`,
+      [fixture.teamId, first.teamWorkspaceId]
+    );
+    expect(grants.rows.map((row) => row.user_id).sort()).toEqual(
+      [fixture.ownerUserId, fixture.memberUserId, fixture.secondMemberUserId, joinerUserId].sort()
+    );
+    const versionsBefore = grants.rows.map((row) => [row.user_id, row.version]);
+    await teamAccess.ensureTeamMemoryDestination(actor(fixture.ownerUserId), {
+      teamId: fixture.teamId
+    });
+    const versionsAfter = await pool.query<{ user_id: string; version: number }>(
+      `select user_id,version from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2 and disabled_at is null
+        order by user_id`,
+      [fixture.teamId, first.teamWorkspaceId]
+    );
+    expect(versionsAfter.rows.map((row) => [row.user_id, row.version])).toEqual(
+      versionsBefore
+    );
+
+    const updated = await teamAccess.updateTeamMemberMemoryRetention(
+      actor(fixture.ownerUserId),
+      {
+        teamId: fixture.teamId,
+        userId: fixture.memberUserId,
+        enabled: false,
+        expectedVersion: 1
+      }
+    );
+    expect(updated).toMatchObject({ enabled: false, version: 2 });
+    await expect(
+      teamAccess.updateTeamMemberMemoryRetention(actor(fixture.ownerUserId), {
+        teamId: fixture.teamId,
+        userId: fixture.memberUserId,
+        enabled: true,
+        expectedVersion: 1
+      })
+    ).rejects.toThrow();
+    await expect(
+      teamAccess.getTeamMemberMemoryRetentionSetting(
+        actor(fixture.memberUserId),
+        { teamId: fixture.teamId, userId: fixture.memberUserId }
+      )
+    ).resolves.toMatchObject({ enabled: false, version: 2 });
+
+    const otherWorkspaceGrants = await pool.query<{ count: string }>(
+      `select count(*)::text as count from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2`,
+      [fixture.teamId, fixture.teamWorkspaceId]
+    );
+    expect(otherWorkspaceGrants.rows[0]?.count).toBe(
+      restrictedWorkspaceGrantsBefore.rows[0]?.count
+    );
+  });
+
   it("keeps uncaptured collaboration activity out of every Memory pipeline table", async () => {
     const fixture = await createTeamFixture();
     const teamAccess = createTeamAccessRepository(pool);

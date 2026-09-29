@@ -373,6 +373,34 @@
       "when": 1790626204498,
       "tag": "0052_dry_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790681826561,
+      "tag": "0053_safe_nitro",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790682886247,
+      "tag": "0054_messy_colossus",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790685403246,
+      "tag": "0055_retention_record_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790686576094,
+      "tag": "0056_certain_night_thrasher",
+      "breakpoints": true
     }
   ]
 }

@@ -656,6 +656,12 @@ export const teamMemberships = pgTable(
     role: teamRole("role").notNull(),
     status: teamMembershipStatus("status").notNull().default("enabled"),
     version: integer("version").notNull().default(1),
+    teamMemoryRetentionEnabled: boolean("team_memory_retention_enabled")
+      .notNull()
+      .default(true),
+    teamMemoryRetentionVersion: integer("team_memory_retention_version")
+      .notNull()
+      .default(1),
     presenceMode: text("presence_mode").notNull().default("auto"),
     manualPresenceStatus: text("manual_presence_status")
       .notNull()
@@ -675,6 +681,10 @@ export const teamMemberships = pgTable(
     index("team_memberships_user_idx").on(table.userId, table.status),
     index("team_memberships_team_idx").on(table.teamId, table.role),
     check("team_memberships_version_check", sql`${table.version} > 0`),
+    check(
+      "team_memberships_memory_retention_version_check",
+      sql`${table.teamMemoryRetentionVersion} > 0`
+    ),
     check(
       "team_memberships_presence_mode_check",
       sql`${table.presenceMode} in ('auto', 'manual')`
@@ -793,6 +803,29 @@ export const teamWorkspaces = pgTable(
         and ${table.purgeCompletedAt} is not null
       )`
     )
+  ]
+);
+
+/**
+ * The Team-wide destination used for explicitly shared Team memory. This maps
+ * one Team to its reserved Workspace; ordinary Team membership never grants
+ * access to unrelated Workspaces.
+ */
+export const teamMemoryDestinations = pgTable(
+  "team_memory_destinations",
+  {
+    teamId: uuid("team_id")
+      .primaryKey()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull().unique(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "team_memory_destinations_workspace_team_fk"
+    }).onDelete("cascade")
   ]
 );
 
@@ -7205,6 +7238,13 @@ export const sharedSourcePreviews = pgTable(
     activationRepresentation: sharedMemoryRepresentation(
       "activation_representation"
     ).notNull(),
+    retentionEnabled: boolean("retention_enabled").notNull().default(false),
+    retentionPolicyEnabled: boolean("retention_policy_enabled")
+      .notNull()
+      .default(false),
+    memberRetentionVersion: integer("member_retention_version")
+      .notNull()
+      .default(1),
     mode: sharedMemoryConsentMode("mode").notNull(),
     representation: sharedMemoryRepresentation("representation").notNull(),
     previewSchemaVersion: integer("preview_schema_version")
@@ -7655,6 +7695,13 @@ export const sharedMemoryCandidatePreviews = pgTable(
     maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
     includeCuratedMemory: boolean("include_curated_memory").notNull(),
     mode: sharedMemoryConsentMode("mode").notNull(),
+    retentionEnabled: boolean("retention_enabled").notNull().default(false),
+    retentionPolicyEnabled: boolean("retention_policy_enabled")
+      .notNull()
+      .default(false),
+    memberRetentionVersion: integer("member_retention_version")
+      .notNull()
+      .default(1),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
     redactedContentHash: text("redacted_content_hash").notNull(),
@@ -7732,7 +7779,8 @@ export const sharedMemoryCandidatePreviews = pgTable(
         and ${table.representationPolicyRevision} > 0
         and ${table.contentPolicyVersion} > 0
         and ${table.classifierVersion} > 0
-        and ${table.expiresAt} > ${table.createdAt}`
+        and ${table.expiresAt} > ${table.createdAt}
+        and ${table.memberRetentionVersion} > 0`
     ),
     check(
       "shared_memory_candidate_previews_hashes_check",
@@ -8076,6 +8124,13 @@ export const sourceOwnerRepresentationConsents = pgTable(
     includeCuratedMemory: boolean("include_curated_memory")
       .notNull()
       .default(false),
+    retentionEnabled: boolean("retention_enabled").notNull().default(false),
+    retentionPolicyEnabled: boolean("retention_policy_enabled")
+      .notNull()
+      .default(false),
+    memberRetentionVersion: integer("member_retention_version")
+      .notNull()
+      .default(1),
     previewId: uuid("preview_id")
       .notNull()
       .references(() => sharedSourcePreviews.id, {
@@ -8199,7 +8254,8 @@ export const sourceOwnerRepresentationConsents = pgTable(
         and ${table.classifierVersion} > 0
         and ${table.sourceOwnerPolicyVersion} > 0
         and ${table.teamPolicyVersion} > 0
-        and ${table.workspacePolicyVersion} > 0`
+        and ${table.workspacePolicyVersion} > 0
+        and ${table.memberRetentionVersion} > 0`
     ),
     check(
       "source_owner_consents_hash_check",
@@ -8299,6 +8355,13 @@ export const teamMemoryShareGrants = pgTable(
     mode: sharedMemoryConsentMode("mode").notNull(),
     maximumFidelity: sharedMemoryRepresentation("maximum_fidelity"),
     includeCuratedMemory: boolean("include_curated_memory"),
+    retentionEnabled: boolean("retention_enabled").notNull().default(false),
+    retentionPolicyEnabled: boolean("retention_policy_enabled")
+      .notNull()
+      .default(false),
+    memberRetentionVersion: integer("member_retention_version")
+      .notNull()
+      .default(1),
     fidelityPolicyRevision: integer("fidelity_policy_revision"),
     contentPolicyVersion: integer("content_policy_version"),
     classifierVersion: integer("classifier_version"),
@@ -8348,7 +8411,14 @@ export const teamMemoryShareGrants = pgTable(
       { onDelete: "restrict" }
     ),
     tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
-    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true }),
+    sourceUpdatesStoppedAt: timestamp("source_updates_stopped_at", {
+      withTimezone: true
+    }),
+    sourceUpdatesStoppedByUserId: uuid("source_updates_stopped_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    )
   },
   (table) => [
     foreignKey({
@@ -8486,7 +8556,10 @@ export const teamMemoryShareGrants = pgTable(
     ),
     check(
       "team_memory_share_grants_version_check",
-      sql`${table.grantVersion} > 0 and ${table.revocationEpoch} >= 0`
+      sql`${table.grantVersion} > 0 and ${table.revocationEpoch} >= 0
+        and ${table.memberRetentionVersion} > 0
+        and ((${table.sourceUpdatesStoppedAt} is null and ${table.sourceUpdatesStoppedByUserId} is null)
+          or ${table.sourceUpdatesStoppedAt} is not null)`
     ),
     check(
       "team_memory_share_grants_retention_check",

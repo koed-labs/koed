@@ -1,0 +1,3 @@
+ALTER TABLE "team_memberships" ADD COLUMN "team_memory_retention_enabled" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "team_memberships" ADD COLUMN "team_memory_retention_version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "team_memberships" ADD CONSTRAINT "team_memberships_memory_retention_version_check" CHECK ("team_memberships"."team_memory_retention_version" > 0);

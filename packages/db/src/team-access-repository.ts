@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
@@ -29,6 +29,7 @@ import {
   teamMemberships,
   teamRepresentationPolicies,
   retentionPolicies,
+  teamMemoryDestinations,
   teamMemoryShareGrants,
   teams,
   teamWorkspaceAccessGrants,
@@ -40,7 +41,8 @@ import {
   DEFAULT_TEAM_BACKUP_RETENTION_SECONDS,
   DEFAULT_TEAM_DELETION_GRACE_SECONDS,
   DEFAULT_TEAM_RETENTION_SECONDS,
-  retentionPolicySnapshotHash
+  retentionPolicySnapshotHash,
+  scheduleShareGrantRevocationRetentionWithClient
 } from "./retention-lifecycle-repository.js";
 import {
   defaultSharedMemoryIncludesCuratedMemory,
@@ -181,6 +183,18 @@ const mapTeamRosterMember = (row: {
 
 const staleVersion = (): never => {
   throw Object.assign(new Error("Stale version"), { code: "STALE_VERSION" });
+};
+
+const assertUuid = (value: string, field: string): void => {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  ) {
+    throw Object.assign(new Error(`${field} must be a UUID`), {
+      statusCode: 400
+    });
+  }
 };
 
 const inviteAcceptanceConflict = Symbol("inviteAcceptanceConflict");
@@ -635,6 +649,97 @@ export const createTeamAccessRepository = (
       return await createDb(client).transaction((tx) => work(tx, client));
     } finally {
       client.release();
+    }
+  };
+
+  const endOwnedShareLifecycleForMembership = async (
+    tx: TeamAccessTransaction,
+    client: pg.PoolClient,
+    input: { teamId: string; userId: string; actorUserId: string; reason: string }
+  ): Promise<void> => {
+    const selected = await client.query<{
+      id: string;
+      logical_memory_id: string;
+      team_workspace_id: string;
+      retention_enabled: boolean;
+      grant_version: number;
+      revocation_epoch: number;
+    }>(
+      `select id,logical_memory_id,team_workspace_id,retention_enabled,
+              grant_version,revocation_epoch
+         from team_memory_share_grants
+        where team_id=$1 and owner_user_id=$2 and lifecycle in ('active','unavailable')
+          and revoked_at is null
+        for update`,
+      [input.teamId, input.userId]
+    );
+    for (const grant of selected.rows) {
+      const now = new Date();
+      if (grant.retention_enabled) {
+        await client.query(
+          `update team_memory_share_grants
+              set source_updates_stopped_at=coalesce(source_updates_stopped_at,$2),
+                  source_updates_stopped_by_user_id=coalesce(source_updates_stopped_by_user_id,$3),
+                  grant_version=grant_version+1,updated_at=now()
+            where id=$1 and source_updates_stopped_at is null`,
+          [grant.id, now, input.actorUserId]
+        );
+      } else {
+        const revokedAt = now;
+        const updated = await client.query<{ revocation_epoch: number }>(
+          `update team_memory_share_grants
+              set lifecycle='revoked',grant_version=grant_version+1,updated_at=now(),
+                  revocation_epoch=revocation_epoch+1,revoked_at=$2,
+                  revoked_by_user_id=$3,revocation_reason=$4
+            where id=$1 and revoked_at is null returning revocation_epoch`,
+          [grant.id, revokedAt, input.actorUserId, input.reason]
+        );
+        if (updated.rows[0]) {
+          await client.query(
+            `update team_memory_representations
+                set state='invalidated',invalidated_at=$2,updated_at=now(),
+                    record_version=record_version+1,
+                    invalidation_reason_code='share_owner_membership_ended'
+              where share_grant_id=$1 and state in ('pending','available','stale')`,
+            [grant.id, revokedAt]
+          );
+          await client.query(
+            `delete from team_memory_semantic_items where share_grant_id=$1`,
+            [grant.id]
+          );
+          const mutationId = randomUUID();
+          await scheduleShareGrantRevocationRetentionWithClient(client, {
+            shareGrantId: grant.id,
+            actorUserId: input.actorUserId,
+            mutationId,
+            revocationEpoch: Number(updated.rows[0].revocation_epoch),
+            triggeredAt: revokedAt
+          });
+          await appendCollaborationOutboxEvent(tx, {
+            family: "access_revoked",
+            teamId: input.teamId,
+            teamWorkspaceId: grant.team_workspace_id,
+            resourceType: "team_memory_share_grant",
+            resourceId: grant.id,
+            actorUserId: input.actorUserId
+          });
+        }
+      }
+      await client.query(
+        `update pending_share_operations
+            set state='revoked',stage='complete',source_update_state='stopped',
+                revoked_at=coalesce(revoked_at,now()),updated_at=now(),
+                operation_version=operation_version+1
+          where grant_id=$1 and state in ('preparing','needs_attention')`,
+        [grant.id]
+      );
+      await client.query(
+        `update pending_share_outbox set state='completed',locked_at=null,updated_at=now()
+          where pending_share_id in (
+            select id from pending_share_operations where grant_id=$1 and state='revoked'
+          )`,
+        [grant.id]
+      );
     }
   };
 
@@ -1096,6 +1201,255 @@ export const createTeamAccessRepository = (
   };
 
   return {
+    async ensureTeamMemoryDestination(
+      actor: ActorContext,
+      input: { teamId: string }
+    ): Promise<{ teamId: string; teamWorkspaceId: string }> {
+      assertUuid(input.teamId, "teamId");
+      return withTeamAccessTransaction(async (tx, client) => {
+        await lockTeamOwnerLifecycle(tx, input.teamId);
+        await tx.execute(sql`select pg_advisory_xact_lock(
+          hashtextextended(${`team-memory-destination:${input.teamId}`},0)
+        )`);
+        const memberRows = await tx
+          .select({ userId: teamMemberships.userId })
+          .from(teamMemberships)
+          .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, actor.userId),
+              eq(teamMemberships.status, "enabled"),
+              isNull(teamMemberships.disabledAt),
+              eq(teams.lifecycle, "active")
+            )
+          )
+          .limit(1)
+          .for("update");
+        if (!memberRows[0]) {
+          throw Object.assign(new Error("Active Team membership is required"), {
+            statusCode: 403
+          });
+        }
+        let destination = await tx
+          .select({ teamWorkspaceId: teamMemoryDestinations.teamWorkspaceId })
+          .from(teamMemoryDestinations)
+          .where(eq(teamMemoryDestinations.teamId, input.teamId))
+          .limit(1);
+        let teamWorkspaceId = destination[0]?.teamWorkspaceId;
+        if (!teamWorkspaceId) {
+          const workspaceRows = await tx
+            .insert(teamWorkspaces)
+            .values({ teamId: input.teamId, name: "Team memory" })
+            .returning({ id: teamWorkspaces.id });
+          const workspace = workspaceRows[0];
+          if (!workspace) throw new Error("Team memory Workspace unavailable");
+          teamWorkspaceId = workspace.id;
+          await tx.insert(teamMemoryDestinations).values({
+            teamId: input.teamId,
+            teamWorkspaceId
+          });
+          await createInitialRepresentationPolicies(tx, {
+            teamId: input.teamId,
+            workspaceId: teamWorkspaceId,
+            actorUserId: actor.userId,
+            includeTeam: false
+          });
+        }
+        // This reserved Workspace is intentionally Team-wide. Materialize
+        // explicit grants for active members; ordinary Workspaces remain
+        // controlled by their existing access grants.
+        await tx.execute(sql`
+          insert into team_workspace_access_grants
+            (team_workspace_id,team_id,user_id,access,can_share_owned_memory,
+             version,granted_by_user_id,disabled_at,disabled_reason)
+          select ${teamWorkspaceId}::uuid,${input.teamId}::uuid,membership.user_id,
+                 'write',true,1,${actor.userId}::uuid,null,null
+            from team_memberships membership
+           where membership.team_id=${input.teamId}::uuid
+             and membership.status='enabled'
+             and membership.disabled_at is null
+          on conflict (team_workspace_id,user_id) do update
+           set access='write',can_share_owned_memory=true,
+                version=team_workspace_access_grants.version+1,
+                granted_by_user_id=excluded.granted_by_user_id,
+                disabled_at=null,disabled_reason=null,updated_at=now()
+          where team_workspace_access_grants.access<>'write'
+             or not team_workspace_access_grants.can_share_owned_memory
+             or team_workspace_access_grants.disabled_at is not null`);
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.memory_destination.ensured",
+          targetTable: "team_memory_destinations",
+          targetId: input.teamId,
+          metadata: { teamId: input.teamId, teamWorkspaceId }
+        });
+        return { teamId: input.teamId, teamWorkspaceId };
+      });
+    },
+
+    async getTeamMemberMemoryRetentionSettings(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<{
+      teamId: string;
+      members: Array<{
+        userId: string;
+        displayName: string | null;
+        enabled: boolean;
+        version: number;
+      }>;
+    }> {
+      assertUuid(teamId, "teamId");
+      return withTeamAccessTransaction(async (tx) => {
+        await lockTeamOwnerLifecycle(tx, teamId);
+        if (!(await getManagingMembershipForUpdate(tx, actor, teamId))) {
+          throw Object.assign(new Error("Team admin access is required"), {
+            statusCode: 403
+          });
+        }
+        const rows = await tx
+          .select({
+            userId: teamMemberships.userId,
+            displayName: users.displayName,
+            enabled: teamMemberships.teamMemoryRetentionEnabled,
+            version: teamMemberships.teamMemoryRetentionVersion
+          })
+          .from(teamMemberships)
+          .innerJoin(users, eq(users.id, teamMemberships.userId))
+          .where(
+            and(
+              eq(teamMemberships.teamId, teamId),
+              eq(teamMemberships.status, "enabled"),
+              isNull(teamMemberships.disabledAt)
+            )
+          )
+          .orderBy(asc(users.displayName), asc(teamMemberships.userId));
+        return { teamId, members: rows };
+      });
+    },
+
+    async getTeamMemberMemoryRetentionSetting(
+      actor: ActorContext,
+      input: { teamId: string; userId: string }
+    ): Promise<{
+      teamId: string;
+      userId: string;
+      enabled: boolean;
+      version: number;
+    } | null> {
+      assertUuid(input.teamId, "teamId");
+      assertUuid(input.userId, "userId");
+      return withTeamAccessTransaction(async (tx) => {
+        await lockTeamOwnerLifecycle(tx, input.teamId);
+        const canManage =
+          input.userId === actor.userId ||
+          Boolean(await getManagingMembershipForUpdate(tx, actor, input.teamId));
+        if (!canManage) {
+          throw Object.assign(new Error("Team member retention access denied"), {
+            statusCode: 403
+          });
+        }
+        const rows = await tx
+          .select({
+            teamId: teamMemberships.teamId,
+            userId: teamMemberships.userId,
+            enabled: teamMemberships.teamMemoryRetentionEnabled,
+            version: teamMemberships.teamMemoryRetentionVersion
+          })
+          .from(teamMemberships)
+          .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, input.userId),
+              eq(teamMemberships.status, "enabled"),
+              isNull(teamMemberships.disabledAt),
+              eq(teams.lifecycle, "active")
+            )
+          )
+          .limit(1);
+        return rows[0] ?? null;
+      });
+    },
+
+    async updateTeamMemberMemoryRetention(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        userId: string;
+        enabled: boolean;
+        expectedVersion: number;
+      }
+    ): Promise<{
+      teamId: string;
+      userId: string;
+      enabled: boolean;
+      version: number;
+    }> {
+      assertUuid(input.teamId, "teamId");
+      assertUuid(input.userId, "userId");
+      if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        throw Object.assign(new Error("Retention version is invalid"), {
+          statusCode: 400
+        });
+      }
+      return withTeamAccessTransaction(async (tx) => {
+        await lockTeamOwnerLifecycle(tx, input.teamId);
+        if (!(await getManagingMembershipForUpdate(tx, actor, input.teamId))) {
+          throw Object.assign(new Error("Team admin access is required"), {
+            statusCode: 403
+          });
+        }
+        const updatedRows = await tx
+          .update(teamMemberships)
+          .set({
+            teamMemoryRetentionEnabled: input.enabled,
+            teamMemoryRetentionVersion:
+              sql`${teamMemberships.teamMemoryRetentionVersion} + 1`,
+            updatedAt: sql`now()`
+          })
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, input.userId),
+              eq(teamMemberships.status, "enabled"),
+              isNull(teamMemberships.disabledAt),
+              eq(
+                teamMemberships.teamMemoryRetentionVersion,
+                input.expectedVersion
+              )
+            )
+          )
+          .returning({
+            userId: teamMemberships.userId,
+            enabled: teamMemberships.teamMemoryRetentionEnabled,
+            version: teamMemberships.teamMemoryRetentionVersion
+          });
+        const updated = updatedRows[0];
+        if (!updated) {
+          throw Object.assign(new Error("Stale version"), {
+            code: "STALE_VERSION",
+            statusCode: 409
+          });
+        }
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.member_memory_retention.updated",
+          targetTable: "team_memberships",
+          targetId: updated.userId,
+          metadata: {
+            teamId: input.teamId,
+            userId: updated.userId,
+            enabled: updated.enabled,
+            previousVersion: input.expectedVersion,
+            version: updated.version
+          }
+        });
+        return { teamId: input.teamId, ...updated };
+      });
+    },
+
     async createTeam(
       actor: ActorContext,
       input: { name: string; idempotencyKey?: string }
@@ -2475,7 +2829,7 @@ export const createTeamAccessRepository = (
       actor: ActorContext,
       input: { teamId: string; expectedVersion: number }
     ): Promise<TeamMembershipRecord | null> {
-      return db.transaction(async (tx) => {
+      return withTeamAccessTransaction(async (tx, client) => {
         await lockTeamOwnerLifecycle(tx, input.teamId);
         const membershipRows = await tx
           .select()
@@ -2538,6 +2892,13 @@ export const createTeamAccessRepository = (
           return null;
         }
         const disabledMembership = mapMembershipRecord(disabledRows[0]);
+
+        await endOwnedShareLifecycleForMembership(tx, client, {
+          teamId: input.teamId,
+          userId: actor.userId,
+          actorUserId: actor.userId,
+          reason: "member_left"
+        });
 
         await disableWorkspaceAccessGrantsForMembership(tx, {
           teamId: input.teamId,
@@ -3176,7 +3537,7 @@ export const createTeamAccessRepository = (
         throw new Error("email must not be empty");
       }
 
-      return db.transaction(async (tx) => {
+      return withTeamAccessTransaction(async (tx, client) => {
         const lockedManager = await getManagingMembershipForUpdate(
           tx,
           actor,
@@ -3968,6 +4329,38 @@ export const createTeamAccessRepository = (
             return null;
           }
 
+          const memoryDestination = await tx
+            .select({ teamWorkspaceId: teamMemoryDestinations.teamWorkspaceId })
+            .from(teamMemoryDestinations)
+            .where(eq(teamMemoryDestinations.teamId, inviteRow.teamId))
+            .limit(1);
+          if (memoryDestination[0]) {
+            await tx
+              .insert(teamWorkspaceAccessGrants)
+              .values({
+                teamWorkspaceId: memoryDestination[0].teamWorkspaceId,
+                teamId: inviteRow.teamId,
+                userId: user.id,
+                access: "write",
+                canShareOwnedMemory: true,
+                grantedByUserId: inviteRow.createdByUserId
+              })
+              .onConflictDoUpdate({
+                target: [
+                  teamWorkspaceAccessGrants.teamWorkspaceId,
+                  teamWorkspaceAccessGrants.userId
+                ],
+                set: {
+                  access: "write",
+                  canShareOwnedMemory: true,
+                  disabledAt: null,
+                  disabledReason: null,
+                  version: sql`${teamWorkspaceAccessGrants.version} + 1`,
+                  updatedAt: sql`now()`
+                }
+              });
+          }
+
           const existingAccessRows = await tx
             .select()
             .from(teamWorkspaceAccessGrants)
@@ -4251,7 +4644,7 @@ export const createTeamAccessRepository = (
         return null;
       }
 
-      return db.transaction(async (tx) => {
+      return withTeamAccessTransaction(async (tx, client) => {
         await lockTeamOwnerLifecycle(tx, input.teamId);
         const lockedManager = await getManagingMembershipForUpdate(
           tx,
@@ -4329,6 +4722,12 @@ export const createTeamAccessRepository = (
         }
 
         const membership = mapMembershipRecord(rows[0]);
+        await endOwnedShareLifecycleForMembership(tx, client, {
+          teamId: input.teamId,
+          userId: input.userId,
+          actorUserId: actor.userId,
+          reason: "member_disabled"
+        });
         await disableWorkspaceAccessGrantsForMembership(tx, {
           teamId: input.teamId,
           userId: input.userId,
