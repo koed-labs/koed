@@ -3685,7 +3685,10 @@ export const registerCollaborationCommandRoute = (
       }
       if (isCollaborationTeamControlCommand(input.command)) {
         const operationFamily =
-          input.command.command === "collaboration.list_invitations"
+          input.command.command === "collaboration.list_invitations" ||
+          input.command.command === "collaboration.get_team_memory_retention" ||
+          input.command.command ===
+            "collaboration.list_team_memory_retention_members"
             ? "team_workspace_read"
             : "action_grant";
         const context = await resolveTeamReadContext(

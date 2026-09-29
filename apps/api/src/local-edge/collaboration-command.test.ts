@@ -1734,6 +1734,129 @@ describe("local-edge collaboration command route", () => {
     expect(dispatched).toBe(false);
   });
 
+  it("routes member retention reads through Team workspace authority without granting policy writes", async () => {
+    const teamId = ids.team;
+    const readOnlyStatus = {
+      ok: true,
+      auth: "device_credential",
+      user: {
+        id: ids.remotePrincipal,
+        email: "remote-alice@example.test",
+        displayName: "Remote Alice"
+      },
+      credential: {
+        id: randomUUID(),
+        ownerUserId: ids.remotePrincipal,
+        operationFamilies: ["team_workspace_read"]
+      }
+    };
+    const baseBackend = backend();
+    const retentionBackend = backend({
+      capabilities: {
+        ...baseBackend.capabilities!,
+        payload: {
+          ...baseBackend.capabilities!.payload!,
+          protocols: {
+            ...baseBackend.capabilities!.payload!.protocols,
+            teamMemoryRetention: {
+              version: 1,
+              destinationEndpoint:
+                "/v1/shared-memory/teams/{teamId}/destination",
+              retainedMemoryEndpoint:
+                "/v1/shared-memory/teams/{teamId}/retained",
+              memberSettingEndpoint:
+                "/v1/teams/{teamId}/memory-retention",
+              ownerReplicaPreviewEndpoint:
+                "/v1/shared-memory/preview-target",
+              ownerShareBundleEndpoint:
+                "/v1/shared-memory/share-bundles",
+              ownerFidelityEndpoint:
+                "/v1/shared-memory/share-grants/{shareGrantId}/fidelity"
+            }
+          }
+        }
+      }
+    });
+    const harness = createHarness({
+      backend: retentionBackend,
+      localFamilies: ["team_workspace_read"],
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path === "/v1/local-edge/device-credentials/status") {
+          return Response.json(readOnlyStatus);
+        }
+        if (path === `/v1/teams/${teamId}/memory-retention`) {
+          return Response.json({
+            setting: {
+              teamId,
+              userId: ids.remotePrincipal,
+              enabled: false,
+              version: 1
+            }
+          });
+        }
+        if (path === `/v1/teams/${teamId}/memory-retention/members`) {
+          return Response.json({
+            teamId,
+            members: [
+              {
+                userId: ids.remotePrincipal,
+                displayName: "Remote Alice",
+                enabled: false,
+                version: 1
+              }
+            ]
+          });
+        }
+        return Response.json({ error: "unexpected route" }, { status: 404 });
+      }
+    });
+
+    for (const command of [
+      "collaboration.get_team_memory_retention",
+      "collaboration.list_team_memory_retention_members"
+    ] as const) {
+      const response = await injectCommand(harness.app, {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command,
+        input: { teamId }
+      } as CollaborationRendererCommand);
+      expect(parseResult(response.body)).toMatchObject({
+        ok: true,
+        command
+      });
+    }
+
+    const writeResponse = await injectCommand(harness.app, {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.update_team_memory_retention",
+      input: {
+        teamId,
+        userId: ids.remotePrincipal,
+        enabled: true,
+        expectedVersion: 1,
+        mutationId: randomUUID(),
+        actionGrant: { id: randomUUID() }
+      }
+    } as CollaborationRendererCommand);
+    expect(parseResult(writeResponse.body)).toMatchObject({
+      ok: false,
+      error: { code: "permission_denied" }
+    });
+    expect(
+      harness.calls.some((call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        return (
+          path ===
+            `/v1/teams/${teamId}/members/${ids.remotePrincipal}/memory-retention` &&
+          call.init.method === "PATCH"
+        );
+      })
+    ).toBe(false);
+  });
+
   it("prepares a captured session source and returns its authoritative Personal Memory entry", async () => {
     const source = createSourceRepository();
     const command = prepareSourceCommand();
