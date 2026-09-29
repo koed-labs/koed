@@ -10,10 +10,35 @@ import {
 import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
 const EXAMPLE_COMMANDS: ManagedConversationSlashCommand[] = [
-  { name: "query", description: "Search across memory", kind: "command", source: "provider" },
-  { name: "edit", description: "Edit the conversation", kind: "command", source: "provider" },
-  { name: "draft", description: "Draft a message", kind: "command", source: "provider", argumentHint: "<text>" },
-  { name: "refine", description: "Refine a result", kind: "skill", source: "provider" }
+  {
+    name: "query",
+    description: "Search across memory",
+    kind: "command",
+    source: "provider",
+    scope: "global"
+  },
+  {
+    name: "edit",
+    description: "Edit the conversation",
+    kind: "command",
+    source: "provider",
+    scope: "project"
+  },
+  {
+    name: "draft",
+    description: "Draft a message",
+    kind: "command",
+    source: "provider",
+    scope: "global",
+    argumentHint: "<text>"
+  },
+  {
+    name: "refine",
+    description: "Refine a result",
+    kind: "skill",
+    source: "provider",
+    scope: "project"
+  }
 ];
 
 describe("findActiveSlashCommand", () => {
@@ -26,12 +51,16 @@ describe("findActiveSlashCommand", () => {
   });
 
   it("ignores slash not at start or after whitespace", () => {
-    expect(findActiveSlashCommand({ text: "abc/def", cursorIndex: 6 })).toBeNull();
+    expect(
+      findActiveSlashCommand({ text: "abc/def", cursorIndex: 6 })
+    ).toBeNull();
   });
 
   it("finds inline slash after whitespace", () => {
     // "hello /edit", cursor=11 (end), slash at 6, query-only range=[7,11), query="edit"
-    expect(findActiveSlashCommand({ text: "hello /edit", cursorIndex: 11 })).toEqual({
+    expect(
+      findActiveSlashCommand({ text: "hello /edit", cursorIndex: 11 })
+    ).toEqual({
       query: "edit",
       range: { start: 7, end: 11 }
     });
@@ -59,7 +88,9 @@ describe("findActiveSlashCommand", () => {
 
   it("finds slash after newline", () => {
     // "line1\n/next", cursor=11 (end), slash at 6, query-only range=[7,11), query="next"
-    expect(findActiveSlashCommand({ text: "line1\n/next", cursorIndex: 11 })).toEqual({
+    expect(
+      findActiveSlashCommand({ text: "line1\n/next", cursorIndex: 11 })
+    ).toEqual({
       query: "next",
       range: { start: 7, end: 11 }
     });
@@ -67,7 +98,9 @@ describe("findActiveSlashCommand", () => {
 
   it("finds slash after tab", () => {
     // "cmd\t/next", cursor=9, slash at 4, query-only range=[5,9), query="next"
-    expect(findActiveSlashCommand({ text: "cmd\t/next", cursorIndex: 9 })).toEqual({
+    expect(
+      findActiveSlashCommand({ text: "cmd\t/next", cursorIndex: 9 })
+    ).toEqual({
       query: "next",
       range: { start: 5, end: 9 }
     });
@@ -75,12 +108,16 @@ describe("findActiveSlashCommand", () => {
 
   it("returns null for slash after quote", () => {
     // "/wo'rld", cursor=7, backward scan finds quote at 3 before slash at 0
-    expect(findActiveSlashCommand({ text: "/wo'rld", cursorIndex: 7 })).toBeNull();
+    expect(
+      findActiveSlashCommand({ text: "/wo'rld", cursorIndex: 7 })
+    ).toBeNull();
   });
 
   it("returns empty query when cursor at slash", () => {
     // "/command", cursor=1, slash at 0, query-only range=[1,1), query=""
-    expect(findActiveSlashCommand({ text: "/command", cursorIndex: 1 })).toEqual({
+    expect(
+      findActiveSlashCommand({ text: "/command", cursorIndex: 1 })
+    ).toEqual({
       query: "",
       range: { start: 1, end: 1 }
     });
@@ -130,7 +167,13 @@ describe("filterSlashCommands", () => {
   it("handles duplicate names — keeps all", () => {
     const dupes = [
       ...EXAMPLE_COMMANDS,
-      { name: "edit", description: "Duplicate edit", kind: "command", source: "provider" }
+      {
+        name: "edit",
+        description: "Duplicate edit",
+        kind: "command" as const,
+        source: "provider" as const,
+        scope: "project" as const
+      }
     ];
     const result = filterSlashCommands(dupes, "edit");
     expect(result).toHaveLength(2);
@@ -141,80 +184,159 @@ describe("applySlashCommandReplacement", () => {
   it("replaces slash command at start", () => {
     // range=[1,2), text="/q" → "/query "
     expect(
-      applySlashCommandReplacement({ text: "/q", range: { start: 1, end: 2 }, commandName: "query" })
+      applySlashCommandReplacement({
+        text: "/q",
+        range: { start: 1, end: 2 },
+        commandName: "query"
+      })
     ).toBe("/query ");
   });
 
   it("replaces inline slash command", () => {
     // range=[7,11), text="hello /edit" → "hello /draft "
     expect(
-      applySlashCommandReplacement({ text: "hello /edit", range: { start: 7, end: 11 }, commandName: "draft" })
+      applySlashCommandReplacement({
+        text: "hello /edit",
+        range: { start: 7, end: 11 },
+        commandName: "draft"
+      })
     ).toBe("hello /draft ");
   });
 
   it("replaces and keeps trailing text when text follows cursor", () => {
     // range=[1,5), text="/edit next" → "/query next"
     expect(
-      applySlashCommandReplacement({ text: "/edit next", range: { start: 1, end: 5 }, commandName: "query" })
+      applySlashCommandReplacement({
+        text: "/edit next",
+        range: { start: 1, end: 5 },
+        commandName: "query"
+      })
     ).toBe("/query next");
   });
 
   it("adds trailing space only when replacement reaches end of input", () => {
     // range=[1,4), text="/abc" → "/x "
     expect(
-      applySlashCommandReplacement({ text: "/abc", range: { start: 1, end: 4 }, commandName: "x" })
+      applySlashCommandReplacement({
+        text: "/abc",
+        range: { start: 1, end: 4 },
+        commandName: "x"
+      })
     ).toBe("/x ");
   });
 
   it("does not add trailing space when text follows cursor", () => {
     // range=[1,3), text="/ab postfix" → "/x postfix"
     expect(
-      applySlashCommandReplacement({ text: "/ab postfix", range: { start: 1, end: 3 }, commandName: "x" })
+      applySlashCommandReplacement({
+        text: "/ab postfix",
+        range: { start: 1, end: 3 },
+        commandName: "x"
+      })
     ).toBe("/x postfix");
   });
 
   it("replaces with empty command name", () => {
     // range=[1,1), text="/" → "/ "
     expect(
-      applySlashCommandReplacement({ text: "/", range: { start: 1, end: 1 }, commandName: "" })
+      applySlashCommandReplacement({
+        text: "/",
+        range: { start: 1, end: 1 },
+        commandName: ""
+      })
     ).toBe("/ ");
   });
 });
 
 describe("slashCommandKeypressIsHandled", () => {
   it("returns true for ArrowDown when menu open", () => {
-    expect(slashCommandKeypressIsHandled({ key: "ArrowDown", open: true, isComposing: false })).toBe(true);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "ArrowDown",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(true);
   });
 
   it("returns true for ArrowUp when menu open", () => {
-    expect(slashCommandKeypressIsHandled({ key: "ArrowUp", open: true, isComposing: false })).toBe(true);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "ArrowUp",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(true);
   });
 
   it("returns true for Tab when menu open", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Tab", open: true, isComposing: false })).toBe(true);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Tab",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(true);
   });
 
   it("returns true for Escape when menu open", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Escape", open: true, isComposing: false })).toBe(true);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Escape",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(true);
   });
 
   it("returns true for Enter when menu open and no IME", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Enter", open: true, isComposing: false })).toBe(true);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Enter",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(true);
   });
 
   it("returns false for Enter when menu open with IME composing", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Enter", open: true, isComposing: true })).toBe(false);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Enter",
+        open: true,
+        isComposing: true
+      })
+    ).toBe(false);
   });
 
   it("returns false for Enter when menu closed", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Enter", open: false, isComposing: false })).toBe(false);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Enter",
+        open: false,
+        isComposing: false
+      })
+    ).toBe(false);
   });
 
   it("returns false for keys not handled by autocomplete", () => {
-    expect(slashCommandKeypressIsHandled({ key: "a", open: true, isComposing: false })).toBe(false);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "a",
+        open: true,
+        isComposing: false
+      })
+    ).toBe(false);
   });
 
   it("returns false when disabled", () => {
-    expect(slashCommandKeypressIsHandled({ key: "Enter", open: true, isComposing: false, disabled: true })).toBe(false);
+    expect(
+      slashCommandKeypressIsHandled({
+        key: "Enter",
+        open: true,
+        isComposing: false,
+        disabled: true
+      })
+    ).toBe(false);
   });
 });

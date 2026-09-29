@@ -3555,8 +3555,7 @@ export const createKoedServerManager = ({
             body: JSON.stringify({
               aiClientDriverId: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
-              projectId: request.projectId,
-              ...(request.cwd ? { cwd: request.cwd } : {})
+              ...(request.projectId ? { projectId: request.projectId } : {})
             })
           }
         }),

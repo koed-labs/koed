@@ -2623,6 +2623,7 @@ type CommandDiscoveryOptions = {
   snapshot?: Record<string, unknown> | null;
   managedConversationRead?: (...args: unknown[]) => Promise<void>;
   authenticate?: () => Promise<{ id: string }>;
+  koedHome?: string;
 };
 
 const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
@@ -2674,7 +2675,10 @@ const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
       .send({ error: typedError.message });
   });
   registerManagedConversationRoutes(app, {
-    config: { deploymentProfile: "local_personal" },
+    config: {
+      deploymentProfile: "local_personal",
+      ...(options.koedHome ? { koedHome: options.koedHome } : {})
+    },
     encryption: { envelopeEncryptionProvider: {} },
     auth: {
       authenticate: options.authenticate ?? (async () => ({ id: userId }))
@@ -2696,8 +2700,7 @@ const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
 const commandDiscoveryPayload = {
   aiClientDriverId: "codex",
   aiClientInstanceId: "codex.default",
-  projectId: "project-1",
-  cwd: "/workspace/project"
+  projectId: "project-1"
 };
 
 describe("managed Conversation command discovery route", () => {
@@ -2798,6 +2801,128 @@ describe("managed Conversation command discovery route", () => {
       status: "ok",
       commands: []
     });
+  });
+
+  it("returns global commands when discovery has no Project scope", async () => {
+    const configHome = mkdtempSync(resolve(tmpdir(), "koed-codex-global-"));
+    const promptDirectory = resolve(configHome, "prompts");
+    mkdirSync(promptDirectory, { recursive: true });
+    writeFileSync(
+      resolve(promptDirectory, "review.md"),
+      "---\ndescription: Review the current changes\n---\nPrompt body stays local.\n"
+    );
+    vi.stubEnv("CODEX_HOME", configHome);
+    vi.stubEnv(
+      "KOED_AI_CLIENT_INSTANCE_REGISTRY",
+      resolve(configHome, "missing-instance-registry.json")
+    );
+    const { app } = createCommandDiscoveryApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations/commands",
+        payload: {
+          aiClientDriverId: "codex",
+          aiClientInstanceId: "codex.default"
+        }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        operation: "command_discovery",
+        status: "ok",
+        commands: [
+          {
+            name: "review",
+            description: "Review the current changes",
+            kind: "command",
+            source: "provider",
+            scope: "global"
+          }
+        ]
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(configHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adds commands from the verified Project root to global commands", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-command-project-"));
+    const configHome = mkdtempSync(resolve(tmpdir(), "koed-codex-global-"));
+    const projectRoot = mkdtempSync(resolve(tmpdir(), "koed-project-root-"));
+    const writePrompt = (path: string, description: string) => {
+      mkdirSync(resolve(path, ".."), { recursive: true });
+      writeFileSync(
+        path,
+        `---\ndescription: ${description}\n---\nLocal prompt body.\n`
+      );
+    };
+    writePrompt(resolve(configHome, "prompts", "review.md"), "Global review");
+    writePrompt(
+      resolve(projectRoot, ".codex", "prompts", "review.md"),
+      "Project review"
+    );
+    writePrompt(
+      resolve(projectRoot, ".codex", "prompts", "test.md"),
+      "Project test"
+    );
+    const projectConfig = resolve(koedHome, "config", "projects.json");
+    mkdirSync(resolve(projectConfig, ".."), { recursive: true });
+    writeFileSync(
+      projectConfig,
+      JSON.stringify({
+        schemaVersion: 3,
+        projects: [
+          {
+            localProjectId: "project-1",
+            path: { cwd: projectRoot, projectRoot }
+          }
+        ]
+      })
+    );
+    vi.stubEnv("CODEX_HOME", configHome);
+    vi.stubEnv(
+      "KOED_AI_CLIENT_INSTANCE_REGISTRY",
+      resolve(koedHome, "missing-instance-registry.json")
+    );
+    const { app } = createCommandDiscoveryApp({ koedHome });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations/commands",
+        payload: commandDiscoveryPayload
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        operation: "command_discovery",
+        status: "ok",
+        commands: [
+          {
+            name: "review",
+            description: "Project review",
+            kind: "command",
+            source: "provider",
+            scope: "project"
+          },
+          {
+            name: "test",
+            description: "Project test",
+            kind: "command",
+            source: "provider",
+            scope: "project"
+          }
+        ]
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(koedHome, { recursive: true, force: true });
+      rmSync(configHome, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects an instance owned by another User", async () => {
@@ -2980,19 +3105,16 @@ describe("managed Conversation command discovery route", () => {
     });
   });
 
-  it("rejects relative cwd paths", async () => {
+  it("rejects empty Project scope identifiers", async () => {
     const { app } = createCommandDiscoveryApp();
     const response = await app.inject({
       method: "POST",
       url: "/v1/managed-conversations/commands",
-      payload: { ...commandDiscoveryPayload, cwd: "relative/path" }
+      payload: { ...commandDiscoveryPayload, projectId: " " }
     });
     await app.close();
 
-    expect(response.json()).toMatchObject({
-      status: "unauthorized",
-      commands: []
-    });
+    expect(response.statusCode).toBe(400);
   });
 
   it("applies managed conversation read rate limiting", async () => {

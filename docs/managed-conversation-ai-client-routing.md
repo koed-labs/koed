@@ -73,6 +73,42 @@ tools before the first turn and fails startup if the server cannot initialize.
 Desktop credentials include the distinct file, terminal, preview, and source-control
 operation families; none grants an AI Client permission or a remote mutation approval.
 
+## Slash command suggestions
+
+Desktop discovers file-backed commands for the selected AI Client instance through
+`discoverCommands` IPC → the Koed Server manager →
+`POST /v1/managed-conversations/commands` → the Worker command-discovery adapter.
+The route requires an owned, enabled instance and a fresh capability snapshot that
+marks slash-command discovery ready. Discovery is available in local execution
+profiles; hosted execution does not read an Operator's local command files.
+
+A Chat without a Project requests client-global definitions only. A Project Chat
+requests both global and Project definitions. The API resolves a supplied Project
+ID against Koed's local Project registry and passes only that verified root to the
+adapter; the renderer never supplies an arbitrary working directory. A Project
+command with the same kind and name takes precedence over the global definition.
+
+The adapters read metadata from bounded Markdown files and return names,
+descriptions, optional argument hints, command/skill kind, and `global` or
+`project` scope. Built-in or runtime-only commands without local Markdown
+definitions are not enumerated. The adapters do not return prompt bodies, execute
+commands, scrape Conversations, or invoke a provider shell. Supported roots are:
+
+- Codex: `<CODEX_HOME>/prompts` and `<Project>/.codex/prompts`.
+- Claude Code: `<CLAUDE_CONFIG_DIR>/commands` and `skills`, plus the corresponding
+  `<Project>/.claude/commands` and `skills` roots.
+- Pi: `<PI_CODING_AGENT_DIR>/prompts` and `skills`, plus the corresponding
+  `<Project>/.pi/prompts` and `skills` roots.
+
+When the environment variable is unset, each AI Client uses its standard home
+configuration directory. Symlinks that escape the selected configuration or
+Project root are ignored. Discovery scans at most 128 returned commands, bounds
+Markdown size and directory traversal, and fails closed after a two-second
+adapter deadline. The Desktop hook debounces requests by 500 ms and keeps
+instance-and-scope-keyed results for up to 30 seconds when a refresh fails;
+unauthorized and stale results clear the cached suggestions. Suggestions are
+ordinary prompt text and do not execute a provider command when selected.
+
 The execution persists driver, instance, model, reasoning effort, permission
 mode, and runner identity. The driver and instance remain fixed for that
 execution. Runner changes use the explicit handoff flow.

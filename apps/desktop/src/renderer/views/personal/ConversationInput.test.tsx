@@ -23,8 +23,20 @@ const DUMMY_SETTINGS: ComponentProps<typeof ConversationInput>["settings"] = {
 };
 
 const DUMMY_COMMANDS: ManagedConversationSlashCommand[] = [
-  { name: "query", description: "Search across memory", kind: "command", source: "provider" },
-  { name: "edit", description: "Edit the conversation", kind: "command", source: "provider" }
+  {
+    name: "query",
+    description: "Search across memory",
+    kind: "command",
+    source: "provider",
+    scope: "global"
+  },
+  {
+    name: "edit",
+    description: "Edit the conversation",
+    kind: "command",
+    source: "provider",
+    scope: "project"
+  }
 ];
 
 describe("ConversationInput", () => {
@@ -117,7 +129,7 @@ describe("ConversationInput", () => {
         value: "Follow-up draft",
         onChange: vi.fn(),
         onSubmit,
-      settings: DUMMY_SETTINGS
+        settings: DUMMY_SETTINGS
       };
       await act(async () => root.render(<ConversationInput {...props} />));
       const event = new KeyboardEvent("keydown", {

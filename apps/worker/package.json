@@ -14,6 +14,10 @@
     "./embedding-workflow": {
       "types": "./dist/embedding-workflow.d.ts",
       "import": "./dist/embedding-workflow.js"
+    },
+    "./command-discovery-adapter": {
+      "types": "./dist/command-discovery-adapter.d.ts",
+      "import": "./dist/command-discovery-adapter.js"
     }
   },
   "files": [

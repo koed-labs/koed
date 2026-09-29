@@ -9,8 +9,7 @@ type DiscoverCommandsApi = {
   discoverCommands: (input: {
     aiClientDriverId: SupportedAiClientDriverId;
     aiClientInstanceId: string;
-    projectId: string;
-    cwd?: string;
+    projectId?: string;
   }) => Promise<unknown>;
 };
 
@@ -52,7 +51,7 @@ export function useSlashCommandDiscovery(
   const lastFetchStartedAtRef = useRef(0);
 
   const fetchCommands = useCallback(() => {
-    if (!api?.discoverCommands || !driverId || !instanceId || !projectId) {
+    if (!api?.discoverCommands || !driverId || !instanceId) {
       setCommands([]);
       setError(null);
       setLastFetchedAt(null);
@@ -102,8 +101,7 @@ export function useSlashCommandDiscovery(
         .discoverCommands({
           aiClientDriverId: driverId,
           aiClientInstanceId: instanceId,
-          projectId,
-          ...(cwd ? { cwd } : {})
+          ...(projectId ? { projectId } : {})
         })
         .then((result) => {
           if (!isCurrentRequest()) return;
@@ -185,7 +183,7 @@ export function useSlashCommandDiscovery(
       if (key !== cacheKey) cachedRef.current.delete(key);
     }
 
-    if (driverId && instanceId && projectId) {
+    if (driverId && instanceId) {
       setCommands([]);
       fetchCommands();
     } else {

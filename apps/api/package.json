@@ -43,6 +43,7 @@
     "@koed/db": "workspace:*",
     "@koed/koed": "workspace:*",
     "@koed/shared": "workspace:*",
+    "@koed/worker": "workspace:*",
     "argon2": "^0.44.0",
     "bullmq": "^5.76.9",
     "dotenv": "^17.2.3",

@@ -5,6 +5,7 @@ export type ManagedConversationSlashCommand = {
   argumentHint?: string;
   kind: "command" | "skill";
   source: "provider";
+  scope: "global" | "project";
 };
 
 /** Character range covering the full slash command (including the slash). */
@@ -38,12 +39,13 @@ export function findActiveSlashCommand({
   text: string;
   cursorIndex: number;
 }): ActiveSlashCommand | null {
-  if (cursorIndex < 1) return null;
+  const boundedCursorIndex = Math.min(cursorIndex, text.length);
+  if (boundedCursorIndex < 1) return null;
 
   // Search backwards from cursor to find the last slash within the query region.
-  let searchPos = cursorIndex - 1;
+  let searchPos = boundedCursorIndex - 1;
   while (searchPos >= 0) {
-    const char = text[searchPos];
+    const char = text[searchPos]!;
     if (char === "/") break;
     if (char === '"' || char === "'" || char === "`") return null;
     if (SLASH_BOUNDARIES.test(char)) return null;
@@ -54,12 +56,12 @@ export function findActiveSlashCommand({
 
   // Slash must be at start of text or preceded by whitespace.
   if (searchPos > 0) {
-    const prev = text[searchPos - 1];
+    const prev = text[searchPos - 1]!;
     if (!SLASH_BOUNDARIES.test(prev)) return null;
   }
 
   const slashIndex = searchPos;
-  const rangeEnd = Math.min(cursorIndex, text.length);
+  const rangeEnd = boundedCursorIndex;
 
   // Reject if a quote appears between the slash and cursor.
   for (let i = slashIndex + 1; i < rangeEnd; i++) {

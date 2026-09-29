@@ -9,7 +9,8 @@ const command = {
   name: "/test",
   description: "Test",
   kind: "command",
-  source: "provider"
+  source: "provider",
+  scope: "global"
 } as const;
 
 type HookResult = ReturnType<typeof useSlashCommandDiscovery>;
@@ -105,6 +106,25 @@ describe("useSlashCommandDiscovery", () => {
     expect(harness.result.current?.loading).toBe(false);
     expect(harness.result.current?.error).toBeNull();
     expect(harness.result.current?.commands).toHaveLength(1);
+    harness.unmount();
+  });
+
+  it("discovers client-global commands without a Project", async () => {
+    const harness = renderDiscoveryHook(
+      mockApi,
+      "codex",
+      "test-instance",
+      null,
+      null
+    );
+
+    await settle();
+
+    expect(mockApi.discoverCommands).toHaveBeenCalledWith({
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "test-instance"
+    });
+    expect(harness.result.current?.commands).toEqual([command]);
     harness.unmount();
   });
 
@@ -220,8 +240,7 @@ describe("useSlashCommandDiscovery", () => {
     expect(firstInput).toEqual({
       aiClientDriverId: "codex",
       aiClientInstanceId: "test-instance",
-      projectId: "test-project",
-      cwd: "/home/test"
+      projectId: "test-project"
     });
 
     harness.unmount();

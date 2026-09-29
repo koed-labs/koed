@@ -335,7 +335,8 @@ describe("Managed Conversation preload bridge", () => {
           description: "Review current changes",
           argumentHint: "[path]",
           kind: "command",
-          source: "provider"
+          source: "provider",
+          scope: "project"
         }
       ]
     }));
@@ -345,8 +346,7 @@ describe("Managed Conversation preload bridge", () => {
       api.discoverCommands({
         aiClientDriverId: "codex",
         aiClientInstanceId: "codex.default",
-        projectId: "project-1",
-        cwd: "/workspace"
+        projectId: "project-1"
       })
     ).resolves.toEqual({
       operation: "command_discovery",
@@ -357,7 +357,8 @@ describe("Managed Conversation preload bridge", () => {
           description: "Review current changes",
           argumentHint: "[path]",
           kind: "command",
-          source: "provider"
+          source: "provider",
+          scope: "project"
         }
       ]
     });
@@ -365,8 +366,7 @@ describe("Managed Conversation preload bridge", () => {
       operation: "command_discovery",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
-      projectId: "project-1",
-      cwd: "/workspace"
+      projectId: "project-1"
     });
   });
 

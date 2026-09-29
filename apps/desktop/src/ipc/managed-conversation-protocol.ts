@@ -210,8 +210,7 @@ export type ManagedConversationCommandDiscoveryRequest = {
   operation: "command_discovery";
   aiClientDriverId: SupportedAiClientDriverId;
   aiClientInstanceId: string;
-  projectId: string;
-  cwd?: string;
+  projectId?: string;
 };
 
 export type ManagedConversationRequest =
@@ -905,8 +904,7 @@ export const parseManagedConversationRequest = (
         "operation",
         "aiClientDriverId",
         "aiClientInstanceId",
-        "projectId",
-        ...(Object.hasOwn(input, "cwd") ? ["cwd"] : [])
+        ...(Object.hasOwn(input, "projectId") ? ["projectId"] : [])
       ],
       "Managed Conversation command discovery"
     );
@@ -932,10 +930,11 @@ export const parseManagedConversationRequest = (
     }
     const rawProjectId = input.projectId;
     if (
-      typeof rawProjectId !== "string" ||
-      rawProjectId.length === 0 ||
-      rawProjectId.length > 128 ||
-      rawProjectId.trim() !== rawProjectId
+      rawProjectId !== undefined &&
+      (typeof rawProjectId !== "string" ||
+        rawProjectId.length === 0 ||
+        rawProjectId.length > 128 ||
+        rawProjectId.trim() !== rawProjectId)
     ) {
       throw new TypeError(
         "Managed Conversation command discovery project id is invalid."
@@ -945,10 +944,7 @@ export const parseManagedConversationRequest = (
       operation: "command_discovery",
       aiClientDriverId: input.aiClientDriverId,
       aiClientInstanceId: rawInstanceId,
-      projectId: rawProjectId,
-      ...(Object.hasOwn(input, "cwd")
-        ? { cwd: identifier(input.cwd as string, "Working directory") }
-        : {})
+      ...(typeof rawProjectId === "string" ? { projectId: rawProjectId } : {})
     };
   }
   throw new TypeError("Unsupported Managed Conversation operation.");
@@ -1914,7 +1910,8 @@ export const parseManagedConversationResult = (
           "description",
           ...(Object.hasOwn(command, "argumentHint") ? ["argumentHint"] : []),
           "kind",
-          "source"
+          "source",
+          "scope"
         ],
         "Managed Conversation slash command"
       );
@@ -1944,6 +1941,11 @@ export const parseManagedConversationResult = (
       if (command.source !== "provider") {
         throw new TypeError(
           "Managed Conversation command discovery command source is invalid."
+        );
+      }
+      if (command.scope !== "global" && command.scope !== "project") {
+        throw new TypeError(
+          "Managed Conversation command discovery command scope is invalid."
         );
       }
       if (

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type {
   DeviceCredentialAuthContext,
   ManagedConversationRuntimeBindingRecord,
@@ -31,6 +31,7 @@ import {
   verifyDesktopLocalCredentialAuthorization
 } from "@koed/shared";
 
+import { createCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   managedConversationTransferRequestHash,
@@ -62,8 +63,7 @@ const managedConversationCommandsRequestSchema = z
       .min(1)
       .max(128)
       .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
-    projectId: z.string().trim().min(1).max(128),
-    cwd: z.string().trim().min(1).max(256).optional()
+    projectId: z.string().trim().min(1).max(128).optional()
   })
   .strict();
 
@@ -1505,17 +1505,6 @@ export const registerManagedConversationRoutes = (
         };
       }
 
-      if (body.cwd) {
-        const cwd = body.cwd.trim();
-        if (cwd.length === 0 || !isAbsolute(cwd)) {
-          return {
-            operation: "command_discovery",
-            status: "unauthorized",
-            commands: []
-          };
-        }
-      }
-
       const snapshot = snapshots.find(
         (candidate) => candidate.instanceId === body.aiClientInstanceId
       );
@@ -1554,7 +1543,50 @@ export const registerManagedConversationRoutes = (
         };
       }
 
-      return { operation: "command_discovery", status: "ok", commands: [] };
+      if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      let projectRoot: string | undefined;
+      if (body.projectId) {
+        try {
+          projectRoot =
+            (await localProjectExecutionPath(
+              context.config.koedHome,
+              body.projectId
+            )) ?? undefined;
+        } catch {
+          return {
+            operation: "command_discovery",
+            status: "unavailable",
+            commands: []
+          };
+        }
+      }
+
+      const adapter = createCommandDiscoveryAdapter(body.aiClientDriverId, {
+        ...process.env,
+        ...(context.config.koedHome
+          ? { KOED_HOME: context.config.koedHome }
+          : {})
+      });
+      try {
+        const commands = await adapter.discoverCommands({
+          aiClientInstanceId: body.aiClientInstanceId,
+          ...(projectRoot ? { projectRoot } : {})
+        });
+        return { operation: "command_discovery", status: "ok", commands };
+      } catch {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
     }
   );
 

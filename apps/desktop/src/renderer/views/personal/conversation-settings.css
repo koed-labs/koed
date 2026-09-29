@@ -304,6 +304,13 @@
   flex-shrink: 0;
 }
 
+.ai-suggestion-scope {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
 .ai-suggestion-loading,
 .ai-suggestion-error {
   padding: 8px 12px;

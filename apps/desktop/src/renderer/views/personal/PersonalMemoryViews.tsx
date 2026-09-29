@@ -1060,6 +1060,10 @@ function ProjectDetail({
           key={project.id}
           api={managedConversations}
           projectId={project.id}
+          projectRoot={project.contextKind === "project" ? project.path : null}
+          commandProjectId={
+            project.contextKind === "project" ? project.id : null
+          }
           options={launchOptions}
           selection={launchSelection}
           onChange={setLaunchSelection}

@@ -941,11 +941,13 @@ const capability = (
         ? synthesisReady
           ? "ready"
           : "not_ready"
-        : managedCapabilityIds.has(id)
-          ? implementedManagedCapabilityIds.has(id)
-            ? "ready"
-            : "not_ready"
-          : "unknown";
+        : id === aiClientCapabilityIds.slashCommandDiscovery
+          ? "ready"
+          : managedCapabilityIds.has(id)
+            ? implementedManagedCapabilityIds.has(id)
+              ? "ready"
+              : "not_ready"
+            : "unknown";
   return {
     id,
     support,

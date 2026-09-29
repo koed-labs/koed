@@ -11,15 +11,27 @@ describe("managed conversation command discovery protocol", () => {
         operation: "command_discovery",
         aiClientDriverId: "codex",
         aiClientInstanceId: "codex-default",
-        projectId: "project-1",
-        cwd: "/workspace/project"
+        projectId: "project-1"
       })
     ).toEqual({
       operation: "command_discovery",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex-default",
-      projectId: "project-1",
-      cwd: "/workspace/project"
+      projectId: "project-1"
+    });
+  });
+
+  it("parses client-global discovery requests without a Project", () => {
+    expect(
+      parseManagedConversationRequest({
+        operation: "command_discovery",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex-default"
+      })
+    ).toEqual({
+      operation: "command_discovery",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex-default"
     });
   });
 
@@ -34,7 +46,8 @@ describe("managed conversation command discovery protocol", () => {
             description: "Review current changes",
             argumentHint: "[path]",
             kind: "command",
-            source: "provider"
+            source: "provider",
+            scope: "project"
           }
         ]
       })
@@ -47,7 +60,8 @@ describe("managed conversation command discovery protocol", () => {
           description: "Review current changes",
           argumentHint: "[path]",
           kind: "command",
-          source: "provider"
+          source: "provider",
+          scope: "project"
         }
       ]
     });
@@ -96,7 +110,8 @@ describe("managed conversation command discovery protocol", () => {
             name: "review",
             description: "Review current changes",
             kind: "command",
-            source: "provider"
+            source: "provider",
+            scope: "project"
           }
         ],
         message: "stale"

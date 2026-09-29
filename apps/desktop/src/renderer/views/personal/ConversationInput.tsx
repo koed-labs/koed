@@ -1,8 +1,20 @@
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
-import { useRef, useState, useCallback, useMemo, type ComponentProps, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  type ComponentProps,
+  type ReactNode
+} from "react";
 
 import { ConversationSettings } from "./ConversationSettings.js";
-import { slashCommandKeypressIsHandled, findActiveSlashCommand, filterSlashCommands, applySlashCommandReplacement } from "./ai-client-slash-suggestions.js";
+import {
+  slashCommandKeypressIsHandled,
+  findActiveSlashCommand,
+  filterSlashCommands,
+  applySlashCommandReplacement
+} from "./ai-client-slash-suggestions.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
 import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
@@ -53,7 +65,24 @@ export function ConversationInput({
 
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [filteredCommands, setFilteredCommands] = useState<ManagedConversationSlashCommand[]>([]);
+  const [filteredCommands, setFilteredCommands] = useState<
+    ManagedConversationSlashCommand[]
+  >([]);
+
+  useEffect(() => {
+    if (!autocompleteOpen) return;
+    const text = textareaRef.current?.value ?? value;
+    const cursorIndex = textareaRef.current?.selectionStart ?? text.length;
+    const active = findActiveSlashCommand({ text, cursorIndex });
+    if (!active) {
+      setAutocompleteOpen(false);
+      setSelectedIndex(-1);
+      return;
+    }
+    setFilteredCommands(
+      filterSlashCommands(autocompleteOptions ?? [], active.query)
+    );
+  }, [autocompleteOpen, autocompleteOptions, value]);
 
   const handleAutocompleteSelect = useCallback(
     (command: ManagedConversationSlashCommand) => {
@@ -61,7 +90,10 @@ export function ConversationInput({
       if (!textarea) return;
 
       const cursorIndex = textarea.selectionStart;
-      const active = findActiveSlashCommand({ text: textarea.value, cursorIndex });
+      const active = findActiveSlashCommand({
+        text: textarea.value,
+        cursorIndex
+      });
 
       if (!active) {
         onAutocompleteSelect?.(command);
@@ -120,14 +152,9 @@ export function ConversationInput({
       }
 
       // Fallback to normal submit handling.
-      if (
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        !isComposing
-      ) {
+      if (event.key === "Enter" && !event.shiftKey && !isComposing) {
         event.preventDefault();
-        if (!disabled && !action.disabled && action.kind === "send")
-          onSubmit();
+        if (!disabled && !action.disabled && action.kind === "send") onSubmit();
       }
     },
     [autocompleteOpen, filteredCommands, disabled, action, onSubmit]
@@ -140,7 +167,10 @@ export function ConversationInput({
       const active = findActiveSlashCommand({ text, cursorIndex });
 
       if (active) {
-        const filtered = filterSlashCommands(autocompleteOptions ?? [], active.query);
+        const filtered = filterSlashCommands(
+          autocompleteOptions ?? [],
+          active.query
+        );
         setFilteredCommands(filtered);
         if (!autocompleteOpen) {
           setAutocompleteOpen(true);
