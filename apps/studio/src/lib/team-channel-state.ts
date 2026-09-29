@@ -12,6 +12,18 @@ export const mayCompleteDraftHydration = (input: { active: boolean; revoked: boo
 export const teamDraftForHydration = (stored: StudioTeamDraft | null): StudioTeamDraft =>
   stored ?? { text: "", pendingSend: null };
 
+export const teamDraftAfterTextChange = (input: {
+  callbackAuthorityKey: string | null;
+  currentAuthorityKey: string | null;
+  hydratedAuthorityKey: string | null;
+  latest: StudioTeamDraft;
+  text: string;
+}): StudioTeamDraft | null => {
+  if (!input.callbackAuthorityKey || input.callbackAuthorityKey !== input.currentAuthorityKey ||
+    input.callbackAuthorityKey !== input.hydratedAuthorityKey) return null;
+  return { ...input.latest, text: input.text };
+};
+
 export const teamDraftForAcceptedReceipt = (input: {
   authority: { teamId: string; threadId: string };
   draft: StudioTeamDraft;

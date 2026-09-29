@@ -22,7 +22,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftAfterTextChange, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -886,9 +886,18 @@ export function TeamChannelWorkspace({
       : current);
   }, [authority?.principalUserId]);
   const changeDraftText = (text: string) => {
-    if (authorityKey && hydratedAuthorityKey === authorityKey) {
-      draftByAuthority.current.set(authorityKey, { ...draftByAuthority.current.get(authorityKey), text, pendingSend });
-    }
+    const callbackAuthorityKey = authorityKey;
+    if (!callbackAuthorityKey) return;
+    const latest = draftByAuthority.current.get(callbackAuthorityKey) ?? { text: draftText, pendingSend };
+    const updated = teamDraftAfterTextChange({
+      callbackAuthorityKey,
+      currentAuthorityKey: authorityKeyRef.current,
+      hydratedAuthorityKey,
+      latest,
+      text
+    });
+    if (!updated) return;
+    draftByAuthority.current.set(callbackAuthorityKey, updated);
     setDraftText(text);
   };
 

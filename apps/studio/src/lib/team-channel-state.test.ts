@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, saveAcceptedReceiptBeforeAcknowledging, studioRequestMayApply, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftForHydration, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, saveAcceptedReceiptBeforeAcknowledging, studioRequestMayApply, studioSelectionMatches, teamDraftAfterTextChange, teamDraftForAcceptedReceipt, teamDraftForHydration, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -19,6 +19,33 @@ test("a missing saved draft still completes authorized hydration with an empty e
   assert.deepEqual(teamDraftForHydration(null), { text: "", pendingSend: null });
   const stored = { text: "saved", pendingSend: null, updatedAt: "2026-09-28T10:00:00.000Z" };
   assert.equal(teamDraftForHydration(stored), stored);
+});
+
+test("a delayed composer clear changes text without overwriting the latest send or receipt marker", () => {
+  const pending = { clientMessageId: "client-a", body: "sent body", createdAt: "2026-09-28T10:00:00.000Z" };
+  const withPending = teamDraftAfterTextChange({
+    callbackAuthorityKey: "authority-a", currentAuthorityKey: "authority-a", hydratedAuthorityKey: "authority-a",
+    latest: { text: "", pendingSend: pending }, text: ""
+  });
+  assert.deepEqual(withPending, { text: "", pendingSend: pending });
+
+  const receiptAckPending = { clientMessageId: "client-a", messageId: "message-a" };
+  assert.deepEqual(teamDraftAfterTextChange({
+    callbackAuthorityKey: "authority-a", currentAuthorityKey: "authority-a", hydratedAuthorityKey: "authority-a",
+    latest: { text: "later edits", pendingSend: null, receiptAckPending }, text: ""
+  }), { text: "", pendingSend: null, receiptAckPending });
+});
+
+test("a delayed composer callback cannot change a different or unhydrated authority draft", () => {
+  const latest = { text: "new chat text", pendingSend: null };
+  assert.equal(teamDraftAfterTextChange({
+    callbackAuthorityKey: "old-authority", currentAuthorityKey: "new-authority", hydratedAuthorityKey: "new-authority",
+    latest, text: ""
+  }), null);
+  assert.equal(teamDraftAfterTextChange({
+    callbackAuthorityKey: "new-authority", currentAuthorityKey: "new-authority", hydratedAuthorityKey: null,
+    latest, text: ""
+  }), null);
 });
 
 const receiptFixture = (overrides: Record<string, unknown> = {}) => ({
