@@ -13,12 +13,14 @@ import {
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
+  completeCollaborationPendingSendWithReceipt,
   listCollaborationPendingSends,
   readCollaborationActionGrantCustodyStatus,
   readLocalEdgeClientCredentialAuthorization,
   readUpstreamCredentialAuthorization,
   storeCollaborationActionGrantCustody,
   storeCollaborationPendingSend,
+  storeCollaborationSendReceipt,
   storeDesktopLocalCredential,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
@@ -1073,6 +1075,378 @@ describe("desktop collaboration broker", () => {
       checkedAt: "2026-07-18T08:44:00.000Z",
       expiresAt: "2026-07-18T08:59:00.000Z"
     });
+    await broker.shutdown();
+  });
+
+  it("recovers an accepted Team send receipt before draining a leftover pending row", async () => {
+    const koedHome = tempRoot();
+    const environment = {
+      KOED_HOME: koedHome,
+      KOED_REPO_ROOT: koedHome,
+      KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const backendId = "team-receipt-backend";
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const principalId = "22222222-2222-4222-8222-222222222222";
+    const deviceId = "33333333-3333-4333-8333-333333333333";
+    const teamId = "44444444-4444-4444-8444-444444444444";
+    const threadId = "55555555-5555-4555-8555-555555555555";
+    const clientMessageId = "66666666-6666-4666-8666-666666666666";
+    const messageId = "77777777-7777-4777-8777-777777777777";
+    const timestamp = "2026-07-20T00:00:00.000Z";
+    const messageBody = "Accepted before the process stopped";
+    registerUpstreamBackend(paths, {
+      id: backendId,
+      url: "http://localhost:3400",
+      profile: "team_self_hosted"
+    });
+    storeUpstreamCredentialSecret(koedHome, {
+      backendId,
+      credentialKeyId: "current",
+      secret: "receipt-backend-secret"
+    });
+    updateUpstreamBackendCredential(paths, backendId, {
+      status: "configured",
+      reference: "keychain://koed-upstream/team-receipt-backend/current"
+    });
+    setActiveUpstreamBackend(paths, backendId);
+    storeLocalEdgeClientCredential(koedHome, {
+      backendId,
+      secret: "receipt-local-edge-secret",
+      operationFamilies: ["team_chat_read", "team_chat_write"]
+    });
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.upstreamEnrollmentsPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        updatedAt: timestamp,
+        enrollments: [
+          {
+            backendId,
+            requestId: "receipt-enrollment",
+            state: "exchanged",
+            activationUrl: null,
+            requestedOperationFamilies: ["team_chat_read", "team_chat_write"],
+            deviceCredentialId: deviceId,
+            principalUserId: principalId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            expiresAt: null,
+            credential: {
+              status: "configured",
+              reference: "keychain://koed-upstream/team-receipt-backend/current"
+            }
+          }
+        ]
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const pending = storeCollaborationPendingSend(koedHome, {
+      ownerId: ownerUserId,
+      backendId,
+      remotePrincipalId: principalId,
+      deviceCredentialId: deviceId,
+      thread: { scope: "team", teamId, threadId },
+      clientMessageId,
+      body: messageBody
+    });
+    const receiptInput = {
+      ownerId: ownerUserId,
+      backendId,
+      remotePrincipalId: principalId,
+      deviceCredentialId: deviceId,
+      receipt: {
+        thread: { scope: "team" as const, teamId, threadId },
+        clientMessageId,
+        message: {
+          id: messageId,
+          clientMessageId,
+          threadId,
+          scope: "team" as const,
+          teamId,
+          sequence: 1,
+          sender: {
+            id: principalId,
+            displayName: "Team member",
+            membershipState: "enabled" as const
+          },
+          senderKind: "user" as const,
+          body: messageBody,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          editedAt: null,
+          deletedAt: null,
+          delivery: "sent" as const,
+          recipientStatus: null,
+          failure: null
+        }
+      }
+    };
+    // Simulate a crash after receipt persistence but before the pending-row cleanup.
+    storeCollaborationSendReceipt(koedHome, receiptInput);
+    const remoteThread = {
+      id: threadId,
+      logicalId: "88888888-8888-4888-8888-888888888888",
+      scope: "team" as const,
+      teamId,
+      kind: "dm" as const,
+      name: null,
+      topic: null,
+      version: 1,
+      lifecycle: "active" as const,
+      canPost: true,
+      latestSequence: 0,
+      unreadCount: 0,
+      lastReadMessageId: null,
+      lastReadSequence: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      lastActivityAt: timestamp,
+      archivedAt: null,
+      participants: [
+        {
+          id: ownerUserId,
+          displayName: "Local owner",
+          membershipState: "enabled" as const
+        },
+        {
+          id: principalId,
+          displayName: "Team member",
+          membershipState: "enabled" as const
+        }
+      ]
+    };
+    const teamSnapshot = collaborationSnapshotSchema.parse({
+      ...snapshot,
+      connection: {
+        state: "live",
+        backendId,
+        connectedAt: timestamp,
+        retryAt: null,
+        reconnectAttempt: 0,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION
+      },
+      navigation: {
+        ...snapshot.navigation,
+        teamPrincipal: {
+          id: principalId,
+          displayName: "Team member",
+          presence: "available",
+          membershipState: "enabled"
+        },
+        teams: [
+          {
+            id: teamId,
+            name: "Receipt team",
+            role: "member",
+            lifecycle: "active",
+            unreadCount: 0,
+            people: [
+              {
+                id: principalId,
+                displayName: "Team member",
+                presence: "available",
+                membershipState: "enabled",
+                teamPresence: {
+                  mode: "auto",
+                  manualStatus: "available",
+                  activityLevel: "active",
+                  lastActivityAt: timestamp,
+                  nextTransitionAt: null,
+                  preferenceVersion: 1
+                }
+              }
+            ],
+            directMessages: [remoteThread],
+            version: 1,
+            workspaces: []
+          }
+        ]
+      },
+      selection: { kind: "team_direct_message", teamId, threadId },
+      view: {
+        kind: "thread",
+        thread: remoteThread,
+        messages: {
+          snapshotRevision: "snapshot.receipt-restart-0001",
+          threadId,
+          items: [],
+          olderCursor: null,
+          newerCursor: null,
+          hasOlder: false,
+          hasNewer: false
+        }
+      }
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        command: { requestId: string; command: string };
+      };
+      expect(request.command.command).toBe("collaboration.load");
+      return Response.json({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: request.command.requestId,
+        command: "collaboration.load",
+        ok: true,
+        data: { snapshot: teamSnapshot }
+      });
+    });
+    const sent: DesktopCollaborationBrokerChildMessage[] = [];
+    const broker = createDesktopCollaborationBroker({
+      environment,
+      paths,
+      fetch: fetchMock,
+      refreshUpstreamBackendCapabilities: async () => ({
+        ok: true,
+        state: "validated",
+        message: "validated"
+      }),
+      sendMessage: (message) => sent.push(message)
+    });
+    const dispatch = async (
+      envelopeId: string,
+      requestId: string,
+      command: unknown
+    ) =>
+      broker.handleMessage({
+        protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        sessionToken,
+        type: "command",
+        envelopeId,
+        ownerId: "studio-window:restart-instance",
+        command: collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId,
+          ...(command as object)
+        })
+      });
+
+    await dispatch(
+      "99999999-9999-4999-8999-999999999991",
+      "99999999-9999-4999-8999-999999999992",
+      { command: "collaboration.load", input: {} }
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(listCollaborationPendingSends(koedHome)).toEqual([]);
+    expect(
+      sent.some(
+        (entry) =>
+          entry.type === "renderer_event" &&
+          entry.event.type === "durable_send" &&
+          entry.event.send.clientMessageId === clientMessageId &&
+          entry.event.send.state === "sent"
+      )
+    ).toBe(true);
+
+    await dispatch(
+      "99999999-9999-4999-8999-999999999993",
+      "99999999-9999-4999-8999-999999999994",
+      {
+        command: "collaboration.get_send_receipt",
+        input: { thread: receiptInput.receipt.thread, clientMessageId }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.get_send_receipt",
+        data: { receipt: receiptInput.receipt }
+      }
+    });
+    await dispatch(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad",
+      {
+        command: "collaboration.get_send_receipt",
+        input: {
+          thread: {
+            ...receiptInput.receipt.thread,
+            teamId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+          },
+          clientMessageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: false,
+        error: { code: "access_revoked" }
+      }
+    });
+    await dispatch(
+      "99999999-9999-4999-8999-999999999997",
+      "99999999-9999-4999-8999-999999999998",
+      {
+        command: "collaboration.acknowledge_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          messageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.acknowledge_send_receipt",
+        data: { acknowledged: false }
+      }
+    });
+    await dispatch(
+      "99999999-9999-4999-8999-999999999995",
+      "99999999-9999-4999-8999-999999999996",
+      {
+        command: "collaboration.acknowledge_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          messageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.acknowledge_send_receipt",
+        data: { acknowledged: true }
+      }
+    });
+    await dispatch(
+      "99999999-9999-4999-8999-999999999999",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+      {
+        command: "collaboration.acknowledge_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          messageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.acknowledge_send_receipt",
+        data: { acknowledged: true }
+      }
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(listCollaborationPendingSends(koedHome)).toEqual([]);
     await broker.shutdown();
   });
 

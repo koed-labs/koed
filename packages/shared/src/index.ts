@@ -670,6 +670,7 @@ export {
   personalMemoryEntrySchema,
   collaborationPersonSchema,
   collaborationReadStateSchema,
+  collaborationSendReceiptSchema,
   collaborationRealtimeControlSchema,
   collaborationRealtimeCursorSchema,
   collaborationRealtimeEventFamilySchema,
@@ -732,6 +733,7 @@ export type {
   CollaborationPerson,
   CollaborationTeamPerson,
   CollaborationReadState,
+  CollaborationSendReceipt,
   CollaborationRealtimeControl,
   CollaborationRealtimeSnapshot,
   CollaborationRendererCommand,
@@ -885,8 +887,13 @@ export {
 } from "./collaboration-action-grant-custody-store.js";
 export {
   clearCollaborationPendingTeamSends,
+  clearCollaborationSendReceiptsForThreads,
+  completeCollaborationPendingSendWithReceipt,
+  deleteCollaborationSendReceipt,
   deleteCollaborationPendingSend,
   listCollaborationPendingSends,
+  readCollaborationSendReceipt,
+  storeCollaborationSendReceipt,
   storeCollaborationPendingSend,
   updateCollaborationPendingSendState
 } from "./collaboration-pending-send-store.js";
@@ -960,7 +967,9 @@ export type {
 } from "./collaboration-action-grant-custody-store.js";
 export type {
   CollaborationPendingSendInput,
-  CollaborationPendingSendRecord
+  CollaborationPendingSendRecord,
+  CollaborationSendReceiptInput,
+  CollaborationSendReceiptLookup
 } from "./collaboration-pending-send-store.js";
 export type {
   PdsApplicationSecretStore,

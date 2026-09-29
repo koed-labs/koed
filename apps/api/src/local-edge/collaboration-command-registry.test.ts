@@ -115,6 +115,11 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.get_send_receipt": { scope: "unsupported", desktop: write },
+  "collaboration.acknowledge_send_receipt": {
+    scope: "unsupported",
+    desktop: write
+  },
   "collaboration.mark_read": {
     scope: "dynamic",
     desktop: write,
@@ -310,6 +315,25 @@ describe("collaboration command registry", () => {
         })
       )
     ).toBe("team");
+  });
+
+  it("keeps local send receipt commands out of every remote API route", () => {
+    const teamThread = { scope: "team", teamId, threadId };
+    const getReceipt = command("collaboration.get_send_receipt", {
+      thread: teamThread,
+      clientMessageId
+    });
+    const acknowledgeReceipt = command(
+      "collaboration.acknowledge_send_receipt",
+      { thread: teamThread, clientMessageId, messageId }
+    );
+
+    expect(collaborationCommandScope(getReceipt)).toBe("unsupported");
+    expect(collaborationCommandScope(acknowledgeReceipt)).toBe("unsupported");
+    expect(personalCollaborationOperationFor(getReceipt)).toBeNull();
+    expect(personalCollaborationOperationFor(acknowledgeReceipt)).toBeNull();
+    expect(teamCollaborationOperationFor(getReceipt)).toBeNull();
+    expect(teamCollaborationOperationFor(acknowledgeReceipt)).toBeNull();
   });
 
   it("constructs scoped upstream operations and validates bound results", () => {

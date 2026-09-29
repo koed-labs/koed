@@ -20,9 +20,11 @@ import {
   deleteCollaborationActionGrantCustody,
   clearCollaborationPendingTeamSends,
   deleteCollaborationPendingSend,
+  deleteCollaborationSendReceipt,
   readCollaborationActionGrantCustodyCommitmentHash,
   readCollaborationActionGrantCustodyStatus,
   listCollaborationPendingSends,
+  readCollaborationSendReceipt,
   DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
   deleteDesktopLocalCredential,
   deleteLocalEdgeClientCredential,
@@ -36,12 +38,14 @@ import {
   rotateDesktopLocalCredential,
   storeCollaborationActionGrantCustody,
   storeCollaborationPendingSend,
+  storeCollaborationSendReceipt,
   storeDesktopLocalCredential,
   storeEnrollmentCredentialCustody,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
   updateCollaborationActionGrantCustodyStatus,
   updateCollaborationPendingSendState,
+  completeCollaborationPendingSendWithReceipt,
   upstreamCredentialReferenceFor,
   verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
@@ -250,6 +254,228 @@ describe("upstream credential secret store", () => {
     expect(clearCollaborationPendingTeamSends(koedHome, "team-vps")).toBe(1);
     expect(deleteCollaborationPendingSend(koedHome, stored.key)).toBe(false);
     expect(listCollaborationPendingSends(koedHome)).toEqual([]);
+  });
+
+  it("atomically converts a pending Team send into an encrypted completion receipt", () => {
+    const koedHome = tempHome();
+    const binding = {
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps",
+      remotePrincipalId: "22222222-2222-4222-8222-222222222222",
+      deviceCredentialId: "33333333-3333-4333-8333-333333333333",
+      thread: {
+        scope: "team" as const,
+        teamId: "44444444-4444-4444-8444-444444444444",
+        threadId: "55555555-5555-4555-8555-555555555555"
+      },
+      clientMessageId: "66666666-6666-4666-8666-666666666666"
+    };
+    const body = "Atomic receipt test body";
+    const pending = storeCollaborationPendingSend(koedHome, {
+      ...binding,
+      body
+    });
+    const receipt = {
+      thread: binding.thread,
+      clientMessageId: binding.clientMessageId,
+      message: {
+        id: "77777777-7777-4777-8777-777777777777",
+        clientMessageId: binding.clientMessageId,
+        threadId: binding.thread.threadId,
+        scope: "team" as const,
+        teamId: binding.thread.teamId,
+        sequence: 1,
+        sender: {
+          id: binding.remotePrincipalId,
+          displayName: "Team member",
+          membershipState: "enabled" as const
+        },
+        senderKind: "user" as const,
+        body,
+        createdAt: "2026-07-18T08:30:00.000Z",
+        updatedAt: "2026-07-18T08:30:00.000Z",
+        editedAt: null,
+        deletedAt: null,
+        delivery: "sent" as const,
+        recipientStatus: null,
+        failure: null
+      }
+    };
+
+    expect(
+      completeCollaborationPendingSendWithReceipt(koedHome, pending.key, {
+        ...binding,
+        receipt
+      })
+    ).toEqual(receipt);
+    expect(listCollaborationPendingSends(koedHome)).toEqual([]);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+  });
+
+  it("retains encrypted completion receipts across restart until exact acknowledgment", () => {
+    const koedHome = tempHome();
+    const binding = {
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps",
+      remotePrincipalId: "22222222-2222-4222-8222-222222222222",
+      deviceCredentialId: "33333333-3333-4333-8333-333333333333",
+      thread: {
+        scope: "team" as const,
+        teamId: "44444444-4444-4444-8444-444444444444",
+        threadId: "55555555-5555-4555-8555-555555555555"
+      },
+      clientMessageId: "66666666-6666-4666-8666-666666666666"
+    };
+    const receipt = {
+      thread: binding.thread,
+      clientMessageId: binding.clientMessageId,
+      message: {
+        id: "77777777-7777-4777-8777-777777777777",
+        clientMessageId: binding.clientMessageId,
+        threadId: binding.thread.threadId,
+        scope: "team" as const,
+        teamId: binding.thread.teamId,
+        sequence: 1,
+        sender: {
+          id: binding.remotePrincipalId,
+          displayName: "Team member",
+          membershipState: "enabled" as const
+        },
+        senderKind: "user" as const,
+        body: "The accepted message body is protected",
+        createdAt: "2026-07-18T08:30:00.000Z",
+        updatedAt: "2026-07-18T08:30:00.000Z",
+        editedAt: null,
+        deletedAt: null,
+        delivery: "sent" as const,
+        recipientStatus: null,
+        failure: null
+      }
+    };
+    const storeInput = { ...binding, receipt };
+    const storePath = resolve(koedHome, "secrets", "upstream-credentials.json");
+    storeCollaborationSendReceipt(koedHome, storeInput);
+    const encryptedStore = readFileSync(storePath, "utf8");
+
+    expect(encryptedStore).not.toContain(receipt.message.body);
+    expect(encryptedStore).not.toContain(receipt.message.sender.displayName);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        ownerId: "88888888-8888-4888-8888-888888888888"
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        thread: {
+          ...binding.thread,
+          teamId: "99999999-9999-4999-8999-999999999999"
+        }
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        backendId: "other-backend"
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        remotePrincipalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        deviceCredentialId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        thread: {
+          ...binding.thread,
+          threadId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        }
+      })
+    ).toBeNull();
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        clientMessageId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+      })
+    ).toBeNull();
+    expect(
+      deleteCollaborationSendReceipt(koedHome, {
+        ...binding,
+        messageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      })
+    ).toBe(false);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+    expect(
+      deleteCollaborationSendReceipt(koedHome, {
+        ...binding,
+        messageId: receipt.message.id
+      })
+    ).toBe(true);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toBeNull();
+    expect(
+      deleteCollaborationSendReceipt(koedHome, {
+        ...binding,
+        messageId: receipt.message.id
+      })
+    ).toBe(false);
+  });
+
+  it("clears Team completion receipts with the backend custody lifecycle", () => {
+    const koedHome = tempHome();
+    const binding = {
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps",
+      remotePrincipalId: "22222222-2222-4222-8222-222222222222",
+      deviceCredentialId: "33333333-3333-4333-8333-333333333333",
+      thread: {
+        scope: "team" as const,
+        teamId: "44444444-4444-4444-8444-444444444444",
+        threadId: "55555555-5555-4555-8555-555555555555"
+      },
+      clientMessageId: "66666666-6666-4666-8666-666666666666"
+    };
+    const receipt = {
+      thread: binding.thread,
+      clientMessageId: binding.clientMessageId,
+      message: {
+        id: "77777777-7777-4777-8777-777777777777",
+        clientMessageId: binding.clientMessageId,
+        threadId: binding.thread.threadId,
+        scope: "team" as const,
+        teamId: binding.thread.teamId,
+        sequence: 1,
+        sender: {
+          id: binding.remotePrincipalId,
+          displayName: "Team member",
+          membershipState: "enabled" as const
+        },
+        senderKind: "user" as const,
+        body: "Clear this on backend revocation",
+        createdAt: "2026-07-18T08:30:00.000Z",
+        updatedAt: "2026-07-18T08:30:00.000Z",
+        editedAt: null,
+        deletedAt: null,
+        delivery: "sent" as const,
+        recipientStatus: null,
+        failure: null
+      }
+    };
+    storeCollaborationSendReceipt(koedHome, { ...binding, receipt });
+
+    expect(clearCollaborationPendingTeamSends(koedHome, "other-vps")).toBe(0);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+    expect(clearCollaborationPendingTeamSends(koedHome, "team-vps")).toBe(1);
+    expect(readCollaborationSendReceipt(koedHome, binding)).toBeNull();
   });
 
   it("accepts complete remote Personal custody and rejects partial bindings", () => {

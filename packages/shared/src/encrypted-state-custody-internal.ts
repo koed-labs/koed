@@ -6,7 +6,10 @@ import { canonicalJsonStringify } from "./canonical-json.js";
 import {
   collaborationApprovalReviewSchema,
   collaborationApprovalTierSchema,
+  collaborationSendReceiptSchema,
   collaborationSafeErrorSchema,
+  type CollaborationSendReceipt,
+  type CollaborationThreadReference,
   type CollaborationApprovalReview,
   type CollaborationApprovalTier,
   type CollaborationSafeError
@@ -268,6 +271,23 @@ export interface CollaborationPendingSendRecord extends CollaborationPendingSend
   updatedAt: string;
 }
 
+export interface CollaborationSendReceiptInput {
+  ownerId: string;
+  backendId: string;
+  remotePrincipalId: string;
+  deviceCredentialId: string;
+  receipt: CollaborationSendReceipt;
+}
+
+export interface CollaborationSendReceiptLookup {
+  ownerId: string;
+  backendId: string;
+  remotePrincipalId: string;
+  deviceCredentialId: string;
+  thread: Extract<CollaborationThreadReference, { scope: "team" }>;
+  clientMessageId: string;
+}
+
 const legacyPendingSendFailure: CollaborationSafeError = {
   code: "temporarily_unavailable",
   userMessage: "Collaboration is temporarily unavailable.",
@@ -296,6 +316,21 @@ interface StoredCollaborationPendingSendRecord {
   envelope: StoredSecretEnvelope;
 }
 
+interface StoredCollaborationSendReceiptRecord {
+  schemaVersion: 1;
+  key: string;
+  ownerId: string;
+  backendId: string;
+  remotePrincipalId: string;
+  deviceCredentialId: string;
+  teamId: string;
+  threadId: string;
+  clientMessageId: string;
+  messageId: string;
+  createdAt: string;
+  envelope: StoredSecretEnvelope;
+}
+
 interface SecretStoreFile {
   schemaVersion: 1;
   updatedAt: string;
@@ -304,6 +339,10 @@ interface SecretStoreFile {
   pendingCollaborationSends: Record<
     string,
     StoredCollaborationPendingSendRecord
+  >;
+  completedCollaborationSendReceipts: Record<
+    string,
+    StoredCollaborationSendReceiptRecord
   >;
 }
 
@@ -517,20 +556,77 @@ function isStoredPendingSendRecord(
   }
 }
 
+function isStoredCollaborationSendReceiptRecord(
+  key: string,
+  candidate: unknown
+): candidate is StoredCollaborationSendReceiptRecord {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+  const record = candidate as Record<string, unknown>;
+  try {
+    if (
+      record.schemaVersion !== 1 ||
+      record.key !== key ||
+      !uuidPattern.test(String(record.ownerId)) ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}$/.test(String(record.backendId)) ||
+      !uuidPattern.test(String(record.remotePrincipalId)) ||
+      !uuidPattern.test(String(record.deviceCredentialId)) ||
+      !uuidPattern.test(String(record.teamId)) ||
+      !uuidPattern.test(String(record.threadId)) ||
+      !uuidPattern.test(String(record.clientMessageId)) ||
+      !uuidPattern.test(String(record.messageId)) ||
+      !isCanonicalTimestamp(record.createdAt) ||
+      !isStoredSecretEnvelope(record.envelope)
+    ) {
+      return false;
+    }
+    const binding = {
+      ownerId: record.ownerId as string,
+      backendId: record.backendId as string,
+      remotePrincipalId: record.remotePrincipalId as string,
+      deviceCredentialId: record.deviceCredentialId as string,
+      thread: {
+        scope: "team" as const,
+        teamId: record.teamId as string,
+        threadId: record.threadId as string
+      },
+      clientMessageId: record.clientMessageId as string
+    };
+    return collaborationSendReceiptKey(binding) === key;
+  } catch {
+    return false;
+  }
+}
+
 const parseStore = (
   parsed: unknown,
   options: { preserveMalformedActionGrants?: boolean } = {}
 ): SecretStoreFile => {
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  const legacyKeys = [
+    "schemaVersion",
+    "updatedAt",
+    "secrets",
+    "actionGrants",
+    "pendingCollaborationSends"
+  ];
+  const currentKeys = [...legacyKeys, "completedCollaborationSendReceipts"];
+  const keys = isRecord(parsed) ? Object.keys(parsed).sort() : [];
   if (
     !isRecord(parsed) ||
-    Object.keys(parsed).length !== 5 ||
+    (canonicalJsonStringify(keys) !==
+      canonicalJsonStringify([...legacyKeys].sort()) &&
+      canonicalJsonStringify(keys) !==
+        canonicalJsonStringify([...currentKeys].sort())) ||
     parsed.schemaVersion !== 1 ||
     !isCanonicalTimestamp(parsed.updatedAt) ||
     !isRecord(parsed.secrets) ||
     !isRecord(parsed.actionGrants) ||
-    !isRecord(parsed.pendingCollaborationSends)
+    !isRecord(parsed.pendingCollaborationSends) ||
+    (parsed.completedCollaborationSendReceipts !== undefined &&
+      !isRecord(parsed.completedCollaborationSendReceipts))
   ) {
     throw new Error("Local secret store is malformed.");
   }
@@ -543,6 +639,11 @@ const parseStore = (
     string,
     StoredCollaborationPendingSendRecord
   >;
+  const completedCollaborationSendReceipts =
+    (parsed.completedCollaborationSendReceipts ?? {}) as Record<
+      string,
+      StoredCollaborationSendReceiptRecord
+    >;
   if (
     Object.entries(secrets).some(
       ([reference, envelope]) =>
@@ -559,6 +660,9 @@ const parseStore = (
       )) ||
     Object.entries(pendingCollaborationSends).some(
       ([key, record]) => !isStoredPendingSendRecord(key, record)
+    ) ||
+    Object.entries(completedCollaborationSendReceipts).some(
+      ([key, record]) => !isStoredCollaborationSendReceiptRecord(key, record)
     )
   ) {
     throw new Error("Local secret store is malformed.");
@@ -568,7 +672,8 @@ const parseStore = (
     updatedAt: parsed.updatedAt,
     secrets,
     actionGrants,
-    pendingCollaborationSends
+    pendingCollaborationSends,
+    completedCollaborationSendReceipts
   };
 };
 
@@ -585,7 +690,8 @@ const encryptedStateCore = (koedHome: string, deps: ResolvedStoreDeps) =>
       updatedAt: now,
       secrets: {},
       actionGrants: {},
-      pendingCollaborationSends: {}
+      pendingCollaborationSends: {},
+      completedCollaborationSendReceipts: {}
     }),
     parse: parseStore,
     deps
@@ -754,6 +860,51 @@ const isCanonicalTimestamp = (value: unknown): value is string => {
 
 const pendingSendAad = (key: string): string =>
   `koed:collaboration-pending-send:v1\n${key}`;
+
+const collaborationSendReceiptAad = (key: string): string =>
+  `koed:collaboration-send-receipt:v1\n${key}`;
+
+const collaborationSendReceiptKey = (
+  input: Pick<
+    CollaborationSendReceiptInput,
+    "ownerId" | "backendId" | "remotePrincipalId" | "deviceCredentialId"
+  > & {
+    thread: Extract<CollaborationThreadReference, { scope: "team" }>;
+    clientMessageId: string;
+  }
+): string =>
+  `collaboration-send-receipt:${createHash("sha256")
+    .update(
+      canonicalJsonStringify({
+        ownerId: input.ownerId,
+        backendId: input.backendId,
+        remotePrincipalId: input.remotePrincipalId,
+        deviceCredentialId: input.deviceCredentialId,
+        teamId: input.thread.teamId,
+        threadId: input.thread.threadId,
+        clientMessageId: input.clientMessageId
+      }),
+      "utf8"
+    )
+    .digest("hex")}`;
+
+const validateCollaborationSendReceiptInput = (
+  input: CollaborationSendReceiptInput
+): CollaborationSendReceiptInput => {
+  if (
+    !uuidPattern.test(input.ownerId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}$/.test(input.backendId) ||
+    !uuidPattern.test(input.remotePrincipalId) ||
+    !uuidPattern.test(input.deviceCredentialId)
+  ) {
+    throw new Error("Collaboration send receipt binding is invalid.");
+  }
+  const receipt = collaborationSendReceiptSchema.parse(input.receipt);
+  return { ...input, receipt };
+};
+
+const sendReceiptLookupKey = (input: CollaborationSendReceiptLookup): string =>
+  collaborationSendReceiptKey(input);
 
 const pendingSendKey = (input: CollaborationPendingSendInput): string =>
   `collaboration-send:${createHash("sha256")
@@ -975,6 +1126,277 @@ export const listCollaborationPendingSends = (
     );
 };
 
+const validateCollaborationSendReceiptLookup = (
+  input: CollaborationSendReceiptLookup
+): CollaborationSendReceiptLookup => {
+  if (
+    !uuidPattern.test(input.ownerId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}$/.test(input.backendId) ||
+    !uuidPattern.test(input.remotePrincipalId) ||
+    !uuidPattern.test(input.deviceCredentialId) ||
+    !uuidPattern.test(input.thread.teamId) ||
+    !uuidPattern.test(input.thread.threadId) ||
+    !uuidPattern.test(input.clientMessageId)
+  ) {
+    throw new Error("Collaboration send receipt lookup is invalid.");
+  }
+  return input;
+};
+
+const collaborationSendReceiptRecordAsInput = (
+  stored: StoredCollaborationSendReceiptRecord,
+  receipt: CollaborationSendReceipt
+): CollaborationSendReceiptInput => ({
+  ownerId: stored.ownerId,
+  backendId: stored.backendId,
+  remotePrincipalId: stored.remotePrincipalId,
+  deviceCredentialId: stored.deviceCredentialId,
+  receipt
+});
+
+const readCollaborationSendReceiptRecord = (
+  encryptionKey: Buffer,
+  stored: StoredCollaborationSendReceiptRecord
+): CollaborationSendReceipt | null => {
+  try {
+    const plaintext = decryptSecret(
+      encryptionKey,
+      stored.envelope,
+      collaborationSendReceiptAad(stored.key)
+    );
+    const parsed = collaborationSendReceiptSchema.safeParse(
+      JSON.parse(plaintext)
+    );
+    if (
+      !parsed.success ||
+      parsed.data.thread.teamId !== stored.teamId ||
+      parsed.data.thread.threadId !== stored.threadId ||
+      parsed.data.clientMessageId !== stored.clientMessageId ||
+      parsed.data.message.id !== stored.messageId
+    ) {
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+};
+
+export const storeCollaborationSendReceipt = (
+  koedHome: string,
+  inputValue: CollaborationSendReceiptInput,
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): CollaborationSendReceipt => {
+  const input = validateCollaborationSendReceiptInput(inputValue);
+  const key = collaborationSendReceiptKey({
+    ownerId: input.ownerId,
+    backendId: input.backendId,
+    remotePrincipalId: input.remotePrincipalId,
+    deviceCredentialId: input.deviceCredentialId,
+    thread: input.receipt.thread,
+    clientMessageId: input.receipt.clientMessageId
+  });
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
+    const previous = store.completedCollaborationSendReceipts[key];
+    if (previous) {
+      const encryptionKey = readStoreKey(koedHome, resolvedDeps);
+      const existing =
+        encryptionKey && isStoredCollaborationSendReceiptRecord(key, previous)
+          ? readCollaborationSendReceiptRecord(encryptionKey, previous)
+          : null;
+      if (
+        !existing ||
+        canonicalJsonStringify(existing) !==
+          canonicalJsonStringify(input.receipt)
+      ) {
+        throw new Error("Collaboration send receipt identity was reused.");
+      }
+      return { result: existing, changed: false };
+    }
+    const encryptionKey = readOrCreateStoreKey(koedHome, resolvedDeps);
+    const now = resolvedDeps.now().toISOString();
+    const stored: StoredCollaborationSendReceiptRecord = {
+      schemaVersion: 1,
+      key,
+      ownerId: input.ownerId,
+      backendId: input.backendId,
+      remotePrincipalId: input.remotePrincipalId,
+      deviceCredentialId: input.deviceCredentialId,
+      teamId: input.receipt.thread.teamId,
+      threadId: input.receipt.thread.threadId,
+      clientMessageId: input.receipt.clientMessageId,
+      messageId: input.receipt.message.id,
+      createdAt: now,
+      envelope: encryptSecret(
+        encryptionKey,
+        canonicalJsonStringify(input.receipt),
+        now,
+        resolvedDeps,
+        undefined,
+        collaborationSendReceiptAad(key)
+      )
+    };
+    store.completedCollaborationSendReceipts[key] = stored;
+    store.updatedAt = now;
+    return { result: input.receipt, changed: true };
+  });
+};
+
+export const completeCollaborationPendingSendWithReceipt = (
+  koedHome: string,
+  pendingKey: string,
+  inputValue: CollaborationSendReceiptInput,
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): CollaborationSendReceipt => {
+  const input = validateCollaborationSendReceiptInput(inputValue);
+  if (!/^collaboration-send:[a-f0-9]{64}$/.test(pendingKey)) {
+    throw new Error("Collaboration pending send key is invalid.");
+  }
+  const key = collaborationSendReceiptKey({
+    ownerId: input.ownerId,
+    backendId: input.backendId,
+    remotePrincipalId: input.remotePrincipalId,
+    deviceCredentialId: input.deviceCredentialId,
+    thread: input.receipt.thread,
+    clientMessageId: input.receipt.clientMessageId
+  });
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
+    const existingStored = store.completedCollaborationSendReceipts[key];
+    const encryptionKey = readStoreKey(koedHome, resolvedDeps);
+    let existing: CollaborationSendReceipt | null = null;
+    if (existingStored) {
+      existing =
+        encryptionKey &&
+        isStoredCollaborationSendReceiptRecord(key, existingStored)
+          ? readCollaborationSendReceiptRecord(encryptionKey, existingStored)
+          : null;
+      if (
+        !existing ||
+        canonicalJsonStringify(existing) !==
+          canonicalJsonStringify(input.receipt)
+      ) {
+        throw new Error("Collaboration send receipt identity was reused.");
+      }
+    }
+    const pendingStored = store.pendingCollaborationSends[pendingKey];
+    if (pendingStored) {
+      const pendingEncryptionKey =
+        encryptionKey ?? readStoreKey(koedHome, resolvedDeps);
+      const pending =
+        pendingEncryptionKey &&
+        isStoredPendingSendRecord(pendingKey, pendingStored)
+          ? readPendingSendRecord(pendingEncryptionKey, pendingStored)
+          : null;
+      if (
+        !pending ||
+        pending.ownerId !== input.ownerId ||
+        pending.backendId !== input.backendId ||
+        pending.remotePrincipalId !== input.remotePrincipalId ||
+        pending.deviceCredentialId !== input.deviceCredentialId ||
+        pending.thread.scope !== "team" ||
+        pending.thread.teamId !== input.receipt.thread.teamId ||
+        pending.thread.threadId !== input.receipt.thread.threadId ||
+        pending.clientMessageId !== input.receipt.clientMessageId ||
+        pending.body !== input.receipt.message.body
+      ) {
+        throw new Error(
+          "Collaboration completion does not match pending send."
+        );
+      }
+      delete store.pendingCollaborationSends[pendingKey];
+    } else if (!existing) {
+      throw new Error("Collaboration pending send was not found.");
+    }
+    if (!existing) {
+      const writeKey =
+        encryptionKey ?? readOrCreateStoreKey(koedHome, resolvedDeps);
+      const now = resolvedDeps.now().toISOString();
+      const stored: StoredCollaborationSendReceiptRecord = {
+        schemaVersion: 1,
+        key,
+        ownerId: input.ownerId,
+        backendId: input.backendId,
+        remotePrincipalId: input.remotePrincipalId,
+        deviceCredentialId: input.deviceCredentialId,
+        teamId: input.receipt.thread.teamId,
+        threadId: input.receipt.thread.threadId,
+        clientMessageId: input.receipt.clientMessageId,
+        messageId: input.receipt.message.id,
+        createdAt: now,
+        envelope: encryptSecret(
+          writeKey,
+          canonicalJsonStringify(input.receipt),
+          now,
+          resolvedDeps,
+          undefined,
+          collaborationSendReceiptAad(key)
+        )
+      };
+      store.completedCollaborationSendReceipts[key] = stored;
+    }
+    store.updatedAt = resolvedDeps.now().toISOString();
+    return { result: existing ?? input.receipt, changed: true };
+  });
+};
+
+export const readCollaborationSendReceipt = (
+  koedHome: string,
+  inputValue: CollaborationSendReceiptLookup,
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): CollaborationSendReceipt | null => {
+  const input = validateCollaborationSendReceiptLookup(inputValue);
+  const key = sendReceiptLookupKey(input);
+  const resolvedDeps = depsWithDefaults(deps);
+  const store = readStoreForRead(koedHome, resolvedDeps);
+  const encryptionKey = readStoreKey(koedHome, resolvedDeps);
+  const stored = store?.completedCollaborationSendReceipts[key];
+  if (
+    !stored ||
+    !encryptionKey ||
+    !isStoredCollaborationSendReceiptRecord(key, stored) ||
+    stored.ownerId !== input.ownerId ||
+    stored.backendId !== input.backendId ||
+    stored.remotePrincipalId !== input.remotePrincipalId ||
+    stored.deviceCredentialId !== input.deviceCredentialId
+  ) {
+    return null;
+  }
+  return readCollaborationSendReceiptRecord(encryptionKey, stored);
+};
+
+export const deleteCollaborationSendReceipt = (
+  koedHome: string,
+  inputValue: CollaborationSendReceiptLookup & { messageId: string },
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): boolean => {
+  const input = validateCollaborationSendReceiptLookup(inputValue);
+  if (!uuidPattern.test(inputValue.messageId)) {
+    throw new Error("Collaboration send receipt message ID is invalid.");
+  }
+  const key = sendReceiptLookupKey(input);
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
+    const stored = store.completedCollaborationSendReceipts[key];
+    if (!stored) return { result: false, changed: false };
+    if (stored.messageId !== inputValue.messageId) {
+      return { result: false, changed: false };
+    }
+    const encryptionKey = readStoreKey(koedHome, resolvedDeps);
+    const receipt =
+      encryptionKey && isStoredCollaborationSendReceiptRecord(key, stored)
+        ? readCollaborationSendReceiptRecord(encryptionKey, stored)
+        : null;
+    if (!receipt || receipt.message.id !== inputValue.messageId) {
+      return { result: false, changed: false };
+    }
+    delete store.completedCollaborationSendReceipts[key];
+    store.updatedAt = resolvedDeps.now().toISOString();
+    return { result: true, changed: true };
+  });
+};
+
 export const updateCollaborationPendingSendState = (
   koedHome: string,
   input: {
@@ -1047,6 +1469,35 @@ export const deleteCollaborationPendingSend = (
   });
 };
 
+export const clearCollaborationSendReceiptsForThreads = (
+  koedHome: string,
+  input: { backendId: string; threadIds: string[] },
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): number => {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}$/.test(input.backendId) ||
+    input.threadIds.some((threadId) => !uuidPattern.test(threadId))
+  ) {
+    throw new Error("Collaboration send receipt scope is invalid.");
+  }
+  const threadIds = new Set(input.threadIds);
+  if (threadIds.size === 0) return 0;
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
+    const keys = Object.entries(store.completedCollaborationSendReceipts)
+      .filter(
+        ([, record]) =>
+          record.backendId === input.backendId && threadIds.has(record.threadId)
+      )
+      .map(([key]) => key);
+    if (keys.length === 0) return { result: 0, changed: false };
+    for (const key of keys)
+      delete store.completedCollaborationSendReceipts[key];
+    store.updatedAt = resolvedDeps.now().toISOString();
+    return { result: keys.length, changed: true };
+  });
+};
+
 export const clearCollaborationPendingTeamSends = (
   koedHome: string,
   backendId: string | null,
@@ -1054,17 +1505,27 @@ export const clearCollaborationPendingTeamSends = (
 ): number => {
   const resolvedDeps = depsWithDefaults(deps);
   return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
-    const keys = Object.entries(store.pendingCollaborationSends)
+    const pendingKeys = Object.entries(store.pendingCollaborationSends)
       .filter(
         ([, record]) =>
           record.scope === "team" &&
           (backendId === null || record.backendId === backendId)
       )
       .map(([key]) => key);
-    if (keys.length === 0) return { result: 0, changed: false };
-    for (const key of keys) delete store.pendingCollaborationSends[key];
+    const receiptKeys = Object.entries(store.completedCollaborationSendReceipts)
+      .filter(
+        ([, record]) => backendId === null || record.backendId === backendId
+      )
+      .map(([key]) => key);
+    if (pendingKeys.length === 0 && receiptKeys.length === 0) {
+      return { result: 0, changed: false };
+    }
+    for (const key of pendingKeys) delete store.pendingCollaborationSends[key];
+    for (const key of receiptKeys) {
+      delete store.completedCollaborationSendReceipts[key];
+    }
     store.updatedAt = resolvedDeps.now().toISOString();
-    return { result: keys.length, changed: true };
+    return { result: pendingKeys.length + receiptKeys.length, changed: true };
   });
 };
 

@@ -487,6 +487,14 @@ export const collaborationCommandRegistry = {
     teamOperation: teamMessageOperation,
     matchesTeamResult: matchesMessage
   },
+  "collaboration.get_send_receipt": {
+    scope: "unsupported",
+    desktopOperationFamily: write
+  },
+  "collaboration.acknowledge_send_receipt": {
+    scope: "unsupported",
+    desktopOperationFamily: write
+  },
   "collaboration.mark_read": {
     scope: threadScope,
     desktopOperationFamily: write,

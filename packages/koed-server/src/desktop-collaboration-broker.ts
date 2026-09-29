@@ -13,8 +13,12 @@ import {
   COLLABORATION_SEND_RETRY_MAX_ATTEMPTS,
   clearCollaborationActionGrantCustodyForBackend,
   clearCollaborationPendingTeamSends,
+  clearCollaborationSendReceiptsForThreads,
+  completeCollaborationPendingSendWithReceipt,
+  deleteCollaborationSendReceipt,
   deleteCollaborationPendingSend,
   listCollaborationPendingSends,
+  readCollaborationSendReceipt,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
   storeCollaborationPendingSend,
@@ -25,6 +29,7 @@ import {
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
   type CollaborationSafeError,
+  type CollaborationSendReceiptLookup,
   type CollaborationSnapshot,
   type CollaborationPendingSendRecord
 } from "@koed/shared";
@@ -557,6 +562,12 @@ export const createDesktopCollaborationBroker = (
           deleteCollaborationPendingSend(paths.koedHome, pending.key);
         }
       }
+      if (backendId) {
+        clearCollaborationSendReceiptsForThreads(paths.koedHome, {
+          backendId,
+          threadIds: [...revokedThreadIds]
+        });
+      }
     }
     owner.requests.clear();
     owner.requestOrder = [];
@@ -708,6 +719,151 @@ export const createDesktopCollaborationBroker = (
       failure,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt
+    });
+  };
+
+  const teamThreadCanPostInSnapshot = (
+    snapshot: CollaborationSnapshot,
+    teamId: string,
+    threadId: string
+  ): boolean => {
+    const team = snapshot.navigation.teams.find(
+      (candidate) => candidate.id === teamId && candidate.lifecycle === "active"
+    );
+    if (!team) return false;
+    if (
+      team.directMessages.some(
+        (thread) => thread.id === threadId && thread.canPost
+      ) ||
+      team.channels.some(
+        (thread) => thread.id === threadId && thread.canPost
+      ) ||
+      team.sharedProjects.some(
+        (project) => project.thread.id === threadId && project.thread.canPost
+      )
+    ) {
+      return true;
+    }
+    return team.workspaces.some((workspace) => {
+      if (workspace.lifecycle !== "active" || workspace.access !== "write") {
+        return false;
+      }
+      if (
+        workspace.channels.some(
+          (thread) => thread.id === threadId && thread.canPost
+        )
+      ) {
+        return true;
+      }
+      return workspace.sharedMemory.some(
+        (session) =>
+          session.companionThreadId === threadId &&
+          snapshot.view.kind === "shared_session" &&
+          snapshot.view.companion.thread.id === threadId &&
+          snapshot.view.companion.thread.canPost
+      );
+    });
+  };
+
+  const sendReceiptLookupForOwner = (
+    ownerId: string,
+    input: {
+      thread: { scope: "team"; teamId: string; threadId: string };
+      clientMessageId: string;
+    }
+  ): CollaborationSendReceiptLookup | null => {
+    const snapshot = ownerContext(ownerId).snapshot;
+    const localOwnerId = durablePendingSendOwnerId();
+    const backendId = findBackendIdentity(paths)?.id ?? null;
+    const binding = backendId
+      ? readUpstreamEnrollmentBinding(paths, backendId)
+      : null;
+    const localEdgeCredential = backendId
+      ? readLocalEdgeClientCredentialAuthorization(paths.koedHome, backendId)
+      : null;
+    if (
+      !snapshot ||
+      !localOwnerId ||
+      !backendId ||
+      snapshot.connection.backendId !== backendId ||
+      !binding ||
+      snapshot.navigation.teamPrincipal?.id !== binding.principalUserId ||
+      !localEdgeCredential ||
+      localEdgeCredential.backendId !== backendId ||
+      !localEdgeCredential.operationFamilies.includes("team_chat_write") ||
+      !teamThreadCanPostInSnapshot(
+        snapshot,
+        input.thread.teamId,
+        input.thread.threadId
+      )
+    ) {
+      return null;
+    }
+    return {
+      ownerId: localOwnerId,
+      backendId,
+      remotePrincipalId: binding.principalUserId,
+      deviceCredentialId: binding.deviceCredentialId,
+      thread: input.thread,
+      clientMessageId: input.clientMessageId
+    };
+  };
+
+  const sendReceiptCommandResult = (
+    command: Extract<
+      CollaborationRendererCommand,
+      | { command: "collaboration.get_send_receipt" }
+      | { command: "collaboration.acknowledge_send_receipt" }
+    >,
+    ownerId: string
+  ): CollaborationCommandResult => {
+    const lookup = sendReceiptLookupForOwner(ownerId, command.input);
+    if (!lookup) {
+      return commandFailure(command, collaborationSafeError("access_revoked"));
+    }
+    if (command.command === "collaboration.get_send_receipt") {
+      return collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: command.requestId,
+        command: command.command,
+        ok: true,
+        data: {
+          receipt: readCollaborationSendReceipt(paths.koedHome, lookup)
+        }
+      });
+    }
+    const receipt = readCollaborationSendReceipt(paths.koedHome, lookup);
+    if (!receipt) {
+      return collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: command.requestId,
+        command: command.command,
+        ok: true,
+        data: { acknowledged: true }
+      });
+    }
+    if (receipt.message.id !== command.input.messageId) {
+      return collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: command.requestId,
+        command: command.command,
+        ok: true,
+        data: { acknowledged: false }
+      });
+    }
+    const deleted = deleteCollaborationSendReceipt(paths.koedHome, {
+      ...lookup,
+      messageId: command.input.messageId
+    });
+    const stillPresent = deleted
+      ? false
+      : readCollaborationSendReceipt(paths.koedHome, lookup) !== null;
+    return collaborationCommandResultSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: command.requestId,
+      command: command.command,
+      ok: true,
+      data: { acknowledged: !stillPresent }
     });
   };
 
@@ -1065,6 +1221,38 @@ export const createDesktopCollaborationBroker = (
         return commandFailure(command, error);
       }
     }
+    if (pending.thread.scope === "team" && pending.backendId) {
+      const receipt = readCollaborationSendReceipt(paths.koedHome, {
+        ownerId: pending.ownerId,
+        backendId: pending.backendId,
+        remotePrincipalId: pending.remotePrincipalId!,
+        deviceCredentialId: pending.deviceCredentialId!,
+        thread: pending.thread,
+        clientMessageId: pending.clientMessageId
+      });
+      if (receipt) {
+        const sent = durableSendFromRecord(
+          pending,
+          ownerContext(context.ownerId).snapshot,
+          { state: "sent", failure: null }
+        );
+        if (!sent) {
+          return commandFailure(
+            command,
+            collaborationSafeError("access_revoked")
+          );
+        }
+        deleteCollaborationPendingSend(paths.koedHome, pending.key);
+        emitDurableSend(context.ownerId, sent, receipt.message);
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: { message: receipt.message }
+        });
+      }
+    }
     const currentExecution = pendingSendExecutions.get(pending.key);
     if (currentExecution) {
       return remapSendResult(command, await currentExecution);
@@ -1130,12 +1318,54 @@ export const createDesktopCollaborationBroker = (
             ...lastResult.data.message,
             clientMessageId: record.clientMessageId
           };
+          if (record.thread.scope === "team" && record.backendId) {
+            try {
+              completeCollaborationPendingSendWithReceipt(
+                paths.koedHome,
+                record.key,
+                {
+                  ownerId: record.ownerId,
+                  backendId: record.backendId,
+                  remotePrincipalId: record.remotePrincipalId!,
+                  deviceCredentialId: record.deviceCredentialId!,
+                  receipt: {
+                    thread: record.thread,
+                    clientMessageId: record.clientMessageId,
+                    message: confirmedMessage
+                  }
+                }
+              );
+            } catch {
+              const unavailable = collaborationSafeError(
+                "temporarily_unavailable"
+              );
+              const manualRetry = updateCollaborationPendingSendState(
+                paths.koedHome,
+                {
+                  key: record.key,
+                  attemptCount,
+                  state: "manual_retry",
+                  failure: unavailable,
+                  nextAttemptAt: null
+                }
+              );
+              const projected = manualRetry
+                ? durableSendFromRecord(
+                    manualRetry,
+                    ownerContext(context.ownerId).snapshot
+                  )
+                : null;
+              if (projected) emitDurableSend(context.ownerId, projected, null);
+              return commandFailure(command, unavailable);
+            }
+          } else {
+            deleteCollaborationPendingSend(paths.koedHome, record.key);
+          }
           const sent = durableSendFromRecord(
             record,
             ownerContext(context.ownerId).snapshot,
             { state: "sent", failure: null }
           );
-          deleteCollaborationPendingSend(paths.koedHome, record.key);
           if (sent) emitDurableSend(context.ownerId, sent, confirmedMessage);
           return collaborationCommandResultSchema.parse({
             ...lastResult,
@@ -1960,7 +2190,10 @@ export const createDesktopCollaborationBroker = (
           : command.command === "collaboration.send_message" ||
               command.command === "collaboration.retry_message"
             ? persistAndExecuteSend(command, context)
-            : await transport.request(command, context);
+            : command.command === "collaboration.get_send_receipt" ||
+                command.command === "collaboration.acknowledge_send_receipt"
+              ? sendReceiptCommandResult(command, message.ownerId)
+              : await transport.request(command, context);
       if (result.ok) {
         const resultData = result.data as {
           snapshot?: CollaborationSnapshot;

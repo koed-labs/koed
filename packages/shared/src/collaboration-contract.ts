@@ -1701,6 +1701,35 @@ export const collaborationThreadReferenceSchema = z.discriminatedUnion(
   ]
 );
 
+export const collaborationSendReceiptSchema = z
+  .object({
+    thread: z
+      .object({
+        scope: z.literal("team"),
+        teamId: z.uuid(),
+        threadId: z.uuid()
+      })
+      .strict(),
+    clientMessageId: z.uuid(),
+    message: collaborationMessageSchema
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    if (
+      receipt.message.scope !== "team" ||
+      receipt.message.teamId !== receipt.thread.teamId ||
+      receipt.message.threadId !== receipt.thread.threadId ||
+      receipt.message.clientMessageId !== receipt.clientMessageId ||
+      receipt.message.delivery !== "sent"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["message"],
+        message: "Send receipt message must match its exact Team send identity"
+      });
+    }
+  });
+
 export const sharedMemorySessionReferenceSchema = z
   .object({
     teamId: z.uuid(),
@@ -2656,6 +2685,27 @@ export const collaborationRendererCommandSchema = z
       clientMessageId: z.uuid(),
       body: collaborationMessageBodySchema
     }),
+    command("collaboration.get_send_receipt", {
+      thread: z
+        .object({
+          scope: z.literal("team"),
+          teamId: z.uuid(),
+          threadId: z.uuid()
+        })
+        .strict(),
+      clientMessageId: z.uuid()
+    }),
+    command("collaboration.acknowledge_send_receipt", {
+      thread: z
+        .object({
+          scope: z.literal("team"),
+          teamId: z.uuid(),
+          threadId: z.uuid()
+        })
+        .strict(),
+      clientMessageId: z.uuid(),
+      messageId: z.uuid()
+    }),
     command("collaboration.mark_read", {
       thread: collaborationThreadReferenceSchema,
       messageId: z.uuid()
@@ -3025,6 +3075,8 @@ const commandNameSchema = z.enum([
   "collaboration.create_team_shared_project",
   "collaboration.send_message",
   "collaboration.retry_message",
+  "collaboration.get_send_receipt",
+  "collaboration.acknowledge_send_receipt",
   "collaboration.mark_read",
   "collaboration.mark_delivered",
   "collaboration.load_message_page",
@@ -3124,6 +3176,14 @@ export const collaborationCommandResultSchema = z.union([
       z.object({ durableSend: collaborationDurableSendSchema }).strict(),
       z.object({ message: collaborationMessageSchema }).strict()
     ])
+  ),
+  successResult(
+    "collaboration.get_send_receipt",
+    z.object({ receipt: collaborationSendReceiptSchema.nullable() }).strict()
+  ),
+  successResult(
+    "collaboration.acknowledge_send_receipt",
+    z.object({ acknowledged: z.boolean() }).strict()
   ),
   successResult(
     "collaboration.mark_read",
@@ -3905,6 +3965,9 @@ export type CollaborationTeamSharedProject = z.infer<
 export type CollaborationMessage = z.infer<typeof collaborationMessageSchema>;
 export type CollaborationDurableSend = z.infer<
   typeof collaborationDurableSendSchema
+>;
+export type CollaborationSendReceipt = z.infer<
+  typeof collaborationSendReceiptSchema
 >;
 export type CollaborationReadState = z.infer<
   typeof collaborationReadStateSchema

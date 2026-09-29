@@ -38,6 +38,14 @@ fail closed without creating speculative local state. Each local edge persists
 only its opaque subscription cursor and binding; it rebuilds the renderer view
 from an authorized snapshot plus cursor replay after reconnect. Realtime is a
 wake mechanism only; snapshots and cursor replay are the correctness path.
+For Team sends, the local edge also keeps an encrypted completion receipt
+after remote acceptance. It stores the exact canonical message together with
+the Team, thread, principal, device credential, and client message identity
+before it removes the pending send. The receipt survives a process restart so
+the renderer can clear only the matching local draft without sending again.
+The receipt is deleted after the renderer confirms that exact message was
+cleared. It uses the existing protected local credential store and does not
+create hosted message history or a hosted receipt record.
 
 This is separate from Team collaboration. Personal collaboration never becomes
 a synthetic Team, does not create Team Membership, and is visible only to the
