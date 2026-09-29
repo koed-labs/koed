@@ -61,6 +61,7 @@ import {
   buildCapturedSessionSyncEvent
 } from "../src/cross-identity-sync-canonical.js";
 import { runDbMigrations } from "../src/migrate.js";
+import { createTeamAccessRepository } from "../src/team-access-repository.js";
 import {
   createPrivacyClassificationRepository,
   type PrivacyClassificationRepository,
@@ -1982,6 +1983,8 @@ describeDb("Shared Memory repository", () => {
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
         mode,
+        retentionEnabled: true,
+        memberRetentionVersion: 1,
         ...fidelityConsent(representations),
         authority: authority(fixture)
       }
@@ -2032,6 +2035,9 @@ describeDb("Shared Memory repository", () => {
         activationRepresentation: preview.activationRepresentation,
         consentId,
         mode: input.mode,
+        retentionEnabled: preview.retentionEnabled,
+        retentionPolicyEnabled: preview.retentionPolicyEnabled,
+        memberRetentionVersion: preview.memberRetentionVersion,
         ...fidelityConsent(input.representations ?? allRepresentations),
         authority: authority(fixture),
         preview
@@ -6059,6 +6065,9 @@ describeDb("Shared Memory repository", () => {
           consentId,
           preview,
           mode: "continuous",
+          retentionEnabled: true,
+          retentionPolicyEnabled: true,
+          memberRetentionVersion: 1,
           ...fidelityConsent(allRepresentations),
           authority: authority(fixture)
         },
@@ -6086,6 +6095,53 @@ describeDb("Shared Memory repository", () => {
       [consentId]
     );
     expect(persisted.rowCount).toBe(0);
+
+    const materializationConsentId = randomUUID();
+    const failingRepository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => privacyProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+      resolveTeamEncryptionProvider: () => {
+        throw new Error("forced Team representation materialization failure");
+      }
+    });
+    await expect(
+      failingRepository.createShareBundle(actor(fixture.ownerUserId), {
+        consent: {
+          ...reviewedSourceBinding(preview),
+          consentId: materializationConsentId,
+          preview,
+          mode: "continuous",
+          retentionEnabled: true,
+          retentionPolicyEnabled: true,
+          memberRetentionVersion: 1,
+          ...fidelityConsent(allRepresentations),
+          authority: authority(fixture)
+        },
+        grant: {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: materializationConsentId,
+          authority: authority(fixture)
+        },
+        expected: {
+          consentId: materializationConsentId,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          previewId: preview.previewId,
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash,
+          ...fidelityConsent(allRepresentations)
+        }
+      })
+    ).rejects.toThrow("forced Team representation materialization failure");
+    const rolledBackBundle = await pool.query(
+      `select 1 from source_owner_representation_consents where id=$1
+       union all
+       select 1 from team_memory_share_grants where consent_id=$1`,
+      [materializationConsentId]
+    );
+    expect(rolledBackBundle.rowCount).toBe(0);
   });
 
   it("keeps preview policy proposals inactive until the final share bundle", async () => {
@@ -6116,6 +6172,9 @@ describeDb("Shared Memory repository", () => {
           consentId,
           preview,
           mode: "continuous",
+          retentionEnabled: true,
+          retentionPolicyEnabled: true,
+          memberRetentionVersion: 1,
           ...fidelityConsent(["memory_events"]),
           authority: authority(fixture)
         },
@@ -6139,6 +6198,20 @@ describeDb("Shared Memory repository", () => {
     );
 
     expect(bundled).not.toBeNull();
+    expect(bundled?.representation).toMatchObject({
+      state: "available",
+      sourceRevision: 1,
+      shareGrantId: bundled?.grant.id
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: bundled!.grant.id,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({
+      freshness: "fresh",
+      representation: { sourceRevision: 1, state: "available" }
+    });
     const afterShare = await pool.query<{
       maximum_fidelity: string;
       include_curated_memory: boolean;
@@ -6262,10 +6335,23 @@ describeDb("Shared Memory repository", () => {
       activationRepresentation: preview.activationRepresentation,
       consentId,
       mode: "snapshot" as const,
+      retentionEnabled: preview.retentionEnabled,
+      retentionPolicyEnabled: preview.retentionPolicyEnabled,
+      memberRetentionVersion: preview.memberRetentionVersion,
       ...fidelityConsent(allRepresentations),
       authority: authority(fixture),
       preview
     };
+    await expect(
+      repository.createSourceOwnerConsent(actor(fixture.ownerUserId), {
+        ...input,
+        consentId: randomUUID(),
+        retentionEnabled: undefined,
+        memberRetentionVersion: undefined
+      })
+    ).rejects.toThrow(
+      "Retained consent must explicitly confirm the reviewed retention choice and version"
+    );
     const first = await repository.createSourceOwnerConsent(
       actor(fixture.ownerUserId),
       input
@@ -6398,6 +6484,8 @@ describeDb("Shared Memory repository", () => {
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
         mode: "continuous",
+        retentionEnabled: true,
+        memberRetentionVersion: 1,
         ...fidelityConsent(allRepresentations),
         authority: authority(fixture)
       }
@@ -7183,6 +7271,457 @@ describeDb("Shared Memory repository", () => {
     );
   });
 
+  it("keeps retained Team recall after its owner leaves and deletes the Personal source", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, { mode: "snapshot", label: "retained-owner-leaves" });
+    await materialize(fixture, grant);
+
+    // Model an already consented retained grant so this regression isolates the
+    // membership transition rather than the preview/consent command flow.
+    await pool.query(
+      `update team_memory_share_grants
+          set retention_enabled=true,retention_policy_enabled=true,
+              member_retention_version=1
+        where id=$1`,
+      [grant.shareGrantId]
+    );
+    await expect(
+      repository.revokeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        reasonCode: "owner_revoked_share",
+        authority: authority(fixture)
+      })
+    ).rejects.toThrow(
+      "Retained Team memory cannot be revoked by the owner; stop future updates instead"
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: grant.representation
+      })
+    ).resolves.not.toBeNull();
+    await pool.query(
+      `update team_memberships set role='owner'
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.managerUserId]
+    );
+
+    await expect(
+      createTeamAccessRepository(pool).leaveTeam(
+        actor(fixture.ownerUserId),
+        { teamId: fixture.teamId, expectedVersion: 1 }
+      )
+      ).resolves.toMatchObject({ status: "disabled" });
+
+    await pool.query(
+      `update sessions
+          set personal_deleted_at=now(),personal_deleted_by_user_id=$2,
+              personal_deletion_reason='retained_owner_departure_test'
+        where id=$1`,
+      [grant.sessionId, fixture.ownerUserId]
+    );
+
+    const persisted = await pool.query<{
+      lifecycle: string;
+      source_updates_stopped_at: Date | null;
+      retention_enabled: boolean;
+    }>(
+      `select lifecycle,source_updates_stopped_at,retention_enabled
+         from team_memory_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(persisted.rows[0]).toMatchObject({
+      lifecycle: "active",
+      retention_enabled: true
+    });
+    expect(persisted.rows[0]?.source_updates_stopped_at).toBeInstanceOf(Date);
+
+    const read = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      {
+        shareGrantId: grant.shareGrantId,
+        representation: grant.representation
+      }
+    );
+    expect(read?.representation.sourceRevision).toBe(grant.currentRevision);
+    expect(read?.items.length).toBeGreaterThan(0);
+  });
+
+  it("rejects stale retention-policy versions before accepting explicit share consent", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "retention-policy-preview");
+    const legacyPreview = await repository.createAuthoritativeSourcePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events", ["memory_events"]),
+        logicalMemoryId: source.logicalMemoryId,
+        remoteReplicaId: source.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "snapshot",
+        ...fidelityConsent(["memory_events"]),
+        authority: authority(fixture)
+      }
+    );
+    await expect(
+      repository.createSourceOwnerConsent(actor(fixture.ownerUserId), {
+        source: legacyPreview.source,
+        sourceCapabilities: legacyPreview.sourceCapabilities,
+        activationRepresentation: legacyPreview.activationRepresentation,
+        consentId: randomUUID(),
+        preview: legacyPreview,
+        mode: "snapshot",
+        ...fidelityConsent(["memory_events"]),
+        authority: authority(fixture)
+      })
+    ).rejects.toThrow("Team retention policy changed after the reviewed preview");
+    const manifest = candidateManifest(source, "memory_events");
+    const createCandidate = (retentionEnabled: boolean, memberRetentionVersion: number) =>
+      repository.createSharedMemoryCandidatePreview(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        source: {
+          kind: "captured_session",
+          sessionId: source.sessionId,
+          logicalMemoryId: source.logicalMemoryId
+        },
+        sourceDeploymentProtocolId: source.sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: source.ownerPrincipalId,
+        deviceCredentialId: source.deviceCredentialId,
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        candidateHash: crossIdentitySyncDigest({ manifest, sourceRevision: 1 }),
+        sourceRevision: 1,
+        itemCount: manifest.length,
+        excludedItemCount: 0,
+        manifest,
+        byteCount: 256,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "snapshot",
+        retentionEnabled,
+        memberRetentionVersion,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        expiresAt: null,
+        authority: authority(fixture)
+      });
+
+    const preview = await createCandidate(true, 1);
+    expect(preview).toMatchObject({
+      retentionEnabled: true,
+      retentionPolicyEnabled: true,
+      memberRetentionVersion: 1
+    });
+
+    await pool.query(
+      `update team_memberships
+          set team_memory_retention_enabled=false,
+              team_memory_retention_version=team_memory_retention_version+1
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    await expect(createCandidate(false, 1)).rejects.toThrow(
+      "Team retention policy changed after the current setting was read"
+    );
+    await expect(createCandidate(true, 2)).rejects.toThrow(
+      "Team retention is disabled for this member"
+    );
+    await expect(createCandidate(false, 2)).resolves.toMatchObject({
+      retentionEnabled: false,
+      retentionPolicyEnabled: false,
+      memberRetentionVersion: 2
+    });
+  });
+
+  it("locates only the owner's ready captured-session replica for a permitted destination", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "ready-replica-locator");
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set state='ready',updated_at=now()
+        where id=$1`,
+      [source.syncRelationshipId]
+    );
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toEqual({
+      remoteReplicaId: source.remoteReplicaId,
+      sourceRevision: 1,
+      source: {
+        kind: "captured_session",
+        sessionId: source.sessionId,
+        logicalMemoryId: source.logicalMemoryId
+      }
+    });
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.managerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+        logicalMemoryId: randomUUID(),
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("resumes stopped retained updates only through a fresh same-grant consent", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      mode: "continuous",
+      label: "explicit-retained-resume"
+    });
+    await seedAuthoritativeSourceRevision(
+      fixture,
+      grant,
+      2,
+      "pre-stop-cached-continuous-update"
+    );
+    const cachedLatePreview = await createPersistedPreview(
+      fixture,
+      grant,
+      "memory_events",
+      2,
+      "pre-stop-cached-continuous-update",
+      allRepresentations,
+      "continuous"
+    );
+    const stopped = await repository.stopOwnedTeamMemoryUpdates(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        teamId: fixture.teamId,
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion
+      }
+    );
+    expect(stopped.sourceUpdatesStoppedAt).not.toBeNull();
+    await expect(
+      repository.materializeGrantRepresentation(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        consentId: grant.consentId,
+        expectedGrantVersion: stopped.grantVersion,
+        preview: cachedLatePreview
+      })
+    ).rejects.toThrow("Owner updates are stopped for this retained Team share");
+    const freshPreview = await createPersistedPreview(
+      fixture,
+      grant,
+      "memory_events",
+      2,
+      "post-stop-explicit-resume",
+      allRepresentations,
+      "continuous"
+    );
+    const resumedConsentId = randomUUID();
+    const resumedBundle = await repository.changeFidelityBundle(
+      actor(fixture.ownerUserId),
+      {
+        consent: {
+          ...reviewedSourceBinding(freshPreview),
+          consentId: resumedConsentId,
+          preview: freshPreview,
+          mode: "continuous",
+          retentionEnabled: true,
+          retentionPolicyEnabled: true,
+          memberRetentionVersion: 1,
+          ...fidelityConsent(allRepresentations),
+          authority: authority(fixture)
+        },
+        fidelity: {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          consentId: resumedConsentId,
+          expectedGrantVersion: stopped.grantVersion,
+          ...fidelityConsent(allRepresentations),
+          authority: authority(fixture)
+        },
+        expected: {
+          logicalMemoryId: grant.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          previewId: freshPreview.previewId,
+          previewRevision: freshPreview.previewRevision,
+          previewHash: freshPreview.previewHash,
+          consentId: resumedConsentId,
+          ...fidelityConsent(allRepresentations)
+        }
+      }
+    );
+    expect(resumedBundle).toMatchObject({
+      grant: { id: grant.shareGrantId, retentionEnabled: true, sourceUpdatesStoppedAt: null },
+      representation: { state: "available", sourceRevision: 2 }
+    });
+  });
+
+  it("keeps non-retained continuous grants non-retained when the future default is enabled", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "future-retention-default");
+    await putOwnerPolicy(fixture, source);
+    await pool.query(
+      `update team_memberships
+          set team_memory_retention_enabled=false,
+              team_memory_retention_version=2
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    const preview = await repository.createAuthoritativeSourcePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        remoteReplicaId: source.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "continuous",
+        retentionEnabled: false,
+        memberRetentionVersion: 2,
+        ...fidelityConsent(allRepresentations),
+        authority: authority(fixture)
+      }
+    );
+    const consentId = randomUUID();
+    await repository.createSourceOwnerConsent(actor(fixture.ownerUserId), {
+      source: preview.source,
+      sourceCapabilities: preview.sourceCapabilities,
+      activationRepresentation: preview.activationRepresentation,
+      consentId,
+      mode: "continuous",
+      retentionEnabled: false,
+      retentionPolicyEnabled: false,
+      memberRetentionVersion: 2,
+      ...fidelityConsent(allRepresentations),
+      authority: authority(fixture),
+      preview
+    });
+    const grant = await repository.createShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId,
+      authority: authority(fixture)
+    });
+    const grantFixture: GrantFixture = {
+      ...source,
+      consentId,
+      shareGrantId: grant.id,
+      grantVersion: grant.grantVersion,
+      representation: "memory_events",
+      maximumFidelity: grant.maximumFidelity,
+      includeCuratedMemory: grant.includeCuratedMemory,
+      preview
+    };
+    await materialize(fixture, grantFixture);
+
+    await pool.query(
+      `update team_memberships
+          set team_memory_retention_enabled=true,
+              team_memory_retention_version=3
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    await seedAuthoritativeSourceRevision(
+      fixture,
+      source,
+      2,
+      "nonretained-update-remains-active"
+    );
+    await expect(
+      repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: source.remoteReplicaId,
+        sourceRevision: 2
+      })
+    ).resolves.toEqual({ advanced: 1 });
+    const persisted = await pool.query<{
+      retention_enabled: boolean;
+      source_revision: number;
+      member_retention_version: number;
+    }>(
+      `select retention_enabled,source_revision,member_retention_version
+         from team_memory_share_grants where id=$1`,
+      [grant.id]
+    );
+    expect(persisted.rows[0]).toEqual({
+      retention_enabled: false,
+      source_revision: 2,
+      member_retention_version: 2
+    });
+  });
+
+  it("removes a retained Team representation for every reader and replays the same removal", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, { mode: "snapshot", label: "retained-admin-removal" });
+    await materialize(fixture, grant);
+    await pool.query(
+      `insert into team_memory_destinations (team_id,team_workspace_id)
+       values ($1,$2)`,
+      [fixture.teamId, fixture.teamWorkspaceId]
+    );
+    await pool.query(
+      `update team_memory_share_grants
+          set retention_enabled=true,retention_policy_enabled=true,
+              member_retention_version=1
+        where id=$1`,
+      [grant.shareGrantId]
+    );
+
+    const retained = await repository.listRetainedTeamMemory(
+      actor(fixture.managerUserId),
+      { teamId: fixture.teamId, limit: 10 }
+    );
+    expect(retained.items).toMatchObject([
+      { shareGrantId: grant.shareGrantId, title: "Shared conversation memories" }
+    ]);
+
+    const mutationId = randomUUID();
+    const removal = {
+      mutationId,
+      teamId: fixture.teamId,
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion
+    };
+    await expect(
+      repository.removeRetainedTeamMemory(actor(fixture.managerUserId), removal)
+    ).resolves.toMatchObject({ lifecycle: "revoked" });
+    await expect(
+      repository.removeRetainedTeamMemory(actor(fixture.managerUserId), removal)
+    ).resolves.toMatchObject({ lifecycle: "revoked" });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: grant.representation
+      })
+    ).resolves.toBeNull();
+    const persisted = await pool.query<{
+      lifecycle: string;
+      state: string;
+      semantic_items: string;
+    }>(
+      `select grant_row.lifecycle,
+              (select state from team_memory_representations
+                where share_grant_id=grant_row.id order by source_revision desc limit 1) as state,
+              (select count(*)::text from team_memory_semantic_items
+                where share_grant_id=grant_row.id) as semantic_items
+         from team_memory_share_grants grant_row where grant_row.id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(persisted.rows[0]).toMatchObject({
+      lifecycle: "revoked",
+      state: "invalidated",
+      semantic_items: "0"
+    });
+  });
+
   it("automatically advances only active continuous grants after target sync", async () => {
     const fixture = await createWorkspaceFixture();
     const continuous = await createGrant(fixture, {
@@ -7830,6 +8369,27 @@ describeDb("Shared Memory repository", () => {
         where id=$1`,
       [leafGrant.sessionId, fixture.ownerUserId]
     );
+    await pool.query(
+      `update team_memory_share_grants
+          set retention_enabled=true,retention_policy_enabled=true,
+              member_retention_version=1
+        where id=any($1::uuid[])`,
+      [grants.map((grant) => grant.shareGrantId)]
+    );
+    await pool.query(
+      `insert into team_memory_destinations (team_id,team_workspace_id)
+       values ($1,$2)`,
+      [fixture.teamId, fixture.teamWorkspaceId]
+    );
+    await pool.query(
+      `update team_memberships set role='owner'
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.managerUserId]
+    );
+    await createTeamAccessRepository(pool).leaveTeam(
+      actor(fixture.ownerUserId),
+      { teamId: fixture.teamId, expectedVersion: 1 }
+    );
     const retainedLeafCandidates =
       await repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),
@@ -7862,6 +8422,46 @@ describeDb("Shared Memory repository", () => {
       leafGrant.shareGrantId
     );
     expect(retainedLeafExpansion?.items.length).toBeGreaterThan(0);
+    const leafGrantAfterDeparture = await pool.query<{ grant_version: number }>(
+      `select grant_version from team_memory_share_grants where id=$1`,
+      [leafGrant.shareGrantId]
+    );
+    const removalMutationId = randomUUID();
+    await repository.removeRetainedTeamMemory(actor(fixture.managerUserId), {
+      mutationId: removalMutationId,
+      teamId: fixture.teamId,
+      shareGrantId: leafGrant.shareGrantId,
+      expectedGrantVersion: leafGrantAfterDeparture.rows[0]!.grant_version
+    });
+    const afterRemovalCandidates =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          representations: ["lcm_leaves"]
+        }
+      );
+    expect(
+      afterRemovalCandidates.some(
+        (candidate) => candidate.shareGrantId === leafGrant.shareGrantId
+      )
+    ).toBe(false);
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: retainedLeafCandidates[0]!.candidateId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toBeNull();
     const sessionScoped =
       await repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),
@@ -7980,6 +8580,29 @@ describeDb("Shared Memory repository", () => {
     ).resolves.toBeNull();
     expect(decryptCount()).toBe(decryptsBeforePrivateCandidate);
 
+    await createTeamAccessRepository(pool).disableTeamMember(
+      actor(fixture.managerUserId),
+      {
+        teamId: fixture.teamId,
+        userId: fixture.readerUserId,
+        expectedVersion: 1
+      }
+    );
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toEqual([]);
+
     await pool.query(
       `update team_memory_representation_chunks
           set aad=jsonb_set(aad, '{chunkFormatVersion}', '"2"'::jsonb)
@@ -7991,7 +8614,7 @@ describeDb("Shared Memory repository", () => {
         shareGrantId: stored.rows[0]!.share_grant_id,
         representation: "memory_events"
       })
-    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    ).resolves.toBeNull();
   });
 
   it("reauthorizes an exact claimed semantic row after revocation and before Team key resolution", async () => {
@@ -8550,6 +9173,18 @@ describeDb("Shared Memory repository", () => {
     const secondGrant = await createDestinationGrant(second, "second-team");
     const firstRepresentation = await materialize(first, firstGrant);
     const secondRepresentation = await materialize(second, secondGrant);
+    await pool.query(
+      `update team_memory_share_grants
+          set retention_enabled=true,retention_policy_enabled=true,
+              member_retention_version=1
+        where id=any($1::uuid[])`,
+      [[firstGrant.shareGrantId, secondGrant.shareGrantId]]
+    );
+    await pool.query(
+      `insert into team_memory_destinations (team_id,team_workspace_id)
+       values ($1,$2),($3,$4)`,
+      [first.teamId, first.teamWorkspaceId, second.teamId, second.teamWorkspaceId]
+    );
     expect(firstGrant.remoteReplicaId).toBe(secondGrant.remoteReplicaId);
     expect(firstGrant.shareGrantId).not.toBe(secondGrant.shareGrantId);
     expect(firstRepresentation.id).not.toBe(secondRepresentation.id);
@@ -8639,25 +9274,74 @@ describeDb("Shared Memory repository", () => {
       new Set([provider.keyId, secondTeamProvider.keyId])
     );
 
-    await repository.revokeShareGrant(actor(first.ownerUserId), {
+    await repository.stopOwnedTeamMemoryUpdates(actor(first.ownerUserId), {
       mutationId: randomUUID(),
+      teamId: first.teamId,
       shareGrantId: firstGrant.shareGrantId,
-      expectedGrantVersion: firstGrant.grantVersion,
-      reasonCode: "first_team_only",
-      authority: authority(first)
+      expectedGrantVersion: firstGrant.grantVersion
     });
+    await pool.query(
+      `update team_memberships set role='owner'
+        where team_id=$1 and user_id=$2`,
+      [first.teamId, first.managerUserId]
+    );
+    await createTeamAccessRepository(pool).leaveTeam(
+      actor(first.ownerUserId),
+      { teamId: first.teamId, expectedVersion: 1 }
+    );
+    await pool.query(
+      `update team_memberships
+          set status='enabled',disabled_at=null,disabled_reason=null,
+              version=version+1,updated_at=now()
+        where team_id=$1 and user_id=$2`,
+      [first.teamId, first.ownerUserId]
+    );
+    await createTeamAccessRepository(pool).ensureTeamMemoryDestination(
+      actor(first.ownerUserId),
+      { teamId: first.teamId }
+    );
+    const stopStates = await pool.query<{
+      id: string;
+      lifecycle: string;
+      source_updates_stopped_at: Date | null;
+    }>(
+      `select id,lifecycle,source_updates_stopped_at
+         from team_memory_share_grants where id=any($1::uuid[]) order by id`,
+      [[firstGrant.shareGrantId, secondGrant.shareGrantId]]
+    );
+    const stopStateById = new Map(
+      stopStates.rows.map((row) => [row.id, row])
+    );
+    expect(stopStateById.get(firstGrant.shareGrantId)).toMatchObject({
+      lifecycle: "active"
+    });
+    expect(
+      stopStateById.get(firstGrant.shareGrantId)?.source_updates_stopped_at
+    ).toBeInstanceOf(Date);
+    expect(stopStateById.get(secondGrant.shareGrantId)).toMatchObject({
+      lifecycle: "active",
+      source_updates_stopped_at: null
+    });
+    await seedAuthoritativeSourceRevision(first, source, 2, "second-team-only-update");
+    await expect(
+      repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: source.remoteReplicaId,
+        sourceRevision: 2
+      })
+    ).resolves.toMatchObject({ advanced: expect.any(Number) });
+    await flushSanitizedSemanticPublication();
     await expect(
       repository.readGrantRepresentation(actor(first.readerUserId), {
         shareGrantId: firstGrant.shareGrantId,
         representation: firstGrant.representation
       })
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ freshness: "fresh", representation: { sourceRevision: 1 } });
     await expect(
       repository.readGrantRepresentation(actor(second.readerUserId), {
         shareGrantId: secondGrant.shareGrantId,
         representation: secondGrant.representation
       })
-    ).resolves.toMatchObject({ freshness: "fresh" });
+    ).resolves.toMatchObject({ freshness: "fresh", representation: { sourceRevision: 2 } });
     const canonicalReplica = await pool.query<{
       lifecycle: string;
       disabled_at: Date | null;
@@ -8742,6 +9426,8 @@ describeDb("Shared Memory repository", () => {
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
         mode: "continuous",
+        retentionEnabled: true,
+        memberRetentionVersion: 1,
         ...fidelityConsent(allRepresentations),
         authority: authority(fixture)
       }
@@ -8753,6 +9439,9 @@ describeDb("Shared Memory repository", () => {
       activationRepresentation: preview.activationRepresentation,
       consentId,
       mode: "continuous",
+      retentionEnabled: preview.retentionEnabled,
+      retentionPolicyEnabled: preview.retentionPolicyEnabled,
+      memberRetentionVersion: preview.memberRetentionVersion,
       ...fidelityConsent(allRepresentations),
       authority: authority(fixture),
       preview

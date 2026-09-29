@@ -63,6 +63,9 @@ export interface CollaborationRemoteSharedMemoryPreview {
   representation: SharedMemoryRepresentation;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
+  retentionEnabled: boolean;
+  retentionPolicyEnabled: boolean;
+  memberRetentionVersion: number;
   mode: "snapshot" | "continuous";
   binding: CollaborationSharedMemorySourceBinding;
   items: CollaborationSharedMemoryCanonicalSourceItem[];
@@ -92,6 +95,8 @@ export interface CollaborationRemoteSharedMemoryConsent {
   consentVersion: number;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
   previewRevision: number;
   previewHash: string;
   sourceRevision: number;
@@ -120,9 +125,12 @@ export interface CollaborationRemoteSharedMemoryGrant {
   mode: "snapshot" | "continuous";
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
   fidelityPolicyRevision: number;
   sourceRevision: number;
   grantVersion: number;
+  ownerUpdatesState: "active" | "stopped";
   lifecycle: SharedMemoryGrant["lifecycle"];
   createdAt: string;
   updatedAt: string;
@@ -677,6 +685,9 @@ const validPersistedPreview = (
     value.representation !== value.activationRepresentation ||
     !isFidelity(value.maximumFidelity) ||
     typeof value.includeCuratedMemory !== "boolean" ||
+    typeof value.retentionEnabled !== "boolean" ||
+    typeof value.retentionPolicyEnabled !== "boolean" ||
+    !isPositiveInteger(value.memberRetentionVersion) ||
     (value.mode !== "snapshot" && value.mode !== "continuous") ||
     !sharedMemoryCeilingAuthorizes(
       value.maximumFidelity,
@@ -777,6 +788,8 @@ const validPersistedConsent = (
     isPositiveInteger(consent.version) &&
     isFidelity(consent.maximumFidelity) &&
     typeof consent.includeCuratedMemory === "boolean" &&
+    typeof consent.retentionEnabled === "boolean" &&
+    isPositiveInteger(consent.memberRetentionVersion) &&
     isPositiveInteger(consent.previewRevision) &&
     isHash(consent.previewHash) &&
     isRevision(consent.sourceRevision) &&
@@ -807,6 +820,9 @@ const validPersistedGrant = (
     isUuid(grant.consentId) &&
     isFidelity(grant.maximumFidelity) &&
     typeof grant.includeCuratedMemory === "boolean" &&
+    typeof grant.retentionEnabled === "boolean" &&
+    isPositiveInteger(grant.memberRetentionVersion) &&
+    ["active", "stopped"].includes(String(grant.ownerUpdatesState)) &&
     isPositiveInteger(grant.fidelityPolicyRevision) &&
     isRevision(grant.sourceRevision) &&
     isPositiveInteger(grant.grantVersion) &&
@@ -898,6 +914,8 @@ const mapConsent = (
   version: consent.consentVersion,
   maximumFidelity: consent.maximumFidelity,
   includeCuratedMemory: consent.includeCuratedMemory,
+  retentionEnabled: consent.retentionEnabled,
+  memberRetentionVersion: consent.memberRetentionVersion,
   previewRevision: consent.previewRevision,
   previewHash: consent.previewHash,
   sourceRevision: consent.sourceRevision,
@@ -924,9 +942,12 @@ const mapGrant = (
   mode: grant.mode,
   maximumFidelity: grant.maximumFidelity,
   includeCuratedMemory: grant.includeCuratedMemory,
+  retentionEnabled: grant.retentionEnabled,
+  memberRetentionVersion: grant.memberRetentionVersion,
   fidelityPolicyRevision: grant.fidelityPolicyRevision,
   sourceRevision: grant.sourceRevision,
   grantVersion: grant.grantVersion,
+  ownerUpdatesState: grant.ownerUpdatesState,
   lifecycle: grant.lifecycle,
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
