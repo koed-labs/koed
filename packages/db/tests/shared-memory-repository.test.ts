@@ -7395,20 +7395,29 @@ describeDb("Shared Memory repository", () => {
 
   it("locates only the owner's ready captured-session replica for a permitted destination", async () => {
     const fixture = await createWorkspaceFixture();
-    const source = await createSource(fixture, 1, "ready-replica-locator");
+    const source = await createSource(
+      fixture,
+      1,
+      "ready-replica-locator",
+      { distinctTargetSession: true }
+    );
+    expect(source.localSessionId).not.toBe(source.sessionId);
     await pool.query(
       `update cross_identity_sync_relationships
           set state='ready',updated_at=now()
         where id=$1`,
       [source.syncRelationshipId]
     );
-    await expect(
-      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+    await putOwnerPolicy(fixture, source);
+    const locator = await repository.getReadyOwnerMemoryReplica(
+      actor(fixture.ownerUserId),
+      {
         logicalMemoryId: source.logicalMemoryId,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId
-      })
-    ).resolves.toEqual({
+      }
+    );
+    expect(locator).toMatchObject({
       remoteReplicaId: source.remoteReplicaId,
       sourceRevision: 1,
       source: {
@@ -7417,6 +7426,29 @@ describeDb("Shared Memory repository", () => {
         logicalMemoryId: source.logicalMemoryId
       }
     });
+    const preview = await repository.createAuthoritativeSourcePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        remoteReplicaId: locator!.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "snapshot",
+        retentionEnabled: true,
+        memberRetentionVersion: 1,
+        ...fidelityConsent(allRepresentations),
+        authority: authority(fixture)
+      }
+    );
+    expect(locator!.source).toEqual(preview.source);
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toEqual(locator);
     await expect(
       repository.getReadyOwnerMemoryReplica(actor(fixture.managerUserId), {
         logicalMemoryId: source.logicalMemoryId,
@@ -7427,6 +7459,31 @@ describeDb("Shared Memory repository", () => {
     await expect(
       repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
         logicalMemoryId: randomUUID(),
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update logical_memories set invalidated_at=now()
+        where id=$1`,
+      [source.logicalMemoryId]
+    );
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update logical_memories
+          set lifecycle='purged',tombstoned_at=now(),purge_completed_at=now()
+        where id=$1`,
+      [source.logicalMemoryId]
+    );
+    await expect(
+      repository.getReadyOwnerMemoryReplica(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId
       })

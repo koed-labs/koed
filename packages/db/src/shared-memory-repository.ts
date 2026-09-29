@@ -12293,7 +12293,7 @@ const loadPersistedPreviewByReference = async (
         );
         const rows = await client.query<Row>(
           `select local_memory.local_session_id,replica.id as replica_id,
-                  sync.target_processing_cursor
+                  sync.target_processing_cursor,source_binding.source_session_id
              from logical_memories memory
              join local_captured_session_logical_memories local_memory
                on local_memory.logical_memory_id=memory.id
@@ -12312,12 +12312,20 @@ const loadPersistedPreviewByReference = async (
               and sync.side='target' and sync.state='ready'
               and sync.revoked_at is null
               and sync.target_processing_cursor>0
+             join logical_memory_source_revision_bindings source_binding
+               on source_binding.logical_memory_id=memory.id
+              and source_binding.owner_principal_id=memory.owner_principal_id
+              and source_binding.source_kind='captured_session'
+              and source_binding.source_revision=sync.target_processing_cursor
              join device_credentials credential
                on credential.id=sync.device_credential_id
               and credential.owner_user_id=memory.owner_user_id
               and credential.revoked_at is null
               and (credential.expires_at is null or credential.expires_at>now())
             where memory.id=$1 and memory.owner_user_id=$2
+              and memory.source_kind='captured_session'
+              and memory.lifecycle='active' and memory.invalidated_at is null
+              and memory.tombstoned_at is null and memory.purge_completed_at is null
             order by sync.target_processing_cursor desc,sync.updated_at desc,
                      replica.id
             limit 1`,
@@ -12332,7 +12340,7 @@ const loadPersistedPreviewByReference = async (
           sourceRevision,
           source: {
             kind: "captured_session" as const,
-            sessionId: stringValue(row.local_session_id),
+            sessionId: stringValue(row.source_session_id),
             logicalMemoryId: input.logicalMemoryId
           }
         };
