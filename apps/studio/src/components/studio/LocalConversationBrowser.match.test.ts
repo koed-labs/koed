@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // Node 24's native TypeScript runner requires the source extension here.
 // @ts-expect-error -- Next's app compiler does not enable TS extension imports.
-import { isSyntheticIndependentProject, managedConversationSourceIds, matchLocalConversationToHome, matchManagedExecutionForCapturedSession } from "./LocalConversationBrowser.match.ts";
+import { indexShareableConversationRows, indexShareablePersonalConversations, isSyntheticIndependentProject, managedConversationSourceIds, matchLocalConversationToHome, matchManagedExecutionForCapturedSession, ownedMemoryForCapturedSession, ownerMemoryLoadMayApply } from "./LocalConversationBrowser.match.ts";
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
+import type { PersonalMemoryEntry } from "@koed/shared/collaboration";
 
 const recent: HomeRecent = {
   id: "native/thread-1",
@@ -25,6 +26,78 @@ const execution: HomeExecution = {
   updatedAt: recent.updatedAt,
   error: null
 };
+
+test("indexes only owner memory entries with a logical memory identity", () => {
+  const entry = (value: Partial<PersonalMemoryEntry>): PersonalMemoryEntry => ({
+    id: "koed-session-1",
+    logicalMemoryId: "logical-memory-1",
+    title: "Owner title",
+    projectName: null,
+    updatedAt: recent.updatedAt,
+    preview: "",
+    eventCount: 1,
+    hasSynchronizedRevision: false,
+    syncState: "not_started",
+    ...value
+  });
+  const index = indexShareablePersonalConversations([
+    entry({}),
+    entry({ id: "not-ready", logicalMemoryId: null })
+  ]);
+
+  assert.equal(
+    ownedMemoryForCapturedSession({
+      sessionId: recent.sessionId,
+      entriesBySessionId: index
+    })?.logicalMemoryId,
+    "logical-memory-1"
+  );
+  assert.equal(
+    ownedMemoryForCapturedSession({
+      sessionId: "codex:native%2Fthread-1",
+      entriesBySessionId: index
+    }),
+    null
+  );
+  assert.equal(
+    ownedMemoryForCapturedSession({
+      sessionId: "not-ready",
+      entriesBySessionId: index
+    }),
+    null
+  );
+  const rows = indexShareableConversationRows({
+    entriesBySessionId: index,
+    recents: [recent],
+    executions: [execution]
+  });
+  assert.equal(
+    rows.byLocalSourceId.get("codex:native%2Fthread-1")?.id,
+    "koed-session-1"
+  );
+  assert.equal(rows.byExecutionId.get(execution.id)?.id, "koed-session-1");
+  assert.equal(rows.byExecutionId.has("koed-session-1"), false);
+});
+
+test("rejects owner memory loads after a scope or request generation changes", () => {
+  const current = {
+    active: true,
+    sequence: 3,
+    currentSequence: 3,
+    homeScopeKey: "account-a",
+    currentHomeScopeKey: "account-a"
+  };
+  assert.equal(ownerMemoryLoadMayApply(current), true);
+  assert.equal(
+    ownerMemoryLoadMayApply({ ...current, currentSequence: 4 }),
+    false
+  );
+  assert.equal(
+    ownerMemoryLoadMayApply({ ...current, currentHomeScopeKey: "account-b" }),
+    false
+  );
+  assert.equal(ownerMemoryLoadMayApply({ ...current, active: false }), false);
+});
 
 test("matches the exact native thread ID and normalized provider to a managed execution", () => {
   assert.deepEqual(

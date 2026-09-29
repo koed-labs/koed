@@ -1,10 +1,99 @@
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
+import type { PersonalMemoryEntry } from "@koed/shared/collaboration";
 
 export type LocalConversationProvider = "codex" | "claude-code" | "pi";
 
 export type LocalConversationMatch =
   | { type: "managed"; executionId: string }
   | { type: "captured"; recent: HomeRecent };
+
+export type ShareablePersonalConversation = Pick<
+  PersonalMemoryEntry,
+  | "id"
+  | "logicalMemoryId"
+  | "title"
+  | "syncState"
+  | "hasSynchronizedRevision"
+>;
+
+/**
+ * Index only owner-authorized Personal Memory entries. Provider source IDs and
+ * managed execution IDs are deliberately not accepted as memory identities.
+ */
+export function indexShareablePersonalConversations(
+  entries: readonly PersonalMemoryEntry[]
+): Map<string, ShareablePersonalConversation> {
+  const indexed = new Map<string, ShareablePersonalConversation>();
+  for (const entry of entries) {
+    if (!entry.id || !entry.logicalMemoryId) continue;
+    indexed.set(entry.id, {
+      id: entry.id,
+      logicalMemoryId: entry.logicalMemoryId,
+      title: entry.title,
+      syncState: entry.syncState,
+      hasSynchronizedRevision: entry.hasSynchronizedRevision
+    });
+  }
+  return indexed;
+}
+
+export function ownedMemoryForCapturedSession(input: {
+  sessionId: string | null | undefined;
+  entriesBySessionId: ReadonlyMap<string, ShareablePersonalConversation>;
+}): ShareablePersonalConversation | null {
+  if (!input.sessionId) return null;
+  return input.entriesBySessionId.get(input.sessionId) ?? null;
+}
+
+export function indexShareableConversationRows(input: {
+  entriesBySessionId: ReadonlyMap<string, ShareablePersonalConversation>;
+  recents: readonly HomeRecent[];
+  executions: readonly HomeExecution[];
+}): {
+  byExecutionId: Map<string, ShareablePersonalConversation>;
+  byLocalSourceId: Map<string, ShareablePersonalConversation>;
+} {
+  const byExecutionId = new Map<string, ShareablePersonalConversation>();
+  const byLocalSourceId = new Map<string, ShareablePersonalConversation>();
+
+  for (const execution of input.executions) {
+    const memory = ownedMemoryForCapturedSession({
+      sessionId: execution.sessionId,
+      entriesBySessionId: input.entriesBySessionId
+    });
+    if (memory) byExecutionId.set(execution.id, memory);
+  }
+
+  for (const recent of input.recents) {
+    const provider = normalizeConversationProvider(recent.provider);
+    if (!provider) continue;
+    const memory = ownedMemoryForCapturedSession({
+      sessionId: recent.sessionId,
+      entriesBySessionId: input.entriesBySessionId
+    });
+    if (!memory) continue;
+    byLocalSourceId.set(
+      `${provider}:${encodeURIComponent(recent.id)}`,
+      memory
+    );
+  }
+
+  return { byExecutionId, byLocalSourceId };
+}
+
+export function ownerMemoryLoadMayApply(input: {
+  active: boolean;
+  sequence: number;
+  currentSequence: number;
+  homeScopeKey: string;
+  currentHomeScopeKey: string | null | undefined;
+}): boolean {
+  return (
+    input.active &&
+    input.sequence === input.currentSequence &&
+    input.homeScopeKey === input.currentHomeScopeKey
+  );
+}
 
 export function normalizeConversationProvider(
   value: string | null | undefined

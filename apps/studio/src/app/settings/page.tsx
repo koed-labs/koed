@@ -9,6 +9,7 @@ import { useTheme, type ThemeName } from "@/components/ThemeProvider";
 import { StudioSidebar } from "@/components/studio/StudioSidebar";
 import type { BuildViewMode } from "@/lib/buildView";
 import { BackendConnectionSettings } from "./BackendConnectionSettings";
+import { TeamMemorySettings } from "./TeamMemorySettings";
 
 const THEME_OPTIONS: { id: ThemeName; label: string; detail: string }[] = [
   { id: "dark", label: "Dark", detail: "Zinc chrome on a near-black canvas." },
@@ -174,6 +175,8 @@ export default function SettingsPage() {
           </section>
 
           <BackendConnectionSettings />
+
+          <TeamMemorySettings />
 
           <section className="mt-8" aria-labelledby="plugins-heading">
             <h2

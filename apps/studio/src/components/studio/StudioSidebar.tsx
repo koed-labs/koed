@@ -71,6 +71,16 @@ type StudioSidebarProps = {
     provider: "codex" | "claude-code" | "pi",
     signal: AbortSignal
   ) => Promise<LocalSourceSelection>;
+  canShareLocalSource?: (
+    sourceId: string,
+    provider: "codex" | "claude-code" | "pi"
+  ) => boolean;
+  onShareLocalSource?: (
+    sourceId: string,
+    provider: "codex" | "claude-code" | "pi"
+  ) => void;
+  canShareManagedExecution?: (executionId: string) => boolean;
+  onShareManagedExecution?: (executionId: string) => void;
   onMoveManagedExecution?: (
     executionId: string,
     destinationProjectId: string
@@ -99,6 +109,10 @@ export function StudioSidebar({
   showLocalCatalog = false,
   canCreateLocalProject: canCreateLocalProjectProp,
   onLocalSourceSelect,
+  canShareLocalSource,
+  onShareLocalSource,
+  canShareManagedExecution,
+  onShareManagedExecution,
   onMoveManagedExecution,
   managedConversations = [],
   managedSourceIds = [],
@@ -573,6 +587,10 @@ export function StudioSidebar({
                     <LocalConversationBrowser
                       onNavigateAway={closeMobileNavigation}
                       onSourceSelect={onLocalSourceSelect}
+                      canShareSource={canShareLocalSource}
+                      onShareSource={onShareLocalSource}
+                      canShareManagedExecution={canShareManagedExecution}
+                      onShareManagedExecution={onShareManagedExecution}
                       onMoveManagedExecution={onMoveManagedExecution}
                       onSelectManagedExecution={onSelectManagedExecution}
                       managedConversations={managedConversations}

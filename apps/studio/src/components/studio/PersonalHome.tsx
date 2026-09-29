@@ -8,9 +8,10 @@ import {
   LoaderCircle,
   RotateCcw,
   Clock3,
+  Share2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { managedRequest, parseLaunchInstances } from "@/lib/managed-agent-chat";
 import type {
@@ -19,6 +20,8 @@ import type {
   HomeRequest,
   HomeSnapshot
 } from "@/lib/studio-contract";
+import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
+import type { CollaborationSnapshot } from "@koed/shared/collaboration";
 import {
   buildHomeViewModel,
   filterHomeCollections,
@@ -34,12 +37,17 @@ import {
   type StudioClearedAttention
 } from "@/lib/studio-attention";
 import { StudioSidebar } from "./StudioSidebar";
+import { OwnedConversationShareDialog } from "./OwnedConversationShareDialog";
 import { ChatComposer, type ChatComposerSelection } from "../ChatComposer";
 import {
+  indexShareablePersonalConversations,
+  indexShareableConversationRows,
   matchLocalConversationToHome,
   matchManagedExecutionForCapturedSession,
   managedConversationSourceIds,
-  normalizeConversationProvider
+  normalizeConversationProvider,
+  ownerMemoryLoadMayApply,
+  type ShareablePersonalConversation
 } from "./LocalConversationBrowser.match";
 
 type LoadState = "loading" | "offline" | "snapshot";
@@ -177,6 +185,17 @@ export function PersonalHome({
     key: string | null;
     items: StudioClearedAttention;
   }>({ key: null, items: {} });
+  const collaborationClient = useMemo(
+    () => new StudioCollaborationClient(),
+    []
+  );
+  const [sharingReloadKey, setSharingReloadKey] = useState(0);
+  const [sharingSessionState, setSharingSessionState] = useState<{
+    key: string;
+    snapshot: CollaborationSnapshot | null;
+    message: string | null;
+  } | null>(null);
+  const sharingSessionSequenceRef = useRef(0);
   const scopeRef = useRef<string | null | undefined>(undefined);
   const requestSequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
@@ -185,6 +204,48 @@ export function PersonalHome({
   const usable = Boolean(
     snapshot && (snapshot.state === "ready" || snapshot.state === "partial")
   );
+  const homeScopeKey = usable ? snapshot?.scopeKey ?? null : null;
+  const sharingSessionKey =
+    homeScopeKey === null ? null : `${homeScopeKey}:${sharingReloadKey}`;
+  const ownerSharingSession =
+    sharingSessionKey && sharingSessionState?.key === sharingSessionKey
+      ? sharingSessionState
+      : null;
+  const ownerMemoryBySessionId = useMemo(
+    () =>
+      indexShareablePersonalConversations(
+        ownerSharingSession?.snapshot?.navigation.personal.memory ?? []
+      ),
+    [ownerSharingSession]
+  );
+  const ownerMemoryForLocalSource = useMemo(
+    () =>
+      indexShareableConversationRows({
+        entriesBySessionId: ownerMemoryBySessionId,
+        recents: snapshot?.recents ?? [],
+        executions: snapshot?.executions ?? []
+      }).byLocalSourceId,
+    [ownerMemoryBySessionId, snapshot]
+  );
+  const ownerMemoryForExecution = useMemo(
+    () =>
+      indexShareableConversationRows({
+        entriesBySessionId: ownerMemoryBySessionId,
+        recents: snapshot?.recents ?? [],
+        executions: snapshot?.executions ?? []
+      }).byExecutionId,
+    [ownerMemoryBySessionId, snapshot]
+  );
+  const [shareConversation, setShareConversation] = useState<{
+    sessionId: string;
+    memory: ShareablePersonalConversation;
+  } | null>(null);
+  const activeShareConversation =
+    shareConversation && homeScopeKey &&
+    ownerMemoryBySessionId.get(shareConversation.sessionId)?.logicalMemoryId ===
+      shareConversation.memory.logicalMemoryId
+      ? shareConversation
+      : null;
   const load = useCallback(async () => {
     const sequence = ++requestSequenceRef.current;
     controllerRef.current?.abort();
@@ -228,6 +289,69 @@ export function PersonalHome({
       }
     }
   }, []);
+
+  useEffect(() => {
+    const refreshSharingSession = () => setSharingReloadKey((value) => value + 1);
+    window.addEventListener("focus", refreshSharingSession);
+    return () => window.removeEventListener("focus", refreshSharingSession);
+  }, []);
+
+  useEffect(() => {
+    if (!sharingSessionKey || !homeScopeKey) return;
+    const sequence = ++sharingSessionSequenceRef.current;
+    let active = true;
+    void collaborationClient
+      .loadSession()
+      .then((current) => {
+        if (
+          !ownerMemoryLoadMayApply({
+            active,
+            sequence,
+            currentSequence: sharingSessionSequenceRef.current,
+            homeScopeKey,
+            currentHomeScopeKey: scopeRef.current
+          })
+        ) {
+          return;
+        }
+        setSharingSessionState({
+          key: sharingSessionKey,
+          snapshot: current,
+          message: null
+        });
+      })
+      .catch((reason: unknown) => {
+        if (
+          !ownerMemoryLoadMayApply({
+            active,
+            sequence,
+            currentSequence: sharingSessionSequenceRef.current,
+            homeScopeKey,
+            currentHomeScopeKey: scopeRef.current
+          })
+        ) {
+          return;
+        }
+        const status =
+          reason && typeof reason === "object" && "status" in reason
+            ? (reason as { status?: unknown }).status
+            : null;
+        setSharingSessionState({
+          key: sharingSessionKey,
+          snapshot: null,
+          message:
+            status === 404
+              ? "Connect a Team backend to preview and share Personal Memory."
+              : "Team sharing is unavailable. Check the Team connection and retry."
+        });
+      });
+    return () => {
+      active = false;
+      if (sequence === sharingSessionSequenceRef.current) {
+        sharingSessionSequenceRef.current += 1;
+      }
+    };
+  }, [collaborationClient, homeScopeKey, sharingSessionKey]);
 
   const loadLocalRunnerAvailability = useCallback(async () => {
     const sequence = ++runnerRequestSequenceRef.current;
@@ -313,6 +437,11 @@ export function PersonalHome({
     );
     return execution ? [{ recent, executionId: execution.id }] : [];
   });
+  const displayedConversationRecents = recents.flatMap((recent) => {
+    const execution = executions.find((candidate) => candidate.sessionId === recent.sessionId);
+    const memory = ownerMemoryBySessionId.get(recent.sessionId);
+    return execution || memory ? [{ recent, executionId: execution?.id ?? null, memory: memory ?? null }] : [];
+  });
   const projects = homeProjects(allRecents, coveredExecutions);
   const firstModelOption = modelOptions[0];
   const firstModelEffort =
@@ -396,6 +525,26 @@ export function PersonalHome({
         showLocalCatalog
         managedConversations={executions}
         managedSourceIds={[...managedConversationSourceIds({ recents: allRecents, executions })]}
+        canShareLocalSource={(sourceId, provider) =>
+          ownerMemoryForLocalSource.has(
+            `${provider}:${encodeURIComponent(sourceId)}`
+          )
+        }
+        onShareLocalSource={(sourceId, provider) => {
+          const memory = ownerMemoryForLocalSource.get(
+            `${provider}:${encodeURIComponent(sourceId)}`
+          );
+          if (!memory) return;
+          setShareConversation({ sessionId: memory.id, memory });
+        }}
+        canShareManagedExecution={(executionId) =>
+          ownerMemoryForExecution.has(executionId)
+        }
+        onShareManagedExecution={(executionId) => {
+          const memory = ownerMemoryForExecution.get(executionId);
+          if (!memory) return;
+          setShareConversation({ sessionId: memory.id, memory });
+        }}
         onSelectManagedExecution={onResumeChat}
         collapsed={collapsed}
         selectedProject={filter}
@@ -834,39 +983,49 @@ export function PersonalHome({
                       className={`h-3.5 w-3.5 text-subtle transition-transform ${recentsOpen ? "rotate-90" : ""}`}
                     />
                     Pick up where you left off
-                    {resumableRecents.length > 0 && (
+                    {displayedConversationRecents.length > 0 && (
                       <span className="text-[11px] text-faint">
-                        {resumableRecents.length}
+                        {displayedConversationRecents.length}
                       </span>
                     )}
                   </button>
                   {recentsOpen && (
                     <div id="home-recents" className="mt-3">
-                      {resumableRecents.length === 0 ? (
+                      {displayedConversationRecents.length === 0 ? (
                         <p className="px-1 text-sm text-subtle">
                           Your resumable chats will appear here.
                         </p>
                       ) : (
                         <ul className="divide-y divide-border overflow-hidden rounded-md border border-border bg-surface/30">
-                          {resumableRecents.map(({ recent, executionId }) => (
-                            <li key={recent.id}>
+                          {displayedConversationRecents.map(({ recent, executionId, memory }) => (
+                            <li key={recent.id} className="flex items-center gap-1 pr-2">
                               <button
                                 type="button"
-                                onClick={() => onResumeChat(executionId)}
-                                className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-hover/50"
+                                disabled={!executionId}
+                                onClick={() => executionId && onResumeChat(executionId)}
+                                className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-hover/50 disabled:cursor-not-allowed"
                               >
                                 <span className="min-w-0 flex-1">
                                   <span className="block truncate text-sm text-foreground">
                                     {recent.title}
                                   </span>
                                   <span className="block truncate text-xs text-muted">
-                                    {recent.projectName} ·{" "}
-                                    {recent.provider ?? "AI client"}
+                                    {recent.projectName} · {recent.provider ?? "AI client"}{executionId ? "" : " · captured, cannot continue here"}
                                   </span>
                                 </span>
                                 <span className="flex-shrink-0 text-xs text-faint">
                                   {formatHomeTime(recent.updatedAt)}
                                 </span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!memory}
+                                onClick={() => memory && setShareConversation({ sessionId: memory.id, memory })}
+                                aria-label={`Share ${recent.title} with a Team`}
+                                title={memory ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
+                                className="shrink-0 rounded-md p-1.5 text-faint hover:bg-surface-hover hover:text-foreground-secondary disabled:cursor-not-allowed disabled:opacity-30"
+                              >
+                                <Share2 className="h-3.5 w-3.5" />
                               </button>
                             </li>
                           ))}
@@ -880,6 +1039,17 @@ export function PersonalHome({
           </div>
         </main>
       </div>
+      {activeShareConversation && ownerSharingSession?.snapshot ? (
+        <OwnedConversationShareDialog
+          key={`${homeScopeKey}:${activeShareConversation.sessionId}`}
+          client={collaborationClient}
+          source={activeShareConversation.memory}
+          teams={ownerSharingSession.snapshot.navigation.teams
+            .filter((team) => team.lifecycle === "active")
+            .map(({ id, name }) => ({ id, name }))}
+          onClose={() => setShareConversation(null)}
+        />
+      ) : null}
     </div>
   );
 }

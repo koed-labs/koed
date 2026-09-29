@@ -7,7 +7,8 @@ import {
   MessageSquare,
   Plus,
   RotateCw,
-  Search
+  Search,
+  Share2
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HomeExecution } from "@/lib/studio-contract";
@@ -56,7 +57,7 @@ const LOCAL_SOURCE_DRAG_TYPE = "application/x-koed-local-source";
 const MANAGED_EXECUTION_DRAG_TYPE = "application/x-koed-managed-execution";
 type ManagedConversation = Pick<
   HomeExecution,
-  "id" | "title" | "projectId" | "provider" | "state" | "updatedAt"
+  "id" | "title" | "projectId" | "provider" | "state" | "updatedAt" | "sessionId"
 >;
 const PROJECT_CONVERSATION_PAGE_SIZE = 5;
 const MAX_CATALOG_PAGES_PER_PROJECT_LOAD = 3;
@@ -169,6 +170,8 @@ function SourceRow({
   disabled,
   unavailableMessage,
   onSelect,
+  canShare,
+  onShare,
   onDragStart
 }: {
   item: LocalSource;
@@ -176,6 +179,8 @@ function SourceRow({
   disabled: boolean;
   unavailableMessage?: string;
   onSelect: () => void;
+  canShare: boolean;
+  onShare: () => void;
   onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   const providerName = PROVIDER_LABEL[item.provider];
@@ -198,7 +203,8 @@ function SourceRow({
     .filter(Boolean)
     .join(" · ");
   return (
-    <>
+    <div>
+    <div className="group flex items-center gap-0.5">
       <button
         type="button"
         disabled={disabled}
@@ -207,7 +213,7 @@ function SourceRow({
         aria-busy={pending}
         aria-label={rowDescription}
         onClick={onSelect}
-        className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary disabled:opacity-60"
+        className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary disabled:opacity-60"
         title={rowDescription}
       >
         <span
@@ -221,6 +227,20 @@ function SourceRow({
           {pending ? "Checking source…" : item.title}
         </span>
       </button>
+      <button
+        type="button"
+        disabled={!canShare}
+        onClick={(event) => {
+          event.stopPropagation();
+          onShare();
+        }}
+        aria-label={`Share ${item.title} with a Team`}
+        title={canShare ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
+        className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <Share2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
       {unavailableMessage ? (
         <div
           role="status"
@@ -230,21 +250,26 @@ function SourceRow({
           <p className="mt-1">{unavailableMessage}</p>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }
 
 function ManagedExecutionRow({
   conversation,
-  onSelect
+  onSelect,
+  canShare,
+  onShare
 }: {
   conversation: ManagedConversation;
   onSelect: () => void;
+  canShare: boolean;
+  onShare: () => void;
 }) {
   const draggable =
     conversation.provider === "codex" &&
     conversation.state.toLowerCase() === "running";
   return (
+    <div className="group flex items-center gap-0.5">
     <button
       type="button"
       draggable={draggable}
@@ -259,7 +284,7 @@ function ManagedExecutionRow({
       onClick={onSelect}
       aria-label={`${conversation.title} · ${conversation.provider} · ${conversation.state}`}
       title={`${conversation.title} · ${conversation.provider} · ${conversation.state}`}
-      className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+      className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
     >
       <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
@@ -267,14 +292,29 @@ function ManagedExecutionRow({
         {conversation.state}
       </span>
     </button>
+    <button
+      type="button"
+      disabled={!canShare}
+      onClick={(event) => { event.stopPropagation(); onShare(); }}
+      aria-label={`Share ${conversation.title} with a Team`}
+      title={canShare ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
+      className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+    >
+      <Share2 className="h-3.5 w-3.5" />
+    </button>
+    </div>
   );
 }
 
 export function LocalConversationBrowser({
   onNavigateAway,
   onSourceSelect,
+  canShareSource,
+  onShareSource,
   onMoveManagedExecution,
   onSelectManagedExecution,
+  canShareManagedExecution,
+  onShareManagedExecution,
   managedConversations = [],
   managedSourceIds = [],
   onNewProject,
@@ -288,11 +328,15 @@ export function LocalConversationBrowser({
     provider: Provider,
     signal: AbortSignal
   ) => Promise<LocalSourceSelection>;
+  canShareSource?: (sourceId: string, provider: Provider) => boolean;
+  onShareSource?: (sourceId: string, provider: Provider) => void;
   onMoveManagedExecution?: (
     executionId: string,
     destinationProjectId: string
   ) => void;
   onSelectManagedExecution?: (executionId: string) => void;
+  canShareManagedExecution?: (executionId: string) => boolean;
+  onShareManagedExecution?: (executionId: string) => void;
   managedConversations?: ManagedConversation[];
   managedSourceIds?: readonly string[];
 }) {
@@ -953,6 +997,8 @@ export function LocalConversationBrowser({
                         onSelect={() =>
                           onSelectManagedExecution?.(conversation.id)
                         }
+                        canShare={canShareManagedExecution?.(conversation.id) ?? false}
+                        onShare={() => onShareManagedExecution?.(conversation.id)}
                       />
                     ))}
                     {visibleCatalogSources.length === 0 &&
@@ -976,6 +1022,8 @@ export function LocalConversationBrowser({
                               : undefined
                           }
                           onSelect={() => void selectSource(item)}
+                          canShare={canShareSource?.(item.sourceId, item.provider) ?? false}
+                          onShare={() => onShareSource?.(item.sourceId, item.provider)}
                           onDragStart={(event) => {
                             if (item.provider !== "codex") return;
                             event.dataTransfer.setData(
@@ -1066,6 +1114,8 @@ export function LocalConversationBrowser({
               key={conversation.id}
               conversation={conversation}
               onSelect={() => onSelectManagedExecution?.(conversation.id)}
+              canShare={canShareManagedExecution?.(conversation.id) ?? false}
+              onShare={() => onShareManagedExecution?.(conversation.id)}
             />
           ))}
           {standaloneItems.map((item) => (
@@ -1080,6 +1130,8 @@ export function LocalConversationBrowser({
                   : undefined
               }
               onSelect={() => void selectSource(item)}
+              canShare={canShareSource?.(item.sourceId, item.provider) ?? false}
+              onShare={() => onShareSource?.(item.sourceId, item.provider)}
               onDragStart={(event) => {
                 if (item.provider !== "codex") return;
                 event.dataTransfer.setData(
