@@ -101,17 +101,52 @@ export type HostedOwnedPreviewItem = {
   content: Record<string, unknown>;
 };
 
-function isHostedOwnedPreviewItem(item: unknown, representation: string, logicalMemoryId: string, sourceRevision: number): item is HostedOwnedPreviewItem {
-  if (!isRecord(item) || !isRecord(item.content) || item.schemaVersion !== 1 ||
-    typeof item.sourceId !== "string" || item.sourceId.length === 0 || item.sourceLogicalMemoryId !== logicalMemoryId ||
-    item.sourceRevision !== sourceRevision || (item.occurredAt !== null && (typeof item.occurredAt !== "string" || Number.isNaN(Date.parse(item.occurredAt))))) return false;
+function isHostedOwnedPreviewItem(item: unknown, representation: string, logicalMemoryId: string, sourceRevision: number, depth = 0): item is HostedOwnedPreviewItem {
+  if (depth > 16) return false;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const exactKeys = (record: Record<string, unknown>, allowed: string[]) => Object.keys(record).every((key) => allowed.includes(key));
+  const filled = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+  const validJson = (value: unknown, depth = 0): boolean => {
+    if (depth > 16) return false;
+    if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (Array.isArray(value)) return value.length <= 2048 && value.every((entry) => validJson(entry, depth + 1));
+    return isRecord(value) && Object.keys(value).length <= 2000 && Object.values(value).every((entry) => validJson(entry, depth + 1));
+  };
+  if (!isRecord(item) || !isRecord(item.content) || !exactKeys(item, ["itemType", "schemaVersion", "sourceId", "sourceLogicalMemoryId", "sourceRevision", "occurredAt", "content"]) || item.schemaVersion !== 1 ||
+    !filled(item.sourceId) || !uuid.test(item.sourceId) || item.sourceLogicalMemoryId !== logicalMemoryId ||
+    !Number.isSafeInteger(item.sourceRevision) || item.sourceRevision !== sourceRevision || sourceRevision < 0 ||
+    (item.occurredAt !== null && (typeof item.occurredAt !== "string" || Number.isNaN(Date.parse(item.occurredAt))))) return false;
   const types: Record<string, readonly string[]> = {
     memory_events: ["user_message", "assistant_message", "thought", "tool_call", "tool_result"],
     lcm_leaves: ["lcm_leaf"],
     lcm_rollups: ["lcm_rollup"],
     curated_assertions: ["curated_assertion"]
   };
-  return (types[representation] ?? []).includes(String(item.itemType));
+  if (!(types[representation] ?? []).includes(String(item.itemType))) return false;
+  const content = item.content;
+  if (item.itemType === "user_message" || item.itemType === "assistant_message" || item.itemType === "thought") {
+    return exactKeys(content, ["text"]) && filled(content.text) && Object.hasOwn(content, "text");
+  }
+  if (item.itemType === "tool_call" || item.itemType === "tool_result") {
+    return exactKeys(content, ["toolName", "toolCallId", "payload"]) && filled(content.toolName) &&
+      (content.toolCallId === null || filled(content.toolCallId)) && Object.hasOwn(content, "payload") && validJson(content.payload);
+  }
+  const expansions = content.expansionItems;
+  const validExpansions = (allowed: readonly string[]): boolean => expansions === undefined ||
+    (Array.isArray(expansions) && expansions.length > 0 && expansions.length <= 2048 && expansions.every((child) =>
+      isRecord(child) && allowed.includes(String(child.itemType)) && isHostedOwnedPreviewItem(child, child.itemType === "lcm_leaf" ? "lcm_leaves" : child.itemType === "lcm_rollup" ? "lcm_rollups" : "memory_events", logicalMemoryId, sourceRevision, depth + 1)));
+  if (item.itemType === "lcm_leaf" || item.itemType === "lcm_rollup") {
+    return exactKeys(content, ["title", "summaryText", "lexicalAnchors", "sourceIds", "expansionItems"]) &&
+      (content.title === undefined || typeof content.title === "string") && filled(content.summaryText) &&
+      Array.isArray(content.lexicalAnchors) && content.lexicalAnchors.every(filled) &&
+      Array.isArray(content.sourceIds) && content.sourceIds.length > 0 && content.sourceIds.every((id) => filled(id) && uuid.test(id)) &&
+      validExpansions(item.itemType === "lcm_rollup" ? ["lcm_leaf"] : types.memory_events);
+  }
+  return exactKeys(content, ["assertionText", "topicTitle", "tags", "sourceCount", "expansionItems"]) &&
+    filled(content.assertionText) && (content.topicTitle === null || content.topicTitle === undefined || typeof content.topicTitle === "string") &&
+    Array.isArray(content.tags) && content.tags.every(filled) && Number.isSafeInteger(content.sourceCount) && Number(content.sourceCount) > 0 &&
+    validExpansions([...types.memory_events, "lcm_leaf", "lcm_rollup"]);
 }
 export type HostedOwnedShare = Record<string, unknown> & {
   kind: "grant" | "pending";

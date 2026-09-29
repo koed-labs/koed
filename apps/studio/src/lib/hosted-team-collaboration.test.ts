@@ -472,7 +472,7 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   const hosted = await client.loadHostedSession();
   assert.equal(hosted.kind, "hosted_browser");
   assert.equal("personal" in hosted, false);
-  const acceptedPreview = await client.previewOwnedSource({
+  const previewInput = {
     source: preview.source,
     logicalMemoryId: preview.logicalMemoryId,
     remoteReplicaId: "12121212-1212-4212-8212-121212121212",
@@ -484,7 +484,8 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
     mode: "snapshot",
     retentionEnabled: false,
     memberRetentionVersion: 1
-  });
+  } as const;
+  const acceptedPreview = await client.previewOwnedSource(previewInput);
   assert.equal(acceptedPreview.items[0]?.content.text, "Shared source item");
   const shareInput = {
     source: preview.source,
@@ -523,17 +524,8 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   assert.deepEqual(previewBody.authority, { action: "workspace.memory.share_owned", source: "browser_session" });
   assert.equal(requests.some(({ url }) => url.includes("candidate-previews") || url.includes("pending-shares")), false);
   preview.items[0]!.sourceLogicalMemoryId = "99999999-9999-4999-8999-999999999999";
-  await assert.rejects(() => client.previewOwnedSource({
-    source: preview.source,
-    logicalMemoryId: preview.logicalMemoryId,
-    remoteReplicaId: "12121212-1212-4212-8212-121212121212",
-    teamId,
-    teamWorkspaceId: preview.teamWorkspaceId,
-    activationRepresentation: "memory_events",
-    maximumFidelity: "memory_events",
-    includeCuratedMemory: false,
-    mode: "snapshot",
-    retentionEnabled: false,
-    memberRetentionVersion: 1
-  }), /invalid share preview/);
+  await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
+  preview.items[0]!.sourceLogicalMemoryId = preview.logicalMemoryId;
+  Object.assign(preview.items[0]!.content, { text: 7, extra: "unreviewed" });
+  await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
 });
