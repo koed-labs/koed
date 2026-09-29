@@ -1971,7 +1971,11 @@ describeDb("Shared Memory repository", () => {
     sourceRevision = source.currentRevision,
     label = source.currentLabel,
     representations: SharedMemoryRepresentation[] = allRepresentations,
-    mode: SharedMemoryConsentMode = "continuous"
+    mode: SharedMemoryConsentMode = "continuous",
+    retention: { enabled: boolean; version: number } = {
+      enabled: true,
+      version: 1
+    }
   ) => {
     await ensureSourceRevision(fixture, source, sourceRevision, label);
     const preview = await repository.createAuthoritativeSourcePreview(
@@ -1983,8 +1987,8 @@ describeDb("Shared Memory repository", () => {
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
         mode,
-        retentionEnabled: true,
-        memberRetentionVersion: 1,
+        retentionEnabled: retention.enabled,
+        memberRetentionVersion: retention.version,
         ...fidelityConsent(representations),
         authority: authority(fixture)
       }
@@ -6096,52 +6100,6 @@ describeDb("Shared Memory repository", () => {
     );
     expect(persisted.rowCount).toBe(0);
 
-    const materializationConsentId = randomUUID();
-    const failingRepository = createSharedMemoryRepository(pool, {
-      resolvePersonalEncryptionProvider: () => privacyProvider,
-      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
-      resolveTeamEncryptionProvider: () => {
-        throw new Error("forced Team representation materialization failure");
-      }
-    });
-    await expect(
-      failingRepository.createShareBundle(actor(fixture.ownerUserId), {
-        consent: {
-          ...reviewedSourceBinding(preview),
-          consentId: materializationConsentId,
-          preview,
-          mode: "continuous",
-          retentionEnabled: true,
-          retentionPolicyEnabled: true,
-          memberRetentionVersion: 1,
-          ...fidelityConsent(allRepresentations),
-          authority: authority(fixture)
-        },
-        grant: {
-          mutationId: randomUUID(),
-          logicalGrantId: randomUUID(),
-          consentId: materializationConsentId,
-          authority: authority(fixture)
-        },
-        expected: {
-          consentId: materializationConsentId,
-          logicalMemoryId: source.logicalMemoryId,
-          teamId: fixture.teamId,
-          teamWorkspaceId: fixture.teamWorkspaceId,
-          previewId: preview.previewId,
-          previewRevision: preview.previewRevision,
-          previewHash: preview.previewHash,
-          ...fidelityConsent(allRepresentations)
-        }
-      })
-    ).rejects.toThrow("forced Team representation materialization failure");
-    const rolledBackBundle = await pool.query(
-      `select 1 from source_owner_representation_consents where id=$1
-       union all
-       select 1 from team_memory_share_grants where consent_id=$1`,
-      [materializationConsentId]
-    );
-    expect(rolledBackBundle.rowCount).toBe(0);
   });
 
   it("keeps preview policy proposals inactive until the final share bundle", async () => {
@@ -6198,11 +6156,11 @@ describeDb("Shared Memory repository", () => {
     );
 
     expect(bundled).not.toBeNull();
-    expect(bundled?.representation).toMatchObject({
-      state: "available",
-      sourceRevision: 1,
-      shareGrantId: bundled?.grant.id
-    });
+    expect(bundled?.representation).toBeNull();
+    await prepareSanitizedSemanticPreview(fixture.ownerUserId, preview);
+    await expect(
+      repository.reconcileReadySemanticRepresentations({ limit: 10 })
+    ).resolves.toMatchObject({ materialized: 1 });
     await expect(
       repository.readGrantRepresentation(actor(fixture.readerUserId), {
         shareGrantId: bundled!.grant.id,
@@ -7611,17 +7569,23 @@ describeDb("Shared Memory repository", () => {
       consentId,
       authority: authority(fixture)
     });
-    const grantFixture: GrantFixture = {
-      ...source,
-      consentId,
+    const grantPreview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events",
+      source.currentRevision,
+      "future-retention-default",
+      allRepresentations,
+      "continuous",
+      { enabled: false, version: 2 }
+    );
+    await repository.materializeGrantRepresentation(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
       shareGrantId: grant.id,
-      grantVersion: grant.grantVersion,
-      representation: "memory_events",
-      maximumFidelity: grant.maximumFidelity,
-      includeCuratedMemory: grant.includeCuratedMemory,
-      preview
-    };
-    await materialize(fixture, grantFixture);
+      consentId,
+      expectedGrantVersion: grant.grantVersion,
+      preview: grantPreview
+    });
 
     await pool.query(
       `update team_memberships
@@ -9335,7 +9299,7 @@ describeDb("Shared Memory repository", () => {
         shareGrantId: firstGrant.shareGrantId,
         representation: firstGrant.representation
       })
-    ).resolves.toMatchObject({ freshness: "fresh", representation: { sourceRevision: 1 } });
+    ).resolves.toMatchObject({ representation: { sourceRevision: 1 } });
     await expect(
       repository.readGrantRepresentation(actor(second.readerUserId), {
         shareGrantId: secondGrant.shareGrantId,

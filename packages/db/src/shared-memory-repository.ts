@@ -1286,7 +1286,7 @@ export interface SharedMemoryRepository {
   ): Promise<{
     consent: SharedMemoryConsentRecord;
     grant: SharedMemoryGrantRecord;
-    representation: SharedMemoryRepresentationRecord;
+    representation: SharedMemoryRepresentationRecord | null;
   } | null>;
   changeFidelityBundle(
     actor: ActorContext,
@@ -1294,7 +1294,7 @@ export interface SharedMemoryRepository {
   ): Promise<{
     consent: SharedMemoryConsentRecord;
     grant: SharedMemoryGrantRecord;
-    representation: SharedMemoryRepresentationRecord;
+    representation: SharedMemoryRepresentationRecord | null;
   } | null>;
   revokeShareGrant(
     actor: ActorContext,
@@ -6548,7 +6548,7 @@ export const createSharedMemoryRepository = (
     };
   };
 
-  const loadPersistedPreviewByReference = async (
+const loadPersistedPreviewByReference = async (
     client: pg.PoolClient,
     input: {
       preview: SharedSourcePreviewReference;
@@ -12691,17 +12691,22 @@ export const createSharedMemoryRepository = (
           if (!grantMatchesBinding(grant, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
           }
-          const representation = await repository.materializeGrantRepresentation(
-            actor,
-            {
-              mutationId: input.grant.mutationId,
-              shareGrantId: grant.id,
-              consentId: consent.id,
-              expectedGrantVersion: grant.grantVersion,
-              preview: input.consent.preview
-            },
-            client
-          );
+          const representation = (await hasReadySanitizedSemanticPreview(
+            client,
+            input.consent.preview
+          ))
+            ? await repository.materializeGrantRepresentation(
+                actor,
+                {
+                  mutationId: input.grant.mutationId,
+                  shareGrantId: grant.id,
+                  consentId: consent.id,
+                  expectedGrantVersion: grant.grantVersion,
+                  preview: input.consent.preview
+                },
+                client
+              )
+            : null;
           return { consent, grant, representation };
         });
       } catch (error) {
@@ -12735,17 +12740,22 @@ export const createSharedMemoryRepository = (
           if (!grantMatchesBinding(grant, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
           }
-          const representation = await repository.materializeGrantRepresentation(
-            actor,
-            {
-              mutationId: input.fidelity.mutationId,
-              shareGrantId: grant.id,
-              consentId: consent.id,
-              expectedGrantVersion: grant.grantVersion,
-              preview: input.consent.preview
-            },
-            client
-          );
+          const representation = (await hasReadySanitizedSemanticPreview(
+            client,
+            input.consent.preview
+          ))
+            ? await repository.materializeGrantRepresentation(
+                actor,
+                {
+                  mutationId: input.fidelity.mutationId,
+                  shareGrantId: grant.id,
+                  consentId: consent.id,
+                  expectedGrantVersion: grant.grantVersion,
+                  preview: input.consent.preview
+                },
+                client
+              )
+            : null;
           return { consent, grant, representation };
         });
       } catch (error) {
@@ -19842,4 +19852,18 @@ export const createSharedMemoryRepository = (
     }
   };
   return repository;
+};
+
+const hasReadySanitizedSemanticPreview = async (
+  client: pg.PoolClient,
+  preview: SharedSourcePreviewReference
+): Promise<boolean> => {
+  const result = await client.query(
+    `select id from shared_source_semantic_previews
+      where source_preview_id=$1 and source_preview_hash=$2
+        and status='ready' and invalidated_at is null
+      limit 1 for share`,
+    [preview.previewId, preview.previewHash]
+  );
+  return Boolean(result.rows[0]);
 };
