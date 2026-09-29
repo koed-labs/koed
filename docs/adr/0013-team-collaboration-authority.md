@@ -1,7 +1,9 @@
 # Team Collaboration Uses Device-Mediated, Server-Authorized Operations
 
 Status: Accepted design; Personal Notes are superseded by
-[ADR 0032](./0032-first-class-revisioned-personal-notes.md).
+[ADR 0032](./0032-first-class-revisioned-personal-notes.md). Consented retained
+share lifecycle is extended by
+[ADR 0046](./0046-consented-team-memory-retention.md).
 
 Related decisions:
 

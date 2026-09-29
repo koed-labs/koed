@@ -50,7 +50,9 @@ User
   existing access grants.
 - Every enabled Team member may read and post in Team-wide and Team Project
   channels. Membership does not grant access to restricted Workspace channels
-  or Team-shared Memory.
+  or their Team-shared Memory. Studio's Team-wide memory destination uses a
+  dedicated stable Workspace and explicit membership-bound access; it must not
+  widen access to other Workspaces.
 - Team direct messages and group direct messages belong to one Team and do not
   belong to a Workspace.
 - Personal Notes and Personal channels belong only to their Personal owner.
@@ -58,6 +60,11 @@ User
 - A shared Captured Session appears in the Workspace named by its Share Grant.
 - Its companion discussion is attached to the shared source and does not appear
   in the ordinary channel list.
+- [Consented retention](adr/0046-consented-team-memory-retention.md) preserves
+  explicitly shared Team representations after contributor departure or
+  Personal source deletion. Contributors control future updates; authorized
+  Team administrators control removal of retained representations. This grants
+  no automatic Conversation Source Access and transfers no Personal ownership.
 - Workspace confidentiality protects Workspace content. Every enabled Team
   member may discover the bounded Team roster and start a Team-scoped direct
   message with another enabled member.

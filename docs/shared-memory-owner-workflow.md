@@ -1,5 +1,23 @@
 # Shared Memory owner workflow model
 
+## Consented retention
+
+[ADR 0046](adr/0046-consented-team-memory-retention.md) extends the ordinary
+owner workflow for explicitly consented retained shares. The contributor may
+stop future updates while the existing authorized Team representation stays
+recallable. An authorized Team administrator removes that retained
+representation. Non-retained shares retain ordinary revocation semantics.
+
+The retention setting and version must be bound to the destination preview,
+consent and share. Changing a member setting cannot silently convert an existing
+share or remove retained knowledge. Departure stops update authority, not the
+remaining members' consented retained recall. Recipient membership, Team and
+Workspace lifecycle, privacy and representation policies still apply.
+
+The revoke transition below describes non-retained owner revocation and
+authorized administrative removal. It must not be used to erase a retained
+share when its contributor merely stops updates.
+
 ## Decision
 
 Defer extraction of a new deep workflow module. The load-bearing Shared Memory

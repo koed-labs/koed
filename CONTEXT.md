@@ -278,8 +278,9 @@ A User's participation state and role within a Team.
 _Avoid_: Workspace access, API token permission
 
 **Team Retention Policy**:
-A Team-level rule that may decide how Team-shared Memory behaves after an
-owning User removes it from Personal Memory.
+A Team-level rule, with per-member settings, that decides whether explicitly
+consented Team-shared Memory remains available after its owning User stops
+sharing, leaves the Team, or removes the source from Personal Memory.
 _Avoid_: Personal deletion, share revocation, legal hold
 
 **Team-shared Memory**:
@@ -367,6 +368,12 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - An **AI Client** performs **Synthesis** from recalled evidence
 - **Personal Memory** belongs to exactly one **User**
 - **Team-shared Memory** remains owned by the originating **User**
+- A **Team Retention Policy** cannot share a User's Personal Memory without
+  explicit consent. A retained Team representation is not an ownership transfer.
+- For retained shares, the originating **User** controls future updates and
+  authorized Team administrators control removal of the retained representation.
+- Enabling retention for an existing non-retained share requires fresh consent.
+  Disabling a member's retention setting does not remove existing retained Memory.
 - A **Share Grant** makes one user-owned memory source recallable to one
   **Team** in one **Workspace**; the first implemented source is a
   **Captured Session**
