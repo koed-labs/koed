@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, saveAcceptedReceiptBeforeAcknowledging, studioRequestMayApply, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftForHydration, teamDraftWithoutReceiptAck, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, saveAcceptedReceiptBeforeAcknowledging, studioRequestMayApply, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftForHydration, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -129,6 +129,25 @@ test("protected receipt acknowledgement denials clear the local protected draft"
     assert.equal(durableSendFailureDisposition(code), "authority_lost");
   }
   assert.equal(durableSendFailureDisposition("invalid_input"), "not_sent");
+});
+
+test("revocation fences queued draft writes and deletes after an in-flight write settles", async () => {
+  assert.equal(teamDraftWriteMayApply({ capturedGeneration: 3, currentGeneration: 3, invalidated: false }), true);
+  assert.equal(teamDraftWriteMayApply({ capturedGeneration: 2, currentGeneration: 3, invalidated: false }), false);
+  assert.equal(teamDraftWriteMayApply({ capturedGeneration: 3, currentGeneration: 3, invalidated: true }), false);
+  let finishWrite!: () => void;
+  const write = new Promise<void>((resolve) => { finishWrite = resolve; });
+  const events: string[] = [];
+  const deletion = deleteTeamDraftAfterQueuedWrite({
+    queuedWrite: write,
+    deleteDraft: async () => { events.push("delete"); }
+  });
+  await Promise.resolve();
+  assert.equal(events.length, 0);
+  finishWrite();
+  events.push("write finished");
+  await deletion;
+  assert.deepEqual(events, ["write finished", "delete"]);
 });
 
 test("ambiguous send errors retain the original identity alongside later edits", () => {

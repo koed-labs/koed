@@ -22,7 +22,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -75,8 +75,10 @@ export function TeamChannelWorkspace({
   const revokedRef = useRef(false);
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
   const draftWriteTails = useRef(new Map<string, Promise<void>>());
+  const draftAuthorityGenerations = useRef(new Map<string, number>());
+  const invalidDraftAuthorities = useRef(new Set<string>());
   const receiptCompletions = useRef(new Map<string, Map<string, { messageId: string; acknowledged: boolean }>>());
-  const clearRevokedViewRef = useRef<() => void>(() => undefined);
+  const clearRevokedViewRef = useRef<(authority?: DraftAuthority, invalidationQueued?: boolean) => void>(() => undefined);
   const sendLocks = useRef(new Set<string>());
   const projectRequestIds = useRef(new Map<string, { requestId: string; name: string }>());
   const directMessageRequestIds = useRef(new Map<string, string>());
@@ -115,8 +117,17 @@ export function TeamChannelWorkspace({
 
   const persistDraft = useCallback((draftAuthority: DraftAuthority, candidate: StudioTeamDraft): Promise<StudioTeamDraft> => {
     const key = JSON.stringify(draftAuthority);
+    const capturedGeneration = draftAuthorityGenerations.current.get(key) ?? 0;
+    if (!teamDraftWriteMayApply({ capturedGeneration, currentGeneration: capturedGeneration, invalidated: invalidDraftAuthorities.current.has(key) })) {
+      return Promise.reject(new Error("This Team draft authority is no longer active."));
+    }
     const previous = draftWriteTails.current.get(key) ?? Promise.resolve();
     const operation = previous.catch(() => undefined).then(async () => {
+      if (!teamDraftWriteMayApply({
+        capturedGeneration,
+        currentGeneration: draftAuthorityGenerations.current.get(key) ?? 0,
+        invalidated: invalidDraftAuthorities.current.has(key)
+      })) throw new Error("This Team draft authority is no longer active.");
       const latest = draftByAuthority.current.get(key) ?? candidate;
       const completions = receiptCompletions.current.get(key);
       const latestCompletion = latest.pendingSend ? completions?.get(latest.pendingSend.clientMessageId) : undefined;
@@ -130,6 +141,11 @@ export function TeamChannelWorkspace({
         ? draftAfterCompletedReceiptWrite({ latest, candidate, ...completion })
         : candidate;
       await drafts.saveDraft(draftAuthority, value);
+      if (!teamDraftWriteMayApply({
+        capturedGeneration,
+        currentGeneration: draftAuthorityGenerations.current.get(key) ?? 0,
+        invalidated: invalidDraftAuthorities.current.has(key)
+      })) throw new Error("This Team draft authority is no longer active.");
       if (completion && draftByAuthority.current.get(key) === latest) {
         draftByAuthority.current.set(key, value);
       }
@@ -141,11 +157,29 @@ export function TeamChannelWorkspace({
     return operation;
   }, [drafts]);
 
+  const invalidateDraftAuthority = useCallback((draftAuthority: DraftAuthority): Promise<void> => {
+    const key = JSON.stringify(draftAuthority);
+    draftAuthorityGenerations.current.set(key, (draftAuthorityGenerations.current.get(key) ?? 0) + 1);
+    invalidDraftAuthorities.current.add(key);
+    draftByAuthority.current.delete(key);
+    const previous = draftWriteTails.current.get(key) ?? null;
+    const operation = deleteTeamDraftAfterQueuedWrite({
+      queuedWrite: previous,
+      deleteDraft: () => drafts.deleteDraft(draftAuthority)
+    });
+    const tail = operation.then(() => undefined, () => undefined);
+    draftWriteTails.current.set(key, tail);
+    void tail.then(() => { if (draftWriteTails.current.get(key) === tail) draftWriteTails.current.delete(key); });
+    return operation;
+  }, [drafts]);
+
   const acknowledgeReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
     const purgeRevokedDraft = async (code: string | null) => {
       if (durableSendFailureDisposition(code) !== "authority_lost") return;
-      clearRevokedViewRef.current();
-      await drafts.deleteDraft(draftAuthority).catch(() => undefined);
+      const key = JSON.stringify(draftAuthority);
+      const deletion = invalidateDraftAuthority(draftAuthority);
+      if (authorityKeyRef.current === key) clearRevokedViewRef.current(draftAuthority, true);
+      await deletion.catch(() => undefined);
     };
     try {
       const result = await run("collaboration.acknowledge_send_receipt", {
@@ -167,7 +201,7 @@ export function TeamChannelWorkspace({
       await purgeRevokedDraft(code);
       throw failure;
     }
-  }, [drafts, run]);
+  }, [invalidateDraftAuthority, run]);
 
   const clearSavedReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
     const key = JSON.stringify(draftAuthority);
@@ -255,7 +289,13 @@ export function TeamChannelWorkspace({
     }
   }, [clearSavedReceiptMarker, persistDraft]);
 
-  const clearRevokedView = useCallback(() => {
+  const clearRevokedView = useCallback((protectedAuthority?: DraftAuthority, invalidationQueued = false) => {
+    let authorityToPurge = protectedAuthority ?? undefined;
+    if (!authorityToPurge && authorityKeyRef.current) {
+      try { authorityToPurge = JSON.parse(authorityKeyRef.current) as DraftAuthority; }
+      catch { authorityToPurge = undefined; }
+    }
+    if (authorityToPurge && !invalidationQueued) void invalidateDraftAuthority(authorityToPurge).catch(() => undefined);
     revokedRef.current = true;
     snapshotEpoch.current += 1;
     selectedRef.current = { teamId: "", threadId: "" };
@@ -278,7 +318,7 @@ export function TeamChannelWorkspace({
     saveSequence.current += 1;
     readReported.current.clear();
     readPending.current.clear();
-  }, []);
+  }, [invalidateDraftAuthority]);
   useEffect(() => { clearRevokedViewRef.current = clearRevokedView; }, [clearRevokedView]);
   const recoverPendingReceipt = useCallback(async (draftAuthority: DraftAuthority, clientMessageId: string): Promise<"recovered" | "missing" | "error"> => {
     const result = await run("collaboration.get_send_receipt", {
@@ -286,7 +326,10 @@ export function TeamChannelWorkspace({
       clientMessageId
     });
     if (!result.ok) {
-      if (result.error.code === "access_revoked") clearRevokedView();
+      if (durableSendFailureDisposition(result.error.code) === "authority_lost") {
+        if (authorityKeyRef.current === JSON.stringify(draftAuthority)) clearRevokedView(draftAuthority);
+        else void invalidateDraftAuthority(draftAuthority).catch(() => undefined);
+      }
       else if (authorityKeyRef.current === JSON.stringify(draftAuthority)) setStatus(result.error.userMessage);
       return "error";
     }
@@ -294,7 +337,7 @@ export function TeamChannelWorkspace({
     const receipt = result.data.receipt;
     if (receipt.clientMessageId !== clientMessageId) return "error";
     return await completeAcceptedReceipt(draftAuthority, receipt) ? "recovered" : "error";
-  }, [clearRevokedView, completeAcceptedReceipt, run]);
+  }, [clearRevokedView, completeAcceptedReceipt, invalidateDraftAuthority, run]);
   const refreshSnapshot = useCallback(async (): Promise<boolean> => {
     const epoch = snapshotEpoch.current;
     try {
@@ -490,9 +533,18 @@ export function TeamChannelWorkspace({
     }
     setStatus(null);
     let active = true;
-    void drafts.loadDraft(authority).then((stored) => {
+    const key = JSON.stringify(authority);
+    const hydrationGeneration = draftAuthorityGenerations.current.get(key) ?? 0;
+    const queuedDraftWrite = draftWriteTails.current.get(key);
+    void (async () => {
+      await queuedDraftWrite?.catch(() => undefined);
+      return drafts.loadDraft(authority);
+    })().then((stored) => {
       if (!mayCompleteDraftHydration({ active, revoked: revokedRef.current })) return;
-      const key = JSON.stringify(authority);
+      if (authorityKeyRef.current !== key || (draftAuthorityGenerations.current.get(key) ?? 0) !== hydrationGeneration) return;
+      // A fresh, successful load under the current verified Team authority is
+      // the only operation that removes this authority's revocation tombstone.
+      invalidDraftAuthorities.current.delete(key);
       const hydratedDraft = stored ?? { text: "", pendingSend: null };
       draftByAuthority.current.set(key, hydratedDraft);
       setDraftText(hydratedDraft.text);

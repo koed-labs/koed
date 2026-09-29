@@ -80,6 +80,20 @@ export const draftTextAfterSendPreflight = (input: {
   latestText: string;
 }): string => input.latestText === input.textBeforePreflight ? "" : input.latestText;
 
+export const teamDraftWriteMayApply = (input: {
+  capturedGeneration: number;
+  currentGeneration: number;
+  invalidated: boolean;
+}): boolean => !input.invalidated && input.capturedGeneration === input.currentGeneration;
+
+export const deleteTeamDraftAfterQueuedWrite = async (input: {
+  queuedWrite: Promise<unknown> | null;
+  deleteDraft: () => Promise<void>;
+}): Promise<void> => {
+  await input.queuedWrite?.catch(() => undefined);
+  await input.deleteDraft();
+};
+
 export const confirmedPendingSend = (
   draft: StudioTeamDraft,
   confirmedClientMessageId: string
