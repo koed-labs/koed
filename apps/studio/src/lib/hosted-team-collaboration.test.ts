@@ -530,4 +530,6 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
   Object.assign(preview.items[0]!, { itemType: "tool_call", content: { toolName: "example", toolCallId: null, payload: { system_prompt: "unreviewed" } } });
   await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
+  Object.assign(preview.items[0]!, { itemType: "user_message", content: { text: "x".repeat(256 * 1024 + 1) } });
+  await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
 });

@@ -105,7 +105,8 @@ function isHostedOwnedPreviewItem(item: unknown, representation: string, logical
   if (depth > 16) return false;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const exactKeys = (record: Record<string, unknown>, allowed: string[]) => Object.keys(record).every((key) => allowed.includes(key));
-  const filled = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+  const bounded = (value: unknown): value is string => typeof value === "string" && new TextEncoder().encode(value).length <= 256 * 1024;
+  const filled = (value: unknown): value is string => bounded(value) && value.trim().length > 0;
   const validJson = (value: unknown, depth = 0, keyCount = { value: 0 }): boolean => {
     if (depth > 16) return false;
     if (value === null || typeof value === "boolean") return true;
@@ -146,7 +147,7 @@ function isHostedOwnedPreviewItem(item: unknown, representation: string, logical
       isRecord(child) && allowed.includes(String(child.itemType)) && isHostedOwnedPreviewItem(child, child.itemType === "lcm_leaf" ? "lcm_leaves" : child.itemType === "lcm_rollup" ? "lcm_rollups" : "memory_events", logicalMemoryId, sourceRevision, depth + 1)));
   if (item.itemType === "lcm_leaf" || item.itemType === "lcm_rollup") {
     return exactKeys(content, ["title", "summaryText", "lexicalAnchors", "sourceIds", "expansionItems"]) &&
-      (content.title === undefined || typeof content.title === "string") && filled(content.summaryText) &&
+      (content.title === undefined || bounded(content.title)) && filled(content.summaryText) &&
       Array.isArray(content.lexicalAnchors) && content.lexicalAnchors.length <= 12 &&
       content.lexicalAnchors.every((anchor) => filled(anchor) && anchor.length <= 120) &&
       new Set(content.lexicalAnchors).size === content.lexicalAnchors.length &&
@@ -154,7 +155,7 @@ function isHostedOwnedPreviewItem(item: unknown, representation: string, logical
       validExpansions(item.itemType === "lcm_rollup" ? ["lcm_leaf"] : types.memory_events);
   }
   return exactKeys(content, ["assertionText", "topicTitle", "tags", "sourceCount", "expansionItems"]) &&
-    filled(content.assertionText) && (content.topicTitle === null || content.topicTitle === undefined || typeof content.topicTitle === "string") &&
+    filled(content.assertionText) && (content.topicTitle === null || content.topicTitle === undefined || bounded(content.topicTitle)) &&
     Array.isArray(content.tags) && content.tags.every(filled) && Number.isSafeInteger(content.sourceCount) && Number(content.sourceCount) > 0 &&
     validExpansions([...types.memory_events, "lcm_leaf", "lcm_rollup"]);
 }
