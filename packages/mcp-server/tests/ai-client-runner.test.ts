@@ -366,7 +366,7 @@ exit 1
         }),
         expect.objectContaining({
           id: "slash_command_discovery",
-          readiness: "ready"
+          readiness: "not_ready"
         })
       ])
     );
