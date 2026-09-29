@@ -519,6 +519,6 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   assert.equal(requests.some(({ init }) => new Headers(init.headers).has("x-studio-csrf")), false);
   const previewBody = JSON.parse(String(requests[1]?.init.body));
   assert.deepEqual(previewBody.sourceCapabilities, ["memory_events"]);
-  assert.deepEqual(previewBody.authority, { action: "shared_memory.authority", source: "browser_session" });
+  assert.deepEqual(previewBody.authority, { action: "workspace.memory.share_owned", source: "browser_session" });
   assert.equal(requests.some(({ url }) => url.includes("candidate-previews") || url.includes("pending-shares")), false);
 });

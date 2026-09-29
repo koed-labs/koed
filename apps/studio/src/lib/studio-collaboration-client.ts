@@ -314,7 +314,7 @@ export class StudioCollaborationClient {
     retentionEnabled: boolean;
     memberRetentionVersion: number;
   }): Promise<HostedOwnedSourcePreview> {
-    const body = await this.browserApi("/v1/shared-memory/previews", { method: "POST", body: { ...input, sourceCapabilities: [input.activationRepresentation], authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi("/v1/shared-memory/previews", { method: "POST", body: { ...input, sourceCapabilities: [input.activationRepresentation], authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     const preview = isRecord(body) && isRecord(body.preview) ? body.preview : null;
     const validHash = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
     const validVersion = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
@@ -372,7 +372,7 @@ export class StudioCollaborationClient {
     memberRetentionVersion: number;
   }): Promise<HostedShareBundleResult> {
     const { previewId, previewHash, ...rest } = input;
-    const body = await this.browserApi("/v1/shared-memory/share-bundles", { method: "POST", body: { ...rest, preview: { previewId, previewHash }, authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi("/v1/shared-memory/share-bundles", { method: "POST", body: { ...rest, preview: { previewId, previewHash }, authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     return validateHostedShareBundle(body, { ...input, logicalGrantId: input.logicalGrantId });
   }
 
@@ -397,7 +397,7 @@ export class StudioCollaborationClient {
     expectedGrantVersion: number;
   }): Promise<HostedShareBundleResult> {
     const { previewId, previewHash, ...rest } = input;
-    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(shareGrantId)}/fidelity`, { method: "PUT", body: { ...rest, preview: { previewId, previewHash }, authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(shareGrantId)}/fidelity`, { method: "PUT", body: { ...rest, preview: { previewId, previewHash }, authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     return validateHostedShareBundle(body, { ...input, shareGrantId });
   }
 
@@ -417,19 +417,19 @@ export class StudioCollaborationClient {
   }
 
   async removeRetainedTeamMemory(input: { teamId: string; shareGrantId: string; expectedGrantVersion: number; mutationId: string }): Promise<{ shareGrantId: string; grantVersion: number; removed: boolean }> {
-    const body = await this.browserApi(`/v1/shared-memory/teams/${encodeURIComponent(input.teamId)}/retained/${encodeURIComponent(input.shareGrantId)}/remove`, { method: "POST", body: { mutationId: input.mutationId, expectedGrantVersion: input.expectedGrantVersion, authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi(`/v1/shared-memory/teams/${encodeURIComponent(input.teamId)}/retained/${encodeURIComponent(input.shareGrantId)}/remove`, { method: "POST", body: { mutationId: input.mutationId, expectedGrantVersion: input.expectedGrantVersion, authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     if (!isRecord(body) || body.shareGrantId !== input.shareGrantId || !Number.isSafeInteger(body.grantVersion) || body.removed !== true) throw new StudioCollaborationRequestError("Koed returned an invalid retained-memory removal.", 502);
     return body as { shareGrantId: string; grantVersion: number; removed: boolean };
   }
 
   async stopOwnedTeamMemoryUpdates(input: { teamId: string; teamWorkspaceId: string; shareGrantId: string; expectedGrantVersion: number; mutationId: string }): Promise<Record<string, unknown>> {
-    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(input.shareGrantId)}/owner-stop-updates`, { method: "POST", body: { ...input, authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(input.shareGrantId)}/owner-stop-updates`, { method: "POST", body: { ...input, authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     if (!isRecord(body) || !isRecord(body.grant)) throw new StudioCollaborationRequestError("Koed returned an invalid update-stop result.", 502);
     return body.grant;
   }
 
   async revokeOwnedShare(input: { teamId: string; teamWorkspaceId: string; shareGrantId: string; expectedGrantVersion: number; mutationId: string; reasonCode: string }): Promise<Record<string, unknown>> {
-    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(input.shareGrantId)}/revoke`, { method: "POST", body: { ...input, authority: { action: "shared_memory.authority", source: "browser_session" } } });
+    const body = await this.browserApi(`/v1/shared-memory/share-grants/${encodeURIComponent(input.shareGrantId)}/revoke`, { method: "POST", body: { ...input, authority: { action: "workspace.memory.share_owned", source: "browser_session" } } });
     if (!isRecord(body) || !isRecord(body.grant)) throw new StudioCollaborationRequestError("Koed returned an invalid share revocation.", 502);
     return body.grant;
   }
