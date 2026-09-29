@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner requires the extension.
-import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, findPendingOwnedShare, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
+import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, findPendingOwnedShare, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
 import type { OwnedShareItem } from "@koed/shared/collaboration";
 
 test("rejects settings results after unmount, account change, Team change, or newer request", () => {
@@ -19,6 +19,13 @@ test("rejects settings results after unmount, account change, Team change, or ne
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentGeneration: 5 }), false);
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentAuthority: "backend:user-b" }), false);
   assert.equal(mayApplyTeamMemoryResult({ ...request, currentTeamId: "team-b" }), false);
+});
+
+test("hosted Team navigation accepts only the API's enabled membership status", () => {
+  assert.equal(isHostedTeamMembershipEnabled("enabled"), true);
+  assert.equal(isHostedTeamMembershipEnabled("active"), false);
+  assert.equal(isHostedTeamMembershipEnabled("pending"), false);
+  assert.equal(isHostedTeamMembershipEnabled(undefined), false);
 });
 
 test("only retained active grants can use the scoped Stop updates operation", () => {

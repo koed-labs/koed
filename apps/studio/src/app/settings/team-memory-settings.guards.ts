@@ -1,5 +1,9 @@
 import type { OwnedShareItem } from "@koed/shared/collaboration";
 
+export function isHostedTeamMembershipEnabled(status: unknown): boolean {
+  return status === "enabled";
+}
+
 export function mayApplyTeamMemoryResult(input: {
   active: boolean;
   requestGeneration: number;

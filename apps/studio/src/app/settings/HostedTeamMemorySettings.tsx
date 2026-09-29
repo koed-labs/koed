@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StudioCollaborationClient, type HostedOwnedShare, type HostedStudioNavigation } from "@/lib/studio-collaboration-client";
 import { OwnedConversationShareDialog } from "@/components/studio/OwnedConversationShareDialog";
-import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
+import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
 
 type Tab = "members" | "memory" | "my-shares";
 type Member = { userId: string; displayName: string | null; enabled: boolean; version: number };
@@ -114,7 +114,7 @@ export function HostedTeamMemorySettings() {
   const shareSnapshotAtRef = useRef<string | null>(null);
 
   const teams = useMemo(() => (navigation?.teams ?? [])
-    .filter(({ membership }) => membership.status === "active")
+    .filter(({ membership }) => isHostedTeamMembershipEnabled(membership.status))
     .map(({ team, membership }) => ({ id: team.id, name: team.name, role: membership.role })), [navigation]);
   const selectedTeam = teams.find((team) => team.id === teamId) ?? null;
   const canManage = selectedTeam?.role === "owner" || selectedTeam?.role === "admin";
@@ -127,10 +127,10 @@ export function HostedTeamMemorySettings() {
       if (sequence !== sessionSequence.current) return;
       const nextAuthority = `${window.location.origin}:${next.principal.id}`;
       const sameAuthority = authorityRef.current === nextAuthority;
-      const currentTeamStillActive = next.teams.some(({ team, membership }) => team.id === teamIdRef.current && membership.status === "active");
+      const currentTeamStillActive = next.teams.some(({ team, membership }) => team.id === teamIdRef.current && isHostedTeamMembershipEnabled(membership.status));
       const nextTeamId = currentTeamStillActive
         ? teamIdRef.current
-        : next.teams.find(({ membership }) => membership.status === "active")?.team.id ?? "";
+        : next.teams.find(({ membership }) => isHostedTeamMembershipEnabled(membership.status))?.team.id ?? "";
       if (authorityRef.current && !sameAuthority) {
         teamGeneration.current += 1;
         dataSequence.current += 1;
