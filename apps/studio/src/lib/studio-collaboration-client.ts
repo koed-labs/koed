@@ -106,12 +106,20 @@ function isHostedOwnedPreviewItem(item: unknown, representation: string, logical
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const exactKeys = (record: Record<string, unknown>, allowed: string[]) => Object.keys(record).every((key) => allowed.includes(key));
   const filled = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
-  const validJson = (value: unknown, depth = 0): boolean => {
+  const validJson = (value: unknown, depth = 0, keyCount = { value: 0 }): boolean => {
     if (depth > 16) return false;
-    if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+    if (value === null || typeof value === "boolean") return true;
+    if (typeof value === "string") return new TextEncoder().encode(value).length <= 256 * 1024;
     if (typeof value === "number") return Number.isFinite(value);
-    if (Array.isArray(value)) return value.length <= 2048 && value.every((entry) => validJson(entry, depth + 1));
-    return isRecord(value) && Object.keys(value).length <= 2000 && Object.values(value).every((entry) => validJson(entry, depth + 1));
+    if (Array.isArray(value)) {
+      keyCount.value += value.length;
+      return keyCount.value <= 2000 && value.every((entry) => validJson(entry, depth + 1, keyCount));
+    }
+    if (!isRecord(value)) return false;
+    const keys = Object.keys(value);
+    keyCount.value += keys.length;
+    return keyCount.value <= 2000 && keys.every((key) =>
+      !/^(?:hidden[_-]?reasoning|chain[_-]?of[_-]?thought|system[_-]?(?:instruction|message|prompt))$/i.test(key) && validJson(value[key], depth + 1, keyCount));
   };
   if (!isRecord(item) || !isRecord(item.content) || !exactKeys(item, ["itemType", "schemaVersion", "sourceId", "sourceLogicalMemoryId", "sourceRevision", "occurredAt", "content"]) || item.schemaVersion !== 1 ||
     !filled(item.sourceId) || !uuid.test(item.sourceId) || item.sourceLogicalMemoryId !== logicalMemoryId ||
@@ -139,7 +147,9 @@ function isHostedOwnedPreviewItem(item: unknown, representation: string, logical
   if (item.itemType === "lcm_leaf" || item.itemType === "lcm_rollup") {
     return exactKeys(content, ["title", "summaryText", "lexicalAnchors", "sourceIds", "expansionItems"]) &&
       (content.title === undefined || typeof content.title === "string") && filled(content.summaryText) &&
-      Array.isArray(content.lexicalAnchors) && content.lexicalAnchors.every(filled) &&
+      Array.isArray(content.lexicalAnchors) && content.lexicalAnchors.length <= 12 &&
+      content.lexicalAnchors.every((anchor) => filled(anchor) && anchor.length <= 120) &&
+      new Set(content.lexicalAnchors).size === content.lexicalAnchors.length &&
       Array.isArray(content.sourceIds) && content.sourceIds.length > 0 && content.sourceIds.every((id) => filled(id) && uuid.test(id)) &&
       validExpansions(item.itemType === "lcm_rollup" ? ["lcm_leaf"] : types.memory_events);
   }

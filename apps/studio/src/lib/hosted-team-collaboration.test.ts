@@ -528,4 +528,6 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   preview.items[0]!.sourceLogicalMemoryId = preview.logicalMemoryId;
   Object.assign(preview.items[0]!.content, { text: 7, extra: "unreviewed" });
   await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
+  Object.assign(preview.items[0]!, { itemType: "tool_call", content: { toolName: "example", toolCallId: null, payload: { system_prompt: "unreviewed" } } });
+  await assert.rejects(() => client.previewOwnedSource(previewInput), /invalid share preview/);
 });
