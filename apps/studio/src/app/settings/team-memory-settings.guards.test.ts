@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner requires the extension.
-import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, findPendingOwnedShare, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
+import { canCancelUnactivatedPendingShare, canReviewHostedShare, canStopRetainedUpdates, findPendingOwnedShare, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
 import type { OwnedShareItem } from "@koed/shared/collaboration";
 
 test("same-scope refresh permits its replacement read and rejects stale settings results", () => {
@@ -41,6 +41,25 @@ test("pending replacements with an associated grant cannot be cancelled independ
   assert.equal(canCancelUnactivatedPendingShare(pending), true);
   assert.equal(canCancelUnactivatedPendingShare({ ...pending, grantId: "grant-a" }), false);
   assert.equal(canCancelUnactivatedPendingShare({ ...pending, state: "revoked" }), false);
+});
+
+test("activated ready hosted Pending Shares review their exact attached grant", () => {
+  const activated = {
+    kind: "pending" as const,
+    grantId: "grant-a",
+    grantVersion: 2,
+    pendingState: "activated",
+    sourceMatches: true,
+    copyReady: true,
+    anotherUpdatePending: false
+  };
+  assert.equal(canReviewHostedShare(activated), true);
+  assert.equal(canReviewHostedShare({ ...activated, pendingState: "preparing" }), false);
+  assert.equal(canReviewHostedShare({ ...activated, copyReady: false }), false);
+  assert.equal(canReviewHostedShare({ ...activated, sourceMatches: false }), false);
+  assert.equal(canReviewHostedShare({ ...activated, anotherUpdatePending: true }), false);
+  assert.equal(canReviewHostedShare({ ...activated, grantId: null }), false);
+  assert.equal(canReviewHostedShare({ ...activated, grantVersion: null }), false);
 });
 
 test("paged scan finds an exact pending destination after the first page", async () => {

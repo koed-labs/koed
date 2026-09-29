@@ -54,6 +54,22 @@ export function canCancelUnactivatedPendingShare(input: {
     Boolean(input.pendingShareId);
 }
 
+export function canReviewHostedShare(input: {
+  kind: "grant" | "pending";
+  grantId: string | null;
+  grantVersion: number | null;
+  lifecycle?: string;
+  pendingState?: string;
+  sourceMatches: boolean;
+  copyReady: boolean;
+  anotherUpdatePending: boolean;
+}): boolean {
+  if (!input.grantId || !input.grantVersion || !input.sourceMatches || !input.copyReady || input.anotherUpdatePending) return false;
+  return input.kind === "grant"
+    ? input.lifecycle === "active"
+    : input.pendingState === "activated";
+}
+
 export function hasAnotherOwnedSharePage(input: {
   nextCursor: string | null;
   pagesRead: number;

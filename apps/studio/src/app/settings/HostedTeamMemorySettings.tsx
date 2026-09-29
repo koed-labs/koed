@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StudioCollaborationClient, type HostedOwnedShare, type HostedStudioNavigation } from "@/lib/studio-collaboration-client";
 import { OwnedConversationShareDialog } from "@/components/studio/OwnedConversationShareDialog";
-import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
+import { canCancelUnactivatedPendingShare, canReviewHostedShare, canStopRetainedUpdates, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
 
 type Tab = "members" | "memory" | "my-shares";
 type Member = { userId: string; displayName: string | null; enabled: boolean; version: number };
@@ -417,7 +417,7 @@ export function HostedTeamMemorySettings() {
     } finally { if (busyToken === busyGeneration.current) setBusyKey(null); }
   };
 
-  const pendingGrantIds = new Set(shareRows.filter((row) => row.kind === "pending" && row.grantId).map((row) => row.grantId));
+  const pendingGrantIds = new Set(shareRows.filter((row) => row.kind === "pending" && row.grantId && row.pendingState !== "activated").map((row) => row.grantId));
 
   return (
     <section className="mt-8 border-t border-border pt-8" aria-labelledby="hosted-team-memory-settings-heading">
@@ -438,17 +438,39 @@ export function HostedTeamMemorySettings() {
         </div> : <p role="tabpanel" className="mt-3 text-xs text-muted">Only Team admins can manage member retention and retained Team memory.</p> : null}
         {tab === "my-shares" ? <div role="tabpanel" className="mt-3 space-y-2">
           {shareRows.length === 0 ? <p className="rounded-lg border border-border bg-surface/40 p-4 text-xs text-muted">No active Personal Memory shares.</p> : shareRows.map((row) => {
-            const pendingUpdate = row.kind === "pending" && row.grantId !== null && row.grantId !== undefined;
+            const activatedPendingGrant = row.kind === "pending" && row.pendingState === "activated" && Boolean(row.grantId);
+            const pendingUpdate = row.kind === "pending" && row.grantId !== null && row.grantId !== undefined && !activatedPendingGrant;
             const grantActive = row.kind === "grant" && row.lifecycle === "active";
             const canStop = row.kind === "grant" && canStopRetainedUpdates({ retentionEnabled: row.retentionEnabled, updatesActive: grantActive && row.ownerUpdatesState === "active", shareGrantId: row.id, grantVersion: row.grantVersion });
             const canRevoke = row.kind === "grant" ? grantActive && !row.retentionEnabled : canCancelUnactivatedPendingShare({ pendingShareId: row.id, grantId: row.grantId ?? null, state: row.pendingState ?? "", workspaceAccessState: row.workspaceAccessState ?? "" });
             const sourceReady = row.source.kind === "captured_session" && typeof row.source.sessionId === "string" && row.source.logicalMemoryId === row.logicalMemoryId && Boolean(row.logicalMemoryId);
-            const canReview = row.kind === "grant" && sourceReady && row.lifecycle === "active" && !pendingGrantIds.has(row.id) && row.grantVersion !== null;
+            const targetGrantId = row.kind === "grant" ? row.id : row.grantId ?? null;
+            const canReview = canReviewHostedShare({
+              kind: row.kind,
+              grantId: targetGrantId,
+              grantVersion: row.grantVersion,
+              lifecycle: row.lifecycle,
+              pendingState: row.pendingState,
+              sourceMatches: sourceReady,
+              copyReady: row.copyReady,
+              anotherUpdatePending: targetGrantId ? pendingGrantIds.has(targetGrantId) : false
+            });
+            const targetGrant = canReview && targetGrantId && row.grantVersion !== null
+              ? { id: targetGrantId, grantVersion: row.grantVersion, retentionEnabled: row.retentionEnabled }
+              : null;
             const resumeAndRefresh = () => {
-              if (!canReview || row.kind !== "grant" || !row.source.sessionId) return;
-              setDialogTarget({ source: { id: row.source.sessionId, logicalMemoryId: row.logicalMemoryId, title: row.sourceTitle }, teamId: row.teamId, grant: { id: row.id, grantVersion: row.grantVersion!, retentionEnabled: row.retentionEnabled } });
+              if (!targetGrant || !row.source.sessionId) return;
+              setDialogTarget({ source: { id: row.source.sessionId, logicalMemoryId: row.logicalMemoryId, title: row.sourceTitle }, teamId: row.teamId, grant: targetGrant });
             };
-            return <article key={`${row.kind}:${row.id}`} className="flex items-start gap-3 rounded-lg border border-border bg-surface/40 px-4 py-3"><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium text-foreground">{row.sourceTitle}</h3><p className="mt-1 truncate text-xs text-muted">{row.teamName} · {row.mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</p><p className="mt-1 text-[11px] text-subtle">{pendingUpdate ? "An update is preparing; the current copy stays available until ready." : row.kind === "pending" ? `${row.pendingStage?.replaceAll("_", " ")} · ${row.pendingState?.replaceAll("_", " ")}` : !row.copyReady ? "Preparing privacy-processed Team copy" : row.ownerUpdatesState === "stopped" ? "Updates stopped" : "Updates active"}{row.retentionEnabled ? " · retained Team copy stays until admin removal" : " · stopping also blocks future recall"}</p></div>
+            const updateState = row.kind === "grant" ? row.ownerUpdatesState : row.sourceUpdateState;
+            const copyStatus = pendingUpdate
+              ? "An update is preparing; the current copy stays available until ready."
+              : activatedPendingGrant
+                ? !row.copyReady ? "Preparing privacy-processed Team copy" : updateState === "stopped" ? "Updates stopped" : "Updates active"
+                : row.kind === "pending"
+                  ? `${row.pendingStage?.replaceAll("_", " ")} · ${row.pendingState?.replaceAll("_", " ")}`
+                  : !row.copyReady ? "Preparing privacy-processed Team copy" : updateState === "stopped" ? "Updates stopped" : "Updates active";
+            return <article key={`${row.kind}:${row.id}`} className="flex items-start gap-3 rounded-lg border border-border bg-surface/40 px-4 py-3"><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium text-foreground">{row.sourceTitle}</h3><p className="mt-1 truncate text-xs text-muted">{row.teamName} · {row.mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</p><p className="mt-1 text-[11px] text-subtle">{copyStatus}{row.retentionEnabled ? " · retained Team copy stays until admin removal" : " · stopping also blocks future recall"}</p></div>
               {canReview ? <button type="button" disabled={Boolean(busyKey)} onClick={resumeAndRefresh} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:text-foreground disabled:opacity-50">Review / refresh</button> : sourceReady && pendingUpdate ? <span className="px-2.5 py-1.5 text-xs text-muted">Already preparing</span> : null}
               {canStop ? <button type="button" disabled={Boolean(busyKey)} onClick={() => void controlShare(row, "stop-updates")} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:border-warning/40 hover:text-warning disabled:opacity-50">{busyKey === `stop-updates:${row.id}` ? "Stopping…" : "Stop updates"}</button> : null}
               {canRevoke ? <button type="button" disabled={Boolean(busyKey)} onClick={() => row.kind === "grant" ? void controlShare(row, "stop-sharing") : void cancelPendingShare(row)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:border-warning/40 hover:text-warning disabled:opacity-50">{busyKey?.endsWith(row.id) ? "Stopping…" : row.kind === "pending" ? "Cancel share" : "Stop sharing"}</button> : null}
