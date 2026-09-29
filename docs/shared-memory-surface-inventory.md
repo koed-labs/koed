@@ -22,6 +22,35 @@ placeholder, incomplete-provenance, unsanitized, or unauthorized state is
 unavailable. The fidelity ceiling is cumulative, but a missing derived layer is
 not replaced with finer Personal or Team source.
 
+## Consented retained authority
+
+[ADR 0046](adr/0046-consented-team-memory-retention.md) defines an explicit
+exception to the source contributor's membership and update requirements.
+The contributor must confirm retention in the destination sharing preview.
+Existing grants remain non-retained until the contributor gives fresh consent.
+A member configuration change cannot convert an existing grant.
+
+For a retained grant, stopping updates or removing the contributor does not
+remove the Team's existing processed representation. Current recipient
+membership, Team lifecycle, Workspace access, representation policy, privacy,
+provenance, and encryption boundaries still apply. The exception cannot expose
+the Personal Conversation, its transcript, or its files. Personal source soft
+deletion does not remove an authorized retained representation.
+
+The Team-wide memory destination has a stable Workspace identity. Its access
+includes all current Team members and later joiners. This destination does not
+change access to other restricted Workspaces. Each Team has independent grants,
+update state, retention consent, and removal authority.
+
+A Team administrator can remove retained knowledge from that Team's future
+recall. The operation must bind the Team, grant, and expected grant version.
+It must invalidate reads, search, expansion, citations, and future
+materialization. Late jobs cannot restore the removed share. Removal leaves
+other Teams' shares, the Personal source, and delivered Agent replies unchanged.
+
+The Ticket 09 review records implementation evidence for this extension.
+Earlier inventory evidence covers only unchanged boundaries.
+
 ## Surface Matrix
 
 | Surface                                                | Shared-memory content                                                                                                                                   | Authorization and redaction boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Representation behavior                                                                                                                                                                                                                                                                                                                                      | Test or implementation evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
