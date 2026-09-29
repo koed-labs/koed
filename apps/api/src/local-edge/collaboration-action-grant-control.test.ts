@@ -232,7 +232,9 @@ describe("collaboration Action Grant control", () => {
           teamId: ids.team,
           workspaceId: ids.workspace,
           maximumFidelity: "memory_events",
-          includeCuratedMemory: false
+          includeCuratedMemory: false,
+          retentionEnabled: false,
+          memberRetentionVersion: 1
         }
       }
     });
@@ -261,6 +263,8 @@ describe("collaboration Action Grant control", () => {
           mode: "continuous",
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
+          retentionEnabled: true,
+          memberRetentionVersion: 3,
           previewRevision: 2,
           previewHash: "b".repeat(64),
           expiresAt: null
@@ -396,7 +400,9 @@ describe("collaboration Action Grant control", () => {
       activationRepresentation: "memory_events",
       mode: "continuous",
       maximumFidelity: "memory_events",
-      includeCuratedMemory: false
+      includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1
     });
   });
 
@@ -541,6 +547,8 @@ describe("collaboration Action Grant control", () => {
       mode: "continuous",
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: true,
+      memberRetentionVersion: 3,
       previewRevision: 2,
       previewHash: "b".repeat(64)
     });
@@ -563,6 +571,8 @@ describe("collaboration Action Grant control", () => {
       mode: "continuous",
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: true,
+      memberRetentionVersion: 3,
       previewRevision: 2,
       previewHash: "b".repeat(64),
       expiresAt: null
@@ -588,6 +598,8 @@ describe("collaboration Action Grant control", () => {
         mode: "continuous",
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         previewRevision: 2,
         previewHash: "b".repeat(64),
         expiresAt: null
@@ -642,6 +654,8 @@ describe("collaboration Action Grant control", () => {
         consentId: ids.consent,
         maximumFidelity: "lcm_leaves",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         expectedGrantVersion: 4,
         mode: "continuous",
         previewRevision: 2,

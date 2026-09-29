@@ -101,6 +101,8 @@ export interface CollaborationActionGrantControlContext {
     maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups";
     includeCuratedMemory: boolean;
     mode: "snapshot" | "continuous";
+    retentionEnabled: boolean;
+    memberRetentionVersion: number;
     previewRevision: number;
     previewHash: string;
   }) => Promise<{ previewId: string } | null>;
@@ -448,6 +450,8 @@ export const createCollaborationActionGrantControl = (
                   maximumFidelity: intent.maximumFidelity,
                   includeCuratedMemory: intent.includeCuratedMemory,
                   mode: intent.mode,
+                  retentionEnabled: intent.retentionEnabled,
+                  memberRetentionVersion: intent.memberRetentionVersion,
                   previewRevision: intent.previewRevision,
                   previewHash: intent.previewHash
                 })

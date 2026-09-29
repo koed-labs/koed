@@ -173,6 +173,9 @@ const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   representation: "memory_events" as const,
   maximumFidelity: "memory_events" as const,
   includeCuratedMemory: false,
+  retentionEnabled: false,
+  retentionPolicyEnabled: false,
+  memberRetentionVersion: 1,
   binding: binding(),
   items,
   sourceContentHash: hashB,
@@ -205,6 +208,9 @@ const grantResponse = (
   consentId: input.consentId ?? ids.consent,
   maximumFidelity: input.maximumFidelity ?? "memory_events",
   includeCuratedMemory: input.includeCuratedMemory ?? false,
+  retentionEnabled: false,
+  memberRetentionVersion: 1,
+  ownerUpdatesState: "active" as const,
   fidelityPolicyRevision: 3,
   sourceRevision: input.sourceRevision ?? 4,
   grantVersion: input.grantVersion ?? 1,
@@ -303,6 +309,8 @@ const collaborationConsent = (): CollaborationPersistedSharedMemoryConsent => ({
     version: 1,
     maximumFidelity: "memory_events",
     includeCuratedMemory: false,
+    retentionEnabled: false,
+    memberRetentionVersion: 1,
     previewRevision: 1,
     previewHash: hash,
     sourceRevision: 4,
@@ -341,6 +349,9 @@ const collaborationGrant = (
     consentId: input.consentId ?? ids.consent,
     maximumFidelity: input.maximumFidelity ?? "memory_events",
     includeCuratedMemory: input.includeCuratedMemory ?? false,
+    retentionEnabled: false,
+    memberRetentionVersion: 1,
+    ownerUpdatesState: "active",
     fidelityPolicyRevision: 3,
     sourceRevision: input.sourceRevision ?? 4,
     grantVersion: input.grantVersion ?? 1,
@@ -370,6 +381,8 @@ const previewCommand = () => ({
     workspaceId: ids.workspace,
     maximumFidelity: "memory_events",
     includeCuratedMemory: false,
+    retentionEnabled: false,
+    memberRetentionVersion: 1,
     actionGrant: { id: ids.actionGrant }
   }
 });
@@ -389,6 +402,8 @@ const shareCommand = () => ({
     mode: "continuous",
     maximumFidelity: "memory_events",
     includeCuratedMemory: false,
+    retentionEnabled: false,
+    memberRetentionVersion: 1,
     previewRevision: 1,
     previewHash: hash,
     expiresAt: null,
@@ -424,6 +439,9 @@ const createFixture = (
     enrollmentBound?: boolean;
     bindEnrollment?: boolean;
     previewTarget?: boolean;
+    retentionEnabled?: boolean;
+    retentionPolicyEnabled?: boolean;
+    memberRetentionVersion?: number;
     actionGrantSecret?: string | null;
     persistPreview?: boolean;
     persistGrant?: boolean;
@@ -505,6 +523,9 @@ const createFixture = (
   );
   const initialPreview: CollaborationPersistedSharedMemoryPreview = {
     ...previewResponse(previewItems),
+    retentionEnabled: overrides.retentionEnabled ?? false,
+    retentionPolicyEnabled: overrides.retentionPolicyEnabled ?? false,
+    memberRetentionVersion: overrides.memberRetentionVersion ?? 1,
     backendId: "team-backend",
     localOwnerUserId: ids.localOwner,
     upstreamUserId: ids.upstreamUser
@@ -734,6 +755,10 @@ const createFixture = (
             representation: recorded.body?.activationRepresentation,
             maximumFidelity: recorded.body?.maximumFidelity,
             includeCuratedMemory: recorded.body?.includeCuratedMemory,
+            retentionEnabled: recorded.body?.retentionEnabled ?? false,
+            retentionPolicyEnabled: false,
+            memberRetentionVersion:
+              recorded.body?.memberRetentionVersion ?? 1,
             sourceRevision: 4,
             sourceHash: hash,
             redactedContentHash: hash,
@@ -1039,7 +1064,64 @@ const createFixture = (
       } else {
         return json({ error: "not found" }, 404);
       }
-      return json(overrides.mutateResponse?.(recorded, response) ?? response);
+      const withLegacyRetentionDefaults = (
+        value: Record<string, unknown>
+      ): Record<string, unknown> => ({
+        ...value,
+        retentionEnabled: value.retentionEnabled ?? false,
+        memberRetentionVersion: value.memberRetentionVersion ?? 1
+      });
+      const responseWithRetentionDefaults = {
+        ...response,
+        ...(response.pendingShare != null
+          ? {
+              pendingShare: withLegacyRetentionDefaults(
+                response.pendingShare as Record<string, unknown>
+              )
+            }
+          : {}),
+        ...(response.share != null &&
+        (response.share as Record<string, unknown>).kind === "pending" &&
+        (response.share as Record<string, unknown>).pendingShare != null
+          ? {
+              share: {
+                ...(response.share as Record<string, unknown>),
+                pendingShare: withLegacyRetentionDefaults(
+                  (response.share as Record<string, unknown>)
+                    .pendingShare as Record<string, unknown>
+                )
+              }
+            }
+          : {}),
+        ...(Array.isArray(response.pendingShares)
+          ? {
+              pendingShares: response.pendingShares.map((pendingShare) =>
+                withLegacyRetentionDefaults(
+                  pendingShare as Record<string, unknown>
+                )
+              )
+            }
+          : {}),
+        ...(Array.isArray(response.shares)
+          ? {
+              shares: (response.shares as Array<Record<string, unknown>>).map(
+                (share) =>
+                  share.kind === "pending" && share.pendingShare != null
+                    ? {
+                        ...share,
+                        pendingShare: withLegacyRetentionDefaults(
+                          share.pendingShare as Record<string, unknown>
+                        )
+                      }
+                    : share
+              )
+            }
+          : {})
+      };
+      return json(
+        overrides.mutateResponse?.(recorded, responseWithRetentionDefaults) ??
+          responseWithRetentionDefaults
+      );
     }
   );
 
@@ -1116,8 +1198,23 @@ const createFixture = (
               schemaVersion: 9,
               payload: {
                 capabilitySchemaVersion: 9,
-                protocols: {
-                  sharedMemorySourceAdmission: { version: 1 }
+              protocols: {
+                  sharedMemorySourceAdmission: { version: 1 },
+                  teamMemoryRetention: {
+                    version: 1,
+                    destinationEndpoint:
+                      "/v1/shared-memory/teams/{teamId}/destination",
+                    retainedMemoryEndpoint:
+                      "/v1/shared-memory/teams/{teamId}/retained",
+                    memberSettingEndpoint:
+                      "/v1/teams/{teamId}/memory-retention",
+                    ownerReplicaPreviewEndpoint:
+                      "/v1/shared-memory/preview-target",
+                    ownerShareBundleEndpoint:
+                      "/v1/shared-memory/share-bundles",
+                    ownerFidelityEndpoint:
+                      "/v1/shared-memory/share-grants/{shareGrantId}/fidelity"
+                  }
                 },
                 capabilities: {
                   "memory.collaboration": { availability: "partial" }
@@ -1408,7 +1505,22 @@ describe("collaboration Shared Memory control", () => {
             payload: {
               capabilitySchemaVersion: 9,
               protocols: {
-                sharedMemorySourceAdmission: { version: 1 }
+                sharedMemorySourceAdmission: { version: 1 },
+                teamMemoryRetention: {
+                  version: 1,
+                  destinationEndpoint:
+                    "/v1/shared-memory/teams/{teamId}/destination",
+                  retainedMemoryEndpoint:
+                    "/v1/shared-memory/teams/{teamId}/retained",
+                  memberSettingEndpoint:
+                    "/v1/teams/{teamId}/memory-retention",
+                  ownerReplicaPreviewEndpoint:
+                    "/v1/shared-memory/preview-target",
+                  ownerShareBundleEndpoint:
+                    "/v1/shared-memory/share-bundles",
+                  ownerFidelityEndpoint:
+                    "/v1/shared-memory/share-grants/{shareGrantId}/fidelity"
+                }
               },
               capabilities: {
                 "memory.collaboration": { availability: "partial" }
@@ -1656,7 +1768,11 @@ describe("collaboration Shared Memory control", () => {
   });
 
   it("resolves a consent preview only for its exact persisted source", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({
+      retentionEnabled: true,
+      retentionPolicyEnabled: true,
+      memberRetentionVersion: 3
+    });
     const input = {
       source: capturedSource,
       sourceCapabilities: [
@@ -1668,6 +1784,8 @@ describe("collaboration Shared Memory control", () => {
       mode: "continuous" as const,
       maximumFidelity: "memory_events" as const,
       includeCuratedMemory: false,
+      retentionEnabled: true,
+      memberRetentionVersion: 3,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -1684,6 +1802,18 @@ describe("collaboration Shared Memory control", () => {
           ...input,
           source: { ...capturedSource, sessionId: uuidFor(999) }
         },
+        context()
+      )
+    ).resolves.toBeNull();
+    await expect(
+      fixture.control.resolveConsentPreview(
+        { ...input, retentionEnabled: false },
+        context()
+      )
+    ).resolves.toBeNull();
+    await expect(
+      fixture.control.resolveConsentPreview(
+        { ...input, memberRetentionVersion: 4 },
         context()
       )
     ).resolves.toBeNull();
@@ -2445,6 +2575,8 @@ describe("collaboration Shared Memory control", () => {
       teamWorkspaceId: ids.workspace,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
       authority: {
         action: "workspace.memory.share_owned",
         source: "device_action_grant",
@@ -2708,6 +2840,8 @@ describe("collaboration Shared Memory control", () => {
           consentId: replacementConsentId,
           maximumFidelity: "lcm_leaves",
           includeCuratedMemory: false,
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
           expectedGrantVersion: 1,
           mode: "continuous",
           previewRevision: 1,
@@ -2803,6 +2937,8 @@ describe("collaboration Shared Memory control", () => {
           consentId: uuidFor(500),
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
           expectedGrantVersion: 1,
           mode: "snapshot",
           previewRevision: 1,
@@ -2885,6 +3021,8 @@ describe("collaboration Shared Memory control", () => {
             consentId: uuidFor(500),
             maximumFidelity: "memory_events",
             includeCuratedMemory: false,
+            retentionEnabled: false,
+            memberRetentionVersion: 1,
             expectedGrantVersion: 1,
             mode: source.kind === "personal_note" ? "snapshot" : "continuous",
             previewRevision: 1,

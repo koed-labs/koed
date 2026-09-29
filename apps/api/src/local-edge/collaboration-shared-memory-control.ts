@@ -778,6 +778,8 @@ export interface CollaborationSharedMemoryControl {
       maximumFidelity: MaximumFidelity;
       includeCuratedMemory: boolean;
       mode: "snapshot" | "continuous";
+      retentionEnabled: boolean;
+      memberRetentionVersion: number;
       previewRevision: number;
       previewHash: string;
     },
@@ -3940,6 +3942,8 @@ export const createCollaborationSharedMemoryControl = (
         maximumFidelity: maximumFidelitySchema,
         includeCuratedMemory: z.boolean(),
         mode: z.enum(["snapshot", "continuous"]),
+        retentionEnabled: z.boolean(),
+        memberRetentionVersion: z.number().int().safe().positive(),
         previewRevision: z.number().int().safe().positive(),
         previewHash: hashSchema
       })
@@ -3964,6 +3968,8 @@ export const createCollaborationSharedMemoryControl = (
           mode: parsedInput.data.mode,
           maximumFidelity: parsedInput.data.maximumFidelity,
           includeCuratedMemory: parsedInput.data.includeCuratedMemory,
+          retentionEnabled: parsedInput.data.retentionEnabled,
+          memberRetentionVersion: parsedInput.data.memberRetentionVersion,
           previewRevision: parsedInput.data.previewRevision,
           previewHash: parsedInput.data.previewHash,
           expiresAt: null,
@@ -3998,6 +4004,9 @@ export const createCollaborationSharedMemoryControl = (
         preview.data.maximumFidelity !== parsedInput.data.maximumFidelity ||
         preview.data.includeCuratedMemory !==
           parsedInput.data.includeCuratedMemory ||
+        preview.data.retentionEnabled !== parsedInput.data.retentionEnabled ||
+        preview.data.memberRetentionVersion !==
+          parsedInput.data.memberRetentionVersion ||
         preview.data.mode !== parsedInput.data.mode
       ) {
         return null;
