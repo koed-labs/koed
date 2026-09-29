@@ -36,6 +36,7 @@ import {
   type ManagedConversationCommandActionRequest,
   type ManagedConversationControlActionResult
 } from "./managed-conversation-command-types.js";
+import { CommandOpIdStore } from "./command-op-id-store.js";
 
 export interface CodexConversationStartupTiming {
   stage:
@@ -381,10 +382,9 @@ export class CodexManagedConversationSession {
   private readonly identityIssueKeys = new Set<string>();
   private readonly clientUserMessageIds = new Map<string, string>();
   private readonly terminalTurnSessions = new Map<string, string>();
-  private readonly controlActionStates = new Map<
-    string,
-    ManagedConversationControlActionResult
-  >();
+  private commandOpIdStore: CommandOpIdStore;
+  private commandOpIdArtifactId: string | null = null;
+  private commandOpIdArtifactPromise: Promise<void> | null = null;
   private readonly childSources = new Map<string, ManagedConversationSource>();
   private bufferedEventBytes = 0;
   private thread: CodexAppServerThreadInfo | null = null;
@@ -399,7 +399,9 @@ export class CodexManagedConversationSession {
   private started = false;
   private closed = false;
 
-  constructor(private readonly config: CodexManagedConversationConfig) {}
+  constructor(private readonly config: CodexManagedConversationConfig) {
+    this.commandOpIdStore = new CommandOpIdStore(this.config.memoryClient);
+  }
 
   async start(): Promise<CodexManagedConversationStartResult> {
     if (this.started && this.client && !this.client.isClosed()) {
@@ -744,6 +746,29 @@ export class CodexManagedConversationSession {
     return [...unique.values()].slice(0, 128);
   }
 
+  private async ensureCommandOpIdArtifactId(): Promise<string> {
+    if (this.commandOpIdArtifactId) return this.commandOpIdArtifactId;
+    if (!this.commandOpIdArtifactPromise) {
+      this.commandOpIdArtifactPromise = this.resolveCommandOpIdArtifactId();
+    }
+    await this.commandOpIdArtifactPromise;
+    return this.commandOpIdArtifactId!;
+  }
+
+  private async resolveCommandOpIdArtifactId(): Promise<void> {
+    const thread = this.thread;
+    if (!thread) return;
+    const lookup = await this.config.memoryClient.lookupConversationSourceArtifact({
+      sourceKind: "codex",
+      externalSessionId: thread.id
+    });
+    const artifact = lookup.artifact as Record<string, unknown>;
+    const artifactId = artifact.id as string;
+    if (!artifactId) return;
+    await this.commandOpIdStore.ensureArtifact(artifactId);
+    this.commandOpIdArtifactId = artifactId;
+  }
+
   async executeControlAction(
     input: ManagedConversationCommandActionRequest
   ): Promise<ManagedConversationControlActionResult> {
@@ -755,7 +780,7 @@ export class CodexManagedConversationSession {
     ) return { status: "rejected", reason: "invalid_request" };
     await this.start();
     // Idempotency: return persisted state for known operation IDs.
-    const existing = this.controlActionStates.get(input.operationId);
+    const existing = this.commandOpIdStore.get(input.operationId);
     if (existing)
       return existing.status === "accepted"
         ? { status: "already_accepted" }
@@ -774,18 +799,27 @@ export class CodexManagedConversationSession {
       return { status: "rejected", reason: "try_after_response" };
     if (!this.protocol?.requestMethods.includes("thread/compact/start"))
       return { status: "rejected", reason: "provider_unsupported" };
+    // Ensure artifact is available for persistence.
+    await this.ensureCommandOpIdArtifactId();
     // Dispatch directly; control actions must not queue behind turns.
-    this.controlActionStates.set(input.operationId, { status: "unknown" });
+    this.commandOpIdStore.set(input.operationId, { status: "unknown" });
     try {
       await this.appServerClient().compactThread(
         this.startResult().thread.id
       );
       const accepted = { status: "accepted" as const };
-      this.controlActionStates.set(input.operationId, accepted);
+      this.commandOpIdStore.set(input.operationId, accepted);
+      // Persist fire-and-forget; next restore will recover.
+      void this.commandOpIdStore.save(
+        this.commandOpIdArtifactId ?? ""
+      ).catch(() => {});
       return accepted;
     } catch {
       const unknown = { status: "unknown" as const };
-      this.controlActionStates.set(input.operationId, unknown);
+      this.commandOpIdStore.set(input.operationId, unknown);
+      void this.commandOpIdStore.save(
+        this.commandOpIdArtifactId ?? ""
+      ).catch(() => {});
       return unknown;
     }
   }
