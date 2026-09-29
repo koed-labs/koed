@@ -298,6 +298,9 @@ const preview = () => ({
   maximumFidelity: "memory_events" as const,
   includeCuratedMemory: false,
   mode: "continuous" as const,
+  retentionEnabled: false,
+  retentionPolicyEnabled: false,
+  memberRetentionVersion: 1,
   previewRevision: 1,
   sourceRevision: 1,
   policyRevision: 1,
@@ -324,6 +327,8 @@ const grant = () => ({
   mode: "continuous" as const,
   maximumFidelity: "memory_events" as const,
   includeCuratedMemory: false,
+  retentionEnabled: false,
+  memberRetentionVersion: 1,
   fidelityPolicyRevision: 1,
   sourceRevision: 1,
   grantVersion: 1,
@@ -331,6 +336,7 @@ const grant = () => ({
   createdAt: timestamp,
   updatedAt: timestamp,
   revokedAt: null,
+  ownerUpdatesState: "active" as const,
   companionThreadId: ids.thread
 });
 
@@ -353,6 +359,8 @@ const pendingShare = () => ({
   activationRepresentation: "lcm_leaves" as const,
   maximumFidelity: "lcm_leaves" as const,
   includeCuratedMemory: false,
+  retentionEnabled: false,
+  memberRetentionVersion: 1,
   mode: "continuous" as const,
   sourceRevision: 1,
   state: "preparing" as const,
@@ -931,6 +939,8 @@ describe("collaboration renderer commands", () => {
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
           mode: "continuous",
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
           actionGrant: actionGrant()
         }
       },
@@ -961,6 +971,8 @@ describe("collaboration renderer commands", () => {
           mode: "continuous",
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
@@ -998,6 +1010,8 @@ describe("collaboration renderer commands", () => {
           maximumFidelity: "lcm_leaves",
           includeCuratedMemory: true,
           expectedGrantVersion: 1,
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
           mode: "continuous",
           previewRevision: 1,
           previewHash: "b".repeat(64),
@@ -1054,6 +1068,8 @@ describe("collaboration renderer commands", () => {
       consentId: ids.consent,
       maximumFidelity: "memory_events" as const,
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
       expectedGrantVersion: 1,
       mode: "snapshot" as const,
       previewRevision: 1,
@@ -1164,7 +1180,9 @@ describe("collaboration renderer commands", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
-        mode: "continuous"
+        mode: "continuous",
+        retentionEnabled: false,
+        memberRetentionVersion: 1
       },
       {
         intent: "collaboration.share_memory",
@@ -1187,6 +1205,8 @@ describe("collaboration renderer commands", () => {
         includeCuratedMemory: false,
         previewRevision: 1,
         previewHash: "b".repeat(64),
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         expiresAt: null
       },
       {
@@ -1219,6 +1239,8 @@ describe("collaboration renderer commands", () => {
         includeCuratedMemory: true,
         expectedGrantVersion: 1,
         mode: "continuous",
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         previewRevision: 1,
         previewHash: "b".repeat(64),
         expiresAt: null
@@ -1332,6 +1354,8 @@ describe("collaboration renderer commands", () => {
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
         mode: "continuous",
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         actionGrant: actionGrant()
       }
     ]) {
@@ -1349,12 +1373,16 @@ describe("collaboration renderer commands", () => {
       {
         activationRepresentation: "lcm_rollups",
         maximumFidelity: "memory_events",
-        includeCuratedMemory: false
+        includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1
       },
       {
         activationRepresentation: "curated_assertions",
         maximumFidelity: "lcm_rollups",
-        includeCuratedMemory: true
+        includeCuratedMemory: true,
+        retentionEnabled: false,
+        memberRetentionVersion: 1
       }
     ]) {
       expect(
