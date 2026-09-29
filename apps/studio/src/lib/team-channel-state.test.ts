@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, saveAcceptedReceiptBeforeAcknowledging, studioRequestMayApply, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftForHydration, teamDraftWithoutReceiptAck, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -19,6 +19,74 @@ test("a missing saved draft still completes authorized hydration with an empty e
   assert.deepEqual(teamDraftForHydration(null), { text: "", pendingSend: null });
   const stored = { text: "saved", pendingSend: null, updatedAt: "2026-09-28T10:00:00.000Z" };
   assert.equal(teamDraftForHydration(stored), stored);
+});
+
+const receiptFixture = (overrides: Record<string, unknown> = {}) => ({
+  thread: { scope: "team", teamId: "team-a", threadId: "thread-a" },
+  clientMessageId: "client-a",
+  message: {
+    id: "message-a", scope: "team", teamId: "team-a", threadId: "thread-a",
+    clientMessageId: "client-a", delivery: "sent"
+  },
+  ...overrides
+}) as never;
+
+test("accepted receipt settlement requires exact authority and pending identity, preserving later edits", () => {
+  const draft = { text: "later edits", pendingSend: { clientMessageId: "client-a", body: "sent body", createdAt: "2026-09-28T10:00:00.000Z" } };
+  const expected = { text: "later edits", pendingSend: null, receiptAckPending: { clientMessageId: "client-a", messageId: "message-a" } };
+  assert.deepEqual(teamDraftForAcceptedReceipt({ authority: { teamId: "team-a", threadId: "thread-a" }, draft, receipt: receiptFixture() }), expected);
+  assert.equal(teamDraftForAcceptedReceipt({ authority: { teamId: "team-b", threadId: "thread-a" }, draft, receipt: receiptFixture() }), null);
+  assert.equal(teamDraftForAcceptedReceipt({ authority: { teamId: "team-a", threadId: "thread-b" }, draft, receipt: receiptFixture() }), null);
+  assert.equal(teamDraftForAcceptedReceipt({ authority: { teamId: "team-a", threadId: "thread-a" }, draft: { ...draft, pendingSend: { ...draft.pendingSend, clientMessageId: "client-b" } }, receipt: receiptFixture() }), null);
+  assert.equal(teamDraftForAcceptedReceipt({ authority: { teamId: "team-a", threadId: "thread-a" }, draft, receipt: receiptFixture({ clientMessageId: "client-b" }) }), null);
+});
+
+test("receipt acknowledgement waits for durable draft clearing and remains pending if the save fails", async () => {
+  const events: string[] = [];
+  const draft = { text: "newer text", pendingSend: { clientMessageId: "client-a", body: "sent body", createdAt: "2026-09-28T10:00:00.000Z" } };
+  const settled = await saveAcceptedReceiptBeforeAcknowledging({
+    authority: { teamId: "team-a", threadId: "thread-a" }, draft, receipt: receiptFixture(),
+    saveDraft: async (value) => { events.push("save"); assert.equal(value.pendingSend, null); },
+    acknowledge: async () => { events.push("ack"); }
+  });
+  assert.deepEqual(events, ["save", "ack"]);
+  assert.equal(settled?.text, "newer text");
+  assert.equal(settled?.receiptAckPending?.messageId, "message-a");
+
+  let acknowledged = false;
+  await assert.rejects(saveAcceptedReceiptBeforeAcknowledging({
+    authority: { teamId: "team-a", threadId: "thread-a" }, draft, receipt: receiptFixture(),
+    saveDraft: async () => { throw new Error("disk full"); },
+    acknowledge: async () => { acknowledged = true; }
+  }), /disk full/);
+  assert.equal(acknowledged, false);
+});
+
+test("receipt ack marker clears only for its exact receipt and supports old drafts", () => {
+  const marked = { text: "next", pendingSend: null, receiptAckPending: { clientMessageId: "client-a", messageId: "message-a" } };
+  assert.deepEqual(teamDraftWithoutReceiptAck(marked, "client-b", "message-a"), marked);
+  assert.deepEqual(teamDraftWithoutReceiptAck(marked, "client-a", "message-b"), marked);
+  assert.deepEqual(teamDraftWithoutReceiptAck(marked, "client-a", "message-a"), { ...marked, receiptAckPending: null });
+  assert.deepEqual(teamDraftForHydration({ text: "old", pendingSend: null }), { text: "old", pendingSend: null });
+});
+
+test("stale autosave writes cannot restore a completed pending send or erase newer text", () => {
+  const pending = { clientMessageId: "client-a", body: "sent body", createdAt: "2026-09-28T10:00:00.000Z" };
+  const staleCandidate = { text: "", pendingSend: pending };
+  const newer = { text: "typed after acceptance", pendingSend: null, receiptAckPending: { clientMessageId: "client-a", messageId: "message-a" } };
+  assert.deepEqual(draftAfterCompletedReceiptWrite({ latest: newer, candidate: staleCandidate, clientMessageId: "client-a", messageId: "message-a", acknowledged: false }), newer);
+  assert.deepEqual(draftAfterCompletedReceiptWrite({ latest: { ...newer, receiptAckPending: null }, candidate: staleCandidate, clientMessageId: "client-a", messageId: "message-a", acknowledged: true }), {
+    text: "typed after acceptance", pendingSend: null, receiptAckPending: null
+  });
+  const nextSend = { clientMessageId: "client-b", body: "next send", createdAt: pending.createdAt };
+  assert.deepEqual(draftAfterCompletedReceiptWrite({ latest: { text: "next", pendingSend: nextSend }, candidate: staleCandidate, clientMessageId: "client-a", messageId: "message-a", acknowledged: true }), {
+    text: "next", pendingSend: nextSend
+  });
+});
+
+test("send preflight clears only the submitted text and preserves edits made while it waits", () => {
+  assert.equal(draftTextAfterSendPreflight({ textBeforePreflight: "submitted", latestText: "submitted" }), "");
+  assert.equal(draftTextAfterSendPreflight({ textBeforePreflight: "submitted", latestText: "new edit while confirming" }), "new edit while confirming");
 });
 
 test("reconciling an accepted send clears only its pending identity and preserves edits", () => {

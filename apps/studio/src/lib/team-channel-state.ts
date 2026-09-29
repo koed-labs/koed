@@ -1,5 +1,5 @@
 import type { StudioTeamDraft } from "./studio-collaboration-client";
-import type { CollaborationDurableSend, CollaborationMessage } from "@koed/shared/collaboration";
+import type { CollaborationDurableSend, CollaborationMessage, CollaborationSendReceipt } from "@koed/shared/collaboration";
 
 export const mayPersistTeamDraft = (input: {
   authorityKey: string | null;
@@ -11,6 +11,74 @@ export const mayCompleteDraftHydration = (input: { active: boolean; revoked: boo
 
 export const teamDraftForHydration = (stored: StudioTeamDraft | null): StudioTeamDraft =>
   stored ?? { text: "", pendingSend: null };
+
+export const teamDraftForAcceptedReceipt = (input: {
+  authority: { teamId: string; threadId: string };
+  draft: StudioTeamDraft;
+  receipt: CollaborationSendReceipt;
+}): StudioTeamDraft | null => {
+  const { authority, draft, receipt } = input;
+  if (receipt.thread.scope !== "team" || receipt.thread.teamId !== authority.teamId ||
+    receipt.thread.threadId !== authority.threadId ||
+    receipt.message.scope !== "team" || receipt.message.teamId !== authority.teamId ||
+    receipt.message.threadId !== authority.threadId || receipt.message.delivery !== "sent" ||
+    receipt.message.clientMessageId !== receipt.clientMessageId ||
+    draft.pendingSend?.clientMessageId !== receipt.clientMessageId) return null;
+  const settled = resolvePendingSend(draft, receipt.clientMessageId, "accepted", draft.pendingSend.body);
+  return {
+    ...settled,
+    receiptAckPending: { clientMessageId: receipt.clientMessageId, messageId: receipt.message.id }
+  };
+};
+
+export const teamDraftWithoutReceiptAck = (
+  draft: StudioTeamDraft,
+  clientMessageId: string,
+  messageId: string
+): StudioTeamDraft => draft.receiptAckPending?.clientMessageId === clientMessageId &&
+  draft.receiptAckPending.messageId === messageId
+  ? { ...draft, receiptAckPending: null }
+  : draft;
+
+export const saveAcceptedReceiptBeforeAcknowledging = async (input: {
+  authority: { teamId: string; threadId: string };
+  draft: StudioTeamDraft;
+  receipt: CollaborationSendReceipt;
+  saveDraft: (draft: StudioTeamDraft) => Promise<void>;
+  acknowledge: () => Promise<void>;
+}): Promise<StudioTeamDraft | null> => {
+  const settled = teamDraftForAcceptedReceipt(input);
+  if (!settled) return null;
+  await input.saveDraft(settled);
+  await input.acknowledge();
+  return settled;
+};
+
+export const draftAfterCompletedReceiptWrite = (input: {
+  latest: StudioTeamDraft;
+  candidate: StudioTeamDraft;
+  clientMessageId: string;
+  messageId: string;
+  acknowledged: boolean;
+}): StudioTeamDraft => {
+  const { latest, candidate, clientMessageId, messageId, acknowledged } = input;
+  const completionMarker = acknowledged ? null : { clientMessageId, messageId };
+  const settle = (draft: StudioTeamDraft): StudioTeamDraft => ({
+    ...resolvePendingSend(draft, clientMessageId, "accepted", draft.pendingSend?.body ?? ""),
+    receiptAckPending: completionMarker
+  });
+  if (latest.pendingSend?.clientMessageId === clientMessageId) return settle(latest);
+  if (candidate.pendingSend?.clientMessageId === clientMessageId) {
+    if (latest.pendingSend) return latest;
+    return settle({ ...latest, pendingSend: candidate.pendingSend });
+  }
+  return candidate;
+};
+
+export const draftTextAfterSendPreflight = (input: {
+  textBeforePreflight: string;
+  latestText: string;
+}): string => input.latestText === input.textBeforePreflight ? "" : input.latestText;
 
 export const confirmedPendingSend = (
   draft: StudioTeamDraft,

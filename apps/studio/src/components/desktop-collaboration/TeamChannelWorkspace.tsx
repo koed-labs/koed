@@ -8,6 +8,7 @@ import {
   type CollaborationMessage,
   type CollaborationMessagePage,
   type CollaborationRendererCommand,
+  type CollaborationSendReceipt,
   type CollaborationSnapshot,
   type CollaborationThread
 } from "@koed/shared/collaboration";
@@ -21,7 +22,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -73,6 +74,9 @@ export function TeamChannelWorkspace({
   const snapshotEpoch = useRef(0);
   const revokedRef = useRef(false);
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
+  const draftWriteTails = useRef(new Map<string, Promise<void>>());
+  const receiptCompletions = useRef(new Map<string, Map<string, { messageId: string; acknowledged: boolean }>>());
+  const sendLocks = useRef(new Set<string>());
   const projectRequestIds = useRef(new Map<string, { requestId: string; name: string }>());
   const directMessageRequestIds = useRef(new Map<string, string>());
   const threadSelectionGeneration = useRef(0);
@@ -99,9 +103,6 @@ export function TeamChannelWorkspace({
   const visiblePendingSend = authorityKey && hydratedAuthorityKey === authorityKey ? pendingSend : null;
   const authorityKeyRef = useRef<string | null>(authorityKey);
   authorityKeyRef.current = authorityKey;
-  if (!revokedRef.current && authorityKey && authorityKey === hydratedAuthorityKey) {
-    draftByAuthority.current.set(authorityKey, { text: draftText, pendingSend });
-  }
   const selectedRef = useRef({ teamId, threadId });
   selectedRef.current = { teamId, threadId };
 
@@ -110,6 +111,131 @@ export function TeamChannelWorkspace({
     input: Record<string, unknown>,
     requestId?: string
   ) => client.run(command, input, requestId), [client]);
+
+  const persistDraft = useCallback((draftAuthority: DraftAuthority, candidate: StudioTeamDraft): Promise<StudioTeamDraft> => {
+    const key = JSON.stringify(draftAuthority);
+    const previous = draftWriteTails.current.get(key) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
+      const latest = draftByAuthority.current.get(key) ?? candidate;
+      const completions = receiptCompletions.current.get(key);
+      const latestCompletion = latest.pendingSend ? completions?.get(latest.pendingSend.clientMessageId) : undefined;
+      const candidateCompletion = candidate.pendingSend ? completions?.get(candidate.pendingSend.clientMessageId) : undefined;
+      const completion = latestCompletion
+        ? { clientMessageId: latest.pendingSend!.clientMessageId, ...latestCompletion }
+          : candidateCompletion
+            ? { clientMessageId: candidate.pendingSend!.clientMessageId, ...candidateCompletion }
+            : null;
+      const value = completion
+        ? draftAfterCompletedReceiptWrite({ latest, candidate, ...completion })
+        : candidate;
+      await drafts.saveDraft(draftAuthority, value);
+      if (completion && draftByAuthority.current.get(key) === latest) {
+        draftByAuthority.current.set(key, value);
+      }
+      return value;
+    });
+    const tail = operation.then(() => undefined, () => undefined);
+    draftWriteTails.current.set(key, tail);
+    void tail.then(() => { if (draftWriteTails.current.get(key) === tail) draftWriteTails.current.delete(key); });
+    return operation;
+  }, [drafts]);
+
+  const acknowledgeReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
+    const result = await run("collaboration.acknowledge_send_receipt", {
+      thread: { scope: "team", teamId: draftAuthority.teamId, threadId: draftAuthority.threadId },
+      clientMessageId: marker.clientMessageId,
+      messageId: marker.messageId
+    });
+    if (!result.ok || !("acknowledged" in result.data) || !result.data.acknowledged) {
+      throw new Error(result.ok ? "The send receipt is still waiting to be confirmed." : result.error.userMessage);
+    }
+  }, [run]);
+
+  const clearSavedReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
+    const key = JSON.stringify(draftAuthority);
+    const completions = receiptCompletions.current.get(key) ?? new Map<string, { messageId: string; acknowledged: boolean }>();
+    const completion = completions.get(marker.clientMessageId) ?? { messageId: marker.messageId, acknowledged: false };
+    completions.set(marker.clientMessageId, completion);
+    receiptCompletions.current.set(key, completions);
+    await acknowledgeReceiptMarker(draftAuthority, marker);
+    if (revokedRef.current) return;
+    if (completion.messageId === marker.messageId) completion.acknowledged = true;
+    const latest = draftByAuthority.current.get(key);
+    if (!latest) return;
+    const withoutMarker = teamDraftWithoutReceiptAck(latest, marker.clientMessageId, marker.messageId);
+    if (withoutMarker === latest) return;
+    try {
+      await persistDraft(draftAuthority, withoutMarker);
+    } catch (failure) {
+      completion.acknowledged = false;
+      throw failure;
+    }
+    if (revokedRef.current) return;
+    const current = draftByAuthority.current.get(key) ?? withoutMarker;
+    const normalizedCurrent = teamDraftWithoutReceiptAck(current, marker.clientMessageId, marker.messageId);
+    draftByAuthority.current.set(key, normalizedCurrent);
+    if (authorityKeyRef.current === key) {
+      setDraftText(normalizedCurrent.text);
+      setPendingSend(normalizedCurrent.pendingSend);
+    }
+  }, [acknowledgeReceiptMarker, persistDraft]);
+
+  const completeAcceptedReceipt = useCallback(async (draftAuthority: DraftAuthority, receipt: CollaborationSendReceipt): Promise<boolean> => {
+    if (revokedRef.current) return false;
+    const key = JSON.stringify(draftAuthority);
+    const latest = draftByAuthority.current.get(key);
+    if (!latest) return false;
+    const settled = teamDraftForAcceptedReceipt({ authority: draftAuthority, draft: latest, receipt });
+    if (!settled) return false;
+    const marker = settled.receiptAckPending!;
+    const completions = receiptCompletions.current.get(key) ?? new Map<string, { messageId: string; acknowledged: boolean }>();
+    completions.set(marker.clientMessageId, { messageId: marker.messageId, acknowledged: false });
+    receiptCompletions.current.set(key, completions);
+    saveSequence.current += 1;
+    try {
+      let saved = await persistDraft(draftAuthority, latest);
+      if (revokedRef.current) return false;
+      // If the user edited while IndexedDB was saving, save that newer text
+      // with the same exact pending-send resolution before acknowledging.
+      while (true) {
+        const current = draftByAuthority.current.get(key) ?? saved;
+        if (current.text !== saved.text) {
+          saved = await persistDraft(draftAuthority, current);
+          if (revokedRef.current) return false;
+          continue;
+        }
+        if (current.pendingSend?.clientMessageId === receipt.clientMessageId) {
+          saved = await persistDraft(draftAuthority, current);
+          if (revokedRef.current) return false;
+          continue;
+        }
+        break;
+      }
+      const current = draftByAuthority.current.get(key) ?? saved;
+      const committed = current.pendingSend?.clientMessageId === receipt.clientMessageId
+        ? teamDraftForAcceptedReceipt({ authority: draftAuthority, draft: current, receipt }) ?? saved
+        : { ...current, receiptAckPending: marker };
+      draftByAuthority.current.set(key, committed);
+      if (authorityKeyRef.current === key) {
+        setDraftText(committed.text);
+        setPendingSend(committed.pendingSend);
+        setStatus(null);
+        setMessages((messagesNow) => mergeTeamMessages(messagesNow, [receipt.message]));
+      }
+      await clearSavedReceiptMarker(draftAuthority, marker);
+      return true;
+    } catch {
+      if (!revokedRef.current && authorityKeyRef.current === key) {
+        const current = draftByAuthority.current.get(key);
+        if (current?.pendingSend?.clientMessageId !== receipt.clientMessageId) {
+          setStatus("Message sent. Device confirmation is still being saved.");
+        } else {
+          setStatus("The sent message is confirmed. Its local draft is still being saved.");
+        }
+      }
+      return false;
+    }
+  }, [clearSavedReceiptMarker, persistDraft]);
 
   const clearRevokedView = useCallback(() => {
     revokedRef.current = true;
@@ -130,9 +256,26 @@ export function TeamChannelWorkspace({
     setCreateChannelOpen(false);
     setCreateProjectOpen(false);
     draftByAuthority.current.clear();
+    receiptCompletions.current.clear();
+    saveSequence.current += 1;
     readReported.current.clear();
     readPending.current.clear();
   }, []);
+  const recoverPendingReceipt = useCallback(async (draftAuthority: DraftAuthority, clientMessageId: string): Promise<"recovered" | "missing" | "error"> => {
+    const result = await run("collaboration.get_send_receipt", {
+      thread: { scope: "team", teamId: draftAuthority.teamId, threadId: draftAuthority.threadId },
+      clientMessageId
+    });
+    if (!result.ok) {
+      if (result.error.code === "access_revoked") clearRevokedView();
+      else if (authorityKeyRef.current === JSON.stringify(draftAuthority)) setStatus(result.error.userMessage);
+      return "error";
+    }
+    if (!("receipt" in result.data) || !result.data.receipt) return "missing";
+    const receipt = result.data.receipt;
+    if (receipt.clientMessageId !== clientMessageId) return "error";
+    return await completeAcceptedReceipt(draftAuthority, receipt) ? "recovered" : "error";
+  }, [clearRevokedView, completeAcceptedReceipt, run]);
   const refreshSnapshot = useCallback(async (): Promise<boolean> => {
     const epoch = snapshotEpoch.current;
     try {
@@ -235,24 +378,17 @@ export function TeamChannelWorkspace({
         if (event.send.state === "sent") {
           const message = event.message;
           if (!message || message.clientMessageId !== event.send.clientMessageId) return true;
-          setMessages((current) => mergeTeamMessages(current, [message]));
-          const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
-          if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
-            const settled = resolvePendingSend(latest, event.send.clientMessageId, "accepted", latest.pendingSend.body);
-            draftByAuthority.current.set(currentAuthorityKey!, settled);
-            setDraftText(settled.text);
-            setPendingSend(settled.pendingSend);
-            setStatus(null);
-            const draftAuthority: DraftAuthority = {
-              backendId: sendAuthority.backendId,
-              principalUserId: sendAuthority.principalUserId,
-              teamId: sendAuthority.teamId,
-              threadId: sendAuthority.threadId
-            };
-            void drafts.saveDraft(draftAuthority, settled).catch(() => {
-              if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message sent. The device draft update could not be saved.");
-            });
-          }
+          const draftAuthority: DraftAuthority = {
+            backendId: sendAuthority.backendId,
+            principalUserId: sendAuthority.principalUserId,
+            teamId: sendAuthority.teamId,
+            threadId: sendAuthority.threadId
+          };
+          void completeAcceptedReceipt(draftAuthority, {
+            thread: { scope: "team", teamId: sendAuthority.teamId, threadId: sendAuthority.threadId },
+            clientMessageId: event.send.clientMessageId,
+            message
+          });
         } else {
           const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
           if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
@@ -274,7 +410,7 @@ export function TeamChannelWorkspace({
                 teamId: sendAuthority.teamId,
                 threadId: sendAuthority.threadId
               };
-              void drafts.saveDraft(draftAuthority, settled).catch(() => {
+              void persistDraft(draftAuthority, settled).catch(() => {
                 if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message was not sent. The updated draft could not be saved on this device.");
               });
             } else {
@@ -284,6 +420,13 @@ export function TeamChannelWorkspace({
         }
       } else if (event.type === "connection" && event.connection.state === "access_revoked") {
         clearRevokedView();
+      } else if (event.type === "connection" && event.connection.state === "live") {
+        const currentAuthority = authorityKeyRef.current ? JSON.parse(authorityKeyRef.current) as DraftAuthority : null;
+        const currentDraft = currentAuthority && draftByAuthority.current.get(JSON.stringify(currentAuthority));
+        if (currentAuthority?.teamId === teamId && currentDraft?.pendingSend) {
+          const recovery = await recoverPendingReceipt(currentAuthority, currentDraft.pendingSend.clientMessageId);
+          if (recovery === "error") return false;
+        }
       } else if (event.type === "control" && event.reason === "access_revoked") {
         clearRevokedView();
       } else if (event.type === "snapshot" || event.type === "control" || event.type === "connection") {
@@ -305,7 +448,7 @@ export function TeamChannelWorkspace({
       const selected = selectedRef.current;
       if (selected.threadId) await loadPageRef.current(selected.threadId, teamId);
     }, teamId);
-  }, [client, clearRevokedView, drafts, teamId]);
+  }, [client, clearRevokedView, completeAcceptedReceipt, drafts, persistDraft, recoverPendingReceipt, teamId]);
 
   useEffect(() => {
     if (teamId && !threads.some((thread) => thread.id === threadId)) {
@@ -330,10 +473,25 @@ export function TeamChannelWorkspace({
     let active = true;
     void drafts.loadDraft(authority).then((stored) => {
       if (!mayCompleteDraftHydration({ active, revoked: revokedRef.current })) return;
-      draftByAuthority.current.set(JSON.stringify(authority), { text: stored?.text ?? "", pendingSend: stored?.pendingSend ?? null });
-      setDraftText(stored?.text ?? "");
-      setPendingSend(stored?.pendingSend ?? null);
-      setHydratedAuthorityKey(JSON.stringify(authority));
+      const key = JSON.stringify(authority);
+      const hydratedDraft = stored ?? { text: "", pendingSend: null };
+      draftByAuthority.current.set(key, hydratedDraft);
+      setDraftText(hydratedDraft.text);
+      setPendingSend(hydratedDraft.pendingSend);
+      setHydratedAuthorityKey(key);
+      void (async () => {
+        if (hydratedDraft.receiptAckPending) {
+          try {
+            await clearSavedReceiptMarker(authority, hydratedDraft.receiptAckPending);
+          } catch {
+            if (authorityKeyRef.current === key && !revokedRef.current) setStatus("Message sent. Device confirmation is still being saved.");
+          }
+        }
+        if (hydratedDraft.pendingSend && !revokedRef.current) {
+          try { await recoverPendingReceipt(authority, hydratedDraft.pendingSend.clientMessageId); }
+          catch { if (authorityKeyRef.current === key && !revokedRef.current) setStatus("Send status could not be checked. Your original draft is still available to reconcile."); }
+        }
+      })();
     }).catch(() => {
       if (mayCompleteDraftHydration({ active, revoked: revokedRef.current })) {
         setStatus("Draft recovery is unavailable on this device.");
@@ -342,23 +500,18 @@ export function TeamChannelWorkspace({
     });
     void loadPageRef.current(activeThread.id, teamId);
     return () => { active = false; };
-  }, [activeThread?.id, authority?.backendId, authority?.principalUserId, authority?.teamId, drafts, teamId]);
-
-  useEffect(() => {
-    if (!pendingSend || !authority || !messages.some((message) => message.clientMessageId === pendingSend.clientMessageId)) return;
-    setPendingSend(null);
-    setStatus(null);
-    void drafts.saveDraft(authority, { text: draftText, pendingSend: null });
-  }, [authority, draftText, drafts, messages, pendingSend]);
+  }, [activeThread?.id, authority?.backendId, authority?.principalUserId, authority?.teamId, clearSavedReceiptMarker, drafts, recoverPendingReceipt, teamId]);
 
   useEffect(() => {
     if (!authority || !mayPersistTeamDraft({ authorityKey, hydratedAuthorityKey })) return;
-    const currentDraft = {
-      text: draftText,
-      pendingSend,
-      updatedAt: new Date().toISOString()
+    const key = authorityKey!;
+    const persist = () => {
+      if (revokedRef.current) return;
+      const latest = draftByAuthority.current.get(key) ?? { text: draftText, pendingSend };
+      void persistDraft(authority, { ...latest, updatedAt: new Date().toISOString() }).catch(() => {
+        if (authorityKeyRef.current === key && !revokedRef.current) setStatus("Draft could not be saved on this device.");
+      });
     };
-    const persist = () => revokedRef.current ? Promise.resolve() : drafts.saveDraft(authority, currentDraft).catch(() => setStatus("Draft could not be saved on this device."));
     const sequence = ++saveSequence.current;
     const timer = window.setTimeout(() => {
       void persist();
@@ -371,7 +524,7 @@ export function TeamChannelWorkspace({
         void persist();
       }
     };
-  }, [authorityKey, hydratedAuthorityKey, draftText, pendingSend, drafts]);
+  }, [authority, authorityKey, hydratedAuthorityKey, draftText, pendingSend, persistDraft]);
 
   useEffect(() => {
     const focusedVisible = document.visibilityState === "visible" && document.hasFocus();
@@ -495,9 +648,25 @@ export function TeamChannelWorkspace({
   };
 
   const send = async (body: string) => {
+    const key = authorityKey;
+    if (!key) return;
+    if (sendLocks.current.has(key)) {
+      setStatus("A send is already being confirmed for this conversation.");
+      throw new Error("A send is already being confirmed for this conversation.");
+    }
+    sendLocks.current.add(key);
+    try {
+      await sendMessage(body, key);
+    } finally {
+      sendLocks.current.delete(key);
+    }
+  };
+
+  const sendMessage = async (body: string, lockedAuthorityKey: string) => {
     if (!activeThread || !authority) return;
     const capturedAuthority = authority;
     const capturedKey = authorityKey;
+    if (capturedKey !== lockedAuthorityKey) return;
     const capturedTeamId = teamId;
     const capturedThreadId = activeThread.id;
     if (!capturedKey) return;
@@ -505,13 +674,26 @@ export function TeamChannelWorkspace({
       setStatus("Resolve the earlier send before sending edited text.");
       return;
     }
+    const draftBeforePreflight = draftByAuthority.current.get(capturedKey)?.text ?? draftText;
+    const unacknowledgedReceipt = draftByAuthority.current.get(capturedKey)?.receiptAckPending;
+    if (unacknowledgedReceipt) {
+      try {
+        await clearSavedReceiptMarker(capturedAuthority, unacknowledgedReceipt);
+      } catch {
+        setStatus("Confirm the previous sent message on this device before sending another.");
+        throw new Error("The previous sent message is still being confirmed on this device.");
+      }
+      if (revokedRef.current || authorityKeyRef.current !== capturedKey) return;
+    }
+    const latestText = draftByAuthority.current.get(capturedKey)?.text ?? draftBeforePreflight;
+    const nextDraftText = draftTextAfterSendPreflight({ textBeforePreflight: draftBeforePreflight, latestText });
     const nextPending = { clientMessageId: crypto.randomUUID(), body, createdAt: new Date().toISOString() };
-    draftByAuthority.current.set(capturedKey, { text: "", pendingSend: nextPending });
+    draftByAuthority.current.set(capturedKey, { ...draftByAuthority.current.get(capturedKey), text: nextDraftText, pendingSend: nextPending });
     setPendingSend(nextPending);
-    setDraftText("");
+    setDraftText(nextDraftText);
     let requestStarted = false;
     try {
-      await drafts.saveDraft(capturedAuthority, { text: "", pendingSend: nextPending });
+      await persistDraft(capturedAuthority, draftByAuthority.current.get(capturedKey)!);
       if (revokedRef.current) return;
       requestStarted = true;
       const result = await run("collaboration.send_message", {
@@ -524,19 +706,12 @@ export function TeamChannelWorkspace({
       const currentlySelected = studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, selectedRef.current);
       if (sentMessage) {
         if (currentlySelected) setMessages((current) => [...current.filter((item) => item.id !== sentMessage.id), sentMessage]);
-        const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: nextPending };
-        const settled = resolvePendingSend(latest, nextPending.clientMessageId, "accepted", body);
-        draftByAuthority.current.set(capturedKey, settled);
-        try {
-          await drafts.saveDraft(capturedAuthority, settled);
-        } catch {
-          if (currentlySelected && authorityKey === capturedKey) setStatus("Message sent. The edited draft update could not be saved on this device.");
-          return;
-        }
-        if (currentlySelected && authorityKey === capturedKey) {
-          setDraftText(settled.text);
-          setPendingSend(settled.pendingSend);
-          setStatus(null);
+        if (sentMessage.clientMessageId === nextPending.clientMessageId && sentMessage.delivery === "sent") {
+          await completeAcceptedReceipt(capturedAuthority, {
+            thread: { scope: "team", teamId: capturedTeamId, threadId: capturedThreadId },
+            clientMessageId: nextPending.clientMessageId,
+            message: sentMessage
+          });
         }
       } else if (result.ok && "durableSend" in result.data) {
         const durableSend = result.data.durableSend;
@@ -552,7 +727,7 @@ export function TeamChannelWorkspace({
         const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: nextPending };
         const retained = retainPendingSendAfterUncertainOutcome(latest, nextPending);
         draftByAuthority.current.set(capturedKey, retained);
-        await drafts.saveDraft(capturedAuthority, retained).catch(() => undefined);
+        await persistDraft(capturedAuthority, retained).catch(() => undefined);
         if (currentlySelected && authorityKey === capturedKey) {
           setDraftText(retained.text);
           setPendingSend(retained.pendingSend);
@@ -562,7 +737,7 @@ export function TeamChannelWorkspace({
         const latest = draftByAuthority.current.get(capturedKey) ?? { text: "", pendingSend: nextPending };
         const settled = resolvePendingSend(latest, nextPending.clientMessageId, "not-sent", body);
         draftByAuthority.current.set(capturedKey, settled);
-        await drafts.saveDraft(capturedAuthority, settled);
+        await persistDraft(capturedAuthority, settled);
         if (currentlySelected && authorityKey === capturedKey) {
           setDraftText(settled.text);
           setPendingSend(settled.pendingSend);
@@ -576,7 +751,7 @@ export function TeamChannelWorkspace({
         ? retainPendingSendAfterUncertainOutcome(latest, nextPending)
         : resolvePendingSend(latest, nextPending.clientMessageId, "not-sent", body);
       draftByAuthority.current.set(capturedKey, settled);
-      await drafts.saveDraft(capturedAuthority, settled).catch(() => undefined);
+      await persistDraft(capturedAuthority, settled).catch(() => undefined);
       if (studioSelectionMatches({ teamId: capturedTeamId, threadId: capturedThreadId }, selectedRef.current) && authorityKey === capturedKey) {
         setDraftText(settled.text);
         setPendingSend(settled.pendingSend);
@@ -592,6 +767,9 @@ export function TeamChannelWorkspace({
     const capturedKey = authorityKey;
     const capturedTeamId = teamId;
     const capturedThreadId = activeThread.id;
+    const receiptResult = await recoverPendingReceipt(capturedAuthority, original.clientMessageId).catch(() => "error" as const);
+    if (receiptResult !== "missing") return;
+    if (revokedRef.current || authorityKeyRef.current !== capturedKey) return;
     const result = await run("collaboration.retry_message", {
       thread: { scope: "team", teamId: capturedTeamId, threadId: capturedThreadId },
       clientMessageId: original.clientMessageId,
@@ -606,7 +784,7 @@ export function TeamChannelWorkspace({
       const settled = resolvePendingSend(latest, original.clientMessageId, "accepted", original.body);
       draftByAuthority.current.set(capturedKey!, settled);
       try {
-        await drafts.saveDraft(capturedAuthority, settled);
+        await persistDraft(capturedAuthority, settled);
       } catch {
         if (currentlySelected && authorityKey === capturedKey) setStatus("Message sent. The edited draft update could not be saved on this device.");
         return;
@@ -638,7 +816,7 @@ export function TeamChannelWorkspace({
   }, [authority?.principalUserId]);
   const changeDraftText = (text: string) => {
     if (authorityKey && hydratedAuthorityKey === authorityKey) {
-      draftByAuthority.current.set(authorityKey, { text, pendingSend });
+      draftByAuthority.current.set(authorityKey, { ...draftByAuthority.current.get(authorityKey), text, pendingSend });
     }
     setDraftText(text);
   };

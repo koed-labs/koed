@@ -384,5 +384,21 @@ describe("Studio collaboration gateway", () => {
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "load");
+    const receiptAckPending = {
+      clientMessageId: "44444444-4444-4444-8444-444444444444",
+      messageId: "55555555-5555-4555-8555-555555555555"
+    };
+    const saved = await postJson(endpoint, {
+      action: "save", authority: request.authority,
+      draft: { text: "", pendingSend: null, receiptAckPending }
+    }, { origin: service.url, "x-studio-csrf": session.csrfToken });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(calls[1], ["save", { authority: request.authority, draft: { text: "", pendingSend: null, receiptAckPending } }]);
+    const malformedReceipt = await postJson(endpoint, {
+      action: "save", authority: request.authority,
+      draft: { text: "", pendingSend: null, receiptAckPending: { ...receiptAckPending, extra: true } }
+    }, { origin: service.url, "x-studio-csrf": session.csrfToken });
+    assert.equal(malformedReceipt.status, 400);
+    assert.equal(calls.length, 2);
   });
 });

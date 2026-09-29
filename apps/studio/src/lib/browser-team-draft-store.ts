@@ -64,6 +64,15 @@ const validPendingSend = (value: unknown): value is StudioTeamDraft["pendingSend
   );
 };
 
+const validReceiptAckPending = (value: unknown): value is NonNullable<StudioTeamDraft["receiptAckPending"]> | null | undefined => {
+  if (value === undefined || value === null) return true;
+  if (!value || typeof value !== "object") return false;
+  const receipt = value as Record<string, unknown>;
+  const isUuid = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
+  return isUuid(receipt.clientMessageId) && isUuid(receipt.messageId);
+};
+
 const assertAuthority = (
   authority: Omit<StudioTeamDraftAuthority, "threadId"> & { threadId?: string }
 ) => {
@@ -249,7 +258,8 @@ export const createBrowserTeamDraftStore = (input: {
           !value ||
           typeof value !== "object" ||
           !validText((value as StudioTeamDraft).text) ||
-          !validPendingSend((value as StudioTeamDraft).pendingSend)
+          !validPendingSend((value as StudioTeamDraft).pendingSend) ||
+          !validReceiptAckPending((value as StudioTeamDraft).receiptAckPending)
         ) {
           throw new Error("Decrypted Team draft is invalid.");
         }
@@ -258,13 +268,13 @@ export const createBrowserTeamDraftStore = (input: {
     },
 
     async save(authority, draft) {
-      if (!validText(draft?.text) || !validPendingSend(draft?.pendingSend)) {
+      if (!validText(draft?.text) || !validPendingSend(draft?.pendingSend) || !validReceiptAckPending(draft?.receiptAckPending)) {
         throw new Error("Team draft is invalid.");
       }
       const { scope, teamScope } = await scopeFor(authority);
       await mutate(() => serial(scope, async () => {
         const database = await databasePromise;
-        if (draft.text.length === 0 && draft.pendingSend === null) {
+        if (draft.text.length === 0 && draft.pendingSend === null && !draft.receiptAckPending) {
           const transaction = database.transaction(["drafts", "keys"], "readwrite");
           transaction.objectStore("drafts").delete(scope);
           transaction.objectStore("keys").delete(scope);
@@ -279,6 +289,7 @@ export const createBrowserTeamDraftStore = (input: {
           encoder.encode(JSON.stringify({
             text: draft.text,
             pendingSend: draft.pendingSend,
+            receiptAckPending: draft.receiptAckPending ?? null,
             updatedAt: new Date().toISOString()
           }))
         );

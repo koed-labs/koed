@@ -378,6 +378,8 @@ export const createStudioWindowController = (input: {
     "collaboration.start_group_direct_message",
     "collaboration.send_message",
     "collaboration.retry_message",
+    "collaboration.get_send_receipt",
+    "collaboration.acknowledge_send_receipt",
     "collaboration.load_message_page",
     "collaboration.mark_read",
     "collaboration.mark_delivered",

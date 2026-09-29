@@ -52,8 +52,28 @@ describe("Studio Team draft store", () => {
     assert.deepEqual(await afterRestart.load(authority), {
       text: "Unsaved edit",
       pendingSend,
+      receiptAckPending: null,
       updatedAt: (await afterRestart.load(authority)).updatedAt
     });
+  });
+
+  it("restores a marker-only completion receipt after restart and validates its exact IDs", async () => {
+    const userDataPath = await createPath();
+    const receiptAckPending = {
+      clientMessageId: "77777777-7777-4777-8777-777777777777",
+      messageId: "88888888-8888-4888-8888-888888888888"
+    };
+    const first = createStudioTeamDraftStore({ userDataPath });
+    await first.save({ authority, draft: { text: "", pendingSend: null, receiptAckPending } });
+    const afterRestart = createStudioTeamDraftStore({ userDataPath });
+    assert.deepEqual(await afterRestart.load(authority), {
+      text: "", pendingSend: null, receiptAckPending,
+      updatedAt: (await afterRestart.load(authority)).updatedAt
+    });
+    await assert.rejects(first.save({
+      authority,
+      draft: { text: "", pendingSend: null, receiptAckPending: { ...receiptAckPending, messageId: "bad" } }
+    }), /invalid/);
   });
 
   it("isolates by backend, principal, Team, and thread, then removes revoked Team state", async () => {

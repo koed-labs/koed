@@ -62,6 +62,13 @@ const validPendingSend = (pendingSend) => {
   );
 };
 
+const validReceiptAckPending = (receiptAckPending) => {
+  if (receiptAckPending === undefined || receiptAckPending === null) return true;
+  return Boolean(receiptAckPending &&
+    Object.keys(receiptAckPending).sort().join(",") === "clientMessageId,messageId" &&
+    UUID.test(receiptAckPending.clientMessageId) && UUID.test(receiptAckPending.messageId));
+};
+
 const parseTeamState = (value, authority) => {
   if (
     !value ||
@@ -81,10 +88,11 @@ const parseTeamState = (value, authority) => {
     if (
       !UUID.test(threadId) ||
       !draft ||
-      Object.keys(draft).some((key) => !["text", "pendingSend", "updatedAt"].includes(key)) ||
+      Object.keys(draft).some((key) => !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(key)) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
       !validPendingSend(draft.pendingSend) ||
+      !validReceiptAckPending(draft.receiptAckPending) ||
       typeof draft.updatedAt !== "string" ||
       !Number.isFinite(Date.parse(draft.updatedAt))
     ) {
@@ -233,7 +241,8 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         !draft ||
         typeof draft.text !== "string" ||
         Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
-        !validPendingSend(draft.pendingSend)
+        !validPendingSend(draft.pendingSend) ||
+        !validReceiptAckPending(draft.receiptAckPending)
       ) {
         throw new Error("Team draft is invalid.");
       }
@@ -246,7 +255,7 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
       await mutate(() => serial(reference, async () => {
         const { value } = readTeam(teamAuthority);
         const nextDrafts = { ...value.drafts };
-        if (draft.text.length === 0 && draft.pendingSend === null) {
+        if (draft.text.length === 0 && draft.pendingSend === null && !draft.receiptAckPending) {
           delete nextDrafts[authority.threadId];
         } else {
           if (
@@ -258,6 +267,7 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
           nextDrafts[authority.threadId] = {
             text: draft.text,
             pendingSend: draft.pendingSend,
+            receiptAckPending: draft.receiptAckPending ?? null,
             updatedAt: new Date().toISOString()
           };
         }

@@ -1021,11 +1021,12 @@ const readStudioTeamDraftAction = async (request) => {
     if (
       !isRecord(draft) ||
       Object.keys(draft).some(
-        (key) => !["text", "pendingSend", "updatedAt"].includes(key)
+        (key) => !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(key)
       ) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > 128 * 1024 ||
-      !(draft.pendingSend === null || isRecord(draft.pendingSend))
+      !(draft.pendingSend === null || isRecord(draft.pendingSend)) ||
+      !(draft.receiptAckPending === undefined || draft.receiptAckPending === null || isRecord(draft.receiptAckPending))
     ) {
       throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
     }
@@ -1040,6 +1041,16 @@ const readStudioTeamDraftAction = async (request) => {
         ) ||
         typeof pending.createdAt !== "string" ||
         !Number.isFinite(Date.parse(pending.createdAt))
+      ) {
+        throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+      }
+    }
+    if (draft.receiptAckPending !== undefined && draft.receiptAckPending !== null) {
+      const receipt = draft.receiptAckPending;
+      if (
+        Object.keys(receipt).sort().join(",") !== "clientMessageId,messageId" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.clientMessageId) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.messageId)
       ) {
         throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
       }

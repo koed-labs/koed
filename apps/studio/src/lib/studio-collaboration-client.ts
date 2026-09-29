@@ -27,6 +27,10 @@ export type StudioTeamDraft = {
     body: string;
     createdAt: string;
   } | null;
+  receiptAckPending?: {
+    clientMessageId: string;
+    messageId: string;
+  } | null;
   updatedAt?: string;
 };
 
