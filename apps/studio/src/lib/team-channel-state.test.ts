@@ -124,6 +124,13 @@ test("known permanent send failures restore the original body only when no newer
   }
 });
 
+test("protected receipt acknowledgement denials clear the local protected draft", () => {
+  for (const code of ["access_revoked", "permission_denied", "not_available"]) {
+    assert.equal(durableSendFailureDisposition(code), "authority_lost");
+  }
+  assert.equal(durableSendFailureDisposition("invalid_input"), "not_sent");
+});
+
 test("ambiguous send errors retain the original identity alongside later edits", () => {
   const original = { clientMessageId: "original-id", body: "exact sent body", createdAt: "2026-09-28T10:00:00.000Z" };
   assert.deepEqual(retainPendingSendAfterUncertainOutcome({ text: "edited while waiting", pendingSend: null }, original), {

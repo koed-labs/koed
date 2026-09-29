@@ -76,6 +76,7 @@ export function TeamChannelWorkspace({
   const draftByAuthority = useRef(new Map<string, StudioTeamDraft>());
   const draftWriteTails = useRef(new Map<string, Promise<void>>());
   const receiptCompletions = useRef(new Map<string, Map<string, { messageId: string; acknowledged: boolean }>>());
+  const clearRevokedViewRef = useRef<() => void>(() => undefined);
   const sendLocks = useRef(new Set<string>());
   const projectRequestIds = useRef(new Map<string, { requestId: string; name: string }>());
   const directMessageRequestIds = useRef(new Map<string, string>());
@@ -141,15 +142,32 @@ export function TeamChannelWorkspace({
   }, [drafts]);
 
   const acknowledgeReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
-    const result = await run("collaboration.acknowledge_send_receipt", {
-      thread: { scope: "team", teamId: draftAuthority.teamId, threadId: draftAuthority.threadId },
-      clientMessageId: marker.clientMessageId,
-      messageId: marker.messageId
-    });
-    if (!result.ok || !("acknowledged" in result.data) || !result.data.acknowledged) {
-      throw new Error(result.ok ? "The send receipt is still waiting to be confirmed." : result.error.userMessage);
+    const purgeRevokedDraft = async (code: string | null) => {
+      if (durableSendFailureDisposition(code) !== "authority_lost") return;
+      clearRevokedViewRef.current();
+      await drafts.deleteDraft(draftAuthority).catch(() => undefined);
+    };
+    try {
+      const result = await run("collaboration.acknowledge_send_receipt", {
+        thread: { scope: "team", teamId: draftAuthority.teamId, threadId: draftAuthority.threadId },
+        clientMessageId: marker.clientMessageId,
+        messageId: marker.messageId
+      });
+      if (!result.ok) {
+        await purgeRevokedDraft(result.error.code);
+        throw new Error(result.error.userMessage);
+      }
+      if (!("acknowledged" in result.data) || !result.data.acknowledged) {
+        throw new Error("The send receipt is still waiting to be confirmed.");
+      }
+    } catch (failure) {
+      const code = failure && typeof failure === "object" && "code" in failure && typeof failure.code === "string"
+        ? failure.code
+        : null;
+      await purgeRevokedDraft(code);
+      throw failure;
     }
-  }, [run]);
+  }, [drafts, run]);
 
   const clearSavedReceiptMarker = useCallback(async (draftAuthority: DraftAuthority, marker: NonNullable<StudioTeamDraft["receiptAckPending"]>) => {
     const key = JSON.stringify(draftAuthority);
@@ -261,6 +279,7 @@ export function TeamChannelWorkspace({
     readReported.current.clear();
     readPending.current.clear();
   }, []);
+  useEffect(() => { clearRevokedViewRef.current = clearRevokedView; }, [clearRevokedView]);
   const recoverPendingReceipt = useCallback(async (draftAuthority: DraftAuthority, clientMessageId: string): Promise<"recovered" | "missing" | "error"> => {
     const result = await run("collaboration.get_send_receipt", {
       thread: { scope: "team", teamId: draftAuthority.teamId, threadId: draftAuthority.threadId },
