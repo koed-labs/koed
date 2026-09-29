@@ -10,6 +10,7 @@ type DiscoverCommandsApi = {
     aiClientDriverId: SupportedAiClientDriverId;
     aiClientInstanceId: string;
     projectId?: string;
+    mode?: "file" | "draft";
   }) => Promise<unknown>;
 };
 
@@ -101,6 +102,7 @@ export function useSlashCommandDiscovery(
         .discoverCommands({
           aiClientDriverId: driverId,
           aiClientInstanceId: instanceId,
+          mode: "draft",
           ...(projectId ? { projectId } : {})
         })
         .then((result) => {

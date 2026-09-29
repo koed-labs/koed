@@ -4,7 +4,8 @@ import {
   findActiveSlashCommand,
   filterSlashCommands,
   applySlashCommandReplacement,
-  slashCommandKeypressIsHandled
+  slashCommandKeypressIsHandled,
+  findUnverifiedSlashCommand
 } from "./ai-client-slash-suggestions.js";
 
 import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
@@ -245,6 +246,23 @@ describe("applySlashCommandReplacement", () => {
         commandName: ""
       })
     ).toBe("/ ");
+  });
+});
+
+describe("findUnverifiedSlashCommand", () => {
+  it("returns matching unverified command before prompt dispatch", () => {
+    expect(
+      findUnverifiedSlashCommand("/review changes", [
+        {
+          name: "review",
+          description: "Review",
+          kind: "command",
+          source: "provider",
+          verification: "unverified",
+          scope: "global"
+        }
+      ])
+    ).toBe("review");
   });
 });
 

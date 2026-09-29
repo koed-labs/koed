@@ -122,7 +122,8 @@ describe("useSlashCommandDiscovery", () => {
 
     expect(mockApi.discoverCommands).toHaveBeenCalledWith({
       aiClientDriverId: "codex",
-      aiClientInstanceId: "test-instance"
+      aiClientInstanceId: "test-instance",
+      mode: "draft"
     });
     expect(harness.result.current?.commands).toEqual([command]);
     harness.unmount();
@@ -240,7 +241,8 @@ describe("useSlashCommandDiscovery", () => {
     expect(firstInput).toEqual({
       aiClientDriverId: "codex",
       aiClientInstanceId: "test-instance",
-      projectId: "test-project"
+      projectId: "test-project",
+      mode: "draft"
     });
 
     harness.unmount();

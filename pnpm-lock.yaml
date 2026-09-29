@@ -130,6 +130,9 @@ importers:
       '@koed/koed-server':
         specifier: workspace:*
         version: link:../../packages/koed-server
+      '@koed/mcp-server':
+        specifier: workspace:*
+        version: link:../../packages/mcp-server
       '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -407,7 +407,9 @@ export const registerDesktopCommandHandlers = (
             handoff: "Koed could not move the managed Conversation.",
             fork: "Koed could not fork the managed Conversation.",
             command_discovery:
-              "Koed could not discover managed Conversation commands."
+              "Koed could not discover managed Conversation commands.",
+            control_action:
+              "Koed could not dispatch the managed Conversation control action."
           };
         // IPC errors deliberately omit causes that can contain private provider diagnostics.
         // eslint-disable-next-line preserve-caught-error

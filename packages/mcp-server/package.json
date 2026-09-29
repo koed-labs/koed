@@ -27,6 +27,10 @@
     "./runtime-contracts": {
       "types": "./dist/runtime-contracts.d.ts",
       "import": "./dist/runtime-contracts.js"
+    },
+    "./managed-conversation-command-types": {
+      "types": "./dist/managed-conversation-command-types.d.ts",
+      "import": "./dist/managed-conversation-command-types.js"
     }
   },
   "files": [

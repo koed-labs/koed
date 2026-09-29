@@ -31,7 +31,12 @@ import {
   verifyDesktopLocalCredentialAuthorization
 } from "@koed/shared";
 
-import { createCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter";
+import {
+  createCommandDiscoveryAdapter,
+  type ManagedConversationSlashCommand
+} from "@koed/worker/command-discovery-adapter";
+import { listCodexDraftCommands } from "@koed/worker/command-discovery-adapter-codex";
+import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-claude";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   managedConversationTransferRequestHash,
@@ -63,7 +68,8 @@ const managedConversationCommandsRequestSchema = z
       .min(1)
       .max(128)
       .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
-    projectId: z.string().trim().min(1).max(128).optional()
+    projectId: z.string().trim().min(1).max(128).optional(),
+    mode: z.enum(["file", "draft"]).optional().default("file")
   })
   .strict();
 
@@ -1568,13 +1574,63 @@ export const registerManagedConversationRoutes = (
         }
       }
 
-      const adapter = createCommandDiscoveryAdapter(body.aiClientDriverId, {
+      const environment = {
         ...process.env,
         ...(context.config.koedHome
           ? { KOED_HOME: context.config.koedHome }
           : {})
-      });
+      };
       try {
+        if (
+          body.mode === "draft" &&
+          (body.aiClientDriverId === "codex" ||
+            body.aiClientDriverId === "claude")
+        ) {
+          const draftCommands =
+            body.aiClientDriverId === "codex"
+              ? await listCodexDraftCommands({
+                  aiClientInstanceId: body.aiClientInstanceId,
+                  environment
+                })
+              : await listClaudeDraftCommands({
+                  aiClientInstanceId: body.aiClientInstanceId,
+                  environment
+                });
+          const projectCommands = projectRoot
+            ? await createCommandDiscoveryAdapter(
+                body.aiClientDriverId,
+                environment
+              )
+                .discoverCommands({
+                  aiClientInstanceId: body.aiClientInstanceId,
+                  projectRoot
+                })
+                .then((commands) =>
+                  commands.filter(
+                    (command) =>
+                      command.scope === "project" &&
+                      command.source === "project-file"
+                  )
+                )
+            : [];
+          // Deduplicate by kind:name with project commands overriding global.
+          const merged = new Map<string, ManagedConversationSlashCommand>();
+          for (const cmd of draftCommands) {
+            merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+          }
+          for (const cmd of projectCommands) {
+            merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+          }
+          return {
+            operation: "command_discovery",
+            status: "ok",
+            commands: [...merged.values()].slice(0, 128)
+          };
+        }
+        const adapter = createCommandDiscoveryAdapter(
+          body.aiClientDriverId,
+          environment
+        );
         const commands = await adapter.discoverCommands({
           aiClientInstanceId: body.aiClientInstanceId,
           ...(projectRoot ? { projectRoot } : {})

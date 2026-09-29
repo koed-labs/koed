@@ -59,6 +59,7 @@ import {
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { DesktopApi } from "../../../types.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { findUnverifiedSlashCommand } from "./ai-client-slash-suggestions.js";
 import { useSlashCommandDiscovery } from "./use-slash-command-discovery.js";
 
 import {
@@ -2107,6 +2108,7 @@ function ManagedConversationComposer({
   const [settingsError, setSettingsError] = useState(
     initialPrompt?.status === "rejected" ? initialPrompt.message : ""
   );
+  const [commandDispatchError, setCommandDispatchError] = useState("");
   const refreshSettingsOptions = useCallback(() => {
     void api
       .launchOptions()
@@ -2603,6 +2605,13 @@ function ManagedConversationComposer({
   ]);
 
   const submit = useCallback(async () => {
+    const unverifiedCommand = findUnverifiedSlashCommand(draft, slashCommands);
+    if (unverifiedCommand) {
+      setCommandDispatchError(
+        `/${unverifiedCommand} is not verified and cannot be dispatched.`
+      );
+      return;
+    }
     if (
       submissionInFlightRef.current ||
       !ownerSendReady ||
@@ -2761,7 +2770,8 @@ function ManagedConversationComposer({
     state.status,
     settingsChange,
     refreshSettingsOptions,
-    refreshRuntimeSnapshot
+    refreshRuntimeSnapshot,
+    slashCommands
   ]);
 
   const respondToRuntimeItem = useCallback(
@@ -3032,6 +3042,7 @@ function ManagedConversationComposer({
           draftRef.current = value;
           draftEditedRef.current = true;
           setDraftError("");
+          setCommandDispatchError("");
           submissionRef.current = null;
         }}
         onSubmit={() => (promptActive ? interruptRuntime() : void submit())}
@@ -3097,6 +3108,11 @@ function ManagedConversationComposer({
           // Command already selected by the input handler, no action needed.
         }}
       />
+      {commandDispatchError ? (
+        <p className="personal-managed-error" role="alert">
+          {commandDispatchError}
+        </p>
+      ) : null}
       {settingsError && (
         <p className="personal-managed-error" role="alert">
           {settingsError}

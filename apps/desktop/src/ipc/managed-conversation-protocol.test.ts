@@ -5,6 +5,56 @@ import {
 } from "./managed-conversation-protocol.js";
 
 describe("managed conversation command discovery protocol", () => {
+  it("parses control action requests and results", () => {
+    expect(
+      parseManagedConversationRequest({
+        operation: "control_action",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex-default",
+        operationId: "operation-1",
+        actionId: "codex.compact",
+        executionGeneration: 2,
+        arguments: []
+      })
+    ).toEqual({
+      operation: "control_action",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex-default",
+      operationId: "operation-1",
+      actionId: "codex.compact",
+      executionGeneration: 2,
+      arguments: []
+    });
+    expect(
+      parseManagedConversationResult({
+        operation: "control_action",
+        status: "rejected",
+        operationId: "operation-1",
+        executionGeneration: 2,
+        reason: "Unsupported action"
+      })
+    ).toEqual({
+      operation: "control_action",
+      status: "rejected",
+      operationId: "operation-1",
+      executionGeneration: 2,
+      reason: "Unsupported action"
+    });
+  });
+
+  it("rejects unknown control action ids", () => {
+    expect(() =>
+      parseManagedConversationRequest({
+        operation: "control_action",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex-default",
+        operationId: "operation-1",
+        actionId: "codex.unknown",
+        executionGeneration: 2,
+        arguments: []
+      })
+    ).toThrow("control action id is invalid");
+  });
   it("parses command discovery requests", () => {
     expect(
       parseManagedConversationRequest({

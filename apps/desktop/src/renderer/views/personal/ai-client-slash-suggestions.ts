@@ -89,6 +89,17 @@ export function findActiveSlashCommand({
  * @param query - Typed text after the slash.
  * @returns Filtered commands (all when query is empty).
  */
+export function findUnverifiedSlashCommand(
+  text: string,
+  commands: ManagedConversationSlashCommand[]
+): string | null {
+  const match = /^\/([^\s]+)/u.exec(text.trimStart());
+  if (!match) return null;
+  const commandName = match[1];
+  const command = commands.find((candidate) => candidate.name === commandName);
+  return command?.verification === "unverified" ? command.name : null;
+}
+
 export function filterSlashCommands(
   commands: ManagedConversationSlashCommand[],
   query: string

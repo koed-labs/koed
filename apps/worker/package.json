@@ -18,6 +18,18 @@
     "./command-discovery-adapter": {
       "types": "./dist/command-discovery-adapter.d.ts",
       "import": "./dist/command-discovery-adapter.js"
+    },
+    "./command-discovery-adapter-codex": {
+      "types": "./dist/command-discovery-adapter-codex.d.ts",
+      "import": "./dist/command-discovery-adapter-codex.js"
+    },
+    "./command-discovery-adapter-claude": {
+      "types": "./dist/command-discovery-adapter-claude.d.ts",
+      "import": "./dist/command-discovery-adapter-claude.js"
+    },
+    "./command-discovery-adapter-pi": {
+      "types": "./dist/command-discovery-adapter-pi.d.ts",
+      "import": "./dist/command-discovery-adapter-pi.js"
     }
   },
   "files": [
