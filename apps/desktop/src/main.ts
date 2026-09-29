@@ -79,6 +79,7 @@ import {
   menuBarIconFilename,
   type DesktopMenuBar
 } from "./tray/menu-bar.js";
+import type { CollaborationApprovalReview } from "@koed/shared";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
@@ -205,6 +206,30 @@ const studioWindowController = createStudioWindowController({
       }
     });
     return studioBrowserWindow;
+  },
+  confirmNativeReview: async (review: CollaborationApprovalReview) => {
+    const reviewWindow = studioBrowserWindow;
+    if (!reviewWindow || reviewWindow.isDestroyed() || !reviewWindow.isVisible()) {
+      return false;
+    }
+    const details = review.details
+      .map(({ label, value }) => `${label}: ${value}`)
+      .join("\n");
+    const result = await dialog.showMessageBox(reviewWindow, {
+      type: "warning",
+      title: review.title,
+      message: review.description,
+      detail: [details, review.consequence].filter(Boolean).join("\n\n"),
+      buttons: ["Cancel", review.confirmLabel],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    return (
+      result.response === 1 &&
+      studioBrowserWindow === reviewWindow &&
+      !reviewWindow.isDestroyed()
+    );
   },
   defaultApiOrigin: "http://127.0.0.1:43300",
   getAccess: async () => {

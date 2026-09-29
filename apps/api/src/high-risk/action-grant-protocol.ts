@@ -31,6 +31,7 @@ import {
   setTeamBillingSeatPolicySchema,
   setTeamEntitlementStateSchema,
   setTeamWorkspaceAccessSchema,
+  updateTeamMemberMemoryRetentionSchema,
   updateTeamMemberRoleSchema
 } from "../team/schemas.js";
 import {
@@ -52,7 +53,9 @@ import {
   bindSharedMemoryCandidatePreviewOperation,
   bindSharedMemoryPendingShareOperation,
   bindSharedMemoryPreviewOperation,
-  bindSharedMemoryRevokeOperation
+  bindSharedMemoryRevokeOperation,
+  bindSharedMemoryOwnerStopUpdatesOperation,
+  bindTeamRetainedMemoryRemovalOperation
 } from "./shared-memory-action-definitions.js";
 import {
   bindConversationSourceDiscoveryOperation,
@@ -95,6 +98,14 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       teamId: uuidSchema,
       userId: uuidSchema,
       body: updateTeamMemberRoleSchema
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("team.member_memory_retention.update"),
+      teamId: uuidSchema,
+      userId: uuidSchema,
+      body: updateTeamMemberMemoryRetentionSchema
     })
     .strict(),
   z
@@ -217,7 +228,10 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       maximumFidelity: createSharedMemoryPreviewSchema.shape.maximumFidelity,
       includeCuratedMemory:
         createSharedMemoryPreviewSchema.shape.includeCuratedMemory,
-      mode: createSharedMemoryPreviewSchema.shape.mode
+      mode: createSharedMemoryPreviewSchema.shape.mode,
+      retentionEnabled: createSharedMemoryPreviewSchema.shape.retentionEnabled,
+      memberRetentionVersion:
+        createSharedMemoryPreviewSchema.shape.memberRetentionVersion
     })
     .strict(),
   z
@@ -252,6 +266,10 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       includeCuratedMemory:
         createSharedMemoryCandidatePreviewSchema.shape.includeCuratedMemory,
       mode: createSharedMemoryCandidatePreviewSchema.shape.mode,
+      retentionEnabled:
+        createSharedMemoryCandidatePreviewSchema.shape.retentionEnabled,
+      memberRetentionVersion:
+        createSharedMemoryCandidatePreviewSchema.shape.memberRetentionVersion,
       expiresAt: createSharedMemoryCandidatePreviewSchema.shape.expiresAt
     })
     .strict(),
@@ -272,6 +290,8 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       mode: createPendingShareSchema.shape.mode,
       maximumFidelity: createPendingShareSchema.shape.maximumFidelity,
       includeCuratedMemory: createPendingShareSchema.shape.includeCuratedMemory,
+      retentionEnabled: createPendingShareSchema.shape.retentionEnabled,
+      memberRetentionVersion: createPendingShareSchema.shape.memberRetentionVersion,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
@@ -286,6 +306,25 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       shareGrantId: uuidSchema,
       expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion,
       reasonCode: revokeShareGrantSchema.shape.reasonCode
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.retained_memory_remove"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.owner_stop_updates"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      teamWorkspaceId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion
     })
     .strict(),
   z
@@ -332,6 +371,10 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
         changeSharedMemoryFidelityBundleSchema.shape.maximumFidelity,
       includeCuratedMemory:
         changeSharedMemoryFidelityBundleSchema.shape.includeCuratedMemory,
+      retentionEnabled:
+        changeSharedMemoryFidelityBundleSchema.shape.retentionEnabled,
+      memberRetentionVersion:
+        changeSharedMemoryFidelityBundleSchema.shape.memberRetentionVersion,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
@@ -618,6 +661,17 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
           expectedVersion: intent.expectedVersion
         }
       };
+    case "collaboration.update_team_memory_retention":
+      return {
+        action: "team.member_memory_retention.update",
+        teamId: intent.teamId,
+        userId: intent.userId,
+        body: {
+          enabled: intent.enabled,
+          expectedVersion: intent.expectedVersion,
+          mutationId: intent.mutationId
+        }
+      };
     case "collaboration.disable_member":
       return {
         action: "team.member.disable",
@@ -676,6 +730,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             maximumFidelity: intent.maximumFidelity,
             includeCuratedMemory: intent.includeCuratedMemory,
             mode: intent.mode,
+            retentionEnabled: intent.retentionEnabled,
+            memberRetentionVersion: intent.memberRetentionVersion,
             expiresAt: intent.candidate.expiresAt
           }
         : resolved?.sharedMemoryRemoteReplicaId
@@ -690,7 +746,9 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
               activationRepresentation: intent.activationRepresentation,
               maximumFidelity: intent.maximumFidelity,
               includeCuratedMemory: intent.includeCuratedMemory,
-              mode: intent.mode
+              mode: intent.mode,
+              retentionEnabled: intent.retentionEnabled,
+              memberRetentionVersion: intent.memberRetentionVersion
             }
           : null;
     case "collaboration.share_memory":
@@ -710,6 +768,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             mode: intent.mode,
             maximumFidelity: intent.maximumFidelity,
             includeCuratedMemory: intent.includeCuratedMemory,
+            retentionEnabled: intent.retentionEnabled,
+            memberRetentionVersion: intent.memberRetentionVersion,
             previewRevision: intent.previewRevision,
             previewHash: intent.previewHash,
             expiresAt: intent.expiresAt
@@ -724,6 +784,23 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         shareGrantId: intent.shareGrantId,
         expectedGrantVersion: intent.expectedGrantVersion,
         reasonCode: intent.reasonCode
+      };
+    case "collaboration.remove_team_retained_memory":
+      return {
+        action: "shared_memory.retained_memory_remove",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        shareGrantId: intent.shareGrantId,
+        expectedGrantVersion: intent.expectedGrantVersion
+      };
+    case "collaboration.stop_owned_team_memory_updates":
+      return {
+        action: "shared_memory.owner_stop_updates",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        teamWorkspaceId: intent.workspaceId,
+        shareGrantId: intent.shareGrantId,
+        expectedGrantVersion: intent.expectedGrantVersion
       };
     case "collaboration.share_conversation_source":
       return {
@@ -760,6 +837,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             maximumFidelity: intent.maximumFidelity,
             includeCuratedMemory: intent.includeCuratedMemory,
             expectedGrantVersion: intent.expectedGrantVersion,
+            retentionEnabled: intent.retentionEnabled,
+            memberRetentionVersion: intent.memberRetentionVersion,
             mode: intent.mode,
             previewRevision: intent.previewRevision,
             previewHash: intent.previewHash,
@@ -808,6 +887,7 @@ export const resolveHighRiskActionGrantOperation = (input: {
     case "team.create":
     case "team.invite.accept":
     case "team.member.role_update":
+    case "team.member_memory_retention.update":
     case "team.member.disable":
     case "team.leave":
     case "team.invite.revoke":
@@ -879,6 +959,10 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryPendingShareOperation(intent, clientRequestId);
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
+    case "shared_memory.retained_memory_remove":
+      return bindTeamRetainedMemoryRemovalOperation(intent, clientRequestId);
+    case "shared_memory.owner_stop_updates":
+      return bindSharedMemoryOwnerStopUpdatesOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_grant":
       return bindConversationSourceGrantOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_revoke":

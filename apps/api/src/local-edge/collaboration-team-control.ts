@@ -41,7 +41,10 @@ export const collaborationTeamControlCommandNames = [
   "collaboration.leave_team",
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
-  "collaboration.set_workspace_access"
+  "collaboration.set_workspace_access",
+  "collaboration.get_team_memory_retention",
+  "collaboration.list_team_memory_retention_members",
+  "collaboration.update_team_memory_retention"
 ] as const;
 
 export type CollaborationTeamControlCommandName =
@@ -1200,6 +1203,94 @@ const dispatch = async (
         ? success(command, { access })
         : failure(command, safeError("internal_error"));
     }
+
+    case "collaboration.get_team_memory_retention": {
+      const path = `/v1/teams/${encodeURIComponent(command.input.teamId)}/memory-retention`;
+      const payload = z.object({
+        setting: z.object({
+          teamId: z.uuid(),
+          userId: z.uuid(),
+          enabled: z.boolean(),
+          version: z.number().int().positive()
+        }).strict()
+      }).strict().parse(await remoteRequest(context, {
+        operationFamily: "team_workspace_read",
+        method: "GET",
+        path,
+        authentication: { kind: "device" }
+      }));
+      return payload.setting.teamId === command.input.teamId &&
+        payload.setting.userId === context.principalUserId
+        ? success(command, { setting: payload.setting })
+        : failure(command, safeError("internal_error"));
+    }
+
+    case "collaboration.list_team_memory_retention_members": {
+      const path = `/v1/teams/${encodeURIComponent(command.input.teamId)}/memory-retention/members`;
+      const payload = z.object({
+        teamId: z.uuid(),
+        members: z.array(z.object({
+          userId: z.uuid(),
+          displayName: z.string().nullable(),
+          enabled: z.boolean(),
+          version: z.number().int().positive()
+        }).strict()).max(1_000)
+      }).strict().parse(await remoteRequest(context, {
+        operationFamily: "team_workspace_read",
+        method: "GET",
+        path,
+        authentication: { kind: "device" }
+      }));
+      return payload.teamId === command.input.teamId
+        ? success(command, { teamId: payload.teamId, members: payload.members.map((member) => ({ teamId: payload.teamId, ...member })) })
+        : failure(command, safeError("internal_error"));
+    }
+
+    case "collaboration.update_team_memory_retention": {
+      if (!command.input.actionGrant) {
+        return failure(command, safeError("permission_denied"));
+      }
+      const path = `/v1/teams/${encodeURIComponent(command.input.teamId)}/members/${encodeURIComponent(command.input.userId)}/memory-retention`;
+      const body = {
+        enabled: command.input.enabled,
+        expectedVersion: command.input.expectedVersion,
+        mutationId: command.input.mutationId
+      };
+      const grant = await actionGrantSecret(command, context, {
+        reference: command.input.actionGrant,
+        action: "team.member_memory_retention.update",
+        teamId: command.input.teamId,
+        targetId: command.input.userId,
+        method: "PATCH",
+        path,
+        body
+      });
+      if (isDispatchResult(grant)) return grant;
+      if (!grant) return failure(command, safeError("permission_denied"));
+      const payload = z.object({
+        policy: z.object({
+          teamId: z.uuid(),
+          userId: z.uuid(),
+          enabled: z.boolean(),
+          version: z.number().int().positive()
+        }).strict()
+      }).strict().parse(await remoteRequest(context, {
+        operationFamily: "admin",
+        method: "PATCH",
+        path,
+        body,
+        idempotencyKey: command.input.mutationId,
+        authentication: { kind: "device", actionGrant: grant }
+      }));
+      const policy = payload.policy;
+      return policy.teamId === command.input.teamId &&
+        policy.userId === command.input.userId &&
+        policy.enabled === command.input.enabled &&
+        policy.version > command.input.expectedVersion
+        ? success(command, { policy })
+        : failure(command, safeError("internal_error"));
+    }
+
   }
 };
 
@@ -1209,6 +1300,17 @@ export const dispatchCollaborationTeamControlCommand = async (
 ): Promise<CollaborationTeamControlDispatchResult> => {
   if (!isCollaborationTeamControlCommand(command)) {
     return { status: "not_handled" };
+  }
+  if (
+    [
+      "collaboration.get_team_memory_retention",
+      "collaboration.list_team_memory_retention_members",
+      "collaboration.update_team_memory_retention"
+    ].includes(command.command) &&
+    context.backend.capabilities?.payload?.protocols?.teamMemoryRetention
+      ?.version !== 1
+  ) {
+    return failure(command, safeError("temporarily_unavailable"));
   }
   try {
     return await dispatch(command, context);

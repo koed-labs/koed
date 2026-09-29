@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
-  collaborationSafeErrorMessages
+  collaborationRendererCommandSchema,
+  collaborationSafeErrorMessages,
+  type CollaborationRendererCommand
 } from "@koed/shared";
 import {
   createStudioWindowController,
@@ -542,7 +544,7 @@ describe("Studio window controller", () => {
       registerProject: async () => ({ ok: true }),
       collaboration: async (command) => {
         commands.push(command);
-        if (command.command === "collaboration.load") return loadResult(command.requestId, collaborationSnapshot());
+        if (command.command === "collaboration.load") return loadResult(command.requestId as string, collaborationSnapshot());
         return {
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: command.requestId,
@@ -555,22 +557,311 @@ describe("Studio window controller", () => {
     });
 
     await controller.open();
-    for (const [command, input] of [
-      ["collaboration.start_direct_message", { teamId, participantUserId: firstMemberId }],
-      ["collaboration.start_group_direct_message", { teamId, participantUserIds: [firstMemberId, secondMemberId] }]
-    ] as const) {
-      const result = await gatewayOptions!.runStudioCollaborationCommand!({
+    const requests: CollaborationRendererCommand[] = [
+      {
         contractVersion: COLLABORATION_CONTRACT_VERSION,
         requestId: crypto.randomUUID(),
-        command,
-        input
-      });
+        command: "collaboration.start_direct_message",
+        input: { teamId, participantUserId: firstMemberId }
+      },
+      {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command: "collaboration.start_group_direct_message",
+        input: { teamId, participantUserIds: [firstMemberId, secondMemberId] }
+      }
+    ];
+    for (const request of requests) {
+      const result = await gatewayOptions!.runStudioCollaborationCommand!(request);
+      const command = request.command;
       expect(result).toMatchObject({ ok: true, command });
     }
     expect(commands.map(({ command }) => command)).toEqual([
       "collaboration.start_direct_message",
       "collaboration.start_group_direct_message"
     ]);
+    await controller.close();
+  });
+
+  it("mediates revoke through a native grant and preserves the original request identity", async () => {
+    const fake = makeWindow();
+    let gatewayOptions: StudioGatewayOptions | undefined;
+    const teamId = "33333333-3333-4333-8333-333333333333";
+    const grantReference = { id: "77777777-7777-4777-8777-777777777777" };
+    const nativeReview = {
+      version: 1 as const,
+      title: "Revoke Shared Memory access?",
+      description: "Remove Team recall through this Share Grant.",
+      consequence: "Personal Memory stays unchanged.",
+      confirmLabel: "Revoke access",
+      details: [{ label: "Team", value: teamId }]
+    };
+    const status = (state: "review_required" | "approved") => ({
+      version: 1 as const,
+      actionGrant: grantReference,
+      approvalTier: "native_review" as const,
+      review: nativeReview,
+      state,
+      activationUrl: null,
+      expiresAt: "2026-09-25T12:05:00.000Z"
+    });
+    const sent: CollaborationRendererCommand[] = [];
+    const originalRequestId = "88888888-8888-4888-8888-888888888888";
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async (options) => {
+        gatewayOptions = options;
+        return { url: "http://127.0.0.1:49828", close: async () => undefined };
+      },
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async (command) => {
+        const parsed = collaborationRendererCommandSchema.parse(command);
+        sent.push(parsed);
+        if (parsed.command === "collaboration.load") {
+          return loadResult(parsed.requestId, collaborationSnapshot());
+        }
+        if (parsed.command === "collaboration.request_action_grant") {
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: true,
+            data: { status: status("review_required") }
+          };
+        }
+        if (parsed.command === "collaboration.confirm_action_grant") {
+          expect(parsed.input).toEqual({ actionGrant: grantReference, decision: "approve" });
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: true,
+            data: { status: status("approved") }
+          };
+        }
+        return {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: parsed.requestId,
+          command: parsed.command,
+          ok: false,
+          error: {
+            code: "temporarily_unavailable",
+            userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+            retryable: true,
+            retryAfterMs: null
+          }
+        };
+      },
+      confirmNativeReview: async (review) => {
+        expect(review).toEqual(nativeReview);
+        return true;
+      },
+      openExternal: async () => undefined
+    });
+
+    await controller.open();
+    await gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: crypto.randomUUID(),
+      command: "collaboration.load",
+      input: {}
+    });
+    const result = await gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: originalRequestId,
+      command: "collaboration.revoke_shared_memory",
+      input: {
+        mutationId: "99999999-9999-4999-8999-999999999999",
+        teamId,
+        workspaceId: "44444444-4444-4444-8444-444444444444",
+        shareGrantId: "55555555-5555-4555-8555-555555555555",
+        expectedGrantVersion: 3,
+        reasonCode: "owner_revoked"
+      }
+    });
+    expect(result).toMatchObject({ ok: false, command: "collaboration.revoke_shared_memory" });
+    const requested = sent.find((command) => command.command === "collaboration.request_action_grant");
+    expect(requested).toMatchObject({
+      input: {
+        intent: {
+          intent: "collaboration.revoke_shared_memory",
+          commandRequestId: originalRequestId,
+          shareGrantId: "55555555-5555-4555-8555-555555555555"
+        }
+      }
+    });
+    const mutation = sent.find((command) => command.command === "collaboration.revoke_shared_memory");
+    expect(mutation).toMatchObject({
+      requestId: originalRequestId,
+      input: { actionGrant: grantReference }
+    });
+
+    await expect(
+      gatewayOptions!.runStudioCollaborationCommand!({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command: "collaboration.revoke_shared_memory",
+        input: {
+          mutationId: crypto.randomUUID(),
+          teamId,
+          workspaceId: "44444444-4444-4444-8444-444444444444",
+          shareGrantId: "55555555-5555-4555-8555-555555555555",
+          expectedGrantVersion: 3,
+          reasonCode: "owner_revoked",
+          actionGrant: { id: crypto.randomUUID() }
+        }
+      })
+    ).rejects.toThrow("cannot supply an Action Grant");
+    const grantRequestsBeforeCandidate = sent.filter(
+      (command) => command.command === "collaboration.request_action_grant"
+    ).length;
+    await gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: crypto.randomUUID(),
+      command: "collaboration.preview_shared_memory_candidate",
+      input: {
+        source: {
+          kind: "captured_session",
+          sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          logicalMemoryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        },
+        activationRepresentation: "memory_events",
+        mode: "snapshot"
+      }
+    });
+    expect(
+      sent.filter((command) => command.command === "collaboration.request_action_grant")
+    ).toHaveLength(grantRequestsBeforeCandidate);
+    await controller.close();
+  });
+
+  it("stops a pending native mutation when the active principal changes during review", async () => {
+    const fake = makeWindow();
+    let gatewayOptions: StudioGatewayOptions | undefined;
+    let activeSnapshot: ReturnType<typeof collaborationSnapshot> = collaborationSnapshot();
+    let releaseReview!: (approved: boolean) => void;
+    let shownReview!: () => void;
+    const reviewShown = new Promise<void>((resolve) => { shownReview = resolve; });
+    const grantReference = { id: "77777777-7777-4777-8777-777777777777" };
+    const review = {
+      version: 1 as const,
+      title: "Revoke Shared Memory access?",
+      description: "Remove Team recall.",
+      consequence: "Personal Memory stays unchanged.",
+      confirmLabel: "Revoke access",
+      details: []
+    };
+    const nativeStatus = {
+      version: 1 as const,
+      actionGrant: grantReference,
+      approvalTier: "native_review" as const,
+      review,
+      state: "review_required" as const,
+      activationUrl: null,
+      expiresAt: "2026-09-25T12:05:00.000Z"
+    };
+    const sent: CollaborationRendererCommand[] = [];
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async (options) => {
+        gatewayOptions = options;
+        return { url: "http://127.0.0.1:49829", close: async () => undefined };
+      },
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async (command) => {
+        const parsed = collaborationRendererCommandSchema.parse(command);
+        sent.push(parsed);
+        if (parsed.command === "collaboration.load") return loadResult(parsed.requestId, activeSnapshot);
+        if (parsed.command === "collaboration.request_action_grant") {
+          return {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: parsed.requestId,
+            command: parsed.command,
+            ok: true,
+            data: { status: nativeStatus }
+          };
+        }
+        return {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: parsed.requestId,
+          command: parsed.command,
+          ok: false,
+          error: {
+            code: "temporarily_unavailable",
+            userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+            retryable: true,
+            retryAfterMs: null
+          }
+        };
+      },
+      confirmNativeReview: async () => {
+        shownReview();
+        return new Promise<boolean>((resolve) => { releaseReview = resolve; });
+      },
+      openExternal: async () => undefined
+    });
+
+    await controller.open();
+    await gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: crypto.randomUUID(),
+      command: "collaboration.load",
+      input: {}
+    });
+    const pending = gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "88888888-8888-4888-8888-888888888888",
+      command: "collaboration.revoke_shared_memory",
+      input: {
+        mutationId: "99999999-9999-4999-8999-999999999999",
+        teamId: "33333333-3333-4333-8333-333333333333",
+        workspaceId: "44444444-4444-4444-8444-444444444444",
+        shareGrantId: "55555555-5555-4555-8555-555555555555",
+        expectedGrantVersion: 3,
+        reasonCode: "owner_revoked"
+      }
+    });
+    await reviewShown;
+    activeSnapshot = {
+      ...activeSnapshot,
+      navigation: {
+        ...activeSnapshot.navigation,
+        teamPrincipal: {
+          ...activeSnapshot.navigation.teamPrincipal!,
+          id: "66666666-6666-4666-8666-666666666666"
+        },
+        teams: activeSnapshot.navigation.teams.map((team) => ({
+          ...team,
+          people: team.people.map((person) => ({
+            ...person,
+            id: "66666666-6666-4666-8666-666666666666"
+          }))
+        }))
+      }
+    };
+    await gatewayOptions!.runStudioCollaborationCommand!({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: crypto.randomUUID(),
+      command: "collaboration.load",
+      input: {}
+    });
+    releaseReview(true);
+    await expect(pending).rejects.toThrow("account, or selected source changed");
+    expect(sent.some((command) => command.command === "collaboration.revoke_shared_memory")).toBe(false);
     await controller.close();
   });
 

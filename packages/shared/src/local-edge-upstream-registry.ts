@@ -39,6 +39,9 @@ export interface LocalEdgeUpstreamBackend {
         sharedMemorySourceAdmission?: {
           version?: number;
         };
+        teamMemoryRetention?: {
+          version?: number;
+        };
       };
       capabilities?: Record<
         string,

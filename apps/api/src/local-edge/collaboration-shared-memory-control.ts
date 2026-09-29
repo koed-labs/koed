@@ -22,6 +22,8 @@ import {
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryPreviewSchema,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryOwnerStopUpdatesActionGrantBinding,
+  teamRetainedMemoryRemovalActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
@@ -76,7 +78,11 @@ const sharedMemoryControlCommandNames = [
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
-  "collaboration.change_shared_memory_fidelity"
+  "collaboration.change_shared_memory_fidelity",
+  "collaboration.ensure_team_memory_destination",
+  "collaboration.list_team_retained_memory",
+  "collaboration.remove_team_retained_memory",
+  "collaboration.stop_owned_team_memory_updates"
 ] as const;
 
 type SharedMemoryControlCommandName =
@@ -189,6 +195,9 @@ const remotePreviewSchema = z
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
     mode: z.enum(["snapshot", "continuous"]),
+    retentionEnabled: z.boolean(),
+    retentionPolicyEnabled: z.boolean(),
+    memberRetentionVersion: z.number().int().positive(),
     binding: sourceBindingSchema,
     items: z.array(redactedSourceItemSchema).min(1).max(2_048),
     sourceContentHash: hashSchema,
@@ -212,6 +221,9 @@ const remoteCandidateAdmissionSchema = z
     representation: representationSchema,
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    retentionPolicyEnabled: z.boolean(),
+    memberRetentionVersion: z.number().int().positive(),
     sourceRevision: z.number().int().safe().min(0),
     sourceHash: hashSchema,
     redactedContentHash: hashSchema,
@@ -270,6 +282,8 @@ const remoteConsentSchema = z
     consentVersion: z.number().int().safe().positive(),
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: z.number().int().safe().positive(),
     previewRevision: z.number().int().safe().positive(),
     previewHash: hashSchema,
     sourceRevision: z.number().int().safe().min(0),
@@ -314,6 +328,9 @@ const remoteGrantSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: z.number().int().positive(),
+    ownerUpdatesState: z.enum(["active", "stopped"]),
     fidelityPolicyRevision: z.number().int().safe().positive(),
     sourceRevision: z.number().int().safe().min(0),
     grantVersion: z.number().int().safe().positive(),
@@ -343,6 +360,9 @@ const remoteTeamGrantSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: z.number().int().positive(),
+    ownerUpdatesState: z.enum(["active", "stopped"]),
     sourceRevision: z.number().int().safe().min(0),
     grantVersion: z.number().int().safe().positive(),
     lifecycle: z.enum([
@@ -494,6 +514,9 @@ const remoteOwnedGrantDto = (
   mode: grant.mode,
   maximumFidelity: grant.maximumFidelity,
   includeCuratedMemory: grant.includeCuratedMemory,
+  retentionEnabled: grant.retentionEnabled,
+  memberRetentionVersion: grant.memberRetentionVersion,
+  ownerUpdatesState: grant.ownerUpdatesState,
   fidelityPolicyRevision: grant.fidelityPolicyRevision,
   sourceRevision: grant.sourceRevision,
   grantVersion: grant.grantVersion,
@@ -1214,6 +1237,11 @@ const supportsCandidateSourceAdmission = (
   backend.capabilities?.payload?.protocols?.sharedMemorySourceAdmission
     ?.version === SOURCE_ADMISSION_PROTOCOL_VERSION;
 
+const supportsTeamMemoryRetention = (
+  backend: LocalEdgeUpstreamBackend
+): boolean =>
+  backend.capabilities?.payload?.protocols?.teamMemoryRetention?.version === 1;
+
 const resolveAuthority = async (
   options: CollaborationSharedMemoryControlOptions,
   command: CollaborationSharedMemoryControlCommand,
@@ -1241,6 +1269,20 @@ const resolveAuthority = async (
   );
   if (!backend || !supportsSharedMemoryControl(backend)) {
     throw new ControlFailure("temporarily_unavailable");
+  }
+  if (
+    [
+      "collaboration.preview_shared_memory",
+      "collaboration.share_memory",
+      "collaboration.change_shared_memory_fidelity",
+      "collaboration.ensure_team_memory_destination",
+      "collaboration.list_team_retained_memory",
+      "collaboration.remove_team_retained_memory",
+      "collaboration.stop_owned_team_memory_updates"
+    ].includes(command.command) &&
+    !supportsTeamMemoryRetention(backend)
+  ) {
+    throw new ControlFailure("protocol_mismatch");
   }
   if (
     command.command === "collaboration.preview_shared_memory" &&
@@ -1331,14 +1373,14 @@ const resolveProtectedActionGrant = (
   command: CollaborationSharedMemoryControlCommand,
   binding: SharedMemoryActionGrantBinding
 ): string => {
-  if (!("actionGrant" in command.input)) {
+  if (!("actionGrant" in command.input) || !command.input.actionGrant) {
     throw new ControlFailure("permission_denied");
   }
   const lifecycle =
     options.actionGrantLifecycle ??
     createCollaborationActionGrantLifecycle({ koedHome: options.koedHome });
   const secret = lifecycle.resolve({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     backendId: authority.backendId,
     deploymentBaseUrl: authority.backend.baseUrl,
     deviceCredentialId: authority.upstreamDeviceCredentialId,
@@ -1357,6 +1399,13 @@ const resolveProtectedActionGrant = (
     throw new ControlFailure("permission_denied");
   }
   return secret;
+};
+
+const actionGrantReference = (input: {
+  actionGrant?: { id: string };
+}): { id: string } => {
+  if (!input.actionGrant) throw new ControlFailure("permission_denied");
+  return input.actionGrant;
 };
 
 const textFromContent = (
@@ -1578,6 +1627,9 @@ const previewDto = (
     maximumFidelity: preview.maximumFidelity,
     includeCuratedMemory: preview.includeCuratedMemory,
     mode: preview.mode,
+    retentionEnabled: preview.retentionEnabled,
+    retentionPolicyEnabled: preview.retentionPolicyEnabled,
+    memberRetentionVersion: preview.memberRetentionVersion,
     previewRevision: preview.previewRevision,
     sourceRevision: preview.sourceRevision,
     policyRevision: preview.binding.fidelityPolicyRevision,
@@ -2178,7 +2230,7 @@ const dispatchCandidatePreview = async (
     throw new ControlFailure("conflict");
   }
   const binding = sharedMemoryCandidatePreviewActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     source: candidate.data.source,
     ...sourceIdentity,
     sourceCapabilities: candidate.data.sourceCapabilities,
@@ -2195,6 +2247,8 @@ const dispatchCandidatePreview = async (
     maximumFidelity: command.input.maximumFidelity,
     includeCuratedMemory: command.input.includeCuratedMemory,
     mode: command.input.mode,
+    retentionEnabled: command.input.retentionEnabled,
+    memberRetentionVersion: command.input.memberRetentionVersion,
     expiresAt: command.input.candidate.expiresAt
   });
   const payload = await remoteRequest(options, authority, {
@@ -2225,6 +2279,9 @@ const dispatchCandidatePreview = async (
     admission.data.maximumFidelity !== command.input.maximumFidelity ||
     admission.data.includeCuratedMemory !==
       command.input.includeCuratedMemory ||
+    admission.data.retentionEnabled !== command.input.retentionEnabled ||
+    admission.data.memberRetentionVersion !==
+      command.input.memberRetentionVersion ||
     admission.data.mode !== command.input.mode ||
     admission.data.expiresAt !== command.input.candidate.expiresAt ||
     admission.data.itemCount !== candidate.data.itemCount ||
@@ -2252,6 +2309,9 @@ const dispatchCandidatePreview = async (
     maximumFidelity: admission.data.maximumFidelity,
     includeCuratedMemory: admission.data.includeCuratedMemory,
     mode: admission.data.mode,
+    retentionEnabled: admission.data.retentionEnabled,
+    retentionPolicyEnabled: admission.data.retentionPolicyEnabled,
+    memberRetentionVersion: admission.data.memberRetentionVersion,
     binding: {
       sourceRevision: admission.data.sourceRevision,
       sourceHash: admission.data.sourceHash,
@@ -2325,7 +2385,7 @@ const dispatchPreview = async (
     }
   }
   const binding = sharedMemoryPreviewActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     source: command.input.source,
     sourceCapabilities: command.input.sourceCapabilities,
     logicalMemoryId: command.input.logicalMemoryId,
@@ -2335,7 +2395,9 @@ const dispatchPreview = async (
     activationRepresentation: command.input.activationRepresentation,
     maximumFidelity: command.input.maximumFidelity,
     includeCuratedMemory: command.input.includeCuratedMemory,
-    mode: command.input.mode
+    mode: command.input.mode,
+    retentionEnabled: command.input.retentionEnabled,
+    memberRetentionVersion: command.input.memberRetentionVersion
   });
   const payload = await remoteRequest(options, authority, {
     method: binding.method,
@@ -2480,13 +2542,15 @@ const dispatchShare = async (
       crossIdentitySyncDigest(command.input.source) ||
     preview.data.maximumFidelity !== command.input.maximumFidelity ||
     preview.data.includeCuratedMemory !== command.input.includeCuratedMemory ||
-    preview.data.mode !== command.input.mode
+    preview.data.mode !== command.input.mode ||
+    preview.data.retentionEnabled !== command.input.retentionEnabled ||
+    preview.data.memberRetentionVersion !== command.input.memberRetentionVersion
   ) {
     throw new ControlFailure("conflict");
   }
   const pendingSource = command.input.source;
   const binding = sharedMemoryPendingShareActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     source: pendingSource,
     sourceCapabilities: command.input.sourceCapabilities,
     activationRepresentation: command.input.activationRepresentation,
@@ -2502,6 +2566,8 @@ const dispatchShare = async (
     mode: command.input.mode,
     maximumFidelity: command.input.maximumFidelity,
     includeCuratedMemory: command.input.includeCuratedMemory,
+    retentionEnabled: command.input.retentionEnabled,
+    memberRetentionVersion: command.input.memberRetentionVersion,
     expiresAt: command.input.expiresAt
   });
   const payload = await remoteRequest(options, authority, {
@@ -2577,7 +2643,7 @@ const dispatchRevoke = async (
     throw new ControlFailure("conflict");
   }
   const binding = sharedMemoryRevokeActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     mutationId: command.input.mutationId,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
@@ -3259,7 +3325,7 @@ const dispatchConversationSourceAccess = async (
   const binding =
     command.command === "collaboration.share_conversation_source"
       ? sharedMemoryTranscriptAccessActionGrantBinding({
-          referenceId: command.input.actionGrant.id,
+          referenceId: actionGrantReference(command.input).id,
           mutationId: command.input.mutationId,
           teamId: command.input.teamId,
           shareGrantId: command.input.shareGrantId,
@@ -3267,7 +3333,7 @@ const dispatchConversationSourceAccess = async (
           mode: command.input.mode
         })
       : sharedMemoryTranscriptRevokeActionGrantBinding({
-          referenceId: command.input.actionGrant.id,
+          referenceId: actionGrantReference(command.input).id,
           mutationId: command.input.mutationId,
           teamId: command.input.teamId,
           shareGrantId: command.input.shareGrantId,
@@ -3366,12 +3432,15 @@ const dispatchChangeFidelity = async (
     parsedPreview.data.maximumFidelity !== command.input.maximumFidelity ||
     parsedPreview.data.includeCuratedMemory !==
       command.input.includeCuratedMemory ||
-    parsedPreview.data.mode !== command.input.mode
+    parsedPreview.data.mode !== command.input.mode ||
+    parsedPreview.data.retentionEnabled !== command.input.retentionEnabled ||
+    parsedPreview.data.memberRetentionVersion !==
+      command.input.memberRetentionVersion
   ) {
     throw new ControlFailure("conflict");
   }
   const binding = sharedMemoryFidelityBundleActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
+    referenceId: actionGrantReference(command.input).id,
     source,
     sourceCapabilities: command.input.sourceCapabilities,
     activationRepresentation: command.input.activationRepresentation,
@@ -3386,6 +3455,8 @@ const dispatchChangeFidelity = async (
     mode: command.input.mode,
     maximumFidelity: command.input.maximumFidelity,
     includeCuratedMemory: command.input.includeCuratedMemory,
+    retentionEnabled: command.input.retentionEnabled,
+    memberRetentionVersion: command.input.memberRetentionVersion,
     previewRevision: command.input.previewRevision,
     previewHash: command.input.previewHash,
     expiresAt: command.input.expiresAt
@@ -3442,6 +3513,154 @@ const dispatchChangeFidelity = async (
   return result;
 };
 
+const dispatchEnsureTeamMemoryDestination = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<CollaborationSharedMemoryControlCommand, { command: "collaboration.ensure_team_memory_destination" }>
+): Promise<CollaborationCommandResult> => {
+  const payload = await remoteRequest(options, authority, {
+    method: "POST",
+    path: `/v1/shared-memory/teams/${encodeURIComponent(command.input.teamId)}/destination`,
+    body: {}
+  });
+  const destination = z.object({ teamId: uuidSchema, teamWorkspaceId: uuidSchema }).strict().safeParse(payload);
+  if (!destination.success || destination.data.teamId !== command.input.teamId) {
+    throw new ControlFailure("permission_denied");
+  }
+  const result = success(command, {
+    teamId: destination.data.teamId,
+    workspaceId: destination.data.teamWorkspaceId
+  });
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
+const dispatchStopOwnedTeamMemoryUpdates = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<CollaborationSharedMemoryControlCommand, { command: "collaboration.stop_owned_team_memory_updates" }>
+): Promise<CollaborationCommandResult> => {
+  const identity = authorityIdentity(authority);
+  const prior = await requirePersistedGrant(
+    options.authorityStore,
+    identity,
+    command.input.shareGrantId,
+    command.input.teamId,
+    command.input.workspaceId
+  );
+  if (
+    prior.grant.grantVersion !== command.input.expectedGrantVersion ||
+    !prior.grant.retentionEnabled
+  ) throw new ControlFailure("conflict");
+  const binding = sharedMemoryOwnerStopUpdatesActionGrantBinding({
+    referenceId: actionGrantReference(command.input).id,
+    mutationId: command.input.mutationId,
+    teamId: command.input.teamId,
+    teamWorkspaceId: command.input.workspaceId,
+    shareGrantId: command.input.shareGrantId,
+    expectedGrantVersion: command.input.expectedGrantVersion
+  });
+  const payload = await remoteRequest(options, authority, {
+    method: binding.method,
+    path: binding.path,
+    body: binding.body,
+    idempotencyKey: command.input.mutationId,
+    actionGrant: resolveProtectedActionGrant(options, authority, command, binding)
+  });
+  const remote = readRemoteGrant(payload);
+  if (
+    remote.id !== prior.grant.id ||
+    remote.teamId !== command.input.teamId ||
+    remote.teamWorkspaceId !== command.input.workspaceId ||
+    remote.retentionEnabled !== true ||
+    remote.ownerUpdatesState !== "stopped" ||
+    remote.grantVersion <= command.input.expectedGrantVersion
+  ) throw new ControlFailure("permission_denied");
+  const persisted = await persistGrant(
+    options.authorityStore,
+    identity,
+    remote,
+    prior,
+    {
+      companionThreadId: prior.grant.companionThreadId,
+      sharedSessionId: remote.id
+    },
+    "mutation"
+  );
+  const result = success(command, { grant: ownerSafeGrant(persisted.grant) });
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
+const dispatchListTeamRetainedMemory = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<CollaborationSharedMemoryControlCommand, { command: "collaboration.list_team_retained_memory" }>
+): Promise<CollaborationCommandResult> => {
+  const query = new URLSearchParams({ limit: String(command.input.limit) });
+  if (command.input.cursor) query.set("cursor", command.input.cursor);
+  const payload = await remoteRequest(options, authority, {
+    method: "GET",
+    path: `/v1/shared-memory/teams/${encodeURIComponent(command.input.teamId)}/retained?${query}`
+  });
+  const page = z.object({
+    teamId: uuidSchema,
+    items: z.array(z.object({
+      shareGrantId: uuidSchema,
+      teamWorkspaceId: uuidSchema,
+      logicalMemoryId: uuidSchema,
+      title: z.string().min(1).max(160),
+      contributorLabel: z.string().min(1).max(80),
+      grantVersion: z.number().int().positive(),
+      sourceUpdateState: z.enum(["active", "stopped"]),
+      retainedAt: timestampSchema
+    }).strict()).max(100),
+    nextCursor: z.string().max(4096).nullable()
+  }).strict().safeParse(payload);
+  if (!page.success || page.data.teamId !== command.input.teamId || page.data.items.length > command.input.limit) {
+    throw new ControlFailure("permission_denied");
+  }
+  const result = success(command, {
+    teamId: page.data.teamId,
+    items: page.data.items,
+    nextCursor: page.data.nextCursor
+  });
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
+const dispatchRemoveTeamRetainedMemory = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<CollaborationSharedMemoryControlCommand, { command: "collaboration.remove_team_retained_memory" }>
+): Promise<CollaborationCommandResult> => {
+  const binding = teamRetainedMemoryRemovalActionGrantBinding({
+    referenceId: actionGrantReference(command.input).id,
+    mutationId: command.input.mutationId,
+    teamId: command.input.teamId,
+    shareGrantId: command.input.shareGrantId,
+    expectedGrantVersion: command.input.expectedGrantVersion
+  });
+  const payload = await remoteRequest(options, authority, {
+    method: binding.method,
+    path: binding.path,
+    body: binding.body,
+    idempotencyKey: command.input.mutationId,
+    actionGrant: resolveProtectedActionGrant(options, authority, command, binding)
+  });
+  const removed = z.object({
+    shareGrantId: uuidSchema,
+    grantVersion: z.number().int().positive(),
+    removed: z.literal(true)
+  }).strict().safeParse(payload);
+  if (!removed.success || removed.data.shareGrantId !== command.input.shareGrantId || removed.data.grantVersion <= command.input.expectedGrantVersion) {
+    throw new ControlFailure("permission_denied");
+  }
+  const result = success(command, removed.data);
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
 const dispatchResolved = async (
   options: CollaborationSharedMemoryControlOptions,
   authority: ResolvedAuthority,
@@ -3473,6 +3692,14 @@ const dispatchResolved = async (
       return dispatchRevoke(options, authority, command);
     case "collaboration.change_shared_memory_fidelity":
       return dispatchChangeFidelity(options, authority, command);
+    case "collaboration.ensure_team_memory_destination":
+      return dispatchEnsureTeamMemoryDestination(options, authority, command);
+    case "collaboration.list_team_retained_memory":
+      return dispatchListTeamRetainedMemory(options, authority, command);
+    case "collaboration.remove_team_retained_memory":
+      return dispatchRemoveTeamRetainedMemory(options, authority, command);
+    case "collaboration.stop_owned_team_memory_updates":
+      return dispatchStopOwnedTeamMemoryUpdates(options, authority, command);
   }
 };
 

@@ -5,6 +5,7 @@ import type {
   SharedMemoryPolicyRecord,
   SharedMemoryReadResult,
   SharedMemoryRepository,
+  TeamAccessRepository,
   SharedMemoryRepresentationRecord,
   TeamConversationSourceGrantRecord,
   TeamConversationSourceRepository,
@@ -15,12 +16,14 @@ import type {
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryOwnerStopUpdatesActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
+  teamRetainedMemoryRemovalActionGrantBinding,
   pendingShareSchema,
   sharedMemoryGrantScopedSourceId,
   validateSharedMemoryCanonicalSourceItem,
@@ -42,13 +45,17 @@ import type { ApiRouteContext } from "../server/context.js";
 import { publicCollaborationThread } from "../collaboration/public-thread.js";
 import {
   advanceContinuousPersonalNoteRevisionSchema,
+  changeDirectSharedMemoryFidelitySchema,
   changeSharedMemoryFidelityBundleSchema,
   createPendingShareSchema,
+  createDirectSharedMemoryBundleSchema,
   createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryPreviewSchema,
   controlPendingShareSchema,
   listOwnedSharesQuerySchema,
+  listRetainedTeamMemoryQuerySchema,
   ownedShareParamsSchema,
+  ownerReplicaPreviewTargetQuerySchema,
   personalNoteSourceArtifactUploadSchema,
   listWorkspaceSharedMemoryQuerySchema,
   putSharedMemoryPolicySchema,
@@ -57,9 +64,12 @@ import {
   readGrantRepresentationQuerySchema,
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
+  removeRetainedTeamMemorySchema,
+  retainedTeamMemoryParamsSchema,
   scopedShareGrantParamsSchema,
   shareGrantParamsSchema,
   sharedMemoryItemDetailParamsSchema,
+  stopOwnedTeamMemoryUpdatesSchema,
   sourceOwnerPolicyParamsSchema,
   teamPolicyParamsSchema,
   workspacePolicyParamsSchema
@@ -144,6 +154,7 @@ const executeRepositoryOperation = async <T>(
 
 export interface SharedMemoryRouteContext {
   requireSharedMemoryRepository(): SharedMemoryRepository;
+  requireTeamAccessRepository?(): TeamAccessRepository;
   requireTeamConversationSourceRepository(): TeamConversationSourceRepository;
   requireCollaborationRepository(): CollaborationRepository;
   requireHighRiskRepository(): Pick<
@@ -402,6 +413,9 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
   representation: preview.representation,
   maximumFidelity: preview.maximumFidelity,
   includeCuratedMemory: preview.includeCuratedMemory,
+  retentionEnabled: preview.retentionEnabled,
+  retentionPolicyEnabled: preview.retentionPolicyEnabled,
+  memberRetentionVersion: preview.memberRetentionVersion,
   binding: {
     sourceRevision: preview.binding.sourceRevision,
     sourceHash: preview.binding.sourceHash,
@@ -445,6 +459,9 @@ const ownerGrantDto = (grant: SharedMemoryGrantRecord) => ({
   sourceRevision: grant.sourceRevision,
   grantVersion: grant.grantVersion,
   lifecycle: grant.lifecycle,
+  retentionEnabled: grant.retentionEnabled,
+  memberRetentionVersion: grant.memberRetentionVersion,
+  ownerUpdatesState: grant.sourceUpdatesStoppedAt === null ? "active" : "stopped",
   grantedByUserId: grant.grantedByUserId,
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
@@ -503,6 +520,8 @@ const pendingShareDto = (pendingShare: PendingShareRecord) =>
     activationRepresentation: pendingShare.activationRepresentation,
     maximumFidelity: pendingShare.maximumFidelity,
     includeCuratedMemory: pendingShare.includeCuratedMemory,
+    retentionEnabled: pendingShare.retentionEnabled,
+    memberRetentionVersion: pendingShare.memberRetentionVersion,
     mode: pendingShare.mode,
     sourceRevision: pendingShare.sourceRevision,
     state: pendingShare.state,
@@ -520,6 +539,32 @@ const pendingShareDto = (pendingShare: PendingShareRecord) =>
     grantId: pendingShare.grantId,
     grantVersion: pendingShare.grantVersion ?? null
   });
+
+const consentDto = (consent: Awaited<ReturnType<SharedMemoryRepository["createSourceOwnerConsent"]>>) => ({
+  source: consent.source,
+  sourceCapabilities: consent.sourceCapabilities,
+  activationRepresentation: consent.activationRepresentation,
+  id: consent.id,
+  logicalMemoryId: consent.logicalMemoryId,
+  teamId: consent.teamId,
+  teamWorkspaceId: consent.teamWorkspaceId,
+  mode: consent.mode,
+  state: consent.state,
+  version: consent.consentVersion,
+  previewId: consent.previewId,
+  maximumFidelity: consent.maximumFidelity,
+  includeCuratedMemory: consent.includeCuratedMemory,
+  retentionEnabled: consent.retentionEnabled,
+  retentionPolicyEnabled: consent.retentionPolicyEnabled,
+  memberRetentionVersion: consent.memberRetentionVersion,
+  previewRevision: consent.previewRevision,
+  previewHash: consent.previewHash,
+  sourceRevision: consent.sourceRevision,
+  createdAt: consent.createdAt,
+  updatedAt: consent.updatedAt,
+  activatedAt: consent.activatedAt,
+  revokedAt: consent.revokedAt
+});
 
 const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
   id: grant.id,
@@ -845,7 +890,9 @@ export const registerSharedMemoryRoutes = (
         activationRepresentation: input.activationRepresentation,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
-        mode: input.mode
+        mode: input.mode,
+        retentionEnabled: input.retentionEnabled,
+        memberRetentionVersion: input.memberRetentionVersion
       });
       const result = await executeRepositoryOperation(() =>
         runHighRiskSharedMemoryWrite(
@@ -865,6 +912,8 @@ export const registerSharedMemoryRoutes = (
                 mode: input.mode,
                 maximumFidelity: input.maximumFidelity,
                 includeCuratedMemory: input.includeCuratedMemory,
+                retentionEnabled: input.retentionEnabled,
+                memberRetentionVersion: input.memberRetentionVersion,
                 authority: authenticated.authority
               }
             );
@@ -873,9 +922,17 @@ export const registerSharedMemoryRoutes = (
               preview.remoteReplicaId !== input.remoteReplicaId ||
               preview.teamId !== input.teamId ||
               preview.teamWorkspaceId !== input.teamWorkspaceId ||
+              input.source.kind !== "captured_session" ||
+              preview.source?.kind !== input.source.kind ||
+              preview.source?.kind !== "captured_session" ||
+              preview.source.sessionId !== input.source.sessionId ||
+              preview.source.logicalMemoryId !== input.source.logicalMemoryId ||
+              !preview.sourceCapabilities.includes(input.activationRepresentation) ||
               preview.representation !== input.activationRepresentation ||
               preview.maximumFidelity !== input.maximumFidelity ||
-              preview.includeCuratedMemory !== input.includeCuratedMemory
+              preview.includeCuratedMemory !== input.includeCuratedMemory ||
+              preview.retentionEnabled !== input.retentionEnabled ||
+              preview.memberRetentionVersion !== input.memberRetentionVersion
             ) {
               return null;
             }
@@ -887,6 +944,126 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return result.body;
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/share-bundles",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const input = createDirectSharedMemoryBundleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(request, context, input.authority);
+      if (authenticated.kind !== "browser") throw forbidden();
+      requireFreshBrowserAuthority(authenticated);
+      const preview = { previewId: input.preview.previewId, previewHash: input.preview.previewHash };
+      const result = await executeRepositoryOperation(() =>
+        context.requireSharedMemoryRepository().createShareBundle(
+          { userId: authenticated.actor.id },
+          {
+            consent: {
+              source: input.source,
+              sourceCapabilities: input.sourceCapabilities,
+              activationRepresentation: input.activationRepresentation,
+              consentId: input.consentId,
+              preview,
+              mode: input.mode,
+              retentionEnabled: input.retentionEnabled,
+              retentionPolicyEnabled: input.retentionPolicyEnabled,
+              memberRetentionVersion: input.memberRetentionVersion,
+              maximumFidelity: input.maximumFidelity,
+              includeCuratedMemory: input.includeCuratedMemory,
+              expiresAt: input.expiresAt,
+              authority: authenticated.authority
+            },
+            grant: {
+              mutationId: input.mutationId,
+              logicalGrantId: input.logicalGrantId,
+              consentId: input.consentId,
+              authority: authenticated.authority
+            },
+            expected: {
+              logicalMemoryId: input.logicalMemoryId,
+              teamId: input.teamId,
+              teamWorkspaceId: input.teamWorkspaceId,
+              previewId: input.preview.previewId,
+              previewRevision: input.previewRevision,
+              previewHash: input.preview.previewHash,
+              maximumFidelity: input.maximumFidelity,
+              includeCuratedMemory: input.includeCuratedMemory,
+              consentId: input.consentId
+            }
+          }
+        )
+      );
+      if (!result || result.grant.teamId !== input.teamId || result.grant.teamWorkspaceId !== input.teamWorkspaceId || result.grant.logicalMemoryId !== input.logicalMemoryId || result.grant.consentId !== input.consentId) throw conflict();
+      return reply.status(201).send({
+        consent: consentDto(result.consent),
+        grant: ownedShareGrantDto(result.grant),
+        representation: result.representation ? { ...teamRepresentationDto(result.representation), consentId: result.representation.consentId } : null
+      });
+    }
+  );
+
+  app.put(
+    "/v1/shared-memory/share-grants/:shareGrantId/fidelity",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const { shareGrantId } = shareGrantParamsSchema.parse(request.params);
+      const input = changeDirectSharedMemoryFidelitySchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(request, context, input.authority);
+      if (authenticated.kind !== "browser") throw forbidden();
+      requireFreshBrowserAuthority(authenticated);
+      const preview = { previewId: input.preview.previewId, previewHash: input.preview.previewHash };
+      const result = await executeRepositoryOperation(() =>
+        context.requireSharedMemoryRepository().changeFidelityBundle(
+          { userId: authenticated.actor.id },
+          {
+            consent: {
+              source: input.source,
+              sourceCapabilities: input.sourceCapabilities,
+              activationRepresentation: input.activationRepresentation,
+              consentId: input.consentId,
+              preview,
+              mode: input.mode,
+              retentionEnabled: input.retentionEnabled,
+              retentionPolicyEnabled: input.retentionPolicyEnabled,
+              memberRetentionVersion: input.memberRetentionVersion,
+              maximumFidelity: input.maximumFidelity,
+              includeCuratedMemory: input.includeCuratedMemory,
+              expiresAt: input.expiresAt,
+              authority: authenticated.authority
+            },
+            fidelity: {
+              mutationId: input.mutationId,
+              shareGrantId,
+              consentId: input.consentId,
+              maximumFidelity: input.maximumFidelity,
+              includeCuratedMemory: input.includeCuratedMemory,
+              expectedGrantVersion: input.expectedGrantVersion,
+              authority: authenticated.authority
+            },
+            expected: {
+              logicalMemoryId: input.logicalMemoryId,
+              teamId: input.teamId,
+              teamWorkspaceId: input.teamWorkspaceId,
+              previewId: input.preview.previewId,
+              previewRevision: input.previewRevision,
+              previewHash: input.preview.previewHash,
+              maximumFidelity: input.maximumFidelity,
+              includeCuratedMemory: input.includeCuratedMemory,
+              consentId: input.consentId
+            }
+          }
+        )
+      );
+      if (!result || result.grant.id !== shareGrantId || result.grant.teamId !== input.teamId || result.grant.teamWorkspaceId !== input.teamWorkspaceId || result.grant.logicalMemoryId !== input.logicalMemoryId || result.grant.consentId !== input.consentId) throw conflict();
+      return {
+        consent: consentDto(result.consent),
+        grant: ownedShareGrantDto(result.grant),
+        representation: result.representation ? { ...teamRepresentationDto(result.representation), consentId: result.representation.consentId } : null
+      };
     }
   );
 
@@ -918,6 +1095,8 @@ export const registerSharedMemoryRoutes = (
         mode: input.mode,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
+        retentionEnabled: input.retentionEnabled,
+        memberRetentionVersion: input.memberRetentionVersion,
         expiresAt: input.expiresAt
       });
       const result = await executeRepositoryOperation(() =>
@@ -946,6 +1125,8 @@ export const registerSharedMemoryRoutes = (
                     mode: input.mode,
                     maximumFidelity: input.maximumFidelity,
                     includeCuratedMemory: input.includeCuratedMemory,
+                    retentionEnabled: input.retentionEnabled,
+                    memberRetentionVersion: input.memberRetentionVersion,
                     expiresAt: input.expiresAt,
                     authority: authenticated.authority
                   }
@@ -1065,6 +1246,8 @@ export const registerSharedMemoryRoutes = (
         mode: input.mode,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
+        retentionEnabled: input.retentionEnabled,
+        memberRetentionVersion: input.memberRetentionVersion,
         expectedGrantVersion: input.expectedGrantVersion,
         expiresAt: input.expiresAt
       });
@@ -1092,6 +1275,8 @@ export const registerSharedMemoryRoutes = (
                 maximumFidelity: input.maximumFidelity,
                 includeCuratedMemory: input.includeCuratedMemory,
                 mode: input.mode,
+                retentionEnabled: input.retentionEnabled,
+                memberRetentionVersion: input.memberRetentionVersion,
                 expiresAt: input.expiresAt,
                 authority: authenticated.authority
               }
@@ -1287,6 +1472,31 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.get(
+    "/v1/shared-memory/preview-target",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const actor = await context.authenticateSession(request);
+      const input = ownerReplicaPreviewTargetQuerySchema.parse(request.query);
+      const replica = await executeRepositoryOperation(() =>
+        context.requireSharedMemoryRepository().getReadyOwnerMemoryReplica(
+          { userId: actor.id },
+          input
+        )
+      );
+      if (!replica) return { ready: false };
+      if (
+        replica.source.kind !== "captured_session" ||
+        replica.source.logicalMemoryId !== input.logicalMemoryId ||
+        !z.uuid().safeParse(replica.remoteReplicaId).success ||
+        !Number.isSafeInteger(replica.sourceRevision) ||
+        replica.sourceRevision < 0
+      ) throw forbidden();
+      return { ready: true, ...replica };
+    }
+  );
+
+  app.get(
     "/v1/shared-memory/owned-shares/:kind/:id",
     { preHandler: context.readRateLimit },
     async (request, reply) => {
@@ -1374,6 +1584,140 @@ export const registerSharedMemoryRoutes = (
 
   const scopedGrantPath =
     "/v1/shared-memory/teams/:teamId/workspaces/:teamWorkspaceId/share-grants/:shareGrantId";
+
+  app.post(
+    "/v1/shared-memory/teams/:teamId/destination",
+    { preHandler: context.writeRateLimit },
+    async (request) => {
+      const actor = await authenticateReader(request, context);
+      const { teamId } = teamPolicyParamsSchema.parse(request.params);
+      const destination = await executeRepositoryOperation(() =>
+        (context.requireTeamAccessRepository?.() ?? (() => {
+          throw Object.assign(new Error("Team memory destination repository unavailable"), { statusCode: 503 });
+        })()).ensureTeamMemoryDestination(
+          { userId: actor.id },
+          { teamId }
+        )
+      );
+      if (destination.teamId !== teamId) throw forbidden();
+      return { teamId, teamWorkspaceId: destination.teamWorkspaceId };
+    }
+  );
+
+  app.get(
+    "/v1/shared-memory/teams/:teamId/retained",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateReader(request, context);
+      const { teamId } = teamPolicyParamsSchema.parse(request.params);
+      const query = listRetainedTeamMemoryQuerySchema.parse(request.query);
+      const page = await executeRepositoryOperation(() =>
+        context.requireSharedMemoryRepository().listRetainedTeamMemory(
+          { userId: actor.id },
+          { teamId, limit: query.limit, cursor: query.cursor }
+        )
+      );
+      if (page.items.length > query.limit) throw forbidden();
+      return {
+        teamId,
+        items: page.items.map((item) => ({
+          shareGrantId: item.shareGrantId,
+          teamWorkspaceId: item.teamWorkspaceId,
+          logicalMemoryId: item.logicalMemoryId,
+          title: "Shared conversation memories",
+          contributorLabel: "Team member",
+          grantVersion: item.grantVersion,
+          sourceUpdateState: item.sourceUpdatesStoppedAt === null ? "active" : "stopped",
+          retainedAt: item.retainedAt
+        })),
+        nextCursor: page.nextCursor
+      };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/teams/:teamId/retained/:shareGrantId/remove",
+    { preHandler: context.writeRateLimit },
+    async (request) => {
+      const params = retainedTeamMemoryParamsSchema.parse(request.params);
+      const input = removeRetainedTeamMemorySchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      requireFreshBrowserAuthority(authenticated);
+      const binding = teamRetainedMemoryRemovalActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        teamId: params.teamId,
+        shareGrantId: params.shareGrantId,
+        expectedGrantVersion: input.expectedGrantVersion
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(context, authenticated, binding, async (repository) => {
+          const grant = await repository.removeRetainedTeamMemory(
+            { userId: authenticated.actor.id },
+            {
+              mutationId: input.mutationId,
+              teamId: params.teamId,
+              shareGrantId: params.shareGrantId,
+              expectedGrantVersion: input.expectedGrantVersion
+            }
+          );
+          if (grant.teamId !== params.teamId || grant.lifecycle !== "revoked") return null;
+          return {
+            statusCode: 200,
+            body: { shareGrantId: grant.id, grantVersion: grant.grantVersion, removed: true }
+          };
+        })
+      );
+      return result.body;
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/share-grants/:shareGrantId/owner-stop-updates",
+    { preHandler: context.writeRateLimit },
+    async (request) => {
+      const { shareGrantId } = shareGrantParamsSchema.parse(request.params);
+      const input = stopOwnedTeamMemoryUpdatesSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      requireFreshBrowserAuthority(authenticated);
+      const binding = sharedMemoryOwnerStopUpdatesActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        shareGrantId,
+        expectedGrantVersion: input.expectedGrantVersion
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(context, authenticated, binding, async (repository) => {
+          const grant = await repository.stopOwnedTeamMemoryUpdates(
+            { userId: authenticated.actor.id },
+            {
+              mutationId: input.mutationId,
+              teamId: input.teamId,
+              shareGrantId,
+              expectedGrantVersion: input.expectedGrantVersion
+            }
+          );
+          if (
+            grant.teamId !== input.teamId ||
+            grant.teamWorkspaceId !== input.teamWorkspaceId ||
+            grant.sourceUpdatesStoppedAt === null
+          ) return null;
+          return { statusCode: 200, body: { grant: ownedShareGrantDto(grant) } };
+        })
+      );
+      return result.body;
+    }
+  );
 
   app.get(
     "/v1/shared-memory/teams/:teamId/workspaces/:teamWorkspaceId/share-grants",

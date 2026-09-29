@@ -933,6 +933,8 @@ export {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryOwnerStopUpdatesActionGrantBinding,
+  teamRetainedMemoryRemovalActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";

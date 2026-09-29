@@ -670,6 +670,34 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.ensure_team_memory_destination": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.get_team_memory_retention": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.list_team_memory_retention_members": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.update_team_memory_retention": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.list_team_retained_memory": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.remove_team_retained_memory": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.stop_owned_team_memory_updates": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.subscribe": {
     scope: (command) => command.input.scope.scope,
     desktopOperationFamily: read

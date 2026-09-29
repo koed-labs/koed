@@ -12,6 +12,7 @@ export const capabilitySchemaVersion = 9;
 export const collaborationRealtimeProtocolVersion =
   COLLABORATION_CONTRACT_VERSION;
 export const sharedMemorySourceAdmissionProtocolVersion = 1;
+export const teamMemoryRetentionProtocolVersion = 1;
 
 export const deploymentProfiles = [
   "developer",
@@ -160,6 +161,15 @@ export interface CapabilitiesResponse {
     sharedMemorySourceAdmission: {
       version: typeof sharedMemorySourceAdmissionProtocolVersion;
       candidateEndpoint: "/v1/shared-memory/candidate-previews";
+    };
+    teamMemoryRetention: {
+      version: typeof teamMemoryRetentionProtocolVersion;
+      destinationEndpoint: "/v1/shared-memory/teams/{teamId}/destination";
+      retainedMemoryEndpoint: "/v1/shared-memory/teams/{teamId}/retained";
+      memberSettingEndpoint: "/v1/teams/{teamId}/memory-retention";
+      ownerReplicaPreviewEndpoint: "/v1/shared-memory/preview-target";
+      ownerShareBundleEndpoint: "/v1/shared-memory/share-bundles";
+      ownerFidelityEndpoint: "/v1/shared-memory/share-grants/{shareGrantId}/fidelity";
     };
   };
   commercial: {
@@ -770,6 +780,15 @@ export const buildCapabilitiesResponse = (
       sharedMemorySourceAdmission: {
         version: sharedMemorySourceAdmissionProtocolVersion,
         candidateEndpoint: "/v1/shared-memory/candidate-previews"
+      },
+      teamMemoryRetention: {
+        version: teamMemoryRetentionProtocolVersion,
+        destinationEndpoint: "/v1/shared-memory/teams/{teamId}/destination",
+        retainedMemoryEndpoint: "/v1/shared-memory/teams/{teamId}/retained",
+        memberSettingEndpoint: "/v1/teams/{teamId}/memory-retention",
+        ownerReplicaPreviewEndpoint: "/v1/shared-memory/preview-target",
+        ownerShareBundleEndpoint: "/v1/shared-memory/share-bundles",
+        ownerFidelityEndpoint: "/v1/shared-memory/share-grants/{shareGrantId}/fidelity"
       }
     },
     commercial: commercialWithFeatureGates,

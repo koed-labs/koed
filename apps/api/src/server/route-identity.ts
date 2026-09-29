@@ -1570,6 +1570,36 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/teams/{teamId}/memory-retention",
+    "session_or_device_credential",
+    "team_memory",
+    "Read the current member's Team Memory retention setting.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/memory-retention/members",
+    "session_or_device_credential",
+    "team_memory",
+    "List Team member retention settings for administrators.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/teams/{teamId}/members/{userId}/memory-retention",
+    "session_or_device_credential",
+    "team_memory",
+    "Update one member's future Team Memory retention setting.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "PATCH",
     "/v1/teams/{teamId}/members/{userId}/role",
     "session_or_device_credential",
@@ -1826,6 +1856,76 @@ export const routeIdentityContracts = [
     "shared_memory",
     "Create an authoritative Shared Memory source preview.",
     "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/preview-target",
+    "session",
+    "shared_memory",
+    "Resolve one ready owner-private replica for an existing captured source and Team destination.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-bundles",
+    "session",
+    "shared_memory",
+    "Create an owner-consented Share Grant and materialize its reviewed representation atomically.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/share-grants/{shareGrantId}/fidelity",
+    "session",
+    "shared_memory",
+    "Replace one owner Share Grant from an exact persisted preview and fresh consent.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/teams/{teamId}/destination",
+    "session_or_device_credential",
+    "shared_memory",
+    "Ensure the stable Team Memory destination for an active member.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/retained",
+    "session_or_device_credential",
+    "shared_memory",
+    "List retained Team Memory representations for administrators.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/teams/{teamId}/retained/{shareGrantId}/remove",
+    "session_or_device_credential",
+    "shared_memory",
+    "Remove one retained Team Memory representation.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants/{shareGrantId}/owner-stop-updates",
+    "session_or_device_credential",
+    "shared_memory",
+    "Stop future updates for one retained Share Grant.",
+    "request_time_action_grant",
     "implemented",
     teamDeploymentModes
   ),

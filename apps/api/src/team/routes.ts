@@ -35,6 +35,7 @@ import {
   teamInviteIdParamsSchema,
   teamMemberParamsSchema,
   teamWorkspaceIdParamsSchema,
+  updateTeamMemberMemoryRetentionSchema,
   updateTeamMemberRoleSchema
 } from "./schemas.js";
 import {
@@ -173,6 +174,9 @@ export const registerTeamRoutes = (
       memoryWrite: memoryWriteRateLimit
     }
   } = context;
+
+  const requireTeamAccessRepository = () =>
+    requireRepository() as MemorySourceRepository & TeamAccessRepository;
 
   const rejectApiToken = (request: FastifyRequest): void => {
     if (/^Bearer(?:\s|$)/i.test(request.headers.authorization?.trim() ?? "")) {
@@ -339,7 +343,7 @@ export const registerTeamRoutes = (
   ): Promise<{ statusCode: number; body: TBody }> => {
     const requireIdentity = options.requireVerifiedIdentity !== false;
     if (actor.kind === "browser") {
-      const repository = requireRepository();
+      const repository = requireTeamAccessRepository();
       if (requireIdentity) {
         await requireVerifiedTeamIdentity(repository, actor.user);
       }
@@ -349,7 +353,7 @@ export const registerTeamRoutes = (
       }
       return result;
     }
-    const result = await requireRepository().executeActionGrant({
+    const result = await requireTeamAccessRepository().executeActionGrant({
       actionGrant: actor.actionGrant,
       ownerUserId: actor.user.id,
       deviceCredentialId: actor.auth.credential.id,
@@ -1325,6 +1329,74 @@ export const registerTeamRoutes = (
               );
               return access ? { statusCode: 200, body: { access } } : null;
             }
+          )
+        )
+      ).body;
+    }
+  );
+
+  app.get(
+    "/v1/teams/:teamId/memory-retention",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const user = await authenticateTeamRead(request);
+      const setting = await requireTeamAccessRepository().getTeamMemberMemoryRetentionSetting(
+        { userId: user.id },
+        { teamId, userId: user.id }
+      );
+      if (!setting || setting.teamId !== teamId || setting.userId !== user.id) {
+        throw forbidden("Team member retention setting is unavailable");
+      }
+      return { setting };
+    }
+  );
+
+  app.get(
+    "/v1/teams/:teamId/memory-retention/members",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const user = await authenticateTeamRead(request);
+      const result = await requireTeamAccessRepository().getTeamMemberMemoryRetentionSettings(
+        { userId: user.id },
+        teamId
+      );
+      if (result.teamId !== teamId || result.members.length > 1_000) {
+        throw forbidden("Team retention settings are unavailable");
+      }
+      return result;
+    }
+  );
+
+  app.patch(
+    "/v1/teams/:teamId/members/:userId/memory-retention",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const { teamId, userId } = teamMemberParamsSchema.parse(request.params);
+      const input = updateTeamMemberMemoryRetentionSchema.parse(request.body);
+      const actor = await authenticateAdminActor(request);
+      return (
+        await runVersioned(() =>
+          runHighRiskTeamWrite(
+            request,
+            actor,
+            {
+              action: "team.member_memory_retention.update",
+              teamId,
+              targetId: userId,
+              body: request.body
+            },
+            async (repository) => {
+              const policy = await repository.updateTeamMemberMemoryRetention(
+                { userId: actor.user.id },
+                { teamId, userId, enabled: input.enabled, expectedVersion: input.expectedVersion }
+              );
+              return policy.teamId === teamId && policy.userId === userId
+                ? { statusCode: 200, body: { policy } }
+                : null;
+            },
+            { requireVerifiedIdentity: false }
           )
         )
       ).body;

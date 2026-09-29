@@ -20,6 +20,7 @@ type TeamAndMembershipAction =
   | "team.invite.accept"
   | "team.invite.revoke"
   | "team.member.role_update"
+  | "team.member_memory_retention.update"
   | "team.member.disable"
   | "team.leave";
 
@@ -256,6 +257,46 @@ const teamMemberRoleUpdateActionDefinition = defineTeamAction<
   }
 });
 
+const teamMemberMemoryRetentionActionDefinition = defineTeamAction<
+  Extract<TeamAndMembershipIntent, { action: "team.member_memory_retention.update" }>
+>({
+  action: "team.member_memory_retention.update",
+  resolveOperation: (intent) =>
+    bindTeamAdminOperation({
+      operationFamily: "admin",
+      action: intent.action,
+      teamId: intent.teamId,
+      targetId: intent.userId,
+      method: "PATCH",
+      path: `/v1/teams/${intent.teamId}/members/${intent.userId}/memory-retention`,
+      body: intent.body
+    }),
+  resolvePolicy: async ({ repository, userId, intent }) => {
+    const review = requireReview(
+      await repository.getTeamMembershipActionReview(
+        { userId },
+        { teamId: intent.teamId, userId: intent.userId }
+      ),
+      "Team memory retention policy change"
+    );
+    if (
+      review.member.status !== "enabled" ||
+      review.member.disabledAt !== null
+    ) unavailable("Team memory retention policy change");
+    return nativeReview({
+      title: "Change this member’s Team memory retention policy?",
+      description: "This controls whether future Shared Memory grants can be retained after the contributor leaves or stops updates.",
+      consequence: "Existing grants keep their separately reviewed retention consent.",
+      confirmLabel: "Change retention policy",
+      details: [
+        { label: "Team", value: review.team.name },
+        { label: "Member", value: memberDisplay(review) },
+        { label: "New grants", value: intent.body.enabled ? "Retention enabled" : "Snapshot only" }
+      ]
+    });
+  }
+});
+
 const teamMemberDisableActionDefinition = defineTeamAction<
   Extract<TeamAndMembershipIntent, { action: "team.member.disable" }>
 >({
@@ -344,6 +385,7 @@ export const teamAndMembershipActionDefinitions = {
   "team.invite.accept": teamInviteAcceptActionDefinition,
   "team.invite.revoke": teamInviteRevokeActionDefinition,
   "team.member.role_update": teamMemberRoleUpdateActionDefinition,
+  "team.member_memory_retention.update": teamMemberMemoryRetentionActionDefinition,
   "team.member.disable": teamMemberDisableActionDefinition,
   "team.leave": teamLeaveActionDefinition
 };
@@ -361,6 +403,10 @@ export const resolveTeamAndMembershipActionGrantOperation = (input: {
       return teamInviteRevokeActionDefinition.resolveOperation(input.intent);
     case "team.member.role_update":
       return teamMemberRoleUpdateActionDefinition.resolveOperation(
+        input.intent
+      );
+    case "team.member_memory_retention.update":
+      return teamMemberMemoryRetentionActionDefinition.resolveOperation(
         input.intent
       );
     case "team.member.disable":

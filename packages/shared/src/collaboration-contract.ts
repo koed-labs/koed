@@ -1861,6 +1861,8 @@ export const collaborationActionGrantIntentSchema = z
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       mode: z.enum(["snapshot", "continuous"]),
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       candidate: sharedMemoryCandidateBindingSchema.optional()
     }),
     actionGrantIntent("collaboration.share_memory", {
@@ -1874,6 +1876,8 @@ export const collaborationActionGrantIntentSchema = z
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
@@ -1923,10 +1927,32 @@ export const collaborationActionGrantIntentSchema = z
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable()
+    }),
+    actionGrantIntent("collaboration.update_team_memory_retention", {
+      teamId: z.uuid(),
+      userId: z.uuid(),
+      enabled: z.boolean(),
+      expectedVersion: positiveVersionSchema,
+      mutationId: z.uuid()
+    }),
+    actionGrantIntent("collaboration.remove_team_retained_memory", {
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema,
+      mutationId: z.uuid()
+    }),
+    actionGrantIntent("collaboration.stop_owned_team_memory_updates", {
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema,
+      mutationId: z.uuid()
     }),
     actionGrantIntent("collaboration.managed_conversation_handoff", {
       executionId: z.uuid(),
@@ -2207,6 +2233,51 @@ export const collaborationWorkspaceSchema = z
   })
   .strict();
 
+export const teamMemoryDestinationSchema = z
+  .object({ teamId: z.uuid(), workspaceId: z.uuid() })
+  .strict();
+
+export const teamMemoryRetentionMemberSchema = z
+  .object({
+    teamId: z.uuid(),
+    userId: z.uuid(),
+    displayName: z.string().trim().min(1).max(120).nullable(),
+    enabled: z.boolean(),
+    version: positiveVersionSchema
+  })
+  .strict();
+
+export const retainedTeamMemoryItemSchema = z
+  .object({
+    shareGrantId: z.uuid(),
+    teamWorkspaceId: z.uuid(),
+    logicalMemoryId: z.uuid(),
+    title: z.string().trim().min(1).max(240),
+    contributorLabel: z.string().trim().min(1).max(120),
+    grantVersion: positiveVersionSchema,
+    sourceUpdateState: z.enum(["active", "stopped"]),
+    retainedAt: collaborationTimestampSchema
+  })
+  .strict();
+
+export const teamMemoryRetentionUpdateSchema = z
+  .object({
+    teamId: z.uuid(),
+    userId: z.uuid(),
+    enabled: z.boolean(),
+    version: positiveVersionSchema
+  })
+  .strict();
+
+export const teamMemoryRetentionSettingSchema = z
+  .object({
+    teamId: z.uuid(),
+    userId: z.uuid(),
+    enabled: z.boolean(),
+    version: positiveVersionSchema
+  })
+  .strict();
+
 export const sharedMemoryPreviewSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
@@ -2218,6 +2289,9 @@ export const sharedMemoryPreviewSchema = z
     maximumFidelity: sharedMemoryFidelityCeilingSchema,
     includeCuratedMemory: z.boolean(),
     mode: z.enum(["snapshot", "continuous"]),
+    retentionEnabled: z.boolean(),
+    retentionPolicyEnabled: z.boolean(),
+    memberRetentionVersion: positiveVersionSchema,
     previewRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     policyRevision: positiveVersionSchema,
@@ -2338,6 +2412,8 @@ export const sharedMemoryConsentSchema = z
     version: positiveVersionSchema,
     maximumFidelity: sharedMemoryFidelityCeilingSchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: positiveVersionSchema,
     previewRevision: positiveVersionSchema,
     previewHash: sha256Schema,
     sourceRevision: nonNegativeSequenceSchema,
@@ -2366,9 +2442,12 @@ const sharedMemoryGrantBaseSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     maximumFidelity: sharedMemoryFidelityCeilingSchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: positiveVersionSchema,
     fidelityPolicyRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     grantVersion: positiveVersionSchema,
+    ownerUpdatesState: z.enum(["active", "stopped"]),
     lifecycle: z.enum([
       "active",
       "unavailable",
@@ -2430,6 +2509,8 @@ export const pendingShareSchema = z
     activationRepresentation: sharedMemoryRepresentationSchema,
     maximumFidelity: sharedMemoryFidelityCeilingSchema,
     includeCuratedMemory: z.boolean(),
+    retentionEnabled: z.boolean(),
+    memberRetentionVersion: positiveVersionSchema,
     mode: z.enum(["snapshot", "continuous"]),
     sourceRevision: nonNegativeSequenceSchema,
     state: z.enum([
@@ -2854,9 +2935,11 @@ export const collaborationRendererCommandSchema = z
       activationRepresentation: sharedMemoryRepresentationSchema,
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
       candidate: sharedMemoryCandidateBindingSchema.optional(),
-      actionGrant: collaborationActionGrantReferenceSchema
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
     }),
     command("collaboration.load_shared_memory_preview_page", {
       previewHash: sha256Schema,
@@ -2874,12 +2957,14 @@ export const collaborationRendererCommandSchema = z
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      actionGrant: collaborationActionGrantReferenceSchema
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
     }),
     command("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -2892,7 +2977,7 @@ export const collaborationRendererCommandSchema = z
         .min(1)
         .max(120)
         .regex(/^[A-Za-z0-9_.:-]+$/),
-      actionGrant: collaborationActionGrantReferenceSchema
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
     }),
     command("collaboration.change_shared_memory_fidelity", {
       source: sharedMemorySourceRefSchema,
@@ -2907,11 +2992,50 @@ export const collaborationRendererCommandSchema = z
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
+      retentionEnabled: z.boolean(),
+      memberRetentionVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      actionGrant: collaborationActionGrantReferenceSchema
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
+    }),
+    command("collaboration.ensure_team_memory_destination", {
+      teamId: z.uuid()
+    }),
+    command("collaboration.get_team_memory_retention", {
+      teamId: z.uuid()
+    }),
+    command("collaboration.list_team_memory_retention_members", {
+      teamId: z.uuid()
+    }),
+    command("collaboration.update_team_memory_retention", {
+      teamId: z.uuid(),
+      userId: z.uuid(),
+      enabled: z.boolean(),
+      expectedVersion: positiveVersionSchema,
+      mutationId: z.uuid(),
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
+    }),
+    command("collaboration.list_team_retained_memory", {
+      teamId: z.uuid(),
+      cursor: collaborationOpaqueCursorSchema.nullable().default(null),
+      limit: z.number().int().min(1).max(100).default(50)
+    }),
+    command("collaboration.remove_team_retained_memory", {
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema,
+      mutationId: z.uuid(),
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
+    }),
+    command("collaboration.stop_owned_team_memory_updates", {
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema,
+      mutationId: z.uuid(),
+      actionGrant: collaborationActionGrantReferenceSchema.optional()
     }),
     command("collaboration.subscribe", {
       scope: z.discriminatedUnion("scope", [
@@ -3108,6 +3232,13 @@ const commandNameSchema = z.enum([
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_fidelity",
+  "collaboration.ensure_team_memory_destination",
+  "collaboration.get_team_memory_retention",
+  "collaboration.list_team_memory_retention_members",
+  "collaboration.update_team_memory_retention",
+  "collaboration.list_team_retained_memory",
+  "collaboration.remove_team_retained_memory",
+  "collaboration.stop_owned_team_memory_updates",
   "collaboration.subscribe",
   "collaboration.unsubscribe",
   "collaboration.acknowledge_delivery"
@@ -3321,6 +3452,51 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.change_shared_memory_fidelity",
     z.object({ pendingShare: pendingShareSchema }).strict()
+  ),
+  successResult(
+    "collaboration.ensure_team_memory_destination",
+    teamMemoryDestinationSchema
+  ),
+  successResult(
+    "collaboration.get_team_memory_retention",
+    z.object({ setting: teamMemoryRetentionSettingSchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_team_memory_retention_members",
+    z
+      .object({
+        teamId: z.uuid(),
+        members: z.array(teamMemoryRetentionMemberSchema).max(1_000)
+      })
+      .strict()
+  ),
+  successResult(
+    "collaboration.update_team_memory_retention",
+    z.object({ policy: teamMemoryRetentionUpdateSchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_team_retained_memory",
+    z
+      .object({
+        teamId: z.uuid(),
+        items: z.array(retainedTeamMemoryItemSchema).max(100),
+        nextCursor: collaborationOpaqueCursorSchema.nullable()
+      })
+      .strict()
+  ),
+  successResult(
+    "collaboration.remove_team_retained_memory",
+    z
+      .object({
+        shareGrantId: z.uuid(),
+        grantVersion: positiveVersionSchema,
+        removed: z.boolean()
+      })
+      .strict()
+  ),
+  successResult(
+    "collaboration.stop_owned_team_memory_updates",
+    z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
   ),
   successResult(
     "collaboration.subscribe",

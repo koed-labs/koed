@@ -80,9 +80,15 @@ export const sharedMemoryFidelityCeilingSchema = z.enum(
   sharedMemoryFidelityCeilings
 );
 
-const fidelityConsentShape = {
+const fidelityPolicyShape = {
   maximumFidelity: sharedMemoryFidelityCeilingSchema,
   includeCuratedMemory: z.boolean()
+};
+
+const fidelityConsentShape = {
+  ...fidelityPolicyShape,
+  retentionEnabled: z.boolean(),
+  memberRetentionVersion: positiveVersionSchema
 };
 
 const validateSourceLogicalMemory = (
@@ -192,6 +198,13 @@ const deviceSharedMemoryAuthoritySchema = z
   })
   .strict();
 
+const browserSessionSharedMemoryAuthoritySchema = z
+  .object({
+    action: z.literal(SHARED_MEMORY_AUTHORITY),
+    source: z.literal("browser_session")
+  })
+  .strict();
+
 export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
   browserSharedMemoryAuthoritySchema,
   deviceSharedMemoryAuthoritySchema
@@ -199,6 +212,10 @@ export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
 
 export const sourceOwnerPolicyParamsSchema = z
   .object({ logicalMemoryId: uuidSchema })
+  .strict();
+
+export const ownerReplicaPreviewTargetQuerySchema = z
+  .object({ logicalMemoryId: uuidSchema, teamId: uuidSchema, teamWorkspaceId: uuidSchema })
   .strict();
 
 export const teamPolicyParamsSchema = z.object({ teamId: uuidSchema }).strict();
@@ -223,6 +240,13 @@ export const listWorkspaceSharedMemoryQuerySchema = z
       .min(0)
       .max(SHARED_MEMORY_WORKSPACE_INDEX_MAX_OFFSET)
       .default(0)
+  })
+  .strict();
+
+export const listRetainedTeamMemoryQuerySchema = z
+  .object({
+    cursor: z.string().trim().min(1).max(4096).nullable().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50)
   })
   .strict();
 
@@ -280,7 +304,7 @@ export const putSharedMemoryPolicySchema = z
     mutationId: uuidSchema,
     policyId: uuidSchema.optional(),
     expectedCurrentVersion: nonNegativeVersionSchema,
-    ...fidelityConsentShape
+    ...fidelityPolicyShape
   })
   .strict();
 
@@ -396,6 +420,53 @@ export const changeSharedMemoryFidelityBundleSchema = z
     validatePersonalNoteConsent(input, context);
   });
 
+const directBrowserShareBindingShape = {
+  source: sharedMemorySourceRefSchema,
+  sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+  activationRepresentation: sharedMemoryRepresentationSchema,
+  logicalMemoryId: uuidSchema,
+  teamId: uuidSchema,
+  teamWorkspaceId: uuidSchema,
+  preview: sharedSourcePreviewReferenceSchema,
+  previewRevision: positiveVersionSchema,
+  mode: z.enum(["snapshot", "continuous"]),
+  maximumFidelity: sharedMemoryFidelityCeilingSchema,
+  includeCuratedMemory: z.boolean(),
+  retentionEnabled: z.boolean(),
+  retentionPolicyEnabled: z.boolean(),
+  memberRetentionVersion: positiveVersionSchema,
+  expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+  authority: browserSessionSharedMemoryAuthoritySchema
+};
+
+export const createDirectSharedMemoryBundleSchema = z
+  .object({
+    ...directBrowserShareBindingShape,
+    mutationId: uuidSchema,
+    logicalGrantId: uuidSchema,
+    consentId: uuidSchema
+  })
+  .strict()
+  .superRefine((input, context) => {
+    validateSourceLogicalMemory(input, context);
+    validateEffectiveSelection(input, context);
+    validatePersonalNoteConsent(input, context);
+  });
+
+export const changeDirectSharedMemoryFidelitySchema = z
+  .object({
+    ...directBrowserShareBindingShape,
+    mutationId: uuidSchema,
+    consentId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema
+  })
+  .strict()
+  .superRefine((input, context) => {
+    validateSourceLogicalMemory(input, context);
+    validateEffectiveSelection(input, context);
+    validatePersonalNoteConsent(input, context);
+  });
+
 export const shareGrantParamsSchema = z
   .object({ shareGrantId: uuidSchema })
   .strict();
@@ -428,6 +499,28 @@ export const scopedShareGrantParamsSchema = z
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
     shareGrantId: uuidSchema
+  })
+  .strict();
+
+export const retainedTeamMemoryParamsSchema = z
+  .object({ teamId: uuidSchema, shareGrantId: uuidSchema })
+  .strict();
+
+export const removeRetainedTeamMemorySchema = z
+  .object({
+    mutationId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema,
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict();
+
+export const stopOwnedTeamMemoryUpdatesSchema = z
+  .object({
+    mutationId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema,
+    authority: sharedMemoryAuthoritySchema
   })
   .strict();
 

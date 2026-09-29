@@ -406,3 +406,119 @@ test("access revocation releases a subscription whose create response arrives la
   unsubscribe();
   streamControllers[0]?.close();
 });
+
+test("uses browser-session persisted-preview bundles without desktop snapshots or candidate admission", async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const preview = {
+    source: { kind: "captured_session", sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", logicalMemoryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } as const,
+    sourceCapabilities: ["memory_events"],
+    activationRepresentation: "memory_events",
+    mode: "snapshot" as const,
+    previewId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    previewHash: "a".repeat(64),
+    previewRevision: 1,
+    logicalMemoryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    teamId,
+    teamWorkspaceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    representation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
+    retentionEnabled: false,
+    retentionPolicyEnabled: false,
+    memberRetentionVersion: 1,
+    binding: { sourceRevision: 7, sourceHash: "a".repeat(64), fidelityPolicyRevision: 1, fidelityPolicyHash: "a".repeat(64), contentPolicyVersion: 1, contentPolicyHash: "a".repeat(64), classifierVersion: 1, classifierHash: "a".repeat(64) },
+    items: [{ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", representation: "memory_events", sequence: 1, occurredAt: timestamp, sourceItems: [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", sourceKind: "user_message", occurredAt: timestamp, body: "Shared source item", actorName: null, toolName: null, toolCallId: null }] }],
+    sourceContentHash: "a".repeat(64),
+    sourceRevision: 7,
+    sourceHash: "a".repeat(64),
+    createdAt: timestamp
+  };
+  let bundleResponseTeamId = teamId;
+  const client = new StudioCollaborationClient(async (input, init = {}) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url === "/v1/teams/navigation") {
+      return new Response(JSON.stringify({
+        principal: { id: memberId, displayName: "Member One" },
+        teams: [{
+          team: { id: teamId, name: "Team One" },
+          membership: { teamId, userId: memberId, status: "enabled", role: "member" },
+          members: [{ userId: memberId, displayName: "Member One" }],
+          workspaces: []
+        }]
+      }));
+    }
+    if (url === "/v1/shared-memory/previews") return new Response(JSON.stringify({ preview }));
+    if (url === "/v1/shared-memory/share-bundles") return new Response(JSON.stringify({
+      consent: {
+        source: preview.source, sourceCapabilities: ["memory_events"], activationRepresentation: "memory_events",
+        id: "15151515-1515-4515-8515-151515151515", logicalMemoryId: preview.logicalMemoryId, teamId: bundleResponseTeamId,
+        teamWorkspaceId: preview.teamWorkspaceId, mode: "snapshot", maximumFidelity: "memory_events", includeCuratedMemory: false,
+        retentionEnabled: false, retentionPolicyEnabled: false, memberRetentionVersion: 1, previewId: preview.previewId,
+        previewHash: preview.previewHash, previewRevision: preview.previewRevision, version: 1
+      },
+      grant: {
+        source: preview.source, sourceCapabilities: ["memory_events"], activationRepresentation: "memory_events",
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff", logicalGrantId: "14141414-1414-4414-8414-141414141414",
+        logicalMemoryId: preview.logicalMemoryId, teamId: bundleResponseTeamId, teamWorkspaceId: preview.teamWorkspaceId,
+        consentId: "15151515-1515-4515-8515-151515151515", mode: "snapshot", maximumFidelity: "memory_events",
+        includeCuratedMemory: false, retentionEnabled: false, memberRetentionVersion: 1, grantVersion: 1
+      },
+      representation: null
+    }), { status: 201 });
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  });
+
+  const hosted = await client.loadHostedSession();
+  assert.equal(hosted.kind, "hosted_browser");
+  assert.equal("personal" in hosted, false);
+  await client.previewOwnedSource({
+    source: preview.source,
+    logicalMemoryId: preview.logicalMemoryId,
+    remoteReplicaId: "12121212-1212-4212-8212-121212121212",
+    teamId,
+    teamWorkspaceId: preview.teamWorkspaceId,
+    activationRepresentation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
+    mode: "snapshot",
+    retentionEnabled: false,
+    memberRetentionVersion: 1
+  });
+  const shareInput = {
+    source: preview.source,
+    sourceCapabilities: ["memory_events"],
+    activationRepresentation: "memory_events",
+    mutationId: "13131313-1313-4313-8313-131313131313",
+    logicalGrantId: "14141414-1414-4414-8414-141414141414",
+    consentId: "15151515-1515-4515-8515-151515151515",
+    logicalMemoryId: preview.logicalMemoryId,
+    teamId,
+    teamWorkspaceId: preview.teamWorkspaceId,
+    previewId: preview.previewId,
+    previewHash: preview.previewHash,
+    previewRevision: preview.previewRevision,
+    mode: "snapshot" as const,
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
+    retentionEnabled: false,
+    retentionPolicyEnabled: false,
+    memberRetentionVersion: 1
+  };
+  await client.shareOwnedSource(shareInput);
+  bundleResponseTeamId = "99999999-9999-4999-8999-999999999999";
+  await assert.rejects(() => client.shareOwnedSource(shareInput), /different consent or Team scope/);
+
+  assert.deepEqual(requests.map(({ url }) => url), [
+    "/v1/teams/navigation",
+    "/v1/shared-memory/previews",
+    "/v1/shared-memory/share-bundles",
+    "/v1/shared-memory/share-bundles"
+  ]);
+  assert.equal(requests.every(({ init }) => init.credentials === "include" && init.redirect === "error"), true);
+  assert.equal(requests.some(({ init }) => new Headers(init.headers).has("x-studio-csrf")), false);
+  const previewBody = JSON.parse(String(requests[1]?.init.body));
+  assert.deepEqual(previewBody.sourceCapabilities, ["memory_events"]);
+  assert.deepEqual(previewBody.authority, { action: "shared_memory.authority", source: "browser_session" });
+  assert.equal(requests.some(({ url }) => url.includes("candidate-previews") || url.includes("pending-shares")), false);
+});

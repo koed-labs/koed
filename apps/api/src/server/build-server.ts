@@ -1825,6 +1825,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,
+    requireTeamAccessRepository: () =>
+      requireRepository() as ReturnType<typeof requireRepository> & import("@koed/db").TeamAccessRepository,
     requireTeamConversationSourceRepository: requireRepository,
     requireCollaborationRepository,
     requireHighRiskRepository: requireRepository,

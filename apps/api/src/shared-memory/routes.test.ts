@@ -286,6 +286,9 @@ const createFixture = () => {
     representation: input.representation,
     maximumFidelity: input.maximumFidelity,
     includeCuratedMemory: input.includeCuratedMemory,
+    retentionEnabled: input.retentionEnabled ?? false,
+    retentionPolicyEnabled: input.retentionEnabled ?? false,
+    memberRetentionVersion: input.memberRetentionVersion ?? 1,
     previewRevision: 1,
     binding: binding(),
     manifest: [
@@ -500,6 +503,8 @@ const createFixture = () => {
         representation: input.activationRepresentation,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
+        retentionEnabled: input.retentionEnabled,
+        memberRetentionVersion: input.memberRetentionVersion,
         mode: input.mode,
         sourceRevision: 1,
         state: "preparing",
@@ -542,6 +547,8 @@ const createFixture = () => {
         representation: input.maximumFidelity,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
+        retentionEnabled: input.retentionEnabled,
+        memberRetentionVersion: input.memberRetentionVersion,
         mode: input.mode,
         sourceRevision: 1,
         state: "preparing",
@@ -580,6 +587,19 @@ const createFixture = () => {
     },
     async getOwnerShare() {
       return null;
+    },
+    async getReadyOwnerMemoryReplica(actor, input) {
+      if (
+        actor.userId !== ids.alice ||
+        input.logicalMemoryId !== ids.logicalMemory ||
+        input.teamId !== ids.teamA ||
+        input.teamWorkspaceId !== ids.workspaceA
+      ) throw new SharedMemoryAuthorizationError("private owner replica");
+      return {
+        remoteReplicaId: ids.remoteReplica,
+        sourceRevision: 7,
+        source: capturedSource
+      };
     },
     async readOwnerSharePreview() {
       return null;
@@ -748,6 +768,8 @@ const createFixture = () => {
         representation: "memory_events",
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         mode: "continuous",
         sourceRevision: input.candidate.sourceRevision,
         state: "preparing",
@@ -1105,6 +1127,7 @@ const createFixture = () => {
 
   return {
     ids,
+    capturedSource,
     users,
     repository,
     sourceRepository,
@@ -1370,6 +1393,8 @@ const capturedIntent = (
     "memory_events" as const,
     "curated_assertions" as const
   ],
+  retentionEnabled: false,
+  memberRetentionVersion: 1,
   activationRepresentation,
   mode
 });
@@ -1924,6 +1949,103 @@ describe("Shared Memory HTTP routes", () => {
       limit: 50,
       offset: 0
     });
+    await app.close();
+  });
+
+  it("resolves only a ready owner replica under the exact owner and Team destination", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const query = new URLSearchParams({
+      logicalMemoryId: fixture.ids.logicalMemory,
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: fixture.ids.workspaceA
+    });
+    const owner = await app.inject({
+      method: "GET",
+      url: `/v1/shared-memory/preview-target?${query}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    const otherOwner = await app.inject({
+      method: "GET",
+      url: `/v1/shared-memory/preview-target?${query}`,
+      headers: sessionHeaders(fixture.ids.bob)
+    });
+    const wrongTeam = await app.inject({
+      method: "GET",
+      url: `/v1/shared-memory/preview-target?${new URLSearchParams({
+        logicalMemoryId: fixture.ids.logicalMemory,
+        teamId: fixture.ids.teamB,
+        teamWorkspaceId: fixture.ids.workspaceA
+      })}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+
+    expect([owner.statusCode, otherOwner.statusCode, wrongTeam.statusCode]).toEqual([200, 403, 403]);
+    expect(jsonBody<Record<string, unknown>>(owner)).toEqual({
+      ready: true,
+      remoteReplicaId: fixture.ids.remoteReplica,
+      sourceRevision: 7,
+      source: fixture.capturedSource
+    });
+    expect(owner.body).not.toContain("sourceCapabilities");
+    expect(owner.body).not.toContain("ownerUserId");
+    expect(owner.body).not.toContain("title");
+    await app.close();
+  });
+
+  it("commits hosted persisted-preview bundles and reports preparing representation truthfully", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/share-bundles",
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
+        logicalMemoryId: fixture.ids.logicalMemory,
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspaceA,
+        preview: { previewId: fixture.ids.preview, previewHash: hash },
+        previewRevision: 1,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        retentionPolicyEnabled: false,
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: fixture.ids.consent,
+        authority: authority()
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(jsonBody<Record<string, unknown>>(response)).toMatchObject({
+      consent: { id: fixture.ids.consent },
+      grant: { id: fixture.ids.grant, teamId: fixture.ids.teamA, teamWorkspaceId: fixture.ids.workspaceA },
+      representation: null
+    });
+    expect(fixture.browserAuthorityReferenceIds).toContain(fixture.ids.sessionAuthority);
+
+    const otherOwner = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/share-bundles",
+      headers: sessionHeaders(fixture.ids.bob),
+      payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
+        logicalMemoryId: fixture.ids.logicalMemory,
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspaceA,
+        preview: { previewId: fixture.ids.preview, previewHash: hash },
+        previewRevision: 1,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        retentionPolicyEnabled: false,
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: fixture.ids.consent,
+        authority: authority()
+      }
+    });
+    expect(otherOwner.statusCode).toBe(403);
     await app.close();
   });
 

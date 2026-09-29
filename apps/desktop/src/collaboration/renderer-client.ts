@@ -337,6 +337,8 @@ export interface CollaborationRendererClient {
     activationRepresentation: SharedMemoryRepresentation;
     maximumFidelity: SharedMemoryFidelityCeiling;
     includeCuratedMemory: boolean;
+    retentionEnabled?: boolean;
+    memberRetentionVersion?: number;
     mode: "snapshot" | "continuous";
     candidate?: {
       source: SharedMemorySourceRef;
@@ -372,6 +374,8 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
+    retentionEnabled?: boolean;
+    memberRetentionVersion?: number;
   }): Promise<SharedMemoryGrant | PendingShare>;
   revokeSharedMemory(input: {
     mutationId: string;
@@ -398,6 +402,8 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
+    retentionEnabled?: boolean;
+    memberRetentionVersion?: number;
   }): Promise<PendingShare>;
   dispose(): void;
 }
@@ -1647,6 +1653,9 @@ export const createCollaborationRendererClient = (
       "collaboration.preview_shared_memory": "Preview Shared Memory",
       "collaboration.share_memory": "Share Memory",
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
+      "collaboration.update_team_memory_retention": "Update Team memory retention",
+      "collaboration.remove_team_retained_memory": "Remove retained Team memory",
+      "collaboration.stop_owned_team_memory_updates": "Stop shared-memory updates",
       "collaboration.change_shared_memory_fidelity":
         "Change Shared Memory fidelity",
       "collaboration.share_conversation_source": "Share Conversation source",
@@ -4177,17 +4186,22 @@ export const createCollaborationRendererClient = (
     },
     async previewSharedMemory(input) {
       const commandRequestId = crypto.randomUUID();
+      const boundInput = {
+        ...input,
+        retentionEnabled: input.retentionEnabled ?? false,
+        memberRetentionVersion: input.memberRetentionVersion ?? 1
+      };
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.preview_shared_memory",
         commandRequestId,
-        ...input
+        ...boundInput
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.preview_shared_memory",
-          input: { ...input, actionGrant }
+          input: { ...boundInput, actionGrant }
         })
       );
       if (
@@ -4216,17 +4230,22 @@ export const createCollaborationRendererClient = (
     },
     async shareMemory(input) {
       const commandRequestId = crypto.randomUUID();
+      const boundInput = {
+        ...input,
+        retentionEnabled: input.retentionEnabled ?? false,
+        memberRetentionVersion: input.memberRetentionVersion ?? 1
+      };
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.share_memory",
         commandRequestId,
-        ...input
+        ...boundInput
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.share_memory",
-          input: { ...input, actionGrant }
+          input: { ...boundInput, actionGrant }
         })
       );
       if (!result.ok || result.command !== "collaboration.share_memory") {
@@ -4261,17 +4280,22 @@ export const createCollaborationRendererClient = (
     },
     async changeSharedMemoryFidelity(input) {
       const commandRequestId = crypto.randomUUID();
+      const boundInput = {
+        ...input,
+        retentionEnabled: input.retentionEnabled ?? false,
+        memberRetentionVersion: input.memberRetentionVersion ?? 1
+      };
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.change_shared_memory_fidelity",
         commandRequestId,
-        ...input
+        ...boundInput
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.change_shared_memory_fidelity",
-          input: { ...input, actionGrant }
+          input: { ...boundInput, actionGrant }
         })
       );
       if (

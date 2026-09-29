@@ -3,15 +3,19 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  collaborationActionGrantIntentSchema,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationSnapshotSchema,
   collaborationThreadSchema,
   collaborationRendererEventSchema,
+  sharedMemorySourceRefSchema,
   type CollaborationSnapshot,
   type CollaborationRendererCommand,
   type CollaborationCommandResult,
-  type CollaborationRendererEvent
+  type CollaborationRendererEvent,
+  type CollaborationActionGrantReference,
+  type CollaborationApprovalReview
 } from "@koed/shared";
 import type { DesktopCommandContext } from "../koed-server/manager.js";
 import { desktopRendererOrigin } from "../ipc/protocol.js";
@@ -114,6 +118,9 @@ export interface StudioGatewayOptions {
   runStudioCollaborationCommand?: (
     command: CollaborationRendererCommand
   ) => Promise<CollaborationCommandResult>;
+  confirmNativeReview?: (
+    review: CollaborationApprovalReview
+  ) => Promise<boolean>;
   subscribeStudioCollaborationEvents?: (
     listener: (event: CollaborationRendererEvent) => void
   ) => () => void;
@@ -166,6 +173,9 @@ export const createStudioWindowController = (input: {
     args: Record<string, unknown>,
     context: DesktopCommandContext
   ) => unknown;
+  confirmNativeReview?: (
+    review: CollaborationApprovalReview
+  ) => Promise<boolean>;
   getTeamDraftStore?: () => Promise<StudioTeamDraftStore>;
   openExternal: (url: string) => Promise<unknown>;
 }): { open: () => Promise<void>; close: () => Promise<void> } => {
@@ -372,6 +382,24 @@ export const createStudioWindowController = (input: {
   const studioChannelCommands = new Set([
     "collaboration.load",
     "collaboration.select",
+    "collaboration.preview_shared_memory_candidate",
+    "collaboration.prepare_shared_memory_source",
+    "collaboration.preview_shared_memory",
+    "collaboration.load_shared_memory_preview_page",
+    "collaboration.share_memory",
+    "collaboration.revoke_shared_memory",
+    "collaboration.change_shared_memory_fidelity",
+    "collaboration.list_owned_shared_memory_grants",
+    "collaboration.list_owned_shares",
+    "collaboration.get_owned_share",
+    "collaboration.control_pending_share",
+    "collaboration.ensure_team_memory_destination",
+    "collaboration.get_team_memory_retention",
+    "collaboration.list_team_memory_retention_members",
+    "collaboration.update_team_memory_retention",
+    "collaboration.list_team_retained_memory",
+    "collaboration.remove_team_retained_memory",
+    "collaboration.stop_owned_team_memory_updates",
     "collaboration.create_team_channel",
     "collaboration.create_team_shared_project",
     "collaboration.start_direct_message",
@@ -387,6 +415,172 @@ export const createStudioWindowController = (input: {
     "collaboration.unsubscribe",
     "collaboration.acknowledge_delivery"
   ]);
+  const protectedStudioCommands = new Set([
+    "collaboration.preview_shared_memory",
+    "collaboration.share_memory",
+    "collaboration.revoke_shared_memory",
+    "collaboration.change_shared_memory_fidelity",
+    "collaboration.update_team_memory_retention",
+    "collaboration.remove_team_retained_memory",
+    "collaboration.stop_owned_team_memory_updates"
+  ]);
+  const runOwnedStudioCommand = async (
+    command: CollaborationRendererCommand,
+    lifecycle: AbortController,
+    ownerId: string
+  ): Promise<CollaborationCommandResult> => {
+    const context: DesktopCommandContext = {
+      ownerId,
+      signal: lifecycle.signal,
+      emitCollaborationEvent: (event) => {
+        if (
+          lifecycle === collaborationLifecycle &&
+          ownerId === collaborationOwnerId
+        ) emitCollaborationEvent(event);
+      }
+    };
+    const result = collaborationCommandResultSchema.parse(
+      await input.collaboration(command, context)
+    );
+    if (
+      lifecycle !== collaborationLifecycle ||
+      lifecycle.signal.aborted ||
+      ownerId !== collaborationOwnerId ||
+      result.requestId !== command.requestId ||
+      result.command !== command.command
+    ) {
+      throw new Error("Studio collaboration authority changed during the request.");
+    }
+    return result;
+  };
+
+  const issueStudioActionGrant = async (
+    command: CollaborationRendererCommand,
+    lifecycle: AbortController,
+    ownerId: string
+  ): Promise<CollaborationActionGrantReference> => {
+    const inputRecord = command.input as Record<string, unknown>;
+    if ("actionGrant" in inputRecord) {
+      throw new Error("Studio cannot supply an Action Grant reference.");
+    }
+    const intent = collaborationActionGrantIntentSchema.parse({
+      intent: command.command,
+      commandRequestId: command.requestId,
+      ...inputRecord
+    });
+    const authorityFingerprint = (): string => {
+      const snapshot = verifiedSnapshot;
+      if (
+        !snapshot ||
+        snapshot.connection.state !== "live" ||
+        !snapshot.connection.backendId ||
+        !snapshot.navigation.teamPrincipal
+      ) {
+        throw new Error("Studio collaboration authority is unavailable.");
+      }
+      const teamId =
+        typeof inputRecord.teamId === "string" ? inputRecord.teamId : null;
+      const team = teamId
+        ? snapshot.navigation.teams.find((entry) => entry.id === teamId)
+        : null;
+      if (teamId && !team) {
+        throw new Error("Team access changed before the operation completed.");
+      }
+      const source = sharedMemorySourceRefSchema.safeParse(inputRecord.source);
+      let sourceIdentity: unknown = null;
+      if (source.success) {
+        if (source.data.kind === "captured_session") {
+          const sessionId = source.data.sessionId;
+          const logicalMemoryId = source.data.logicalMemoryId;
+          const entry = snapshot.navigation.personal.memory.find(
+            (item) =>
+              item.id === sessionId && item.logicalMemoryId === logicalMemoryId
+          );
+          if (!entry) {
+            throw new Error("The selected Conversation source is no longer available.");
+          }
+          sourceIdentity = { sessionId, logicalMemoryId };
+        } else if (source.data.kind === "personal_note") {
+          sourceIdentity = {
+            noteId: source.data.noteId,
+            noteRevision: source.data.noteRevision,
+            memoryEventId: source.data.memoryEventId,
+            logicalMemoryId: source.data.logicalMemoryId
+          };
+        }
+      }
+      return JSON.stringify({
+        backendId: snapshot.connection.backendId,
+        principalId: snapshot.navigation.teamPrincipal.id,
+        teamId,
+        teamRole: team?.role ?? null,
+        selection: snapshot.selection,
+        sourceIdentity
+      });
+    };
+    const expectedAuthority = authorityFingerprint();
+    const assertAuthorityCurrent = (): void => {
+      if (authorityFingerprint() !== expectedAuthority) {
+        throw new Error("Team, account, or selected source changed during native review.");
+      }
+    };
+    const actionCommand = async (
+      name:
+        | "collaboration.request_action_grant"
+        | "collaboration.confirm_action_grant"
+        | "collaboration.await_action_grant",
+      input: Record<string, unknown>
+    ) => {
+      const grantCommand = collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: name,
+        input
+      });
+      return runOwnedStudioCommand(grantCommand, lifecycle, ownerId);
+    };
+    let grantResult = await actionCommand("collaboration.request_action_grant", { intent });
+    if (!grantResult.ok || grantResult.command !== "collaboration.request_action_grant") {
+      throw new Error("Native Action Grant request failed.");
+    }
+    let status = grantResult.data.status;
+    while (status.state === "review_required" || status.state === "pending") {
+      if (status.state === "review_required") {
+        if (!status.review || !input.confirmNativeReview) {
+          throw new Error("Native review is unavailable.");
+        }
+        const approved = await input.confirmNativeReview(status.review);
+        if (lifecycle !== collaborationLifecycle || lifecycle.signal.aborted || ownerId !== collaborationOwnerId) {
+          throw new Error("Studio collaboration authority changed during review.");
+        }
+        assertAuthorityCurrent();
+        const decisionResult = await actionCommand("collaboration.confirm_action_grant", {
+          actionGrant: status.actionGrant,
+          decision: approved ? "approve" : "cancel"
+        });
+        if (!decisionResult.ok || decisionResult.command !== "collaboration.confirm_action_grant") {
+          throw new Error("Native Action Grant decision failed.");
+        }
+        status = decisionResult.data.status;
+        if (!approved) throw new Error("Action Grant was declined.");
+        continue;
+      }
+      if (Date.parse(status.expiresAt) <= Date.now()) {
+        throw new Error("Native Action Grant expired.");
+      }
+      const awaited = await actionCommand("collaboration.await_action_grant", {
+        actionGrant: status.actionGrant
+      });
+      if (!awaited.ok || awaited.command !== "collaboration.await_action_grant") {
+        throw new Error("Native Action Grant wait failed.");
+      }
+      status = awaited.data.status;
+    }
+    assertAuthorityCurrent();
+    if (status.state !== "approved") throw new Error("Action Grant was not approved.");
+    return status.actionGrant;
+  };
+
   const runStudioCollaborationCommand = async (
     args: CollaborationRendererCommand
   ): Promise<CollaborationCommandResult> => {
@@ -412,18 +606,19 @@ export const createStudioWindowController = (input: {
     const ownerId = collaborationOwnerId;
     if (!lifecycle || lifecycle.signal.aborted || !ownerId)
       throw new Error("Studio collaboration is unavailable.");
-    const result = collaborationCommandResultSchema.parse(
-      await input.collaboration(command, {
-        ownerId,
-        signal: lifecycle.signal,
-        emitCollaborationEvent: (event) => {
-          if (
-            lifecycle === collaborationLifecycle &&
-            ownerId === collaborationOwnerId
-          )
-            emitCollaborationEvent(event);
-        }
-      })
+    const actionGrant = protectedStudioCommands.has(command.command)
+      ? await issueStudioActionGrant(command, lifecycle, ownerId)
+      : undefined;
+    const authorizedCommand = actionGrant
+      ? collaborationRendererCommandSchema.parse({
+          ...command,
+          input: { ...command.input, actionGrant }
+        })
+      : command;
+    const result = await runOwnedStudioCommand(
+      authorizedCommand,
+      lifecycle,
+      ownerId
     );
     if (
       lifecycle !== collaborationLifecycle ||
@@ -727,6 +922,9 @@ export const createStudioWindowController = (input: {
         registerProject: input.registerProject,
         loadCollaborationSnapshot,
         runStudioCollaborationCommand,
+        ...(input.confirmNativeReview
+          ? { confirmNativeReview: input.confirmNativeReview }
+          : {}),
         loadStudioCollaborationSnapshot,
         loadStudioTeamDraft: async (authority) => {
           await loadStudioCollaborationSnapshot();

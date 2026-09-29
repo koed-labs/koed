@@ -87,6 +87,8 @@ export const sharedMemoryPreviewActionGrantBinding = (input: {
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -106,6 +108,8 @@ export const sharedMemoryPreviewActionGrantBinding = (input: {
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
       mode: input.mode,
+      retentionEnabled: input.retentionEnabled,
+      memberRetentionVersion: input.memberRetentionVersion,
       authority: authorityBody(input.referenceId)
     }
   });
@@ -129,6 +133,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding => {
   const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
@@ -157,6 +163,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
       mode: input.mode,
+      retentionEnabled: input.retentionEnabled,
+      memberRetentionVersion: input.memberRetentionVersion,
       expiresAt: input.expiresAt ?? null,
       authority: authorityBody(input.referenceId)
     }
@@ -178,6 +186,8 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   expiresAt?: string | null;
@@ -206,6 +216,8 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
+      retentionEnabled: input.retentionEnabled,
+      memberRetentionVersion: input.memberRetentionVersion,
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt ?? null,
@@ -236,6 +248,53 @@ export const sharedMemoryRevokeActionGrantBinding = (input: {
       teamWorkspaceId: input.teamWorkspaceId,
       expectedGrantVersion: input.expectedGrantVersion,
       reasonCode: input.reasonCode,
+      authority: authorityBody(input.referenceId)
+    }
+});
+
+export const sharedMemoryOwnerStopUpdatesActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  shareGrantId: string;
+  expectedGrantVersion: number;
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.owner_stop_updates.${input.teamWorkspaceId}`,
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "POST",
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/owner-stop-updates`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      expectedGrantVersion: input.expectedGrantVersion,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const teamRetainedMemoryRemovalActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  shareGrantId: string;
+  expectedGrantVersion: number;
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.retained_memory.remove.${input.teamId}`,
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "POST",
+    path: `/v1/shared-memory/teams/${input.teamId}/retained/${input.shareGrantId}/remove`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      shareGrantId: input.shareGrantId,
+      expectedGrantVersion: input.expectedGrantVersion,
       authority: authorityBody(input.referenceId)
     }
   });
@@ -306,6 +365,8 @@ export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   expectedGrantVersion: number;
+  retentionEnabled: boolean;
+  memberRetentionVersion: number;
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding => {
   const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
@@ -333,6 +394,8 @@ export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
       mode: input.mode,
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
+      retentionEnabled: input.retentionEnabled,
+      memberRetentionVersion: input.memberRetentionVersion,
       expectedGrantVersion: input.expectedGrantVersion,
       expiresAt: input.expiresAt ?? null,
       authority: authorityBody(input.referenceId)

@@ -10,6 +10,8 @@ import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryOwnerStopUpdatesActionGrantBinding,
+  teamRetainedMemoryRemovalActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemoryRepresentation,
@@ -32,6 +34,8 @@ type SharedMemoryAction =
   | "shared_memory.pending_share"
   | "shared_memory.preview"
   | "shared_memory.revoke"
+  | "shared_memory.retained_memory_remove"
+  | "shared_memory.owner_stop_updates"
   | "shared_memory.conversation_source_grant"
   | "shared_memory.conversation_source_revoke"
   | "shared_memory.change_fidelity";
@@ -48,6 +52,7 @@ type SharedMemoryActionRepository = Pick<
   | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryFidelityChangeReview"
+  | "listRetainedTeamMemory"
   | "getTeamConversationSourceGrantReview"
 >;
 
@@ -118,7 +123,9 @@ export const bindSharedMemoryPreviewOperation = (
     activationRepresentation: intent.activationRepresentation,
     maximumFidelity: intent.maximumFidelity,
     includeCuratedMemory: intent.includeCuratedMemory,
-    mode: intent.mode
+    mode: intent.mode,
+    retentionEnabled: intent.retentionEnabled,
+    memberRetentionVersion: intent.memberRetentionVersion
   });
 
 export const bindSharedMemoryCandidatePreviewOperation = (
@@ -147,6 +154,8 @@ export const bindSharedMemoryCandidatePreviewOperation = (
     maximumFidelity: intent.maximumFidelity,
     includeCuratedMemory: intent.includeCuratedMemory,
     mode: intent.mode,
+    retentionEnabled: intent.retentionEnabled,
+    memberRetentionVersion: intent.memberRetentionVersion,
     expiresAt: intent.expiresAt
   });
 
@@ -172,6 +181,8 @@ export const bindSharedMemoryPendingShareOperation = (
     mode: intent.mode,
     maximumFidelity: intent.maximumFidelity,
     includeCuratedMemory: intent.includeCuratedMemory,
+    retentionEnabled: intent.retentionEnabled,
+    memberRetentionVersion: intent.memberRetentionVersion,
     previewRevision: intent.previewRevision,
     previewHash: intent.previewHash,
     expiresAt: intent.expiresAt
@@ -189,6 +200,31 @@ export const bindSharedMemoryRevokeOperation = (
     shareGrantId: intent.shareGrantId,
     expectedGrantVersion: intent.expectedGrantVersion,
     reasonCode: intent.reasonCode
+  });
+
+export const bindTeamRetainedMemoryRemovalOperation = (
+  intent: Extract<SharedMemoryActionIntent, { action: "shared_memory.retained_memory_remove" }>,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  teamRetainedMemoryRemovalActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    teamId: intent.teamId,
+    shareGrantId: intent.shareGrantId,
+    expectedGrantVersion: intent.expectedGrantVersion
+  });
+
+export const bindSharedMemoryOwnerStopUpdatesOperation = (
+  intent: Extract<SharedMemoryActionIntent, { action: "shared_memory.owner_stop_updates" }>,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryOwnerStopUpdatesActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    teamId: intent.teamId,
+    teamWorkspaceId: intent.teamWorkspaceId,
+    shareGrantId: intent.shareGrantId,
+    expectedGrantVersion: intent.expectedGrantVersion
   });
 
 export const bindSharedMemoryFidelityChangeOperation = (
@@ -214,6 +250,8 @@ export const bindSharedMemoryFidelityChangeOperation = (
     mode: intent.mode,
     maximumFidelity: intent.maximumFidelity,
     includeCuratedMemory: intent.includeCuratedMemory,
+    retentionEnabled: intent.retentionEnabled,
+    memberRetentionVersion: intent.memberRetentionVersion,
     previewRevision: intent.previewRevision,
     previewHash: intent.previewHash,
     expiresAt: intent.expiresAt
@@ -642,11 +680,93 @@ const conversationSourceRevokeDefinition = {
   }
 };
 
+const retainedMemoryRemovalDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    const intent = input.intent;
+    if (intent.action !== "shared_memory.retained_memory_remove") return null;
+    const page = await input.repository.listRetainedTeamMemory(
+      { userId: input.userId },
+      { teamId: intent.teamId, limit: 100 }
+    );
+    const retained = page.items.find(
+      (item) =>
+        item.shareGrantId === intent.shareGrantId &&
+        item.grantVersion === intent.expectedGrantVersion
+    );
+    if (!retained) throw new Error("Retained Team Memory review is unavailable");
+    return {
+      operation: bindTeamRetainedMemoryRemovalOperation(
+        intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Remove retained Team Memory?",
+        description:
+          "End Team recall for this retained representation and start its configured deletion lifecycle.",
+        consequence:
+          "The contributor's Personal Memory stays private and is not deleted. This action applies only to the selected Team Share Grant.",
+        confirmLabel: "Remove retained memory",
+        details: [
+          { label: "Team", value: intent.teamId },
+          { label: "Share Grant", value: retained.shareGrantId },
+          { label: "Memory", value: retained.title },
+          { label: "Contributor", value: "Team member" },
+          { label: "Grant version", value: String(retained.grantVersion) }
+        ]
+      })
+    };
+  }
+};
+
+const ownerStopUpdatesDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    const intent = input.intent;
+    if (intent.action !== "shared_memory.owner_stop_updates") return null;
+    const review = requireReview(
+      await input.repository.getSharedMemoryRevokeReview(
+        { userId: input.userId },
+        {
+          teamId: intent.teamId,
+          teamWorkspaceId: intent.teamWorkspaceId,
+          shareGrantId: intent.shareGrantId,
+          expectedGrantVersion: intent.expectedGrantVersion
+        }
+      ),
+      "Stop retained Team Memory updates"
+    );
+    return {
+      operation: bindSharedMemoryOwnerStopUpdatesOperation(
+        intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Stop updates to retained Team Memory?",
+        description:
+          "Keep the current retained Team representation available while stopping future updates from your Personal Memory.",
+        consequence:
+          "Team members keep recall of the current retained representation until an admin removes it. Your Personal Memory remains unchanged.",
+        confirmLabel: "Stop future updates",
+        details: [
+          { label: "Personal Memory", value: sourceName(review) },
+          { label: "Team", value: review.team.name },
+          { label: "Workspace", value: review.workspace.name },
+          { label: "Share Grant", value: intent.shareGrantId },
+          { label: "Grant version", value: String(review.grant.grantVersion) }
+        ]
+      })
+    };
+  }
+};
+
 export const sharedMemoryActionDefinitions = {
   "shared_memory.candidate_preview": candidatePreviewDefinition,
   "shared_memory.pending_share": pendingShareDefinition,
   "shared_memory.preview": previewDefinition,
   "shared_memory.revoke": revokeDefinition,
+  "shared_memory.retained_memory_remove": retainedMemoryRemovalDefinition,
+  "shared_memory.owner_stop_updates": ownerStopUpdatesDefinition,
   "shared_memory.conversation_source_grant": conversationSourceGrantDefinition,
   "shared_memory.conversation_source_revoke":
     conversationSourceRevokeDefinition,

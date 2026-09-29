@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  collaborationCommandResultSchema,
   collaborationConnectionEventSchema,
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
@@ -237,15 +238,17 @@ export const createCollaborationLocalTransport = (
     }
     clearTimeout(item.timer);
     pending.delete(message.envelopeId);
+    const parsedResult = collaborationCommandResultSchema.safeParse(message.result);
     if (
-      message.result.requestId !== item.command.requestId ||
-      message.result.command !== item.command.command
+      !parsedResult.success ||
+      parsedResult.data.requestId !== item.command.requestId ||
+      parsedResult.data.command !== item.command.command
     ) {
       item.resolve(failureResult(item.command, safeError("internal_error")));
       restartBroker(safeError("internal_error"));
       return;
     }
-    item.resolve(message.result);
+    item.resolve(parsedResult.data);
   };
 
   const ensureBroker = async (): Promise<CollaborationBrokerChild> => {

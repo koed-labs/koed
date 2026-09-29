@@ -69,6 +69,14 @@ export const updateTeamMemberRoleSchema = z
   })
   .strict();
 
+export const updateTeamMemberMemoryRetentionSchema = z
+  .object({
+    enabled: z.boolean(),
+    expectedVersion: z.number().int().positive(),
+    mutationId: z.string().uuid()
+  })
+  .strict();
+
 export const createTeamWorkspaceSchema = z
   .object({
     teamId: z.string().uuid(),
