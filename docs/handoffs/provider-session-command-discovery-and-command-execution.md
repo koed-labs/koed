@@ -132,10 +132,11 @@ Provider investigation/implementation:
 
 - **Codex:** expose a bounded App Server request for `skills/list` using the
   session's verified cwd. Combine the live skill list with supported built-ins
-  and Codex custom prompt definitions. Verify the App Server protocol/version
-  support before relying on a method. Current `CodexAppServerClient.request()`
-  is private; add purpose-specific public methods rather than exposing generic
-  arbitrary RPC dispatch.
+  and Codex custom prompt definitions (always scanned, per Paseo). Verify the
+  App Server protocol/version support before relying on a method. Current
+  `CodexAppServerClient.request()` is private; add purpose-specific public
+  methods rather than exposing generic arbitrary RPC dispatch. Add
+  verification metadata per Resolved design decisions §3.
 - **Claude Code:** verify the installed Claude Agent SDK version/API for
   `supportedCommands()` (Paseo uses it), and expose only supported command and
   skill metadata from the managed SDK query/session.
@@ -146,6 +147,9 @@ Keep file-backed discovery as a fallback only where session/provider discovery
 cannot provide the needed catalog. Preserve global versus Project provenance;
 for Project-free Chats, omit Project definitions. Use the verified Project root
 or the execution's persisted cwd, never a renderer-supplied arbitrary path.
+Tag file-sourced entries with verification metadata per Resolved design
+decisions §3: only present verified entries as confirmed executable commands;
+label unverified file entries for revalidation at dispatch or omit them.
 
 ### 3. Support the pre-start composer
 
@@ -173,17 +177,20 @@ For a command such as Codex `/compact`:
 - dispatch it to the owning managed session (Paseo uses Codex App Server
   `thread/compact/start`); do not call normal `turn/start` with `/compact`;
 - serialize with active turns and respect cancellation, execution ownership,
-  generation fencing, and permission/runtime state;
-- make retries/idempotency explicit so uncertain delivery cannot compact twice;
-- present progress, completion, and failure through existing Conversation
-  presentation without fabricating a user prompt or Memory Event.
+  generation fencing, and permission/runtime state (see Resolved design
+  decisions §4);
+- make retries/idempotency explicit so uncertain delivery cannot compact twice
+  (see Resolved design decisions §1); present progress, completion, and failure
+  through existing Conversation presentation without fabricating a user prompt
+  or Memory Event.
 
 Selection should not unexpectedly execute a control action. A safe initial UX is
 to let selection fill the composer, then on explicit submission resolve an
-exact command invocation and route it by its trusted semantics. Ordinary text
-such as `Please explain /compact` must remain an ordinary prompt. Confirm this
-UX and define argument parsing, quoting, unknown-command, and in-flight-turn
-behavior before implementation.
+exact command invocation and route it by its trusted semantics. See Resolved
+design decisions §2 for parsing, case sensitivity, argument handling, and
+unknown-command behavior. Ordinary text such as `Please explain /compact` must
+remain an ordinary prompt. In-flight-turn behavior is defined in Resolved design
+decisions §4.
 
 Do not assume every slash command has the same semantics across Codex, Claude,
 and Pi. Add only provider actions that Koed can implement safely and test; other
@@ -210,6 +217,74 @@ provider commands/skills may remain provider-recognized prompt input.
   the final source-of-truth, topology, command semantics, failure modes, and
   cache behavior. Do not change `CONTEXT.md` unless a genuinely new domain term
   is resolved.
+
+## Resolved design decisions
+
+These decisions were made after reviewing Paseo's approach. Paseo offers useful
+precedents but does not answer operation-ID, fallback-provenance, or
+generation-fencing questions for Koed. Koed should make its contract explicit
+rather than inherit Paseo's accidental behaviors.
+
+### 1. Operation ID and retry reconciliation
+
+There is no command operation ID in Paseo. Paseo's out-of-band dispatch returns
+no disposition token; a `clientMessageId` prevents duplicate timeline entries but
+does not make the provider action idempotent. Codex's `thread/compact/start`
+passes only a `threadId`, not an operation ID. Paseo's
+`pendingManualCompactionStarts` and item-ID tracking are event-correlation
+heuristics, not idempotency guarantees.
+
+Koed will have the dispatch endpoint accept a stable operation ID from the
+client, persist it alongside the conversation, and return it with an
+accepted/already-accepted status and the session generation. Retries with that
+ID must return the existing operation state, not redispatch it. The record
+stays persisted at least as long as the conversation's history. If provider
+acceptance is ambiguous, the endpoint reports unknown and reconciles against
+provider events rather than automatically replaying. A timeout means "still
+reconciling," not "safe to retry."
+
+### 2. Exact invocation parsing and argument behavior
+
+Paseo separates autocomplete matching from execution parsing. Autocomplete uses
+case-insensitive fuzzy ranking. Execution parsing is separate: it parses a slash
+command at the start of the submitted text using exact, case-sensitive
+command-name checks. Partial matches like `/co` do not execute `/compact`. Codex
+handles `/compact extra` by accepting the arguments but ignoring them.
+
+Koed will keep fuzzy matching in autocomplete suggestions but exact-match the
+canonical command name at submit time. Argument behavior is defined per command;
+Koed-owned controls must not silently ignore arguments. Unknown or stale control
+actions fail closed — the submission becomes ordinary prompt text, not an
+execution attempt.
+
+### 3. File fallback provenance
+
+Paseo's catalog type has a `kind` field (command/skill) but no field indicating
+whether an entry came from the live provider, a file fallback, a built-in, or a
+custom-prompt file. Paseo's Codex adapter merges these sources and scans skill
+files when the live skill list is unavailable, while always scanning custom
+prompts from `$CODEX_HOME/prompts`.
+
+Koed will add source and verification metadata to each catalog entry:
+`provider`, `builtin`, `global-file`, `project-file`, plus `verified` or
+`unverified` status. File-only entries must not be presented as confirmed
+executable commands. Either label them unverified and revalidate at dispatch,
+or omit them when the provider cannot confirm them. The intent is to prevent
+phantom entries from reaching the dispatch path.
+
+### 4. Active-turn and generation-policy
+
+Paseo does not queue Codex `/compact`: it dispatches it out of band with no
+expected-generation check in that path. Steering operations use turn-ID checks;
+Claude has a `compacting` gate that blocks steering but not compact; Codex's
+compact is specifically designed not to cancel an active turn. This is not a
+universal provider policy.
+
+Koed will default to rejecting control actions while a turn is active, returning
+"try after this response." Control actions must not queue across turns or
+session generations. If the generation changes before dispatch, drop it. If the
+generation changes after the provider accepted, reconcile the result against the
+old generation rather than redirecting to the new one.
 
 ## Suggested implementation order
 
