@@ -691,6 +691,31 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("allows only the exact GET paths for Team memory retention settings", () => {
+    const teamId = "11111111-1111-4111-8111-111111111111";
+    for (const path of [
+      `/v1/teams/${teamId}/memory-retention`,
+      `/v1/teams/${teamId}/memory-retention/members`
+    ]) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_read", "GET", path)
+      ).not.toThrow();
+    }
+
+    for (const [method, path] of [
+      ["POST", `/v1/teams/${teamId}/memory-retention`],
+      ["PATCH", `/v1/teams/${teamId}/memory-retention/members`],
+      ["GET", `/v1/teams/${teamId}/memory-retention/members/extra`],
+      ["GET", `/v1/teams/not-a-uuid/memory-retention`],
+      ["GET", `/v1/teams/${teamId}/members/${teamId}/memory-retention`],
+      ["GET", `/v1/teams/${teamId}/billing-seats`]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_read", method, path)
+      ).toThrow("not allowed for operation family");
+    }
+  });
+
   it("routes file inspection only for its explicit enrolled family", () => {
     const managedBackend = backend({
       routePolicy: { managedExecution: "enabled" }

@@ -372,6 +372,10 @@ export const assertUpstreamOperationPathAllowed = (
   if (operationFamily === "team_workspace_read") {
     if (
       (method === "GET" && pathname === "/v1/team-context") ||
+      (method === "GET" &&
+        /^\/v1\/teams\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/memory-retention(?:\/members)?$/i.test(
+          pathname
+        )) ||
       (method === "POST" &&
         pathname === "/v1/collaboration/realtime/snapshot") ||
       (method === "GET" && pathname === "/v1/collaboration/realtime/stream") ||
