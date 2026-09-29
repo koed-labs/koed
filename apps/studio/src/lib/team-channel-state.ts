@@ -154,6 +154,11 @@ export const durableSendStatus = (
   return null;
 };
 
+export const durableSendFailureDisposition = (failureCode: string | null): "authority_lost" | "not_sent" =>
+  failureCode === "access_revoked" || failureCode === "permission_denied" || failureCode === "not_available"
+    ? "authority_lost"
+    : "not_sent";
+
 export const describeStudioCommandFailure = (failure: unknown): {
   revoked: boolean;
   message: string;

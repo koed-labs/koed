@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -39,6 +39,21 @@ test("settling an in-flight send preserves edits and never clears a newer send i
   assert.deepEqual(resolvePendingSend({ text: "new text", pendingSend: original }, original.clientMessageId, "not-sent", original.body), { text: "new text", pendingSend: null });
   const newer = { clientMessageId: "newer-id", body: "new request", createdAt: original.createdAt };
   assert.deepEqual(resolvePendingSend({ text: "draft", pendingSend: newer }, original.clientMessageId, "accepted", original.body), { text: "draft", pendingSend: newer });
+});
+
+test("known permanent send failures restore the original body only when no newer draft exists", () => {
+  const pending = { clientMessageId: "original-id", body: "rejected body", createdAt: "2026-09-28T10:00:00.000Z" };
+  assert.deepEqual(resolvePendingSend({ text: "", pendingSend: pending }, pending.clientMessageId, "not-sent", pending.body), {
+    text: pending.body, pendingSend: null
+  });
+  assert.deepEqual(resolvePendingSend({ text: "newer edits", pendingSend: pending }, pending.clientMessageId, "not-sent", pending.body), {
+    text: "newer edits", pendingSend: null
+  });
+  assert.equal(durableSendFailureDisposition("invalid_input"), "not_sent");
+  assert.equal(durableSendFailureDisposition(null), "not_sent");
+  for (const code of ["access_revoked", "permission_denied", "not_available"]) {
+    assert.equal(durableSendFailureDisposition(code), "authority_lost");
+  }
 });
 
 test("ambiguous send errors retain the original identity alongside later edits", () => {

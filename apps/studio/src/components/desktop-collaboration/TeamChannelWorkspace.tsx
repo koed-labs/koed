@@ -21,7 +21,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -256,7 +256,30 @@ export function TeamChannelWorkspace({
         } else {
           const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
           if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
-            setStatus(durableSendStatus(event.send));
+            if (event.send.state === "failed" && durableSendFailureDisposition(event.send.failure?.code ?? null) === "authority_lost") {
+              clearRevokedView();
+              return true;
+            }
+            if (event.send.state === "failed" && currentAuthorityKey) {
+              const settled = resolvePendingSend(latest, event.send.clientMessageId, "not-sent", latest.pendingSend.body);
+              draftByAuthority.current.set(currentAuthorityKey, settled);
+              setDraftText(settled.text);
+              setPendingSend(settled.pendingSend);
+              setStatus(event.send.failure?.userMessage
+                ? `Not sent. ${event.send.failure.userMessage}`
+                : "Message was not sent. Your draft is ready to send again.");
+              const draftAuthority: DraftAuthority = {
+                backendId: sendAuthority.backendId,
+                principalUserId: sendAuthority.principalUserId,
+                teamId: sendAuthority.teamId,
+                threadId: sendAuthority.threadId
+              };
+              void drafts.saveDraft(draftAuthority, settled).catch(() => {
+                if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message was not sent. The updated draft could not be saved on this device.");
+              });
+            } else {
+              setStatus(durableSendStatus(event.send));
+            }
           }
         }
       } else if (event.type === "connection" && event.connection.state === "access_revoked") {
