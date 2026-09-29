@@ -11,6 +11,7 @@ import type {
 } from "@koed/shared/collaboration";
 import type { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { ShareablePersonalConversation } from "./LocalConversationBrowser.match";
+import { findPendingOwnedShare } from "@/app/settings/team-memory-settings.guards";
 
 type TeamOption = { id: string; name: string };
 type Mode = "snapshot" | "continuous";
@@ -85,6 +86,7 @@ export function OwnedConversationShareDialog({
 
   const preparePreview = async () => {
     const sequence = ++requestSequence.current;
+    const isCurrent = () => sequence === requestSequence.current;
     setBusy(true);
     setError(null);
     setCandidate(null);
@@ -101,43 +103,54 @@ export function OwnedConversationShareDialog({
         sessionId: source.id,
         logicalMemoryId: source.logicalMemoryId
       };
+      const destinationResult = await client.run("collaboration.ensure_team_memory_destination", { teamId });
+      if (!isCurrent()) return;
       const destination = resultData<{ teamId: string; workspaceId: string }>(
-        await client.run("collaboration.ensure_team_memory_destination", { teamId }),
+        destinationResult,
         "collaboration.ensure_team_memory_destination"
       );
       if (destination.teamId !== teamId) throw new Error("The Team destination changed. Reload and try again.");
+      const grantsResult = await client.run("collaboration.list_owned_shared_memory_grants", { logicalMemoryId: source.logicalMemoryId });
+      if (!isCurrent()) return;
       const grants = resultData<{ grants: Array<{ id: string; teamId: string; workspaceId: string; lifecycle: string; grantVersion: number; retentionEnabled: boolean }> }>(
-        await client.run("collaboration.list_owned_shared_memory_grants", { logicalMemoryId: source.logicalMemoryId }),
+        grantsResult,
         "collaboration.list_owned_shared_memory_grants"
       ).grants;
       const currentTargetGrant = grants.find((grant) => grant.teamId === teamId && grant.workspaceId === destination.workspaceId && grant.lifecycle === "active") ?? null;
-      const ownerShares = resultData<{ shares: OwnedShareItem[] }>(
-        await client.run("collaboration.list_owned_shares", { cursor: null, limit: 50, history: false }),
-        "collaboration.list_owned_shares"
-      ).shares;
-      const pendingForDestination = ownerShares.find((item) =>
-        item.kind === "pending" &&
-        item.pendingShare.logicalMemoryId === source.logicalMemoryId &&
-        item.pendingShare.teamId === teamId &&
-        item.pendingShare.workspaceId === destination.workspaceId &&
-        item.pendingShare.state !== "revoked" &&
-        item.pendingShare.state !== "activated"
-      );
-      if (pendingForDestination) {
+      const pendingScan = await findPendingOwnedShare({
+        loadPage: async (cursor) => {
+          const sharesResult = await client.run("collaboration.list_owned_shares", { cursor, limit: 100, history: false });
+          const ownerShares = resultData<{ shares: OwnedShareItem[]; nextCursor: string | null }>(sharesResult, "collaboration.list_owned_shares");
+          return ownerShares;
+        },
+        isCurrent,
+        logicalMemoryId: source.logicalMemoryId,
+        teamId,
+        workspaceId: destination.workspaceId,
+        pageLimit: 10
+      });
+      if (!isCurrent()) return;
+      if (pendingScan.found) {
         throw new Error("A share for this Team is already preparing or needs attention. Check Settings → Teams → Memory → My shares before trying again.");
       }
+      if (!pendingScan.complete) {
+        throw new Error("Could not verify all existing shares for this Team. Review My shares before retrying.");
+      }
+      if (!isCurrent()) return;
       setTargetGrant(currentTargetGrant ? {
         id: currentTargetGrant.id,
         grantVersion: currentTargetGrant.grantVersion,
         retentionEnabled: currentTargetGrant.retentionEnabled
       } : null);
       const previewRetentionEnabled = currentTargetGrant?.retentionEnabled === true || currentRetentionSetting.enabled;
-      const prepared = resultData<{ candidate: SharedMemoryCandidatePreview }>(
-        await client.run("collaboration.preview_shared_memory_candidate", {
+      const candidateResult = await client.run("collaboration.preview_shared_memory_candidate", {
           source: sourceRef,
           activationRepresentation: maximumFidelity,
           mode
-        }),
+        });
+      if (!isCurrent()) return;
+      const prepared = resultData<{ candidate: SharedMemoryCandidatePreview }>(
+        candidateResult,
         "collaboration.preview_shared_memory_candidate"
       ).candidate;
       if (
@@ -150,7 +163,7 @@ export function OwnedConversationShareDialog({
       ) {
         throw new Error("No privacy-processed memory is available for this Conversation yet.");
       }
-      if (sequence !== requestSequence.current) return;
+      if (!isCurrent()) return;
       setCandidate(prepared);
       const candidateBinding = {
         source: prepared.source,
@@ -165,8 +178,7 @@ export function OwnedConversationShareDialog({
         mode,
         expiresAt: prepared.expiresAt
       };
-      const nextPreview = resultData<{ preview: SharedMemoryPreview }>(
-        await client.run("collaboration.preview_shared_memory", {
+      const previewResult = await client.run("collaboration.preview_shared_memory", {
           source: prepared.source,
           logicalMemoryId: prepared.logicalMemoryId,
           teamId,
@@ -179,10 +191,13 @@ export function OwnedConversationShareDialog({
           memberRetentionVersion: currentRetentionSetting.version,
           mode,
           candidate: candidateBinding
-        }),
+        });
+      if (!isCurrent()) return;
+      const nextPreview = resultData<{ preview: SharedMemoryPreview }>(
+        previewResult,
         "collaboration.preview_shared_memory"
       ).preview;
-      if (sequence !== requestSequence.current) return;
+      if (!isCurrent()) return;
       if (
         nextPreview.sourceRevision !== prepared.sourceRevision ||
         nextPreview.teamId !== teamId ||
@@ -196,15 +211,17 @@ export function OwnedConversationShareDialog({
       let completePreview = nextPreview;
       let cursor = nextPreview.nextCursor;
       while (cursor) {
-        const page = resultData<{ preview: SharedMemoryPreview }>(
-          await client.run("collaboration.load_shared_memory_preview_page", {
+        const pageResult = await client.run("collaboration.load_shared_memory_preview_page", {
             previewHash: nextPreview.previewHash,
             cursor,
             limit: 50
-          }),
+          });
+        if (!isCurrent()) return;
+        const page = resultData<{ preview: SharedMemoryPreview }>(
+          pageResult,
           "collaboration.load_shared_memory_preview_page"
         ).preview;
-        if (sequence !== requestSequence.current) return;
+        if (!isCurrent()) return;
         if (page.previewHash !== nextPreview.previewHash || page.sourceRevision !== nextPreview.sourceRevision) {
           throw new Error("The preview changed while loading. Prepare a fresh preview.");
         }
@@ -228,36 +245,45 @@ export function OwnedConversationShareDialog({
   const confirmShare = async () => {
     if (!preview || !candidate || !retentionSetting) return;
     const sequence = ++requestSequence.current;
+    const isCurrent = () => sequence === requestSequence.current;
     setBusy(true);
     setError(null);
     try {
+      const destinationResult = await client.run("collaboration.ensure_team_memory_destination", { teamId });
+      if (!isCurrent()) return;
       const destination = resultData<{ teamId: string; workspaceId: string }>(
-        await client.run("collaboration.ensure_team_memory_destination", { teamId }),
+        destinationResult,
         "collaboration.ensure_team_memory_destination"
       );
       if (destination.teamId !== teamId || destination.workspaceId !== preview.workspaceId) {
         throw new Error("The Team destination changed after preview. Prepare a fresh preview.");
       }
+      const retentionResult = await client.run("collaboration.get_team_memory_retention", { teamId });
+      if (!isCurrent()) return;
       const currentRetention = resultData<{ setting: { enabled: boolean; version: number } }>(
-        await client.run("collaboration.get_team_memory_retention", { teamId }),
+        retentionResult,
         "collaboration.get_team_memory_retention"
       ).setting;
       if (
         currentRetention.version !== preview.memberRetentionVersion ||
         (preview.retentionEnabled && !currentRetention.enabled && !targetGrant?.retentionEnabled)
       ) {
-        setPreview(null);
-        setCandidate(null);
-        setRetentionSetting({ teamId, enabled: currentRetention.enabled, version: currentRetention.version });
+        if (isCurrent()) {
+          setPreview(null);
+          setCandidate(null);
+          setRetentionSetting({ teamId, enabled: currentRetention.enabled, version: currentRetention.version });
+        }
         throw new Error("The Team retention setting changed after preview. Review a fresh preview before sharing.");
       }
-      const grants = resultData<{ grants: Array<{ id: string; teamId: string; workspaceId: string; lifecycle: string; grantVersion: number }> }>(
-        await client.run("collaboration.list_owned_shared_memory_grants", {
+      const grantsResult = await client.run("collaboration.list_owned_shared_memory_grants", {
           logicalMemoryId: source.logicalMemoryId
-        }),
+        });
+      if (!isCurrent()) return;
+      const grants = resultData<{ grants: Array<{ id: string; teamId: string; workspaceId: string; lifecycle: string; grantVersion: number }> }>(
+        grantsResult,
         "collaboration.list_owned_shared_memory_grants"
       ).grants;
-      if (sequence !== requestSequence.current) return;
+      if (!isCurrent()) return;
       const target = grants.find((grant) => grant.teamId === teamId && grant.workspaceId === destination.workspaceId && grant.lifecycle === "active");
       if (
         (targetGrant === null && target !== undefined) ||
@@ -294,9 +320,9 @@ export function OwnedConversationShareDialog({
         : await client.run("collaboration.share_memory", {
             ...common,
             mutationId: crypto.randomUUID(),
-            logicalGrantId: crypto.randomUUID()
+          logicalGrantId: crypto.randomUUID()
           });
-      if (sequence !== requestSequence.current) return;
+      if (!isCurrent()) return;
       if (result.command === "collaboration.change_shared_memory_fidelity") {
         resultData<{ pendingShare: unknown }>(result, "collaboration.change_shared_memory_fidelity");
         setCompleteMessage("The updated share is preparing. The current Team copy stays available until the update is ready.");
