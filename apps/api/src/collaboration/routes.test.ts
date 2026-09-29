@@ -123,7 +123,8 @@ const createCollaborationFixture = () => {
 
   const participant = (userId: string) => ({
     userId,
-    displayName: users.get(userId)?.displayName ?? null
+    displayName: users.get(userId)?.displayName ?? null,
+    membershipState: "enabled" as const
   });
 
   const newThread = (input: {

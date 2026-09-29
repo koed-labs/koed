@@ -82,6 +82,7 @@ export type CollaborationEventFamily =
 export interface CollaborationParticipantRecord {
   userId: string;
   displayName: string | null;
+  membershipState?: "enabled" | "disabled";
 }
 
 export interface CollaborationThreadRecord {
@@ -1585,11 +1586,27 @@ const participantsForThreads = async (
     thread_id: string;
     user_id: string;
     display_name: string | null;
+    membership_state: "enabled" | "disabled";
   }>(
     `
-      select cp.thread_id, cp.user_id, u.display_name
+      select
+        cp.thread_id,
+        cp.user_id,
+        u.display_name,
+        case
+          when ct.scope = 'personal' then 'enabled'
+          when tm.status = 'enabled'
+            and tm.disabled_at is null
+            and u.disabled_at is null
+            and u.deleted_at is null then 'enabled'
+          else 'disabled'
+        end as membership_state
       from collaboration_participants cp
+      join collaboration_threads ct on ct.id = cp.thread_id
       join users u on u.id = cp.user_id
+      left join team_memberships tm
+        on tm.team_id = ct.team_id
+       and tm.user_id = cp.user_id
       where cp.thread_id = any($1::uuid[])
       order by cp.thread_id, cp.ordinal
     `,
@@ -1600,7 +1617,8 @@ const participantsForThreads = async (
     const participants = byThread.get(row.thread_id) ?? [];
     participants.push({
       userId: row.user_id,
-      displayName: row.display_name
+      displayName: row.display_name,
+      membershipState: row.membership_state
     });
     byThread.set(row.thread_id, participants);
   }
@@ -4451,7 +4469,8 @@ export const createCollaborationRepository = (
       );
       return result.rows.map((row) => ({
         userId: row.user_id,
-        displayName: row.display_name
+        displayName: row.display_name,
+        membershipState: "enabled"
       }));
     },
 

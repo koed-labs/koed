@@ -798,7 +798,7 @@ const rendererThreadFromRecord = (
         participants: thread.participants.map((participant) => ({
           id: participant.userId,
           displayName: displayName(participant.displayName, "Team member"),
-          membershipState: "enabled"
+          membershipState: participant.membershipState ?? "enabled"
         }))
       };
     }

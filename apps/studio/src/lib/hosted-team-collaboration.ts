@@ -5,9 +5,11 @@ import {
   collaborationRendererUpdateSchema,
   collaborationTimestampSchema,
   collaborationThreadSchema,
+  collaborationPersonSchema,
   collaborationMessageSchema,
   collaborationTeamSharedProjectSchema,
   type CollaborationMessage,
+  type CollaborationPerson,
   type CollaborationThread,
   type CollaborationTeamSharedProject
 } from "@koed/shared/collaboration";
@@ -21,10 +23,13 @@ export class HostedTeamRequestError extends Error {
   }
 }
 
+export type HostedTeamPerson = Omit<CollaborationPerson, "presence">;
+
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const hostedTeamPersonSchema = collaborationPersonSchema.omit({ presence: true });
 const teamRealtimeEvent = (value: unknown, teamId: string, subscriptionId: string) => {
   if (!record(value) || value.protocolVersion !== COLLABORATION_CONTRACT_VERSION || !uuid.test(String(value.eventId)) || !record(value.subscription) || value.subscription.id !== subscriptionId) return null;
   if (typeof value.cursor !== "string" || !collaborationRealtimeCursorSchema.safeParse(value.cursor).success) return null;
@@ -57,10 +62,24 @@ const teamThread = (value: unknown, teamId: string): CollaborationThread | null 
     lastActivityAt: value.lastActivityAt,
     archivedAt: value.archivedAt
   };
+  const participants = Array.isArray(value.participants)
+    ? value.participants.map((participant) => {
+        if (!record(participant)) return participant;
+        return {
+          id: participant.userId,
+          displayName: typeof participant.displayName === "string" && participant.displayName.trim() ? participant.displayName : "Team member",
+          membershipState: participant.membershipState
+        };
+      })
+    : value.participants;
   const mapped = value.kind === "team_channel"
     ? { ...base, kind: "team_channel", name: value.name === null && value.systemKey === "team.general" ? "general" : value.name, systemKey: value.systemKey === "team.general" ? "team.general" : null }
     : value.kind === "team_project_channel" && typeof value.teamProjectId === "string"
       ? { ...base, kind: "team_project_channel", teamProjectId: value.teamProjectId }
+      : value.kind === "dm"
+        ? { ...base, kind: "dm", name: null, topic: null, participants }
+        : value.kind === "group_dm"
+          ? { ...base, kind: "group_dm", participants }
       : null;
   if (!mapped) return null;
   const parsed = collaborationThreadSchema.safeParse(mapped);
@@ -112,6 +131,63 @@ export class HostedTeamCollaborationClient {
       if (!parsed || parsed.kind !== "team_channel") throw new HostedTeamRequestError("Koed returned invalid Team channels.", 502);
       return parsed;
     });
+  }
+
+  async listPeople(teamId: string): Promise<HostedTeamPerson[]> {
+    const response = await this.request(`/v1/collaboration/teams/${encodeURIComponent(teamId)}/participants`);
+    if (!record(response) || !Array.isArray(response.participants)) {
+      throw new HostedTeamRequestError("Koed returned invalid Team participants.", 502);
+    }
+    const people = response.participants.map((entry) => {
+      if (!record(entry)) return null;
+      const parsed = hostedTeamPersonSchema.safeParse({
+        id: entry.userId,
+        displayName: typeof entry.displayName === "string" && entry.displayName.trim() ? entry.displayName : "Team member",
+        membershipState: "enabled"
+      });
+      return parsed.success ? parsed.data : null;
+    });
+    if (people.some((person) => !person) || new Set(people.map((person) => person?.id)).size !== people.length) {
+      throw new HostedTeamRequestError("Koed returned invalid Team participants.", 502);
+    }
+    return people as HostedTeamPerson[];
+  }
+
+  async listDirectMessages(teamId: string): Promise<CollaborationThread[]> {
+    const response = await this.request(`/v1/collaboration/teams/${encodeURIComponent(teamId)}/direct-messages`);
+    if (!record(response) || !Array.isArray(response.threads)) {
+      throw new HostedTeamRequestError("Koed returned invalid Team direct messages.", 502);
+    }
+    const threads = response.threads.map((entry) => teamThread(entry, teamId));
+    if (threads.some((thread) => !thread || (thread.kind !== "dm" && thread.kind !== "group_dm"))) {
+      throw new HostedTeamRequestError("Koed returned invalid Team direct messages.", 502);
+    }
+    return threads as CollaborationThread[];
+  }
+
+  async startDirectMessage(teamId: string, participantUserId: string, requestId: string): Promise<CollaborationThread> {
+    const response = await this.request(
+      `/v1/collaboration/teams/${encodeURIComponent(teamId)}/direct-messages`,
+      { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify({ participantUserId }) }
+    );
+    const thread = record(response) ? teamThread(response.thread, teamId) : null;
+    if (!thread || thread.kind !== "dm" || !thread.participants.some((participant) => participant.id === participantUserId)) {
+      throw new HostedTeamRequestError("Koed returned an invalid direct message.", 502);
+    }
+    return thread;
+  }
+
+  async startGroupDirectMessage(teamId: string, participantUserIds: string[], requestId: string): Promise<CollaborationThread> {
+    const response = await this.request(
+      `/v1/collaboration/teams/${encodeURIComponent(teamId)}/group-direct-messages`,
+      { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify({ participantUserIds }) }
+    );
+    const thread = record(response) ? teamThread(response.thread, teamId) : null;
+    const requested = new Set(participantUserIds);
+    if (!thread || thread.kind !== "group_dm" || participantUserIds.length !== requested.size || thread.participants.length !== requested.size + 1 || !participantUserIds.every((id) => thread.participants.some((participant) => participant.id === id))) {
+      throw new HostedTeamRequestError("Koed returned an invalid group direct message.", 502);
+    }
+    return thread;
   }
 
   async listProjects(teamId: string): Promise<Array<CollaborationTeamSharedProject & { thread: CollaborationThread }>> {

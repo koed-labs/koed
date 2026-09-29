@@ -277,7 +277,8 @@ interface RemoteRequestOptions {
 const canonicalParticipantSchema = z
   .object({
     userId: z.uuid(),
-    displayName: z.string().nullable()
+    displayName: z.string().nullable(),
+    membershipState: z.enum(["enabled", "disabled"]).optional()
   })
   .strict();
 
@@ -1199,7 +1200,7 @@ const targetThreadFrom = (
       participants: thread.participants.map((participant) => ({
         id: participant.userId,
         displayName: participant.displayName,
-        membershipState: "enabled"
+        membershipState: participant.membershipState ?? "enabled"
       }))
     };
   }

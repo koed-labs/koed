@@ -102,7 +102,8 @@ const remoteThreadCommonSchema = z.object({
       z
         .object({
           userId: z.uuid(),
-          displayName: z.string().max(320).nullable()
+          displayName: z.string().max(320).nullable(),
+          membershipState: z.enum(["enabled", "disabled"]).optional()
         })
         .strict()
     )

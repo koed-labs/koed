@@ -1259,6 +1259,37 @@ describeDb("Collaboration repository", () => {
     });
 
     expect(distinct?.id).not.toBe(original?.id);
+    await pool.query(
+      `update team_memberships set status='disabled' where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.memberUserId]
+    );
+    const retainedWhileRemoved = await repository.getThread(
+      actor(fixture.ownerUserId),
+      { threadId: original!.id }
+    );
+    expect(
+      retainedWhileRemoved?.participants.find(
+        ({ userId }) => userId === fixture.memberUserId
+      )?.membershipState
+    ).toBe("disabled");
+    await expect(
+      repository.getThread(actor(fixture.memberUserId), {
+        threadId: original!.id
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_memberships set status='enabled' where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.memberUserId]
+    );
+    const restoredMembership = await repository.getThread(
+      actor(fixture.memberUserId),
+      { threadId: original!.id }
+    );
+    expect(
+      restoredMembership?.participants.find(
+        ({ userId }) => userId === fixture.memberUserId
+      )?.membershipState
+    ).toBe("enabled");
     await expect(
       repository.listMessages(actor(fixture.ownerUserId), {
         threadId: distinct!.id
@@ -1337,6 +1368,28 @@ describeDb("Collaboration repository", () => {
     ).resolves.toMatchObject({
       messages: [expect.objectContaining({ id: originalMessage!.id })]
     });
+    const retainedWhileAccountDisabled = await repository.getThread(
+      actor(fixture.ownerUserId),
+      { threadId: original!.id }
+    );
+    expect(
+      retainedWhileAccountDisabled?.participants.find(
+        ({ userId }) => userId === fixture.memberUserId
+      )?.membershipState
+    ).toBe("disabled");
+    await pool.query(`update users set disabled_at=null where id=$1`, [
+      fixture.memberUserId
+    ]);
+    const restoredAccount = await repository.getThread(
+      actor(fixture.memberUserId),
+      { threadId: original!.id }
+    );
+    expect(restoredAccount?.id).toBe(original!.id);
+    expect(
+      restoredAccount?.participants.find(
+        ({ userId }) => userId === fixture.memberUserId
+      )?.membershipState
+    ).toBe("enabled");
   });
 
   it("rejects a two-client idempotency race with divergent logical thread identities", async () => {

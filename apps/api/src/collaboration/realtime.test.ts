@@ -912,8 +912,12 @@ const sharedCompanionThread = (
   lastReadSequence: 0,
   unreadCount: 0,
   participants: [
-    { userId: fixture.ids.alice, displayName: "Alice" },
-    { userId: fixture.ids.bob, displayName: "Bob" }
+    {
+      userId: fixture.ids.alice,
+      displayName: "Alice",
+      membershipState: "enabled"
+    },
+    { userId: fixture.ids.bob, displayName: "Bob", membershipState: "enabled" }
   ],
   createdAt: iso,
   updatedAt: iso,
@@ -1658,8 +1662,16 @@ describe("collaboration realtime protocol", () => {
       sharedCompanionThread(fixture)
     ]);
     fixture.repository.listTeamParticipants = vi.fn(async () => [
-      { userId: fixture.ids.alice, displayName: "Alice" },
-      { userId: fixture.ids.bob, displayName: "Bob" }
+      {
+        userId: fixture.ids.alice,
+        displayName: "Alice",
+        membershipState: "enabled"
+      },
+      {
+        userId: fixture.ids.bob,
+        displayName: "Bob",
+        membershipState: "enabled"
+      }
     ]);
     const device = createDeviceAuth(fixture, {
       active: true,
@@ -1748,8 +1760,16 @@ describe("collaboration realtime protocol", () => {
     fixture.repository.getThread = vi.fn(async () => companion);
     fixture.repository.listThreads = vi.fn(async () => [companion]);
     fixture.repository.listTeamParticipants = vi.fn(async () => [
-      { userId: fixture.ids.alice, displayName: "Alice" },
-      { userId: fixture.ids.bob, displayName: "Bob" }
+      {
+        userId: fixture.ids.alice,
+        displayName: "Alice",
+        membershipState: "enabled"
+      },
+      {
+        userId: fixture.ids.bob,
+        displayName: "Bob",
+        membershipState: "enabled"
+      }
     ]);
     const app = await buildTestServer(fixture, {
       sharedMemoryRepository: {
@@ -2280,7 +2300,11 @@ describe("collaboration realtime protocol", () => {
           sharedCompanionThread(fixture)
         ]);
         fixture.repository.listTeamParticipants = vi.fn(async () => [
-          { userId: fixture.ids.alice, displayName: "Alice" }
+          {
+            userId: fixture.ids.alice,
+            displayName: "Alice",
+            membershipState: "enabled"
+          }
         ]);
       }
       const app = await buildTestServer(fixture, {

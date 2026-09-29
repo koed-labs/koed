@@ -9,6 +9,7 @@ import { canApplySubscriptionSnapshot, StudioCollaborationClient } from "./studi
 const teamId = "11111111-1111-4111-8111-111111111111";
 const threadId = "22222222-2222-4222-8222-222222222222";
 const memberId = "33333333-3333-4333-8333-333333333333";
+const otherMemberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const timestamp = "2026-09-28T12:00:00.000Z";
 const rawThread = {
   id: threadId,
@@ -74,6 +75,79 @@ test("maps authorized Team REST records into renderer channel and history shapes
   assert.equal(page.hasOlder, true);
   assert.equal(requests.every(({ init }) => init.credentials === "include"), true);
   assert.equal(requests[1]?.url.includes("limit=50"), true);
+});
+
+test("maps Team people and direct-message REST records and preserves historical membership state", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const dm = {
+    ...rawThread,
+    kind: "dm",
+    name: null,
+    topic: null,
+    participants: [
+      { userId: memberId, displayName: "Member One", membershipState: "enabled" },
+      { userId: otherMemberId, displayName: null, membershipState: "enabled" }
+    ]
+  };
+  const historicalDm = { ...dm, participants: [dm.participants[0], { ...dm.participants[1], membershipState: "disabled" }] };
+  const client = new HostedTeamCollaborationClient(async (input, init = {}) => {
+    const url = String(input);
+    calls.push({ url, init });
+    if (url.endsWith("/participants")) return new Response(JSON.stringify({ participants: [
+      { userId: memberId, displayName: "Member One" },
+      { userId: otherMemberId, displayName: null }
+    ] }));
+    if (url.endsWith("/direct-messages") && init.method !== "POST") return new Response(JSON.stringify({ threads: [historicalDm] }));
+    return new Response(JSON.stringify({ thread: dm }), { status: 201 });
+  });
+  assert.deepEqual(await client.listPeople(teamId), [
+    { id: memberId, displayName: "Member One", membershipState: "enabled" },
+    { id: otherMemberId, displayName: "Team member", membershipState: "enabled" }
+  ]);
+  const listed = await client.listDirectMessages(teamId);
+  assert.equal(listed[0]?.kind, "dm");
+  if (listed[0]?.kind === "dm") assert.deepEqual(listed[0].participants.map(({ id, membershipState }) => ({ id, membershipState })), [
+    { id: memberId, membershipState: "enabled" },
+    { id: otherMemberId, membershipState: "disabled" }
+  ]);
+  const requestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  assert.equal((await client.startDirectMessage(teamId, otherMemberId, requestId)).kind, "dm");
+  assert.equal(new Headers(calls[2]?.init.headers).get("Idempotency-Key"), requestId);
+  assert.deepEqual(JSON.parse(String(calls[2]?.init.body)), { participantUserId: otherMemberId });
+});
+
+test("rejects malformed and cross-Team direct-message records", async () => {
+  const invalid = [
+    { ...rawThread, kind: "dm", name: null, topic: null, participants: [{ userId: memberId, displayName: "Member One", membershipState: "enabled" }] },
+    { ...rawThread, teamId: "77777777-7777-4777-8777-777777777777", kind: "dm", name: null, topic: null, participants: [{ userId: memberId, displayName: "Member One", membershipState: "enabled" }, { userId: otherMemberId, displayName: "Member Two", membershipState: "enabled" }] },
+    { ...rawThread, kind: "dm", name: null, topic: null, participants: [{ userId: memberId, displayName: "Member One", membershipState: "enabled" }, { userId: "not-a-uuid", displayName: "Member Two", membershipState: "enabled" }] }
+  ];
+  for (const thread of invalid) {
+    const client = new HostedTeamCollaborationClient(async () => new Response(JSON.stringify({ threads: [thread] })));
+    await assert.rejects(client.listDirectMessages(teamId), /invalid Team direct messages/);
+  }
+});
+
+test("starts group direct messages with the selected participant set and idempotency key", async () => {
+  const group = {
+    ...rawThread,
+    kind: "group_dm",
+    participants: [
+      { userId: memberId, displayName: "Member One", membershipState: "enabled" },
+      { userId: otherMemberId, displayName: "Member Two", membershipState: "enabled" },
+      { userId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", displayName: "Member Three", membershipState: "enabled" }
+    ]
+  };
+  let sent: RequestInit | undefined;
+  const client = new HostedTeamCollaborationClient(async (_input, init = {}) => {
+    sent = init;
+    return new Response(JSON.stringify({ thread: group }), { status: 201 });
+  });
+  const requestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const participantIds = [otherMemberId, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"];
+  assert.equal((await client.startGroupDirectMessage(teamId, participantIds, requestId)).kind, "group_dm");
+  assert.equal(new Headers(sent?.headers).get("Idempotency-Key"), requestId);
+  assert.deepEqual(JSON.parse(String(sent?.body)), { participantUserIds: participantIds });
 });
 
 test("uses the API bodyText shape and preserves the idempotency key for send", async () => {

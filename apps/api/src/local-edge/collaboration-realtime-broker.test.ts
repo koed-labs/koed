@@ -1181,7 +1181,7 @@ const eventPayload = (stream: string) => {
 };
 
 describe("local collaboration realtime broker", () => {
-  it("accepts Team channel and shared Project threads in a realtime snapshot", async () => {
+  it("accepts Team channel, Shared Project, and DM participant state in a realtime snapshot", async () => {
     const commonThread = {
       logicalId: threadId,
       scope: "team",
@@ -1220,6 +1220,19 @@ describe("local collaboration realtime broker", () => {
         teamProjectId: "99999999-9999-4999-8999-999999999998",
         systemKey: null,
         name: "Implementation"
+      },
+      {
+        ...commonThread,
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "group_dm",
+        teamProjectId: null,
+        systemKey: null,
+        name: null,
+        participants: [
+          { userId: remotePrincipalA, displayName: "Member One", membershipState: "enabled" },
+          { userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", displayName: "Member Two", membershipState: "disabled" },
+          { userId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", displayName: "Member Three", membershipState: "enabled" }
+        ]
       }
     ];
     const harness = await createHarness({ snapshotThreads: channelThreads });
@@ -1229,6 +1242,7 @@ describe("local collaboration realtime broker", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.delivery.snapshot.threads).toEqual(channelThreads);
+    expect(body.delivery.snapshot.threads[2]?.participants[1]?.membershipState).toBe("disabled");
   });
 
   it("serves Personal snapshot and stream locally without an upstream backend", async () => {
