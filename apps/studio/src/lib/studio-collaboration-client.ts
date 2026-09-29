@@ -6,14 +6,17 @@ import {
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
   collaborationSnapshotSchema,
+  sharedMemoryRepresentationSchema,
+  sharedMemorySourceItemSchema,
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
   type CollaborationSnapshot,
-  type CollaborationSubscription
+  type CollaborationSubscription,
+  type SharedMemoryFidelityCeiling,
+  type SharedMemoryRepresentation,
+  type SharedMemorySourceItem
 } from "@koed/shared/collaboration";
-import type { SharedMemoryFidelityCeiling, SharedMemoryRepresentation, SharedMemorySourceItem } from "@koed/shared";
-import { sharedMemoryRepresentationSchema, sharedMemorySourceItemSchema } from "@koed/shared";
 
 export type StudioTeamDraftAuthority = {
   backendId: string;
