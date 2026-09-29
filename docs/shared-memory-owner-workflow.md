@@ -234,6 +234,25 @@ same mutation/idempotency identity and accepting only a matching authoritative
 snapshot. This is necessarily distributed reconciliation, not a database
 bundle invariant.
 
+## Studio browser sharing
+
+The browser uses its signed-in owner session and an existing ready owner-private
+replica. An owner-only locator checks the exact logical Memory, Team and Workspace
+before returning the source binding. It does not enroll or upload a source.
+Desktop keeps its existing device source admission and native approval flow.
+
+Browser confirmation binds the persisted authoritative preview, explicit retention
+choice and member policy version to the existing consent and grant transaction.
+The existing privacy worker prepares the semantic derivative and reconciles the
+processed Team representation. Studio reports Preparing until that representation
+is ready. A grant's internal active authority does not by itself mean that a
+recipient can read a representation. Read and recall still require the processed,
+authorized representation.
+
+A direct same-grant refresh uses fresh preview and consent. It preserves the old
+readable copy until the replacement is ready. A stopped grant cannot advance from
+an old automatic job; an explicit fresh consent can resume its scoped updates.
+
 ## Revisit trigger
 
 Proceed with a new tracer-bullet breakdown only if a second caller must execute
