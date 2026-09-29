@@ -72,6 +72,19 @@ Sharing confirmation must explain the retention effect. It must not promise
 that stopping updates removes retained Team knowledge or retracts replies
 already delivered.
 
+## Consent and browser transport
+
+Persist the retention choice and member policy version in the reviewed preview,
+then bind the same values to consent and the Share Grant. An older caller that
+omits retention fields must never inherit enabled retention from a member setting.
+The member policy version is separate from the existing storage retention version.
+
+Browser sharing uses the signed-in owner's existing synchronized replica and the
+existing session and CSRF protections. An owner-only replica locator may return
+its identifier and exact source binding after checking Team and Workspace access.
+This lookup does not enroll a source, upload content, or grant transcript access.
+A missing or unavailable replica must return an unavailable state.
+
 ## Alternatives
 
 Revoking all recall when the contributor leaves loses organizational knowledge.
