@@ -21,7 +21,7 @@ import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
-import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
+import { describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, visibleReadMayAdvance } from "@/lib/team-channel-state";
 import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -226,6 +226,39 @@ export function TeamChannelWorkspace({
           historyApplied,
           snapshotApplied
         });
+      } else if (event.type === "durable_send") {
+        const sendAuthority = event.send.authority;
+        const currentAuthorityKey = authorityKeyRef.current;
+        if (sendAuthority.scope !== "team" || sendAuthority.teamId !== teamId ||
+          !studioSelectionMatches({ teamId: sendAuthority.teamId, threadId: sendAuthority.threadId }, selectedRef.current) ||
+          !durableSendMatchesAuthority(event.send, currentAuthorityKey)) return true;
+        if (event.send.state === "sent") {
+          const message = event.message;
+          if (!message || message.clientMessageId !== event.send.clientMessageId) return true;
+          setMessages((current) => mergeTeamMessages(current, [message]));
+          const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
+          if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
+            const settled = resolvePendingSend(latest, event.send.clientMessageId, "accepted", latest.pendingSend.body);
+            draftByAuthority.current.set(currentAuthorityKey!, settled);
+            setDraftText(settled.text);
+            setPendingSend(settled.pendingSend);
+            setStatus(null);
+            const draftAuthority: DraftAuthority = {
+              backendId: sendAuthority.backendId,
+              principalUserId: sendAuthority.principalUserId,
+              teamId: sendAuthority.teamId,
+              threadId: sendAuthority.threadId
+            };
+            void drafts.saveDraft(draftAuthority, settled).catch(() => {
+              if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message sent. The device draft update could not be saved.");
+            });
+          }
+        } else {
+          const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
+          if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
+            setStatus(durableSendStatus(event.send));
+          }
+        }
       } else if (event.type === "connection" && event.connection.state === "access_revoked") {
         clearRevokedView();
       } else if (event.type === "control" && event.reason === "access_revoked") {
@@ -249,7 +282,7 @@ export function TeamChannelWorkspace({
       const selected = selectedRef.current;
       if (selected.threadId) await loadPageRef.current(selected.threadId, teamId);
     }, teamId);
-  }, [client, clearRevokedView, teamId]);
+  }, [client, clearRevokedView, drafts, teamId]);
 
   useEffect(() => {
     if (teamId && !threads.some((thread) => thread.id === threadId)) {
@@ -410,10 +443,21 @@ export function TeamChannelWorkspace({
       if (result.error.code === "access_revoked") clearRevokedView();
       throw new Error(result.error.userMessage);
     }
-    if (!("thread" in result.data) || (result.data.thread.kind !== "dm" && result.data.thread.kind !== "group_dm")) {
+    if (!("thread" in result.data)) {
       throw new Error("Koed returned an invalid direct message.");
     }
     const createdThread = result.data.thread;
+    if (createdThread.kind !== "dm" && createdThread.kind !== "group_dm") {
+      throw new Error("Koed returned an invalid direct message.");
+    }
+    if (!directMessageThreadMatchesRequest({
+      requestedTeamId: selectedTeamId,
+      principalUserId,
+      participantUserIds: participants,
+      thread: createdThread
+    })) {
+      throw new Error("Koed returned an invalid direct message.");
+    }
     directMessageRequestIds.current.delete(key);
     setSnapshot((current) => current && ({
       ...current,
@@ -472,7 +516,13 @@ export function TeamChannelWorkspace({
           setStatus(null);
         }
       } else if (result.ok && "durableSend" in result.data) {
-        if (currentlySelected && authorityKey === capturedKey) setStatus("Sending…");
+        const durableSend = result.data.durableSend;
+        const currentPending = draftByAuthority.current.get(capturedKey)?.pendingSend;
+        if (currentlySelected && authorityKey === capturedKey &&
+          durableSend.clientMessageId === nextPending.clientMessageId && currentPending?.clientMessageId === nextPending.clientMessageId &&
+          durableSendMatchesAuthority(durableSend, capturedKey)) {
+          setStatus(durableSendStatus(durableSend));
+        }
       } else if (!result.ok && result.error.code === "access_revoked") {
         clearRevokedView();
       } else if (!result.ok && result.error.retryable) {

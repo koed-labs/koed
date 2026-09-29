@@ -1,5 +1,5 @@
 import type { StudioTeamDraft } from "./studio-collaboration-client";
-import type { CollaborationMessage } from "@koed/shared/collaboration";
+import type { CollaborationDurableSend, CollaborationMessage } from "@koed/shared/collaboration";
 
 export const mayPersistTeamDraft = (input: {
   authorityKey: string | null;
@@ -105,6 +105,54 @@ export const directMessageParticipantsAreEligible = (input: {
 }): boolean => input.participantUserIds.length > 0 &&
   new Set(input.participantUserIds).size === input.participantUserIds.length &&
   input.participantUserIds.every((userId) => userId !== input.principalUserId && input.enabledMemberIds.has(userId));
+
+export const directMessageThreadMatchesRequest = (input: {
+  requestedTeamId: string;
+  principalUserId: string;
+  participantUserIds: string[];
+  thread: unknown;
+}): boolean => {
+  if (!input.thread || typeof input.thread !== "object") return false;
+  const thread = input.thread as { scope?: unknown; teamId?: unknown; kind?: unknown; participants?: unknown };
+  if (!Array.isArray(thread.participants) || !thread.participants.every((participant) =>
+    participant && typeof participant === "object" && "id" in participant && typeof participant.id === "string"
+  )) return false;
+  const expectedParticipants = [input.principalUserId, ...input.participantUserIds];
+  const expectedSet = new Set(expectedParticipants);
+  const returnedIds = thread.participants.map((participant) => participant.id as string);
+  const returnedSet = new Set(returnedIds);
+  const expectedKind = input.participantUserIds.length === 1 ? "dm" : "group_dm";
+  return input.participantUserIds.length > 0 &&
+    expectedSet.size === expectedParticipants.length &&
+    thread.scope === "team" &&
+    thread.teamId === input.requestedTeamId &&
+    thread.kind === expectedKind &&
+    returnedSet.size === returnedIds.length &&
+    returnedSet.size === expectedSet.size &&
+    [...expectedSet].every((participantId) => returnedSet.has(participantId));
+};
+
+export const durableSendMatchesAuthority = (
+  send: Pick<CollaborationDurableSend, "authority">,
+  authorityKey: string | null
+): boolean => {
+  if (!authorityKey || send.authority.scope !== "team") return false;
+  return JSON.stringify({
+    backendId: send.authority.backendId,
+    principalUserId: send.authority.principalUserId,
+    teamId: send.authority.teamId,
+    threadId: send.authority.threadId
+  }) === authorityKey;
+};
+
+export const durableSendStatus = (
+  send: Pick<CollaborationDurableSend, "state" | "failure">
+): string | null => {
+  if (send.state === "queued") return "Sending…";
+  if (send.state === "manual_retry") return send.failure?.userMessage ?? "Send is queued for retry.";
+  if (send.state === "failed") return send.failure?.userMessage ?? "Message could not be sent.";
+  return null;
+};
 
 export const describeStudioCommandFailure = (failure: unknown): {
   revoked: boolean;

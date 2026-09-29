@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -113,6 +113,36 @@ test("direct-message retries use a stable participant-set key and reject self or
   assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["me"], enabledMemberIds }), false);
   assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["disabled"], enabledMemberIds }), false);
   assert.equal(directMessageParticipantsAreEligible({ principalUserId: "me", participantUserIds: ["a", "a"], enabledMemberIds }), false);
+});
+
+test("created direct messages must match the requested Team, kind, and exact participant set", () => {
+  const base = { requestedTeamId: "team", principalUserId: "me", participantUserIds: ["alice"] };
+  const thread = { scope: "team", teamId: "team", kind: "dm", participants: [{ id: "me" }, { id: "alice" }] };
+  assert.equal(directMessageThreadMatchesRequest({ ...base, thread }), true);
+  assert.equal(directMessageThreadMatchesRequest({
+    ...base,
+    participantUserIds: ["alice", "bob"],
+    thread: { scope: "team", teamId: "team", kind: "group_dm", participants: [{ id: "me" }, { id: "alice" }, { id: "bob" }] }
+  }), true);
+  assert.equal(directMessageThreadMatchesRequest({ ...base, thread: { ...thread, teamId: "other" } }), false);
+  assert.equal(directMessageThreadMatchesRequest({ ...base, thread: { ...thread, kind: "group_dm" } }), false);
+  assert.equal(directMessageThreadMatchesRequest({ ...base, thread: { ...thread, participants: [...thread.participants, { id: "outsider" }] } }), false);
+  assert.equal(directMessageThreadMatchesRequest({ ...base, thread: { ...thread, participants: [{ id: "me" }, { id: "other" }] } }), false);
+});
+
+test("durable send events apply only to the exact account, Team, and thread", () => {
+  const authority = { backendId: "backend", principalUserId: "owner", teamId: "team", threadId: "thread" };
+  const send = { authority: { scope: "team" as const, ...authority, workspaceId: null } };
+  assert.equal(durableSendMatchesAuthority(send, JSON.stringify(authority)), true);
+  assert.equal(durableSendMatchesAuthority(send, JSON.stringify({ ...authority, principalUserId: "other" })), false);
+  assert.equal(durableSendMatchesAuthority(send, JSON.stringify({ ...authority, backendId: "other" })), false);
+  assert.equal(durableSendMatchesAuthority(send, JSON.stringify({ ...authority, teamId: "other" })), false);
+  assert.equal(durableSendMatchesAuthority(send, JSON.stringify({ ...authority, threadId: "other" })), false);
+  assert.equal(durableSendMatchesAuthority(send, null), false);
+  assert.equal(durableSendStatus({ state: "queued", failure: null }), "Sending…");
+  assert.equal(durableSendStatus({ state: "manual_retry", failure: null }), "Send is queued for retry.");
+  assert.equal(durableSendStatus({ state: "failed", failure: null }), "Message could not be sent.");
+  assert.equal(durableSendStatus({ state: "sent", failure: null }), null);
 });
 
 test("Desktop command rejection becomes visible history status without treating invalid input as revocation", () => {
