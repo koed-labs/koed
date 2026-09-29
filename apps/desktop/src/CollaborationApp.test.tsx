@@ -1025,6 +1025,9 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       mode: input.mode,
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
+      retentionEnabled: false,
+      retentionPolicyEnabled: false,
+      memberRetentionVersion: 1,
       previewRevision: 1,
       sourceRevision: 12,
       policyRevision: 1,
@@ -1055,6 +1058,9 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       mode: input.mode,
       maximumFidelity: "memory_events" as const,
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      ownerUpdatesState: "active" as const,
       fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
@@ -1632,7 +1638,7 @@ describe("CollaborationApp", () => {
     const snapshot = baseSnapshot();
     const entry = snapshot.navigation.personal.memory[0]!;
     const client = createClient(snapshot);
-    const pending: OwnedShareItem = {
+    const pending: Extract<OwnedShareItem, { kind: "pending" }> = {
       kind: "pending",
       pendingShare: {
         source: {
@@ -1651,6 +1657,8 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         mode: "continuous",
         sourceRevision: 12,
         state: "preparing",
@@ -1790,6 +1798,9 @@ describe("CollaborationApp", () => {
       workspaceId: ids.workspace,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      retentionPolicyEnabled: false,
+      memberRetentionVersion: 1,
       previewRevision: 1,
       sourceRevision: 1,
       policyRevision: 1,
@@ -1814,6 +1825,8 @@ describe("CollaborationApp", () => {
       workspaceId: ids.workspace,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
       mode: "continuous",
       sourceRevision: 1,
       state: "preparing",
@@ -1982,6 +1995,9 @@ describe("CollaborationApp", () => {
       mode: "snapshot",
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      ownerUpdatesState: "active",
       fidelityPolicyRevision: 1,
       sourceRevision: 1,
       grantVersion: 4,
@@ -2004,6 +2020,8 @@ describe("CollaborationApp", () => {
       workspaceId: ids.workspace,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
       mode: "snapshot",
       sourceRevision: 2,
       state: "preparing",
@@ -2046,6 +2064,9 @@ describe("CollaborationApp", () => {
       workspaceId: ids.workspace,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      retentionPolicyEnabled: false,
+      memberRetentionVersion: 1,
       previewRevision: 1,
       sourceRevision: 2,
       policyRevision: 1,
@@ -2128,7 +2149,7 @@ describe("CollaborationApp", () => {
   it("opens owner-wide Shares from the active Personal Memory route", async () => {
     const snapshot = baseSnapshot();
     const client = createClient(snapshot);
-    const pending: OwnedShareItem = {
+    const pending: Extract<OwnedShareItem, { kind: "pending" }> = {
       kind: "pending",
       pendingShare: {
         source: {
@@ -2147,9 +2168,11 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
-        mode: "continuous",
-        sourceRevision: 12,
-        state: "activated",
+      mode: "continuous",
+      sourceRevision: 12,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      state: "activated",
         stage: "complete",
         workspaceAccessState: "active",
         sourceUpdateState: "failed",
@@ -2209,6 +2232,9 @@ describe("CollaborationApp", () => {
       consentId: pending.pendingShare.consentId,
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      ownerUpdatesState: "active",
       fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 2,
@@ -2473,6 +2499,9 @@ describe("CollaborationApp", () => {
       consentId: uuid(623),
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      ownerUpdatesState: "active",
       fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
@@ -2606,6 +2635,9 @@ describe("CollaborationApp", () => {
       consentId: uuid(628),
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
+      retentionEnabled: false,
+      memberRetentionVersion: 1,
+      ownerUpdatesState: "active",
       fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
@@ -2905,7 +2937,7 @@ describe("CollaborationApp", () => {
         personal: { ...current.navigation.personal, memory: [] }
       }
     });
-    const failed: OwnedShareItem = {
+    const failed: Extract<OwnedShareItem, { kind: "pending" }> = {
       kind: "pending",
       pendingShare: {
         source: {
@@ -2924,6 +2956,8 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         mode: "continuous",
         sourceRevision: 12,
         state: "failed",
@@ -4542,6 +4576,8 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         mode: "continuous",
         sourceRevision: 12,
         state: "needs_attention",
@@ -4610,7 +4646,7 @@ describe("CollaborationApp", () => {
   it("keeps Shares detail focus stable while a continuous Pending Share pauses", async () => {
     const setInterval = vi.spyOn(window, "setInterval");
     const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
-    const pending: OwnedShareItem = {
+    const pending: Extract<OwnedShareItem, { kind: "pending" }> = {
       kind: "pending",
       pendingShare: {
         source: {
@@ -4629,6 +4665,8 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
         mode: "continuous",
         sourceRevision: 12,
         state: "activated",
@@ -5416,6 +5454,9 @@ pnpm test
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        retentionPolicyEnabled: false,
+        memberRetentionVersion: 1,
         previewRevision: 1,
         sourceRevision: 2,
         policyRevision: 1,
@@ -5478,6 +5519,9 @@ pnpm test
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: false,
+        retentionPolicyEnabled: false,
+        memberRetentionVersion: 1,
         previewRevision: 2,
         sourceRevision: 2,
         policyRevision: 1,
