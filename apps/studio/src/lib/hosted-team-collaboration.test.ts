@@ -427,7 +427,7 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
     retentionPolicyEnabled: false,
     memberRetentionVersion: 1,
     binding: { sourceRevision: 7, sourceHash: "a".repeat(64), fidelityPolicyRevision: 1, fidelityPolicyHash: "a".repeat(64), contentPolicyVersion: 1, contentPolicyHash: "a".repeat(64), classifierVersion: 1, classifierHash: "a".repeat(64) },
-    items: [{ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", representation: "memory_events", sequence: 1, occurredAt: timestamp, sourceItems: [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", sourceKind: "user_message", occurredAt: timestamp, body: "Shared source item", actorName: null, toolName: null, toolCallId: null }] }],
+    items: [{ itemType: "user_message", schemaVersion: 1, sourceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", sourceLogicalMemoryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", sourceRevision: 7, occurredAt: timestamp, content: { text: "Shared source item" } }],
     sourceContentHash: "a".repeat(64),
     sourceRevision: 7,
     sourceHash: "a".repeat(64),
@@ -472,7 +472,7 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   const hosted = await client.loadHostedSession();
   assert.equal(hosted.kind, "hosted_browser");
   assert.equal("personal" in hosted, false);
-  await client.previewOwnedSource({
+  const acceptedPreview = await client.previewOwnedSource({
     source: preview.source,
     logicalMemoryId: preview.logicalMemoryId,
     remoteReplicaId: "12121212-1212-4212-8212-121212121212",
@@ -485,6 +485,7 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
     retentionEnabled: false,
     memberRetentionVersion: 1
   });
+  assert.equal(acceptedPreview.items[0]?.content.text, "Shared source item");
   const shareInput = {
     source: preview.source,
     sourceCapabilities: ["memory_events"],
@@ -521,4 +522,18 @@ test("uses browser-session persisted-preview bundles without desktop snapshots o
   assert.deepEqual(previewBody.sourceCapabilities, ["memory_events"]);
   assert.deepEqual(previewBody.authority, { action: "workspace.memory.share_owned", source: "browser_session" });
   assert.equal(requests.some(({ url }) => url.includes("candidate-previews") || url.includes("pending-shares")), false);
+  preview.items[0]!.sourceLogicalMemoryId = "99999999-9999-4999-8999-999999999999";
+  await assert.rejects(() => client.previewOwnedSource({
+    source: preview.source,
+    logicalMemoryId: preview.logicalMemoryId,
+    remoteReplicaId: "12121212-1212-4212-8212-121212121212",
+    teamId,
+    teamWorkspaceId: preview.teamWorkspaceId,
+    activationRepresentation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
+    mode: "snapshot",
+    retentionEnabled: false,
+    memberRetentionVersion: 1
+  }), /invalid share preview/);
 });

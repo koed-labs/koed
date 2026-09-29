@@ -7,15 +7,13 @@ import {
   collaborationRendererEventSchema,
   collaborationSnapshotSchema,
   sharedMemoryRepresentationSchema,
-  sharedMemorySourceItemSchema,
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
   type CollaborationSnapshot,
   type CollaborationSubscription,
   type SharedMemoryFidelityCeiling,
-  type SharedMemoryRepresentation,
-  type SharedMemorySourceItem
+  type SharedMemoryRepresentation
 } from "@koed/shared/collaboration";
 
 export type StudioTeamDraftAuthority = {
@@ -87,12 +85,34 @@ export type HostedOwnedSourcePreview = {
     classifierVersion: number;
     classifierHash: string;
   };
-  items: SharedMemorySourceItem[];
+  items: HostedOwnedPreviewItem[];
   sourceContentHash: string;
   sourceRevision: number;
   sourceHash: string;
   createdAt: string;
 };
+export type HostedOwnedPreviewItem = {
+  itemType: "user_message" | "assistant_message" | "thought" | "tool_call" | "tool_result" | "lcm_leaf" | "lcm_rollup" | "curated_assertion";
+  schemaVersion: 1;
+  sourceId: string;
+  sourceLogicalMemoryId: string;
+  sourceRevision: number;
+  occurredAt: string | null;
+  content: Record<string, unknown>;
+};
+
+function isHostedOwnedPreviewItem(item: unknown, representation: string, logicalMemoryId: string, sourceRevision: number): item is HostedOwnedPreviewItem {
+  if (!isRecord(item) || !isRecord(item.content) || item.schemaVersion !== 1 ||
+    typeof item.sourceId !== "string" || item.sourceId.length === 0 || item.sourceLogicalMemoryId !== logicalMemoryId ||
+    item.sourceRevision !== sourceRevision || (item.occurredAt !== null && (typeof item.occurredAt !== "string" || Number.isNaN(Date.parse(item.occurredAt))))) return false;
+  const types: Record<string, readonly string[]> = {
+    memory_events: ["user_message", "assistant_message", "thought", "tool_call", "tool_result"],
+    lcm_leaves: ["lcm_leaf"],
+    lcm_rollups: ["lcm_rollup"],
+    curated_assertions: ["curated_assertion"]
+  };
+  return (types[representation] ?? []).includes(String(item.itemType));
+}
 export type HostedOwnedShare = Record<string, unknown> & {
   kind: "grant" | "pending";
   grant?: Record<string, unknown> & {
@@ -335,7 +355,7 @@ export class StudioCollaborationClient {
       !validVersion(binding.contentPolicyVersion) || !validHash(binding.contentPolicyHash) || !validVersion(binding.classifierVersion) || !validHash(binding.classifierHash) ||
       !validHash(preview.sourceContentHash) || !Number.isSafeInteger(preview.sourceRevision) || preview.sourceRevision !== binding.sourceRevision ||
       !validHash(preview.sourceHash) || preview.sourceHash !== binding.sourceHash || typeof preview.createdAt !== "string" || Number.isNaN(Date.parse(preview.createdAt)) ||
-      items.length === 0 || items.some((item) => !sharedMemorySourceItemSchema.safeParse(item).success || !isRecord(item) || item.representation !== input.activationRepresentation)) {
+      items.length === 0 || items.some((item) => !isHostedOwnedPreviewItem(item, input.activationRepresentation, input.logicalMemoryId, preview.sourceRevision as number))) {
       throw new StudioCollaborationRequestError("Koed returned an invalid share preview.", 502);
     }
     return preview as unknown as HostedOwnedSourcePreview;

@@ -9,7 +9,7 @@ import type {
   SharedMemoryFidelityCeiling,
   OwnedShareItem
 } from "@koed/shared/collaboration";
-import type { HostedOwnedSourcePreview, HostedReadyOwnerReplica, StudioCollaborationClient } from "@/lib/studio-collaboration-client";
+import type { HostedOwnedPreviewItem, HostedOwnedSourcePreview, HostedReadyOwnerReplica, StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { ShareablePersonalConversation } from "./LocalConversationBrowser.match";
 import { findPendingOwnedShare } from "@/app/settings/team-memory-settings.guards";
 
@@ -41,7 +41,12 @@ function resultData<T>(
   return result.data as T;
 }
 
-function previewText(item: SharedMemoryPreview["items"][number]): string {
+function previewText(item: SharedMemoryPreview["items"][number] | HostedOwnedPreviewItem): string {
+  if ("content" in item) {
+    const content = item.content;
+    if ((item.itemType === "user_message" || item.itemType === "assistant_message" || item.itemType === "thought") && typeof content.text === "string") return content.text;
+    return JSON.stringify(content, null, 2);
+  }
   if (item.representation === "memory_events") return item.sourceItems.map((source) => source.body).join("\n\n");
   if (item.representation === "curated_assertions") return item.assertionText;
   return item.summaryText;
@@ -493,9 +498,7 @@ export function OwnedConversationShareDialog({
   const selectedTeam = teams.find((team) => team.id === teamId);
   const currentRetentionSetting = retentionSetting?.teamId === teamId ? retentionSetting : null;
   const previewNeedsRetentionConsent = preview?.retentionEnabled === true;
-  const previewItems = preview
-    ? preview.items as SharedMemoryPreview["items"]
-    : [];
+  const previewItems = preview?.items ?? [];
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="share-memory-title" className="flex max-h-[min(90vh,760px)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
@@ -530,7 +533,7 @@ export function OwnedConversationShareDialog({
             {!preview ? <button type="button" disabled={busy || !teamId || !currentRetentionSetting} onClick={() => void preparePreview()} className="rounded-md bg-chip px-3 py-2 text-xs font-medium text-chip-foreground hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Preparing privacy preview…" : "Preview memory"}</button> : null}
             {(candidate || hostedBrowser) && preview ? <div className="space-y-3 rounded-md border border-border bg-background/50 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted"><span>{selectedTeam?.name} · {mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</span><span>Source revision {preview.sourceRevision} · {previewItemCount(preview)} item{previewItemCount(preview) === 1 ? "" : "s"}</span></div>
-              <div className="max-h-56 space-y-2 overflow-y-auto">{previewItems.map((item) => <article key={`${item.representation}:${item.id}`} className="rounded-md border border-border/70 bg-surface px-3 py-2"><p className="whitespace-pre-wrap text-xs leading-5 text-foreground-secondary">{previewText(item)}</p></article>)}</div>
+              <div className="max-h-56 space-y-2 overflow-y-auto">{previewItems.map((item) => <article key={"sourceId" in item ? `${item.itemType}:${item.sourceId}` : `${item.representation}:${item.id}`} className="rounded-md border border-border/70 bg-surface px-3 py-2"><p className="whitespace-pre-wrap text-xs leading-5 text-foreground-secondary">{previewText(item)}</p></article>)}</div>
               <p className="text-[11px] text-muted">This exact preview is bound to revision {preview.sourceRevision} and hash {preview.previewHash.slice(0, 12)}…{preview.retentionEnabled ? " Retention was explicitly included." : " No retained copy was requested."}</p>
               {preview.retentionEnabled ? <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs"><input type="checkbox" checked={retentionAcknowledged} disabled={busy} onChange={(event) => setRetentionAcknowledged(event.target.checked)} /><span><strong className="text-foreground">I consent to a retained Team copy.</strong><span className="mt-0.5 block text-muted">This representation can stay available after you stop sharing, leave the Team, or delete the Personal source. A Team admin can remove it.</span></span></label> : null}
             </div> : null}
