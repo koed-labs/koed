@@ -287,6 +287,50 @@ describe("Pi managed RPC conversation", () => {
     await session.closeAndWait();
   });
 
+  it("lists bounded file-backed commands with provenance and rejects actions", async () => {
+    const f = fixture();
+    const globalRoot = path.join(f.root, "pi-agent");
+    const projectPromptRoot = path.join(f.root, ".pi", "prompts");
+    const globalPromptRoot = path.join(globalRoot, "prompts");
+    fs.mkdirSync(globalPromptRoot, { recursive: true });
+    fs.mkdirSync(projectPromptRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalPromptRoot, "review.md"),
+      "---\ndescription: Review changes\n---\nPrompt body"
+    );
+    fs.writeFileSync(path.join(projectPromptRoot, "test.md"), "Project prompt");
+    const session = new PiManagedConversationSession({
+      ...f.config,
+      env: { ...f.config.env, PI_CODING_AGENT_DIR: globalRoot }
+    });
+
+    await expect(session.listCommands()).resolves.toEqual([
+      expect.objectContaining({
+        name: "review",
+        description: "Review changes",
+        scope: "global",
+        source: "global-file",
+        verification: "unverified",
+        invocation: { type: "prompt" }
+      }),
+      expect.objectContaining({
+        name: "test",
+        scope: "project",
+        source: "project-file",
+        verification: "unverified"
+      })
+    ]);
+    await expect(
+      session.executeControlAction({
+        operationId: "operation-1",
+        actionId: "codex.compact",
+        executionGeneration: 1,
+        arguments: []
+      })
+    ).resolves.toEqual({ status: "rejected", reason: "unsupported_action" });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
   it("reports a provider-error turn as unsuccessful after it settles", async () => {
     const { session, emit } = fixture();
     await session.start();

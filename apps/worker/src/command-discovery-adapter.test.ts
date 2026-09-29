@@ -75,7 +75,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Review changes",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       }
     ]);
@@ -108,7 +109,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Project review",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "project-file",
+        verification: "unverified",
         scope: "project"
       },
       {
@@ -116,7 +118,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Project test",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "project-file",
+        verification: "unverified",
         scope: "project"
       }
     ]);
@@ -153,7 +156,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Global review",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       },
       {
@@ -161,7 +165,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Explain code",
         argumentHint: "<target>",
         kind: "skill",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       },
       {
@@ -169,7 +174,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Project test",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "project-file",
+        verification: "unverified",
         scope: "project"
       },
       {
@@ -177,7 +183,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Audit code",
         argumentHint: "<target>",
         kind: "skill",
-        source: "provider",
+        source: "project-file",
+        verification: "unverified",
         scope: "project"
       }
     ]);
@@ -202,7 +209,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Review changes",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       },
       {
@@ -210,7 +218,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Explain code",
         argumentHint: "<target>",
         kind: "skill",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       }
     ]);
@@ -277,7 +286,8 @@ describe("AI Client command discovery adapters", () => {
         description: "Review changes",
         argumentHint: "<target>",
         kind: "command",
-        source: "provider",
+        source: "global-file",
+        verification: "unverified",
         scope: "global"
       }
     ]);

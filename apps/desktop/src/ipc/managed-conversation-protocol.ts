@@ -1911,7 +1911,9 @@ export const parseManagedConversationResult = (
           ...(Object.hasOwn(command, "argumentHint") ? ["argumentHint"] : []),
           "kind",
           "source",
-          "scope"
+          "scope",
+          ...(Object.hasOwn(command, "verification") ? ["verification"] : []),
+          ...(Object.hasOwn(command, "invocation") ? ["invocation"] : [])
         ],
         "Managed Conversation slash command"
       );
@@ -1938,10 +1940,39 @@ export const parseManagedConversationResult = (
           "Managed Conversation command discovery command kind is invalid."
         );
       }
-      if (command.source !== "provider") {
+      if (
+        command.source !== "provider" &&
+        command.source !== "builtin" &&
+        command.source !== "global-file" &&
+        command.source !== "project-file"
+      ) {
         throw new TypeError(
           "Managed Conversation command discovery command source is invalid."
         );
+      }
+      if (
+        command.verification !== undefined &&
+        command.verification !== "verified" &&
+        command.verification !== "unverified"
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery verification is invalid."
+        );
+      }
+      if (command.invocation !== undefined) {
+        const invocation = record(command.invocation, "Command invocation");
+        if (invocation.type === "prompt") {
+          exactKeys(invocation, ["type"], "Command invocation");
+        } else if (
+          invocation.type === "control_action" &&
+          invocation.actionId === "codex.compact"
+        ) {
+          exactKeys(invocation, ["type", "actionId"], "Command invocation");
+        } else {
+          throw new TypeError(
+            "Managed Conversation command invocation is invalid."
+          );
+        }
       }
       if (command.scope !== "global" && command.scope !== "project") {
         throw new TypeError(

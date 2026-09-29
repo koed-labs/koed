@@ -4,8 +4,12 @@ export type ManagedConversationSlashCommand = {
   description: string;
   argumentHint?: string;
   kind: "command" | "skill";
-  source: "provider";
+  source: "provider" | "builtin" | "global-file" | "project-file";
+  verification?: "verified" | "unverified";
   scope: "global" | "project";
+  invocation?:
+    | { type: "prompt" }
+    | { type: "control_action"; actionId: "codex.compact" };
 };
 
 /** Character range covering the full slash command (including the slash). */
@@ -100,14 +104,15 @@ export function filterSlashCommands(
 }
 
 /**
- * Replaces the full slash command (slash + query) with the selected command name.
+ * Replaces the full slash command (slash + query) with the selected command.
+ * Catalog names are slash-free; the slash is prepended at insert time.
  * Preserves text after the range.
  * Appends one space only when replacement reaches end of input.
  *
  * @param text - Full input text.
  * @param range - Character range of the full slash command.
- * @param commandName - Selected command name.
- * @returns Updated text with the command name substituted.
+ * @param commandName - Selected command name (slash-free from catalog).
+ * @returns Updated text with /commandName substituted.
  */
 export function applySlashCommandReplacement({
   text,
@@ -118,10 +123,13 @@ export function applySlashCommandReplacement({
   range: SlashCommandRange;
   commandName: string;
 }): string {
-  // Replace only the query portion; keep the slash and surrounding text.
-  const before = text.slice(0, range.start);
+  // Replace only the query portion; keep surrounding text and the slash.
+  // Catalog names are slash-free, so the slash is explicitly re-added.
+  // range.start points to the character after the slash, so slice to
+  // range.start-1 to exclude the slash, then prepend it with the command.
+  const before = text.slice(0, range.start - 1);
   const after = text.slice(range.end);
-  const replacement = `${before}${commandName}`;
+  const replacement = `${before}/${commandName}`;
 
   if (range.end >= text.length) {
     return `${replacement} `;

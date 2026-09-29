@@ -75,12 +75,14 @@ operation families; none grants an AI Client permission or a remote mutation app
 
 ## Slash command suggestions
 
-Desktop discovers file-backed commands for the selected AI Client instance through
+Desktop command discovery currently reaches the bounded file fallback through
 `discoverCommands` IPC → the Koed Server manager →
 `POST /v1/managed-conversations/commands` → the Worker command-discovery adapter.
 The route requires an owned, enabled instance and a fresh capability snapshot that
-marks slash-command discovery ready. Discovery is available in local execution
-profiles; hosted execution does not read an Operator's local command files.
+marks slash-command discovery ready. Hosted execution does not read an Operator's
+local command files. Codex managed sessions now expose read-only `listCommands()`
+and a purpose-specific `skills/list` RPC wrapper, but API/Worker discovery routing
+has not yet been connected to that live session owner.
 
 A Chat without a Project requests client-global definitions only. A Project Chat
 requests both global and Project definitions. The API resolves a supplied Project
@@ -88,11 +90,14 @@ ID against Koed's local Project registry and passes only that verified root to t
 adapter; the renderer never supplies an arbitrary working directory. A Project
 command with the same kind and name takes precedence over the global definition.
 
-The adapters read metadata from bounded Markdown files and return names,
-descriptions, optional argument hints, command/skill kind, and `global` or
-`project` scope. Built-in or runtime-only commands without local Markdown
-definitions are not enumerated. The adapters do not return prompt bodies, execute
-commands, scrape Conversations, or invoke a provider shell. Supported roots are:
+The fallback adapters read metadata from bounded Markdown files and return names,
+descriptions, optional argument hints, command/skill kind, provenance, verification,
+and `global` or `project` scope. File entries are unverified and must be revalidated
+before executable dispatch. Codex live listing supports provider skills and the
+allowlisted `/compact` built-in; custom prompts remain file-backed and unverified.
+The API currently does not expose invocation metadata or dispatch control actions.
+The adapters do not return prompt bodies, scrape Conversations, or invoke a provider
+shell. Supported roots are:
 
 - Codex: `<CODEX_HOME>/prompts` and `<Project>/.codex/prompts`.
 - Claude Code: `<CLAUDE_CONFIG_DIR>/commands` and `skills`, plus the corresponding
@@ -106,8 +111,9 @@ Project root are ignored. Discovery scans at most 128 returned commands, bounds
 Markdown size and directory traversal, and fails closed after a two-second
 adapter deadline. The Desktop hook debounces requests by 500 ms and keeps
 instance-and-scope-keyed results for up to 30 seconds when a refresh fails;
-unauthorized and stale results clear the cached suggestions. Suggestions are
-ordinary prompt text and do not execute a provider command when selected.
+unauthorized and stale results clear the cached suggestions. Suggestions do not execute a provider command when selected. End-to-end exact
+invocation parsing and control-action dispatch remain pending; until then, do not
+route `/compact` through ordinary prompt submission.
 
 The execution persists driver, instance, model, reasoning effort, permission
 mode, and runner identity. The driver and instance remain fixed for that

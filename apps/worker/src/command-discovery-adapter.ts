@@ -12,8 +12,9 @@ export type ManagedConversationSlashCommand = {
   description: string;
   argumentHint?: string;
   kind: "command" | "skill";
-  source: "provider";
-  scope: "global" | "project";
+  source: "provider" | "builtin" | "global-file" | "project-file";
+  verification?: "verified" | "unverified";
+  scope?: "global" | "project";
 };
 
 export interface CommandDiscoveryAdapter {
@@ -35,7 +36,7 @@ type SourceRoot = {
   kind: "command" | "skill";
 };
 
-type FileCommand = Omit<ManagedConversationSlashCommand, "scope">;
+type FileCommand = Omit<ManagedConversationSlashCommand, "scope" | "source">;
 
 const MAX_COMMANDS = 128;
 const MAX_FILE_BYTES = 64 * 1024;
@@ -116,7 +117,7 @@ const commandFromFile = async (
       description,
       ...(argumentHint ? { argumentHint } : {}),
       kind,
-      source: "provider"
+      verification: "unverified"
     };
   } catch {
     return null;
@@ -163,7 +164,12 @@ const commandsInRoot = async (
         ? relative(root, directory).split(/[\\/]/).join("/")
         : relative(root, path).slice(0, -extname(path).length);
       const command = await commandFromFile(root, path, source.kind, rawName);
-      if (command) commands.push({ ...command, scope: source.scope });
+      if (command)
+        commands.push({
+          ...command,
+          scope: source.scope,
+          source: source.scope === "project" ? "project-file" : "global-file"
+        });
     }
   };
   await visit(root, 0);
@@ -261,7 +267,7 @@ const commandRoots = (
   return roots;
 };
 
-const environmentForInstance = (
+export const environmentForCommandDiscoveryInstance = (
   driverId: SupportedAiClientDriverId,
   instanceId: string,
   environment: NodeJS.ProcessEnv
@@ -288,7 +294,7 @@ export const createCommandDiscoveryAdapter: CommandDiscoveryAdapterFactory = (
 ) => ({
   async discoverCommands(args) {
     const discovery = (async (): Promise<ManagedConversationSlashCommand[]> => {
-      const environment = environmentForInstance(
+      const environment = environmentForCommandDiscoveryInstance(
         driverId,
         args.aiClientInstanceId,
         baseEnvironment
