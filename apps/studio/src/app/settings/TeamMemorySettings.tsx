@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { CollaborationSnapshot, OwnedShareItem, OwnedSharedMemoryGrant } from "@koed/shared/collaboration";
-import { canStopRetainedUpdates, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
+import { HostedTeamMemorySettings } from "./HostedTeamMemorySettings";
+import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, mayApplyTeamMemoryResult } from "./team-memory-settings.guards";
 
 type Tab = "members" | "memory" | "my-shares";
 type Member = {
@@ -33,6 +34,11 @@ function commandData<T>(
 }
 
 export function TeamMemorySettings() {
+  if (process.env.NEXT_PUBLIC_KOED_STUDIO_HOSTED === "1") return <HostedTeamMemorySettings />;
+  return <NativeTeamMemorySettings />;
+}
+
+function NativeTeamMemorySettings() {
   const client = useMemo(() => new StudioCollaborationClient(), []);
   const [snapshot, setSnapshot] = useState<CollaborationSnapshot | null>(null);
   const [teamId, setTeamId] = useState("");
@@ -52,6 +58,9 @@ export function TeamMemorySettings() {
   const busyGeneration = useRef(0);
   const ownedSharesGeneration = useRef(0);
   const authorityKeyRef = useRef<string | null>(null);
+  const lastAuthorityKeyRef = useRef<string | null>(null);
+  const teamIdRef = useRef("");
+  const sessionLoadRef = useRef<Promise<{ authorityKey: string; snapshot: CollaborationSnapshot } | null> | null>(null);
   const teams = (snapshot?.navigation.teams ?? []).filter((team) => team.lifecycle === "active");
   const selectedTeam = teams.find((team) => team.id === teamId) ?? null;
   const canManage = selectedTeam?.role === "owner" || selectedTeam?.role === "admin";
@@ -60,39 +69,78 @@ export function TeamMemorySettings() {
     let active = true;
     const loadSession = () => {
       const sequence = ++sessionSequence.current;
-      void client.loadSession().then((value) => {
-        if (!active || sequence !== sessionSequence.current) return;
+      const pending = client.loadSession().then((value) => {
+        if (!active || sequence !== sessionSequence.current) return null;
         loadSequence.current += 1;
         ownedSharesGeneration.current += 1;
-        authorityKeyRef.current = `${value.connection.backendId ?? ""}:${value.navigation.teamPrincipal?.id ?? ""}`;
+        const authorityKey = `${value.connection.backendId ?? ""}:${value.navigation.teamPrincipal?.id ?? ""}`;
+        const authorityChanged = lastAuthorityKeyRef.current !== null && lastAuthorityKeyRef.current !== authorityKey;
+        const currentTeamIsActive = value.navigation.teams.some((team) => team.id === teamIdRef.current && team.lifecycle === "active");
+        const nextTeamId = currentTeamIsActive
+          ? teamIdRef.current
+          : value.navigation.teams.find((team) => team.lifecycle === "active")?.id ?? "";
+        const selectedTeam = value.navigation.teams.find((team) => team.id === nextTeamId && team.lifecycle === "active");
+        const canStillManage = selectedTeam?.role === "owner" || selectedTeam?.role === "admin";
+        if (authorityChanged || !currentTeamIsActive) {
+          teamGeneration.current += 1;
+          setMembers([]);
+          setItems([]);
+          setNextCursor(null);
+          setRemovePrompt(null);
+        } else if (!canStillManage) {
+          setMembers([]);
+          setItems([]);
+          setNextCursor(null);
+          setRemovePrompt(null);
+        }
+        if (authorityChanged) {
+          setOwnedShares([]);
+          setOwnedSharesNextCursor(null);
+        }
+        teamIdRef.current = nextTeamId;
+        authorityKeyRef.current = authorityKey;
+        lastAuthorityKeyRef.current = authorityKey;
         setSnapshot(value);
-        setTeamId((current) => current && value.navigation.teams.some((team) => team.id === current && team.lifecycle === "active")
-          ? current
-          : value.navigation.teams.find((team) => team.lifecycle === "active")?.id ?? "");
+        setTeamId(nextTeamId);
         setState("ready");
+        setError(null);
+        return { authorityKey, snapshot: value };
       }).catch((reason: unknown) => {
-        if (!active || sequence !== sessionSequence.current) return;
+        if (!active || sequence !== sessionSequence.current) return null;
+        const status = reason && typeof reason === "object" && "status" in reason ? (reason as { status?: unknown }).status : null;
+        if (status === 401 || status === 403) {
+          authorityKeyRef.current = null;
+          lastAuthorityKeyRef.current = null;
+          setSnapshot(null);
+          setTeamId("");
+          teamIdRef.current = "";
+          setMembers([]);
+          setItems([]);
+          setOwnedShares([]);
+          setOwnedSharesNextCursor(null);
+          setNextCursor(null);
+          setRemovePrompt(null);
+          setState("unavailable");
+        } else if (lastAuthorityKeyRef.current) {
+          authorityKeyRef.current = lastAuthorityKeyRef.current;
+          setState("ready");
+        } else {
+          setState("unavailable");
+        }
         setError(reason instanceof Error ? reason.message : "Team settings are unavailable.");
-        setState("unavailable");
+        return null;
       });
+      sessionLoadRef.current = pending;
     };
     const reloadFocused = () => {
       loadSequence.current += 1;
       sessionSequence.current += 1;
-      teamGeneration.current += 1;
       busyGeneration.current += 1;
       ownedSharesGeneration.current += 1;
       authorityKeyRef.current = null;
       setState("loading");
       setError(null);
-      setMembers([]);
-      setItems([]);
-      setOwnedShares([]);
-      setOwnedSharesNextCursor(null);
-      setRemovePrompt(null);
-      setNextCursor(null);
       setBusyKey(null);
-      setTeamId("");
       loadSession();
     };
     loadSession();
@@ -191,6 +239,20 @@ export function TeamMemorySettings() {
     const requestGeneration = sessionSequence.current;
     const requestTeamGeneration = teamGeneration.current;
     const busyToken = ++busyGeneration.current;
+    const reconcileAcceptedChange = async () => {
+      if (requestTeamGeneration !== teamGeneration.current || requestTeamId !== teamIdRef.current || requestAuthority !== lastAuthorityKeyRef.current) return;
+      const sessionLoad = sessionLoadRef.current;
+      if (!sessionLoad) return;
+      const refreshed = await sessionLoad;
+      if (!refreshed || refreshed.authorityKey !== requestAuthority || requestTeamId !== teamIdRef.current || requestTeamGeneration !== teamGeneration.current) return;
+      const refreshedTeam = refreshed.snapshot.navigation.teams.find((team) => team.id === requestTeamId && team.lifecycle === "active");
+      if (refreshedTeam?.role !== "owner" && refreshedTeam?.role !== "admin") return;
+      const reconciliationSequence = sessionSequence.current;
+      const result = await client.run("collaboration.list_team_memory_retention_members", { teamId: requestTeamId });
+      const data = commandData<{ teamId: string; members: Member[] }>(result, "collaboration.list_team_memory_retention_members");
+      if (data.teamId !== requestTeamId || requestTeamId !== teamIdRef.current || requestTeamGeneration !== teamGeneration.current || reconciliationSequence !== sessionSequence.current || authorityKeyRef.current !== requestAuthority) return;
+      setMembers(data.members);
+    };
     const key = `member:${member.userId}`;
     setBusyKey(key);
     setError(null);
@@ -203,15 +265,19 @@ export function TeamMemorySettings() {
         mutationId: crypto.randomUUID()
       });
       const { policy } = commandData<{ policy: { teamId: string; enabled: boolean; version: number; userId: string } }>(result, "collaboration.update_team_memory_retention");
-      if (!mayApplyTeamMemoryResult({
+      const stillCurrent = mayApplyTeamMemoryResult({
         active: true,
         requestGeneration,
         currentGeneration: sessionSequence.current,
         requestAuthority,
         currentAuthority: authorityKeyRef.current,
         requestTeamId,
-        currentTeamId: teamId
-      }) || requestTeamGeneration !== teamGeneration.current || policy.teamId !== requestTeamId) return;
+        currentTeamId: teamIdRef.current
+      }) && requestTeamGeneration === teamGeneration.current && policy.teamId === requestTeamId;
+      if (!stillCurrent) {
+        await reconcileAcceptedChange();
+        return;
+      }
       setMembers((current) => current.map((item) => item.userId === policy.userId
         ? { ...item, enabled: policy.enabled, version: policy.version }
         : item));
@@ -318,15 +384,13 @@ export function TeamMemorySettings() {
   };
 
   const stopUpdates = async (item: OwnedShareItem) => {
-    const grant = item.kind === "grant" ? item.grant : null;
-    const pending = item.kind === "pending" ? item.pendingShare : null;
-    const shareGrantId = grant?.id ?? pending?.grantId;
-    const expectedGrantVersion = grant?.grantVersion ?? pending?.grantVersion;
+    if (item.kind !== "grant") return;
+    const grant = item.grant;
+    const shareGrantId = grant.id;
+    const expectedGrantVersion = grant.grantVersion;
     if (!canStopRetainedUpdates({
-      retentionEnabled: grant?.retentionEnabled === true || pending?.retentionEnabled === true,
-      updatesActive: grant
-        ? grant.lifecycle === "active" && grant.ownerUpdatesState === "active"
-        : pending?.workspaceAccessState === "active" && pending.sourceUpdateState === "active",
+      retentionEnabled: grant.retentionEnabled,
+      updatesActive: grant.lifecycle === "active" && grant.ownerUpdatesState === "active",
       shareGrantId,
       grantVersion: expectedGrantVersion
     })) return;
@@ -338,8 +402,8 @@ export function TeamMemorySettings() {
     setError(null);
     try {
       const result = await client.run("collaboration.stop_owned_team_memory_updates", {
-        teamId: grant?.teamId ?? pending!.teamId,
-        workspaceId: grant?.workspaceId ?? pending!.workspaceId,
+        teamId: grant.teamId,
+        workspaceId: grant.workspaceId,
         shareGrantId,
         expectedGrantVersion,
         mutationId: crypto.randomUUID()
@@ -406,6 +470,7 @@ export function TeamMemorySettings() {
     teamGeneration.current += 1;
     loadSequence.current += 1;
     busyGeneration.current += 1;
+    teamIdRef.current = nextTeamId;
     setBusyKey(null);
     setError(null);
     setTeamId(nextTeamId);
@@ -464,20 +529,25 @@ export function TeamMemorySettings() {
             const updatesActive = grant
               ? grant.lifecycle === "active" && grant.ownerUpdatesState === "active"
               : pending?.workspaceAccessState === "active" && pending.sourceUpdateState === "active";
-            const canStop = canStopRetainedUpdates({
+            const canStop = grant ? canStopRetainedUpdates({
               retentionEnabled: record.retentionEnabled,
               updatesActive,
               shareGrantId,
               grantVersion: version
-            });
+            }) : false;
             const canRevoke = grant
               ? grant.lifecycle === "active" && !grant.retentionEnabled
-              : pending?.workspaceAccessState !== "revoked" && pending?.state !== "revoked";
+              : canCancelUnactivatedPendingShare({
+                pendingShareId: pending!.id,
+                grantId: pending!.grantId,
+                state: pending!.state,
+                workspaceAccessState: pending!.workspaceAccessState
+              });
             return <article key={`${item.kind}:${record.id}`} className="flex items-start gap-3 rounded-lg border border-border bg-surface/40 px-4 py-3">
               <div className="min-w-0 flex-1">
                 <h3 className="truncate text-sm font-medium text-foreground">{item.summary.sourceTitle}</h3>
                 <p className="mt-1 truncate text-xs text-muted">{item.summary.teamName} · {record.mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</p>
-                <p className="mt-1 text-[11px] text-subtle">{pending ? `${pending.stage.replaceAll("_", " ")} · ${pending.state.replaceAll("_", " ")}` : grant?.ownerUpdatesState === "stopped" ? "Updates stopped" : "Updates active"}{record.retentionEnabled ? " · retained Team copy stays until admin removal" : " · stopping also blocks future recall"}</p>
+                <p className="mt-1 text-[11px] text-subtle">{pending ? `${pending.stage.replaceAll("_", " ")} · ${pending.state.replaceAll("_", " ")}` : item.summary.lastReadyRevision === null || item.summary.workspaceContentAccess === "unavailable" ? "Preparing privacy-processed Team copy" : grant?.ownerUpdatesState === "stopped" ? "Updates stopped" : "Updates active"}{record.retentionEnabled ? " · retained Team copy stays until admin removal" : " · stopping also blocks future recall"}</p>
               </div>
               {canStop ? <button type="button" disabled={Boolean(busyKey)} onClick={() => void stopUpdates(item)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:border-warning/40 hover:text-warning disabled:opacity-50">{busyKey === `stop:${shareGrantId}` ? "Stopping…" : "Stop updates"}</button> : null}
               {canRevoke ? <button type="button" disabled={Boolean(busyKey)} onClick={() => void revokeShare(item)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:border-warning/40 hover:text-warning disabled:opacity-50">{busyKey === `revoke:${record.id}` ? "Stopping…" : "Stop sharing"}</button> : null}

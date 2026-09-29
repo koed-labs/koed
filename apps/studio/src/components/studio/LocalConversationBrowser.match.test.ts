@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // Node 24's native TypeScript runner requires the source extension here.
 // @ts-expect-error -- Next's app compiler does not enable TS extension imports.
-import { indexShareableConversationRows, indexShareablePersonalConversations, isSyntheticIndependentProject, managedConversationSourceIds, matchLocalConversationToHome, matchManagedExecutionForCapturedSession, ownedMemoryForCapturedSession, ownerMemoryLoadMayApply } from "./LocalConversationBrowser.match.ts";
+import { indexShareableConversationRows, indexShareablePersonalConversations, isSyntheticIndependentProject, managedConversationSourceIds, matchLocalConversationToHome, matchManagedExecutionForCapturedSession, ownedMemoryForCapturedSession, ownerMemoryLoadMayApply, ownerSnapshotMaySurviveRefresh, shareDialogSourceMayRemainOpen } from "./LocalConversationBrowser.match.ts";
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
 import type { PersonalMemoryEntry } from "@koed/shared/collaboration";
 
@@ -97,6 +97,27 @@ test("rejects owner memory loads after a scope or request generation changes", (
     false
   );
   assert.equal(ownerMemoryLoadMayApply({ ...current, active: false }), false);
+});
+
+test("keeps an open share dialog through same-authority refresh but closes on scope, authority, or source change", () => {
+  const current = {
+    sourceHomeScopeKey: "home-a",
+    currentHomeScopeKey: "home-a",
+    sourceAuthorityKey: "backend-a:user-a",
+    currentAuthorityKey: "backend-a:user-a",
+    sourceLogicalMemoryId: "memory-a",
+    currentLogicalMemoryId: "memory-a"
+  };
+  assert.equal(shareDialogSourceMayRemainOpen(current), true);
+  assert.equal(shareDialogSourceMayRemainOpen({ ...current, currentHomeScopeKey: "home-b" }), false);
+  assert.equal(shareDialogSourceMayRemainOpen({ ...current, currentAuthorityKey: "backend-a:user-b" }), false);
+  assert.equal(shareDialogSourceMayRemainOpen({ ...current, currentLogicalMemoryId: "memory-b" }), false);
+});
+
+test("keeps a same-scope owner snapshot after transient failure but clears it on explicit authorization denial", () => {
+  assert.equal(ownerSnapshotMaySurviveRefresh({ sameHomeScope: true, authorizationDenied: false }), true);
+  assert.equal(ownerSnapshotMaySurviveRefresh({ sameHomeScope: true, authorizationDenied: true }), false);
+  assert.equal(ownerSnapshotMaySurviveRefresh({ sameHomeScope: false, authorizationDenied: false }), false);
 });
 
 test("matches the exact native thread ID and normalized provider to a managed execution", () => {

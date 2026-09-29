@@ -9,12 +9,27 @@ import type {
   SharedMemoryFidelityCeiling,
   OwnedShareItem
 } from "@koed/shared/collaboration";
-import type { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
+import type { HostedOwnedSourcePreview, HostedReadyOwnerReplica, StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { ShareablePersonalConversation } from "./LocalConversationBrowser.match";
 import { findPendingOwnedShare } from "@/app/settings/team-memory-settings.guards";
 
 type TeamOption = { id: string; name: string };
 type Mode = "snapshot" | "continuous";
+type ShareSource = Pick<ShareablePersonalConversation, "id" | "logicalMemoryId" | "title">;
+type ShareTargetGrant = { id: string; grantVersion: number; retentionEnabled: boolean };
+type SharePreview = SharedMemoryPreview | HostedOwnedSourcePreview;
+
+function isHostedPreview(preview: SharePreview): preview is HostedOwnedSourcePreview {
+  return "teamWorkspaceId" in preview;
+}
+
+function previewWorkspaceId(preview: SharePreview): string {
+  return isHostedPreview(preview) ? preview.teamWorkspaceId : preview.workspaceId;
+}
+
+function previewItemCount(preview: SharePreview): number {
+  return isHostedPreview(preview) ? preview.items.length : preview.itemCount;
+}
 
 function resultData<T>(
   result: CollaborationCommandResult,
@@ -36,14 +51,22 @@ export function OwnedConversationShareDialog({
   client,
   source,
   teams,
+  hostedBrowser = false,
+  initialTeamId,
+  initialTargetGrant = null,
+  onComplete,
   onClose
 }: {
   client: StudioCollaborationClient;
-  source: ShareablePersonalConversation;
+  source: ShareSource;
   teams: TeamOption[];
+  hostedBrowser?: boolean;
+  initialTeamId?: string;
+  initialTargetGrant?: ShareTargetGrant | null;
+  onComplete?: () => void;
   onClose: () => void;
 }) {
-  const [teamId, setTeamId] = useState(teams[0]?.id ?? "");
+  const [teamId, setTeamId] = useState(initialTeamId ?? teams[0]?.id ?? "");
   const [mode, setMode] = useState<Mode>("snapshot");
   const [maximumFidelity, setMaximumFidelity] = useState<SharedMemoryFidelityCeiling>("memory_events");
   const [retentionSetting, setRetentionSetting] = useState<{
@@ -52,13 +75,9 @@ export function OwnedConversationShareDialog({
     version: number;
   } | null>(null);
   const [retentionAcknowledged, setRetentionAcknowledged] = useState(false);
-  const [targetGrant, setTargetGrant] = useState<{
-    id: string;
-    grantVersion: number;
-    retentionEnabled: boolean;
-  } | null>(null);
+  const [targetGrant, setTargetGrant] = useState<ShareTargetGrant | null>(initialTargetGrant);
   const [candidate, setCandidate] = useState<SharedMemoryCandidatePreview | null>(null);
-  const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
+  const [preview, setPreview] = useState<SharePreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [completeMessage, setCompleteMessage] = useState<string | null>(null);
@@ -70,11 +89,12 @@ export function OwnedConversationShareDialog({
     const sequence = ++requestSequence.current;
     let active = true;
     if (!teamId) return () => { active = false; };
-    void client
-      .run("collaboration.get_team_memory_retention", { teamId })
-      .then((result) => {
+    const loadSetting = hostedBrowser
+      ? client.getTeamMemoryRetention(teamId).then((setting) => ({ enabled: setting.enabled, version: setting.version }))
+      : client.run("collaboration.get_team_memory_retention", { teamId }).then((result) => resultData<{ setting: { enabled: boolean; version: number } }>(result, "collaboration.get_team_memory_retention").setting);
+    void loadSetting
+      .then((setting) => {
         if (!active || sequence !== requestSequence.current) return;
-        const { setting } = resultData<{ setting: { enabled: boolean; version: number } }>(result, "collaboration.get_team_memory_retention");
         setRetentionSetting({ teamId, enabled: setting.enabled, version: setting.version });
       })
       .catch((reason: unknown) => {
@@ -82,7 +102,7 @@ export function OwnedConversationShareDialog({
         setError(reason instanceof Error ? reason.message : "Team retention settings are unavailable.");
       });
     return () => { active = false; };
-  }, [client, teamId]);
+  }, [client, hostedBrowser, teamId]);
 
   const preparePreview = async () => {
     const sequence = ++requestSequence.current;
@@ -103,6 +123,53 @@ export function OwnedConversationShareDialog({
         sessionId: source.id,
         logicalMemoryId: source.logicalMemoryId
       };
+      if (hostedBrowser) {
+        const destination = await client.ensureTeamMemoryDestination(teamId);
+        if (!isCurrent()) return;
+        const replica = await client.getReadyOwnerMemoryReplica({
+          logicalMemoryId: source.logicalMemoryId,
+          teamId,
+          teamWorkspaceId: destination.teamWorkspaceId
+        });
+        if (!isCurrent()) return;
+        if (!replica) throw new Error("This processed memory is not available from an authorized ready Team replica in the browser yet. Open Studio on the source device to prepare it.");
+        if (
+          replica.source.kind !== "captured_session" ||
+          replica.source.sessionId !== source.id ||
+          replica.source.logicalMemoryId !== source.logicalMemoryId
+        ) throw new Error("The ready Team replica does not match this exact Conversation. Refresh My shares and try again.");
+        const previewRetentionEnabled = targetGrant?.retentionEnabled === true || currentRetentionSetting.enabled;
+        const prepared = await client.previewOwnedSource({
+          source: replica.source,
+          logicalMemoryId: source.logicalMemoryId,
+          remoteReplicaId: replica.remoteReplicaId,
+          teamId,
+          teamWorkspaceId: destination.teamWorkspaceId,
+          activationRepresentation: maximumFidelity,
+          maximumFidelity,
+          includeCuratedMemory: false,
+          mode,
+          retentionEnabled: previewRetentionEnabled,
+          memberRetentionVersion: currentRetentionSetting.version
+        });
+        if (!isCurrent()) return;
+        if (
+          prepared.source.kind !== "captured_session" ||
+          prepared.source.sessionId !== source.id ||
+          prepared.source.logicalMemoryId !== source.logicalMemoryId ||
+          prepared.logicalMemoryId !== source.logicalMemoryId ||
+          prepared.teamId !== teamId ||
+          prepared.teamWorkspaceId !== destination.teamWorkspaceId ||
+          prepared.sourceRevision !== replica.sourceRevision ||
+          prepared.items.length === 0 ||
+          prepared.retentionEnabled !== previewRetentionEnabled ||
+          prepared.retentionPolicyEnabled !== currentRetentionSetting.enabled ||
+          prepared.memberRetentionVersion !== currentRetentionSetting.version
+        ) throw new Error("The ready source or retention policy changed during preview. Prepare a fresh preview.");
+        setCandidate(null);
+        setPreview(prepared);
+        return;
+      }
       const destinationResult = await client.run("collaboration.ensure_team_memory_destination", { teamId });
       if (!isCurrent()) return;
       const destination = resultData<{ teamId: string; workspaceId: string }>(
@@ -243,19 +310,100 @@ export function OwnedConversationShareDialog({
   };
 
   const confirmShare = async () => {
-    if (!preview || !candidate || !retentionSetting) return;
+    if (!preview || (!hostedBrowser && !candidate) || !retentionSetting) return;
+    if (!source.logicalMemoryId) return;
     const sequence = ++requestSequence.current;
     const isCurrent = () => sequence === requestSequence.current;
     setBusy(true);
     setError(null);
     try {
+      if (hostedBrowser) {
+        if (!isHostedPreview(preview)) throw new Error("Prepare a fresh browser preview before confirming.");
+        const destination = await client.ensureTeamMemoryDestination(teamId);
+        if (!isCurrent()) return;
+        if (destination.teamId !== teamId || destination.teamWorkspaceId !== preview.teamWorkspaceId) {
+          throw new Error("The Team destination changed after preview. Prepare a fresh preview.");
+        }
+        const currentRetention = await client.getTeamMemoryRetention(teamId);
+        if (!isCurrent()) return;
+        if (
+          currentRetention.version !== preview.memberRetentionVersion ||
+          (preview.retentionEnabled && !currentRetention.enabled && !targetGrant?.retentionEnabled) ||
+          currentRetention.enabled !== preview.retentionPolicyEnabled
+        ) {
+          setPreview(null);
+          setRetentionSetting({ teamId, enabled: currentRetention.enabled, version: currentRetention.version });
+          throw new Error("The Team retention setting changed after preview. Review a fresh preview before sharing.");
+        }
+        const readyReplica: HostedReadyOwnerReplica | null = await client.getReadyOwnerMemoryReplica({
+          logicalMemoryId: source.logicalMemoryId,
+          teamId,
+          teamWorkspaceId: destination.teamWorkspaceId
+        });
+        if (!isCurrent()) return;
+        if (
+          !readyReplica ||
+          readyReplica.source.sessionId !== source.id ||
+          readyReplica.source.logicalMemoryId !== source.logicalMemoryId ||
+          readyReplica.sourceRevision !== preview.sourceRevision
+        ) {
+          setPreview(null);
+          throw new Error("The ready source changed after preview. Prepare a fresh preview.");
+        }
+        const mutationId = crypto.randomUUID();
+        const consentId = crypto.randomUUID();
+        const common = {
+          source: preview.source,
+          sourceCapabilities: preview.sourceCapabilities,
+          activationRepresentation: preview.activationRepresentation,
+          mutationId,
+          consentId,
+          logicalMemoryId: preview.logicalMemoryId,
+          teamId: preview.teamId,
+          teamWorkspaceId: preview.teamWorkspaceId,
+          previewId: preview.previewId,
+          previewHash: preview.previewHash,
+          previewRevision: preview.previewRevision,
+          mode: preview.mode,
+          maximumFidelity: preview.maximumFidelity,
+          includeCuratedMemory: preview.includeCuratedMemory,
+          retentionEnabled: preview.retentionEnabled,
+          retentionPolicyEnabled: preview.retentionPolicyEnabled,
+          memberRetentionVersion: preview.memberRetentionVersion
+        };
+        const result = targetGrant
+          ? await client.changeOwnedSourceFidelity(targetGrant.id, {
+              ...common,
+              expectedGrantVersion: targetGrant.grantVersion
+            })
+          : await client.shareOwnedSource({
+              ...common,
+              logicalGrantId: crypto.randomUUID()
+            });
+        if (!isCurrent()) return;
+        const resultData = result as { grant?: unknown; representation?: { state?: unknown } | null };
+        if (!resultData.grant) throw new Error("Koed returned no active Team share.");
+        const ready = resultData.representation?.state === "available";
+        setCompleteMessage(targetGrant
+          ? ready
+            ? "The privacy-processed copy was refreshed for this Team."
+            : "The update is preparing. The current Team copy stays available until the new representation is ready."
+          : ready
+            ? "The privacy-processed snapshot is shared with this Team."
+            : "The share is preparing. It will appear when privacy filtering and activation finish.");
+        setPreview(null);
+        setCandidate(null);
+        onComplete?.();
+        return;
+      }
+      if (!candidate) throw new Error("Prepare a fresh privacy preview before confirming.");
       const destinationResult = await client.run("collaboration.ensure_team_memory_destination", { teamId });
       if (!isCurrent()) return;
       const destination = resultData<{ teamId: string; workspaceId: string }>(
         destinationResult,
         "collaboration.ensure_team_memory_destination"
       );
-      if (destination.teamId !== teamId || destination.workspaceId !== preview.workspaceId) {
+      if (destination.teamId !== teamId || destination.workspaceId !== previewWorkspaceId(preview)) {
         throw new Error("The Team destination changed after preview. Prepare a fresh preview.");
       }
       const retentionResult = await client.run("collaboration.get_team_memory_retention", { teamId });
@@ -332,6 +480,7 @@ export function OwnedConversationShareDialog({
       }
       setPreview(null);
       setCandidate(null);
+      onComplete?.();
     } catch (reason) {
       if (sequence === requestSequence.current) {
         setError(reason instanceof Error ? reason.message : "The share could not be confirmed.");
@@ -344,6 +493,9 @@ export function OwnedConversationShareDialog({
   const selectedTeam = teams.find((team) => team.id === teamId);
   const currentRetentionSetting = retentionSetting?.teamId === teamId ? retentionSetting : null;
   const previewNeedsRetentionConsent = preview?.retentionEnabled === true;
+  const previewItems = preview
+    ? preview.items as SharedMemoryPreview["items"]
+    : [];
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="share-memory-title" className="flex max-h-[min(90vh,760px)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
@@ -352,7 +504,7 @@ export function OwnedConversationShareDialog({
             <h2 id="share-memory-title" className="text-sm font-semibold text-foreground">Share processed memory</h2>
             <p className="mt-1 truncate text-xs text-muted">{source.title}</p>
           </div>
-          <button type="button" aria-label="Close sharing dialog" disabled={busy} onClick={onClose} className="rounded-md p-1 text-subtle hover:bg-surface-hover hover:text-foreground disabled:opacity-50"><X className="h-4 w-4" /></button>
+            <button type="button" aria-label="Close sharing dialog" disabled={busy} onClick={onClose} className="rounded-md p-1 text-subtle hover:bg-surface-hover hover:text-foreground disabled:opacity-50"><X className="h-4 w-4" /></button>
         </header>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           {!completeMessage ? <>
@@ -376,9 +528,9 @@ export function OwnedConversationShareDialog({
             </label>
             {currentRetentionSetting && <p className="text-[11px] text-faint">{targetGrant?.retentionEnabled ? "This share’s retained-copy choice stays enabled." : currentRetentionSetting.enabled ? "This Team enables retention for your future shares." : "This Team has disabled retention for new shares."} Retention policy version {currentRetentionSetting.version}.</p>}
             {!preview ? <button type="button" disabled={busy || !teamId || !currentRetentionSetting} onClick={() => void preparePreview()} className="rounded-md bg-chip px-3 py-2 text-xs font-medium text-chip-foreground hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Preparing privacy preview…" : "Preview memory"}</button> : null}
-            {candidate && preview ? <div className="space-y-3 rounded-md border border-border bg-background/50 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted"><span>{selectedTeam?.name} · {mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</span><span>Source revision {preview.sourceRevision} · {preview.itemCount} item{preview.itemCount === 1 ? "" : "s"}</span></div>
-              <div className="max-h-56 space-y-2 overflow-y-auto">{preview.items.map((item) => <article key={`${item.representation}:${item.id}`} className="rounded-md border border-border/70 bg-surface px-3 py-2"><p className="whitespace-pre-wrap text-xs leading-5 text-foreground-secondary">{previewText(item)}</p></article>)}</div>
+            {(candidate || hostedBrowser) && preview ? <div className="space-y-3 rounded-md border border-border bg-background/50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted"><span>{selectedTeam?.name} · {mode === "snapshot" ? "Snapshot" : "Ongoing updates"}</span><span>Source revision {preview.sourceRevision} · {previewItemCount(preview)} item{previewItemCount(preview) === 1 ? "" : "s"}</span></div>
+              <div className="max-h-56 space-y-2 overflow-y-auto">{previewItems.map((item) => <article key={`${item.representation}:${item.id}`} className="rounded-md border border-border/70 bg-surface px-3 py-2"><p className="whitespace-pre-wrap text-xs leading-5 text-foreground-secondary">{previewText(item)}</p></article>)}</div>
               <p className="text-[11px] text-muted">This exact preview is bound to revision {preview.sourceRevision} and hash {preview.previewHash.slice(0, 12)}…{preview.retentionEnabled ? " Retention was explicitly included." : " No retained copy was requested."}</p>
               {preview.retentionEnabled ? <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs"><input type="checkbox" checked={retentionAcknowledged} disabled={busy} onChange={(event) => setRetentionAcknowledged(event.target.checked)} /><span><strong className="text-foreground">I consent to a retained Team copy.</strong><span className="mt-0.5 block text-muted">This representation can stay available after you stop sharing, leave the Team, or delete the Personal source. A Team admin can remove it.</span></span></label> : null}
             </div> : null}
@@ -388,7 +540,7 @@ export function OwnedConversationShareDialog({
         </div>
         <footer className="flex justify-end gap-2 border-t border-border bg-background/50 px-5 py-3">
           <button type="button" disabled={busy} onClick={onClose} className="rounded-md px-3 py-2 text-xs text-muted hover:bg-surface-hover hover:text-foreground">{completeMessage ? "Done" : "Cancel"}</button>
-          {preview && !completeMessage ? <button type="button" disabled={busy || preview.items.length === 0 || (previewNeedsRetentionConsent && !retentionAcknowledged)} onClick={() => void confirmShare()} className="rounded-md bg-chip px-3 py-2 text-xs font-medium text-chip-foreground hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Confirming…" : "Confirm share"}</button> : null}
+          {preview && !completeMessage ? <button type="button" disabled={busy || previewItemCount(preview) === 0 || (previewNeedsRetentionConsent && !retentionAcknowledged)} onClick={() => void confirmShare()} className="rounded-md bg-chip px-3 py-2 text-xs font-medium text-chip-foreground hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Confirming…" : "Confirm share"}</button> : null}
         </footer>
       </section>
     </div>

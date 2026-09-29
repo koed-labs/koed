@@ -38,6 +38,18 @@ export function canStopRetainedUpdates(input: {
   return input.retentionEnabled && input.updatesActive && Boolean(input.shareGrantId) && Boolean(input.grantVersion);
 }
 
+export function canCancelUnactivatedPendingShare(input: {
+  pendingShareId: string;
+  grantId: string | null;
+  state: string;
+  workspaceAccessState: string;
+}): boolean {
+  return input.grantId === null &&
+    input.state !== "revoked" &&
+    input.workspaceAccessState !== "revoked" &&
+    Boolean(input.pendingShareId);
+}
+
 export function hasAnotherOwnedSharePage(input: {
   nextCursor: string | null;
   pagesRead: number;

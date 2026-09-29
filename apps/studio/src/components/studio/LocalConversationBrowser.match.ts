@@ -95,6 +95,26 @@ export function ownerMemoryLoadMayApply(input: {
   );
 }
 
+export function shareDialogSourceMayRemainOpen(input: {
+  sourceHomeScopeKey: string;
+  currentHomeScopeKey: string | null;
+  sourceAuthorityKey: string;
+  currentAuthorityKey: string | null;
+  sourceLogicalMemoryId: string | null;
+  currentLogicalMemoryId: string | null;
+}): boolean {
+  return input.sourceHomeScopeKey === input.currentHomeScopeKey &&
+    input.sourceAuthorityKey === input.currentAuthorityKey &&
+    input.sourceLogicalMemoryId === input.currentLogicalMemoryId;
+}
+
+export function ownerSnapshotMaySurviveRefresh(input: {
+  sameHomeScope: boolean;
+  authorizationDenied: boolean;
+}): boolean {
+  return input.sameHomeScope && !input.authorizationDenied;
+}
+
 export function normalizeConversationProvider(
   value: string | null | undefined
 ): LocalConversationProvider | null {

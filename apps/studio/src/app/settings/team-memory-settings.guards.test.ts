@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner requires the extension.
-import { canStopRetainedUpdates, findPendingOwnedShare, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
+import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, findPendingOwnedShare, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
 import type { OwnedShareItem } from "@koed/shared/collaboration";
 
 test("rejects settings results after unmount, account change, Team change, or newer request", () => {
@@ -26,6 +26,13 @@ test("only retained active grants can use the scoped Stop updates operation", ()
   assert.equal(canStopRetainedUpdates(active), true);
   assert.equal(canStopRetainedUpdates({ ...active, retentionEnabled: false }), false);
   assert.equal(canStopRetainedUpdates({ ...active, updatesActive: false }), false);
+});
+
+test("pending replacements with an associated grant cannot be cancelled independently", () => {
+  const pending = { pendingShareId: "pending-a", grantId: null, state: "preparing", workspaceAccessState: "active" };
+  assert.equal(canCancelUnactivatedPendingShare(pending), true);
+  assert.equal(canCancelUnactivatedPendingShare({ ...pending, grantId: "grant-a" }), false);
+  assert.equal(canCancelUnactivatedPendingShare({ ...pending, state: "revoked" }), false);
 });
 
 test("paged scan finds an exact pending destination after the first page", async () => {

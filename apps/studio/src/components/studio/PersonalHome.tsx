@@ -46,7 +46,9 @@ import {
   matchManagedExecutionForCapturedSession,
   managedConversationSourceIds,
   normalizeConversationProvider,
+  ownerSnapshotMaySurviveRefresh,
   ownerMemoryLoadMayApply,
+  shareDialogSourceMayRemainOpen,
   type ShareablePersonalConversation
 } from "./LocalConversationBrowser.match";
 
@@ -192,6 +194,7 @@ export function PersonalHome({
   const [sharingReloadKey, setSharingReloadKey] = useState(0);
   const [sharingSessionState, setSharingSessionState] = useState<{
     key: string;
+    homeScopeKey: string;
     snapshot: CollaborationSnapshot | null;
     message: string | null;
   } | null>(null);
@@ -208,9 +211,12 @@ export function PersonalHome({
   const sharingSessionKey =
     homeScopeKey === null ? null : `${homeScopeKey}:${sharingReloadKey}`;
   const ownerSharingSession =
-    sharingSessionKey && sharingSessionState?.key === sharingSessionKey
+    homeScopeKey && sharingSessionState?.homeScopeKey === homeScopeKey
       ? sharingSessionState
       : null;
+  const ownerSharingAuthorityKey: string | null = ownerSharingSession?.snapshot
+    ? `${ownerSharingSession.snapshot.connection.backendId ?? ""}:${ownerSharingSession.snapshot.navigation.teamPrincipal?.id ?? ""}`
+    : null;
   const ownerMemoryBySessionId = useMemo(
     () =>
       indexShareablePersonalConversations(
@@ -239,11 +245,21 @@ export function PersonalHome({
   const [shareConversation, setShareConversation] = useState<{
     sessionId: string;
     memory: ShareablePersonalConversation;
+    authorityKey: string;
+    homeScopeKey: string;
   } | null>(null);
+  const currentShareMemory = shareConversation
+    ? ownerMemoryBySessionId.get(shareConversation.sessionId)?.logicalMemoryId ?? null
+    : null;
   const activeShareConversation =
-    shareConversation && homeScopeKey &&
-    ownerMemoryBySessionId.get(shareConversation.sessionId)?.logicalMemoryId ===
-      shareConversation.memory.logicalMemoryId
+    shareConversation && shareDialogSourceMayRemainOpen({
+      sourceHomeScopeKey: shareConversation.homeScopeKey,
+      currentHomeScopeKey: homeScopeKey,
+      sourceAuthorityKey: shareConversation.authorityKey,
+      currentAuthorityKey: ownerSharingAuthorityKey,
+      sourceLogicalMemoryId: shareConversation.memory.logicalMemoryId,
+      currentLogicalMemoryId: currentShareMemory
+    })
       ? shareConversation
       : null;
   const load = useCallback(async () => {
@@ -316,6 +332,7 @@ export function PersonalHome({
         }
         setSharingSessionState({
           key: sharingSessionKey,
+          homeScopeKey,
           snapshot: current,
           message: null
         });
@@ -336,14 +353,18 @@ export function PersonalHome({
           reason && typeof reason === "object" && "status" in reason
             ? (reason as { status?: unknown }).status
             : null;
-        setSharingSessionState({
+        setSharingSessionState((previous) => ({
           key: sharingSessionKey,
-          snapshot: null,
+          homeScopeKey,
+          snapshot: ownerSnapshotMaySurviveRefresh({
+            sameHomeScope: previous?.homeScopeKey === homeScopeKey,
+            authorizationDenied: status === 401 || status === 403
+          }) ? previous?.snapshot ?? null : null,
           message:
             status === 404
               ? "Connect a Team backend to preview and share Personal Memory."
               : "Team sharing is unavailable. Check the Team connection and retry."
-        });
+        }));
       });
     return () => {
       active = false;
@@ -535,7 +556,7 @@ export function PersonalHome({
             `${provider}:${encodeURIComponent(sourceId)}`
           );
           if (!memory) return;
-          setShareConversation({ sessionId: memory.id, memory });
+          if (ownerSharingAuthorityKey && homeScopeKey) setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey });
         }}
         canShareManagedExecution={(executionId) =>
           ownerMemoryForExecution.has(executionId)
@@ -543,7 +564,7 @@ export function PersonalHome({
         onShareManagedExecution={(executionId) => {
           const memory = ownerMemoryForExecution.get(executionId);
           if (!memory) return;
-          setShareConversation({ sessionId: memory.id, memory });
+          if (ownerSharingAuthorityKey && homeScopeKey) setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey });
         }}
         onSelectManagedExecution={onResumeChat}
         collapsed={collapsed}
@@ -1020,7 +1041,7 @@ export function PersonalHome({
                               <button
                                 type="button"
                                 disabled={!memory}
-                                onClick={() => memory && setShareConversation({ sessionId: memory.id, memory })}
+                                onClick={() => memory && ownerSharingAuthorityKey && homeScopeKey && setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey })}
                                 aria-label={`Share ${recent.title} with a Team`}
                                 title={memory ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
                                 className="shrink-0 rounded-md p-1.5 text-faint hover:bg-surface-hover hover:text-foreground-secondary disabled:cursor-not-allowed disabled:opacity-30"
