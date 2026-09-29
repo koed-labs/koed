@@ -4,7 +4,7 @@ import test from "node:test";
 import { canCancelUnactivatedPendingShare, canStopRetainedUpdates, findPendingOwnedShare, isHostedTeamMembershipEnabled, mayApplyTeamMemoryResult } from "./team-memory-settings.guards.ts";
 import type { OwnedShareItem } from "@koed/shared/collaboration";
 
-test("rejects settings results after unmount, account change, Team change, or newer request", () => {
+test("same-scope refresh permits its replacement read and rejects stale settings results", () => {
   const request = {
     active: true,
     requestGeneration: 4,

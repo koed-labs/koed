@@ -203,7 +203,10 @@ function NativeTeamMemorySettings() {
     };
     void load();
     return () => { active = false; };
-  }, [canManage, client, state, tab, teamId]);
+  // Session refreshes invalidate in-flight reads via loadSequence. Include the
+  // accepted snapshot so a same-authority refresh starts a replacement read
+  // even when state, tab, Team, and role did not change.
+  }, [canManage, client, snapshot, state, tab, teamId]);
 
   useEffect(() => {
     if (state !== "ready") return;
