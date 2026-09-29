@@ -751,7 +751,12 @@ export class CodexManagedConversationSession {
     if (!this.commandOpIdArtifactPromise) {
       this.commandOpIdArtifactPromise = this.resolveCommandOpIdArtifactId();
     }
-    await this.commandOpIdArtifactPromise;
+    try {
+      await this.commandOpIdArtifactPromise;
+    } finally {
+      // Reset promise on failure so subsequent calls retry.
+      this.commandOpIdArtifactPromise = null;
+    }
     return this.commandOpIdArtifactId!;
   }
 
@@ -779,6 +784,8 @@ export class CodexManagedConversationSession {
       input.arguments.some((argument) => typeof argument !== "string")
     ) return { status: "rejected", reason: "invalid_request" };
     await this.start();
+    // Ensure artifact is available for persistence (triggers restore).
+    await this.ensureCommandOpIdArtifactId();
     // Idempotency: return persisted state for known operation IDs.
     const existing = this.commandOpIdStore.get(input.operationId);
     if (existing)
@@ -799,7 +806,6 @@ export class CodexManagedConversationSession {
       return { status: "rejected", reason: "try_after_response" };
     if (!this.protocol?.requestMethods.includes("thread/compact/start"))
       return { status: "rejected", reason: "provider_unsupported" };
-    // Ensure artifact is available for persistence.
     await this.ensureCommandOpIdArtifactId();
     // Dispatch directly; control actions must not queue behind turns.
     this.commandOpIdStore.set(input.operationId, { status: "unknown" });
