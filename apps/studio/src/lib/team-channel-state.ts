@@ -9,6 +9,9 @@ export const mayPersistTeamDraft = (input: {
 export const mayCompleteDraftHydration = (input: { active: boolean; revoked: boolean }): boolean =>
   input.active && !input.revoked;
 
+export const teamDraftForHydration = (stored: StudioTeamDraft | null): StudioTeamDraft =>
+  stored ?? { text: "", pendingSend: null };
+
 export const confirmedPendingSend = (
   draft: StudioTeamDraft,
   confirmedClientMessageId: string

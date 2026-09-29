@@ -13,7 +13,7 @@ import type { HostedTeam, HostedUser } from "@/lib/hosted-session";
 import { HostedTeamCollaborationClient, HostedTeamRequestError } from "@/lib/hosted-team-collaboration";
 import type { HostedTeamPerson } from "@/lib/hosted-team-collaboration";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
-import { directMessageAttemptKey, directMessageParticipantsAreEligible, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches } from "@/lib/team-channel-state";
+import { directMessageAttemptKey, directMessageParticipantsAreEligible, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration } from "@/lib/team-channel-state";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 
 const makeAuthority = (teamId: string, threadId: string, userId: string): StudioTeamDraftAuthority => ({
@@ -212,7 +212,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     const authorize = activeThread.kind === "dm" || activeThread.kind === "group_dm"
       ? client.listDirectMessages(team.id).then((threads) => threads.some((thread) => thread.id === activeThread.id && (thread.kind === "dm" || thread.kind === "group_dm")))
       : Promise.resolve(true);
-    void authorize.then((authorized) => {
+    void authorize.then(async (authorized) => {
       if (!current || revokedRef.current) return null;
       if (!authorized) {
         setMessages([]);
@@ -225,13 +225,15 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
         return null;
       }
       void loadPage(activeThread.id);
-      return drafts.retainAuthorizedTeams({ backendId: authority.backendId, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) }).then(() => drafts.load(authority));
+      await drafts.retainAuthorizedTeams({ backendId: authority.backendId, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) });
+      return { stored: await drafts.load(authority) };
     }).then((stored) => {
       if (!stored) return;
       if (!current || revokedRef.current) return;
-      draftByAuthority.current.set(JSON.stringify(authority), { text: stored?.text ?? "", pendingSend: stored?.pendingSend ?? null });
-      setDraftText(stored?.text ?? "");
-      setPendingSend(stored?.pendingSend ?? null);
+      const draft = teamDraftForHydration(stored.stored);
+      draftByAuthority.current.set(JSON.stringify(authority), draft);
+      setDraftText(draft.text);
+      setPendingSend(draft.pendingSend);
       setHydrated(true);
       setHydratedKey(JSON.stringify(authority));
     }).catch((failure: unknown) => {

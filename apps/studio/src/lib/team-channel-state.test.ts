@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
-import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, visibleReadMayAdvance } from "./team-channel-state.ts";
+import { confirmedPendingSend, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration, visibleReadMayAdvance } from "./team-channel-state.ts";
 
 test("draft recovery does not save an empty pre-hydration value", () => {
   const authorityKey = JSON.stringify({ backendId: "b", principalUserId: "p", teamId: "t", threadId: "c" });
@@ -13,6 +13,12 @@ test("late draft hydration cannot apply after revocation or authority cleanup", 
   assert.equal(mayCompleteDraftHydration({ active: true, revoked: false }), true);
   assert.equal(mayCompleteDraftHydration({ active: true, revoked: true }), false);
   assert.equal(mayCompleteDraftHydration({ active: false, revoked: false }), false);
+});
+
+test("a missing saved draft still completes authorized hydration with an empty editable draft", () => {
+  assert.deepEqual(teamDraftForHydration(null), { text: "", pendingSend: null });
+  const stored = { text: "saved", pendingSend: null, updatedAt: "2026-09-28T10:00:00.000Z" };
+  assert.equal(teamDraftForHydration(stored), stored);
 });
 
 test("reconciling an accepted send clears only its pending identity and preserves edits", () => {
