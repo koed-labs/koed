@@ -8421,6 +8421,84 @@ describeDb("Shared Memory repository", () => {
       actor(fixture.ownerUserId),
       { teamId: fixture.teamId, expectedVersion: 1 }
     );
+    const purgeOwnerReplica = async (
+      grant: (typeof grants)[number],
+      idempotencyKey: string
+    ) => {
+      const replica = await pool.query<{ id: string; version: number }>(
+        `select id,version from memory_replicas where id=$1`,
+        [grant.remoteReplicaId]
+      );
+      expect(replica.rows).toHaveLength(1);
+      await retentionRepository.createPolicy({
+        target: {
+          scope: "owner_private_replica",
+          ownerPrivateReplicaId: grant.remoteReplicaId,
+          logicalMemoryId: grant.logicalMemoryId
+        },
+        retentionSeconds: 0,
+        backupRetentionSeconds: 0,
+        effectiveAt: new Date("2020-01-01T00:00:00.000Z")
+      });
+      const requested = await retentionRepository.requestOwnerPrivateReplicaPurge({
+        ownerPrivateReplicaId: grant.remoteReplicaId,
+        actorUserId: fixture.ownerUserId,
+        expectedVersion: replica.rows[0]!.version,
+        trigger: "source_purge",
+        triggeredAt: new Date(),
+        idempotencyKey
+      });
+      expect(requested).not.toBeNull();
+      const claimed = await retentionRepository.claimNextPurgeJob();
+      expect(claimed?.job.id).toBe(requested!.purgeJob.id);
+      await retentionRepository.processClaimedPurgeJob({
+        purgeJobId: claimed!.job.id,
+        purgeAttemptId: claimed!.attempt.id
+      });
+      await expect(
+        retentionRepository.completePurgeJob(claimed!.job.id)
+      ).resolves.toMatchObject({ completed: true });
+      const state = await pool.query<{
+        lifecycle: string;
+        purge_completed_at: Date | null;
+        sync_state: string;
+        revocation_reason: string;
+      }>(
+        `select replica.lifecycle,replica.purge_completed_at,
+                relationship.state as sync_state,relationship.revocation_reason
+           from memory_replicas replica
+           join cross_identity_sync_relationships relationship
+             on relationship.local_replica_id=replica.id
+            and relationship.logical_memory_id=replica.logical_memory_id
+          where replica.id=$1`,
+        [grant.remoteReplicaId]
+      );
+      expect(state.rows[0]).toMatchObject({
+        lifecycle: "purged",
+        sync_state: "revoked",
+        revocation_reason: "owner_private_replica_purged"
+      });
+      expect(state.rows[0]!.purge_completed_at).toBeInstanceOf(Date);
+    };
+    await purgeOwnerReplica(leafGrant, `retained-team-replica-${randomUUID()}`);
+    const retainedLeafRead = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      {
+        shareGrantId: leafGrant.shareGrantId,
+        representation: "lcm_leaves"
+      }
+    );
+    expect(retainedLeafRead).toMatchObject({
+      representation: { state: "available", sourceRevision: leafGrant.currentRevision },
+      companionScope: {
+        kind: "shared_session_discussion",
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        logicalMemoryId: leafGrant.logicalMemoryId,
+        shareGrantId: leafGrant.shareGrantId
+      }
+    });
+    expect(retainedLeafRead?.items.length).toBeGreaterThan(0);
     const retainedLeafCandidates =
       await repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),
@@ -8440,12 +8518,15 @@ describeDb("Shared Memory repository", () => {
         (candidate) => candidate.shareGrantId === leafGrant.shareGrantId
       )
     ).toBe(true);
+    const retainedLeafCandidate = retainedLeafCandidates.find(
+      (candidate) => candidate.shareGrantId === leafGrant.shareGrantId
+    )!;
     const retainedLeafExpansion =
       await repository.expandAuthorizedSharedMemorySemanticItem(
         actor(fixture.readerUserId),
         {
           teamWorkspaceId: fixture.teamWorkspaceId,
-          candidateId: retainedLeafCandidates[0]!.candidateId,
+          candidateId: retainedLeafCandidate.candidateId,
           searchDomain: "global"
         }
       );
@@ -8453,6 +8534,9 @@ describeDb("Shared Memory repository", () => {
       leafGrant.shareGrantId
     );
     expect(retainedLeafExpansion?.items.length).toBeGreaterThan(0);
+    expect(retainedLeafExpansion?.parent.sourceRevision).toBe(
+      leafGrant.currentRevision
+    );
     const leafGrantAfterDeparture = await pool.query<{ grant_version: number }>(
       `select grant_version from team_memory_share_grants where id=$1`,
       [leafGrant.shareGrantId]
@@ -8539,6 +8623,49 @@ describeDb("Shared Memory repository", () => {
     expect(new Set(projectScoped.map((item) => item.shareGrantId))).toEqual(
       new Set([rollupGrant.shareGrantId])
     );
+    await pool.query(
+      `update team_memory_share_grants set retention_enabled=false where id=$1`,
+      [rollupGrant.shareGrantId]
+    );
+    await purgeOwnerReplica(
+      rollupGrant,
+      `nonretained-team-replica-${randomUUID()}`
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: rollupGrant.shareGrantId,
+        representation: "lcm_rollups"
+      })
+    ).resolves.toBeNull();
+    const afterNonretainedPurge =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          representations: ["lcm_rollups"]
+        }
+      );
+    expect(
+      afterNonretainedPurge.some(
+        (candidate) => candidate.shareGrantId === rollupGrant.shareGrantId
+      )
+    ).toBe(false);
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: rollupCandidate.candidateId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toBeNull();
     await expect(
       repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),

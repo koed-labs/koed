@@ -2649,6 +2649,44 @@ const cumulativeRepresentationAuthorizationSql = (
       and ${ceilingAuthorizes(workspace)}))`;
 };
 
+/**
+ * Owner-private source access normally requires its live target replica and
+ * sync relationship. After that replica has completed its purge, an
+ * explicitly retained Team grant may use only its already materialized Team
+ * representation. Bind this exception to the durable purge tombstone and the
+ * exact revoked relationship reason; arbitrary missing or revoked source
+ * state does not authorize Team recall.
+ */
+const capturedTeamSourceAccessSql = (
+  grant = "g",
+  replica = "mr",
+  relationship = "sr"
+): string => `(
+  ${grant}.source_kind='captured_session' and (
+    (
+      ${replica}.id is not null
+      and ${replica}.replica_role='target'
+      and ${replica}.encryption_scope='owner_private_replica'
+      and ${replica}.lifecycle='active'
+      and ${replica}.disabled_at is null
+      and ${relationship}.id is not null
+      and ${relationship}.revoked_at is null
+      and ${relationship}.state in ('processing','partially_available','ready','stale')
+    )
+    or (
+      ${grant}.retention_enabled=true
+      and ${replica}.id is not null
+      and ${replica}.replica_role='target'
+      and ${replica}.encryption_scope='owner_private_replica'
+      and ${replica}.lifecycle='purged'
+      and ${replica}.purge_completed_at is not null
+      and ${relationship}.state='revoked'
+      and ${relationship}.revoked_at is not null
+      and ${relationship}.revocation_reason='owner_private_replica_purged'
+    )
+  )
+)`;
+
 const semanticPrivacyConsentJoinSql = (
   preview = "preview",
   grant = "g",
@@ -18605,14 +18643,12 @@ const loadPersistedPreviewByReference = async (
                          and wp.team_workspace_id=grant_row.team_workspace_id
                          and wp.superseded_at is null
                         left join memory_replicas mr on mr.id=grant_row.remote_replica_id
-                         and mr.lifecycle='active' and mr.replica_role='target'
+                         and mr.replica_role='target'
                          and mr.encryption_scope='owner_private_replica'
-                         and mr.disabled_at is null
                         left join cross_identity_sync_relationships sr
                           on sr.local_replica_id=mr.id
                          and sr.logical_memory_id=grant_row.logical_memory_id
-                         and sr.side='target' and sr.revoked_at is null
-                         and sr.state in ('processing','partially_available','ready','stale')
+                         and sr.side='target'
                         join shared_source_preview_records sp
                           on sp.id=r.source_preview_id and sp.invalidated_at is null
                         join shared_source_artifact_records sa
@@ -18620,7 +18656,7 @@ const loadPersistedPreviewByReference = async (
                        where grant_row.team_workspace_id=tw.id
                          and grant_row.lifecycle='active' and grant_row.revoked_at is null
                          and (
-                           (grant_row.source_kind='captured_session' and mr.id is not null and sr.id is not null)
+                           ${capturedTeamSourceAccessSql("grant_row", "mr", "sr")}
                            or (grant_row.source_kind='personal_note' and grant_row.remote_replica_id is null)
                          )
                          and ${cumulativeRepresentationAuthorizationSql("r.representation", { grant: "grant_row" })}
@@ -18704,13 +18740,10 @@ const loadPersistedPreviewByReference = async (
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
              and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
-           left join memory_replicas mr on mr.id=g.remote_replica_id and mr.lifecycle='active'
+           left join memory_replicas mr on mr.id=g.remote_replica_id
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
-             and mr.disabled_at is null
            left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.revoked_at is null
-             and sr.state in ('processing','partially_available','ready','stale')
            join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
            join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
@@ -18721,7 +18754,7 @@ const loadPersistedPreviewByReference = async (
              and source_session.owner_user_id=g.owner_user_id
           where smi.embedding_state='embedded'
             and (
-              (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
+              (${capturedTeamSourceAccessSql()}
                 and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
                 and local_memory.local_session_id is null)
@@ -18853,13 +18886,10 @@ const loadPersistedPreviewByReference = async (
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
              and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
-           left join memory_replicas mr on mr.id=g.remote_replica_id and mr.lifecycle='active'
+           left join memory_replicas mr on mr.id=g.remote_replica_id
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
-             and mr.disabled_at is null
            left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.revoked_at is null
-             and sr.state in ('processing','partially_available','ready','stale')
            join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
            join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
@@ -18870,7 +18900,7 @@ const loadPersistedPreviewByReference = async (
              and source_session.owner_user_id=g.owner_user_id
           where smi.embedding_state='embedded'
             and (
-              (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
+              (${capturedTeamSourceAccessSql()}
                 and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
                 and local_memory.local_session_id is null)
@@ -19015,11 +19045,8 @@ const loadPersistedPreviewByReference = async (
              and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
            left join memory_replicas mr on mr.id=g.remote_replica_id
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
-             and mr.lifecycle='active' and mr.disabled_at is null
            left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.revoked_at is null
-             and sr.state in ('processing','partially_available','ready','stale')
            join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
            join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
@@ -19030,7 +19057,7 @@ const loadPersistedPreviewByReference = async (
              and source_session.owner_user_id=g.owner_user_id
           where smi.id=$1 and smi.team_workspace_id=$2 and smi.embedding_state='embedded'
             and (
-              (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
+              (${capturedTeamSourceAccessSql()}
                 and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
                 and local_memory.local_session_id is null)
@@ -19335,10 +19362,9 @@ const loadPersistedPreviewByReference = async (
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
              and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
            left join memory_replicas mr on mr.id=g.remote_replica_id and mr.replica_role='target'
-             and mr.encryption_scope='owner_private_replica' and mr.lifecycle='active' and mr.disabled_at is null
+             and mr.encryption_scope='owner_private_replica'
            left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.state <> 'purge_pending'
            join lateral (
              select r0.* from team_memory_representation_records r0
               where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
@@ -19391,7 +19417,7 @@ const loadPersistedPreviewByReference = async (
             and privacy_classifier.revoked_at is null
           where g.id=$1 and g.lifecycle='active' and g.revoked_at is null
             and (
-              (g.source_kind='captured_session' and mr.id is not null and sr.id is not null)
+              ${capturedTeamSourceAccessSql()}
               or (g.source_kind='personal_note' and g.remote_replica_id is null)
             )
             and ${cumulativeRepresentationAuthorizationSql("r.representation")}
