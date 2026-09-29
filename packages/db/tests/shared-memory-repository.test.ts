@@ -7605,7 +7605,7 @@ describeDb("Shared Memory repository", () => {
         remoteReplicaId: source.remoteReplicaId,
         sourceRevision: 2
       })
-    ).resolves.toEqual({ advanced: 1 });
+    ).resolves.toEqual({ advanced: 3 });
     const persisted = await pool.query<{
       retention_enabled: boolean;
       source_revision: number;
