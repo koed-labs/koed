@@ -512,6 +512,13 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/personal-agents/{agentId}/restore",
+    "session_or_api_token",
+    "personal_memory",
+    "Restore the owner's retired Personal Agent with its stable identity and retained history; local profiles also accept a Personal API token."
+  ),
+  route(
+    "POST",
     "/v1/cross-identity-sync/relationships/{relationshipId}/retry",
     "session_or_device_credential",
     "future_remote",

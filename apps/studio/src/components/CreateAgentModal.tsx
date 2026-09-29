@@ -10,11 +10,13 @@ import {
 } from "@/lib/personal-agent-role-templates-client";
 import {
   canSubmitAgentIdentity,
+  createAgentIdentityDraftStore,
   effortsForModel,
   generatedSoul,
   initialAgentIdentityEditorValues,
   modelOptions,
   preferredEffortForModel,
+  type AgentIdentityDraftScope,
   type AgentIdentityEditorInitialValues,
   type AgentIdentityEditorValues,
   type AgentModelCapability
@@ -29,6 +31,10 @@ export type CreateAgentModalProps = Readonly<{
   onCreated: (definitionId: string) => void;
   editDefinition?: AgentDefinition;
   initialValues?: AgentIdentityEditorInitialValues;
+  draftIdentity?: Readonly<{
+    scope: AgentIdentityDraftScope;
+    target: string;
+  }>;
   capabilities?: readonly AgentModelCapability[];
   onSubmit?: (
     values: AgentIdentityEditorValues
@@ -80,12 +86,26 @@ function AgentIdentityEditor({
   onCreated,
   editDefinition,
   initialValues,
+  draftIdentity,
   capabilities = [],
   onSubmit,
   legacyMode
 }: AgentIdentityEditorProps) {
   const isEditing = Boolean(editDefinition);
   const labRef = useRef<PixelkinLabHandle>(null);
+  const draftOwnerId = draftIdentity?.scope.ownerId;
+  const draftBackendId = draftIdentity?.scope.backendId;
+  const draftTarget = draftIdentity?.target;
+  const draftStore = useMemo(
+    () =>
+      draftOwnerId && draftBackendId && draftTarget
+        ? createAgentIdentityDraftStore({
+            scope: { ownerId: draftOwnerId, backendId: draftBackendId },
+            target: draftTarget
+          })
+        : null,
+    [draftBackendId, draftOwnerId, draftTarget]
+  );
   const initial = useMemo(
     () =>
       initialAgentIdentityEditorValues({
@@ -97,6 +117,7 @@ function AgentIdentityEditor({
   const [name, setName] = useState(initial.name);
   const [role, setRole] = useState(initial.role);
   const [soul, setSoul] = useState(initial.soul);
+  const [draftAvatar, setDraftAvatar] = useState(initial.avatar);
   const [soulEdited, setSoulEdited] = useState(
     initialValues?.soul !== undefined || editDefinition?.identity !== undefined
   );
@@ -120,7 +141,90 @@ function AgentIdentityEditor({
   const [replaceTemplateConfirmOpen, setReplaceTemplateConfirmOpen] =
     useState(false);
   const [saving, setSaving] = useState(false);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [draftHydrating, setDraftHydrating] = useState(Boolean(draftStore));
+  const [draftStorageError, setDraftStorageError] = useState<string | null>(
+    null
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const userEditedDraftRef = useRef(false);
+
+  const markDraftDirty = () => {
+    userEditedDraftRef.current = true;
+    setDraftDirty(true);
+  };
+
+  useEffect(() => {
+    if (!draftStore || legacyMode) return;
+    let active = true;
+    void draftStore
+      .hydrate()
+      .then((values) => {
+        if (!active) return;
+        if (values && !userEditedDraftRef.current) {
+          setName(values.name);
+          setRole(values.role);
+          setSoul(values.soul);
+          setDraftAvatar(values.avatar);
+          setSoulEdited(true);
+          setPreferredModel(values.preferredModel);
+          setPreferredEffort(values.preferredEffort);
+          setSourceTemplateId(values.sourceTemplateId);
+          setSourceTemplateVersion(values.sourceTemplateVersion);
+        }
+        if (values) setDraftDirty(true);
+      })
+      .catch(() => {
+        if (active) {
+          setDraftStorageError("This device could not read the local draft.");
+        }
+      })
+      .finally(() => {
+        if (active) setDraftHydrating(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [draftStore, legacyMode]);
+
+  useEffect(() => {
+    if (!draftStore || !draftDirty || draftHydrating || saving || legacyMode)
+      return;
+    const persist = () => {
+      void draftStore
+        .write({
+          name,
+          role,
+          soul,
+          avatar: labRef.current?.capture() ?? draftAvatar,
+          preferredModel,
+          preferredEffort,
+          sourceTemplateId,
+          sourceTemplateVersion
+        })
+        .then(() => setDraftStorageError(null))
+        .catch(() =>
+          setDraftStorageError("This device could not save the local draft.")
+        );
+    };
+    persist();
+    const interval = window.setInterval(persist, 1000);
+    return () => window.clearInterval(interval);
+  }, [
+    draftDirty,
+    draftAvatar,
+    draftHydrating,
+    draftStore,
+    legacyMode,
+    name,
+    preferredEffort,
+    preferredModel,
+    role,
+    soul,
+    sourceTemplateId,
+    sourceTemplateVersion,
+    saving
+  ]);
 
   const modelCapabilities = [...capabilities];
   const modelOptionsForEditor = modelOptions(modelCapabilities, preferredModel);
@@ -177,6 +281,7 @@ function AgentIdentityEditor({
   }, [close, replaceTemplateConfirmOpen]);
 
   const handleModelChange = (model: string) => {
+    markDraftDirty();
     setPreferredModel(model || null);
     setPreferredEffort(
       preferredEffortForModel(modelCapabilities, model || null, preferredEffort)
@@ -186,16 +291,17 @@ function AgentIdentityEditor({
   const submit = async () => {
     if (
       saving ||
+      draftHydrating ||
       !canSubmitAgentIdentity({ name, role, soul: effectiveSoul })
     ) {
       return;
     }
-    const avatar = labRef.current?.capture() ?? undefined;
+    const avatar = labRef.current?.capture() ?? draftAvatar;
     const values: AgentIdentityEditorValues = {
       name: name.trim(),
       role: role.trim(),
       soul: effectiveSoul.trim(),
-      avatar: avatar ?? initial.avatar,
+      avatar,
       preferredModel,
       preferredEffort,
       sourceTemplateId,
@@ -205,6 +311,15 @@ function AgentIdentityEditor({
     setSubmitError(null);
     try {
       const result = await onSubmit(values);
+      if (draftStore) {
+        try {
+          await draftStore.clear();
+        } catch {
+          setDraftStorageError(
+            "The Agent was saved, but this device could not clear its local draft."
+          );
+        }
+      }
       onCreated(result.definitionId);
     } catch (error) {
       setSubmitError(
@@ -279,14 +394,22 @@ function AgentIdentityEditor({
           </button>
         </div>
         <div className="grid min-h-0 flex-1 gap-6 overflow-y-auto px-5 pb-5 md:grid-cols-[240px_1fr]">
-          <PixelkinLab ref={labRef} initialSpec={initial.avatar?.spec} />
+          <PixelkinLab
+            key={JSON.stringify(draftAvatar?.spec ?? null)}
+            ref={labRef}
+            initialSpec={draftAvatar?.spec}
+            onChange={markDraftDirty}
+          />
           <div className="space-y-4">
             <label className="block">
               <span className="mb-2 block text-sm text-muted">Name</span>
               <input
                 autoFocus
                 value={name}
-                onChange={(event) => setName(event.target.value)}
+                onChange={(event) => {
+                  markDraftDirty();
+                  setName(event.target.value);
+                }}
                 placeholder="Bø, Avery…"
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus:border-border-strong"
               />
@@ -295,7 +418,10 @@ function AgentIdentityEditor({
               <span className="mb-2 block text-sm text-muted">Role</span>
               <input
                 value={role}
-                onChange={(event) => handleRoleChange(event.target.value)}
+                onChange={(event) => {
+                  markDraftDirty();
+                  handleRoleChange(event.target.value);
+                }}
                 placeholder="Project manager, backend developer…"
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus:border-border-strong"
               />
@@ -312,7 +438,10 @@ function AgentIdentityEditor({
                       <button
                         key={template.id}
                         type="button"
-                        onClick={() => selectRoleSuggestion(template)}
+                        onClick={() => {
+                          markDraftDirty();
+                          selectRoleSuggestion(template);
+                        }}
                         className="text-foreground-secondary underline underline-offset-2"
                       >
                         {template.title}
@@ -346,7 +475,10 @@ function AgentIdentityEditor({
                     </button>
                     <button
                       type="button"
-                      onClick={applyTemplate}
+                      onClick={() => {
+                        markDraftDirty();
+                        applyTemplate();
+                      }}
                       className="rounded-md border border-border px-2 py-1 text-xs text-foreground-secondary hover:bg-surface-hover"
                     >
                       Use template
@@ -371,14 +503,10 @@ function AgentIdentityEditor({
                 <select
                   value={preferredModel ?? ""}
                   onChange={(event) => handleModelChange(event.target.value)}
-                  disabled={legacyMode || modelCapabilities.length === 0}
+                  disabled={legacyMode}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value="">
-                    {modelCapabilities.length === 0
-                      ? "Waiting for capabilities"
-                      : "Select a model"}
-                  </option>
+                  <option value="">No default</option>
                   {modelOptionsForEditor.map((option) => (
                     <option
                       key={option.id}
@@ -397,17 +525,20 @@ function AgentIdentityEditor({
                 </span>
                 <select
                   value={preferredEffort ?? ""}
-                  onChange={(event) =>
-                    setPreferredEffort(event.target.value || null)
-                  }
-                  disabled={legacyMode || effortOptions.length === 0}
+                  onChange={(event) => {
+                    markDraftDirty();
+                    setPreferredEffort(event.target.value || null);
+                  }}
+                  disabled={legacyMode}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value="">
-                    {preferredModel
-                      ? "Select an effort"
-                      : "Select a model first"}
-                  </option>
+                  <option value="">No default</option>
+                  {preferredEffort &&
+                    !effortOptions.includes(preferredEffort) && (
+                      <option value={preferredEffort} disabled>
+                        {preferredEffort} (unavailable)
+                      </option>
+                    )}
                   {effortOptions.map((effort) => (
                     <option key={effort} value={effort}>
                       {effort}
@@ -421,6 +552,43 @@ function AgentIdentityEditor({
                 Preview persistence is limited to the existing workspace fields.
                 Soul, model, and effort are read-only until a connected save
                 handler is provided.
+              </p>
+            )}
+            {!legacyMode && draftDirty && (
+              <p
+                role="status"
+                className="text-[11px] leading-relaxed text-warning"
+              >
+                {draftStorageError
+                  ? "Not saved to your account. Device recovery is unavailable; keep this window open until you can save."
+                  : "Not saved to your account. This draft is stored on this device."}{" "}
+                Select {isEditing ? "Save changes" : "Create agent"} when you
+                are ready.
+              </p>
+            )}
+            {draftHydrating && (
+              <p
+                role="status"
+                className="text-[11px] leading-relaxed text-subtle"
+              >
+                Checking this device for a saved draft…
+              </p>
+            )}
+            {!legacyMode && !draftIdentity && (
+              <p
+                role="status"
+                className="text-[11px] leading-relaxed text-warning"
+              >
+                Device draft recovery is unavailable until your account and
+                backend are verified.
+              </p>
+            )}
+            {draftStorageError && (
+              <p
+                role="alert"
+                className="text-[11px] leading-relaxed text-danger"
+              >
+                {draftStorageError} Keep this window open until you can save.
               </p>
             )}
             {submitError && (
@@ -437,7 +605,11 @@ function AgentIdentityEditor({
           <button
             type="button"
             disabled={
-              saving || !name.trim() || !role.trim() || !effectiveSoul.trim()
+              saving ||
+              draftHydrating ||
+              !name.trim() ||
+              !role.trim() ||
+              !effectiveSoul.trim()
             }
             className="rounded-lg bg-chip px-4 py-2 text-sm font-medium text-chip-foreground hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
             onClick={submit}

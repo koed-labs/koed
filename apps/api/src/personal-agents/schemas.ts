@@ -15,6 +15,19 @@ const boundedTextAllowEmpty = (maximum: number) =>
 
 const optionalNullableText = (maximum: number) =>
   z.string().trim().max(maximum).nullable();
+const optionalDefaultProvider = z
+  .string()
+  .trim()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/)
+  .nullable();
+const optionalDefaultModel = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PERSONAL_AGENT_MODEL_MAX_LENGTH)
+  .nullable();
 export const personalAgentIdParamsSchema = z
   .object({ agentId: z.uuid() })
   .strict();
@@ -34,10 +47,8 @@ export const personalAgentCreateSchema = z
       .optional()
       .default(null),
     soulInstructions: boundedText(PERSONAL_AGENT_SOUL_MAX_LENGTH),
-    defaultProvider: boundedText(96).regex(
-      /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/
-    ),
-    defaultModel: boundedText(PERSONAL_AGENT_MODEL_MAX_LENGTH),
+    defaultProvider: optionalDefaultProvider.optional().default(null),
+    defaultModel: optionalDefaultModel.optional().default(null),
     defaultReasoningEffort: optionalNullableText(
       PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
     )
@@ -62,6 +73,19 @@ export const personalAgentCreateSchema = z
   .strict()
   .refine(
     (value) =>
+      (value.defaultProvider === null) === (value.defaultModel === null),
+    { message: "Default provider and model must both be set or both be null" }
+  )
+  .refine(
+    (value) =>
+      value.defaultProvider !== null || value.defaultReasoningEffort === null,
+    {
+      message:
+        "Default reasoning effort must be null when no provider and model are saved"
+    }
+  )
+  .refine(
+    (value) =>
       (value.sourceTemplateId === null) ===
       (value.sourceTemplateVersion === null),
     {
@@ -79,10 +103,8 @@ export const personalAgentUpdateSchema = z
       PERSONAL_AGENT_AVATAR_REFERENCE_MAX_LENGTH
     ).optional(),
     soulInstructions: boundedText(PERSONAL_AGENT_SOUL_MAX_LENGTH).optional(),
-    defaultProvider: boundedText(96)
-      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/)
-      .optional(),
-    defaultModel: boundedText(PERSONAL_AGENT_MODEL_MAX_LENGTH).optional(),
+    defaultProvider: optionalDefaultProvider.optional(),
+    defaultModel: optionalDefaultModel.optional(),
     defaultReasoningEffort: optionalNullableText(
       PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
     ).optional(),
@@ -103,6 +125,18 @@ export const personalAgentUpdateSchema = z
   .strict()
   .refine(
     (value) =>
+      !(
+        value.defaultProvider === null &&
+        value.defaultModel === null &&
+        value.defaultReasoningEffort != null
+      ),
+    {
+      message:
+        "Default reasoning effort must be null when no provider and model are saved"
+    }
+  )
+  .refine(
+    (value) =>
       (value.sourceTemplateId === undefined &&
         value.sourceTemplateVersion === undefined) ||
       (value.sourceTemplateId === null &&
@@ -120,5 +154,9 @@ export const personalAgentUpdateSchema = z
   );
 
 export const personalAgentRetireSchema = z
+  .object({ requestId: z.uuid(), expectedVersion: z.number().int().positive() })
+  .strict();
+
+export const personalAgentRestoreSchema = z
   .object({ requestId: z.uuid(), expectedVersion: z.number().int().positive() })
   .strict();

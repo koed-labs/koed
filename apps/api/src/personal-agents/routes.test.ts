@@ -113,6 +113,7 @@ const buildFixture = async (deploymentProfile = "developer") => {
     createPersonalAgent: vi.fn(async () => detail()),
     updatePersonalAgent: vi.fn(async () => detail()),
     retirePersonalAgent: vi.fn(async () => identity()),
+    restorePersonalAgent: vi.fn(async () => identity()),
     listAiClientInstances: vi.fn(async () => [capabilityInstance]),
     listCurrentAiClientCapabilitySnapshots: vi.fn(async () => [
       capabilitySnapshot
@@ -333,7 +334,34 @@ describe("Personal Agent API", () => {
     });
   });
 
-  it("validates defaults against a healthy AI Client capability snapshot", async () => {
+  it("surfaces normalized name conflicts as useful 409 responses", async () => {
+    const fixture = await buildFixture();
+    vi.mocked(fixture.repository.createPersonalAgent).mockRejectedValue(
+      Object.assign(new Error("database constraint details"), {
+        code: "PERSONAL_AGENT_NAME_CONFLICT"
+      })
+    );
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/personal-agents",
+      payload: {
+        requestId: randomUUID(),
+        name: "Planner",
+        soulInstructions: "Plan carefully.",
+        defaultProvider: null,
+        defaultModel: null
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error:
+        "A Personal Agent with this name or a previous name already exists for this account"
+    });
+  });
+
+  it("stores an unavailable saved default as account-owned profile data", async () => {
     const fixture = await buildFixture();
     const response = await fixture.app.inject({
       method: "POST",
@@ -351,7 +379,54 @@ describe("Personal Agent API", () => {
     });
     await fixture.app.close();
 
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.createPersonalAgent).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({
+        defaultProvider: "codex",
+        defaultModel: "missing-model"
+      })
+    );
+  });
+
+  it("creates a Personal Agent with no saved provider or model", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/personal-agents",
+      payload: {
+        requestId: randomUUID(),
+        name: "Planner",
+        soulInstructions: "Plan carefully."
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.createPersonalAgent).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({ defaultProvider: null, defaultModel: null })
+    );
+    expect(fixture.repository.listAiClientInstances).not.toHaveBeenCalled();
+  });
+
+  it("rejects a saved reasoning effort without provider and model defaults", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/personal-agents",
+      payload: {
+        requestId: randomUUID(),
+        name: "Planner",
+        soulInstructions: "Plan carefully.",
+        defaultProvider: null,
+        defaultModel: null,
+        defaultReasoningEffort: "high"
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(400);
     expect(fixture.repository.createPersonalAgent).not.toHaveBeenCalled();
   });
 
@@ -421,6 +496,63 @@ describe("Personal Agent API", () => {
     );
   });
 
+  it("clears both provider and model defaults together", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "PATCH",
+      url: `/v1/personal-agents/${agentId}`,
+      payload: {
+        requestId: randomUUID(),
+        expectedVersion: 1,
+        defaultProvider: null,
+        defaultModel: null,
+        defaultReasoningEffort: null
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.updatePersonalAgent).toHaveBeenCalledWith(
+      { userId: ownerId },
+      expect.objectContaining({ defaultProvider: null, defaultModel: null })
+    );
+  });
+
+  it("requires effort to be cleared when provider and model defaults are cleared", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "PATCH",
+      url: `/v1/personal-agents/${agentId}`,
+      payload: {
+        requestId: randomUUID(),
+        expectedVersion: 1,
+        defaultProvider: null,
+        defaultModel: null
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(fixture.repository.updatePersonalAgent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a partial clear of the paired defaults", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "PATCH",
+      url: `/v1/personal-agents/${agentId}`,
+      payload: {
+        requestId: randomUUID(),
+        expectedVersion: 1,
+        defaultProvider: null
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(fixture.repository.updatePersonalAgent).not.toHaveBeenCalled();
+  });
+
   it("publishes provider and instance identity with ready models", async () => {
     const fixture = await buildFixture();
     const response = await fixture.app.inject({
@@ -476,6 +608,45 @@ describe("Personal Agent API", () => {
       agentId,
       requestId,
       expectedVersion: 1
+    });
+  });
+
+  it("forwards version-checked restore to the owner-scoped repository", async () => {
+    const fixture = await buildFixture();
+    const requestId = randomUUID();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/personal-agents/${agentId}/restore`,
+      payload: { requestId, expectedVersion: 1 }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.restorePersonalAgent).toHaveBeenCalledWith({
+      actor: { userId: ownerId },
+      agentId,
+      requestId,
+      expectedVersion: 1
+    });
+  });
+
+  it("surfaces reused restore request IDs as safe 409 responses", async () => {
+    const fixture = await buildFixture();
+    vi.mocked(fixture.repository.restorePersonalAgent).mockRejectedValue(
+      Object.assign(new Error("database constraint details"), {
+        code: "IDEMPOTENCY_CONFLICT"
+      })
+    );
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/personal-agents/${agentId}/restore`,
+      payload: { requestId: randomUUID(), expectedVersion: 1 }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "Personal Agent request conflicts with existing state"
     });
   });
 

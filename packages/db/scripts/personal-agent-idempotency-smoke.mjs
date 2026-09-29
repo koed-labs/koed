@@ -300,21 +300,27 @@ try {
         and item_type = 'transient_output'`
   );
 
+  await repository.updatePersonalAgent(actor, {
+    agentId: first.agent.id,
+    requestId: randomUUID(),
+    expectedVersion: 2,
+    name: "Final Smoke Agent"
+  });
   const retireRequestId = randomUUID();
   const retired = await repository.retirePersonalAgent({
     actor,
     agentId: first.agent.id,
     requestId: retireRequestId,
-    expectedVersion: 2
+    expectedVersion: 3
   });
   if (retired?.lifecycle !== "retired") throw new Error("Retirement failed");
   const replayedRetirement = await repository.retirePersonalAgent({
     actor,
     agentId: first.agent.id,
     requestId: retireRequestId,
-    expectedVersion: 2
+    expectedVersion: 3
   });
-  if (replayedRetirement?.currentVersion !== 2)
+  if (replayedRetirement?.currentVersion !== 3)
     throw new Error("Retirement replay changed history");
   if (!(await repository.getPersonalAgentExecutionJob(actor, jobId))) {
     throw new Error("Retirement deleted the historical agent job");
@@ -332,6 +338,75 @@ try {
       clientUserMessageId: randomUUID()
     }),
     409
+  );
+
+  const historicalDetail = await repository.getPersonalAgent(
+    actor,
+    first.agent.id
+  );
+  if (historicalDetail?.history.jobs[0]?.agentName !== "Updated Smoke Agent") {
+    throw new Error("Renaming rewrote the historical Job name");
+  }
+  await assertRejects(
+    repository.createPersonalAgent(actor, {
+      ...input,
+      requestId: randomUUID(),
+      name: " smoke AGENT "
+    }),
+    "PERSONAL_AGENT_NAME_CONFLICT"
+  );
+
+  const restoreRequestId = randomUUID();
+  const restored = await repository.restorePersonalAgent({
+    actor,
+    agentId: first.agent.id,
+    requestId: restoreRequestId,
+    expectedVersion: 3
+  });
+  const restoredReplay = await repository.restorePersonalAgent({
+    actor,
+    agentId: first.agent.id,
+    requestId: restoreRequestId,
+    expectedVersion: 3
+  });
+  if (
+    restored?.id !== first.agent.id ||
+    restored.lifecycle !== "active" ||
+    restoredReplay?.id !== restored.id ||
+    restoredReplay.currentVersion !== 3
+  ) {
+    throw new Error("Restore did not preserve identity and history");
+  }
+
+  const secondAgent = await repository.createPersonalAgent(actor, {
+    ...input,
+    requestId: randomUUID(),
+    name: "Second Smoke Agent",
+    defaultProvider: null,
+    defaultModel: null,
+    defaultReasoningEffort: null
+  });
+  if (
+    secondAgent.agent.defaultProvider !== null ||
+    secondAgent.agent.defaultModel !== null ||
+    secondAgent.agent.defaultReasoningEffort !== null
+  ) {
+    throw new Error("Agent without model default did not persist correctly");
+  }
+  await repository.retirePersonalAgent({
+    actor,
+    agentId: secondAgent.agent.id,
+    requestId: randomUUID(),
+    expectedVersion: 1
+  });
+  await assertRejects(
+    repository.restorePersonalAgent({
+      actor,
+      agentId: secondAgent.agent.id,
+      requestId: restoreRequestId,
+      expectedVersion: 1
+    }),
+    "IDEMPOTENCY_CONFLICT"
   );
   console.log(
     "Personal Agent operational lifecycle smoke passed in disposable database"

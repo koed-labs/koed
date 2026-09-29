@@ -45,6 +45,12 @@ const retiredMutationError = (): Error =>
     code: "PERSONAL_AGENT_RETIRED"
   });
 
+const nameConflictError = (): Error =>
+  Object.assign(
+    new Error("Personal Agent name was already used by this account"),
+    { code: "PERSONAL_AGENT_NAME_CONFLICT" }
+  );
+
 export interface CreatePersonalAgentInput {
   requestId: string;
   name: string;
@@ -52,8 +58,8 @@ export interface CreatePersonalAgentInput {
   avatarReference?: string | null;
   soulInstructions: string;
   instructionSource: PersonalAgentInstructionSource;
-  defaultProvider: string;
-  defaultModel: string;
+  defaultProvider: string | null;
+  defaultModel: string | null;
   defaultReasoningEffort?: string | null;
   sourceTemplateId?: string | null;
   sourceTemplateVersion?: number | null;
@@ -142,6 +148,7 @@ export interface PersonalAgentHistory {
 
 export interface PersonalAgentHistoryJob extends PersonalAgentExecutionJob {
   title: string;
+  agentName: string | null;
   attempts: PersonalAgentExecutionAttempt[];
   latestAttempt: PersonalAgentExecutionAttempt | null;
 }
@@ -204,12 +211,18 @@ export interface PersonalAgentRepository {
       role?: string | null;
       avatarReference?: string | null;
       soulInstructions?: string;
-      defaultProvider?: string;
-      defaultModel?: string;
+      defaultProvider?: string | null;
+      defaultModel?: string | null;
       defaultReasoningEffort?: string | null;
     }
   ): Promise<PersonalAgentDetail | null>;
   retirePersonalAgent(input: {
+    actor: ActorContext;
+    agentId: string;
+    requestId: string;
+    expectedVersion: number;
+  }): Promise<PersonalAgentIdentity | null>;
+  restorePersonalAgent(input: {
     actor: ActorContext;
     agentId: string;
     requestId: string;
@@ -287,8 +300,8 @@ type IdentityRow = {
   name: string;
   role: string;
   avatar_reference: string | null;
-  default_provider: string;
-  default_model: string;
+  default_provider: string | null;
+  default_model: string | null;
   default_reasoning_effort: string | null;
   lifecycle: "active" | "retired";
   current_version: number;
@@ -299,6 +312,8 @@ type IdentityRow = {
   retirement_request_id: string | null;
   creation_request_fingerprint: string;
   retirement_request_fingerprint: string | null;
+  restore_request_id: string | null;
+  restore_request_fingerprint: string | null;
 };
 
 type VersionRow = {
@@ -309,8 +324,8 @@ type VersionRow = {
   name: string;
   role: string;
   avatar_reference: string | null;
-  default_provider: string;
-  default_model: string;
+  default_provider: string | null;
+  default_model: string | null;
   default_reasoning_effort: string | null;
   soul_instructions: string;
   instruction_source: PersonalAgentInstructionSource;
@@ -549,6 +564,30 @@ export const createPersonalAgentRepository = (
     }
   };
 
+  const reserveName = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    agentId: string,
+    name: string
+  ): Promise<void> => {
+    const inserted = await client.query<{ agent_id: string }>(
+      `insert into personal_agent_name_claims
+         (owner_user_id, normalized_name, agent_id)
+       select $1, lower(regexp_replace(trim($2), '\\s+', ' ', 'g')), $3
+       on conflict (owner_user_id, normalized_name) do nothing
+       returning agent_id`,
+      [ownerUserId, name, agentId]
+    );
+    if (inserted.rows[0]) return;
+    const existing = await client.query<{ agent_id: string }>(
+      `select agent_id from personal_agent_name_claims
+       where owner_user_id = $1
+         and normalized_name = lower(regexp_replace(trim($2), '\\s+', ' ', 'g'))`,
+      [ownerUserId, name]
+    );
+    if (existing.rows[0]?.agent_id !== agentId) throw nameConflictError();
+  };
+
   const insertSoul = async (
     client: pg.PoolClient,
     actor: ActorContext,
@@ -628,8 +667,8 @@ export const createPersonalAgentRepository = (
       instructionSource: PersonalAgentInstructionSource;
       requestId: string;
       requestFingerprint: string;
-      defaultProvider: string;
-      defaultModel: string;
+      defaultProvider: string | null;
+      defaultModel: string | null;
       defaultReasoningEffort: string | null;
       sourceTemplateId?: string | null;
       sourceTemplateVersion?: number | null;
@@ -683,6 +722,7 @@ export const createPersonalAgentRepository = (
           default_provider, default_model, default_reasoning_effort,
           current_version, creation_request_id, creation_request_fingerprint,
           retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
           created_at, updated_at, retired_at
        from personal_agent_identities
        where id = $1 and owner_user_id = $2`,
@@ -723,7 +763,8 @@ export const createPersonalAgentRepository = (
        join personal_agent_identity_versions v
          on v.agent_id = i.id and v.owner_user_id = i.owner_user_id
         and v.version = $3
-       where i.id = $1 and i.owner_user_id = $2`,
+       where i.id = $1 and i.owner_user_id = $2
+       ${requireActive ? "for share of i" : ""}`,
       [attribution.agentId, actor.userId, attribution.agentVersion]
     );
     if (
@@ -758,9 +799,22 @@ export const createPersonalAgentRepository = (
           jobId: job.id,
           limit: 100
         });
+        const historicalIdentity =
+          job.attribution.kind === "agent"
+            ? await pool.query<{ name: string }>(
+                `select name from personal_agent_identity_versions
+                 where owner_user_id = $1 and agent_id = $2 and version = $3`,
+                [
+                  actor.userId,
+                  job.attribution.agentId,
+                  job.attribution.agentVersion
+                ]
+              )
+            : null;
         return {
           ...job,
           title: "Agent task",
+          agentName: historicalIdentity?.rows[0]?.name ?? null,
           attempts: attempts.attempts,
           latestAttempt: attempts.attempts[0] ?? null
         };
@@ -1120,6 +1174,19 @@ export const createPersonalAgentRepository = (
     actor: ActorContext,
     input: CreatePersonalAgentInput
   ): Promise<PersonalAgentDetail> => {
+    if ((input.defaultProvider === null) !== (input.defaultModel === null)) {
+      throw new TypeError(
+        "Default provider and model must both be set or both be null"
+      );
+    }
+    if (
+      input.defaultProvider === null &&
+      input.defaultReasoningEffort != null
+    ) {
+      throw new TypeError(
+        "Default reasoning effort must be null when no provider and model are saved"
+      );
+    }
     const created = await withTransaction(async (client) => {
       const fingerprint = requestFingerprint({
         operation: "create",
@@ -1145,6 +1212,7 @@ export const createPersonalAgentRepository = (
             default_provider, default_model, default_reasoning_effort,
             current_version, creation_request_id, creation_request_fingerprint,
             retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
             created_at, updated_at, retired_at
          from personal_agent_identities
          where owner_user_id = $1 and creation_request_id = $2`,
@@ -1168,6 +1236,7 @@ export const createPersonalAgentRepository = (
            default_provider, default_model, default_reasoning_effort,
            current_version, creation_request_id, creation_request_fingerprint,
            retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
            created_at, updated_at, retired_at`,
         [
           actor.userId,
@@ -1184,6 +1253,7 @@ export const createPersonalAgentRepository = (
       const identityRow = result.rows[0];
       if (!identityRow)
         throw new Error("Personal Agent insert returned no row");
+      await reserveName(client, actor.userId, identityRow.id, input.name);
       const versionRow = await insertVersion(client, actor, {
         agentId: identityRow.id,
         ownerUserId: actor.userId,
@@ -1221,6 +1291,7 @@ export const createPersonalAgentRepository = (
           default_provider, default_model, default_reasoning_effort,
           current_version, creation_request_id, creation_request_fingerprint,
           retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
           created_at, updated_at, retired_at
        from personal_agent_identities
        where owner_user_id = $1
@@ -1257,6 +1328,7 @@ export const createPersonalAgentRepository = (
             default_provider, default_model, default_reasoning_effort,
             current_version, creation_request_id, creation_request_fingerprint,
             retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
             created_at, updated_at, retired_at
          from personal_agent_identities
          where id = $1 and owner_user_id = $2
@@ -1342,8 +1414,8 @@ export const createPersonalAgentRepository = (
       role?: string | null;
       avatarReference?: string | null;
       soulInstructions?: string;
-      defaultProvider?: string;
-      defaultModel?: string;
+      defaultProvider?: string | null;
+      defaultModel?: string | null;
       defaultReasoningEffort?: string | null;
       sourceTemplateId?: string | null;
       sourceTemplateVersion?: number | null;
@@ -1389,6 +1461,7 @@ export const createPersonalAgentRepository = (
             default_provider, default_model, default_reasoning_effort,
             current_version, creation_request_id, creation_request_fingerprint,
             retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
             created_at, updated_at, retired_at
          from personal_agent_identities
          where id = $1 and owner_user_id = $2
@@ -1436,11 +1509,35 @@ export const createPersonalAgentRepository = (
       const soulInstructions =
         input.soulInstructions ??
         (await decryptSoul(client, actor, currentVersion.id));
+      const nextName = input.name ?? row.name;
+      const nextProvider =
+        input.defaultProvider !== undefined
+          ? input.defaultProvider
+          : row.default_provider;
+      const nextModel =
+        input.defaultModel !== undefined
+          ? input.defaultModel
+          : row.default_model;
+      const nextEffort =
+        input.defaultReasoningEffort !== undefined
+          ? input.defaultReasoningEffort
+          : row.default_reasoning_effort;
+      if ((nextProvider === null) !== (nextModel === null)) {
+        throw new TypeError(
+          "Default provider and model must both be set or both be cleared"
+        );
+      }
+      if (nextProvider === null && nextEffort !== null) {
+        throw new TypeError(
+          "Default reasoning effort must be null when no provider and model are saved"
+        );
+      }
+      await reserveName(client, actor.userId, input.agentId, nextName);
       const versionRow = await insertVersion(client, actor, {
         agentId: input.agentId,
         ownerUserId: actor.userId,
         version: row.current_version + 1,
-        name: input.name ?? row.name,
+        name: nextName,
         role: input.role !== undefined ? (input.role ?? "") : row.role,
         avatarReference:
           input.avatarReference !== undefined
@@ -1460,12 +1557,9 @@ export const createPersonalAgentRepository = (
             : (currentVersion.source_template_version ?? null),
         requestId: input.requestId,
         requestFingerprint: updateFingerprint,
-        defaultProvider: input.defaultProvider ?? row.default_provider,
-        defaultModel: input.defaultModel ?? row.default_model,
-        defaultReasoningEffort:
-          input.defaultReasoningEffort !== undefined
-            ? input.defaultReasoningEffort
-            : row.default_reasoning_effort
+        defaultProvider: nextProvider,
+        defaultModel: nextModel,
+        defaultReasoningEffort: nextEffort
       });
       await client.query(
         `update personal_agent_identities
@@ -1480,11 +1574,9 @@ export const createPersonalAgentRepository = (
           versionRow.name,
           versionRow.role,
           versionRow.avatar_reference,
-          input.defaultProvider ?? row.default_provider,
-          input.defaultModel ?? row.default_model,
-          input.defaultReasoningEffort !== undefined
-            ? input.defaultReasoningEffort
-            : row.default_reasoning_effort,
+          nextProvider,
+          nextModel,
+          nextEffort,
           versionRow.version
         ]
       );
@@ -1516,6 +1608,7 @@ export const createPersonalAgentRepository = (
             default_provider, default_model, default_reasoning_effort,
             current_version, creation_request_id, creation_request_fingerprint,
             retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
             created_at, updated_at, retired_at
          from personal_agent_identities
          where id = $1 and owner_user_id = $2
@@ -1552,6 +1645,7 @@ export const createPersonalAgentRepository = (
            default_provider, default_model, default_reasoning_effort,
            current_version, creation_request_id, creation_request_fingerprint,
            retirement_request_id, retirement_request_fingerprint,
+          restore_request_id, restore_request_fingerprint,
            created_at, updated_at, retired_at`,
         [
           input.agentId,
@@ -1563,20 +1657,105 @@ export const createPersonalAgentRepository = (
       return result.rows[0] ? mapIdentity(result.rows[0]) : null;
     });
 
+  const restorePersonalAgent = async (input: {
+    actor: ActorContext;
+    agentId: string;
+    requestId: string;
+    expectedVersion: number;
+  }): Promise<PersonalAgentIdentity | null> =>
+    withTransaction(async (client) => {
+      const restoreFingerprint = requestFingerprint({
+        operation: "restore",
+        ownerUserId: input.actor.userId,
+        agentId: input.agentId,
+        requestId: input.requestId,
+        expectedVersion: input.expectedVersion
+      });
+      await client.query(
+        `select pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`personal-agent:restore:${input.actor.userId}:${input.requestId}`]
+      );
+      const replay = await client.query<IdentityRow>(
+        `select id, owner_user_id, name, role, avatar_reference, lifecycle,
+            default_provider, default_model, default_reasoning_effort,
+            current_version, creation_request_id, creation_request_fingerprint,
+            retirement_request_id, retirement_request_fingerprint,
+            restore_request_id, restore_request_fingerprint,
+            created_at, updated_at, retired_at
+         from personal_agent_identities
+         where owner_user_id = $1 and restore_request_id = $2
+         for update`,
+        [input.actor.userId, input.requestId]
+      );
+      if (replay.rows[0]) {
+        if (
+          replay.rows[0].id !== input.agentId ||
+          replay.rows[0].restore_request_fingerprint !== restoreFingerprint
+        ) {
+          throw idempotencyConflict(
+            "Personal Agent restore request was reused with different input"
+          );
+        }
+        return mapIdentity(replay.rows[0]);
+      }
+      const current = await client.query<IdentityRow>(
+        `select id, owner_user_id, name, role, avatar_reference, lifecycle,
+            default_provider, default_model, default_reasoning_effort,
+            current_version, creation_request_id, creation_request_fingerprint,
+            retirement_request_id, retirement_request_fingerprint,
+            restore_request_id, restore_request_fingerprint,
+            created_at, updated_at, retired_at
+         from personal_agent_identities
+         where id = $1 and owner_user_id = $2
+         for update`,
+        [input.agentId, input.actor.userId]
+      );
+      const row = current.rows[0];
+      if (!row) return null;
+      if (row.current_version !== input.expectedVersion) {
+        throw Object.assign(new Error("Personal Agent version is stale"), {
+          code: "STALE_VERSION"
+        });
+      }
+      if (row.lifecycle !== "retired") {
+        throw Object.assign(new Error("Personal Agent is already active"), {
+          code: "PERSONAL_AGENT_NOT_RETIRED"
+        });
+      }
+      const restored = await client.query<IdentityRow>(
+        `update personal_agent_identities
+            set lifecycle = 'active', retired_at = null,
+                restore_request_id = $3, restore_request_fingerprint = $4,
+                updated_at = now()
+          where id = $1 and owner_user_id = $2 and lifecycle = 'retired'
+         returning id, owner_user_id, name, role, avatar_reference, lifecycle,
+           default_provider, default_model, default_reasoning_effort,
+           current_version, creation_request_id, creation_request_fingerprint,
+           retirement_request_id, retirement_request_fingerprint,
+           restore_request_id, restore_request_fingerprint,
+           created_at, updated_at, retired_at`,
+        [input.agentId, input.actor.userId, input.requestId, restoreFingerprint]
+      );
+      return restored.rows[0] ? mapIdentity(restored.rows[0]) : null;
+    });
+
   const createPersonalAgentExecutionJob = async (
     actor: ActorContext,
     input: PersonalAgentExecutionJobInput
-  ): Promise<PersonalAgentExecutionJob> => {
-    const conversation = await pool.query<{ id: string }>(
-      `select id from managed_conversation_executions where id = $1 and owner_user_id = $2 limit 1`,
-      [input.conversationId, actor.userId]
-    );
-    if (!conversation.rows[0]) {
-      throw new Error("Conversation is not owned by the Personal Agent owner");
-    }
-    await validateAttribution(pool, actor, input.attribution, true);
-    const result = await pool.query<JobRow>(
-      `insert into personal_agent_execution_jobs
+  ): Promise<PersonalAgentExecutionJob> =>
+    withTransaction(async (client) => {
+      const conversation = await client.query<{ id: string }>(
+        `select id from managed_conversation_executions where id = $1 and owner_user_id = $2 limit 1`,
+        [input.conversationId, actor.userId]
+      );
+      if (!conversation.rows[0]) {
+        throw new Error(
+          "Conversation is not owned by the Personal Agent owner"
+        );
+      }
+      await validateAttribution(client, actor, input.attribution, true);
+      const result = await client.query<JobRow>(
+        `insert into personal_agent_execution_jobs
         (owner_user_id, conversation_id, command_id, attribution_kind, agent_id, agent_version, title, project_id)
        values ($1, $2, $3, $4, $5, $6, $7, $8)
        returning id, owner_user_id, conversation_id, command_id, title, project_id,
@@ -1584,21 +1763,21 @@ export const createPersonalAgentRepository = (
          agent_version, state, attempts_started, attempts_succeeded,
          attempts_failed, attempts_canceled, attempts_interrupted,
          last_attempt_id, created_at, updated_at`,
-      [
-        actor.userId,
-        input.conversationId,
-        input.commandId ?? null,
-        input.attribution.kind,
-        input.attribution.agentId,
-        input.attribution.agentVersion,
-        input.title?.trim().slice(0, 512) || "Agent task",
-        input.projectId ?? null
-      ]
-    );
-    const row = result.rows[0];
-    if (!row) throw new Error("Personal Agent job insert returned no row");
-    return mapJob(row);
-  };
+        [
+          actor.userId,
+          input.conversationId,
+          input.commandId ?? null,
+          input.attribution.kind,
+          input.attribution.agentId,
+          input.attribution.agentVersion,
+          input.title?.trim().slice(0, 512) || "Agent task",
+          input.projectId ?? null
+        ]
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("Personal Agent job insert returned no row");
+      return mapJob(row);
+    });
 
   const recordPersonalAgentTurnOutput = async (input: {
     actor: ActorContext;
@@ -1872,7 +2051,6 @@ export const createPersonalAgentRepository = (
       ) {
         throw new Error("Attempt attribution does not match its job");
       }
-      await validateAttribution(client, actor, input.attribution, false);
       if (input.managedExecutionId !== null) {
         const execution = await client.query<{ id: string }>(
           `select id
@@ -1945,6 +2123,7 @@ export const createPersonalAgentRepository = (
         }
         return existing;
       }
+      await validateAttribution(client, actor, input.attribution, true);
       const result = await client.query<AttemptRow>(
         `insert into personal_agent_execution_attempts
           (id, owner_user_id, job_id, attempt_number, attribution_kind,
@@ -2276,6 +2455,7 @@ export const createPersonalAgentRepository = (
     createPersonalAgentVersion,
     updatePersonalAgent,
     retirePersonalAgent,
+    restorePersonalAgent,
     createPersonalAgentExecutionJob,
     recordPersonalAgentTurnOutput,
     getPersonalAgentTurnOutput,

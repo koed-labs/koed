@@ -1,8 +1,33 @@
 const prefix = "/studio-api/personal-agents";
 const uuid =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const detail = new RegExp(`^/(${uuid})(/retire)?$`);
+const detail = new RegExp(`^/(${uuid})(/(?:retire|restore))?$`);
 const maximum = 256 * 1024;
+
+async function boundedConflictCode(response) {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 4096) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(Buffer.from(value));
+    }
+    const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return payload?.code === "name_conflict" ? "name_conflict" : null;
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 export async function handlePersonalAgents({
   request,
@@ -140,7 +165,11 @@ export async function handlePersonalAgents({
       }
     );
     if (!upstream.ok) {
-      await upstream.body?.cancel?.();
+      const conflictCode =
+        routeFamily === "personal-agents" && upstream.status === 409
+          ? await boundedConflictCode(upstream)
+          : null;
+      if (conflictCode === null) await upstream.body?.cancel?.();
       const status = [400, 401, 403, 404, 409, 422, 429].includes(
         upstream.status
       )
@@ -148,13 +177,16 @@ export async function handlePersonalAgents({
         : 503;
       send(status, {
         error:
-          status === 409
+          conflictCode === "name_conflict"
+            ? "An Agent with this name or a previous name already exists. Choose another name."
+            : status === 409
             ? "The request conflicts with the current state. Refresh and check agent, model, and runtime availability before trying again."
             : status === 429
               ? "Koed is receiving too many requests. Wait a minute, then try again. Your changes have not been confirmed."
               : status === 503
                 ? "The runtime service is unavailable. Check the configured local or remote connection before retrying."
-                : "The request could not be completed."
+                : "The request could not be completed.",
+        ...(conflictCode ? { code: conflictCode } : {})
       });
       return true;
     }

@@ -32,24 +32,57 @@ Attempt completion is compare-and-set and idempotent for the exact attempt and
 outcome. Hard deletion of an execution cascades its operational job records;
 retiring an agent does not delete those records.
 
+Migration `0057_handy_loki` permits a profile to have no default AI Client or
+model, with provider and model either both set or both absent. It also reserves
+each current and former Agent name for one identity within the owner's account.
+The normalized name claim is kept when an Agent is renamed or retired. The
+migration checks existing profile versions for cross-Agent name collisions
+before altering the schema; a collision must be resolved without rewriting
+historical work before that database can upgrade.
+Migration `0058_windy_warpath` also requires default effort to be absent when
+there is no default model, for both the current profile and saved versions.
+
 The `/v1/personal-agents` API supports listing, detail, creation, version-checked
-updates and retirement. `/v1/personal-agents/capabilities` exposes the current
+updates, retirement and same-identity restoration. A name already claimed by
+another Agent, including a former name, returns a conflict. Detail history
+reports the immutable Agent name and version captured for each Job, while all
+Jobs remain associated with the same Agent identity after a rename.
+`/v1/personal-agents/capabilities` exposes the current
 user's ready AI Client models and supported reasoning efforts. The local Studio
 gateway forwards only these routes, keeps credentials outside the renderer,
 and checks origin and CSRF tokens for writes. Hosted deployments require their
-own authenticated User session; the local transport is not hosted authentication.
+own authenticated User session. Hosted Studio serves the static UI at `/studio/`
+and calls the same-origin `/v1/personal-agents` API; the API checks browser
+write origins. The local transport is not hosted authentication.
 
 Create requests carry an idempotency identifier. Edits and retirement include
 the version the user saw, so a stale editor cannot overwrite a newer identity.
 Changing a name does not regenerate the saved soul. Avatar storage contains the
 compact Pixelkin configuration, not its generated image cache.
 
+Studio keeps an unsaved create/edit form on the device where it was typed,
+scoped by the verified account and backend. Browser Studio uses local browser
+storage. Desktop Studio uses the existing encrypted local recovery bridge and
+permits a narrowly scoped Agent-draft write during a temporary backend outage
+after that account/backend pair was authenticated in the current app process.
+A cold offline restart keeps the draft but does not reveal it until the account
+is verified again. Drafts do not become account profiles until the User saves
+explicitly; a successful save clears the device draft.
+
 ## Execution Boundary
 
-Saving a preferred model does not launch an AI Client. Runtime integration must
-validate capabilities again when a task actually starts. Each execution attempt
+An Agent profile may be saved without a preferred model, or with a model that is
+currently unavailable on this computer. Saving it does not launch an AI Client.
+Runtime integration validates capabilities when a Job actually starts and asks
+for an available per-Job choice when the saved default is absent or unavailable.
+It does not silently change the reusable profile. Each execution attempt
 must record the actual provider, model, effort and permissions; history must not
 derive these values from today's agent defaults.
+
+Retirement prevents new Jobs and attempts but does not cancel or rewrite an
+already-running attempt. Restoration returns the same Agent identity and
+historical work to the active list. Profile edits create immutable versions;
+running and completed Jobs retain their original version and name.
 
 Every chat mechanism must resolve mentions to stable identity IDs. An explicit
 mention selects the respondent and applies its preferred model and reasoning

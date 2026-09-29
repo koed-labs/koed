@@ -7,7 +7,15 @@ import type {
 import type { AgentAvatar } from "./collab";
 
 const BASE_PATH = "/studio-api/personal-agents";
+const HOSTED_BASE_PATH = "/v1/personal-agents";
 const MAX_AVATAR_JSON_LENGTH = 2_048;
+
+function isHostedStudio(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/studio/")
+  );
+}
 
 export type PersonalAgentLifecycle = "active" | "retired";
 
@@ -37,6 +45,8 @@ export type PersonalAgentAttempt = Readonly<{
 export type PersonalAgentJob = Readonly<{
   id: string;
   title: string;
+  agentName?: string | null;
+  agentVersion?: number | null;
   projectId?: string | null;
   projectName?: string | null;
   state: string;
@@ -108,7 +118,27 @@ export type PersonalAgentsApi = Readonly<{
     expectedVersion: number,
     options?: PersonalAgentWriteOptions
   ) => Promise<PersonalAgent>;
+  restore: (
+    id: string,
+    expectedVersion: number,
+    options?: PersonalAgentWriteOptions
+  ) => Promise<PersonalAgent>;
+  draftScope?: (signal?: AbortSignal) => Promise<PersonalAgentDraftScope>;
 }>;
+
+export type PersonalAgentDraftScope = Readonly<{
+  ownerId: string;
+  backendId: string;
+}>;
+
+export function personalAgentDraftKey(
+  scope: PersonalAgentDraftScope | null,
+  target: string
+): string | null {
+  if (!scope?.ownerId.trim() || !scope.backendId.trim()) return null;
+  const part = (value: string) => encodeURIComponent(value.trim());
+  return `koed.studio.personal-agent-draft.v1:${part(scope.backendId)}:${part(scope.ownerId)}:${part(target)}`;
+}
 
 export type PersonalAgentWriteOptions = Readonly<{
   signal?: AbortSignal;
@@ -233,6 +263,7 @@ function parseAttempt(value: unknown): PersonalAgentAttempt {
 function parseJob(value: unknown): PersonalAgentJob {
   if (!isRecord(value))
     throw new Error("The agent service returned an invalid job.");
+  const attribution = isRecord(value.attribution) ? value.attribution : {};
   const attemptsValue = arrayValue(value.attempts);
   const attempts = attemptsValue ? attemptsValue.map(parseAttempt) : [];
   const latestAttemptValue = isRecord(value.latestAttempt)
@@ -246,6 +277,13 @@ function parseJob(value: unknown): PersonalAgentJob {
   return {
     id: requiredText(value.id, "job id"),
     title: text(value.title ?? value.objective) ?? "Untitled job",
+    agentName: text(value.agentName ?? attribution.agentName),
+    agentVersion:
+      typeof attribution.agentVersion === "number"
+        ? attribution.agentVersion
+        : typeof value.agentVersion === "number"
+          ? value.agentVersion
+          : null,
     projectId: text(value.projectId),
     projectName: text(value.projectName),
     state: requiredText(value.state ?? value.status, "job state"),
@@ -429,9 +467,10 @@ function parseCapabilities(value: unknown): AgentModelCapability[] {
 }
 
 function splitModelOption(value: string | null): {
-  provider: string;
-  model: string;
+  provider: string | null;
+  model: string | null;
 } {
+  if (!value) return { provider: null, model: null };
   const separator = value?.indexOf(":") ?? -1;
   if (!value || separator <= 0 || separator === value.length - 1) {
     throw new Error("Choose a supported model before saving the agent.");
@@ -475,8 +514,10 @@ async function assertOk(
 
 async function csrfToken(signal?: AbortSignal): Promise<string> {
   const response = await fetch("/studio-api/github/session", {
+    credentials: "include",
     headers: { Accept: "application/json" },
     cache: "no-store",
+    redirect: "error",
     signal
   });
   const payload = await assertOk(response, "Studio session is unavailable.");
@@ -491,19 +532,29 @@ async function call(
   init: RequestInit = {},
   signal?: AbortSignal
 ): Promise<unknown> {
+  const hosted = isHostedStudio();
   const method = init.method ?? "GET";
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   if (method !== "GET") {
     headers.set("Content-Type", "application/json");
-    headers.set("x-studio-csrf", await csrfToken(signal));
+    if (!hosted) headers.set("x-studio-csrf", await csrfToken(signal));
   }
-  const response = await fetch(`${BASE_PATH}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-    signal
-  });
+  const route =
+    path.startsWith("/studio-api/") || path.startsWith("/v1/")
+      ? path
+      : `${hosted ? HOSTED_BASE_PATH : BASE_PATH}${path}`;
+  const response = await fetch(
+    route,
+    {
+      ...init,
+      headers,
+      cache: "no-store",
+      credentials: "include",
+      redirect: "error",
+      signal
+    }
+  );
   return assertOk(response, "The agent service is unavailable.");
 }
 
@@ -545,6 +596,27 @@ export const personalAgentsHttpAdapter: PersonalAgentsApi = Object.freeze({
   },
   async capabilities(signal) {
     return parseCapabilities(await call("/capabilities", {}, signal));
+  },
+  async draftScope(signal) {
+    const value = await call(
+      isHostedStudio()
+        ? "/v1/managed-conversations/access"
+        : "/studio-api/managed-conversations/access",
+      {},
+      signal
+    );
+    if (
+      !isRecord(value) ||
+      !isRecord(value.user) ||
+      typeof value.user.id !== "string" ||
+      typeof value.backendId !== "string"
+    ) {
+      throw new Error("The signed-in agent draft scope is unavailable.");
+    }
+    return {
+      ownerId: requiredText(value.user.id, "owner id"),
+      backendId: requiredText(value.backendId, "backend id")
+    };
   },
   async create(values, options) {
     const parsed = unwrapAgentPayload(
@@ -591,6 +663,22 @@ export const personalAgentsHttpAdapter: PersonalAgentsApi = Object.freeze({
       )
     );
     return parseAgent(parsed.agent, parsed.activity);
+  },
+  async restore(id, expectedVersion, options) {
+    const parsed = unwrapAgentPayload(
+      await call(
+        `/${encodeURIComponent(id)}/restore`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            expectedVersion,
+            requestId: options?.requestId ?? personalAgentRequestId()
+          })
+        },
+        options?.signal
+      )
+    );
+    return parseAgent(parsed.agent, parsed.activity);
   }
 });
 
@@ -617,4 +705,19 @@ export function agentEditorInitialValues(agent: PersonalAgent): {
     sourceTemplateId: agent.sourceTemplateId,
     sourceTemplateVersion: agent.sourceTemplateVersion
   };
+}
+
+export function uniqueAgentCloneName(
+  sourceName: string,
+  existingNames: readonly string[]
+): string {
+  const base = `${sourceName.trim() || "Agent"} copy`;
+  const normalizedNames = new Set(
+    existingNames.map((name) => name.trim().toLocaleLowerCase())
+  );
+  if (!normalizedNames.has(base.toLocaleLowerCase())) return base;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base} ${suffix}`;
+    if (!normalizedNames.has(candidate.toLocaleLowerCase())) return candidate;
+  }
 }

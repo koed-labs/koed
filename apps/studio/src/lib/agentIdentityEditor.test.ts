@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   canSubmitAgentIdentity,
   capabilitiesForModel,
+  createAgentIdentityDraftStore,
   effortsForModel,
   generatedSoul,
   initialAgentIdentityEditorValues,
   modelLabel,
   modelOptions,
   preferredEffortForModel,
+  readAgentIdentityDraft,
+  writeAgentIdentityDraft,
+  clearAgentIdentityDraft,
   soulAfterNameOrRoleChange,
   type AgentModelCapability
 } from "./agentIdentityEditor";
@@ -27,6 +31,162 @@ const capabilities: AgentModelCapability[] = [
 ];
 
 describe("agent identity editor", () => {
+  it("round-trips and clears a device-local profile draft", () => {
+    const values = {
+      name: "Draft Bob",
+      role: "reviewer",
+      soul: "Keep this private draft",
+      avatar: {
+        seed: 7,
+        spec: { seed: 7 },
+        image: "data:image/png;base64,bob"
+      },
+      preferredModel: "offline:model",
+      preferredEffort: "high",
+      sourceTemplateId: "reviewer",
+      sourceTemplateVersion: 2
+    };
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => data.set(key, value),
+      removeItem: (key: string) => data.delete(key)
+    };
+
+    writeAgentIdentityDraft(storage, "draft", values);
+    expect(readAgentIdentityDraft(storage, "draft")).toEqual(values);
+    clearAgentIdentityDraft(storage, "draft");
+    expect(readAgentIdentityDraft(storage, "draft")).toBeNull();
+  });
+
+  it("ignores malformed device-local drafts", () => {
+    const storage = {
+      getItem: () => "{not-json",
+      setItem: () => {},
+      removeItem: () => {}
+    };
+    expect(readAgentIdentityDraft(storage, "draft")).toBeNull();
+  });
+
+  it("uses the encrypted Desktop bridge after authenticated scope hydration", async () => {
+    const values = {
+      name: "Draft Bob",
+      role: "reviewer",
+      soul: "Saved locally",
+      preferredModel: "offline:model",
+      preferredEffort: "high",
+      sourceTemplateId: null,
+      sourceTemplateVersion: null
+    };
+    const records = new Map<string, string>();
+    const calls: string[] = [];
+    const bridge = {
+      read: async ({
+        ownerId,
+        executionId
+      }: {
+        ownerId: string;
+        executionId: string;
+      }) => {
+        calls.push(`read:${ownerId}:${executionId}`);
+        return records.get(`${ownerId}:${executionId}`) ?? null;
+      },
+      write: async ({
+        ownerId,
+        executionId,
+        value
+      }: {
+        ownerId: string;
+        executionId: string;
+        value: string;
+      }) => {
+        calls.push(`write:${ownerId}:${executionId}`);
+        records.set(`${ownerId}:${executionId}`, value);
+      },
+      delete: async ({
+        ownerId,
+        executionId
+      }: {
+        ownerId: string;
+        executionId: string;
+      }) => {
+        calls.push(`delete:${ownerId}:${executionId}`);
+        records.delete(`${ownerId}:${executionId}`);
+      }
+    };
+    const storage = {
+      getItem: () => {
+        throw new Error("Desktop bridge should be preferred");
+      },
+      setItem: () => {
+        throw new Error("Desktop bridge should be preferred");
+      },
+      removeItem: () => {
+        throw new Error("Desktop bridge should be preferred");
+      }
+    };
+    const input = {
+      scope: { ownerId: "owner-1", backendId: "backend-1" },
+      target: "edit:agent-1",
+      storage,
+      bridge
+    };
+    const store = createAgentIdentityDraftStore(input)!;
+    expect(await store.hydrate()).toBeNull();
+    await store.write(values);
+
+    const afterRestart = createAgentIdentityDraftStore(input)!;
+    expect(await afterRestart.hydrate()).toEqual(values);
+    await afterRestart.clear();
+    expect(await afterRestart.hydrate()).toBeNull();
+    expect(calls).toEqual([
+      "read:owner-1:agent-draft:edit:agent-1",
+      "write:owner-1:agent-draft:edit:agent-1",
+      "read:owner-1:agent-draft:edit:agent-1",
+      "delete:owner-1:agent-draft:edit:agent-1",
+      "read:owner-1:agent-draft:edit:agent-1"
+    ]);
+  });
+
+  it("keeps browser drafts isolated by owner and backend", async () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => data.set(key, value),
+      removeItem: (key: string) => data.delete(key)
+    };
+    const first = createAgentIdentityDraftStore({
+      scope: { ownerId: "owner-a", backendId: "backend-a" },
+      target: "create",
+      storage,
+      bridge: null
+    })!;
+    const otherOwner = createAgentIdentityDraftStore({
+      scope: { ownerId: "owner-b", backendId: "backend-a" },
+      target: "create",
+      storage,
+      bridge: null
+    })!;
+    await first.write({
+      name: "Bob",
+      role: "reviewer",
+      soul: "Local only",
+      preferredModel: null,
+      preferredEffort: null,
+      sourceTemplateId: null,
+      sourceTemplateVersion: null
+    });
+    expect(await otherOwner.hydrate()).toBeNull();
+    expect(
+      await createAgentIdentityDraftStore({
+        scope: { ownerId: "owner-a", backendId: "backend-a" },
+        target: "create",
+        storage,
+        bridge: null
+      })?.hydrate()
+    ).toMatchObject({ name: "Bob" });
+  });
+
   it("generates only the initial soul draft", () => {
     const initial = initialAgentIdentityEditorValues({
       initialValues: { name: "Bob", role: "reviewer" }

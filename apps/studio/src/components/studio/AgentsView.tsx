@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Award, Pencil, Plus, Sparkles, X } from "lucide-react";
+import { Archive, Award, Copy, Pencil, Plus, Sparkles, X } from "lucide-react";
 import type { AgentDefinition, AgentStatus } from "@/lib/collab";
 import { relativeTime } from "@/lib/collab";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
@@ -21,12 +21,18 @@ import {
   personalAgentRequestId,
   type PersonalAgent,
   type PersonalAgentJob,
-  type PersonalAgentsApi
+  type PersonalAgentsApi,
+  type PersonalAgentDraftScope,
+  uniqueAgentCloneName
 } from "@/lib/personal-agents-client";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 
 type ModalState =
-  | { type: "create" }
+  | {
+      type: "create";
+      initialValues?: ReturnType<typeof agentEditorInitialValues>;
+      draftTarget: string;
+    }
   | { type: "edit"; agent: PersonalAgent }
   | null;
 
@@ -119,12 +125,19 @@ export function AgentsView({
 }: AgentsViewProps) {
   const [agents, setAgents] = useState<PersonalAgent[]>([]);
   const [capabilities, setCapabilities] = useState<AgentModelCapability[]>([]);
+  const [draftScope, setDraftScope] = useState<PersonalAgentDraftScope | null>(
+    null
+  );
+  const draftScopeRef = useRef<PersonalAgentDraftScope | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<PersonalAgent | null>(
     null
   );
   const [modal, setModal] = useState<ModalState>(null);
   const [retireTarget, setRetireTarget] = useState<PersonalAgent | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [cloneLoadingId, setCloneLoadingId] = useState<string | null>(null);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
     "loading"
   );
@@ -163,13 +176,31 @@ export function AgentsView({
       setLoadState("loading");
       setError(null);
       try {
-        const [agentsResult, capabilitiesResult] = await Promise.allSettled([
-          api.list(signal),
-          api.capabilities(signal)
-        ]);
+        const [agentsResult, capabilitiesResult, scopeResult] =
+          await Promise.allSettled([
+            api.list(signal),
+            api.capabilities(signal),
+            api.draftScope?.(signal) ??
+              Promise.reject(new Error("Draft scope is unavailable."))
+          ]);
         if (signal.aborted) return;
         if (agentsResult.status === "rejected") throw agentsResult.reason;
         setAgents(agentsResult.value);
+        if (scopeResult.status === "fulfilled") {
+          const nextScope = scopeResult.value;
+          const previousScope = draftScopeRef.current;
+          if (
+            previousScope &&
+            (previousScope.ownerId !== nextScope.ownerId ||
+              previousScope.backendId !== nextScope.backendId)
+          ) {
+            setModal(null);
+            setRetireTarget(null);
+            setSelectedId(null);
+          }
+          draftScopeRef.current = nextScope;
+          setDraftScope(nextScope);
+        }
         if (capabilitiesResult.status === "fulfilled") {
           setCapabilities(capabilitiesResult.value);
           setCapabilityError(null);
@@ -313,6 +344,54 @@ export function AgentsView({
     }
   };
 
+  const restoreAgent = async (agent: PersonalAgent) => {
+    setRestoringId(agent.id);
+    setLifecycleError(null);
+    try {
+      const restored = await api.restore(agent.id, agent.currentVersion, {
+        requestId: personalAgentRequestId()
+      });
+      setAgents((current) => upsertAgent(current, restored));
+      setSelectedDetail((current) => preserveActivity(current, restored));
+    } catch (reason) {
+      setLifecycleError(
+        reason instanceof Error
+          ? reason.message
+          : "The agent could not be restored."
+      );
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  const cloneAgent = async (agent: PersonalAgent) => {
+    setCloneLoadingId(agent.id);
+    setLifecycleError(null);
+    try {
+      const latest = await api.get(agent.id);
+      const initialValues = agentEditorInitialValues(latest);
+      setModal({
+        type: "create",
+        initialValues: {
+          ...initialValues,
+          name: uniqueAgentCloneName(
+            latest.name,
+            agents.map((candidate) => candidate.name)
+          )
+        },
+        draftTarget: `clone:${latest.id}`
+      });
+    } catch (reason) {
+      setLifecycleError(
+        reason instanceof Error
+          ? reason.message
+          : "The latest agent profile is unavailable."
+      );
+    } finally {
+      setCloneLoadingId(null);
+    }
+  };
+
   if (loadState === "loading") {
     return (
       <AgentsShell
@@ -370,7 +449,9 @@ export function AgentsView({
               <h1 className="text-3xl font-semibold">Agents</h1>
               <button
                 type="button"
-                onClick={() => setModal({ type: "create" })}
+                onClick={() =>
+                  setModal({ type: "create", draftTarget: "create" })
+                }
                 className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface-hover px-3 py-1.5 text-xs font-medium text-foreground-secondary transition-colors hover:bg-surface-active hover:text-foreground"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -381,7 +462,13 @@ export function AgentsView({
             {capabilityError && (
               <p className="mt-4 text-xs text-warning">
                 Model capabilities are unavailable. Existing agents remain
-                readable, but saving requires a supported model list.
+                readable, and you can still save a profile without a default
+                model. Choose an available model before starting a Job.
+              </p>
+            )}
+            {lifecycleError && (
+              <p role="alert" className="mt-4 text-xs text-danger">
+                {lifecycleError}
               </p>
             )}
 
@@ -483,11 +570,17 @@ export function AgentsView({
             onClose={closeDetail}
             onEdit={() => setModal({ type: "edit", agent: selected })}
             onRetire={() => setRetireTarget(selected)}
+            onClone={() => void cloneAgent(selected)}
+            onRestore={() => void restoreAgent(selected)}
+            cloneLoading={cloneLoadingId === selected.id}
+            restoring={restoringId === selected.id}
+            lifecycleError={lifecycleError}
           />
         )}
 
         {modal && (
           <CreateAgentModal
+            key={`${draftScope?.backendId ?? "unverified"}:${draftScope?.ownerId ?? "unverified"}:${modal.type === "create" ? modal.draftTarget : `edit:${modal.agent.id}`}`}
             onClose={() => setModal(null)}
             onCreated={() => setModal(null)}
             editDefinition={
@@ -496,6 +589,17 @@ export function AgentsView({
             initialValues={
               modal.type === "edit"
                 ? agentEditorInitialValues(modal.agent)
+                : modal.initialValues
+            }
+            draftIdentity={
+              draftScope
+                ? {
+                    scope: draftScope,
+                    target:
+                      modal.type === "create"
+                        ? modal.draftTarget
+                        : `edit:${modal.agent.id}`
+                  }
                 : undefined
             }
             capabilities={capabilities}
@@ -556,7 +660,12 @@ function AgentDetailPanel({
   error,
   onClose,
   onEdit,
-  onRetire
+  onRetire,
+  onClone,
+  onRestore,
+  cloneLoading,
+  restoring,
+  lifecycleError
 }: {
   agent: PersonalAgent;
   loading: boolean;
@@ -564,6 +673,11 @@ function AgentDetailPanel({
   onClose: () => void;
   onEdit: () => void;
   onRetire: () => void;
+  onClone: () => void;
+  onRestore: () => void;
+  cloneLoading: boolean;
+  restoring: boolean;
+  lifecycleError: string | null;
 }) {
   const [soulOpen, setSoulOpen] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -649,7 +763,7 @@ function AgentDetailPanel({
           </div>
         </div>
         <div className="flex flex-shrink-0 items-center gap-0.5">
-          {agent.lifecycle === "active" && (
+          {agent.lifecycle === "active" ? (
             <>
               <Tooltip content="Edit agent">
                 <button
@@ -672,7 +786,33 @@ function AgentDetailPanel({
                 </button>
               </Tooltip>
             </>
+          ) : (
+            <Tooltip content="Restore this agent">
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[11px] font-medium text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+                onClick={onRestore}
+                disabled={restoring}
+              >
+                {restoring ? "Restoring…" : "Restore"}
+              </button>
+            </Tooltip>
           )}
+          <Tooltip content="Clone this profile">
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-subtle hover:bg-surface-hover hover:text-foreground-secondary disabled:opacity-50"
+              onClick={onClone}
+              aria-label="Clone agent"
+              disabled={cloneLoading}
+            >
+              {cloneLoading ? (
+                <span className="px-1 text-[10px]">…</span>
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </Tooltip>
           <Tooltip content="Close">
             <button
               ref={closeButtonRef}
@@ -686,6 +826,12 @@ function AgentDetailPanel({
           </Tooltip>
         </div>
       </div>
+
+      {lifecycleError && (
+        <p role="alert" className="mt-3 px-5 text-xs text-danger">
+          {lifecycleError}
+        </p>
+      )}
 
       <div className="mt-4 px-5">
         <span className="rounded-full bg-chip px-2.5 py-1 text-[11px] font-medium text-chip-foreground">
@@ -924,6 +1070,14 @@ function JobCard({
       </div>
       {job.projectName && (
         <p className="mt-0.5 text-[11px] text-subtle">{job.projectName}</p>
+      )}
+      {job.agentName && (
+        <p className="mt-0.5 text-[11px] text-subtle">
+          Agent profile · {job.agentName}
+          {job.agentVersion !== null && job.agentVersion !== undefined
+            ? ` · v${job.agentVersion}`
+            : ""}
+        </p>
       )}
       <p className="mt-2 text-[11px] text-subtle">
         {jobStatusLabel(job.state)} · Actual model: {settingLabel(job.model)} ·{" "}

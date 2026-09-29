@@ -111,6 +111,23 @@ const attempt = () =>
   });
 
 describe("Personal Agent domain contract", () => {
+  it("allows an unset paired provider and model without inventing defaults", () => {
+    expect(
+      parsePersonalAgentIdentity({
+        ...identity(),
+        defaultProvider: null,
+        defaultModel: null
+      })
+    ).toMatchObject({ defaultProvider: null, defaultModel: null });
+    expect(() =>
+      parsePersonalAgentIdentity({
+        ...identity(),
+        defaultProvider: null,
+        defaultModel: "gpt-test"
+      })
+    ).toThrow(/both be set or both be null/);
+  });
+
   it("keeps editable identity versions owner-scoped and retirement explicit", () => {
     const current = identity();
     const version = parsePersonalAgentIdentityVersion({
@@ -286,6 +303,36 @@ describe("Personal Agent domain contract", () => {
         reasoningEffort: " "
       })
     ).toThrow();
+  });
+
+  it("requires null effort when a Personal Agent has no saved provider/model", () => {
+    expect(() =>
+      parsePersonalAgentIdentity({
+        ...identity(),
+        defaultProvider: null,
+        defaultModel: null,
+        defaultReasoningEffort: "high"
+      })
+    ).toThrow(/reasoning effort must be null/);
+    expect(() =>
+      parsePersonalAgentIdentityVersion({
+        contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+        id: ids.version,
+        agentId: ids.agent,
+        ownerUserId: ids.owner,
+        version: 1,
+        name: "Planner",
+        role: "Planning assistant",
+        avatarReference: "preset:planner",
+        defaultProvider: null,
+        defaultModel: null,
+        defaultReasoningEffort: "high",
+        soulInstructions: "Plan carefully and state uncertainty.",
+        instructionSource: "custom",
+        createdByUserId: ids.owner,
+        createdAt: timestamps.created
+      })
+    ).toThrow(/reasoning effort must be null/);
   });
 
   it("keeps unknown legacy runtime attribution nullable", () => {

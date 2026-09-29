@@ -90,6 +90,21 @@ test("preserves conflict status so stale edits cannot masquerade as saved", asyn
   );
 });
 
+test("maps only the bounded Agent name conflict without leaking backend details", async () => {
+  const named = await call({
+    fetchImpl: async () => Response.json({ code: "name_conflict", error: "private details" }, { status: 409 })
+  });
+  assert.equal(named.status, 409);
+  assert.equal(named.body.code, "name_conflict");
+  assert.match(named.body.error, /Choose another name/);
+  assert.equal(JSON.stringify(named).includes("private details"), false);
+  const other = await call({
+    fetchImpl: async () => Response.json({ code: "stale_version", error: "private details" }, { status: 409 })
+  });
+  assert.equal(other.status, 409);
+  assert.equal(other.body.code, undefined);
+});
+
 test("uses paired local access for each route family and never falls back after readiness failure", async () => {
   const cases = [
     ["personal-agents", "/studio-api/personal-agents"],
@@ -144,6 +159,42 @@ test("uses paired local access for each route family and never falls back after 
       assert.equal(JSON.stringify(result).includes("must-not-be-sent"), false);
     }
   }
+});
+
+test("forwards only an authenticated, CSRF-checked Agent restore", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `http://localhost/studio-api/personal-agents/${id}/restore`;
+  const payload = { requestId: "22222222-2222-4222-8222-222222222222", expectedVersion: 2 };
+  const makeRequest = (method) => {
+    const request = Readable.from([Buffer.from(JSON.stringify(payload))]);
+    request.method = method;
+    request.headers = { "content-type": "application/json" };
+    return request;
+  };
+  const result = await call({
+    request: makeRequest("POST"),
+    url: new URL(path),
+    fetchImpl: async (url, init) => {
+      assert.equal(url.pathname, `/v1/personal-agents/${id}/restore`);
+      assert.equal(init.method, "POST");
+      assert.equal(init.headers.authorization, "Bearer secret");
+      assert.deepEqual(JSON.parse(init.body), payload);
+      return Response.json({ agent: { id, lifecycle: "active" } });
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.agent.id, id);
+  assert.equal((await call({
+    request: makeRequest("GET"),
+    url: new URL(path),
+    fetchImpl: () => assert.fail("restore must be POST only")
+  })).status, 405);
+  assert.equal((await call({
+    request: makeRequest("POST"),
+    url: new URL(path),
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("restore requires CSRF")
+  })).status, 403);
 });
 
 test("role template catalogue is a read-only authenticated API proxy", async () => {

@@ -1633,6 +1633,11 @@ export const createKoedServerManager = ({
   const pendingProjectMetadataPaths = new Set<string>();
   let retainedPersonalApiOrigin: string | null = null;
   let retainedPersonalApiToken: string | null = null;
+  // A Studio Agent draft may be written while the local API is temporarily
+  // unavailable, but only after this manager has authenticated the exact
+  // owner/backend pair. Keep this authorization in memory; never infer it from
+  // renderer supplied identity or from a persisted draft reference.
+  const verifiedStudioRecoveryScopes = new Set<string>();
   let personalApiTokenProvisioning: Promise<
     { ok: true; apiToken: string } | { ok: false; error: string }
   > | null = null;
@@ -3134,29 +3139,53 @@ export const createKoedServerManager = ({
     if (!managedConversationDraftStore) {
       throw new PersonalMemoryBoundaryError("not_ready", false);
     }
-    const [access, identity] = await Promise.all([
-      personalMemoryAccess(),
-      authenticatedPersonalMemoryRequest(
+    const access = await personalMemoryAccess();
+    const scopeKey = JSON.stringify({
+      backend: access.apiOrigin,
+      ownerUserId: request.ownerId
+    });
+    let userId: string;
+    try {
+      const identity = await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => ({
           url: new URL("/v1/managed-conversations/access", apiOrigin),
           init: { method: "GET" }
         }),
         64 * 1_024
-      )
-    ]);
-    const user = objectValue(identity.user);
-    if (typeof user?.id !== "string") {
-      throw new PersonalMemoryBoundaryError("invalid_response", false);
-    }
-    if (user.id !== request.ownerId) {
-      throw new PersonalMemoryBoundaryError("not_found", false);
+      );
+      const user = objectValue(identity.user);
+      if (typeof user?.id !== "string") {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      if (user.id !== request.ownerId) {
+        throw new PersonalMemoryBoundaryError("not_found", false);
+      }
+      userId = user.id;
+      verifiedStudioRecoveryScopes.add(scopeKey);
+    } catch (error) {
+      // Offline draft writes are narrowly authorized by a successful earlier
+      // access check in this Desktop manager. Chat recovery and all reads or
+      // deletes still require a live backend check.
+      const currentAccess = await personalMemoryAccess().catch(() => null);
+      if (
+        request.operation !== "write" ||
+        !request.executionId.startsWith("agent-draft:") ||
+        !(error instanceof PersonalMemoryBoundaryError) ||
+        error.code !== "request_failed" ||
+        !error.retryable ||
+        currentAccess?.apiOrigin !== access.apiOrigin ||
+        !verifiedStudioRecoveryScopes.has(scopeKey)
+      ) {
+        throw error;
+      }
+      userId = request.ownerId;
     }
     const reference = `studio-chat-recovery-${createHash("sha256")
       .update(
         JSON.stringify({
           scope: "studio-chat-recovery",
           backend: access.apiOrigin,
-          ownerUserId: user.id,
+          ownerUserId: userId,
           executionId: request.executionId
         })
       )

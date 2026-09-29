@@ -4162,14 +4162,16 @@ export const personalAgentIdentities = pgTable(
     role: text("role").notNull(),
     avatarReference: text("avatar_reference"),
     lifecycle: text("lifecycle").notNull().default("active"),
-    defaultProvider: text("default_provider").notNull(),
-    defaultModel: text("default_model").notNull(),
+    defaultProvider: text("default_provider"),
+    defaultModel: text("default_model"),
     defaultReasoningEffort: text("default_reasoning_effort"),
     currentVersion: integer("current_version").notNull().default(1),
     creationRequestId: uuid("creation_request_id").notNull(),
     creationRequestFingerprint: text("creation_request_fingerprint").notNull(),
     retirementRequestId: uuid("retirement_request_id"),
     retirementRequestFingerprint: text("retirement_request_fingerprint"),
+    restoreRequestId: uuid("restore_request_id"),
+    restoreRequestFingerprint: text("restore_request_fingerprint"),
     createdAt: now(),
     updatedAt: updatedNow(),
     retiredAt: timestamp("retired_at", { withTimezone: true })
@@ -4187,6 +4189,10 @@ export const personalAgentIdentities = pgTable(
       table.ownerUserId,
       table.retirementRequestId
     ),
+    unique("personal_agent_identities_owner_restore_request_unique").on(
+      table.ownerUserId,
+      table.restoreRequestId
+    ),
     index("personal_agent_identities_owner_lifecycle_idx").on(
       table.ownerUserId,
       table.lifecycle,
@@ -4197,11 +4203,14 @@ export const personalAgentIdentities = pgTable(
       sql`length(trim(${table.name})) between 1 and 128
         and length(${table.role}) <= 512
         and (${table.avatarReference} is null or length(${table.avatarReference}) <= 4096)
-        and ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
-        and length(trim(${table.defaultModel})) between 1 and 512
+        and ((${table.defaultProvider} is null) = (${table.defaultModel} is null))
+        and (${table.defaultProvider} is null or ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$')
+        and (${table.defaultModel} is null or length(trim(${table.defaultModel})) between 1 and 512)
+        and (${table.defaultProvider} is not null or ${table.defaultReasoningEffort} is null)
         and (${table.defaultReasoningEffort} is null or length(trim(${table.defaultReasoningEffort})) between 1 and 64)
         and ${table.creationRequestFingerprint} ~ '^[0-9a-f]{64}$'
-        and (${table.retirementRequestFingerprint} is null or ${table.retirementRequestFingerprint} ~ '^[0-9a-f]{64}$')`
+        and (${table.retirementRequestFingerprint} is null or ${table.retirementRequestFingerprint} ~ '^[0-9a-f]{64}$')
+        and (${table.restoreRequestFingerprint} is null or ${table.restoreRequestFingerprint} ~ '^[0-9a-f]{64}$')`
     ),
     check(
       "personal_agent_identities_lifecycle_check",
@@ -4227,8 +4236,8 @@ export const personalAgentIdentityVersions = pgTable(
     name: text("name").notNull(),
     role: text("role").notNull(),
     avatarReference: text("avatar_reference"),
-    defaultProvider: text("default_provider").notNull(),
-    defaultModel: text("default_model").notNull(),
+    defaultProvider: text("default_provider"),
+    defaultModel: text("default_model"),
     defaultReasoningEffort: text("default_reasoning_effort"),
     soulInstructions: text("soul_instructions").notNull(),
     instructionSource: text("instruction_source").notNull(),
@@ -4293,8 +4302,10 @@ export const personalAgentIdentityVersions = pgTable(
       sql`length(trim(${table.name})) between 1 and 128
         and length(${table.role}) <= 512
         and (${table.avatarReference} is null or length(${table.avatarReference}) <= 4096)
-        and ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
-        and length(trim(${table.defaultModel})) between 1 and 512
+        and ((${table.defaultProvider} is null) = (${table.defaultModel} is null))
+        and (${table.defaultProvider} is null or ${table.defaultProvider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$')
+        and (${table.defaultModel} is null or length(trim(${table.defaultModel})) between 1 and 512)
+        and (${table.defaultProvider} is not null or ${table.defaultReasoningEffort} is null)
         and (${table.defaultReasoningEffort} is null or length(trim(${table.defaultReasoningEffort})) between 1 and 64)
         and ${table.soulInstructions} = '[koed encrypted personal agent soul]'
         and ${table.instructionSource} in ('generated', 'custom')
@@ -4307,6 +4318,44 @@ export const personalAgentIdentityVersions = pgTable(
     check(
       "personal_agent_identity_versions_number_check",
       sql`${table.version} > 0`
+    )
+  ]
+);
+
+export const personalAgentNameClaims = pgTable(
+  "personal_agent_name_claims",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    claimedAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.normalizedName],
+      name: "personal_agent_name_claims_owner_name_pk"
+    }),
+    unique("personal_agent_name_claims_owner_agent_name_unique").on(
+      table.ownerUserId,
+      table.agentId,
+      table.normalizedName
+    ),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "personal_agent_name_claims_owner_agent_fk"
+    }).onDelete("cascade"),
+    check(
+      "personal_agent_name_claims_normalized_check",
+      sql`${table.normalizedName} = lower(regexp_replace(trim(${table.normalizedName}), '\\s+', ' ', 'g'))
+        and length(trim(${table.normalizedName})) between 1 and 128`
+    ),
+    index("personal_agent_name_claims_owner_agent_idx").on(
+      table.ownerUserId,
+      table.agentId
     )
   ]
 );
@@ -8415,10 +8464,9 @@ export const teamMemoryShareGrants = pgTable(
     sourceUpdatesStoppedAt: timestamp("source_updates_stopped_at", {
       withTimezone: true
     }),
-    sourceUpdatesStoppedByUserId: uuid("source_updates_stopped_by_user_id").references(
-      () => users.id,
-      { onDelete: "set null" }
-    )
+    sourceUpdatesStoppedByUserId: uuid(
+      "source_updates_stopped_by_user_id"
+    ).references(() => users.id, { onDelete: "set null" })
   },
   (table) => [
     foreignKey({

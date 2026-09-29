@@ -249,6 +249,91 @@ describe("managed Project move authority migration", () => {
   });
 });
 
+describe("Personal Agent ownership migration", () => {
+  it("preflights historical name collisions before changing schema and backfills all name history", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0057_handy_loki.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    expect(journal.entries.find((entry) => entry.idx === 57)).toEqual(
+      expect.objectContaining({ idx: 57, tag: "0057_handy_loki" })
+    );
+
+    const guard = migrationSql.indexOf("DO $$");
+    const firstDdl = migrationSql.indexOf(
+      'CREATE TABLE "personal_agent_name_claims"'
+    );
+    expect(guard).toBe(0);
+    expect(firstDdl).toBeGreaterThan(guard);
+    expect(migrationSql.slice(guard, firstDdl)).toContain(
+      "Personal Agent historical name collision: owner %, normalized name % is claimed by multiple agents"
+    );
+    expect(migrationSql.slice(guard, firstDdl)).toContain(
+      "HAVING count(DISTINCT names.agent_id) > 1"
+    );
+
+    const backfill = migrationSql.slice(
+      migrationSql.indexOf('INSERT INTO "personal_agent_name_claims"'),
+      migrationSql.indexOf(
+        'ALTER TABLE "personal_agent_identities" DROP CONSTRAINT'
+      )
+    );
+    expect(backfill).toContain("FROM personal_agent_identity_versions");
+    expect(backfill).toContain("FROM personal_agent_identities");
+    expect(backfill).toContain(
+      "lower(regexp_replace(trim(name), '\\s+', ' ', 'g'))"
+    );
+    expect(backfill).not.toMatch(/\b(update|delete)\b/i);
+  });
+});
+
+describe("Personal Agent reasoning effort constraint migration", () => {
+  it("adds the nullable-default effort rule to both current and historical versions", async () => {
+    const [journalText, migrationSql, snapshotText] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0058_windy_warpath.sql"),
+      readDrizzleFile("meta/0058_snapshot.json")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    const snapshot = JSON.parse(snapshotText) as {
+      tables: Record<
+        string,
+        { checkConstraints: Record<string, { value: string }> }
+      >;
+    };
+    expect(journal.entries.at(-1)).toEqual(
+      expect.objectContaining({ idx: 58, tag: "0058_windy_warpath" })
+    );
+
+    for (const table of [
+      "public.personal_agent_identities",
+      "public.personal_agent_identity_versions"
+    ]) {
+      expect(migrationSql).toContain(
+        `ALTER TABLE "${table.split(".")[1]}" DROP CONSTRAINT`
+      );
+      expect(migrationSql).toContain(
+        `ALTER TABLE "${table.split(".")[1]}" ADD CONSTRAINT`
+      );
+      expect(migrationSql).toContain(
+        `"${table.split(".")[1]}"."default_provider" is not null or "${table.split(".")[1]}"."default_reasoning_effort" is null`
+      );
+      expect(
+        snapshot.tables[table]?.checkConstraints[
+          `${table.split(".")[1]}_text_check`
+        ]?.value
+      ).toContain(
+        `"${table.split(".")[1]}"."default_provider" is not null or "${table.split(".")[1]}"."default_reasoning_effort" is null`
+      );
+    }
+  });
+});
+
 describe("Claude AI Client migration", () => {
   it("seeds explicit semantic and raw-only Claude projection policies", async () => {
     const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");

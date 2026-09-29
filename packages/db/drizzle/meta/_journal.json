@@ -401,6 +401,20 @@
       "when": 1790686576094,
       "tag": "0056_certain_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1790711894686,
+      "tag": "0057_handy_loki",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1790714230718,
+      "tag": "0058_windy_warpath",
+      "breakpoints": true
     }
   ]
 }

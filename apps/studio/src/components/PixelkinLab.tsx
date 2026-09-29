@@ -30,8 +30,10 @@ function readLabState(session: PixelkinSession) {
   };
 }
 
-export const PixelkinLab = forwardRef<PixelkinLabHandle, { initialSpec?: Record<string, unknown> }>(
-  function PixelkinLab({ initialSpec }, ref) {
+export const PixelkinLab = forwardRef<
+  PixelkinLabHandle,
+  { initialSpec?: Record<string, unknown>; onChange?: () => void }
+>(function PixelkinLab({ initialSpec, onChange }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<PixelkinSession | null>(null);
   const [expression, setExpression] = useState("happy");
@@ -74,6 +76,7 @@ export const PixelkinLab = forwardRef<PixelkinLabHandle, { initialSpec?: Record<
     const session = sessionRef.current;
     if (!session) return;
     mutate(session);
+    onChange?.();
     const next = readLabState(session);
     setExpression(next.expression);
     setPalette(next.palette);
@@ -172,5 +175,4 @@ export const PixelkinLab = forwardRef<PixelkinLabHandle, { initialSpec?: Record<
       </div>
     </div>
   );
-  }
-);
+});

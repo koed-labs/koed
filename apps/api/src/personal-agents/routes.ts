@@ -13,6 +13,7 @@ import {
   personalAgentIdParamsSchema,
   personalAgentListQuerySchema,
   personalAgentRetireSchema,
+  personalAgentRestoreSchema,
   personalAgentUpdateSchema
 } from "./schemas.js";
 
@@ -33,11 +34,8 @@ const conflict = (message: string, code = "conflict") =>
 const notFound = (message: string) =>
   Object.assign(new Error(message), { statusCode: 404 });
 
-const capabilityUnavailable = (message: string) =>
-  Object.assign(new Error(message), {
-    statusCode: 409,
-    code: "ai_client_capability_unavailable"
-  });
+const badRequest = (message: string) =>
+  Object.assign(new Error(message), { statusCode: 400 });
 
 const isStaleVersionError = (error: unknown): boolean =>
   Boolean(
@@ -156,39 +154,17 @@ const readyCapabilityInstances = async (
   });
 };
 
-const assertDefaultCapability = async (
-  repository: CapabilityRepository,
-  userId: string,
-  input: {
-    provider: string;
-    model: string;
-    reasoningEffort: string | null;
-  }
-): Promise<void> => {
-  const instances = await readyCapabilityInstances(repository, userId);
-  const matches = instances.flatMap((instance) =>
-    instance.models.filter(
-      (model) => model.id === input.model && model.provider === input.provider
-    )
-  );
-  if (matches.length === 0) {
-    throw capabilityUnavailable("Selected AI Client model is unavailable");
-  }
-  if (
-    input.reasoningEffort !== null &&
-    !matches.some((model) =>
-      model.supportedReasoningEfforts.includes(input.reasoningEffort as string)
-    )
-  ) {
-    throw capabilityUnavailable(
-      "Selected reasoning effort is unavailable for this model"
-    );
-  }
-};
-
 const handleWriteConflict = (error: unknown): never => {
   if (isStaleVersionError(error))
     throw conflict("Stale version", "stale_version");
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "PERSONAL_AGENT_NOT_RETIRED"
+  ) {
+    throw conflict("Personal Agent is already active", "lifecycle_conflict");
+  }
   if (
     error &&
     typeof error === "object" &&
@@ -198,6 +174,17 @@ const handleWriteConflict = (error: unknown): never => {
     throw conflict(
       "Personal Agent request conflicts with existing state",
       "request_conflict"
+    );
+  }
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "PERSONAL_AGENT_NAME_CONFLICT"
+  ) {
+    throw conflict(
+      "A Personal Agent with this name or a previous name already exists for this account",
+      "name_conflict"
     );
   }
   throw error;
@@ -319,11 +306,6 @@ export const registerPersonalAgentRoutes = (
         input.sourceTemplateId,
         input.sourceTemplateVersion
       );
-      await assertDefaultCapability(requireRepository(), user.id, {
-        provider: input.defaultProvider,
-        model: input.defaultModel,
-        reasoningEffort: input.defaultReasoningEffort ?? null
-      });
       const detail = await routeRepository(requireRepository())
         .createPersonalAgent(
           { userId: user.id },
@@ -361,23 +343,27 @@ export const registerPersonalAgentRoutes = (
           requireRepository()
         ).getPersonalAgent({ userId: user.id }, agentId);
         if (!current) throw notFound("Personal Agent not found");
-        const defaultsChanged =
-          (input.defaultProvider !== undefined &&
-            input.defaultProvider !== current.agent.defaultProvider) ||
-          (input.defaultModel !== undefined &&
-            input.defaultModel !== current.agent.defaultModel) ||
-          (input.defaultReasoningEffort !== undefined &&
-            input.defaultReasoningEffort !==
-              current.agent.defaultReasoningEffort);
-        if (defaultsChanged) {
-          await assertDefaultCapability(requireRepository(), user.id, {
-            provider: input.defaultProvider ?? current.agent.defaultProvider,
-            model: input.defaultModel ?? current.agent.defaultModel,
-            reasoningEffort:
-              input.defaultReasoningEffort !== undefined
-                ? input.defaultReasoningEffort
-                : current.agent.defaultReasoningEffort
-          });
+        const resultingProvider =
+          input.defaultProvider !== undefined
+            ? input.defaultProvider
+            : current.agent.defaultProvider;
+        const resultingModel =
+          input.defaultModel !== undefined
+            ? input.defaultModel
+            : current.agent.defaultModel;
+        const resultingEffort =
+          input.defaultReasoningEffort !== undefined
+            ? input.defaultReasoningEffort
+            : current.agent.defaultReasoningEffort;
+        if ((resultingProvider === null) !== (resultingModel === null)) {
+          throw badRequest(
+            "Default provider and model must both be set or both be cleared"
+          );
+        }
+        if (resultingProvider === null && resultingEffort !== null) {
+          throw badRequest(
+            "Default reasoning effort must be cleared when provider and model are cleared"
+          );
         }
       }
       const detail = await routeRepository(requireRepository())
@@ -400,6 +386,21 @@ export const registerPersonalAgentRoutes = (
         sourceTemplateId: identityVersion.sourceTemplateId,
         sourceTemplateVersion: identityVersion.sourceTemplateVersion
       };
+    }
+  );
+
+  app.post(
+    "/v1/personal-agents/:agentId/restore",
+    { preHandler: agentRateLimit },
+    async (request) => {
+      const user = await authenticatePersonalAgent(request);
+      const { agentId } = personalAgentIdParamsSchema.parse(request.params);
+      const input = personalAgentRestoreSchema.parse(request.body);
+      const agent = await routeRepository(requireRepository())
+        .restorePersonalAgent({ actor: { userId: user.id }, agentId, ...input })
+        .catch(handleWriteConflict);
+      if (!agent) throw notFound("Personal Agent not found");
+      return { agent: publicAgent(agent) };
     }
   );
 

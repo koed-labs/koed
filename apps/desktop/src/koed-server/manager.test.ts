@@ -4783,12 +4783,68 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         })
       ).rejects.toThrow();
 
+      // The authenticated scope above permits offline Agent draft writes from
+      // this manager instance. Generic Studio recovery and reads remain online
+      // gated, and an owner not verified by this manager cannot reuse it.
+      personalMemoryFetch.mockImplementation(async () => {
+        throw new Error("backend offline");
+      });
+      await expect(
+        manager.studioChatRecovery({
+          operation: "write",
+          ownerId: recoveryOwnerId,
+          executionId: "agent-draft:create",
+          value: JSON.stringify({ name: "Unsaved Agent" })
+        })
+      ).resolves.toEqual({ operation: "write", ok: true });
+      await expect(
+        manager.studioChatRecovery({
+          operation: "write",
+          ownerId: recoveryOwnerId,
+          executionId: "execution-studio",
+          value: studioRecoveryValue
+        })
+      ).rejects.toThrow();
+      await expect(
+        manager.studioChatRecovery({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          executionId: "agent-draft:create"
+        })
+      ).rejects.toThrow();
+      await expect(
+        manager.studioChatRecovery({
+          operation: "write",
+          ownerId: "00000000-0000-4000-8000-000000000002",
+          executionId: "agent-draft:create",
+          value: JSON.stringify({ name: "Other account" })
+        })
+      ).rejects.toThrow();
+      personalMemoryFetch.mockImplementation(async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/managed-conversations/access") {
+          return new Response(
+            JSON.stringify({
+              user: { id: recoveryOwnerId }
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" }
+            }
+          );
+        }
+        return new Response(JSON.stringify({ error: "unexpected route" }), {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        });
+      });
+
       const references = [
         ...draftStore.put.mock.calls.map(([reference]) => reference),
         ...draftStore.get.mock.calls.map(([reference]) => reference),
         ...draftStore.delete.mock.calls.map(([reference]) => reference)
       ];
-      expect(new Set(references).size).toBe(4);
+      expect(new Set(references).size).toBe(5);
       expect(references).toEqual(
         expect.arrayContaining([
           expect.stringMatching(/^managed-draft-[0-9a-f]{64}$/),
@@ -4799,7 +4855,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       expect(
         references.every((reference) => !reference.includes(identity.projectId))
       ).toBe(true);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(12);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(20);
       const reads = draftStore.get.mock.calls.length;
       personalMemoryFetch.mockResolvedValueOnce(
         new Response(
@@ -4811,7 +4867,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         manager.managedConversation({ operation: "draft_read", ...identity })
       ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
       expect(draftStore.get).toHaveBeenCalledTimes(reads);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(13);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(21);
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

@@ -21,7 +21,7 @@ const optionalText = (maximum: number) => z.string().trim().max(maximum);
 const nonEmptyOrNullText = (maximum: number) =>
   requiredText(maximum).nullable();
 const timestamp = z.string().datetime({ offset: true });
-const provider = requiredText(96).regex(aiClientIdentifierPattern);
+const provider = requiredText(96).regex(aiClientIdentifierPattern).nullable();
 const aiClientInstance = requiredText(128).regex(aiClientIdentifierPattern);
 
 export const personalAgentLifecycleSchema = z.enum(["active", "retired"]);
@@ -42,7 +42,7 @@ export const personalAgentIdentitySchema = z
     ).nullable(),
     lifecycle: personalAgentLifecycleSchema,
     defaultProvider: provider,
-    defaultModel: requiredText(PERSONAL_AGENT_MODEL_MAX_LENGTH),
+    defaultModel: requiredText(PERSONAL_AGENT_MODEL_MAX_LENGTH).nullable(),
     /** null means that no reasoning effort was selected, not an inferred default. */
     defaultReasoningEffort: nonEmptyOrNullText(
       PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
@@ -54,6 +54,24 @@ export const personalAgentIdentitySchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.defaultProvider === null) !== (value.defaultModel === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultModel"],
+        message: "Default provider and model must both be set or both be null"
+      });
+    }
+    if (
+      value.defaultProvider === null &&
+      value.defaultReasoningEffort !== null
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultReasoningEffort"],
+        message:
+          "Default reasoning effort must be null when no provider and model are saved"
+      });
+    }
     if (value.lifecycle === "active" && value.retiredAt !== null) {
       context.addIssue({
         code: "custom",
@@ -94,7 +112,7 @@ export const personalAgentIdentityVersionSchema = z
       PERSONAL_AGENT_AVATAR_REFERENCE_MAX_LENGTH
     ).nullable(),
     defaultProvider: provider,
-    defaultModel: requiredText(PERSONAL_AGENT_MODEL_MAX_LENGTH),
+    defaultModel: requiredText(PERSONAL_AGENT_MODEL_MAX_LENGTH).nullable(),
     defaultReasoningEffort: nonEmptyOrNullText(
       PERSONAL_AGENT_REASONING_EFFORT_MAX_LENGTH
     ),
@@ -118,6 +136,24 @@ export const personalAgentIdentityVersionSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.defaultProvider === null) !== (value.defaultModel === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultModel"],
+        message: "Default provider and model must both be set or both be null"
+      });
+    }
+    if (
+      value.defaultProvider === null &&
+      value.defaultReasoningEffort !== null
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultReasoningEffort"],
+        message:
+          "Default reasoning effort must be null when no provider and model are saved"
+      });
+    }
     if (
       (value.sourceTemplateId === null) !==
       (value.sourceTemplateVersion === null)

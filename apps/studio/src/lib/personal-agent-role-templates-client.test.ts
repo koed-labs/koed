@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  listPersonalAgentRoleTemplates,
   matchRoleTemplate,
   parsePersonalAgentRoleTemplates,
   rankRoleTemplates
 } from "./personal-agent-role-templates-client";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const template = (id: string, version: number, title = id) => ({
   id,
@@ -60,5 +65,39 @@ describe("personal agent role template client", () => {
     expect(matchRoleTemplate("  BACKEND ENGINEER ", [backend])).toBe(backend);
     expect(matchRoleTemplate("backend developer", [backend])).toBeUndefined();
     expect(matchRoleTemplate("", [backend])).toBeUndefined();
+  });
+
+  it("loads role templates from the hosted same-origin API route", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/studio/agents" } });
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({ templates: [template("researcher", 1, "Researcher")] })
+    );
+
+    await expect(listPersonalAgentRoleTemplates(undefined, fetcher)).resolves.toEqual([
+      template("researcher", 1, "Researcher")
+    ]);
+    expect(fetcher).toHaveBeenCalledWith(
+      "/v1/personal-agent-role-templates",
+      expect.objectContaining({
+        cache: "no-store",
+        credentials: "include",
+        redirect: "error",
+        headers: { accept: "application/json" }
+      })
+    );
+  });
+
+  it("keeps local Studio role templates on the gateway route", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/agents" } });
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({ templates: [template("researcher", 1, "Researcher")] })
+    );
+
+    await listPersonalAgentRoleTemplates(undefined, fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/studio-api/personal-agent-role-templates",
+      expect.objectContaining({ credentials: "include" })
+    );
   });
 });
