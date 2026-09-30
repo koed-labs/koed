@@ -6,6 +6,7 @@ import {
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   managedConversationFileOperationResultSchema,
+  personalAgentIntentSignalSchema,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
 
@@ -29,6 +30,26 @@ const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
 const personalAgentJobParamsSchema = z.object({ jobId: uuid }).strict();
+const personalAgentIntentBodySchema = z
+  .object({
+    leaseToken: uuid,
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    runnerId: boundedRunnerId,
+    providerTurnId: z.string().trim().min(1).max(256),
+    intent: personalAgentIntentSignalSchema
+  })
+  .strict();
+const personalAgentTurnStatusBodySchema = z
+  .object({
+    leaseToken: uuid,
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    runnerId: boundedRunnerId,
+    providerTurnId: z.string().trim().min(1).max(256),
+    status: z.enum(["complete", "awaiting_owner"])
+  })
+  .strict();
 const personalAgentAttemptParamsSchema = z
   .object({ jobId: uuid, attemptId: uuid })
   .strict();
@@ -54,6 +75,7 @@ const personalAgentAttributionSchema = z
   .strict();
 const createPersonalAgentAttemptSchema = z
   .object({
+    commandId: uuid.nullable().default(null),
     attemptNumber: z.number().int().safe().positive(),
     attribution: personalAgentAttributionSchema,
     provider: z.string().trim().min(1).max(120).nullable(),
@@ -85,6 +107,7 @@ const recordPersonalAgentOutputSchema = z
 const completePersonalAgentAttemptSchema = z
   .object({
     outcome: z.enum(["succeeded", "failed", "canceled", "interrupted"]),
+    jobState: z.literal("waiting").optional(),
     eventId: z.string().trim().min(1).max(240).optional(),
     observedAt: z.iso.datetime().optional()
   })
@@ -1202,6 +1225,24 @@ export const registerManagedConversationRunnerRoutes = (
           { statusCode: 409 }
         );
       }
+      if (input.commandId) {
+        const command = await repository.getManagedConversationCommand(
+          actor,
+          input.commandId
+        );
+        if (
+          !command ||
+          command.executionId !== execution.id ||
+          command.executionGeneration !== execution.executionGeneration ||
+          command.commandKind !== "prompt" ||
+          command.state !== "dispatching"
+        ) {
+          throw Object.assign(
+            new Error("Personal Agent attempt command is not current"),
+            { statusCode: 409 }
+          );
+        }
+      }
       const attempt = await repository.createPersonalAgentExecutionAttempt(
         actor,
         { jobId, ...input }
@@ -1258,6 +1299,106 @@ export const registerManagedConversationRunnerRoutes = (
         attemptId,
         ...input
       });
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/personal-agent-intent",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = personalAgentIntentBodySchema.parse(request.body);
+      const { command, execution } = await requireCommandForRunner(
+        context,
+        auth,
+        commandId
+      );
+      if (
+        command.commandKind !== "prompt" ||
+        command.state !== "dispatching" ||
+        command.executionId !== input.executionId ||
+        command.executionGeneration !== input.executionGeneration ||
+        command.leaseToken === null ||
+        command.leaseToken !== input.leaseToken ||
+        execution.runnerId !== input.runnerId ||
+        execution.state !== "running" ||
+        execution.executionGeneration !== input.executionGeneration
+      ) {
+        throw Object.assign(
+          new Error(
+            "Personal Agent intent is not bound to the current command"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      const assignment = await context
+        .requireRepository()
+        .recordPersonalAgentIntentForManagedCommand(
+          { userId: auth.userId },
+          {
+            commandId,
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            leaseToken: input.leaseToken,
+            runnerId: input.runnerId,
+            deviceId: auth.deviceId,
+            deploymentId: auth.deploymentId,
+            providerTurnId: input.providerTurnId,
+            intent: input.intent
+          }
+        );
+      return { assignment };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/personal-agent-turn-status",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = personalAgentTurnStatusBodySchema.parse(request.body);
+      const { command, execution } = await requireCommandForRunner(
+        context,
+        auth,
+        commandId
+      );
+      if (
+        command.commandKind !== "prompt" ||
+        command.state !== "dispatching" ||
+        command.executionId !== input.executionId ||
+        command.executionGeneration !== input.executionGeneration ||
+        command.leaseToken === null ||
+        command.leaseToken !== input.leaseToken ||
+        execution.runnerId !== input.runnerId ||
+        execution.state !== "running" ||
+        execution.executionGeneration !== input.executionGeneration
+      ) {
+        throw Object.assign(
+          new Error(
+            "Personal Agent turn status is not bound to the current command"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      await context
+        .requireRepository()
+        .recordPersonalAgentTurnStatusForManagedCommand(
+          { userId: auth.userId },
+          {
+            commandId,
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            leaseToken: input.leaseToken,
+            runnerId: input.runnerId,
+            deviceId: auth.deviceId,
+            deploymentId: auth.deploymentId,
+            providerTurnId: input.providerTurnId,
+            status: input.status
+          }
+        );
+      return { status: input.status };
     }
   );
 

@@ -56,6 +56,17 @@ export function HostedStudio({ view }: HostedStudioProps) {
   const initialAgentId = initialNewConversation
     ? (searchParams.get("agent") ?? undefined)
     : undefined;
+  const initialRequestDraft = initialNewConversation
+    ? (searchParams.get("draft") ?? undefined)
+    : undefined;
+  const teamRequestId = searchParams.get("teamRequest") ?? undefined;
+  const teamRequestTeamId = searchParams.get("teamRequestTeam") ?? undefined;
+  const teamRequestExpectedRequestVersion = readVersionParam(
+    searchParams.get("teamRequestVersion")
+  );
+  const teamRequestExpectedReviewVersion = readVersionParam(
+    searchParams.get("teamReviewVersion")
+  );
   const initialExecutionId =
     view === "home" ? (searchParams.get("execution") ?? undefined) : undefined;
 
@@ -265,6 +276,15 @@ export function HostedStudio({ view }: HostedStudioProps) {
                 initialNewConversation={initialNewConversation}
                 initialAgentId={initialAgentId}
                 initialExecutionId={initialExecutionId}
+                initialDraft={initialRequestDraft}
+                teamRequestId={teamRequestId}
+                teamRequestTeamId={teamRequestTeamId}
+                teamRequestExpectedRequestVersion={
+                  teamRequestExpectedRequestVersion
+                }
+                teamRequestExpectedReviewVersion={
+                  teamRequestExpectedReviewVersion
+                }
               />
               <HostedOverview teams={session.teams} />
             </>
@@ -289,6 +309,12 @@ export function HostedStudio({ view }: HostedStudioProps) {
       </main>
     </div>
   );
+}
+
+function readVersionParam(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function TeamMark({ index }: { index: number }) {

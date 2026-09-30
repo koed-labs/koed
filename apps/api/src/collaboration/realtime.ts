@@ -193,6 +193,19 @@ export interface CollaborationRealtimeServiceOptions {
           | "getManagedConversationRuntimeItem"
         >)
     | null;
+  teamAgentRequestInvalidationRepository?: {
+    materializeRealtimeInvalidation(
+      actor: ActorContext,
+      input: { teamId: string; resourceType: string; resourceId: string }
+    ): Promise<{
+      type: "team_agent_request_invalidated";
+      teamId: string;
+      requestId: string | null;
+      channelId: string | null;
+      ownerId: string | null;
+      kind: "request" | "offers";
+    } | null>;
+  } | null;
   sharedMemoryRepository: Pick<
     SharedMemoryRepository,
     "getOwnerShare" | "listWorkspaceGrants"
@@ -249,6 +262,7 @@ const requiredOperationFamiliesForEvent = (
     case "message_created":
     case "receipt_state_updated":
     case "public_square_changed":
+    case "team_agent_request_changed":
       return ["team_chat_read"];
     case "share_grant_lifecycle":
       return ["share_grant_management"];
@@ -1066,14 +1080,56 @@ const materializeEvent = async (
         materializationRepository
       );
     case "public_square_changed":
-      if (event.scope !== "team" || !event.teamId || !event.resourceType.startsWith("public_square_")) return { action: "requires_snapshot" };
+      if (
+        event.scope !== "team" ||
+        !event.teamId ||
+        !event.resourceType.startsWith("public_square_")
+      )
+        return { action: "requires_snapshot" };
       update = {
         type: "public_square_invalidated",
         teamId: event.teamId,
-        projectId: event.resourceType === "public_square_project" ? event.resourceId : null,
-        publicationId: event.resourceType === "public_square_publication" ? event.resourceId : null
+        projectId:
+          event.resourceType === "public_square_project"
+            ? event.resourceId
+            : null,
+        publicationId:
+          event.resourceType === "public_square_publication"
+            ? event.resourceId
+            : null
       };
       break;
+    case "team_agent_request_changed": {
+      if (
+        event.scope !== "team" ||
+        !event.teamId ||
+        !options.teamAgentRequestInvalidationRepository ||
+        !["team_agent_request", "team_agent_offer"].includes(event.resourceType)
+      ) {
+        return { action: "requires_snapshot" };
+      }
+      const materialized =
+        await options.teamAgentRequestInvalidationRepository.materializeRealtimeInvalidation(
+          client.actor,
+          {
+            teamId: event.teamId,
+            resourceType: event.resourceType,
+            resourceId: event.resourceId
+          }
+        );
+      if (!materialized) return { action: "skip" };
+      if (
+        materialized.teamId !== event.teamId ||
+        (materialized.kind === "request" &&
+          (materialized.requestId !== event.resourceId ||
+            materialized.channelId !== event.threadId)) ||
+        (materialized.kind === "offers" && event.threadId !== null)
+      ) {
+        return { action: "requires_snapshot" };
+      }
+      update = materialized;
+      break;
+    }
     case "pending_share_lifecycle":
       return materializePendingShareLifecycleEvent(
         client.actor,

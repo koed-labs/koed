@@ -28,6 +28,7 @@ import {
   hostedRecoveryDisposition,
   hostedRecoveryGuardForSelection,
   hostedRecoverySelectionIsCurrent,
+  hostedNewStartPromptForVerifiedScope,
   hostedMessagesForSelection,
   hostedMessagesWithTransientOutput,
   hostedLaunchInstancesForDevice,
@@ -54,6 +55,14 @@ import {
 } from "@/lib/device-managed-chat-recovery";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
+import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
+import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
+import {
+  managedAgentJobMarkers,
+  type ManagedAgentJobMarker
+} from "@/lib/managed-agent-job-markers";
+import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
+import { HostedTeamCollaborationClient } from "@/lib/hosted-team-collaboration";
 import {
   personalAgentsHttpAdapter,
   type PersonalAgent
@@ -70,6 +79,24 @@ const moveNoticeIntentKey = (executionId: string, moveId: string) =>
   `koed.studio.project-move-dismiss-intent:${executionId}:${moveId}`;
 const isRegisteredProjectId = (value: string) =>
   /^lp_[0-9a-f]{32}$/iu.test(value);
+const retainTeamRequestContext = (
+  executionId: string,
+  requestId?: string,
+  teamId?: string,
+  requestVersion?: number,
+  reviewVersion?: number
+) => {
+  const params = new URLSearchParams({ chat: "1", execution: executionId });
+  if (requestId && teamId) {
+    params.set("teamRequest", requestId);
+    params.set("teamRequestTeam", teamId);
+  }
+  if (Number.isSafeInteger(requestVersion))
+    params.set("teamRequestVersion", String(requestVersion));
+  if (Number.isSafeInteger(reviewVersion))
+    params.set("teamReviewVersion", String(reviewVersion));
+  return `/?${params.toString()}`;
+};
 
 type PendingMessage = HostedConversationMessage & {
   executionId: string;
@@ -91,24 +118,46 @@ export function HostedManagedChats({
   onAuthorizationLost,
   initialNewConversation = false,
   initialAgentId,
-  initialExecutionId
+  initialExecutionId,
+  initialDraft = "",
+  teamRequestId,
+  teamRequestTeamId,
+  teamRequestExpectedRequestVersion,
+  teamRequestExpectedReviewVersion
 }: {
   onAuthorizationLost: () => void;
   initialNewConversation?: boolean;
   initialAgentId?: string;
   initialExecutionId?: string;
+  initialDraft?: string;
+  teamRequestId?: string;
+  teamRequestTeamId?: string;
+  teamRequestExpectedRequestVersion?: number;
+  teamRequestExpectedReviewVersion?: number;
 }) {
   const router = useRouter();
+  const teamAgentRequestsClient = useMemo(
+    () => new TeamAgentRequestsClient("hosted"),
+    []
+  );
+  const teamCollaborationClient = useMemo(
+    () => new HostedTeamCollaborationClient(),
+    []
+  );
   const [executions, setExecutions] = useState<HostedManagedExecution[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(
     initialExecutionId ?? null
   );
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [messages, setMessages] = useState<HostedConversationMessage[]>([]);
+  const [jobMarkers, setJobMarkers] = useState<ManagedAgentJobMarker[]>([]);
+  const [jobMarkersExecutionId, setJobMarkersExecutionId] = useState<
+    string | null
+  >(null);
   const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(
     null
   );
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft);
   const [recoveryScope, setRecoveryScope] =
     useState<HostedRecoveryScope | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] =
@@ -127,6 +176,24 @@ export function HostedManagedChats({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [teamSummaryState, setTeamSummaryState] = useState<{
+    status: "idle" | "drafting" | "ready" | "error";
+    text: string;
+  }>({ status: "idle", text: "" });
+  const [teamSummaryAttemptRevision, setTeamSummaryAttemptRevision] =
+    useState(0);
+  const [teamQuestionDraft, setTeamQuestionDraft] = useState("");
+  const [teamRequestReviewVersion, setTeamRequestReviewVersion] = useState(
+    teamRequestExpectedReviewVersion
+  );
+  const [teamRequestReviewSaved, setTeamRequestReviewSaved] = useState(
+    !teamRequestId || Boolean(initialExecutionId)
+  );
+  const teamSummaryAttempt = useRef<{
+    executionId: string;
+    commandId: string;
+    userMessageId: string;
+  } | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
@@ -176,6 +243,8 @@ export function HostedManagedChats({
   const projectMoveRequestInFlightRef = useRef(false);
   const launchOptionsLoadInFlightRef = useRef(false);
   const initialNewConversationHandled = useRef(false);
+  const initialPromptWasEdited = useRef(false);
+  const initialPromptSeeded = useRef(false);
 
   const writeRecovery = useCallback(
     (
@@ -260,6 +329,8 @@ export function HostedManagedChats({
         setSelectedId(null);
         setRuntime(null);
         setMessages([]);
+        setJobMarkers([]);
+        setJobMarkersExecutionId(null);
         setPendingMessage(null);
         draftRef.current = "";
         setDraft("");
@@ -881,8 +952,9 @@ export function HostedManagedChats({
   }, [handleError]);
 
   useEffect(() => {
-    if (!recoveryScope || loading) return;
+    if (!recoveryScope || loading || initialPromptSeeded.current) return;
     const controller = new AbortController();
+    const selectedExecutionAtStart = selectedIdRef.current;
     const newConversationStore = createDeviceManagedChatRecoveryStore({
       ...recoveryScope,
       executionId: null
@@ -895,6 +967,7 @@ export function HostedManagedChats({
         newStartOperationRef.current = null;
         queueMicrotask(() => {
           if (controller.signal.aborted) return;
+          initialPromptSeeded.current = true;
           setPendingNewStart(null);
           setInitialPrompt(pendingStart.prompt);
           setNewConversationOpen(true);
@@ -907,6 +980,7 @@ export function HostedManagedChats({
       newStartOperationRef.current = pendingStart;
       queueMicrotask(() => {
         if (controller.signal.aborted) return;
+        initialPromptSeeded.current = true;
         setPendingNewStart(pendingStart);
         void reconcileStartOperation(
           pendingStart,
@@ -918,12 +992,20 @@ export function HostedManagedChats({
       return () => controller.abort();
     }
     newStartOperationRef.current = null;
-    const recoveredPrompt = recovered?.draft ?? "";
     queueMicrotask(() => {
-      if (!controller.signal.aborted) setInitialPrompt(recoveredPrompt);
+      if (controller.signal.aborted || initialPromptSeeded.current) return;
+      initialPromptSeeded.current = true;
+      const prompt = hostedNewStartPromptForVerifiedScope({
+        recoveryRecord: recovered ?? null,
+        handoffDraft: initialDraft,
+        promptWasEdited: initialPromptWasEdited.current,
+        selectedExecutionAtStart,
+        selectedExecutionNow: selectedIdRef.current
+      });
+      if (prompt !== null) setInitialPrompt(prompt);
     });
     return () => controller.abort();
-  }, [recoveryScope, loading, reconcileStartOperation]);
+  }, [recoveryScope, loading, initialDraft, reconcileStartOperation]);
 
   useEffect(() => {
     if (!recoveryScope || !selectedId) return;
@@ -991,6 +1073,21 @@ export function HostedManagedChats({
           return;
         setRuntime(value.runtime);
         setMessages(value.state.messages);
+        setJobMarkers(
+          managedAgentJobMarkers(value.state, {
+            messages: value.state.messages,
+            activeAgentName:
+              value.state.participants?.find(
+                (participant) =>
+                  participant.agentId === value.state.activeAgentId
+              )?.name ?? null,
+            projects: launchOptions?.projects.map((project) => ({
+              id: project.id,
+              name: project.name
+            }))
+          })
+        );
+        setJobMarkersExecutionId(selectedId);
         setError(null);
         setStatus(null);
         setPendingMessage((pending) =>
@@ -1047,7 +1144,8 @@ export function HostedManagedChats({
     refreshProjectMove,
     selectedId,
     reconcileStartOperation,
-    reconcilePromptOperation
+    reconcilePromptOperation,
+    launchOptions
   ]);
 
   const selected = useMemo(
@@ -1055,6 +1153,107 @@ export function HostedManagedChats({
     [executions, selectedId]
   );
   const selectedRuntime = runtime?.execution.id === selectedId ? runtime : null;
+  useEffect(() => {
+    const attempt = teamSummaryAttempt.current;
+    const command = selectedRuntime?.latestCommand;
+    if (
+      !attempt ||
+      attempt.executionId !== selectedId ||
+      command?.id !== attempt.commandId
+    )
+      return;
+    if (command.state === "completed") {
+      const draft = teamSummaryReplyForTurn(messages, attempt.userMessageId);
+      if (draft) {
+        setTeamSummaryState({ status: "ready", text: draft.slice(0, 2_000) });
+        teamSummaryAttempt.current = null;
+      }
+    } else if (command.state === "failed" || command.state === "canceled") {
+      setTeamSummaryState({ status: "error", text: "" });
+      teamSummaryAttempt.current = null;
+    }
+  }, [
+    messages,
+    selectedId,
+    selectedRuntime?.latestCommand,
+    teamSummaryAttemptRevision
+  ]);
+  const draftTeamSummary = async (
+    request: import("@koed/shared/team-agent-requests").TeamAgentRequest
+  ) => {
+    if (
+      !selectedRuntime ||
+      request.status !== "accepted" ||
+      !["succeeded", "failed", "canceled"].includes(request.jobStatus ?? "") ||
+      !request.jobId
+    )
+      return;
+    setTeamSummaryState({ status: "drafting", text: "" });
+    try {
+      const result = await send(
+        false,
+        {
+          purpose: "team_summary_draft",
+          teamSummary: {
+            teamId: teamRequestTeamId ?? request.teamId,
+            requestId: request.id,
+            jobId: request.jobId
+          }
+        },
+        "Draft a summary for my review"
+      );
+      if (!result) throw new Error("The private summary draft was not queued.");
+      teamSummaryAttempt.current = {
+        executionId: selectedRuntime.execution.id,
+        ...result
+      };
+      setTeamSummaryAttemptRevision((revision) => revision + 1);
+    } catch (failure) {
+      setTeamSummaryState({ status: "error", text: "" });
+      handleError(failure);
+    }
+  };
+  const shareTeamQuestion = async (
+    request: import("@koed/shared/team-agent-requests").TeamAgentRequest,
+    text: string,
+    clientMessageId: string
+  ) => {
+    if (request.status !== "accepted" || !request.channelId)
+      throw new Error(
+        "Questions can only be posted for accepted work in its originating channel."
+      );
+    const message = await teamCollaborationClient.sendMessage(
+      request.teamId,
+      request.channelId,
+      text,
+      clientMessageId
+    );
+    if (message.delivery !== "sent")
+      throw new Error(
+        "The question send is still being reconciled. Retry this same reviewed question before editing it."
+      );
+  };
+  const handleTeamReviewSaved = useCallback(
+    (
+      review: import("@koed/shared/team-agent-requests").TeamAgentRequestReview
+    ) => {
+      setTeamRequestReviewVersion(review.version);
+      setTeamRequestReviewSaved(Boolean(review.privateGoal.trim()));
+      if (
+        teamRequestId &&
+        teamRequestTeamId &&
+        typeof window !== "undefined" &&
+        window.location.search.includes("teamReviewVersion=")
+      ) {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("teamReviewVersion") !== String(review.version)) {
+          params.set("teamReviewVersion", String(review.version));
+          router.replace(`${window.location.pathname}?${params.toString()}`);
+        }
+      }
+    },
+    [router, teamRequestId, teamRequestTeamId]
+  );
   const activeMemoryRecall =
     memoryRecallFailure?.kind === "start"
       ? newConversationOpen
@@ -1139,6 +1338,7 @@ export function HostedManagedChats({
   );
   const launchCanStart = Boolean(
     recoveryScope &&
+    (!teamRequestId || Boolean(selectedId) || teamRequestReviewSaved) &&
     launchOptions &&
     launchOptions.runners.some((item) => item.deviceId === launchDeviceId) &&
     (launchProjectId === "" ||
@@ -1183,6 +1383,21 @@ export function HostedManagedChats({
         if (selectedIdRef.current === id) {
           setRuntime(value.runtime);
           setMessages(value.state.messages);
+          setJobMarkers(
+            managedAgentJobMarkers(value.state, {
+              messages: value.state.messages,
+              activeAgentName:
+                value.state.participants?.find(
+                  (participant) =>
+                    participant.agentId === value.state.activeAgentId
+                )?.name ?? null,
+              projects: launchOptions?.projects.map((project) => ({
+                id: project.id,
+                name: project.name
+              }))
+            })
+          );
+          setJobMarkersExecutionId(id);
           await refreshProjectMove(id);
         }
       }
@@ -1298,8 +1513,15 @@ export function HostedManagedChats({
     }
   };
 
-  const send = async (continueWithoutMemory = false) => {
-    const prompt = draft.trim();
+  const send = async (
+    continueWithoutMemory = false,
+    purpose?: {
+      purpose: "team_summary_draft";
+      teamSummary: { teamId: string; requestId: string; jobId: string };
+    },
+    promptOverride?: string
+  ) => {
+    const prompt = (promptOverride ?? draft).trim();
     if (
       !selected ||
       !selectedRuntime ||
@@ -1372,7 +1594,12 @@ export function HostedManagedChats({
         },
         undefined,
         fetch,
-        continueWithoutMemory ? { continueWithoutMemory: true } : {}
+        {
+          ...(continueWithoutMemory
+            ? { continueWithoutMemory: true as const }
+            : {}),
+          ...(purpose ?? {})
+        }
       );
       if (selectedIdRef.current !== selected.id) return;
       const acceptedOperation = {
@@ -1399,6 +1626,7 @@ export function HostedManagedChats({
           : "Message accepted · refreshing Conversation status."
       );
       await reconcilePromptOperation(acceptedOperation, selected.id, store);
+      return { commandId: command.commandId, userMessageId: messageId };
     } catch (cause) {
       if (
         cause instanceof HostedManagedChatError &&
@@ -1802,6 +2030,21 @@ export function HostedManagedChats({
               expectedAgentVersion: launchAgent.currentVersion
             }
           : {}),
+        ...(teamRequestId &&
+        teamRequestTeamId &&
+        typeof teamRequestExpectedRequestVersion === "number" &&
+        Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+        typeof teamRequestReviewVersion === "number" &&
+        Number.isSafeInteger(teamRequestReviewVersion)
+          ? {
+              teamAgentRequest: {
+                teamId: teamRequestTeamId,
+                requestId: teamRequestId,
+                expectedRequestVersion: teamRequestExpectedRequestVersion,
+                expectedReviewVersion: teamRequestReviewVersion
+              }
+            }
+          : {}),
         ...(prompt
           ? {
               initialPrompt: prompt,
@@ -1812,7 +2055,15 @@ export function HostedManagedChats({
           ? { continueWithoutMemory: true as const }
           : {})
       });
-      router.replace("/");
+      router.replace(
+        retainTeamRequestContext(
+          started.execution.id,
+          teamRequestId,
+          teamRequestTeamId,
+          teamRequestExpectedRequestVersion,
+          teamRequestReviewVersion
+        )
+      );
       setNewConversationOpen(false);
       selectedIdRef.current = started.execution.id;
       recoveryOperationRef.current = null;
@@ -1950,955 +2201,1031 @@ export function HostedManagedChats({
   };
 
   return (
-    <section
-      aria-label="Your Koed Conversations"
-      className="mb-6 rounded-xl border border-border bg-surface p-4 md:p-5"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-base font-semibold text-foreground">
-            Your Conversations
-          </h1>
-          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
-            Continue managed Conversations from your Koed devices. Messages and
-            controls use your signed-in Koed session.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => void openNewConversation()}
-            className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90"
-          >
-            New Conversation
-          </button>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
-            />{" "}
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {newConversationOpen && (
-        <form
-          className="mt-4 rounded-lg border border-border bg-background p-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void createConversation();
+    <>
+      {teamRequestId && teamRequestTeamId ? (
+        <TeamAgentRequestReviewPanel
+          teamId={teamRequestTeamId}
+          requestId={teamRequestId}
+          executionId={selectedRuntime?.execution.id ?? null}
+          client={teamAgentRequestsClient}
+          onAuthorizationLost={onAuthorizationLost}
+          onAccepted={() => {
+            void refresh();
           }}
-        >
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs font-semibold text-foreground">
-              Start on a Koed device
+          onReviewSaved={handleTeamReviewSaved}
+          summaryDraftStatus={teamSummaryState.status}
+          summaryDraftText={teamSummaryState.text}
+          onDraftSummary={(request) => void draftTeamSummary(request)}
+          questionDraft={teamQuestionDraft}
+          onQuestionDraftConsumed={() => setTeamQuestionDraft("")}
+          onShareQuestion={shareTeamQuestion}
+        />
+      ) : null}
+      <section
+        aria-label="Your Koed Conversations"
+        className="mb-6 rounded-xl border border-border bg-surface p-4 md:p-5"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-base font-semibold text-foreground">
+              Your Conversations
+            </h1>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
+              Continue managed Conversations from your Koed devices. Messages
+              and controls use your signed-in Koed session.
             </p>
+          </div>
+          <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => {
-                setNewConversationOpen(false);
-                setMemoryRecallFailure(null);
-                setError(null);
-              }}
-              aria-label="Close New Conversation"
-              className="rounded p-1 text-muted hover:bg-surface-hover"
+              onClick={() => void openNewConversation()}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90"
             >
-              <X className="h-3.5 w-3.5" />
+              New Conversation
+            </button>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+              />{" "}
+              Refresh
             </button>
           </div>
-          {initialAgentId && (
-            <div className="mb-3 rounded-md border border-border bg-surface/60 px-3 py-2 text-xs">
-              {launchAgentLoading ? (
-                <p className="text-muted">Loading the selected Agent…</p>
-              ) : launchAgentError ? (
-                <p role="alert" className="text-danger">
-                  {launchAgentError}
-                </p>
-              ) : launchAgent ? (
-                <>
-                  <p className="font-medium text-foreground">
-                    Agent · {launchAgent.name}
-                  </p>
-                  <p className="mt-0.5 text-muted">
-                    Enter a clear Job goal. Follow-ups stay in this
-                    Conversation.
-                  </p>
-                  {!launchAgent.defaultProvider ||
-                  !launchAgent.defaultModel ||
-                  !launchAgentDefaultAvailable ? (
-                    <p className="mt-2 text-warning">
-                      {launchAgent.defaultProvider && launchAgent.defaultModel
-                        ? "This Agent’s default model is unavailable on the selected computer. Choose an available model and reasoning setting for this Job; the profile defaults will stay unchanged."
-                        : "This Agent has no default model. Choose an available model and reasoning setting for this Job; the profile will stay unchanged."}
-                    </p>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          )}
-          {launchLoading ? (
-            <p className="text-xs text-muted">
-              Loading eligible devices, Project choices, and model choices…
-            </p>
-          ) : launchOptions ? (
-            launchOptions.runners.length &&
-            launchOptions.instances.some(
-              (instance) =>
-                instance.models.length > 0 &&
-                instance.permissionModes.length > 0
-            ) ? (
-              <>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  <label className="text-[11px] text-muted">
-                    Project
-                    <select
-                      value={launchProjectId}
-                      onChange={(event) =>
-                        setLaunchProjectId(event.target.value)
-                      }
-                      className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                    >
-                      <option value="">No Project / Standalone</option>
-                      {launchOptions.projects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-[11px] text-muted">
-                    Device
-                    <select
-                      value={launchDeviceId}
-                      onChange={(event) => {
-                        const deviceId = event.target.value;
-                        setLaunchDeviceId(deviceId);
-                        setConfirmedAgentModelFor(null);
-                        const instance = hostedLaunchInstancesForDevice(
-                          launchOptions,
-                          deviceId
-                        )[0];
-                        const model = instance?.models[0];
-                        setLaunchInstanceId(instance?.instanceId ?? "");
-                        setLaunchModelId(model?.id ?? "");
-                        setLaunchEffort(
-                          model?.supportedReasoningEfforts[0] ?? ""
-                        );
-                        setLaunchPermission(instance?.permissionModes[0] ?? "");
-                      }}
-                      className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                    >
-                      {launchOptions.runners.map((runner) => (
-                        <option key={runner.deviceId} value={runner.deviceId}>
-                          {runner.displayName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-[11px] text-muted">
-                    Model
-                    <select
-                      value={`${launchInstanceId}::${launchModelId}`}
-                      onChange={(event) => {
-                        const [instanceId, modelId] =
-                          event.target.value.split("::");
-                        const instance = launchDeviceInstances.find(
-                          (item) => item.instanceId === instanceId
-                        );
-                        const model = instance?.models.find(
-                          (item) => item.id === modelId
-                        );
-                        setLaunchInstanceId(instanceId ?? "");
-                        setLaunchModelId(modelId ?? "");
-                        setConfirmedAgentModelFor(launchAgent?.id ?? null);
-                        setLaunchEffort(
-                          model?.supportedReasoningEfforts[0] ?? ""
-                        );
-                        setLaunchPermission(instance?.permissionModes[0] ?? "");
-                      }}
-                      className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                    >
-                      {launchDeviceInstances.flatMap((instance) =>
-                        instance.models.map((model) => (
-                          <option
-                            key={`${instance.instanceId}:${model.id}`}
-                            value={`${instance.instanceId}::${model.id}`}
-                          >
-                            {model.displayName} · {instance.driverId}{" "}
-                            {instance.ready ? "" : "(last known choice)"}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                  {launchModel &&
-                    launchModel.supportedReasoningEfforts.length > 0 && (
-                      <label className="text-[11px] text-muted">
-                        Reasoning
-                        <select
-                          value={launchEffort}
-                          onChange={(event) =>
-                            setLaunchEffort(event.target.value)
-                          }
-                          className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                        >
-                          {launchModel.supportedReasoningEfforts.map(
-                            (effort) => (
-                              <option key={effort} value={effort}>
-                                {effort}
-                              </option>
-                            )
-                          )}
-                        </select>
-                      </label>
-                    )}
-                  <label className="text-[11px] text-muted">
-                    Permission
-                    <select
-                      value={launchPermission}
-                      onChange={(event) =>
-                        setLaunchPermission(event.target.value)
-                      }
-                      className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                    >
-                      {launchInstance?.permissionModes.map((permission) => (
-                        <option key={permission} value={permission}>
-                          {permission.replaceAll("_", " ")}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <label className="mt-3 block text-[11px] text-muted">
-                  {initialAgentId ? "Job goal" : "First message (optional)"}
-                  <textarea
-                    value={initialPrompt}
-                    required={Boolean(initialAgentId)}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setInitialPrompt(value);
-                      const store =
-                        newStartStoreRef.current ??
-                        (recoveryScope
-                          ? createDeviceManagedChatRecoveryStore({
-                              ...recoveryScope,
-                              executionId: null
-                            })
-                          : null);
-                      newStartStoreRef.current = store;
-                      writeRecovery(store, value, newStartOperationRef.current);
-                    }}
-                    rows={2}
-                    className="mt-1 block w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                  />
-                </label>
-                <p className="mt-2 text-[10px] leading-4 text-muted">
-                  Device eligibility does not show whether it is online. Model
-                  choices are last known and are checked by the device when it
-                  reconnects; the Conversation may remain Pending.
-                </p>
-                <button
-                  type="submit"
-                  disabled={
-                    !launchCanStart ||
-                    sending ||
-                    newStartRecoveryChecking ||
-                    pendingNewStart !== null
-                  }
-                  className="mt-3 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:opacity-50"
-                >
-                  {sending
-                    ? "Starting…"
-                    : initialAgentId
-                      ? "Start Agent Job"
-                      : "Start Conversation"}
-                </button>
-                {activeMemoryRecall?.kind === "start" ? (
-                  <div
-                    className="mt-2 flex flex-wrap gap-2"
-                    role="group"
-                    aria-label="Memory recall actions"
-                  >
-                    <button
-                      type="button"
-                      disabled={sending}
-                      onClick={() => void createConversation()}
-                      className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
-                    >
-                      Retry
-                    </button>
-                    {activeMemoryRecall.agentId ? (
-                      <button
-                        type="button"
-                        disabled={sending}
-                        onClick={() => void createConversation(true)}
-                        className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
-                      >
-                        Continue without Memory
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <p className="text-xs text-muted">
-                An eligible device, model, and supported permission are
-                required. Check your Koed account and try again.
+        </div>
+
+        {newConversationOpen && (
+          <form
+            className="mt-4 rounded-lg border border-border bg-background p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createConversation();
+            }}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs font-semibold text-foreground">
+                Start on a Koed device
               </p>
-            )
-          ) : (
-            <p className="text-xs text-muted">
-              Launch options are unavailable.
-            </p>
-          )}
-        </form>
-      )}
-
-      {error && (
-        <p
-          role="alert"
-          className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
-        >
-          {error}
-        </p>
-      )}
-      {runtimeRequestNotice?.executionId === selectedId && (
-        <div
-          role="alert"
-          className="mt-3 flex items-start justify-between gap-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-foreground"
-        >
-          <p>
-            This request changed before Studio could apply your response. Your
-            response was not applied; the latest request state is shown below.
-          </p>
-          <button
-            type="button"
-            className="shrink-0 text-muted underline underline-offset-2"
-            onClick={() => setRuntimeRequestNotice(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-      {(status || pendingNewStart || pendingRecoveryForSelection) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-          <p role="status">
-            {status ??
-              (pendingNewStart
-                ? "A previous Conversation start is saved. Check its status before starting another."
-                : "A previous continuation is saved. Check its status before sending again.")}
-          </p>
-          {(pendingNewStart || pendingRecoveryForSelection) && (
-            <button
-              className="rounded border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-              disabled={currentRecoveryChecking}
-              onClick={checkRecoveryStatus}
-              type="button"
-            >
-              {currentRecoveryChecking
-                ? "Checking…"
-                : pendingNewStart
-                  ? "Check start status"
-                  : "Check send status"}
-            </button>
-          )}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="mt-5 flex items-center gap-2 text-xs text-muted">
-          <LoaderCircle className="h-4 w-4 animate-spin" /> Loading
-          Conversations…
-        </div>
-      ) : executions.length === 0 ? (
-        <p className="mt-5 rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted">
-          No managed Conversations are available for this account.
-        </p>
-      ) : (
-        <div className="mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-          <nav
-            aria-label="Managed Conversations"
-            className="max-h-56 space-y-1 overflow-y-auto lg:max-h-[520px]"
-          >
-            {executions.map((execution) => (
               <button
-                key={execution.id}
                 type="button"
                 onClick={() => {
+                  setNewConversationOpen(false);
                   setMemoryRecallFailure(null);
                   setError(null);
-                  selectedIdRef.current = execution.id;
-                  recoveryOperationRef.current = null;
-                  setScopedPendingRecoveryOperation(null, execution.id);
-                  setSelectedId(execution.id);
-                  setRuntime(null);
-                  setMessages([]);
-                  setPendingMessage(null);
-                  setStatus(null);
-                  setLatestProjectMove(null);
-                  setProjectMoveLoaded(false);
-                  setProjectMoveDialogOpen(false);
-                  setProjectMovePickerOpen(false);
                 }}
-                aria-current={execution.id === selectedId ? "true" : undefined}
-                className={`w-full rounded-md px-3 py-2 text-left ${execution.id === selectedId ? "bg-surface-hover text-foreground" : "text-foreground-secondary hover:bg-surface-hover"}`}
+                aria-label="Close New Conversation"
+                className="rounded p-1 text-muted hover:bg-surface-hover"
               >
-                <span className="block truncate text-xs font-medium">
-                  {execution.model} · {execution.provider}
-                </span>
-                <span className="mt-1 block text-[11px] text-muted">
-                  {stateLabel(execution)} ·{" "}
-                  {new Date(execution.updatedAt).toLocaleString()}
-                </span>
+                <X className="h-3.5 w-3.5" />
               </button>
-            ))}
-          </nav>
-
-          <div className="flex min-h-[340px] min-w-0 flex-col rounded-lg border border-border bg-background">
-            <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium text-foreground">
-                  {selected?.model ?? "Conversation"}
-                </p>
-                <p className="mt-0.5 text-[11px] text-muted">
-                  {selectedRuntime
-                    ? stateLabel({
-                        ...selected!,
-                        state: selectedRuntime.execution.state
-                      })
-                    : "Connecting"}
-                </p>
-                {(pendingStart || pendingPrompt) && (
-                  <p className="mt-0.5 text-[10px] text-muted">
-                    Pending · accepted by Koed; device availability is not known
-                    from this state.
-                  </p>
-                )}
-                {pendingControl && (
-                  <p className="mt-0.5 text-[10px] text-muted">
-                    {latestCommand?.commandKind === "stop"
-                      ? "Stop"
-                      : "Interrupt"}{" "}
-                    accepted · waiting for the assigned device to apply it.
-                  </p>
-                )}
-              </div>
-              <div className="flex gap-1">
-                {canCancelQueuedPrompt && (
-                  <button
-                    type="button"
-                    onClick={() => void cancelPending()}
-                    disabled={controlBusy}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
-                  >
-                    <X className="h-3 w-3" /> Cancel Pending
-                  </button>
-                )}
-                {canCancelStart && (
-                  <button
-                    type="button"
-                    onClick={() => void cancelStart()}
-                    disabled={controlBusy}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
-                  >
-                    <X className="h-3 w-3" /> Cancel Start
-                  </button>
-                )}
-                {canStop && (
-                  <div className="relative">
-                    <button
-                      type="button"
-                      aria-label="Conversation menu"
-                      aria-expanded={conversationMenuOpen}
-                      onClick={() => setConversationMenuOpen((open) => !open)}
-                      className="rounded-md p-1.5 text-foreground-secondary hover:bg-surface-hover"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </button>
-                    {conversationMenuOpen && (
-                      <div className="absolute right-0 z-10 mt-1 min-w-36 rounded-md border border-border bg-background p-1 shadow-lg">
-                        <button
-                          type="button"
-                          onClick={endConversation}
-                          disabled={controlBusy || pendingControl}
-                          className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-                        >
-                          End session…
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
-            {selectedRuntime && (
-              <div className="border-b border-border px-3 py-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="mr-auto text-[11px] text-muted">
-                    Current Project:{" "}
-                    {selectedProjectId
-                      ? (selectedProjectName ?? "Project")
-                      : "Standalone"}
+            {initialAgentId && (
+              <div className="mb-3 rounded-md border border-border bg-surface/60 px-3 py-2 text-xs">
+                {launchAgentLoading ? (
+                  <p className="text-muted">Loading the selected Agent…</p>
+                ) : launchAgentError ? (
+                  <p role="alert" className="text-danger">
+                    {launchAgentError}
                   </p>
-                  {latestProjectMove?.executionId === selectedId && (
-                    <span role="status" className="text-[11px] text-muted">
-                      Project Move{" "}
-                      {latestProjectMove.state === "pending"
-                        ? "Pending on assigned device"
-                        : latestProjectMove.state === "claimed"
-                          ? "claimed by assigned device"
-                          : latestProjectMove.state === "completed"
-                            ? "completed"
-                            : latestProjectMove.state}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void openProjectMove()}
-                    disabled={
-                      !PROJECT_MOVE_UI_ENABLED ||
-                      selectedRuntime.execution.provider !== "codex" ||
-                      !projectMoveLoaded ||
-                      projectMoveBusy ||
-                      projectMoveInFlight ||
-                      sending ||
-                      controlBusy ||
-                      activePrompt ||
-                      pendingControl
-                    }
-                    title={moveUnavailableReason ?? undefined}
-                    className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Move to Project
-                  </button>
-                  {latestProjectMove?.executionId === selectedId &&
-                    latestProjectMove.state === "pending" && (
-                      <button
-                        type="button"
-                        onClick={() => void cancelProjectMove()}
-                        disabled={projectMoveBusy}
-                        className="rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover disabled:opacity-50"
-                      >
-                        Cancel Pending Move
-                      </button>
-                    )}
-                </div>
-                {moveUnavailableReason ? (
-                  <p
-                    role="note"
-                    className="mt-1 text-[10px] leading-4 text-muted"
-                  >
-                    {moveUnavailableReason} If Move succeeds, source edits stay
-                    at the source Project; if they cannot be safely retained,
-                    the Move fails and the original context remains unchanged.
-                  </p>
-                ) : null}
-                {projectMovePickerOpen && launchOptions ? (
-                  <div className="mt-2 flex flex-wrap items-end gap-2">
-                    <label className="text-[10px] text-muted">
-                      Destination Project
-                      <select
-                        value={projectMoveDestinationId}
-                        onChange={(event) =>
-                          setProjectMoveDestinationId(event.target.value)
-                        }
-                        className="mt-1 block min-w-44 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-                      >
-                        {launchOptions.projects
-                          .filter(
-                            (project) =>
-                              isRegisteredProjectId(project.id) &&
-                              project.id !== selectedProjectId
-                          )
-                          .map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.name}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setProjectMoveDialogOpen(true)}
-                      disabled={!projectMoveDestination || projectMoveBusy}
-                      className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                    >
-                      Review Move
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProjectMovePickerOpen(false)}
-                      className="rounded-md px-2 py-1.5 text-[11px] text-muted hover:bg-surface-hover"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                ) : launchAgent ? (
+                  <>
+                    <p className="font-medium text-foreground">
+                      Agent · {launchAgent.name}
+                    </p>
+                    <p className="mt-0.5 text-muted">
+                      Start a private Agent conversation. Discuss the work
+                      before it becomes an assigned Job.
+                    </p>
+                    {!launchAgent.defaultProvider ||
+                    !launchAgent.defaultModel ||
+                    !launchAgentDefaultAvailable ? (
+                      <p className="mt-2 text-warning">
+                        {launchAgent.defaultProvider && launchAgent.defaultModel
+                          ? "This Agent’s default model is unavailable on the selected computer. Choose an available model and reasoning setting for this conversation; the profile defaults will stay unchanged."
+                          : "This Agent has no default model. Choose an available model and reasoning setting for this conversation; the profile will stay unchanged."}
+                      </p>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             )}
-            <div
-              aria-live="polite"
-              className="flex-1 space-y-3 overflow-y-auto p-3"
-            >
-              {!selectedRuntime && (
-                <p className="text-xs text-muted">Loading live Conversation…</p>
-              )}
-              {displayMessages.map((message) => (
-                <article
-                  key={message.id}
-                  className={`max-w-[92%] rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "ml-auto bg-accent/10 text-foreground" : "bg-surface text-foreground-secondary"}`}
-                  aria-live={
-                    message.id.startsWith("transient:") ? "polite" : undefined
-                  }
-                >
-                  <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted">
-                    {message.role === "user"
-                      ? "You"
-                      : (message.author?.name ?? selected?.model ?? "Agent")}
+            {launchLoading ? (
+              <p className="text-xs text-muted">
+                Loading eligible devices, Project choices, and model choices…
+              </p>
+            ) : launchOptions ? (
+              launchOptions.runners.length &&
+              launchOptions.instances.some(
+                (instance) =>
+                  instance.models.length > 0 &&
+                  instance.permissionModes.length > 0
+              ) ? (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="text-[11px] text-muted">
+                      Project
+                      <select
+                        value={launchProjectId}
+                        onChange={(event) =>
+                          setLaunchProjectId(event.target.value)
+                        }
+                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                      >
+                        <option value="">No Project / Standalone</option>
+                        {launchOptions.projects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-[11px] text-muted">
+                      Device
+                      <select
+                        value={launchDeviceId}
+                        onChange={(event) => {
+                          const deviceId = event.target.value;
+                          setLaunchDeviceId(deviceId);
+                          setConfirmedAgentModelFor(null);
+                          const instance = hostedLaunchInstancesForDevice(
+                            launchOptions,
+                            deviceId
+                          )[0];
+                          const model = instance?.models[0];
+                          setLaunchInstanceId(instance?.instanceId ?? "");
+                          setLaunchModelId(model?.id ?? "");
+                          setLaunchEffort(
+                            model?.supportedReasoningEfforts[0] ?? ""
+                          );
+                          setLaunchPermission(
+                            instance?.permissionModes[0] ?? ""
+                          );
+                        }}
+                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                      >
+                        {launchOptions.runners.map((runner) => (
+                          <option key={runner.deviceId} value={runner.deviceId}>
+                            {runner.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-[11px] text-muted">
+                      Model
+                      <select
+                        value={`${launchInstanceId}::${launchModelId}`}
+                        onChange={(event) => {
+                          const [instanceId, modelId] =
+                            event.target.value.split("::");
+                          const instance = launchDeviceInstances.find(
+                            (item) => item.instanceId === instanceId
+                          );
+                          const model = instance?.models.find(
+                            (item) => item.id === modelId
+                          );
+                          setLaunchInstanceId(instanceId ?? "");
+                          setLaunchModelId(modelId ?? "");
+                          setConfirmedAgentModelFor(launchAgent?.id ?? null);
+                          setLaunchEffort(
+                            model?.supportedReasoningEfforts[0] ?? ""
+                          );
+                          setLaunchPermission(
+                            instance?.permissionModes[0] ?? ""
+                          );
+                        }}
+                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                      >
+                        {launchDeviceInstances.flatMap((instance) =>
+                          instance.models.map((model) => (
+                            <option
+                              key={`${instance.instanceId}:${model.id}`}
+                              value={`${instance.instanceId}::${model.id}`}
+                            >
+                              {model.displayName} · {instance.driverId}{" "}
+                              {instance.ready ? "" : "(last known choice)"}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </label>
+                    {launchModel &&
+                      launchModel.supportedReasoningEfforts.length > 0 && (
+                        <label className="text-[11px] text-muted">
+                          Reasoning
+                          <select
+                            value={launchEffort}
+                            onChange={(event) =>
+                              setLaunchEffort(event.target.value)
+                            }
+                            className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                          >
+                            {launchModel.supportedReasoningEfforts.map(
+                              (effort) => (
+                                <option key={effort} value={effort}>
+                                  {effort}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </label>
+                      )}
+                    <label className="text-[11px] text-muted">
+                      Permission
+                      <select
+                        value={launchPermission}
+                        onChange={(event) =>
+                          setLaunchPermission(event.target.value)
+                        }
+                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                      >
+                        {launchInstance?.permissionModes.map((permission) => (
+                          <option key={permission} value={permission}>
+                            {permission.replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="mt-3 block text-[11px] text-muted">
+                    {initialAgentId
+                      ? "Private conversation prompt"
+                      : "First message (optional)"}
+                    <textarea
+                      value={initialPrompt}
+                      required={Boolean(initialAgentId)}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        initialPromptWasEdited.current = true;
+                        setInitialPrompt(value);
+                        const store =
+                          newStartStoreRef.current ??
+                          (recoveryScope
+                            ? createDeviceManagedChatRecoveryStore({
+                                ...recoveryScope,
+                                executionId: null
+                              })
+                            : null);
+                        newStartStoreRef.current = store;
+                        writeRecovery(
+                          store,
+                          value,
+                          newStartOperationRef.current
+                        );
+                      }}
+                      rows={2}
+                      className="mt-1 block w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
+                    />
+                  </label>
+                  <p className="mt-2 text-[10px] leading-4 text-muted">
+                    Device eligibility does not show whether it is online. Model
+                    choices are last known and are checked by the device when it
+                    reconnects; the Conversation may remain Pending.
                   </p>
-                  <p className="whitespace-pre-wrap break-words text-xs leading-5">
-                    {message.content}
-                  </p>
-                  {message.role === "assistant" && message.memory ? (
-                    <MemoryAttributionNote memory={message.memory} />
+                  <button
+                    type="submit"
+                    disabled={
+                      !launchCanStart ||
+                      sending ||
+                      newStartRecoveryChecking ||
+                      pendingNewStart !== null
+                    }
+                    className="mt-3 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {sending
+                      ? "Starting…"
+                      : initialAgentId
+                        ? "Start private conversation"
+                        : "Start Conversation"}
+                  </button>
+                  {activeMemoryRecall?.kind === "start" ? (
+                    <div
+                      className="mt-2 flex flex-wrap gap-2"
+                      role="group"
+                      aria-label="Memory recall actions"
+                    >
+                      <button
+                        type="button"
+                        disabled={sending}
+                        onClick={() => void createConversation()}
+                        className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
+                      >
+                        Retry
+                      </button>
+                      {activeMemoryRecall.agentId ? (
+                        <button
+                          type="button"
+                          disabled={sending}
+                          onClick={() => void createConversation(true)}
+                          className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
+                        >
+                          Continue without Memory
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
-                  {message.id.startsWith("transient:") && (
-                    <p className="mt-1 text-[10px] text-muted">
-                      {hostedPromptOutcomeIsUncertain(selectedRuntime)
-                        ? "Partial response · outcome uncertain"
-                        : "Streaming response"}
-                    </p>
-                  )}
-                  {message.id === pendingMessage?.id && (
-                    <p className="mt-1 text-[10px] text-muted">
-                      {pendingMessage?.commandState === "dispatching"
-                        ? "Working · claimed by the assigned computer"
-                        : ["queued", "blocked"].includes(
-                              pendingMessage?.commandState ?? ""
-                            )
-                          ? "Pending · accepted by Koed"
-                          : "Outcome uncertain · check send status"}
-                    </p>
-                  )}
-                </article>
+                </>
+              ) : (
+                <p className="text-xs text-muted">
+                  An eligible device, model, and supported permission are
+                  required. Check your Koed account and try again.
+                </p>
+              )
+            ) : (
+              <p className="text-xs text-muted">
+                Launch options are unavailable.
+              </p>
+            )}
+          </form>
+        )}
+
+        {error && (
+          <p
+            role="alert"
+            className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {error}
+          </p>
+        )}
+        {runtimeRequestNotice?.executionId === selectedId && (
+          <div
+            role="alert"
+            className="mt-3 flex items-start justify-between gap-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-foreground"
+          >
+            <p>
+              This request changed before Studio could apply your response. Your
+              response was not applied; the latest request state is shown below.
+            </p>
+            <button
+              type="button"
+              className="shrink-0 text-muted underline underline-offset-2"
+              onClick={() => setRuntimeRequestNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        {(status || pendingNewStart || pendingRecoveryForSelection) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+            <p role="status">
+              {status ??
+                (pendingNewStart
+                  ? "A previous Conversation start is saved. Check its status before starting another."
+                  : "A previous continuation is saved. Check its status before sending again.")}
+            </p>
+            {(pendingNewStart || pendingRecoveryForSelection) && (
+              <button
+                className="rounded border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+                disabled={currentRecoveryChecking}
+                onClick={checkRecoveryStatus}
+                type="button"
+              >
+                {currentRecoveryChecking
+                  ? "Checking…"
+                  : pendingNewStart
+                    ? "Check start status"
+                    : "Check send status"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="mt-5 flex items-center gap-2 text-xs text-muted">
+            <LoaderCircle className="h-4 w-4 animate-spin" /> Loading
+            Conversations…
+          </div>
+        ) : executions.length === 0 ? (
+          <p className="mt-5 rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted">
+            No managed Conversations are available for this account.
+          </p>
+        ) : (
+          <div className="mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+            <nav
+              aria-label="Managed Conversations"
+              className="max-h-56 space-y-1 overflow-y-auto lg:max-h-[520px]"
+            >
+              {executions.map((execution) => (
+                <button
+                  key={execution.id}
+                  type="button"
+                  onClick={() => {
+                    setMemoryRecallFailure(null);
+                    setError(null);
+                    selectedIdRef.current = execution.id;
+                    recoveryOperationRef.current = null;
+                    setScopedPendingRecoveryOperation(null, execution.id);
+                    setSelectedId(execution.id);
+                    setRuntime(null);
+                    setMessages([]);
+                    setPendingMessage(null);
+                    setStatus(null);
+                    setLatestProjectMove(null);
+                    setProjectMoveLoaded(false);
+                    setProjectMoveDialogOpen(false);
+                    setProjectMovePickerOpen(false);
+                  }}
+                  aria-current={
+                    execution.id === selectedId ? "true" : undefined
+                  }
+                  className={`w-full rounded-md px-3 py-2 text-left ${execution.id === selectedId ? "bg-surface-hover text-foreground" : "text-foreground-secondary hover:bg-surface-hover"}`}
+                >
+                  <span className="block truncate text-xs font-medium">
+                    {execution.model} · {execution.provider}
+                  </span>
+                  <span className="mt-1 block text-[11px] text-muted">
+                    {stateLabel(execution)} ·{" "}
+                    {new Date(execution.updatedAt).toLocaleString()}
+                  </span>
+                </button>
               ))}
-              {runtimeRequests.map((request) => {
-                const item = selectedRuntime?.items.find(
-                  (candidate) => candidate.id === request.id
-                );
-                if (!item) return null;
-                const sessionApproval =
-                  item.payload.supportsSessionApproval === true;
-                const approvalCanBeReviewed =
-                  hasMeaningfulHostedApprovalDetails(request);
-                const visibleDetails = request.details.filter(
-                  (detail) =>
-                    detail.label !== "Working directory" &&
-                    detail.label !== "Grant root"
-                );
-                return (
+            </nav>
+
+            <div className="flex min-h-[340px] min-w-0 flex-col rounded-lg border border-border bg-background">
+              <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {selected?.model ?? "Conversation"}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    {selectedRuntime
+                      ? stateLabel({
+                          ...selected!,
+                          state: selectedRuntime.execution.state
+                        })
+                      : "Connecting"}
+                  </p>
+                  {(pendingStart || pendingPrompt) && (
+                    <p className="mt-0.5 text-[10px] text-muted">
+                      Pending · accepted by Koed; device availability is not
+                      known from this state.
+                    </p>
+                  )}
+                  {pendingControl && (
+                    <p className="mt-0.5 text-[10px] text-muted">
+                      {latestCommand?.commandKind === "stop"
+                        ? "Stop"
+                        : "Interrupt"}{" "}
+                      accepted · waiting for the assigned device to apply it.
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  {canCancelQueuedPrompt && (
+                    <button
+                      type="button"
+                      onClick={() => void cancelPending()}
+                      disabled={controlBusy}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+                    >
+                      <X className="h-3 w-3" /> Cancel Pending
+                    </button>
+                  )}
+                  {canCancelStart && (
+                    <button
+                      type="button"
+                      onClick={() => void cancelStart()}
+                      disabled={controlBusy}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+                    >
+                      <X className="h-3 w-3" /> Cancel Start
+                    </button>
+                  )}
+                  {canStop && (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        aria-label="Conversation menu"
+                        aria-expanded={conversationMenuOpen}
+                        onClick={() => setConversationMenuOpen((open) => !open)}
+                        className="rounded-md p-1.5 text-foreground-secondary hover:bg-surface-hover"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                      {conversationMenuOpen && (
+                        <div className="absolute right-0 z-10 mt-1 min-w-36 rounded-md border border-border bg-background p-1 shadow-lg">
+                          <button
+                            type="button"
+                            onClick={endConversation}
+                            disabled={controlBusy || pendingControl}
+                            className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+                          >
+                            End session…
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {selectedRuntime && (
+                <div className="border-b border-border px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="mr-auto text-[11px] text-muted">
+                      Current Project:{" "}
+                      {selectedProjectId
+                        ? (selectedProjectName ?? "Project")
+                        : "Standalone"}
+                    </p>
+                    {latestProjectMove?.executionId === selectedId && (
+                      <span role="status" className="text-[11px] text-muted">
+                        Project Move{" "}
+                        {latestProjectMove.state === "pending"
+                          ? "Pending on assigned device"
+                          : latestProjectMove.state === "claimed"
+                            ? "claimed by assigned device"
+                            : latestProjectMove.state === "completed"
+                              ? "completed"
+                              : latestProjectMove.state}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void openProjectMove()}
+                      disabled={
+                        !PROJECT_MOVE_UI_ENABLED ||
+                        selectedRuntime.execution.provider !== "codex" ||
+                        !projectMoveLoaded ||
+                        projectMoveBusy ||
+                        projectMoveInFlight ||
+                        sending ||
+                        controlBusy ||
+                        activePrompt ||
+                        pendingControl
+                      }
+                      title={moveUnavailableReason ?? undefined}
+                      className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Move to Project
+                    </button>
+                    {latestProjectMove?.executionId === selectedId &&
+                      latestProjectMove.state === "pending" && (
+                        <button
+                          type="button"
+                          onClick={() => void cancelProjectMove()}
+                          disabled={projectMoveBusy}
+                          className="rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-hover disabled:opacity-50"
+                        >
+                          Cancel Pending Move
+                        </button>
+                      )}
+                  </div>
+                  {moveUnavailableReason ? (
+                    <p
+                      role="note"
+                      className="mt-1 text-[10px] leading-4 text-muted"
+                    >
+                      {moveUnavailableReason} If Move succeeds, source edits
+                      stay at the source Project; if they cannot be safely
+                      retained, the Move fails and the original context remains
+                      unchanged.
+                    </p>
+                  ) : null}
+                  {projectMovePickerOpen && launchOptions ? (
+                    <div className="mt-2 flex flex-wrap items-end gap-2">
+                      <label className="text-[10px] text-muted">
+                        Destination Project
+                        <select
+                          value={projectMoveDestinationId}
+                          onChange={(event) =>
+                            setProjectMoveDestinationId(event.target.value)
+                          }
+                          className="mt-1 block min-w-44 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground"
+                        >
+                          {launchOptions.projects
+                            .filter(
+                              (project) =>
+                                isRegisteredProjectId(project.id) &&
+                                project.id !== selectedProjectId
+                            )
+                            .map((project) => (
+                              <option key={project.id} value={project.id}>
+                                {project.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setProjectMoveDialogOpen(true)}
+                        disabled={!projectMoveDestination || projectMoveBusy}
+                        className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                      >
+                        Review Move
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProjectMovePickerOpen(false)}
+                        className="rounded-md px-2 py-1.5 text-[11px] text-muted hover:bg-surface-hover"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              <div
+                aria-live="polite"
+                className="flex-1 space-y-3 overflow-y-auto p-3"
+              >
+                {!selectedRuntime && (
+                  <p className="text-xs text-muted">
+                    Loading live Conversation…
+                  </p>
+                )}
+                {jobMarkersExecutionId === selectedId &&
+                  jobMarkers.map((job) => (
+                    <article
+                      key={`job:${job.id}`}
+                      className="mx-auto w-full max-w-3xl rounded-lg border border-border bg-surface/70 px-3 py-2 text-xs text-foreground-secondary"
+                    >
+                      <p className="font-medium text-foreground">
+                        Job · {job.state.replaceAll("_", " ")}
+                      </p>
+                      <p className="mt-1">
+                        {job.agentName} · {job.projectName}
+                      </p>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-muted">
+                        {job.goal}
+                      </p>
+                    </article>
+                  ))}
+                {displayMessages.map((message) => (
                   <article
-                    key={request.id}
-                    className="rounded-lg border border-border bg-surface p-3"
-                    aria-label={
-                      request.kind === "user_input"
-                        ? "Pending agent question"
-                        : "Pending agent permission"
+                    key={message.id}
+                    className={`max-w-[92%] rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "ml-auto bg-accent/10 text-foreground" : "bg-surface text-foreground-secondary"}`}
+                    aria-live={
+                      message.id.startsWith("transient:") ? "polite" : undefined
                     }
                   >
-                    <p className="text-xs font-semibold text-foreground">
-                      {request.kind === "user_input"
-                        ? "The AI Client needs your input"
-                        : request.kind === "permissions_approval"
-                          ? "Approve permissions?"
-                          : request.kind === "file_approval"
-                            ? "Approve file changes?"
-                            : "Approve command?"}
+                    <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+                      {message.role === "user"
+                        ? "You"
+                        : (message.author?.name ?? selected?.model ?? "Agent")}
                     </p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground-secondary">
-                      {request.description}
+                    <p className="whitespace-pre-wrap break-words text-xs leading-5">
+                      {message.content}
                     </p>
-                    {visibleDetails.map((detail, index) => (
-                      <div className="mt-2" key={`${detail.label}:${index}`}>
-                        <p className="text-[10px] font-medium text-muted">
-                          {detail.label}
-                        </p>
-                        <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px] leading-4 text-foreground-secondary">
-                          {detail.text}
-                        </pre>
-                      </div>
-                    ))}
-                    {request.kind === "user_input" ? (
-                      request.questions?.length ? (
-                        <form
-                          className="mt-3 space-y-2"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            const values = new FormData(event.currentTarget);
-                            const answers = Object.fromEntries(
-                              (request.questions ?? []).map((question) => {
-                                const answer = String(
-                                  values.get(question.id) ?? ""
-                                );
-                                const options =
-                                  question.options?.map(
-                                    (option) => option.label
-                                  ) ?? [];
-                                return [
-                                  question.id,
-                                  [
-                                    question.isOther &&
-                                    answer &&
-                                    !options.includes(answer)
-                                      ? `user_note: ${answer}`
-                                      : answer
-                                  ]
-                                ];
-                              })
-                            );
-                            void respondToRuntimeRequest(request.id, {
-                              answers
-                            });
-                          }}
+                    {teamRequestId &&
+                      message.role === "assistant" &&
+                      message.content.trim() &&
+                      !message.id.startsWith("transient:") && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setTeamQuestionDraft(
+                              message.content.slice(0, 2_000)
+                            )
+                          }
+                          className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
                         >
-                          {(request.questions ?? []).map((question) => (
-                            <label
-                              className="block text-[11px] text-foreground-secondary"
-                              key={question.id}
-                            >
-                              <span>
-                                {question.header || question.question}
-                              </span>
-                              {question.header && question.question ? (
-                                <span className="mt-0.5 block text-muted">
-                                  {question.question}
-                                </span>
-                              ) : null}
-                              {question.options?.length && !question.isOther ? (
-                                <select
-                                  className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                  name={question.id}
-                                  required={question.required !== false}
-                                  defaultValue=""
-                                >
-                                  <option disabled value="">
-                                    Select an answer
-                                  </option>
-                                  {question.options.map((option) => (
-                                    <option
-                                      key={option.label}
-                                      value={option.label}
-                                    >
-                                      {option.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <input
-                                  className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                  name={question.id}
-                                  required={question.required !== false}
-                                  type={question.isSecret ? "password" : "text"}
-                                />
-                              )}
-                            </label>
-                          ))}
-                          <button
-                            className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                            disabled={controlBusy}
-                            type="submit"
+                          Prepare Team question
+                        </button>
+                      )}
+                    {message.role === "assistant" && message.memory ? (
+                      <MemoryAttributionNote memory={message.memory} />
+                    ) : null}
+                    {message.id.startsWith("transient:") && (
+                      <p className="mt-1 text-[10px] text-muted">
+                        {hostedPromptOutcomeIsUncertain(selectedRuntime)
+                          ? "Partial response · outcome uncertain"
+                          : "Streaming response"}
+                      </p>
+                    )}
+                    {message.id === pendingMessage?.id && (
+                      <p className="mt-1 text-[10px] text-muted">
+                        {pendingMessage?.commandState === "dispatching"
+                          ? "Working · claimed by the assigned computer"
+                          : ["queued", "blocked"].includes(
+                                pendingMessage?.commandState ?? ""
+                              )
+                            ? "Pending · accepted by Koed"
+                            : "Outcome uncertain · check send status"}
+                      </p>
+                    )}
+                  </article>
+                ))}
+                {runtimeRequests.map((request) => {
+                  const item = selectedRuntime?.items.find(
+                    (candidate) => candidate.id === request.id
+                  );
+                  if (!item) return null;
+                  const sessionApproval =
+                    item.payload.supportsSessionApproval === true;
+                  const approvalCanBeReviewed =
+                    hasMeaningfulHostedApprovalDetails(request);
+                  const visibleDetails = request.details.filter(
+                    (detail) =>
+                      detail.label !== "Working directory" &&
+                      detail.label !== "Grant root"
+                  );
+                  return (
+                    <article
+                      key={request.id}
+                      className="rounded-lg border border-border bg-surface p-3"
+                      aria-label={
+                        request.kind === "user_input"
+                          ? "Pending agent question"
+                          : "Pending agent permission"
+                      }
+                    >
+                      <p className="text-xs font-semibold text-foreground">
+                        {request.kind === "user_input"
+                          ? "The AI Client needs your input"
+                          : request.kind === "permissions_approval"
+                            ? "Approve permissions?"
+                            : request.kind === "file_approval"
+                              ? "Approve file changes?"
+                              : "Approve command?"}
+                      </p>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground-secondary">
+                        {request.description}
+                      </p>
+                      {visibleDetails.map((detail, index) => (
+                        <div className="mt-2" key={`${detail.label}:${index}`}>
+                          <p className="text-[10px] font-medium text-muted">
+                            {detail.label}
+                          </p>
+                          <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px] leading-4 text-foreground-secondary">
+                            {detail.text}
+                          </pre>
+                        </div>
+                      ))}
+                      {request.kind === "user_input" ? (
+                        request.questions?.length ? (
+                          <form
+                            className="mt-3 space-y-2"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              const values = new FormData(event.currentTarget);
+                              const answers = Object.fromEntries(
+                                (request.questions ?? []).map((question) => {
+                                  const answer = String(
+                                    values.get(question.id) ?? ""
+                                  );
+                                  const options =
+                                    question.options?.map(
+                                      (option) => option.label
+                                    ) ?? [];
+                                  return [
+                                    question.id,
+                                    [
+                                      question.isOther &&
+                                      answer &&
+                                      !options.includes(answer)
+                                        ? `user_note: ${answer}`
+                                        : answer
+                                    ]
+                                  ];
+                                })
+                              );
+                              void respondToRuntimeRequest(request.id, {
+                                answers
+                              });
+                            }}
                           >
-                            <Check className="h-3 w-3" /> Submit answer
-                          </button>
-                        </form>
-                      ) : (
-                        <p
-                          className="mt-3 text-[11px] text-muted"
-                          role="status"
-                        >
-                          The latest question details are unavailable. Refresh
-                          before responding.
-                        </p>
-                      )
-                    ) : approvalCanBeReviewed ? (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
-                          disabled={controlBusy}
-                          onClick={() =>
-                            void respondToRuntimeRequest(request.id, {
-                              decision: "decline"
-                            })
-                          }
-                          type="button"
-                        >
-                          Deny
-                        </button>
-                        <button
-                          className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
-                          disabled={controlBusy}
-                          onClick={() =>
-                            void respondToRuntimeRequest(request.id, {
-                              decision: "cancel"
-                            })
-                          }
-                          type="button"
-                        >
-                          Cancel request
-                        </button>
-                        <button
-                          className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                          disabled={controlBusy}
-                          onClick={() =>
-                            void respondToRuntimeRequest(request.id, {
-                              decision: "accept"
-                            })
-                          }
-                          type="button"
-                        >
-                          Approve
-                        </button>
-                        {sessionApproval ? (
+                            {(request.questions ?? []).map((question) => (
+                              <label
+                                className="block text-[11px] text-foreground-secondary"
+                                key={question.id}
+                              >
+                                <span>
+                                  {question.header || question.question}
+                                </span>
+                                {question.header && question.question ? (
+                                  <span className="mt-0.5 block text-muted">
+                                    {question.question}
+                                  </span>
+                                ) : null}
+                                {question.options?.length &&
+                                !question.isOther ? (
+                                  <select
+                                    className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                    name={question.id}
+                                    required={question.required !== false}
+                                    defaultValue=""
+                                  >
+                                    <option disabled value="">
+                                      Select an answer
+                                    </option>
+                                    {question.options.map((option) => (
+                                      <option
+                                        key={option.label}
+                                        value={option.label}
+                                      >
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                    name={question.id}
+                                    required={question.required !== false}
+                                    type={
+                                      question.isSecret ? "password" : "text"
+                                    }
+                                  />
+                                )}
+                              </label>
+                            ))}
+                            <button
+                              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                              disabled={controlBusy}
+                              type="submit"
+                            >
+                              <Check className="h-3 w-3" /> Submit answer
+                            </button>
+                          </form>
+                        ) : (
+                          <p
+                            className="mt-3 text-[11px] text-muted"
+                            role="status"
+                          >
+                            The latest question details are unavailable. Refresh
+                            before responding.
+                          </p>
+                        )
+                      ) : approvalCanBeReviewed ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
                           <button
                             className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
                             disabled={controlBusy}
                             onClick={() =>
                               void respondToRuntimeRequest(request.id, {
-                                decision: "acceptForSession"
+                                decision: "decline"
                               })
                             }
                             type="button"
                           >
-                            Always allow this session
+                            Deny
                           </button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <p className="mt-3 text-[11px] text-muted" role="status">
-                        Koed did not provide enough safe request detail to
-                        review this approval. Refresh before deciding.
-                      </p>
-                    )}
-                  </article>
-                );
-              })}
-              {selectedRuntime &&
-                displayMessages.length === 0 &&
-                runtimeRequests.length === 0 && (
-                  <p className="text-xs text-muted">
-                    No messages in this Conversation yet.
-                  </p>
-                )}
-            </div>
-            <form
-              className="border-t border-border p-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (activePrompt) void control("interrupt");
-                else void send();
-              }}
-            >
-              <div className="flex items-end gap-2">
-                <textarea
-                  aria-label="Continue Conversation"
-                  value={draft}
-                  onChange={(event) => updateDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      if (activePrompt) void control("interrupt");
-                      else void send();
-                    }
-                  }}
-                  rows={2}
-                  placeholder={
-                    canSend
-                      ? "Continue this Conversation…"
-                      : "Conversation is not ready for a message"
-                  }
-                  disabled={!canSend || sending}
-                  className="min-h-10 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    activePrompt
-                      ? selectedRuntime?.execution.state !== "running" ||
-                        controlBusy ||
-                        pendingControl
-                      : !canSend || !draft.trim() || sending
-                  }
-                  aria-label={
-                    activePrompt ? "Stop active turn" : "Send message"
-                  }
-                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {sending ? (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  ) : activePrompt ? (
-                    <Square className="h-3.5 w-3.5" />
-                  ) : (
-                    <Send className="h-3.5 w-3.5" />
-                  )}{" "}
-                  {activePrompt ? "Stop" : "Send"}
-                </button>
+                          <button
+                            className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                            disabled={controlBusy}
+                            onClick={() =>
+                              void respondToRuntimeRequest(request.id, {
+                                decision: "cancel"
+                              })
+                            }
+                            type="button"
+                          >
+                            Cancel request
+                          </button>
+                          <button
+                            className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                            disabled={controlBusy}
+                            onClick={() =>
+                              void respondToRuntimeRequest(request.id, {
+                                decision: "accept"
+                              })
+                            }
+                            type="button"
+                          >
+                            Approve
+                          </button>
+                          {sessionApproval ? (
+                            <button
+                              className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                              disabled={controlBusy}
+                              onClick={() =>
+                                void respondToRuntimeRequest(request.id, {
+                                  decision: "acceptForSession"
+                                })
+                              }
+                              type="button"
+                            >
+                              Always allow this session
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p
+                          className="mt-3 text-[11px] text-muted"
+                          role="status"
+                        >
+                          Koed did not provide enough safe request detail to
+                          review this approval. Refresh before deciding.
+                        </p>
+                      )}
+                    </article>
+                  );
+                })}
+                {selectedRuntime &&
+                  displayMessages.length === 0 &&
+                  runtimeRequests.length === 0 && (
+                    <p className="text-xs text-muted">
+                      No messages in this Conversation yet.
+                    </p>
+                  )}
               </div>
-              {activeMemoryRecall?.kind === "prompt" ? (
-                <div
-                  className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2"
-                  role="group"
-                  aria-label="Memory recall actions"
-                >
-                  <p className="text-[11px] text-foreground-secondary">
-                    Memory could not be checked. Your draft is still here.
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      disabled={!draft.trim() || sending}
-                      onClick={() => void send()}
-                      className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
-                    >
-                      Retry
-                    </button>
-                    {activeMemoryRecall.agentId ? (
+              <form
+                className="border-t border-border p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (activePrompt) void control("interrupt");
+                  else void send();
+                }}
+              >
+                <div className="flex items-end gap-2">
+                  <textarea
+                    aria-label="Continue Conversation"
+                    value={draft}
+                    onChange={(event) => updateDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        if (activePrompt) void control("interrupt");
+                        else void send();
+                      }
+                    }}
+                    rows={2}
+                    placeholder={
+                      canSend
+                        ? "Continue this Conversation…"
+                        : "Conversation is not ready for a message"
+                    }
+                    disabled={!canSend || sending}
+                    className="min-h-10 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      activePrompt
+                        ? selectedRuntime?.execution.state !== "running" ||
+                          controlBusy ||
+                          pendingControl
+                        : !canSend || !draft.trim() || sending
+                    }
+                    aria-label={
+                      activePrompt ? "Stop active turn" : "Send message"
+                    }
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {sending ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : activePrompt ? (
+                      <Square className="h-3.5 w-3.5" />
+                    ) : (
+                      <Send className="h-3.5 w-3.5" />
+                    )}{" "}
+                    {activePrompt ? "Stop" : "Send"}
+                  </button>
+                </div>
+                {activeMemoryRecall?.kind === "prompt" ? (
+                  <div
+                    className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2"
+                    role="group"
+                    aria-label="Memory recall actions"
+                  >
+                    <p className="text-[11px] text-foreground-secondary">
+                      Memory could not be checked. Your draft is still here.
+                    </p>
+                    <div className="flex gap-2">
                       <button
                         type="button"
                         disabled={!draft.trim() || sending}
-                        onClick={() => void send(true)}
-                        className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
+                        onClick={() => void send()}
+                        className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
                       >
-                        Continue without Memory
+                        Retry
                       </button>
-                    ) : null}
+                      {activeMemoryRecall.agentId ? (
+                        <button
+                          type="button"
+                          disabled={!draft.trim() || sending}
+                          onClick={() => void send(true)}
+                          className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
+                        >
+                          Continue without Memory
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              ) : null}
-              <p className="mt-2 text-[10px] text-muted">
-                Pending means Koed accepted the message. It does not show
-                whether the device is online.
-              </p>
-            </form>
+                ) : null}
+                <p className="mt-2 text-[10px] text-muted">
+                  Pending means Koed accepted the message. It does not show
+                  whether the device is online.
+                </p>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
-      {projectMoveDialogOpen && selectedRuntime && projectMoveDestination ? (
-        <ProjectMoveConfirmation
-          threadTitle={selected?.model ?? "Managed Conversation"}
-          projectName={projectMoveDestination.name}
-          sourceEditStatus="unknown"
-          onMove={submitProjectMove}
-          onCancel={() => {
-            setProjectMoveDialogOpen(false);
-            setProjectMovePickerOpen(false);
-          }}
-        />
-      ) : null}
-    </section>
+        )}
+        {projectMoveDialogOpen && selectedRuntime && projectMoveDestination ? (
+          <ProjectMoveConfirmation
+            threadTitle={selected?.model ?? "Managed Conversation"}
+            projectName={projectMoveDestination.name}
+            sourceEditStatus="unknown"
+            onMove={submitProjectMove}
+            onCancel={() => {
+              setProjectMoveDialogOpen(false);
+              setProjectMovePickerOpen(false);
+            }}
+          />
+        ) : null}
+      </section>
+    </>
   );
 }

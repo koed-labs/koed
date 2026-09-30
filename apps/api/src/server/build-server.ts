@@ -1566,11 +1566,32 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       getManagedConversationRuntimeItem:
         repository.getManagedConversationRuntimeItem
     };
+    const teamAgentRequestInvalidationRepository =
+      repository as typeof repository & {
+        materializeRealtimeInvalidation?: (
+          actor: { userId: string },
+          input: { teamId: string; resourceType: string; resourceId: string }
+        ) => Promise<{
+          type: "team_agent_request_invalidated";
+          teamId: string;
+          requestId: string | null;
+          channelId: string | null;
+          ownerId: string | null;
+          kind: "request" | "offers";
+        } | null>;
+      };
     collaborationRealtimeService = await createCollaborationRealtimeService({
       app,
       auth: authHelpers,
       repository: collaborationRepository,
       materializationRepository: collaborationRealtimeMaterializationRepository,
+      teamAgentRequestInvalidationRepository:
+        teamAgentRequestInvalidationRepository.materializeRealtimeInvalidation
+          ? {
+              materializeRealtimeInvalidation:
+                teamAgentRequestInvalidationRepository.materializeRealtimeInvalidation
+            }
+          : null,
       sharedMemoryRepository: repository,
       teamPresenceRepository: repository,
       pool,
@@ -1800,6 +1821,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     config: routeContext.config,
     localEdge: routeContext.localEdge,
     requireCollaborationRepository: requireRepository,
+    requireTeamAgentRequestsRepository: requireRepository,
+    createOwnerJobWithClient: (client, input) =>
+      requireRepository().createManagedConversationAcceptedAgentAssignmentWithClient(
+        client,
+        input
+      ),
     requireSharedMemoryRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,
     authenticateSessionOrDeviceCredential:
@@ -1828,7 +1855,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,
     requireTeamAccessRepository: () =>
-      requireRepository() as ReturnType<typeof requireRepository> & import("@koed/db").TeamAccessRepository,
+      requireRepository() as ReturnType<typeof requireRepository> &
+        import("@koed/db").TeamAccessRepository,
     requireTeamConversationSourceRepository: requireRepository,
     requireCollaborationRepository,
     requireHighRiskRepository: requireRepository,

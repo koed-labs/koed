@@ -32,7 +32,12 @@ function LiveHome({
   initialProjectRequest,
   executionId,
   requestedProjectId,
-  requestedAgentId
+  requestedAgentId,
+  requestDraft,
+  teamRequestId,
+  teamRequestTeamId,
+  teamRequestExpectedRequestVersion,
+  teamRequestExpectedReviewVersion
 }: {
   onPlugins: () => void;
   onPullRequests: () => void;
@@ -41,11 +46,16 @@ function LiveHome({
   executionId?: string;
   requestedProjectId?: string;
   requestedAgentId?: string;
+  requestDraft?: string;
+  teamRequestId?: string;
+  teamRequestTeamId?: string;
+  teamRequestExpectedRequestVersion?: number;
+  teamRequestExpectedReviewVersion?: number;
 }) {
   const [chatOpen, setChatOpen] = useState(initialChatOpen);
   const [collapsed, setCollapsed] = useState(false);
   const [chatKey, setChatKey] = useState(0);
-  const [initialChatDraft, setInitialChatDraft] = useState("");
+  const [initialChatDraft, setInitialChatDraft] = useState(requestDraft ?? "");
   const [initialChatSelection, setInitialChatSelection] = useState<
     ChatComposerSelection | undefined
   >();
@@ -461,6 +471,14 @@ function LiveHome({
                   initialDraft={initialChatDraft}
                   initialSelection={initialChatSelection}
                   executionId={resumeId}
+                  teamRequestId={teamRequestId}
+                  teamRequestTeamId={teamRequestTeamId}
+                  teamRequestExpectedRequestVersion={
+                    teamRequestExpectedRequestVersion
+                  }
+                  teamRequestExpectedReviewVersion={
+                    teamRequestExpectedReviewVersion
+                  }
                   sidebarMoveTarget={pendingSidebarMove}
                   onSidebarMoveTargetHandled={(requestId) => {
                     setPendingSidebarMove((current) =>
@@ -509,8 +527,23 @@ function HomeMode() {
       executionId={searchParams.get("execution") ?? undefined}
       requestedProjectId={searchParams.get("project") ?? undefined}
       requestedAgentId={searchParams.get("agent") ?? undefined}
+      requestDraft={searchParams.get("draft") ?? undefined}
+      teamRequestId={searchParams.get("teamRequest") ?? undefined}
+      teamRequestTeamId={searchParams.get("teamRequestTeam") ?? undefined}
+      teamRequestExpectedRequestVersion={readVersionParam(
+        searchParams.get("teamRequestVersion")
+      )}
+      teamRequestExpectedReviewVersion={readVersionParam(
+        searchParams.get("teamReviewVersion")
+      )}
     />
   );
+}
+
+function readVersionParam(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 export default function Home() {

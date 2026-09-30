@@ -971,6 +971,98 @@ describe("collaboration HTTP routes", () => {
     await app.close();
   });
 
+  it("requires managed execution in addition to Team chat write for device acceptance", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${randomUUID()}/decision`,
+      headers: deviceHeaders(fixture.ids.alice, ["team_chat_write"]),
+      payload: { expectedVersion: 1, decision: "accept" }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(jsonBody<{ error: string }>(response).error).toContain(
+      "Device credential is not allowed for this operation"
+    );
+    await app.close();
+  });
+
+  it("blocks local acceptance when managed execution is disabled upstream", async () => {
+    const fixture = createCollaborationFixture();
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-agent-request-auth-"));
+    const configDirectory = resolve(koedHome, "config");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      resolve(configDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "paired-local-token" })
+    );
+    const upstreamPath = resolve(configDirectory, "upstream-backends.json");
+    writeFileSync(
+      upstreamPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: {
+              teamWorkspaceRead: "enabled",
+              managedExecution: "disabled"
+            },
+            credential: { status: "configured" },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:15:00.000Z",
+              schemaVersion: 9,
+              payload: {
+                capabilitySchemaVersion: 9,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" },
+                  "memory.managedConversations": { availability: "available" }
+                },
+                protocols: {
+                  collaborationRealtime: {
+                    version: COLLABORATION_CONTRACT_VERSION,
+                    transport: "sse"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      })
+    );
+    let upstreamCalls = 0;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      deploymentProfile: "local_personal",
+      koedHome,
+      localEdge: {
+        upstreamBackendsPath: upstreamPath,
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Bearer enrolled-team-credential",
+        fetch: async () => {
+          upstreamCalls += 1;
+          return new Response("{}", { status: 200 });
+        }
+      }
+    });
+    try {
+      const response = await app.inject({
+        method: "PUT",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/agent-requests/${randomUUID()}/decision`,
+        headers: { authorization: "Bearer paired-local-token" },
+        payload: { expectedVersion: 1, decision: "accept" }
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.body).toContain("Managed Agent execution is disabled");
+      expect(upstreamCalls).toBe(0);
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a valid but unpaired local API Token before any upstream access", async () => {
     const fixture = createCollaborationFixture();
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-public-square-auth-"));

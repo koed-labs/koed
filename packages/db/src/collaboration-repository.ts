@@ -78,6 +78,7 @@ export type CollaborationEventFamily =
   | "pending_share_lifecycle"
   | "managed_conversation_changed"
   | "public_square_changed"
+  | "team_agent_request_changed"
   | "access_revoked";
 
 export interface CollaborationParticipantRecord {
@@ -3932,6 +3933,11 @@ const sendCollaborationMessage = async (
   await attachRecipientStatuses(client, actor, inserted.rows);
   return mapMessageRow(client, actor, provider, inserted.rows[0]!);
 };
+
+// Collaborating repositories can include a message in their own transaction
+// while keeping the same Team authorization, encryption, idempotency, and
+// realtime outbox behavior as the public repository method.
+export const sendCollaborationMessageWithClient = sendCollaborationMessage;
 
 const listCollaborationMessages = async (
   client: pg.Pool | pg.PoolClient,

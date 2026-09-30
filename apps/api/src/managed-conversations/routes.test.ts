@@ -212,6 +212,7 @@ describe("managed Conversation capability admission", () => {
     const commandId = randomUUID();
     const messageId = randomUUID();
     const now = new Date().toISOString();
+    const legacyTurnOutput = vi.fn(async () => "Safe assistant output");
     const app = Fastify({ logger: false });
     app.setErrorHandler((error, _request, reply) => {
       const typedError = error as Error & { statusCode?: number };
@@ -269,6 +270,25 @@ describe("managed Conversation capability admission", () => {
           createdAt: now,
           updatedAt: now
         }),
+        listManagedConversationPromptHistory: async () => ({
+          turns: [
+            {
+              commandId,
+              clientUserMessageId: messageId,
+              prompt: "Review this. Do not expose private context.",
+              createdAt: now,
+              completedAt: now,
+              providerTurnId: null,
+              providerItemId: null,
+              assistantOutput: {
+                text: "Safe assistant output",
+                truncated: false
+              }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null
+        }),
         listPersonalAgentExecutionJobs: async () => ({
           jobs: [
             {
@@ -305,7 +325,25 @@ describe("managed Conversation capability admission", () => {
           state: "dispatching",
           leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
           createdAt: now,
-          payload: { prompt: "Review this. Do not expose private context." }
+          payload: {
+            prompt: "Review this. Do not expose private context.",
+            personalAgent: { agentId, agentVersion: 4, jobId },
+            personalAgentContext: {
+              schemaVersion: 1,
+              identity: {
+                agentId,
+                version: 4,
+                identityVersionId: versionId,
+                name: "Mira",
+                role: "Reviewer",
+                soulInstructions: "private instruction"
+              },
+              project: { projectId: null, name: null },
+              activeJob: { jobId, state: "running", goal: "private goal" },
+              pendingTeamRequestId: null,
+              memory: { searchDomain: "global", evidence: [] }
+            }
+          }
         }),
         getPersonalAgentVersion: async () => ({
           contractVersion: 1,
@@ -321,7 +359,7 @@ describe("managed Conversation capability admission", () => {
           createdByUserId: userId,
           createdAt: now
         }),
-        getPersonalAgentTurnOutput: async () => "Safe assistant output",
+        getPersonalAgentTurnOutput: legacyTurnOutput,
         getPersonalAgent: async () => ({
           agent: {
             id: agentId,
@@ -354,7 +392,7 @@ describe("managed Conversation capability admission", () => {
           content: "Review this. Do not expose private context."
         },
         {
-          id: `agent:${jobId}`,
+          id: `provider:${commandId}`,
           role: "assistant",
           content: "Safe assistant output",
           author: {
@@ -365,9 +403,229 @@ describe("managed Conversation capability admission", () => {
           }
         }
       ],
-      jobs: [{ observedState: "running", freshness: "current" }]
+      jobs: [
+        {
+          observedState: "running",
+          freshness: "current",
+          agentId,
+          agentName: "Mira",
+          agentVersion: 4
+        }
+      ]
     });
     expect(response.body).not.toContain("private instruction");
+    expect(legacyTurnOutput).not.toHaveBeenCalled();
+  });
+
+  it("includes private planning and summary turns alongside named-Agent Job history", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const agentId = randomUUID();
+    const discussionCommandId = randomUUID();
+    const summaryCommandId = randomUUID();
+    const discussionMessageId = randomUUID();
+    const summaryMessageId = randomUUID();
+    const history = vi.fn(async () => ({
+      turns: [
+        {
+          commandId: discussionCommandId,
+          clientUserMessageId: discussionMessageId,
+          prompt: "Let's refine this request privately.",
+          createdAt: "2026-09-29T10:00:00.000Z",
+          completedAt: "2026-09-29T10:00:01.000Z",
+          providerTurnId: null,
+          providerItemId: null,
+          assistantOutput: {
+            text: "What scope should I use?",
+            truncated: false
+          }
+        },
+        {
+          commandId: summaryCommandId,
+          clientUserMessageId: summaryMessageId,
+          prompt: "Draft a Team summary for my review.",
+          createdAt: "2026-09-29T10:02:00.000Z",
+          completedAt: "2026-09-29T10:02:01.000Z",
+          providerTurnId: null,
+          providerItemId: null,
+          assistantOutput: { text: "A draft summary.", truncated: false }
+        }
+      ],
+      hasMore: false,
+      nextCursor: null
+    }));
+    const jobs = vi.fn(async () => ({
+      jobs: [],
+      hasMore: false,
+      nextCursor: null
+    }));
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-named-planning-history-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ownerUserId: userId,
+          executionGeneration: 1,
+          state: "running"
+        }),
+        getPersonalAgentConversation: async () => ({
+          activeAgentId: agentId,
+          participants: []
+        }),
+        listManagedConversationPromptHistory: history,
+        listPersonalAgentExecutionJobs: jobs,
+        getManagedConversationCommand: async (_actor: unknown, id: string) => ({
+          id,
+          payload: {}
+        })
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state`
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(history).toHaveBeenCalledWith(
+      { userId },
+      { executionId, limit: 20, includeAssigned: true }
+    );
+    expect(jobs).toHaveBeenCalledWith(
+      { userId },
+      { conversationId: executionId, limit: 20 }
+    );
+    expect(response.json().messages).toMatchObject([
+      {
+        id: discussionMessageId,
+        role: "user",
+        content: "Let's refine this request privately."
+      },
+      {
+        id: `provider:${discussionCommandId}`,
+        role: "assistant",
+        content: "What scope should I use?"
+      },
+      {
+        id: summaryMessageId,
+        role: "user",
+        content: "Draft a Team summary for my review."
+      },
+      {
+        id: `provider:${summaryCommandId}`,
+        role: "assistant",
+        content: "A draft summary."
+      }
+    ]);
+    expect(response.json().jobs).toEqual([]);
+  });
+
+  it("uses a combined cursor for named-Agent prompts and Job history", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const agentId = randomUUID();
+    const jobId = randomUUID();
+    const jobCursor = Buffer.from(
+      `2026-09-29T10:00:00.000Z|${jobId}`,
+      "utf8"
+    ).toString("base64url");
+    const history = vi
+      .fn()
+      .mockResolvedValueOnce({
+        turns: [],
+        hasMore: true,
+        nextCursor: "prompt:12"
+      })
+      .mockResolvedValueOnce({ turns: [], hasMore: false, nextCursor: null });
+    const jobs = vi
+      .fn()
+      .mockResolvedValueOnce({ jobs: [], hasMore: true, nextCursor: jobCursor })
+      .mockResolvedValueOnce({ jobs: [], hasMore: false, nextCursor: null });
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-named-timeline-cursor-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ownerUserId: userId,
+          executionGeneration: 1,
+          state: "running"
+        }),
+        getPersonalAgentConversation: async () => ({
+          activeAgentId: agentId,
+          participants: []
+        }),
+        listManagedConversationPromptHistory: history,
+        listPersonalAgentExecutionJobs: jobs
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const first = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state?limit=5`
+    });
+    const nextCursor = first.json().nextCursor as string;
+    const decoded = JSON.parse(
+      Buffer.from(
+        nextCursor.slice("agent-state:v1:".length),
+        "base64url"
+      ).toString("utf8")
+    );
+    const second = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state?limit=5&before=${encodeURIComponent(nextCursor)}`
+    });
+    await app.close();
+
+    expect(first.statusCode).toBe(200);
+    expect(decoded).toEqual({
+      version: 1,
+      prompt: "prompt:12",
+      jobs: jobCursor
+    });
+    expect(history.mock.calls[1]?.[1]).toEqual({
+      executionId,
+      limit: 5,
+      includeAssigned: true,
+      before: "prompt:12"
+    });
+    expect(jobs.mock.calls[1]?.[1]).toEqual({
+      conversationId: executionId,
+      limit: 5,
+      before: jobCursor
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().nextCursor).toBeNull();
   });
 
   it.each([null, { activeAgentId: null, participants: [] }])(
@@ -3513,6 +3771,7 @@ describe("managed Conversation routes", () => {
           }
         ],
         listTeamWorkspaceContexts: vi.fn(async () => []),
+        listPersonalAgentExecutionJobs: vi.fn(async () => ({ jobs: [] })),
         searchMemoryNodes,
         enqueueManagedConversationPrompt: enqueue
       })
@@ -5464,13 +5723,15 @@ describe("managed Conversation routes", () => {
     ).toBe(false);
   });
 
-  it("blocks a local start until the worker verifies its execution checkout", async () => {
+  it("passes native Team review binding into the local start transaction", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const commandId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
     const projectId = "lp_local_workspace";
+    const teamId = randomUUID();
+    const requestId = randomUUID();
     const projectPath = "/work/local-workspace";
     const createManagedConversation = vi.fn(async () => ({
       execution: {
@@ -5519,6 +5780,7 @@ describe("managed Conversation routes", () => {
         ...launchRepository,
         listLcmGraphThreads: async () => [{ id: projectId, path: projectPath }],
         createManagedConversation,
+        bindOwnerReviewExecutionWithClient: vi.fn(async () => null),
         upsertManagedConversationRuntimeBinding: vi.fn(async () => ({})),
         getManagedConversationRuntimeBinding: vi.fn(async () => null)
       })
@@ -5531,7 +5793,13 @@ describe("managed Conversation routes", () => {
       payload: {
         projectId,
         ...launchSelection,
-        idempotencyKey: "phase7-local-workspace-start"
+        idempotencyKey: "phase7-local-workspace-start",
+        teamAgentRequest: {
+          teamId,
+          requestId,
+          expectedRequestVersion: 2,
+          expectedReviewVersion: 3
+        }
       }
     });
     await app.close();
@@ -5541,6 +5809,13 @@ describe("managed Conversation routes", () => {
       { userId },
       expect.objectContaining({
         projectId,
+        initialTeamAgentRequest: {
+          teamId,
+          requestId,
+          expectedRequestVersion: 2,
+          expectedReviewVersion: 3
+        },
+        bindInitialTeamAgentRequestWithClient: expect.any(Function),
         deferUntilRuntimeBinding: true
       })
     );

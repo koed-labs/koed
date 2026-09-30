@@ -24,7 +24,8 @@ import {
   handlePersonalAgents,
   handleManagedConversations,
   handlePersonalAgentRoleTemplates,
-  handlePublicSquare
+  handlePublicSquare,
+  handleTeamAgentRequests
 } from "./personal-agents-http.mjs";
 import { handleRetainedWorkspaces } from "./retained-workspaces-http.mjs";
 
@@ -1976,6 +1977,7 @@ export const createStudioServer = ({
         return;
       if (
         (await handlePersonalAgents(localApiOptions)) ||
+        (await handleTeamAgentRequests(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||
         (await handlePersonalAgentRoleTemplates(localApiOptions)) ||
         (await handleManagedConversations(localApiOptions))

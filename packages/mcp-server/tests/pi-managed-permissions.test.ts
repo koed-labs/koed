@@ -3,7 +3,7 @@ import managedPermissions from "../integrations/pi/managed-permissions.mjs";
 
 type PermissionApi = Parameters<typeof managedPermissions>[0];
 
-function fixture(mode: string) {
+function fixture(mode: string, gate = false) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   managedPermissions(
     {
@@ -11,7 +11,10 @@ function fixture(mode: string) {
         handlers.set(name, handler as (...args: unknown[]) => unknown);
       }) as PermissionApi["on"]
     },
-    { KOED_MANAGED_PERMISSION_MODE: mode }
+    {
+      KOED_MANAGED_PERMISSION_MODE: mode,
+      ...(gate ? { KOED_MANAGED_AGENT_TOOL_GATE: "1" } : {})
+    }
   );
   const select = vi.fn().mockResolvedValue("Decline");
   const controller = new AbortController();
@@ -66,5 +69,29 @@ describe("managed Pi tool permissions", () => {
       return "Approve";
     });
     expect(await f.call("bash")).toMatchObject({ block: true });
+  });
+  it("lets the current managed Agent command fence work tools even in full access", async () => {
+    const f = fixture("full_access", true);
+    expect(await f.call("bash")).toMatchObject({ block: true });
+    expect(f.select).toHaveBeenCalledWith(
+      expect.stringContaining('"kind":"koed_tool_gate"'),
+      ["Allow", "Deny", "Use configured permissions"],
+      expect.anything()
+    );
+    f.select.mockResolvedValue("Allow");
+    expect(await f.call("edit")).toBeUndefined();
+  });
+  it("does not ask for user approval for provider-native Agent signals", async () => {
+    const f = fixture("supervised", true);
+    expect(await f.call("koed_agent_intent")).toBeUndefined();
+    expect(await f.call("koed_agent_turn_status")).toBeUndefined();
+    expect(f.select).not.toHaveBeenCalled();
+    expect(await f.call("bash")).toMatchObject({ block: true });
+    expect(f.select).toHaveBeenCalledOnce();
+    expect(f.select).toHaveBeenCalledWith(
+      expect.stringContaining('"kind":"koed_tool_gate"'),
+      ["Allow", "Deny", "Use configured permissions"],
+      expect.anything()
+    );
   });
 });

@@ -11,6 +11,8 @@ import path from "node:path";
 import { managedKoedMcpServer } from "./managed-koed-mcp.js";
 
 import {
+  createSdkMcpServer,
+  tool,
   forkSession as forkClaudeSession,
   query,
   type McpServerConfig,
@@ -31,6 +33,18 @@ import {
   claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
+
+import type { PersonalAgentIntentSignal } from "@koed/shared";
+import {
+  PERSONAL_AGENT_INTENT_TOOL_NAME,
+  PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
+  personalAgentIntentToolInputSchema,
+  parsePersonalAgentIntentToolInput,
+  PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
+  PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
+  personalAgentTurnStatusToolInputSchema,
+  parsePersonalAgentTurnStatusToolInput
+} from "./personal-agent-intent-tool.js";
 
 export const CLAUDE_MANAGED_CONVERSATION_PROVIDER = "claude" as const;
 
@@ -54,6 +68,18 @@ export interface ClaudeManagedConversationConfig {
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
   onTextDelta?: (delta: string, turnId: string) => void;
+  executionPolicy?: () => "work" | "planning" | "summary";
+  personalAgentToolsEnabled?: () => boolean;
+  personalAgentTurnStatusHandler?: (
+    status: "complete" | "awaiting_owner"
+  ) => Promise<void>;
+  personalAgentIntentHandler?: (signal: PersonalAgentIntentSignal) => Promise<{
+    jobId: string;
+    attemptId: string;
+    title: string;
+    state: "queued" | "running";
+    continuation: boolean;
+  }>;
 }
 
 export interface ClaudeManagedConversationIdentity {
@@ -1047,8 +1073,96 @@ export class ClaudeManagedConversationSession {
     const abortController = new AbortController();
     const shouldResume = this.resumed || this.submittedQuery;
     let stream: Query;
+    let intentTurnActive = true;
+    const executionPolicy = this.config.executionPolicy?.() ?? "work";
+    const agentToolsEnabled =
+      executionPolicy === "work" &&
+      (this.config.personalAgentToolsEnabled?.() ?? true);
+    const permissionMode =
+      executionPolicy === "work" ? this.config.permissionMode : "default";
+    const planningTools = ["Read", "Glob", "Grep", "LS", "AskUserQuestion"];
     try {
-      const koedMcp = managedKoedMcpServer(this.config.env ?? process.env);
+      const koedMcp =
+        executionPolicy === "work"
+          ? managedKoedMcpServer(this.config.env ?? process.env)
+          : null;
+      const intentHandler = agentToolsEnabled
+        ? this.config.personalAgentIntentHandler
+        : undefined;
+      const statusHandler = agentToolsEnabled
+        ? this.config.personalAgentTurnStatusHandler
+        : undefined;
+      const intentServer =
+        intentHandler || statusHandler
+          ? createSdkMcpServer({
+              name: "koed_agent_assignment",
+              version: "1.0.0",
+              alwaysLoad: true,
+              tools: [
+                ...(intentHandler
+                  ? [
+                      tool(
+                        PERSONAL_AGENT_INTENT_TOOL_NAME,
+                        PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
+                        personalAgentIntentToolInputSchema.shape,
+                        async (input) => {
+                          if (
+                            !intentTurnActive ||
+                            abortController.signal.aborted ||
+                            this.closed
+                          ) {
+                            throw new Error(
+                              "Agent assignment belongs to an inactive Claude turn"
+                            );
+                          }
+                          const signal =
+                            parsePersonalAgentIntentToolInput(input);
+                          // The command-scoped runner handler validates authority and commits
+                          // the Job before Claude can continue with its work actions.
+                          const result = await intentHandler(signal);
+                          return {
+                            content: [
+                              { type: "text", text: JSON.stringify(result) }
+                            ]
+                          };
+                        }
+                      )
+                    ]
+                  : []),
+                ...(statusHandler
+                  ? [
+                      tool(
+                        PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
+                        PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
+                        personalAgentTurnStatusToolInputSchema.shape,
+                        async (input) => {
+                          if (
+                            !intentTurnActive ||
+                            abortController.signal.aborted ||
+                            this.closed
+                          ) {
+                            throw new Error(
+                              "Agent outcome belongs to an inactive Claude turn"
+                            );
+                          }
+                          const status =
+                            parsePersonalAgentTurnStatusToolInput(input);
+                          await statusHandler(status);
+                          return {
+                            content: [
+                              {
+                                type: "text",
+                                text: JSON.stringify({ recorded: true, status })
+                              }
+                            ]
+                          };
+                        }
+                      )
+                    ]
+                  : [])
+              ]
+            })
+          : null;
       stream = query({
         prompt,
         options: {
@@ -1060,20 +1174,36 @@ export class ClaudeManagedConversationSession {
           ...(this.config.reasoningEffort
             ? { effort: claudeAgentSdkEffort(this.config.reasoningEffort) }
             : {}),
-          ...(this.config.permissionMode === "default"
-            ? {}
-            : { permissionMode: this.config.permissionMode }),
-          ...(this.config.permissionMode === "bypassPermissions"
+          ...(permissionMode === "default" ? {} : { permissionMode }),
+          ...(permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }
             : {}),
-          tools: this.config.tools ?? [],
+          tools:
+            executionPolicy === "summary"
+              ? []
+              : executionPolicy === "planning"
+                ? planningTools
+                : (this.config.tools ?? []),
           ...(this.config.canUseTool
             ? { canUseTool: this.config.canUseTool }
             : {}),
-          allowedTools: this.config.allowedTools ?? [],
+          allowedTools: [
+            ...(executionPolicy === "work"
+              ? (this.config.allowedTools ?? [])
+              : executionPolicy === "planning"
+                ? planningTools
+                : []),
+            ...(intentHandler
+              ? ["mcp__koed_agent_assignment__koed_agent_intent"]
+              : []),
+            ...(statusHandler
+              ? ["mcp__koed_agent_assignment__koed_agent_turn_status"]
+              : [])
+          ],
           mcpServers: {
-            ...this.config.mcpServers,
-            ...(koedMcp ? { koed: koedMcp } : {})
+            ...(executionPolicy === "work" ? this.config.mcpServers : {}),
+            ...(koedMcp ? { koed: koedMcp } : {}),
+            ...(intentServer ? { koed_agent_assignment: intentServer } : {})
           },
           strictMcpConfig: true,
           settingSources: this.config.settingSources ?? [],
@@ -1091,6 +1221,7 @@ export class ClaudeManagedConversationSession {
         }
       });
     } catch (error) {
+      intentTurnActive = false;
       if (abortController.signal.aborted) {
         throw new ClaudeManagedConversationCancelledError();
       }
@@ -1149,6 +1280,7 @@ export class ClaudeManagedConversationSession {
       }
       throw error;
     } finally {
+      intentTurnActive = false;
       if (this.activeQuery === stream) {
         this.activeQuery = null;
         this.activeAbortController = null;

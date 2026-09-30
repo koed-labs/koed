@@ -27,7 +27,9 @@ are additive; they do not reset conversations or memory.
 
 Migration `0046_personal_agent_durable_history` adds execution-keyed
 conversation participants, ordered job events, command references and encrypted
-assistant output. A prompt and its attributed job are created in one transaction.
+assistant output. The original flow created a prompt and its attributed job in
+one transaction. Ticket 13 now keeps planning outside assigned Jobs and binds
+explicit assignments through the same managed authority.
 Attempt completion is compare-and-set and idempotent for the exact attempt and
 outcome. Hard deletion of an execution cascades its operational job records;
 retiring an agent does not delete those records.
@@ -96,6 +98,12 @@ Retirement prevents new Jobs and attempts but does not cancel or rewrite an
 already-running attempt. Restoration returns the same Agent identity and
 historical work to the active list. Profile edits create immutable versions;
 running and completed Jobs retain their original version and name.
+
+The approved conversational assignment refinement is documented in
+[Studio Team Agent work](./studio-team-agent-work.md). Ticket 13 changes the
+per-request Job recording described below: planning remains private, active
+steering retains one Job, and additional assigned work after completion creates
+another Job. That refinement is currently being implemented.
 
 Give a job starts a fresh Personal chat with that active Agent selected. The
 User writes one clear goal in the chat composer. Model and reasoning effort are

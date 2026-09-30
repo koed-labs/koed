@@ -23,6 +23,36 @@ import {
   type LocalRetainedWorkspace
 } from "@/lib/hosted-managed-chats";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
+import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
+import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
+import {
+  teamQuestionReceiptMatches,
+  teamQuestionSendStatus
+} from "@/lib/team-agent-channel-sharing";
+import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
+import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
+import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
+
+const RECEIPT_WAIT_EXPIRED = Symbol("receipt-wait-expired");
+
+async function awaitBeforeDeadline<T>(
+  operation: Promise<T>,
+  deadline: number
+): Promise<T | typeof RECEIPT_WAIT_EXPIRED> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return RECEIPT_WAIT_EXPIRED;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<typeof RECEIPT_WAIT_EXPIRED>((resolve) => {
+        timeout = setTimeout(() => resolve(RECEIPT_WAIT_EXPIRED), remaining);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 import {
   dismissProjectMoveNotice,
   shouldKeepProjectMoveNoticeIntent
@@ -75,6 +105,24 @@ const isRegisteredProjectId = (value: string) =>
   /^lp_[0-9a-f]{32}$/iu.test(value);
 const moveNoticeIntentKey = (executionId: string, moveId: string) =>
   `koed.studio.project-move-dismiss-intent:${executionId}:${moveId}`;
+const retainTeamRequestContext = (
+  href: string,
+  requestId?: string,
+  teamId?: string,
+  requestVersion?: number,
+  reviewVersion?: number
+) => {
+  if (!requestId || !teamId) return href;
+  const [path, query = ""] = href.split("?", 2);
+  const params = new URLSearchParams(query);
+  params.set("teamRequest", requestId);
+  params.set("teamRequestTeam", teamId);
+  if (Number.isSafeInteger(requestVersion))
+    params.set("teamRequestVersion", String(requestVersion));
+  if (Number.isSafeInteger(reviewVersion))
+    params.set("teamReviewVersion", String(reviewVersion));
+  return `${path}?${params.toString()}`;
+};
 const delay = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -94,6 +142,10 @@ const delay = (ms: number, signal: AbortSignal) =>
 
 export function LiveAgentChat({
   executionId: initialExecutionId,
+  teamRequestId,
+  teamRequestTeamId,
+  teamRequestExpectedRequestVersion,
+  teamRequestExpectedReviewVersion,
   initialDraft = "",
   initialSelection,
   projectId,
@@ -104,6 +156,10 @@ export function LiveAgentChat({
   onSidebarMoveTargetHandled
 }: {
   executionId?: string;
+  teamRequestId?: string;
+  teamRequestTeamId?: string;
+  teamRequestExpectedRequestVersion?: number;
+  teamRequestExpectedReviewVersion?: number;
   initialDraft?: string;
   initialSelection?: ChatComposerSelection;
   projectId?: string;
@@ -118,6 +174,20 @@ export function LiveAgentChat({
   onSidebarMoveTargetHandled?: (requestId: number) => void;
 }) {
   const router = useRouter();
+  const teamAgentRequestsClient = useMemo(
+    () => new TeamAgentRequestsClient("studio"),
+    []
+  );
+  const collaborationClient = useMemo(
+    () => new StudioCollaborationClient(),
+    []
+  );
+  const [teamRequestReviewVersion, setTeamRequestReviewVersion] = useState(
+    teamRequestExpectedReviewVersion
+  );
+  const [teamRequestReviewSaved, setTeamRequestReviewSaved] = useState(
+    !teamRequestId || Boolean(initialExecutionId)
+  );
   const [agents, setAgents] = useState<PersonalAgent[]>([]);
   const [instances, setInstances] = useState<LaunchInstance[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(
@@ -130,6 +200,9 @@ export function LiveAgentChat({
   );
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [activity, setActivity] = useState<BuildActivity | null>(null);
+  const [jobMarkers, setJobMarkers] = useState<
+    ReturnType<typeof managedAgentJobMarkers>
+  >([]);
   const [messages, setMessages] = useState<NewChatRuntimeMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [memoryRecallFailure, setMemoryRecallFailure] = useState<string | null>(
@@ -157,6 +230,19 @@ export function LiveAgentChat({
   const [deletingRetainedWorkspace, setDeletingRetainedWorkspace] =
     useState(false);
   const [sending, setSending] = useState(false);
+  const [teamSummaryState, setTeamSummaryState] = useState<{
+    status: "idle" | "drafting" | "ready" | "error";
+    text: string;
+    message: string;
+  }>({ status: "idle", text: "", message: "" });
+  const [teamSummaryAttemptRevision, setTeamSummaryAttemptRevision] =
+    useState(0);
+  const [teamQuestionDraft, setTeamQuestionDraft] = useState("");
+  const teamSummaryAttempt = useRef<{
+    executionId: string;
+    commandId: string;
+    userMessageId: string;
+  } | null>(null);
   const [recoveryBlocked, setRecoveryBlocked] = useState(false);
   const [recoveredDraft, setRecoveredDraft] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -371,7 +457,13 @@ export function LiveAgentChat({
                       );
                     }
                     router.replace(
-                      `/?chat=1&execution=${encodeURIComponent(execution.id)}`
+                      retainTeamRequestContext(
+                        `/?chat=1&execution=${encodeURIComponent(execution.id)}`,
+                        teamRequestId,
+                        teamRequestTeamId,
+                        teamRequestExpectedRequestVersion,
+                        teamRequestExpectedReviewVersion
+                      )
                     );
                     return;
                   }
@@ -448,7 +540,14 @@ export function LiveAgentChat({
           );
       });
     return () => controller.abort();
-  }, [initialDraft, initialExecutionId, router, settleRecoveredSend]);
+  }, [
+    initialDraft,
+    initialExecutionId,
+    router,
+    settleRecoveredSend,
+    teamRequestId,
+    teamRequestTeamId
+  ]);
 
   const refresh = useCallback(
     async (id: string, signal: AbortSignal) => {
@@ -474,6 +573,18 @@ export function LiveAgentChat({
       if (state.executionGeneration !== snapshot.execution.executionGeneration)
         return snapshot;
       setActivity(managedAgentActivity(state));
+      const selectedAgentName =
+        agents.find((agent) => agent.id === state.activeAgentId)?.name ?? null;
+      setJobMarkers(
+        managedAgentJobMarkers(state, {
+          messages: Array.isArray(state.messages) ? state.messages : [],
+          activeAgentName: selectedAgentName,
+          projects: registeredProjects.map((project) => ({
+            id: project.id,
+            name: project.name
+          }))
+        })
+      );
       setHistoryNotice(
         state.hasMore === true ? "Showing recent conversation history" : ""
       );
@@ -639,7 +750,7 @@ export function LiveAgentChat({
       }
       return snapshot;
     },
-    [initialExecutionId, settleRecoveredSend]
+    [agents, initialExecutionId, registeredProjects, settleRecoveredSend]
   );
 
   const refreshRetainedWorkspaces = useCallback(
@@ -927,7 +1038,11 @@ export function LiveAgentChat({
   const send = async (
     text: string,
     selection: ChatComposerSelection,
-    continueWithoutMemory?: true
+    continueWithoutMemory?: true,
+    purpose?: {
+      purpose: "team_summary_draft";
+      teamSummary: { teamId: string; requestId: string; jobId: string };
+    }
   ) => {
     if (operationRef.current)
       throw new Error("A submission is already in progress.");
@@ -978,6 +1093,16 @@ export function LiveAgentChat({
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
         permissionMode: settings.permissionMode,
+        teamAgentRequestBinding:
+          teamRequestId &&
+          Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+          Number.isSafeInteger(teamRequestReviewVersion)
+            ? ([
+                teamRequestId,
+                teamRequestExpectedRequestVersion!,
+                teamRequestReviewVersion!
+              ] as const)
+            : null,
         expectedSettings: knownExecution
           ? {
               model: knownExecution.model,
@@ -1063,7 +1188,20 @@ export function LiveAgentChat({
             projectId: projectId ?? null,
             contextKind: projectId ? "project" : "independent",
             runnerKind: "local_device",
-            idempotencyKey: request.startId
+            idempotencyKey: request.startId,
+            ...(teamRequestId &&
+            teamRequestTeamId &&
+            Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
+            Number.isSafeInteger(teamRequestReviewVersion)
+              ? {
+                  teamAgentRequest: {
+                    teamId: teamRequestTeamId,
+                    requestId: teamRequestId,
+                    expectedRequestVersion: teamRequestExpectedRequestVersion,
+                    expectedReviewVersion: teamRequestReviewVersion
+                  }
+                }
+              : {})
           },
           signal
         );
@@ -1129,8 +1267,19 @@ export function LiveAgentChat({
           // Runtime status will be reconciled on the next periodic refresh.
         }
         if (startedNewExecution)
-          router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
-        return;
+          router.replace(
+            retainTeamRequestContext(
+              `/?chat=1&execution=${encodeURIComponent(id)}`,
+              teamRequestId,
+              teamRequestTeamId,
+              teamRequestExpectedRequestVersion,
+              teamRequestReviewVersion
+            )
+          );
+        return {
+          commandId: snapshot.latestCommand.id,
+          userMessageId: request.messageId
+        };
       }
       if (snapshot.execution.state !== "running")
         throw new Error(
@@ -1227,6 +1376,7 @@ export function LiveAgentChat({
           agentId: selected.id,
           expectedAgentVersion: selected.currentVersion,
           ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
+          ...(purpose ?? {}),
           ...(JSON.stringify(expected) === JSON.stringify(next)
             ? {}
             : { settingsChange: { expected, next } })
@@ -1250,7 +1400,19 @@ export function LiveAgentChat({
           setStatus("Task accepted; reconnecting to its progress");
       }
       if (startedNewExecution)
-        router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
+        router.replace(
+          retainTeamRequestContext(
+            `/?chat=1&execution=${encodeURIComponent(id)}`,
+            teamRequestId,
+            teamRequestTeamId,
+            teamRequestExpectedRequestVersion,
+            teamRequestExpectedReviewVersion
+          )
+        );
+      return {
+        commandId: result.command.id as string,
+        userMessageId: request.messageId
+      };
     } catch (cause) {
       const message =
         cause instanceof Error ? cause.message : "Unable to send the task.";
@@ -1285,12 +1447,18 @@ export function LiveAgentChat({
           navigableExecutionId
         ) {
           router.replace(
-            selection.agentId
-              ? managedAgentRecoveryHref(
-                  navigableExecutionId,
-                  selection.agentId
-                )
-              : `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`
+            retainTeamRequestContext(
+              selection.agentId
+                ? managedAgentRecoveryHref(
+                    navigableExecutionId,
+                    selection.agentId
+                  )
+                : `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`,
+              teamRequestId,
+              teamRequestTeamId,
+              teamRequestExpectedRequestVersion,
+              teamRequestReviewVersion
+            )
           );
         }
       }
@@ -1403,6 +1571,232 @@ export function LiveAgentChat({
     [executionId, messages, runtime]
   );
   const currentExecution = runtime?.execution ?? null;
+  useEffect(() => {
+    const attempt = teamSummaryAttempt.current;
+    const command = runtime?.latestCommand;
+    if (
+      !attempt ||
+      attempt.executionId !== executionId ||
+      command?.id !== attempt.commandId
+    )
+      return;
+    if (command.state === "completed") {
+      const draft = teamSummaryReplyForTurn(
+        displayedMessages,
+        attempt.userMessageId
+      );
+      if (draft) {
+        setTeamSummaryState({
+          status: "ready",
+          text: draft.slice(0, 2_000),
+          message: ""
+        });
+        teamSummaryAttempt.current = null;
+      }
+    } else if (command.state === "failed" || command.state === "canceled") {
+      setTeamSummaryState({
+        status: "error",
+        text: "",
+        message: "The Agent could not finish this private summary draft."
+      });
+      teamSummaryAttempt.current = null;
+    }
+  }, [
+    displayedMessages,
+    executionId,
+    runtime?.latestCommand,
+    teamSummaryAttemptRevision
+  ]);
+  const draftTeamSummary = async (
+    request: import("@koed/shared/team-agent-requests").TeamAgentRequest
+  ) => {
+    if (
+      !currentExecution ||
+      !lifecycle.current ||
+      request.status !== "accepted" ||
+      !["succeeded", "failed", "canceled"].includes(request.jobStatus ?? "") ||
+      !request.jobId
+    )
+      return;
+    const agent = agents.find(
+      (candidate) =>
+        candidate.id === request.agentId && candidate.lifecycle === "active"
+    );
+    if (!agent) {
+      setTeamSummaryState({
+        status: "error",
+        text: "",
+        message: "The accepted Agent is unavailable in this private execution."
+      });
+      return;
+    }
+    setTeamSummaryState({ status: "drafting", text: "", message: "" });
+    try {
+      const result = await send(
+        "Draft a summary for my review",
+        {
+          agentId: agent.id,
+          expectedAgentVersion: agent.currentVersion,
+          provider: currentExecution.provider,
+          model: currentExecution.model,
+          effort: currentExecution.reasoningEffort ?? "",
+          permissionMode:
+            currentExecution.permissionMode === "supervised" ? "ask" : "full",
+          instanceId: currentExecution.aiClientInstanceId
+        },
+        undefined,
+        {
+          purpose: "team_summary_draft",
+          teamSummary: {
+            teamId: teamRequestTeamId ?? request.teamId,
+            requestId: request.id,
+            jobId: request.jobId
+          }
+        }
+      );
+      if (!result) throw new Error("The private summary draft was not queued.");
+      teamSummaryAttempt.current = {
+        executionId: currentExecution.id,
+        ...result
+      };
+      setTeamSummaryAttemptRevision((revision) => revision + 1);
+    } catch (failure) {
+      setTeamSummaryState({
+        status: "error",
+        text: "",
+        message:
+          failure instanceof Error
+            ? failure.message
+            : "The private summary draft could not be queued."
+      });
+    }
+  };
+  const shareTeamQuestion = async (
+    request: import("@koed/shared/team-agent-requests").TeamAgentRequest,
+    text: string,
+    clientMessageId: string
+  ) => {
+    if (request.status !== "accepted" || !request.channelId)
+      throw new Error(
+        "Questions can only be posted for accepted work in its originating channel."
+      );
+    // This chat owns a separate collaboration client from the Team workspace.
+    // Prime its authority snapshot before the durable send command.
+    const snapshot = await collaborationClient.loadSession();
+    const team = snapshot.navigation.teams.find(
+      (entry) => entry.id === request.teamId
+    );
+    const canAccessChannel = Boolean(
+      team &&
+      (team.channels.some((thread) => thread.id === request.channelId) ||
+        team.sharedProjects.some(
+          (project) => project.thread.id === request.channelId
+        ))
+    );
+    if (!canAccessChannel)
+      throw new Error(
+        "The request channel is not available in the current Team session. Refresh Team access before posting."
+      );
+    const result = await collaborationClient.run("collaboration.send_message", {
+      thread: {
+        scope: "team",
+        teamId: request.teamId,
+        threadId: request.channelId
+      },
+      clientMessageId,
+      body: text
+    });
+    if (!result.ok) throw new Error(result.error.userMessage);
+    const delivery = teamQuestionSendStatus(result.data);
+    if (delivery.state === "failed")
+      throw new Error(
+        delivery.message ??
+          "The reviewed question was not sent. Retry the same text or edit it before posting again."
+      );
+    const deadline = Date.now() + 4_000;
+    while (Date.now() < deadline) {
+      const receiptResult = await awaitBeforeDeadline(
+        collaborationClient.run("collaboration.get_send_receipt", {
+          thread: {
+            scope: "team",
+            teamId: request.teamId,
+            threadId: request.channelId
+          },
+          clientMessageId
+        }),
+        deadline
+      );
+      if (receiptResult === RECEIPT_WAIT_EXPIRED) break;
+      if (!receiptResult.ok) throw new Error(receiptResult.error.userMessage);
+      if (!("receipt" in receiptResult.data))
+        throw new Error("Koed returned an invalid question delivery receipt.");
+      const receipt = receiptResult.data.receipt;
+      if (receipt) {
+        if (
+          !teamQuestionReceiptMatches(receipt, {
+            teamId: request.teamId,
+            threadId: request.channelId,
+            clientMessageId,
+            body: text
+          })
+        )
+          throw new Error(
+            "The question receipt did not match this Team, channel, and reviewed text. The send remains unconfirmed."
+          );
+        const ackResult = await awaitBeforeDeadline(
+          collaborationClient.run("collaboration.acknowledge_send_receipt", {
+            thread: {
+              scope: "team",
+              teamId: request.teamId,
+              threadId: request.channelId
+            },
+            clientMessageId,
+            messageId: receipt.message.id
+          }),
+          deadline
+        );
+        if (ackResult === RECEIPT_WAIT_EXPIRED)
+          throw new Error(
+            "The question was sent, but delivery confirmation is still being saved. Keep this reviewed text until confirmation completes."
+          );
+        if (
+          !ackResult.ok ||
+          !("acknowledged" in ackResult.data) ||
+          !ackResult.data.acknowledged
+        )
+          throw new Error(
+            "The question delivery confirmation is still pending."
+          );
+        return;
+      }
+      const pause = Math.min(350, deadline - Date.now());
+      if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
+    }
+    throw new Error(
+      "The reviewed question is queued, but delivery is not confirmed yet. Its text and send identity are retained; retry the same text to check the existing send."
+    );
+  };
+  const handleTeamReviewSaved = useCallback(
+    (
+      review: import("@koed/shared/team-agent-requests").TeamAgentRequestReview
+    ) => {
+      setTeamRequestReviewVersion(review.version);
+      setTeamRequestReviewSaved(Boolean(review.privateGoal.trim()));
+      if (
+        teamRequestId &&
+        teamRequestTeamId &&
+        typeof window !== "undefined" &&
+        window.location.search.includes("teamReviewVersion=")
+      ) {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("teamReviewVersion") !== String(review.version)) {
+          params.set("teamReviewVersion", String(review.version));
+          router.replace(`${window.location.pathname}?${params.toString()}`);
+        }
+      }
+    },
+    [router, teamRequestId, teamRequestTeamId]
+  );
   const currentProjectId = currentExecution?.projectId ?? null;
   const currentProjectName = registeredProjects.find(
     (project) => project.id === currentProjectId
@@ -1507,6 +1901,28 @@ export function LiveAgentChat({
   };
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {teamRequestId && teamRequestTeamId && (
+        <TeamAgentRequestReviewPanel
+          teamId={teamRequestTeamId}
+          requestId={teamRequestId}
+          executionId={currentExecution?.id ?? null}
+          client={teamAgentRequestsClient}
+          onAuthorizationLost={() =>
+            setError("Team access changed. Refresh to check your access.")
+          }
+          onAccepted={() => {
+            if (currentExecution?.id && lifecycle.current)
+              void refresh(currentExecution.id, lifecycle.current.signal);
+          }}
+          onReviewSaved={handleTeamReviewSaved}
+          summaryDraftStatus={teamSummaryState.status}
+          summaryDraftText={teamSummaryState.text}
+          onDraftSummary={(request) => void draftTeamSummary(request)}
+          questionDraft={teamQuestionDraft}
+          onQuestionDraftConsumed={() => setTeamQuestionDraft("")}
+          onShareQuestion={shareTeamQuestion}
+        />
+      )}
       {currentExecution ? (
         <section
           aria-label="Managed Conversation Project"
@@ -1702,14 +2118,23 @@ export function LiveAgentChat({
             enabled:
               loaded &&
               instances.length > 0 &&
+              (!teamRequestId ||
+                Boolean(executionId) ||
+                teamRequestReviewSaved) &&
               !recoveryBlocked &&
               !failedExecutions.has(runtime?.execution.state ?? ""),
             messages: displayedMessages,
+            jobMarkers,
             isSending: sending,
             error,
             memoryRecallFailure,
             status: [status, historyNotice].filter(Boolean).join(" · "),
-            onSend: send,
+            onSend: async (text, selection, continueWithoutMemory) => {
+              await send(text, selection, continueWithoutMemory);
+            },
+            onSelectTeamQuestion: teamRequestId
+              ? (text: string) => setTeamQuestionDraft(text.slice(0, 2_000))
+              : undefined,
             onInterrupt: () => void interrupt(),
             canInterrupt,
             canCancelPendingPrompt,

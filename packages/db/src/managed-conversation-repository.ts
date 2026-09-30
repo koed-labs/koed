@@ -6,6 +6,7 @@ import {
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
   personalAgentExecutionContextSchema,
+  personalAgentIntentSignalSchema,
   personalMemoryTurnContextSchema,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
@@ -13,9 +14,12 @@ import {
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult,
   type PersonalAgentExecutionContext,
+  type PersonalAgentIntentSignal,
+  type PersonalAgentTurnStatus,
   type PersonalMemoryTurnContext
 } from "@koed/shared";
 import pg from "pg";
+import type { PendingTeamAgentRequestExecutionBinding } from "./team-agent-requests-repository.js";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings,
@@ -271,12 +275,39 @@ export interface ManagedConversationCommandRecord {
   dispatchingAt: string | null;
   completedAt: string | null;
   personalAgent?: {
-    jobId: string;
+    jobId: string | null;
     agentId: string;
     agentVersion: number;
     identityVersionId: string;
     replayed: boolean;
   };
+}
+
+export interface ManagedConversationAcceptedAgentAssignmentInput {
+  requestId: string;
+  teamId: string;
+  teamProjectId: string;
+  ownerUserId: string;
+  agentId: string;
+  agentVersion: number;
+  localProjectId: string;
+  executionId: string;
+  privateGoal: string;
+  idempotencyKey: string;
+}
+
+export interface ManagedConversationAcceptedAgentAssignment {
+  jobId: string;
+  commandId: string;
+}
+
+export interface ManagedConversationPersonalAgentIntentResult {
+  jobId: string;
+  agentId: string;
+  agentVersion: number;
+  identityVersionId: string;
+  title: string;
+  continuation: boolean;
 }
 
 export interface ManagedConversationPromptCancellationResult {
@@ -289,6 +320,39 @@ export interface ClaimedManagedConversationCommand extends ManagedConversationCo
 }
 
 export interface ManagedConversationRepository {
+  recordPersonalAgentIntentForManagedCommand(
+    actor: ActorContext,
+    input: {
+      commandId: string;
+      executionId: string;
+      executionGeneration: number;
+      leaseToken: string;
+      runnerId: string;
+      deviceId: string;
+      deploymentId: string;
+      providerTurnId: string;
+      intent: PersonalAgentIntentSignal;
+    }
+  ): Promise<ManagedConversationPersonalAgentIntentResult>;
+  recordPersonalAgentTurnStatusForManagedCommand(
+    actor: ActorContext,
+    input: {
+      commandId: string;
+      executionId: string;
+      executionGeneration: number;
+      leaseToken: string;
+      runnerId: string;
+      deviceId: string;
+      deploymentId: string;
+      providerTurnId: string;
+      status: PersonalAgentTurnStatus;
+    }
+  ): Promise<void>;
+  /** Persist a Team acceptance inside the caller's transaction only. */
+  createManagedConversationAcceptedAgentAssignmentWithClient(
+    client: pg.PoolClient,
+    input: ManagedConversationAcceptedAgentAssignmentInput
+  ): Promise<ManagedConversationAcceptedAgentAssignment>;
   requestManagedConversationProjectMove(
     actor: ActorContext,
     input: {
@@ -368,6 +432,16 @@ export interface ManagedConversationRepository {
       initialAgentId?: string;
       initialExpectedAgentVersion?: number;
       initialPersonalAgentContext?: PersonalAgentExecutionContext;
+      initialTeamAgentRequest?: {
+        teamId: string;
+        requestId: string;
+        expectedRequestVersion: number;
+        expectedReviewVersion: number;
+      };
+      bindInitialTeamAgentRequestWithClient?: (
+        client: pg.PoolClient,
+        executionId: string
+      ) => Promise<PendingTeamAgentRequestExecutionBinding | null>;
       deferUntilRuntimeBinding?: boolean;
     }
   ): Promise<{
@@ -387,6 +461,8 @@ export interface ManagedConversationRepository {
       expectedAgentVersion?: number;
       personalAgentContext?: PersonalAgentExecutionContext;
       personalMemoryContext?: PersonalMemoryTurnContext;
+      serverPurpose?: "team_summary_draft";
+      teamSummary?: { teamId: string; requestId: string; jobId: string };
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
     }
@@ -536,7 +612,13 @@ export interface ManagedConversationRepository {
   }): Promise<ManagedConversationExecutionRecord[]>;
   listManagedConversationPromptHistory(
     actor: ActorContext,
-    input: { executionId: string; limit?: number; before?: string }
+    input: {
+      executionId: string;
+      limit?: number;
+      before?: string;
+      /** Include prompt commands already assigned to a Personal Agent Job. */
+      includeAssigned?: boolean;
+    }
   ): Promise<{
     turns: Array<{
       commandId: string;
@@ -1305,6 +1387,12 @@ const startDigest = (input: {
   initialPromptClientUserMessageId?: string;
   initialAgentId?: string;
   initialExpectedAgentVersion?: number;
+  initialTeamAgentRequest?: {
+    teamId: string;
+    requestId: string;
+    expectedRequestVersion: number;
+    expectedReviewVersion: number;
+  };
   initialMemoryStatus?: PersonalMemoryTurnContext["status"];
   deferUntilRuntimeBinding?: boolean;
 }): string =>
@@ -1336,6 +1424,9 @@ const startDigest = (input: {
             initialAgentId: input.initialAgentId,
             initialExpectedAgentVersion: input.initialExpectedAgentVersion
           }
+        : {}),
+      ...(input.initialTeamAgentRequest
+        ? { initialTeamAgentRequest: input.initialTeamAgentRequest }
         : {}),
       ...(input.initialMemoryStatus === "skipped"
         ? { continueWithoutMemory: true }
@@ -1512,13 +1603,15 @@ export const createManagedConversationRepository = (
     fileMentions?: Array<Record<string, unknown>>;
     settings: ManagedConversationSettings;
     personalAgent?: {
-      jobId: string;
+      jobId: string | null;
       agentId: string;
       agentVersion: number;
       identityVersionId: string;
     };
     personalAgentContext?: PersonalAgentExecutionContext;
     personalMemoryContext?: PersonalMemoryTurnContext;
+    serverPurpose?: "team_summary_draft";
+    teamSummary?: { teamId: string; requestId: string; jobId: string };
   }) =>
     encryptCommandPayload({
       ownerUserId: input.ownerUserId,
@@ -1537,6 +1630,12 @@ export const createManagedConversationRepository = (
           : {}),
         ...(input.personalMemoryContext
           ? { personalMemoryContext: input.personalMemoryContext }
+          : {}),
+        ...(input.serverPurpose === "team_summary_draft"
+          ? {
+              serverPurpose: input.serverPurpose,
+              teamSummary: input.teamSummary
+            }
           : {}),
         ...(input.personalMemoryContext?.status === "skipped"
           ? { continueWithoutMemory: true }
@@ -2171,6 +2270,610 @@ export const createManagedConversationRepository = (
       );
     },
 
+    async recordPersonalAgentIntentForManagedCommand(actor, rawInput) {
+      const input = {
+        ...rawInput,
+        intent: personalAgentIntentSignalSchema.parse(rawInput.intent)
+      };
+      if (
+        !UUID_PATTERN.test(input.commandId) ||
+        !UUID_PATTERN.test(input.executionId) ||
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1 ||
+        !input.leaseToken.trim() ||
+        !input.runnerId.trim() ||
+        !UUID_PATTERN.test(input.deviceId) ||
+        !UUID_PATTERN.test(input.deploymentId) ||
+        !input.providerTurnId.trim() ||
+        input.providerTurnId.length > 256
+      ) {
+        throw statusError("Personal Agent intent command is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const commandResult = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS}
+             from managed_conversation_commands
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.commandId]
+        );
+        const command = commandResult.rows[0];
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS}
+             from managed_conversation_executions
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.executionId]
+        );
+        const execution = executionResult.rows[0];
+        if (
+          !command ||
+          !execution ||
+          command.execution_id !== input.executionId ||
+          command.command_kind !== "prompt" ||
+          command.state !== "dispatching" ||
+          command.execution_generation !== input.executionGeneration ||
+          command.lease_token !== input.leaseToken ||
+          !command.lease_expires_at ||
+          command.lease_expires_at.getTime() <= Date.now() ||
+          execution.execution_generation !== input.executionGeneration ||
+          execution.state !== "running" ||
+          execution.runner_id !== input.runnerId ||
+          execution.runner_device_id !== input.deviceId ||
+          execution.runner_deployment_id !== input.deploymentId
+        ) {
+          throw statusError(
+            "Personal Agent intent command is not current",
+            409
+          );
+        }
+        const payload = await decryptPayload(command);
+        const context = personalAgentExecutionContextSchema.safeParse(
+          payload?.personalAgentContext
+        );
+        const selected = payload?.personalAgent;
+        if (
+          payload?.serverPurpose === "team_summary_draft" ||
+          !context.success ||
+          !selected ||
+          typeof selected !== "object" ||
+          !(
+            "jobId" in selected &&
+            (typeof selected.jobId === "string" || selected.jobId === null)
+          ) ||
+          !("agentId" in selected) ||
+          typeof selected.agentId !== "string" ||
+          !("agentVersion" in selected) ||
+          typeof selected.agentVersion !== "number" ||
+          !("identityVersionId" in selected) ||
+          typeof selected.identityVersionId !== "string" ||
+          context.data.identity.agentId !== selected.agentId ||
+          context.data.identity.version !== selected.agentVersion ||
+          context.data.identity.identityVersionId !== selected.identityVersionId
+        ) {
+          throw statusError("Personal Agent command context is invalid", 409);
+        }
+        if (context.data.pendingTeamRequestId && selected.jobId === null) {
+          throw statusError(
+            "This Agent request is awaiting the owner's acceptance",
+            409
+          );
+        }
+        if (context.data.project.projectId !== execution.project_id) {
+          throw statusError("Personal Agent command context is stale", 409);
+        }
+
+        const existingJobId = selected.jobId;
+        if (existingJobId) {
+          const existing = await client.query<{
+            id: string;
+            conversation_id: string;
+            agent_id: string | null;
+            agent_version: number | null;
+            title: string;
+            state: string;
+          }>(
+            `select id, conversation_id, agent_id, agent_version, title, state
+               from personal_agent_execution_jobs
+              where id = $1 and owner_user_id = $2
+              for update`,
+            [existingJobId, actor.userId]
+          );
+          if (
+            !existing.rows[0] ||
+            existing.rows[0].conversation_id !== execution.id ||
+            existing.rows[0].agent_id !== selected.agentId ||
+            existing.rows[0].agent_version !== selected.agentVersion
+          ) {
+            throw statusError("Personal Agent Job binding is invalid", 409);
+          }
+          if (input.intent.kind === "continue") {
+            await client.query("commit");
+            return {
+              jobId: existingJobId,
+              agentId: selected.agentId,
+              agentVersion: selected.agentVersion,
+              identityVersionId: selected.identityVersionId,
+              title: context.data.activeJob?.goal ?? existing.rows[0].title,
+              continuation: true
+            };
+          }
+          if (
+            ["queued", "running", "waiting"].includes(existing.rows[0].state)
+          ) {
+            throw statusError("Continue the active Agent Job first", 409);
+          }
+        }
+
+        if (input.intent.kind === "continue" && !context.data.activeJob) {
+          throw statusError("There is no active Agent Job to continue", 409);
+        }
+        if (
+          input.intent.kind !== "continue" &&
+          context.data.activeJob !== null
+        ) {
+          const captured = await client.query<{ id: string; state: string }>(
+            `select id,state from personal_agent_execution_jobs
+              where id=$1 and owner_user_id=$2 and conversation_id=$3
+                and agent_id=$4 and agent_version=$5
+              for update`,
+            [
+              context.data.activeJob.jobId,
+              actor.userId,
+              execution.id,
+              selected.agentId,
+              selected.agentVersion
+            ]
+          );
+          if (
+            !captured.rows[0] ||
+            ["queued", "running", "waiting"].includes(captured.rows[0].state)
+          ) {
+            throw statusError("Continue the active Agent Job first", 409);
+          }
+        }
+
+        let jobId: string;
+        let title: string;
+        if (input.intent.kind === "continue") {
+          jobId = context.data.activeJob!.jobId;
+          title = context.data.activeJob!.goal;
+          const continued = await client.query<{ id: string }>(
+            `select id from personal_agent_execution_jobs
+              where id = $1 and owner_user_id = $2
+                and conversation_id = $3 and agent_id = $4
+                and agent_version = $5`,
+            [
+              jobId,
+              actor.userId,
+              execution.id,
+              selected.agentId,
+              selected.agentVersion
+            ]
+          );
+          if (!continued.rows[0]) {
+            throw statusError("Captured Agent Job is unavailable", 409);
+          }
+        } else {
+          title = input.intent.goal;
+          jobId = randomUUID();
+          await client.query(
+            `insert into personal_agent_execution_jobs
+              (id, owner_user_id, conversation_id, attribution_kind, agent_id,
+               agent_version, idempotency_key, command_id, title, project_id, state)
+             values ($1, $2, $3, 'agent', $4, $5, $6, $7, 'Agent task', $8, 'queued')`,
+            [
+              jobId,
+              actor.userId,
+              execution.id,
+              selected.agentId,
+              selected.agentVersion,
+              `managed-agent-command:${command.id}`,
+              command.id,
+              execution.project_id
+            ]
+          );
+          await client.query(
+            `insert into personal_agent_execution_job_events
+              (owner_user_id, job_id, sequence, event_id, execution_generation,
+               event_type, payload, observed_at)
+             values ($1, $2, 1, $3, $4, 'job_enqueued', '{}'::jsonb, now())`,
+            [
+              actor.userId,
+              jobId,
+              `command:${command.id}:job_enqueued`,
+              input.executionGeneration
+            ]
+          );
+        }
+
+        const encryptedPayload = await encryptCommandPayload({
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          commandId: command.id,
+          objectClass: "managed_conversation_prompt",
+          value: {
+            ...(payload ?? {}),
+            personalAgent: { ...selected, jobId },
+            personalAgentIntent: input.intent
+          }
+        });
+        await client.query(
+          `update managed_conversation_commands
+              set encrypted_payload = $3::jsonb, updated_at = now()
+            where owner_user_id = $1 and id = $2`,
+          [actor.userId, command.id, encryptedPayload]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          mutationId: `managed-agent-intent:${command.id}:${input.providerTurnId}`
+        });
+        await notifyManagedConversationCommand(client, execution.id);
+        await client.query("commit");
+        return {
+          jobId,
+          agentId: selected.agentId,
+          agentVersion: selected.agentVersion,
+          identityVersionId: selected.identityVersionId,
+          title,
+          continuation: input.intent.kind === "continue"
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async recordPersonalAgentTurnStatusForManagedCommand(actor, input) {
+      if (
+        !UUID_PATTERN.test(input.commandId) ||
+        !UUID_PATTERN.test(input.executionId) ||
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1 ||
+        !input.leaseToken.trim() ||
+        !input.runnerId.trim() ||
+        !UUID_PATTERN.test(input.deviceId) ||
+        !UUID_PATTERN.test(input.deploymentId) ||
+        !input.providerTurnId.trim() ||
+        input.providerTurnId.length > 256 ||
+        !["complete", "awaiting_owner"].includes(input.status)
+      ) {
+        throw statusError("Personal Agent turn status is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const commandResult = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS}
+             from managed_conversation_commands
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.commandId]
+        );
+        const command = commandResult.rows[0];
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS}
+             from managed_conversation_executions
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.executionId]
+        );
+        const execution = executionResult.rows[0];
+        if (
+          !command ||
+          !execution ||
+          command.execution_id !== input.executionId ||
+          command.command_kind !== "prompt" ||
+          command.state !== "dispatching" ||
+          command.execution_generation !== input.executionGeneration ||
+          command.lease_token !== input.leaseToken ||
+          !command.lease_expires_at ||
+          command.lease_expires_at.getTime() <= Date.now() ||
+          execution.execution_generation !== input.executionGeneration ||
+          execution.state !== "running" ||
+          execution.runner_id !== input.runnerId ||
+          execution.runner_device_id !== input.deviceId ||
+          execution.runner_deployment_id !== input.deploymentId
+        ) {
+          throw statusError("Personal Agent turn status is not current", 409);
+        }
+        const payload = await decryptPayload(command);
+        const agent = payload?.personalAgent;
+        if (
+          payload?.serverPurpose === "team_summary_draft" ||
+          !agent ||
+          typeof agent !== "object" ||
+          !("jobId" in agent) ||
+          typeof agent.jobId !== "string"
+        ) {
+          throw statusError("Personal Agent turn has no assigned Job", 409);
+        }
+        const prior = payload?.personalAgentTurnStatus;
+        if (prior !== undefined && prior !== input.status) {
+          throw statusError(
+            "Personal Agent turn status was already recorded",
+            409
+          );
+        }
+        const encryptedPayload = await encryptCommandPayload({
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          commandId: command.id,
+          objectClass: "managed_conversation_prompt",
+          value: {
+            ...(payload ?? {}),
+            personalAgentTurnStatus: input.status,
+            personalAgentTurnStatusProviderTurnId: input.providerTurnId
+          }
+        });
+        await client.query(
+          `update managed_conversation_commands
+              set encrypted_payload = $3::jsonb, updated_at = now()
+            where owner_user_id = $1 and id = $2`,
+          [actor.userId, command.id, encryptedPayload]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          mutationId: `managed-agent-turn-status:${command.id}:${input.providerTurnId}`
+        });
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createManagedConversationAcceptedAgentAssignmentWithClient(
+      client,
+      input
+    ) {
+      const privateGoal = input.privateGoal.trim();
+      if (
+        !UUID_PATTERN.test(input.requestId) ||
+        !UUID_PATTERN.test(input.teamId) ||
+        !UUID_PATTERN.test(input.teamProjectId) ||
+        !UUID_PATTERN.test(input.ownerUserId) ||
+        !UUID_PATTERN.test(input.agentId) ||
+        !UUID_PATTERN.test(input.executionId) ||
+        !Number.isSafeInteger(input.agentVersion) ||
+        input.agentVersion <= 0 ||
+        !input.localProjectId.trim() ||
+        !privateGoal ||
+        Buffer.byteLength(privateGoal, "utf8") > 12_000 ||
+        !input.idempotencyKey.trim()
+      ) {
+        throw statusError("Accepted Agent assignment is invalid", 400);
+      }
+
+      const existing = await client.query<CommandRow>(
+        `select ${COMMAND_COLUMNS}
+           from managed_conversation_commands
+          where owner_user_id = $1 and idempotency_key = $2
+          limit 1`,
+        [input.ownerUserId, input.idempotencyKey]
+      );
+      if (existing.rows[0]) {
+        const payload = await decryptPayload(existing.rows[0]);
+        const assignment = payload?.personalAgent;
+        if (
+          existing.rows[0].execution_id !== input.executionId ||
+          !assignment ||
+          typeof assignment !== "object" ||
+          !("jobId" in assignment) ||
+          typeof assignment.jobId !== "string"
+        ) {
+          throw statusError("Accepted Agent assignment key was reused", 409);
+        }
+        return { jobId: assignment.jobId, commandId: existing.rows[0].id };
+      }
+
+      const executionResult = await client.query<ExecutionRow>(
+        `select ${EXECUTION_COLUMNS}
+           from managed_conversation_executions
+          where owner_user_id = $1 and id = $2
+          for update`,
+        [input.ownerUserId, input.executionId]
+      );
+      const execution = executionResult.rows[0];
+      if (
+        !execution ||
+        !["starting", "running"].includes(execution.state) ||
+        execution.project_id !== input.localProjectId
+      ) {
+        throw statusError("Reviewed Agent Conversation is unavailable", 409);
+      }
+
+      const identity = await client.query<{
+        current_version: number;
+        lifecycle: string;
+      }>(
+        `select current_version, lifecycle
+           from personal_agent_identities
+          where owner_user_id = $1 and id = $2
+          for share`,
+        [input.ownerUserId, input.agentId]
+      );
+      const actualAgentVersion = identity.rows[0]?.current_version;
+      if (identity.rows[0]?.lifecycle !== "active" || !actualAgentVersion) {
+        throw statusError(
+          "Personal Agent changed; reload it before accepting",
+          409
+        );
+      }
+      const version = await client.query<{
+        id: string;
+        name: string;
+        role: string;
+        soul_instructions: string;
+      }>(
+        `select id, name, role, soul_instructions
+           from personal_agent_identity_versions
+          where owner_user_id = $1 and agent_id = $2 and version = $3`,
+        [input.ownerUserId, input.agentId, actualAgentVersion]
+      );
+      const versionRow = version.rows[0];
+      if (!versionRow) {
+        throw statusError("Personal Agent version is unavailable", 409);
+      }
+
+      const latestCommand = await client.query<CommandRow>(
+        `select ${COMMAND_COLUMNS}
+           from managed_conversation_commands
+          where owner_user_id = $1 and execution_id = $2
+            and command_kind in ('start', 'prompt')
+          order by sequence desc
+          limit 1
+          for share`,
+        [input.ownerUserId, input.executionId]
+      );
+      const latestPayload = latestCommand.rows[0]
+        ? await decryptPayload(latestCommand.rows[0])
+        : null;
+      const context = personalAgentExecutionContextSchema.safeParse(
+        latestPayload?.personalAgentContext
+      );
+      if (
+        !context.success ||
+        context.data.identity.agentId !== input.agentId ||
+        context.data.identity.version !== actualAgentVersion ||
+        context.data.identity.identityVersionId !== versionRow.id ||
+        context.data.project.projectId !== input.localProjectId ||
+        context.data.pendingTeamRequestId !== input.requestId
+      ) {
+        throw statusError(
+          "Reviewed Conversation does not match the accepted Agent",
+          409
+        );
+      }
+
+      const conversation = await client.query<{ owner_user_id: string }>(
+        `select owner_user_id from personal_agent_conversations
+          where conversation_id = $1
+          for share`,
+        [input.executionId]
+      );
+      if (conversation.rows[0]?.owner_user_id !== input.ownerUserId) {
+        throw statusError("Personal Agent conversation is unavailable", 409);
+      }
+
+      const commandId = randomUUID();
+      const jobId = randomUUID();
+      const clientUserMessageId = randomUUID();
+      const requestDigest = sha256(
+        JSON.stringify({
+          kind: "accepted_team_agent_assignment",
+          requestId: input.requestId,
+          teamId: input.teamId,
+          teamProjectId: input.teamProjectId,
+          ownerUserId: input.ownerUserId,
+          agentId: input.agentId,
+          agentVersion: input.agentVersion,
+          localProjectId: input.localProjectId,
+          executionId: input.executionId,
+          privateGoal
+        })
+      );
+      const sequenceResult = await client.query<{ sequence: number }>(
+        `select coalesce(max(sequence), -1) + 1 as sequence
+           from managed_conversation_commands
+          where execution_id = $1`,
+        [input.executionId]
+      );
+      const sequence = sequenceResult.rows[0]!.sequence;
+      const personalAgent = {
+        jobId,
+        agentId: input.agentId,
+        agentVersion: actualAgentVersion,
+        identityVersionId: versionRow.id,
+        replayed: false
+      };
+      const assignedContext = personalAgentExecutionContextSchema.parse({
+        ...context.data,
+        identity: {
+          ...context.data.identity,
+          name: versionRow.name,
+          role: versionRow.role,
+          soulInstructions: context.data.identity.soulInstructions
+        },
+        activeJob: null,
+        pendingTeamRequestId: null
+      });
+      const encryptedPayload = await encryptPrompt({
+        ownerUserId: input.ownerUserId,
+        executionId: input.executionId,
+        commandId,
+        prompt: privateGoal,
+        clientUserMessageId,
+        settings: {
+          model: execution.model,
+          reasoningEffort: execution.reasoning_effort,
+          permissionMode: execution.permission_mode
+        },
+        personalAgent,
+        personalAgentContext: assignedContext,
+        ...(latestPayload?.personalMemoryContext
+          ? {
+              personalMemoryContext: personalMemoryTurnContextSchema.parse(
+                latestPayload.personalMemoryContext
+              )
+            }
+          : {})
+      });
+      await client.query(
+        `insert into managed_conversation_commands (
+           id, owner_user_id, execution_id, idempotency_key, sequence,
+           command_kind, request_digest, client_user_message_id,
+           execution_generation, encrypted_payload
+         ) values ($1, $2, $3, $4, $5, 'prompt', $6, $7, $8, $9::jsonb)`,
+        [
+          commandId,
+          input.ownerUserId,
+          input.executionId,
+          input.idempotencyKey,
+          sequence,
+          requestDigest,
+          clientUserMessageId,
+          execution.execution_generation,
+          encryptedPayload
+        ]
+      );
+      await client.query(
+        `insert into personal_agent_execution_jobs
+          (id, owner_user_id, conversation_id, attribution_kind, agent_id,
+           agent_version, idempotency_key, command_id, title, project_id, state)
+         values ($1, $2, $3, 'agent', $4, $5, $6, $7, 'Agent task', $8, 'queued')`,
+        [
+          jobId,
+          input.ownerUserId,
+          input.executionId,
+          input.agentId,
+          actualAgentVersion,
+          input.idempotencyKey,
+          commandId,
+          input.localProjectId
+        ]
+      );
+      await client.query(
+        `insert into personal_agent_execution_job_events
+          (owner_user_id, job_id, sequence, event_id, execution_generation,
+           event_type, payload, observed_at)
+         values ($1, $2, 1, $3, $4, 'job_enqueued', '{}'::jsonb, now())`,
+        [
+          input.ownerUserId,
+          jobId,
+          `request:${input.requestId}:job_enqueued`,
+          execution.execution_generation
+        ]
+      );
+      await notifyManagedConversationCommand(client, input.executionId);
+      return { jobId, commandId };
+    },
     async createManagedConversation(actor, input) {
       const projectId = input.projectId?.trim() || null;
       if (
@@ -2183,6 +2886,8 @@ export const createManagedConversationRepository = (
         (input.initialAgentId !== undefined &&
           (!input.initialPrompt?.trim() ||
             !input.initialPromptClientUserMessageId)) ||
+        (input.initialTeamAgentRequest !== undefined &&
+          !input.bindInitialTeamAgentRequestWithClient) ||
         (input.initialPromptClientUserMessageId !== undefined &&
           (!input.initialPrompt?.trim() ||
             !UUID_PATTERN.test(input.initialPromptClientUserMessageId))) ||
@@ -2234,6 +2939,7 @@ export const createManagedConversationRepository = (
               input.initialPromptClientUserMessageId,
             initialAgentId: input.initialAgentId,
             initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+            initialTeamAgentRequest: input.initialTeamAgentRequest,
             initialMemoryStatus: input.initialPersonalMemoryContext?.status,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
           });
@@ -2272,6 +2978,7 @@ export const createManagedConversationRepository = (
             input.initialPromptClientUserMessageId,
           initialAgentId: input.initialAgentId,
           initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+          initialTeamAgentRequest: input.initialTeamAgentRequest,
           initialMemoryStatus: input.initialPersonalMemoryContext?.status,
           deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
         });
@@ -2417,12 +3124,127 @@ export const createManagedConversationRepository = (
             [executionId, actor.userId, input.initialAgentId]
           );
           initialPersonalAgent = {
-            jobId: randomUUID(),
+            jobId: null,
             agentId: input.initialAgentId,
             agentVersion: input.initialExpectedAgentVersion,
             identityVersionId,
             replayed: false
           };
+        }
+        if (input.initialTeamAgentRequest) {
+          const binding = await input.bindInitialTeamAgentRequestWithClient!(
+            client,
+            executionId
+          );
+          if (
+            !binding ||
+            binding.ownerUserId !== actor.userId ||
+            binding.localProjectId !== projectId ||
+            binding.teamId !== input.initialTeamAgentRequest.teamId ||
+            binding.requestId !== input.initialTeamAgentRequest.requestId
+          ) {
+            throw statusError("Team Agent review is no longer available", 409);
+          }
+          if (initialPersonalAgent) {
+            if (
+              binding.agentId !== initialPersonalAgent.agentId ||
+              binding.agentVersion !== initialPersonalAgent.agentVersion ||
+              !initialPersonalAgentContext
+            ) {
+              throw statusError(
+                "Team Agent review is no longer available",
+                409
+              );
+            }
+            initialPersonalAgentContext =
+              personalAgentExecutionContextSchema.parse({
+                ...initialPersonalAgentContext,
+                pendingTeamRequestId: binding.requestId
+              });
+          } else {
+            // Native Studio starts the private review execution first, then
+            // queues its first planning prompt through the normal prompt route.
+            // Bind the pending request and Agent inside this start transaction.
+            if (input.initialPrompt?.trim()) {
+              throw statusError(
+                "Team Agent review start requires an explicit Agent context",
+                400
+              );
+            }
+            const identity = await client.query<{
+              current_version: number;
+              lifecycle: string;
+            }>(
+              `select current_version, lifecycle
+                 from personal_agent_identities
+                where owner_user_id = $1 and id = $2
+                for update`,
+              [actor.userId, binding.agentId]
+            );
+            if (
+              !identity.rows[0] ||
+              identity.rows[0].lifecycle !== "active" ||
+              identity.rows[0].current_version !== binding.agentVersion
+            ) {
+              throw statusError(
+                "Personal Agent changed; reload it before sending",
+                409
+              );
+            }
+            const version = await client.query<{ id: string }>(
+              `select id from personal_agent_identity_versions
+                where owner_user_id = $1 and agent_id = $2 and version = $3`,
+              [actor.userId, binding.agentId, binding.agentVersion]
+            );
+            const identityVersionId = version.rows[0]?.id;
+            if (!identityVersionId) {
+              throw statusError("Personal Agent version is unavailable", 409);
+            }
+            await client.query(
+              `insert into personal_agent_conversations
+                (conversation_id, owner_user_id, active_agent_id)
+               values ($1, $2, $3)
+               on conflict (conversation_id) do nothing`,
+              [executionId, actor.userId, binding.agentId]
+            );
+            const conversationOwner = await client.query<{
+              owner_user_id: string;
+            }>(
+              `select owner_user_id from personal_agent_conversations
+                where conversation_id = $1 for update`,
+              [executionId]
+            );
+            if (conversationOwner.rows[0]?.owner_user_id !== actor.userId) {
+              throw statusError(
+                "Personal Agent conversation is unavailable",
+                409
+              );
+            }
+            await client.query(
+              `insert into personal_agent_conversation_participants
+                (conversation_id, owner_user_id, agent_id, ordinal)
+               select $1, $2, $3, coalesce(max(ordinal), -1) + 1
+                 from personal_agent_conversation_participants
+                where conversation_id = $1
+               on conflict (conversation_id, agent_id) do nothing`,
+              [executionId, actor.userId, binding.agentId]
+            );
+            await client.query(
+              `update personal_agent_conversations
+                  set active_agent_id = $3,
+                      version = version + case when active_agent_id is distinct from $3 then 1 else 0 end,
+                      updated_at = now()
+                where conversation_id = $1 and owner_user_id = $2`,
+              [executionId, actor.userId, binding.agentId]
+            );
+            initialPersonalAgent = {
+              jobId: null,
+              agentId: binding.agentId,
+              agentVersion: binding.agentVersion,
+              identityVersionId,
+              replayed: false
+            };
+          }
         }
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
@@ -2468,36 +3290,6 @@ export const createManagedConversationRepository = (
             input.deferUntilRuntimeBinding === true ? executionId : null
           ]
         );
-        if (initialPersonalAgent) {
-          await client.query(
-            `insert into personal_agent_execution_jobs
-              (id, owner_user_id, conversation_id, attribution_kind, agent_id,
-               agent_version, idempotency_key, command_id, title, project_id, state)
-             values ($1, $2, $3, 'agent', $4, $5, $6, $7, $8, $9, 'queued')`,
-            [
-              initialPersonalAgent.jobId,
-              actor.userId,
-              executionId,
-              initialPersonalAgent.agentId,
-              initialPersonalAgent.agentVersion,
-              input.idempotencyKey,
-              commandId,
-              "Agent task",
-              projectId
-            ]
-          );
-          await client.query(
-            `insert into personal_agent_execution_job_events
-              (owner_user_id, job_id, sequence, event_id, execution_generation,
-               event_type, payload, observed_at)
-             values ($1, $2, 1, $3, 1, 'job_enqueued', '{}'::jsonb, now())`,
-            [
-              actor.userId,
-              initialPersonalAgent.jobId,
-              `command:${commandId}:job_enqueued`
-            ]
-          );
-        }
         await appendManagedConversationEvent(client, {
           ownerUserId: actor.userId,
           executionId,
@@ -2552,6 +3344,12 @@ export const createManagedConversationRepository = (
           (input.expectedAgentVersion === undefined) ||
         (input.agentId === undefined) !==
           (input.personalAgentContext === undefined) ||
+        (input.serverPurpose === undefined) !==
+          (input.teamSummary === undefined) ||
+        (input.serverPurpose === "team_summary_draft" &&
+          (!UUID_PATTERN.test(input.teamSummary!.teamId) ||
+            !UUID_PATTERN.test(input.teamSummary!.requestId) ||
+            !UUID_PATTERN.test(input.teamSummary!.jobId))) ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
           input.clientUserMessageId
         ) ||
@@ -2652,6 +3450,12 @@ export const createManagedConversationRepository = (
             clientUserMessageId: input.clientUserMessageId,
             prompt,
             fileMentionCommandIds,
+            ...(input.serverPurpose
+              ? {
+                  serverPurpose: input.serverPurpose,
+                  teamSummary: input.teamSummary
+                }
+              : {}),
             ...(input.agentId
               ? {
                   agentId: input.agentId,
@@ -2684,7 +3488,8 @@ export const createManagedConversationRepository = (
             savedAgent &&
             typeof savedAgent === "object" &&
             "jobId" in savedAgent &&
-            typeof savedAgent.jobId === "string" &&
+            (typeof savedAgent.jobId === "string" ||
+              savedAgent.jobId === null) &&
             "agentId" in savedAgent &&
             typeof savedAgent.agentId === "string" &&
             "agentVersion" in savedAgent &&
@@ -2802,7 +3607,7 @@ export const createManagedConversationRepository = (
             [input.executionId, actor.userId, input.agentId]
           );
           personalAgent = {
-            jobId: randomUUID(),
+            jobId: null,
             agentId: input.agentId,
             agentVersion: input.expectedAgentVersion,
             identityVersionId,
@@ -2875,7 +3680,13 @@ export const createManagedConversationRepository = (
           settings,
           ...(personalAgent ? { personalAgent } : {}),
           ...(personalAgentContext ? { personalAgentContext } : {}),
-          ...(personalMemoryContext ? { personalMemoryContext } : {})
+          ...(personalMemoryContext ? { personalMemoryContext } : {}),
+          ...(input.serverPurpose
+            ? {
+                serverPurpose: input.serverPurpose,
+                teamSummary: input.teamSummary
+              }
+            : {})
         });
         const result = await client.query<CommandRow>(
           `insert into managed_conversation_commands (
@@ -2896,7 +3707,7 @@ export const createManagedConversationRepository = (
             encryptedPayload
           ]
         );
-        if (personalAgent && personalAgentContext) {
+        if (personalAgent?.jobId && personalAgentContext) {
           await client.query(
             `insert into personal_agent_execution_jobs
               (id, owner_user_id, conversation_id, attribution_kind, agent_id,
@@ -4013,6 +4824,12 @@ export const createManagedConversationRepository = (
 
     async listManagedConversationPromptHistory(actor, input) {
       const limit = Math.min(Math.max(input.limit ?? 20, 1), 20);
+      const assignmentFilter = input.includeAssigned
+        ? ""
+        : `and not exists (
+              select 1 from personal_agent_execution_jobs job
+               where job.command_id = managed_conversation_commands.id
+            )`;
       const cursor = input.before?.match(/^prompt:(\d+)$/);
       if (
         input.before &&
@@ -4026,10 +4843,7 @@ export const createManagedConversationRepository = (
           where owner_user_id = $1 and execution_id = $2
             and command_kind = 'prompt' and state = 'completed'
             and ($3::integer is null or sequence < $3)
-            and not exists (
-              select 1 from personal_agent_execution_jobs job
-               where job.command_id = managed_conversation_commands.id
-            )
+            ${assignmentFilter}
           order by sequence desc
           limit $4`,
         [
@@ -5164,8 +5978,9 @@ export const createManagedConversationRepository = (
                   startAgentValue &&
                   typeof startAgentValue === "object" &&
                   "jobId" in startAgentValue &&
-                  typeof startAgentValue.jobId === "string" &&
-                  UUID_PATTERN.test(startAgentValue.jobId) &&
+                  (startAgentValue.jobId === null ||
+                    (typeof startAgentValue.jobId === "string" &&
+                      UUID_PATTERN.test(startAgentValue.jobId))) &&
                   "agentId" in startAgentValue &&
                   typeof startAgentValue.agentId === "string" &&
                   UUID_PATTERN.test(startAgentValue.agentId) &&
@@ -5175,7 +5990,7 @@ export const createManagedConversationRepository = (
                   typeof startAgentValue.identityVersionId === "string" &&
                   UUID_PATTERN.test(startAgentValue.identityVersionId)
                     ? {
-                        jobId: startAgentValue.jobId,
+                        jobId: startAgentValue.jobId as string | null,
                         agentId: startAgentValue.agentId,
                         agentVersion: startAgentValue.agentVersion as number,
                         identityVersionId: startAgentValue.identityVersionId,
@@ -5304,7 +6119,7 @@ export const createManagedConversationRepository = (
                     where id = $1`,
                   [row.id, { initialPromptCommandId: childCommandId }]
                 );
-                if (startAgent) {
+                if (startAgent?.jobId) {
                   const rebound = await client.query(
                     `update personal_agent_execution_jobs
                         set command_id = $3,

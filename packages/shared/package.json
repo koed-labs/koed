@@ -35,6 +35,10 @@
       "types": "./dist/public-square-contract.d.ts",
       "import": "./dist/public-square-contract.js"
     },
+    "./team-agent-requests": {
+      "types": "./dist/team-agent-requests-contract.d.ts",
+      "import": "./dist/team-agent-requests-contract.js"
+    },
     "./private-network": {
       "types": "./dist/private-network.d.ts",
       "import": "./dist/private-network.js"

@@ -3,7 +3,9 @@ import type {
   MemorySourceRepository,
   PersonalNoteRecord,
   PublicSquareRepository,
-  SharedMemoryRepository
+  SharedMemoryRepository,
+  TeamAgentRequestsRepository,
+  CreateOwnerJobWithClient
 } from "@koed/db";
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -28,6 +30,7 @@ import {
 } from "./admission.js";
 import {
   assertUpstreamOperationPathAllowed,
+  upstreamAdvertisesCapability,
   upstreamSupportsCollaborationRealtime
 } from "../local-edge/upstream-routing.js";
 import {
@@ -55,6 +58,15 @@ import {
   workspaceCollaborationParamsSchema
 } from "./schemas.js";
 import { publicCollaborationThread } from "./public-thread.js";
+import {
+  createTeamAgentRequestInputSchema,
+  decideTeamAgentRequestInputSchema,
+  listTeamAgentRequestsQuerySchema,
+  postTeamAgentRequestOutcomeInputSchema,
+  updateTeamAgentOfferInputSchema,
+  updateTeamAgentRequestReviewInputSchema,
+  withdrawTeamAgentRequestInputSchema
+} from "@koed/shared/team-agent-requests";
 
 const SMALL_BODY_LIMIT_BYTES = 16 * 1024;
 const MESSAGE_BODY_LIMIT_BYTES = 72 * 1024;
@@ -76,6 +88,8 @@ export interface CollaborationRouteContext extends Pick<
     SharedMemoryRepository,
     "listWorkspaceGrants"
   >;
+  requireTeamAgentRequestsRepository(): TeamAgentRequestsRepository;
+  createOwnerJobWithClient: CreateOwnerJobWithClient;
   projectPersonalNote(input: {
     ownerUserId: string;
     note: PersonalNoteRecord;
@@ -328,7 +342,7 @@ export const registerCollaborationRoutes = (
     body?: unknown
   ): Promise<Record<string, unknown> | null> => {
     if (!authority) return null;
-    const method = request.method as "GET" | "POST" | "PUT";
+    const method = request.method as "GET" | "POST" | "PUT" | "DELETE";
     const requestUrl = new URL(request.url, "http://localhost");
     const path = `${requestUrl.pathname}${requestUrl.search}`;
     assertUpstreamOperationPathAllowed(operationFamily, method, path);
@@ -364,6 +378,277 @@ export const registerCollaborationRoutes = (
     }
     return payload;
   };
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/agent-offers",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_read",
+        authority
+      );
+      if (proxied) return proxied;
+      const page = await context
+        .requireTeamAgentRequestsRepository()
+        .listOffers({ userId: user.id }, { teamId });
+      if (!page) throw forbidden();
+      return { teamId, offers: page.items, serverTime: page.serverTime };
+    }
+  );
+
+  app.put(
+    "/v1/collaboration/teams/:teamId/agent-offers/:agentId",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), agentId: z.uuid() })
+        .parse(request.params);
+      const input = updateTeamAgentOfferInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const offer = await context
+        .requireTeamAgentRequestsRepository()
+        .updateOffer({ userId: user.id }, { ...params, ...input });
+      if (!offer) throw forbidden();
+      return { offer };
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/teams/:teamId/agent-requests",
+    { preHandler: writeRateLimit, bodyLimit: MESSAGE_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const input = createTeamAgentRequestInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const created = await context
+        .requireTeamAgentRequestsRepository()
+        .createRequest({ userId: user.id }, { teamId, ...input });
+      if (!created) throw forbidden();
+      return { request: created };
+    }
+  );
+
+  const listTeamAgentRequests = async (
+    request: FastifyRequest,
+    inbox: boolean
+  ) => {
+    const { user, authority } = await authenticatePublicSquare(
+      request,
+      "team_chat_read"
+    );
+    const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+    const query = listTeamAgentRequestsQuerySchema.parse(request.query);
+    const proxied = await proxyPublicSquare(
+      request,
+      "team_chat_read",
+      authority
+    );
+    if (proxied) return proxied;
+    const page = await context
+      .requireTeamAgentRequestsRepository()
+      .listRequests({ userId: user.id }, { teamId, ...query, inbox });
+    if (!page) throw forbidden();
+    return page;
+  };
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/agent-requests",
+    { preHandler: readRateLimit },
+    async (request) => listTeamAgentRequests(request, false)
+  );
+  app.get(
+    "/v1/collaboration/teams/:teamId/agent-requests/inbox",
+    { preHandler: readRateLimit },
+    async (request) => listTeamAgentRequests(request, true)
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/agent-requests/:requestId/review",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), requestId: z.uuid() })
+        .parse(request.params);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_read",
+        authority
+      );
+      if (proxied) return proxied;
+      const review = await context
+        .requireTeamAgentRequestsRepository()
+        .getReview({ userId: user.id }, params);
+      if (!review) throw forbidden();
+      return { review };
+    }
+  );
+  app.put(
+    "/v1/collaboration/teams/:teamId/agent-requests/:requestId/review",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), requestId: z.uuid() })
+        .parse(request.params);
+      const input = updateTeamAgentRequestReviewInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const review = await context
+        .requireTeamAgentRequestsRepository()
+        .updateReview({ userId: user.id }, { ...params, ...input });
+      if (!review) throw forbidden();
+      return { review };
+    }
+  );
+  app.put(
+    "/v1/collaboration/teams/:teamId/agent-requests/:requestId/decision",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), requestId: z.uuid() })
+        .parse(request.params);
+      const input = decideTeamAgentRequestInputSchema.parse(request.body);
+      if (
+        input.decision === "accept" &&
+        authority &&
+        (authority.backend.routePolicy.managedExecution !== "enabled" ||
+          authority.backend.capabilities?.state !== "validated" ||
+          (authority.backend.capabilities.expiresAt &&
+            Date.parse(authority.backend.capabilities.expiresAt) <=
+              Date.now()) ||
+          !upstreamAdvertisesCapability(
+            authority.backend,
+            "memory.managedConversations"
+          ))
+      ) {
+        throw Object.assign(
+          new Error("Managed Agent execution is disabled for this upstream"),
+          { statusCode: 403 }
+        );
+      }
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      if (input.decision === "accept") {
+        const authorization = request.headers.authorization?.trim() ?? "";
+        if (!/^Bearer(?:\s|$)/i.test(authorization)) {
+          await context.authenticateSessionOrDeviceCredential(
+            request,
+            "managed_execution",
+            {
+              apiTokenError: "API Tokens cannot authorize Agent execution"
+            }
+          );
+        }
+      }
+      const repo = context.requireTeamAgentRequestsRepository();
+      const result = await repo.decideRequest(
+        { userId: user.id },
+        { ...params, ...input },
+        (client, jobInput) => context.createOwnerJobWithClient(client, jobInput)
+      );
+      if (!result) throw forbidden();
+      return { request: result };
+    }
+  );
+  app.delete(
+    "/v1/collaboration/teams/:teamId/agent-requests/:requestId",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), requestId: z.uuid() })
+        .parse(request.params);
+      const input = withdrawTeamAgentRequestInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const result = await context
+        .requireTeamAgentRequestsRepository()
+        .withdrawRequest({ userId: user.id }, { ...params, ...input });
+      if (!result) throw forbidden();
+      return { request: result };
+    }
+  );
+  app.post(
+    "/v1/collaboration/teams/:teamId/agent-requests/:requestId/outcome",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), requestId: z.uuid() })
+        .parse(request.params);
+      const input = postTeamAgentRequestOutcomeInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const result = await context
+        .requireTeamAgentRequestsRepository()
+        .postOutcome({ userId: user.id }, { ...params, ...input });
+      if (!result) throw forbidden();
+      return { request: result };
+    }
+  );
 
   app.get(
     "/v1/collaboration/personal/snapshot",

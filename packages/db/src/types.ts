@@ -24,6 +24,7 @@ import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.
 import type { HighRiskActionRepository } from "./high-risk-action-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { ManagedConversationRepository } from "./managed-conversation-repository.js";
+import type { TeamAgentRequestsRepository } from "./team-agent-requests-repository.js";
 import type { ManagedTerminalRepository } from "./managed-terminal-repository.js";
 import type { DevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import type { ManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
@@ -1972,6 +1973,7 @@ export interface MemorySourceRepository
     PublicSquareRepository,
     SharedMemoryRepository,
     TeamConversationSourceRepository,
+    TeamAgentRequestsRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;

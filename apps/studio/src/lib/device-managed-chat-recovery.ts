@@ -35,6 +35,13 @@ export type ManagedChatSendRequestIdentity = Readonly<{
   model: string;
   reasoningEffort: string | null;
   permissionMode: string;
+  teamAgentRequestBinding?:
+    | readonly [
+        requestId: string,
+        requestVersion: number,
+        reviewVersion: number
+      ]
+    | null;
   expectedSettings: Readonly<{
     model: string;
     reasoningEffort: string | null;
@@ -91,6 +98,7 @@ export function managedChatSendRequestFingerprint(
     identity.model,
     identity.reasoningEffort,
     identity.permissionMode,
+    identity.teamAgentRequestBinding ?? null,
     identity.expectedSettings
       ? [
           identity.expectedSettings.model,
@@ -151,13 +159,12 @@ function isUnsubmittedStartToPromptTransition(
     if (
       !Array.isArray(previous) ||
       !Array.isArray(next) ||
-      previous.length !== 12 ||
-      next.length !== 12 ||
+      ![12, 13].includes(previous.length) ||
+      ![12, 13].includes(next.length) ||
       previous[0] !== "start" ||
       next[0] !== "prompt" ||
       previous[2] !== null ||
       previous[3] !== null ||
-      previous[11] !== null ||
       typeof next[2] !== "string" ||
       next[2].length === 0 ||
       !(
@@ -169,11 +176,15 @@ function isUnsubmittedStartToPromptTransition(
     ) {
       return false;
     }
+    const previousBinding = previous.length === 13 ? previous[11] : null;
+    const nextBinding = next.length === 13 ? next[11] : null;
+    if (JSON.stringify(previousBinding) !== JSON.stringify(nextBinding))
+      return false;
     if (previous[1] !== next[1]) return false;
     for (let index = 4; index <= 10; index += 1) {
       if (previous[index] !== next[index]) return false;
     }
-    const expectedSettings = next[11];
+    const expectedSettings = next.length === 13 ? next[12] : next[11];
     if (next[3] === null) return expectedSettings === null;
     return (
       Array.isArray(expectedSettings) &&

@@ -21,8 +21,9 @@ import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 import { sharedMemorySourceRefSchema } from "./shared-memory-source.js";
 export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
+import { teamAgentRequestInvalidationSchema } from "./team-agent-requests-contract.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 5;
+export const COLLABORATION_CONTRACT_VERSION = 6;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -3765,7 +3766,8 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
       projectId: z.uuid().nullable(),
       publicationId: z.uuid().nullable()
     })
-    .strict()
+    .strict(),
+  teamAgentRequestInvalidationSchema
 ]);
 
 export const collaborationRealtimeEventFamilySchema = z.enum([
@@ -3787,6 +3789,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "pending_share_lifecycle",
   "managed_conversation_changed",
   "public_square_changed",
+  "team_agent_request_changed",
   "access_revoked"
 ]);
 
@@ -3953,6 +3956,7 @@ const realtimeUpdateDeliverySchema = z
       pending_share_lifecycle: new Set(["owned_share_status_changed"]),
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
       public_square_changed: new Set(["public_square_invalidated"]),
+      team_agent_request_changed: new Set(["team_agent_request_invalidated"]),
       access_revoked: new Set(["shared_session_removed"])
     };
 

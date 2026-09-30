@@ -162,6 +162,48 @@ export type {
   PublicSquarePublication,
   TeamProjectMemberConnection
 } from "./public-square-contract.js";
+export {
+  createTeamAgentRequestInputSchema,
+  decideTeamAgentRequestInputSchema,
+  listTeamAgentRequestsQuerySchema,
+  postTeamAgentRequestOutcomeInputSchema,
+  teamAgentOfferPageSchema,
+  teamAgentOfferResponseSchema,
+  teamAgentOfferSchema,
+  teamAgentOffersResponseSchema,
+  teamAgentRequestInboxSchema,
+  teamAgentRequestInvalidationSchema,
+  teamAgentRequestJobStatusSchema,
+  teamAgentRequestPageSchema,
+  teamAgentRequestResponseSchema,
+  teamAgentRequestReviewResponseSchema,
+  teamAgentRequestReviewSchema,
+  teamAgentRequestSchema,
+  teamAgentRequestStatusSchema,
+  updateTeamAgentOfferInputSchema,
+  updateTeamAgentRequestReviewInputSchema,
+  withdrawTeamAgentRequestInputSchema
+} from "./team-agent-requests-contract.js";
+export type {
+  CreateTeamAgentRequestInput,
+  DecideTeamAgentRequestInput,
+  PostTeamAgentRequestOutcomeInput,
+  TeamAgentOffer,
+  TeamAgentOfferPage,
+  TeamAgentOfferResponse,
+  TeamAgentOffersResponse,
+  TeamAgentRequest,
+  TeamAgentRequestInbox,
+  TeamAgentRequestInvalidation,
+  TeamAgentRequestPage,
+  TeamAgentRequestReview,
+  TeamAgentRequestReviewResponse,
+  TeamAgentRequestResponse,
+  TeamAgentRequestStatus,
+  UpdateTeamAgentOfferInput,
+  UpdateTeamAgentRequestReviewInput,
+  WithdrawTeamAgentRequestInput
+} from "./team-agent-requests-contract.js";
 
 // Internal bootstrap identity shared by local capture and Desktop credentials.
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
@@ -262,6 +304,10 @@ export {
   parsePersonalAgentIdentity,
   parsePersonalAgentIdentityVersion,
   personalAgentExecutionContextSchema,
+  personalAgentIntentSignalSchema,
+  personalAgentIntentSignalJsonSchema,
+  personalAgentTurnStatusSchema,
+  personalAgentTurnStatusJsonSchema,
   personalAgentAttemptCountersSchema,
   personalAgentAttemptOutcomeSchema,
   personalAgentAttributionSchema,
@@ -295,6 +341,8 @@ export type {
   PersonalAgentConversation,
   PersonalAgentExecutionAttempt,
   PersonalAgentExecutionContext,
+  PersonalAgentIntentSignal,
+  PersonalAgentTurnStatus,
   PersonalAgentExecutionJob,
   PersonalAgentIdentity,
   PersonalAgentIdentityVersion,

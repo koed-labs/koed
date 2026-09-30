@@ -1092,10 +1092,15 @@ describe("desktop collaboration broker", () => {
     const deviceId = "33333333-3333-4333-8333-333333333333";
     const teamId = "44444444-4444-4444-8444-444444444444";
     const threadId = "55555555-5555-4555-8555-555555555555";
+    const channelId = "55555555-5555-4555-8555-555555555556";
+    const projectId = "55555555-5555-4555-8555-555555555557";
     const clientMessageId = "66666666-6666-4666-8666-666666666666";
     const messageId = "77777777-7777-4777-8777-777777777777";
+    const channelClientMessageId = "66666666-6666-4666-8666-666666666667";
+    const channelMessageId = "77777777-7777-4777-8777-777777777778";
     const timestamp = "2026-07-20T00:00:00.000Z";
     const messageBody = "Accepted before the process stopped";
+    const channelMessageBody = "Accepted top-level Team channel send";
     registerUpstreamBackend(paths, {
       id: backendId,
       url: "http://localhost:3400",
@@ -1159,6 +1164,15 @@ describe("desktop collaboration broker", () => {
       clientMessageId,
       body: messageBody
     });
+    storeCollaborationPendingSend(koedHome, {
+      ownerId: ownerUserId,
+      backendId,
+      remotePrincipalId: principalId,
+      deviceCredentialId: deviceId,
+      thread: { scope: "team", teamId, threadId: channelId },
+      clientMessageId: channelClientMessageId,
+      body: channelMessageBody
+    });
     const receiptInput = {
       ownerId: ownerUserId,
       backendId,
@@ -1191,15 +1205,69 @@ describe("desktop collaboration broker", () => {
         }
       }
     };
+    const channelReceiptInput = {
+      ownerId: ownerUserId,
+      backendId,
+      remotePrincipalId: principalId,
+      deviceCredentialId: deviceId,
+      receipt: {
+        thread: { scope: "team" as const, teamId, threadId: channelId },
+        clientMessageId: channelClientMessageId,
+        message: {
+          id: channelMessageId,
+          clientMessageId: channelClientMessageId,
+          threadId: channelId,
+          scope: "team" as const,
+          teamId,
+          sequence: 1,
+          sender: {
+            id: principalId,
+            displayName: "Team member",
+            membershipState: "enabled" as const
+          },
+          senderKind: "user" as const,
+          body: channelMessageBody,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          editedAt: null,
+          deletedAt: null,
+          delivery: "sent" as const,
+          recipientStatus: null,
+          failure: null
+        }
+      }
+    };
     // Simulate a crash after receipt persistence but before the pending-row cleanup.
     storeCollaborationSendReceipt(koedHome, receiptInput);
+    storeCollaborationSendReceipt(koedHome, channelReceiptInput);
     const remoteThread = {
       id: threadId,
       logicalId: "88888888-8888-4888-8888-888888888888",
       scope: "team" as const,
       teamId,
-      kind: "dm" as const,
-      name: null,
+      kind: "team_project_channel" as const,
+      name: "Project work",
+      topic: null,
+      teamProjectId: projectId,
+      version: 1,
+      lifecycle: "active" as const,
+      canPost: true,
+      latestSequence: 0,
+      unreadCount: 0,
+      lastReadMessageId: null,
+      lastReadSequence: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      lastActivityAt: timestamp,
+      archivedAt: null
+    };
+    const remoteChannel = {
+      id: channelId,
+      logicalId: "88888888-8888-4888-8888-888888888889",
+      scope: "team" as const,
+      teamId,
+      kind: "team_channel" as const,
+      name: "general",
       topic: null,
       version: 1,
       lifecycle: "active" as const,
@@ -1212,18 +1280,7 @@ describe("desktop collaboration broker", () => {
       updatedAt: timestamp,
       lastActivityAt: timestamp,
       archivedAt: null,
-      participants: [
-        {
-          id: ownerUserId,
-          displayName: "Local owner",
-          membershipState: "enabled" as const
-        },
-        {
-          id: principalId,
-          displayName: "Team member",
-          membershipState: "enabled" as const
-        }
-      ]
+      systemKey: "team.general" as const
     };
     const teamSnapshot = collaborationSnapshotSchema.parse({
       ...snapshot,
@@ -1266,13 +1323,27 @@ describe("desktop collaboration broker", () => {
                 }
               }
             ],
-            directMessages: [remoteThread],
+            directMessages: [],
+            channels: [remoteChannel],
+            sharedProjects: [
+              {
+                id: projectId,
+                teamId,
+                name: "Project work",
+                thread: remoteThread
+              }
+            ],
             version: 1,
             workspaces: []
           }
         ]
       },
-      selection: { kind: "team_direct_message", teamId, threadId },
+      selection: {
+        kind: "team_project_channel",
+        teamId,
+        teamProjectId: projectId,
+        threadId
+      },
       view: {
         kind: "thread",
         thread: remoteThread,
@@ -1347,6 +1418,28 @@ describe("desktop collaboration broker", () => {
           entry.event.send.state === "sent"
       )
     ).toBe(true);
+    expect(
+      sent.some(
+        (entry) =>
+          entry.type === "renderer_event" &&
+          entry.event.type === "durable_send" &&
+          entry.event.send.clientMessageId === channelClientMessageId &&
+          entry.event.send.state === "sent"
+      )
+    ).toBe(true);
+    expect(
+      sent
+        .filter(
+          (entry) =>
+            entry.type === "renderer_event" &&
+            entry.event.type === "durable_send"
+        )
+        .map((entry) =>
+          entry.type === "renderer_event" && entry.event.type === "durable_send"
+            ? entry.event.send.authority.workspaceId
+            : undefined
+        )
+    ).toEqual([null, null]);
 
     await dispatch(
       "99999999-9999-4999-8999-999999999993",

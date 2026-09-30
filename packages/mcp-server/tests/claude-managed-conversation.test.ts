@@ -13,14 +13,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const sdk = vi.hoisted(() => ({
   query: vi.fn(),
-  forkSession: vi.fn()
+  forkSession: vi.fn(),
+  createSdkMcpServer: vi.fn()
 }));
 
-vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
-  query: sdk.query,
-  forkSession: sdk.forkSession
-}));
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return {
+    ...actual,
+    query: sdk.query,
+    forkSession: sdk.forkSession,
+    createSdkMcpServer: (
+      ...args: Parameters<typeof actual.createSdkMcpServer>
+    ) => {
+      sdk.createSdkMcpServer(...args);
+      return actual.createSdkMcpServer(...args);
+    }
+  };
+});
 
 import {
   ClaudeManagedConversationCancelledError,
@@ -40,6 +51,7 @@ const temporaryDirectories: string[] = [];
 afterEach(() => {
   sdk.query.mockReset();
   sdk.forkSession.mockReset();
+  sdk.createSdkMcpServer.mockClear();
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -897,5 +909,236 @@ describe("managed Claude home leases", () => {
     destroyManagedClaudeHome(managedHome, env);
 
     expect(fs.existsSync(managedHome)).toBe(false);
+  });
+});
+
+describe("Claude Agent assignment native tool", () => {
+  const currentIntentTool = () => {
+    const configuration = sdk.createSdkMcpServer.mock.calls.at(-1)?.[0] as
+      | Parameters<
+          (typeof import("@anthropic-ai/claude-agent-sdk"))["createSdkMcpServer"]
+        >[0]
+      | undefined;
+    const registered = configuration?.tools?.[0];
+    if (!registered)
+      throw new Error("No native Agent intent tool was registered");
+    return registered;
+  };
+  const assignment = () => ({
+    jobId: randomUUID(),
+    attemptId: randomUUID(),
+    title: "Review work",
+    state: "running" as const,
+    continuation: false
+  });
+
+  it("awaits authority before returning a native tool result in the existing query", async () => {
+    const { config } = fixture();
+    const result = assignment();
+    let committed = false;
+    const handler = vi.fn(async () => {
+      committed = true;
+      return result;
+    });
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        const response = await currentIntentTool().handler(
+          { kind: "assign", goal: "Review work" },
+          {}
+        );
+        expect(committed).toBe(true);
+        expect(response.content).toEqual([
+          { type: "text", text: JSON.stringify(result) }
+        ]);
+        yield successResult(options.sessionId!, "Assigned");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      personalAgentIntentHandler: handler
+    });
+    await session.start("Perform the discussed work");
+    expect(handler).toHaveBeenCalledExactlyOnceWith({
+      kind: "assign",
+      goal: "Review work"
+    });
+    expect(sdk.query).toHaveBeenCalledTimes(1);
+    expect(queryOptions().allowedTools).toContain(
+      "mcp__koed_agent_assignment__koed_agent_intent"
+    );
+    expect(queryOptions().mcpServers?.koed_agent_assignment?.type).toBe("sdk");
+    await expect(
+      currentIntentTool().handler({ kind: "assign", goal: "Late work" }, {})
+    ).rejects.toThrow("inactive Claude turn");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await session.closeAndWait();
+  });
+
+  it("rejects invalid provider signals without calling runner authority", async () => {
+    const { config } = fixture();
+    const handler = vi.fn(async () => assignment());
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        await expect(
+          currentIntentTool().handler(
+            { kind: "assign", goal: "Work", ownerUserId: randomUUID() },
+            {}
+          )
+        ).rejects.toThrow();
+        await expect(
+          currentIntentTool().handler({ kind: "assign" }, {})
+        ).rejects.toThrow();
+        yield successResult(options.sessionId!, "Clarify the work");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      personalAgentIntentHandler: handler
+    });
+    await session.start("Discuss an approach");
+    expect(handler).not.toHaveBeenCalled();
+    expect(sdk.query).toHaveBeenCalledTimes(1);
+    await session.closeAndWait();
+  });
+
+  it("propagates authority failure and retires the tool with the failed turn", async () => {
+    const { config } = fixture();
+    const handler = vi.fn(async () => {
+      throw new Error("Stale command fence");
+    });
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        await currentIntentTool().handler(
+          { kind: "new_job", goal: "Additional work" },
+          {}
+        );
+        yield successResult(options.sessionId!, "Unexpected authority success");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      personalAgentIntentHandler: handler
+    });
+    await expect(session.start("Do additional work")).rejects.toThrow(
+      "Stale command fence"
+    );
+    await expect(
+      currentIntentTool().handler({ kind: "continue" }, {})
+    ).rejects.toThrow("inactive Claude turn");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await session.closeAndWait();
+  });
+});
+
+describe("Claude Agent native Job outcome", () => {
+  const statusTool = () => {
+    const configuration = sdk.createSdkMcpServer.mock.calls.at(-1)?.[0] as
+      | Parameters<
+          (typeof import("@anthropic-ai/claude-agent-sdk"))["createSdkMcpServer"]
+        >[0]
+      | undefined;
+    const registered = configuration?.tools?.find(
+      (entry) => entry.name === "koed_agent_turn_status"
+    );
+    if (!registered) throw new Error("No native Job outcome tool registered");
+    return registered;
+  };
+
+  it("records a bounded outcome in the existing query and rejects stale or forged calls", async () => {
+    const { config } = fixture();
+    const handler = vi.fn(async () => {});
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        await expect(
+          statusTool().handler({ status: "complete", jobId: randomUUID() }, {})
+        ).rejects.toThrow();
+        await expect(
+          statusTool().handler({ status: "failed" }, {})
+        ).rejects.toThrow();
+        await statusTool().handler({ status: "awaiting_owner" }, {});
+        expect(handler).toHaveBeenCalledExactlyOnceWith("awaiting_owner");
+        yield successResult(options.sessionId!, "Which option should I use?");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      personalAgentTurnStatusHandler: handler
+    });
+    await session.start("Continue the assigned work");
+    expect(sdk.query).toHaveBeenCalledTimes(1);
+    expect(queryOptions().allowedTools).toContain(
+      "mcp__koed_agent_assignment__koed_agent_turn_status"
+    );
+    await expect(
+      statusTool().handler({ status: "complete" }, {})
+    ).rejects.toThrow("inactive Claude turn");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await session.closeAndWait();
+  });
+});
+
+describe("Claude per-turn planning and summary tool policy", () => {
+  it("limits pending review to read tools, disables tools for summary, and restores selected execution controls", async () => {
+    const { config } = fixture();
+    let policy: "work" | "planning" | "summary" = "planning";
+    let agentToolsEnabled = true;
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield successResult(options.sessionId!, "Reviewed");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      permissionMode: "bypassPermissions",
+      tools: ["Bash", "Read", "Write"],
+      allowedTools: ["Bash"],
+      executionPolicy: () => policy,
+      personalAgentToolsEnabled: () => agentToolsEnabled,
+      personalAgentTurnStatusHandler: vi.fn(async () => {})
+    });
+    await session.start("Review a Team request");
+    expect(queryOptions().tools).toEqual([
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "AskUserQuestion"
+    ]);
+    expect(queryOptions().allowDangerouslySkipPermissions).toBeUndefined();
+    expect(queryOptions().mcpServers).toEqual({});
+    expect(queryOptions().allowedTools).not.toContain("Bash");
+    policy = "summary";
+    await session.prompt("Draft a summary");
+    expect(queryOptions(1).tools).toEqual([]);
+    expect(queryOptions(1).allowedTools).toEqual([]);
+    expect(queryOptions(1).mcpServers).toEqual({});
+    policy = "work";
+    await session.prompt("Owner accepted the work");
+    expect(queryOptions(2).tools).toEqual(["Bash", "Read", "Write"]);
+    expect(queryOptions(2).permissionMode).toBe("bypassPermissions");
+    expect(queryOptions(2).allowDangerouslySkipPermissions).toBe(true);
+    agentToolsEnabled = false;
+    await session.prompt("Continue a direct AI Client chat");
+    expect(queryOptions(3).mcpServers?.koed_agent_assignment).toBeUndefined();
+    expect(queryOptions(3).allowedTools).not.toContain(
+      "mcp__koed_agent_assignment__koed_agent_turn_status"
+    );
+    expect(queryOptions(3).tools).toEqual(["Bash", "Read", "Write"]);
+    await session.closeAndWait();
   });
 });

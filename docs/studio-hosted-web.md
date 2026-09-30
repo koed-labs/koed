@@ -25,3 +25,12 @@ The Studio Settings page uses explicit, CSRF-protected loopback actions for the 
 ## Partial Agent replies
 
 Studio displays partial Agent text from owner-scoped encrypted runtime output. Provider turn and item IDs reconcile this text with saved history without showing duplicate replies. If an accepted turn has an uncertain outcome, keep its encrypted partial text and show **Partial response · outcome uncertain** after reload. This text is not a completed reply. Studio does not automatically resend the prompt. Known completion, interruption, cancellation, or an explicit session end retires or reconciles transient output through the existing managed authority.
+
+## Team Agent coordination
+
+The approved [Team Agent work contract](./studio-team-agent-work.md) extends
+existing Team messaging and private managed Conversations. Requests require
+explicit per-Team Agent availability and owner acceptance. Team request DTOs
+exclude private refinements, output, Memory and local paths. Native operations
+reuse the local edge and hosted browser operations use current session authority.
+Ticket 13 implementation and its focused validation are in progress.

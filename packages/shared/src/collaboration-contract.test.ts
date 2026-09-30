@@ -1946,6 +1946,39 @@ describe("collaboration snapshots and DTOs", () => {
 });
 
 describe("collaboration results and realtime", () => {
+  it("accepts scoped Team Agent request invalidations without private fields", () => {
+    const parsed = collaborationRendererUpdateSchema.safeParse({
+      type: "team_agent_request_invalidated",
+      teamId: ids.team,
+      requestId: ids.request,
+      channelId: ids.otherUser,
+      ownerId: ids.user,
+      kind: "request"
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      collaborationRendererUpdateSchema.safeParse({
+        type: "team_agent_request_invalidated",
+        teamId: ids.team,
+        requestId: ids.request,
+        channelId: ids.otherUser,
+        ownerId: ids.user,
+        kind: "request",
+        privateGoal: "secret"
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationRendererUpdateSchema.safeParse({
+        type: "team_agent_request_invalidated",
+        teamId: ids.team,
+        requestId: null,
+        channelId: null,
+        ownerId: ids.user,
+        kind: "offers"
+      }).success
+    ).toBe(true);
+  });
+
   it("normalizes latest-command cancellation eligibility without exposing attempts", () => {
     const update = {
       type: "managed_conversation_upserted",

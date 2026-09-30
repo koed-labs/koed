@@ -62,6 +62,7 @@ import { createMemoryQuestionRepository } from "./memory-question-repository.js"
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import { createPersonalAgentRepository } from "./personal-agent-repository.js";
 import { createPublicSquareRepository } from "./public-square-repository.js";
+import { createTeamAgentRequestsRepository } from "./team-agent-requests-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
@@ -4090,6 +4091,10 @@ export const createMemorySourceRepository = (
       teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
     }),
     ...createPublicSquareRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
+    }),
+    ...createTeamAgentRequestsRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
     }),

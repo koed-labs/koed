@@ -190,6 +190,17 @@ export const personalAgentExecutionContextSchema = z
         name: optionalText(256).nullable()
       })
       .strict(),
+    activeJob: z
+      .object({
+        jobId: z.uuid(),
+        state: z.enum(["queued", "running", "waiting"]),
+        goal: requiredText(1_000)
+      })
+      .strict()
+      .nullable()
+      .default(null),
+    /** Server-derived binding for an owner-private pending Team request. */
+    pendingTeamRequestId: z.uuid().nullable().default(null),
     memory: z
       .object({
         searchDomain: z.enum(["project", "global"]),
@@ -238,6 +249,51 @@ export const personalAgentExecutionContextSchema = z
 export type PersonalAgentExecutionContext = z.infer<
   typeof personalAgentExecutionContextSchema
 >;
+
+/**
+ * Provider-native signal emitted only when an Agent turn explicitly accepts
+ * or continues an assignment. The user prompt itself never carries this
+ * authority-bearing value.
+ */
+export const personalAgentIntentSignalSchema = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("assign"),
+        goal: requiredText(1_000)
+      })
+      .strict(),
+    z.object({ kind: z.literal("continue") }).strict(),
+    z
+      .object({
+        kind: z.literal("new_job"),
+        goal: requiredText(1_000)
+      })
+      .strict()
+  ])
+  .describe(
+    "A bounded Agent intent signal. Emit assign only for explicit user work requests, continue only for explicit follow-up on an active Job, and new_job only for explicit additional work after completion. Do not emit for planning, questions, discussion, or ambiguity."
+  );
+
+export type PersonalAgentIntentSignal = z.infer<
+  typeof personalAgentIntentSignalSchema
+>;
+
+export const personalAgentIntentSignalJsonSchema = z.toJSONSchema(
+  personalAgentIntentSignalSchema
+);
+
+/** State asserted by the Agent's actual turn, never inferred from its prose. */
+export const personalAgentTurnStatusSchema = z.enum([
+  "complete",
+  "awaiting_owner"
+]);
+export type PersonalAgentTurnStatus = z.infer<
+  typeof personalAgentTurnStatusSchema
+>;
+export const personalAgentTurnStatusJsonSchema = z.toJSONSchema(
+  z.object({ status: personalAgentTurnStatusSchema }).strict()
+);
 
 export const personalAgentParticipantSchema = z
   .object({
@@ -334,6 +390,7 @@ export type PersonalAgentAttribution = z.infer<
 export const personalAgentJobStateSchema = z.enum([
   "queued",
   "running",
+  "waiting",
   "succeeded",
   "failed",
   "canceled"
@@ -389,7 +446,21 @@ export const personalAgentExecutionJobSchema = z
     counters: personalAgentAttemptCountersSchema,
     lastAttemptId: z.uuid().nullable(),
     outputReference: z
-      .object({ runtimeItemIds: z.array(requiredText(256)).max(128) })
+      .object({
+        runtimeItemIds: z.array(requiredText(256)).max(128),
+        attemptOutputs: z
+          .array(
+            z
+              .object({
+                attemptId: z.uuid(),
+                runtimeItemIds: z.array(requiredText(256)).min(1).max(128)
+              })
+              .strict()
+          )
+          .max(100)
+          .optional(),
+        legacyRuntimeItemIds: z.array(requiredText(256)).max(128).optional()
+      })
       .strict()
       .nullable()
       .default(null),
@@ -410,6 +481,7 @@ export const personalAgentExecutionAttemptSchema = z
     id: z.uuid(),
     ownerUserId: z.uuid(),
     jobId: z.uuid(),
+    commandId: z.uuid().nullable().default(null),
     attemptNumber: z.number().int().positive(),
     attribution: personalAgentAttributionSchema,
     /** Actual settings used for this attempt, not job defaults. */

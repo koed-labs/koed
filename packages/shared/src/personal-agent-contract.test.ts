@@ -15,6 +15,8 @@ import {
   personalAgentRunningAttemptCount,
   personalAgentTerminalAttemptCount,
   personalAgentExecutionContextSchema,
+  personalAgentIntentSignalSchema,
+  personalAgentTurnStatusSchema,
   retirePersonalAgent,
   setPersonalAgentActiveRespondent
 } from "./personal-agent-contract.js";
@@ -112,6 +114,51 @@ const attempt = () =>
   });
 
 describe("Personal Agent domain contract", () => {
+  it("accepts only bounded structured assignment signals", () => {
+    expect(
+      personalAgentIntentSignalSchema.parse({
+        kind: "assign",
+        goal: "Review the authentication boundary."
+      })
+    ).toEqual({
+      kind: "assign",
+      goal: "Review the authentication boundary."
+    });
+    expect(personalAgentIntentSignalSchema.parse({ kind: "continue" })).toEqual(
+      { kind: "continue" }
+    );
+    expect(
+      personalAgentIntentSignalSchema.parse({
+        kind: "new_job",
+        goal: "Add regression coverage for the confirmed issue."
+      }).kind
+    ).toBe("new_job");
+    expect(
+      personalAgentIntentSignalSchema.safeParse({
+        kind: "assign",
+        goal: "   "
+      }).success
+    ).toBe(false);
+    expect(
+      personalAgentIntentSignalSchema.safeParse({
+        kind: "assign",
+        goal: "x".repeat(1_001)
+      }).success
+    ).toBe(false);
+    expect(
+      personalAgentIntentSignalSchema.safeParse({
+        kind: "continue",
+        goal: "Invented extra authority"
+      }).success
+    ).toBe(false);
+    expect(
+      personalAgentIntentSignalSchema.safeParse({
+        kind: "discussion",
+        goal: "No job"
+      }).success
+    ).toBe(false);
+  });
+
   it("requires Workspace attribution for Team evidence in Agent context", () => {
     const context = {
       schemaVersion: 1,
@@ -154,6 +201,31 @@ describe("Personal Agent domain contract", () => {
         }
       }).success
     ).toBe(true);
+  });
+
+  it("represents a waiting Job and restricts provider turn outcomes", () => {
+    const context = personalAgentExecutionContextSchema.parse({
+      schemaVersion: 1,
+      identity: {
+        agentId: ids.agent,
+        version: 1,
+        identityVersionId: ids.version,
+        name: "Planner",
+        role: "Planning assistant",
+        soulInstructions: "Be precise."
+      },
+      project: { projectId: null, name: null },
+      activeJob: { jobId: ids.job, state: "waiting", goal: "Review the draft" },
+      pendingTeamRequestId: ids.conversation,
+      memory: { searchDomain: "global", evidence: [] }
+    });
+
+    expect(context.activeJob?.state).toBe("waiting");
+    expect(context.pendingTeamRequestId).toBe(ids.conversation);
+    expect(personalAgentTurnStatusSchema.parse("awaiting_owner")).toBe(
+      "awaiting_owner"
+    );
+    expect(() => personalAgentTurnStatusSchema.parse("failed")).toThrow();
   });
 
   it("allows an unset paired provider and model without inventing defaults", () => {

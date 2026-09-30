@@ -699,18 +699,52 @@ describe("local edge upstream routing", () => {
       `/v1/collaboration/teams/${team}/public-square?limit=50&cursor=abc`,
       `/v1/collaboration/teams/${team}/public-square/projects/${project}/connection`,
       `/v1/collaboration/teams/${team}/public-square/${publication}/brief-draft`
-    ]) expect(() => assertUpstreamOperationPathAllowed("team_chat_read", "GET", path)).not.toThrow();
+    ])
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_read", "GET", path)
+      ).not.toThrow();
     for (const [method, path] of [
-      ["PUT", `/v1/collaboration/teams/${team}/public-square/projects/${project}/connection`],
-      ["POST", `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`],
-      ["PUT", `/v1/collaboration/teams/${team}/public-square/${publication}/brief`]
-    ] as const) expect(() => assertUpstreamOperationPathAllowed("team_chat_write", method, path)).not.toThrow();
+      [
+        "PUT",
+        `/v1/collaboration/teams/${team}/public-square/projects/${project}/connection`
+      ],
+      [
+        "POST",
+        `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`
+      ],
+      [
+        "PUT",
+        `/v1/collaboration/teams/${team}/public-square/${publication}/brief`
+      ]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_write", method, path)
+      ).not.toThrow();
     for (const [family, method, path] of [
-      ["team_chat_read", "GET", `/v1/collaboration/teams/${team}/public-square?offset=1`],
-      ["team_chat_read", "POST", `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`],
-      ["team_chat_write", "PUT", `/v1/collaboration/teams/${team}/public-square/${publication}/brief-draft`],
-      ["team_chat_read", "GET", `/v1/collaboration/teams/${team}/public-square/projects/not-a-uuid/connection`]
-    ] as const) expect(() => assertUpstreamOperationPathAllowed(family, method, path)).toThrow("not allowed for operation family");
+      [
+        "team_chat_read",
+        "GET",
+        `/v1/collaboration/teams/${team}/public-square?offset=1`
+      ],
+      [
+        "team_chat_read",
+        "POST",
+        `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`
+      ],
+      [
+        "team_chat_write",
+        "PUT",
+        `/v1/collaboration/teams/${team}/public-square/${publication}/brief-draft`
+      ],
+      [
+        "team_chat_read",
+        "GET",
+        `/v1/collaboration/teams/${team}/public-square/projects/not-a-uuid/connection`
+      ]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed(family, method, path)
+      ).toThrow("not allowed for operation family");
   });
 
   it("allows only the exact GET paths for Team memory retention settings", () => {
@@ -873,6 +907,38 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("admits command-scoped Agent signals only as managed runner POSTs", () => {
+    for (const suffix of [
+      "personal-agent-intent",
+      "personal-agent-turn-status"
+    ]) {
+      const path = `/v1/managed-conversation-runner/commands/11111111-1111-4111-8111-111111111111/${suffix}`;
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", "POST", path)
+      ).not.toThrow();
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", "GET", path)
+      ).toThrow();
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "managed_execution",
+          "POST",
+          `${path}?ownerId=other`
+        )
+      ).toThrow();
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_write", "POST", path)
+      ).toThrow();
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "managed_execution",
+          "POST",
+          path.replace("11111111-1111-4111-8111-111111111111", "invalid")
+        )
+      ).toThrow();
+    }
+  });
+
   it("routes the Personal Agent runner job lifecycle only on its declared methods", () => {
     const allowed = [
       [
@@ -984,5 +1050,56 @@ describe("local edge upstream routing", () => {
         )
       ).toThrow("not allowed for operation family");
     }
+  });
+});
+
+describe("Team Agent request upstream route grants", () => {
+  const team = "8138c7cd-b96d-49eb-b647-6f03a8486033";
+  const id = "0b014db6-a942-5e80-8ccf-4949130c51a7";
+  const prefix = `/v1/collaboration/teams/${team}`;
+  it("permits explicit read routes and bounded request filters", () => {
+    for (const path of [
+      `${prefix}/agent-offers`,
+      `${prefix}/agent-requests/inbox?limit=50&cursor=page`,
+      `${prefix}/agent-requests/${id}/review`,
+      `${prefix}/agent-requests?channelId=${id}&status=awaiting_owner&limit=5&cursor=page`
+    ])
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_read", "GET", path)
+      ).not.toThrow();
+  });
+  it("permits only explicit request mutation routes", () => {
+    for (const [method, path] of [
+      ["POST", `${prefix}/agent-requests`],
+      ["PUT", `${prefix}/agent-offers/${id}`],
+      ["PUT", `${prefix}/agent-requests/${id}/review`],
+      ["PUT", `${prefix}/agent-requests/${id}/decision`],
+      ["DELETE", `${prefix}/agent-requests/${id}`],
+      ["POST", `${prefix}/agent-requests/${id}/outcome`]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_chat_write", method, path)
+      ).not.toThrow();
+  });
+  it("rejects widened scopes, invalid filters and method escalation", () => {
+    for (const [family, method, path] of [
+      ["personal_collaboration_read", "GET", `${prefix}/agent-offers`],
+      ["managed_execution", "PUT", `${prefix}/agent-offers/${id}`],
+      ["team_chat_read", "PUT", `${prefix}/agent-requests/${id}/decision`],
+      ["team_chat_write", "POST", `${prefix}/agent-requests/${id}/stop`],
+      ["team_chat_read", "GET", `${prefix}/agent-requests?ownerId=${id}`],
+      ["team_chat_read", "GET", `${prefix}/agent-requests?channelId=invalid`],
+      ["team_chat_read", "GET", `${prefix}/agent-requests?limit=101`],
+      ["team_chat_read", "GET", `${prefix}/agent-requests?limit=5&limit=7`],
+      ["team_chat_read", "GET", `${prefix}/agent-requests/inbox?ownerId=${id}`],
+      [
+        "team_chat_write",
+        "DELETE",
+        `${prefix}/agent-requests/${id}?ownerId=${id}`
+      ]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed(family, method, path)
+      ).toThrow();
   });
 });

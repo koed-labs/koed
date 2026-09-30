@@ -80,6 +80,8 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "completeManagedConversationFork"
   | "failManagedConversationFork"
   | "getPersonalAgentExecutionJob"
+  | "recordPersonalAgentIntentForManagedCommand"
+  | "recordPersonalAgentTurnStatusForManagedCommand"
   | "listPersonalAgentExecutionJobs"
   | "listPersonalAgentExecutionAttempts"
   | "createPersonalAgentExecutionAttempt"
@@ -235,6 +237,39 @@ export const createManagedConversationAuthorityClient = (options: {
         : (object(payload.job, "Personal Agent job") as never);
     },
 
+    async recordPersonalAgentIntentForManagedCommand(_actor, input) {
+      const { commandId } = input;
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(commandId)}/personal-agent-intent`,
+        {
+          executionId: input.executionId,
+          executionGeneration: input.executionGeneration,
+          leaseToken: input.leaseToken,
+          runnerId: input.runnerId,
+          providerTurnId: input.providerTurnId,
+          intent: input.intent
+        }
+      );
+      return object(payload.assignment, "Personal Agent assignment") as never;
+    },
+
+    async recordPersonalAgentTurnStatusForManagedCommand(_actor, input) {
+      const { commandId } = input;
+      await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(commandId)}/personal-agent-turn-status`,
+        {
+          executionId: input.executionId,
+          executionGeneration: input.executionGeneration,
+          leaseToken: input.leaseToken,
+          runnerId: input.runnerId,
+          providerTurnId: input.providerTurnId,
+          status: input.status
+        }
+      );
+    },
+
     async listPersonalAgentExecutionJobs(_actor, input = {}) {
       if (!input.conversationId) {
         throw new ManagedConversationAuthorityError(
@@ -304,12 +339,14 @@ export const createManagedConversationAuthorityClient = (options: {
     },
 
     async completePersonalAgentExecutionAttempt(input) {
-      const { jobId, attemptId, outcome, eventId, observedAt } = input;
+      const { jobId, attemptId, outcome, eventId, observedAt, jobState } =
+        input;
       const payload = await request(
         "POST",
         `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(jobId)}/attempts/${encodeURIComponent(attemptId)}/complete`,
         {
           outcome,
+          ...(jobState ? { jobState } : {}),
           ...(eventId ? { eventId } : {}),
           ...(observedAt ? { observedAt } : {})
         }

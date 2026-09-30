@@ -218,12 +218,85 @@ describe("managed Conversation prompt cancellation", () => {
   });
 });
 
+describe("managed Agent signal command fencing", () => {
+  it("rejects a stale callback after the same runner reclaimed the command", async () => {
+    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
+    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
+    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
+    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
+    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
+    const currentLeaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
+    const staleLeaseToken = "e3717fb4-7bb3-4793-a449-43f1ab7a2cb5";
+    const runnerId = "runner-one";
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from managed_conversation_commands")) {
+        return {
+          rows: [
+            {
+              id: commandId,
+              execution_id: executionId,
+              command_kind: "prompt",
+              state: "dispatching",
+              execution_generation: 3,
+              lease_token: currentLeaseToken,
+              lease_expires_at: new Date(Date.now() + 60_000)
+            }
+          ]
+        };
+      }
+      if (sql.includes("from managed_conversation_executions")) {
+        return {
+          rows: [
+            {
+              id: executionId,
+              owner_user_id: ownerUserId,
+              execution_generation: 3,
+              state: "running",
+              runner_id: runnerId,
+              runner_device_id: deviceId,
+              runner_deployment_id: deploymentId
+            }
+          ]
+        };
+      }
+      return { rows: [] };
+    });
+    const repository = createManagedConversationRepository(
+      {
+        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+      } as unknown as pg.Pool,
+      {}
+    );
+
+    await expect(
+      repository.recordPersonalAgentIntentForManagedCommand(
+        { userId: ownerUserId },
+        {
+          commandId,
+          executionId,
+          executionGeneration: 3,
+          leaseToken: staleLeaseToken,
+          runnerId,
+          deviceId,
+          deploymentId,
+          providerTurnId: "codex-turn-from-old-claim",
+          intent: { kind: "assign", goal: "Modify a file" }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(query).toHaveBeenCalledWith("rollback");
+  });
+});
+
 describe("managed Conversation initial Agent start", () => {
-  it("binds one Job to the encrypted start command and replays without another Job", async () => {
+  it("keeps private planning unassigned in the encrypted start command and replay", async () => {
     const ownerUserId = "11111111-1111-4111-8111-111111111111";
     const agentId = "22222222-2222-4222-8222-222222222222";
     const identityVersionId = "33333333-3333-4333-8333-333333333333";
     const clientMessageId = "44444444-4444-4444-8444-444444444444";
+    const projectId = "lp_0123456789abcdef0123456789abcdef";
+    const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const requestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const now = new Date("2026-09-30T00:00:00.000Z");
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 9).toString("base64")
@@ -233,7 +306,7 @@ describe("managed Conversation initial Agent start", () => {
       status: "skipped",
       attributionNonce: "55555555-5555-4555-8555-555555555555",
       searchDomain: "global",
-      projectId: null,
+      projectId,
       evidence: []
     };
     const agentContext = {
@@ -246,13 +319,13 @@ describe("managed Conversation initial Agent start", () => {
         role: "Reviewer",
         soulInstructions: "Be precise."
       },
-      project: { projectId: null, name: null },
+      project: { projectId, name: "Shared project" },
       memory: { searchDomain: "global", evidence: [] }
     };
     const executionRow = {
       id: "66666666-6666-4666-8666-666666666666",
       owner_user_id: ownerUserId,
-      project_id: null,
+      project_id: projectId,
       provider: "codex",
       ai_client_instance_id: "codex.default",
       model: "gpt-test",
@@ -313,6 +386,7 @@ describe("managed Conversation initial Agent start", () => {
       }
       if (sql.includes("insert into managed_conversation_executions")) {
         executionRow.id = params[0] as string;
+        executionRow.project_id = params[2] as string | null;
         return { rows: [executionRow] };
       }
       if (sql.includes("from personal_agent_identities")) {
@@ -362,15 +436,33 @@ describe("managed Conversation initial Agent start", () => {
       }
       return { rows: [] };
     });
+    const poolClient = { query, release: vi.fn() };
+    const bindReview = vi.fn(
+      async (client: pg.PoolClient, boundExecutionId: string) => {
+        expect(client).toBe(poolClient);
+        expect(boundExecutionId).toBe(executionRow.id);
+        expect(startCommandRow).toBeNull();
+        return {
+          requestId,
+          teamId,
+          teamProjectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          ownerUserId,
+          agentId,
+          agentVersion: 4,
+          localProjectId: projectId,
+          privateGoal: "Ship the small fix."
+        };
+      }
+    );
     const repository = createManagedConversationRepository(
       {
-        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+        connect: vi.fn(async () => poolClient)
       } as unknown as pg.Pool,
       { envelopeEncryptionProvider: provider }
     );
     const input = {
-      projectId: null,
-      contextKind: "independent" as const,
+      projectId,
+      contextKind: "project" as const,
       provider: "codex",
       aiClientInstanceId: "codex.default",
       model: "gpt-test",
@@ -386,6 +478,13 @@ describe("managed Conversation initial Agent start", () => {
       initialAgentId: agentId,
       initialExpectedAgentVersion: 4,
       initialPersonalAgentContext: agentContext,
+      initialTeamAgentRequest: {
+        teamId,
+        requestId,
+        expectedRequestVersion: 2,
+        expectedReviewVersion: 3
+      },
+      bindInitialTeamAgentRequestWithClient: bindReview,
       deferUntilRuntimeBinding: true
     };
 
@@ -410,21 +509,51 @@ describe("managed Conversation initial Agent start", () => {
       prompt: "Ship the small fix.",
       continueWithoutMemory: true,
       personalAgent: {
+        jobId: null,
         agentId,
         agentVersion: 4,
         identityVersionId
       },
-      personalAgentContext: agentContext
+      personalAgentContext: { ...agentContext, pendingTeamRequestId: requestId }
     });
-    expect(jobInsertCalls).toHaveLength(1);
-    expect(jobInsertCalls[0]?.[2]).toBe(first.execution.id);
-    expect(jobInsertCalls[0]?.[3]).toBe(agentId);
-    expect(jobInsertCalls[0]?.[6]).toBe(first.command.id);
+    expect(jobInsertCalls).toHaveLength(0);
+    expect(bindReview).toHaveBeenCalledTimes(1);
     expect(
       query.mock.calls.filter(([sql]) =>
         sql.includes("insert into managed_conversation_commands")
       )
     ).toHaveLength(1);
+
+    // Native Studio starts a private Team review without a prompt; the
+    // transaction still binds the reviewed Agent before returning the
+    // execution so the next ordinary prompt cannot escape as an unassigned
+    // conversation.
+    startCommandRow = null;
+    const nativeStart = await repository.createManagedConversation(
+      { userId: ownerUserId },
+      {
+        ...input,
+        idempotencyKey: "native-team-review-start",
+        initialPrompt: undefined,
+        initialPromptClientUserMessageId: undefined,
+        initialPersonalMemoryContext: undefined,
+        initialAgentId: undefined,
+        initialExpectedAgentVersion: undefined,
+        initialPersonalAgentContext: undefined
+      }
+    );
+    expect(nativeStart.execution.id).toBe(executionRow.id);
+    expect(nativeStart.command.payload).toBeNull();
+    expect(bindReview).toHaveBeenCalledTimes(2);
+    expect(
+      query.mock.calls.some(
+        ([sql, params]) =>
+          sql.includes("insert into personal_agent_conversations") &&
+          params[0] === nativeStart.execution.id &&
+          params[2] === agentId
+      )
+    ).toBe(true);
+    expect(jobInsertCalls).toHaveLength(0);
   });
 });
 
@@ -787,6 +916,7 @@ describe("managed provider encrypted history", () => {
       [owner, executionId, 5, 2]
     );
     expect(query.mock.calls[0]?.[0]).toContain("state = 'completed'");
+    expect(query.mock.calls[0]?.[0]).toContain("not exists");
     expect(history).toMatchObject({
       turns: [
         {
@@ -806,6 +936,14 @@ describe("managed provider encrypted history", () => {
         { executionId, before: "foreign-cursor" }
       )
     ).rejects.toMatchObject({ statusCode: 400 });
-    expect(query).toHaveBeenCalledTimes(1);
+    const assignedHistory =
+      await repository.listManagedConversationPromptHistory(
+        { userId: owner },
+        { executionId, includeAssigned: true }
+      );
+    expect(assignedHistory.turns).toHaveLength(2);
+    expect(query.mock.calls[1]?.[0]).not.toContain("not exists");
+    expect(query.mock.calls[1]?.[1]).toEqual([owner, executionId, null, 21]);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });

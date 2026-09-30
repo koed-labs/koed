@@ -57,6 +57,12 @@ import {
   formatPersonalAgentManagedPrompt,
   managedPromptPersonalAgentContext,
   managedPromptPersonalMemoryContext,
+  PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
+  PERSONAL_AGENT_INTENT_TOOL_NAME,
+  parsePersonalAgentIntentToolInput,
+  PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
+  PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
+  parsePersonalAgentTurnStatusToolInput,
   MemoryApiClient,
   MemoryApiError,
   prepareManagedClaudeHome,
@@ -90,6 +96,8 @@ import {
   managedConversationTargetReadinessIsFresh,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   personalAgentExecutionContextSchema,
+  personalAgentIntentSignalJsonSchema,
+  personalAgentTurnStatusJsonSchema,
   verifyManagedConversationForkManifest,
   verifyManagedConversationHandoffCertificate,
   verifyManagedConversationHandoffSourceAttestation,
@@ -97,7 +105,9 @@ import {
   type EnvelopeEncryptionProvider,
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult,
-  type ManagedConversationTargetReadinessEvidence
+  type ManagedConversationTargetReadinessEvidence,
+  type PersonalAgentIntentSignal,
+  type PersonalAgentTurnStatus
 } from "@koed/shared";
 import type { Logger } from "pino";
 
@@ -744,6 +754,29 @@ export const managedConversationFailureCode = (error: unknown): string => {
   return "ManagedConversationFailure";
 };
 
+export const managedPersonalAgentTurnDeclaredComplete = (
+  payload: Record<string, unknown> | null | undefined,
+  inMemoryStatus: PersonalAgentTurnStatus | undefined,
+  providerTurnId: string | undefined
+): boolean => {
+  if (inMemoryStatus === "complete") return true;
+  return Boolean(
+    providerTurnId &&
+    payload?.personalAgentTurnStatus === "complete" &&
+    payload.personalAgentTurnStatusProviderTurnId === providerTurnId
+  );
+};
+
+export const managedPersonalAgentSignalThreadMatchesCurrentCommand = (
+  command: Pick<ClaimedManagedConversationCommand, "execution">,
+  providerThreadId: string
+): boolean =>
+  Boolean(
+    providerThreadId &&
+    command.execution.providerThreadId &&
+    command.execution.providerThreadId === providerThreadId
+  );
+
 const errorCode = managedConversationFailureCode;
 
 type ManagedConversationRuntimeSessionIdentity = {
@@ -1002,6 +1035,10 @@ export const createManagedConversationService = (options: {
   >();
   const activeCommandExecutionCounts = new Map<string, number>();
   const activePromptProviderTurns = new Map<string, string>();
+  const activePersonalAgentCommandByExecution = new Map<
+    string,
+    ClaimedManagedConversationCommand
+  >();
   const activePromptDispatches = new Map<string, string[]>();
   const deferredInterruptTargets = new Map<string, string>();
   const awaitingPromptDispatchControls = new Map<string, Set<string>>();
@@ -1073,6 +1110,18 @@ export const createManagedConversationService = (options: {
     }
   >();
   const personalAgentAttemptsByCommand = new Map<string, string>();
+  const personalAgentOverridesByCommand = new Map<
+    string,
+    {
+      jobId: string;
+      agentId: string;
+      agentVersion: number;
+    }
+  >();
+  const personalAgentTurnStatusByCommand = new Map<
+    string,
+    PersonalAgentTurnStatus
+  >();
   const memoryClient = new MemoryApiClient({
     apiUrl: options.apiUrl,
     apiToken: options.apiToken,
@@ -1764,11 +1813,21 @@ export const createManagedConversationService = (options: {
 
   const personalAgentJobFor = (command: PersonalAgentCommandContext) => {
     const value = command.payload?.personalAgent;
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      return null;
-    const metadata = value as Record<string, unknown>;
+    const override = personalAgentOverridesByCommand.get(command.id);
     if (
-      typeof metadata.jobId !== "string" ||
+      (!value || typeof value !== "object" || Array.isArray(value)) &&
+      !override
+    ) {
+      return null;
+    }
+    const metadata = {
+      ...(value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {}),
+      ...(override ?? {})
+    };
+    if (
+      (typeof metadata.jobId !== "string" && metadata.jobId !== null) ||
       typeof metadata.agentId !== "string" ||
       typeof metadata.agentVersion !== "number"
     ) {
@@ -1783,11 +1842,33 @@ export const createManagedConversationService = (options: {
     ) {
       throw managedConversationError("ManagedConversationPayloadError");
     }
+    if (metadata.jobId === null) return null;
     return {
       jobId: metadata.jobId,
       agentId: metadata.agentId,
       agentVersion: metadata.agentVersion
     };
+  };
+
+  const isSummaryDraftCommand = (
+    command: PersonalAgentCommandContext
+  ): boolean => command.payload?.serverPurpose === "team_summary_draft";
+
+  const isPendingTeamReviewCommand = (
+    command: PersonalAgentCommandContext
+  ): boolean => {
+    const context = personalAgentExecutionContextSchema.safeParse(
+      managedPromptPersonalAgentContext(command.payload)
+    );
+    const selected = command.payload?.personalAgent;
+    return Boolean(
+      context.success &&
+      context.data.pendingTeamRequestId &&
+      selected &&
+      typeof selected === "object" &&
+      !Array.isArray(selected) &&
+      (selected as Record<string, unknown>).jobId === null
+    );
   };
 
   const formatManagedTurnPrompt = (
@@ -1824,7 +1905,17 @@ export const createManagedConversationService = (options: {
       actor,
       personalAgent.jobId
     );
-    if (!job || job.commandId !== command.id) {
+    const commandContext = personalAgentExecutionContextSchema.safeParse(
+      managedPromptPersonalAgentContext(command.payload)
+    );
+    const capturedContinuation =
+      commandContext.success &&
+      commandContext.data.activeJob?.jobId === job?.id;
+    if (
+      !job ||
+      job.conversationId !== command.executionId ||
+      (job.commandId !== command.id && !capturedContinuation)
+    ) {
       throw managedConversationError("ManagedConversationPayloadError");
     }
     if (job.lastAttemptId) {
@@ -1834,7 +1925,11 @@ export const createManagedConversationService = (options: {
           limit: 1
         });
       const latest = attempts.attempts[0];
-      if (latest?.id === job.lastAttemptId && latest.status === "running") {
+      if (
+        latest?.id === job.lastAttemptId &&
+        latest.status === "running" &&
+        latest.commandId === command.id
+      ) {
         personalAgentAttemptsByCommand.set(command.id, latest.id);
         return { jobId: job.id, attemptId: latest.id };
       }
@@ -1843,6 +1938,7 @@ export const createManagedConversationService = (options: {
     const attempt =
       await options.repository.createPersonalAgentExecutionAttempt(actor, {
         jobId: job.id,
+        commandId: command.id,
         attemptNumber: job.counters.attemptsStarted + 1,
         attribution: {
           kind: "agent",
@@ -1863,6 +1959,112 @@ export const createManagedConversationService = (options: {
       });
     personalAgentAttemptsByCommand.set(command.id, attempt.id);
     return { jobId: job.id, attemptId: attempt.id };
+  };
+
+  const personalAgentSignalCommand = (
+    executionId: string,
+    provider: ManagedConversationProvider,
+    providerTurnId?: string,
+    providerThreadId?: string
+  ): { command: ClaimedManagedConversationCommand; providerTurnId: string } => {
+    const command = activePersonalAgentCommandByExecution.get(executionId);
+    if (
+      !command ||
+      command.commandKind !== "prompt" ||
+      command.execution.provider !== provider ||
+      activePromptProviderTurns.get(executionId) !== command.id ||
+      !command.leaseToken ||
+      (providerThreadId &&
+        !managedPersonalAgentSignalThreadMatchesCurrentCommand(
+          command,
+          providerThreadId
+        ))
+    ) {
+      throw new ManagedConversationLeaseLostError();
+    }
+    // Codex provides its current app-server turn identity in each dynamic tool
+    // request. Claude's in-process SDK tool can only run in its active query;
+    // bind that call to the fenced prompt command itself.
+    const turnId = providerTurnId ?? `${provider}:${command.id}`;
+    if (!turnId || turnId.length > 256) {
+      throw new ManagedConversationLeaseLostError();
+    }
+    return { command, providerTurnId: turnId };
+  };
+
+  const recordPersonalAgentIntent = async (
+    command: ClaimedManagedConversationCommand,
+    providerTurnId: string,
+    intent: PersonalAgentIntentSignal
+  ) => {
+    if (isSummaryDraftCommand(command)) {
+      throw managedConversationError(
+        "PersonalAgentSummaryDraftCannotAssignError"
+      );
+    }
+    const result =
+      await options.repository.recordPersonalAgentIntentForManagedCommand(
+        { userId: command.ownerUserId },
+        {
+          commandId: command.id,
+          executionId: command.executionId,
+          executionGeneration: command.executionGeneration,
+          leaseToken: command.leaseToken!,
+          runnerId,
+          deviceId: options.deviceId,
+          deploymentId: options.deploymentId,
+          providerTurnId,
+          intent
+        }
+      );
+    personalAgentOverridesByCommand.set(command.id, {
+      jobId: result.jobId,
+      agentId: result.agentId,
+      agentVersion: result.agentVersion
+    });
+    const attempt = await runningPersonalAgentAttempt(command);
+    if (!attempt) {
+      throw managedConversationError(
+        "PersonalAgentAttemptRecoveryPendingError"
+      );
+    }
+    return {
+      jobId: result.jobId,
+      attemptId: attempt.attemptId,
+      title: result.title,
+      state: "running" as const,
+      continuation: result.continuation
+    };
+  };
+
+  const recordPersonalAgentTurnStatus = async (
+    command: ClaimedManagedConversationCommand,
+    providerTurnId: string,
+    status: PersonalAgentTurnStatus
+  ): Promise<void> => {
+    if (isSummaryDraftCommand(command)) {
+      throw managedConversationError(
+        "PersonalAgentSummaryDraftCannotSetStatusError"
+      );
+    }
+    if (!personalAgentJobFor(command)) {
+      throw managedConversationError("PersonalAgentJobRequiredError");
+    }
+    await options.repository.recordPersonalAgentTurnStatusForManagedCommand(
+      { userId: command.ownerUserId },
+      {
+        commandId: command.id,
+        executionId: command.executionId,
+        executionGeneration: command.executionGeneration,
+        leaseToken: command.leaseToken!,
+        runnerId,
+        deviceId: options.deviceId,
+        deploymentId: options.deploymentId,
+        providerTurnId,
+        status
+      }
+    );
+    personalAgentTurnStatusByCommand.set(command.id, status);
   };
 
   const personalAgentTranscriptOutputForTurn = async (
@@ -1920,7 +2122,6 @@ export const createManagedConversationService = (options: {
     command: PersonalAgentCommandContext,
     turnId?: string | null
   ): Promise<{ text: string; truncated: boolean } | undefined> => {
-    if (personalAgentJobFor(command)) return undefined;
     let text =
       command.execution.provider === "codex" && turnId
         ? ((await personalAgentTranscriptOutputForTurn(command, turnId))
@@ -2078,9 +2279,19 @@ export const createManagedConversationService = (options: {
       jobId: active.jobId,
       attemptId: active.attemptId,
       outcome,
+      ...(outcome === "succeeded" &&
+      !managedPersonalAgentTurnDeclaredComplete(
+        command.payload,
+        personalAgentTurnStatusByCommand.get(command.id),
+        turnId
+      )
+        ? { jobState: "waiting" as const }
+        : {}),
       eventId: `command:${command.id}:attempt:${active.attemptId}:${outcome}`
     });
     personalAgentAttemptsByCommand.delete(command.id);
+    personalAgentTurnStatusByCommand.delete(command.id);
+    personalAgentOverridesByCommand.delete(command.id);
   };
 
   const releaseTransientOutputBuffers = (
@@ -2309,6 +2520,61 @@ export const createManagedConversationService = (options: {
         approvalPolicy: permission.approvalPolicy,
         sandboxMode: permission.sandboxMode,
         approvalsReviewer: permission.approvalsReviewer,
+        dynamicTools: [
+          {
+            name: PERSONAL_AGENT_INTENT_TOOL_NAME,
+            description: PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
+            inputSchema: personalAgentIntentSignalJsonSchema
+          },
+          {
+            name: PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
+            description: PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
+            inputSchema: personalAgentTurnStatusJsonSchema
+          }
+        ],
+        dynamicToolHandler: async (call) => {
+          try {
+            const active = personalAgentSignalCommand(
+              execution.id,
+              "codex",
+              call.turnId,
+              call.threadId
+            );
+            if (call.tool === PERSONAL_AGENT_INTENT_TOOL_NAME) {
+              const signal = parsePersonalAgentIntentToolInput(call.arguments);
+              const assignment = await recordPersonalAgentIntent(
+                active.command,
+                active.providerTurnId,
+                signal
+              );
+              return { success: true, text: JSON.stringify(assignment) };
+            }
+            if (call.tool === PERSONAL_AGENT_TURN_STATUS_TOOL_NAME) {
+              const status = parsePersonalAgentTurnStatusToolInput(
+                call.arguments
+              );
+              await recordPersonalAgentTurnStatus(
+                active.command,
+                active.providerTurnId,
+                status
+              );
+              return {
+                success: true,
+                text: JSON.stringify({ recorded: true, status })
+              };
+            }
+            throw new Error("Unknown managed Personal Agent tool");
+          } catch (error) {
+            options.logger.info(
+              { error_name: errorCode(error), execution_id: execution.id },
+              "managed Agent signal rejected"
+            );
+            return {
+              success: false,
+              text: "The Agent signal was rejected because the current assignment or turn is no longer authorized."
+            };
+          }
+        },
         providerRequestHandler: async ({ method, params }) => {
           const itemKind = runtimeRequestKind(method);
           const item =
@@ -2430,6 +2696,38 @@ export const createManagedConversationService = (options: {
           signalRuntimeWake();
         }
       },
+      appServerForTurn: (base) => {
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (
+          activeCommand &&
+          (isPendingTeamReviewCommand(activeCommand) ||
+            isSummaryDraftCommand(activeCommand))
+        ) {
+          return {
+            ...base,
+            approvalPolicy: "never",
+            sandboxMode: "read-only",
+            dynamicTools: []
+          };
+        }
+        const context = activeCommand
+          ? personalAgentExecutionContextSchema.safeParse(
+              managedPromptPersonalAgentContext(activeCommand.payload)
+            )
+          : null;
+        if (!context?.success) return { ...base, dynamicTools: [] };
+        if (!context.data.activeJob) {
+          return {
+            ...base,
+            dynamicTools: (base.dynamicTools ?? []).filter(
+              (tool) => tool.name === PERSONAL_AGENT_INTENT_TOOL_NAME
+            )
+          };
+        }
+        return base;
+      },
       ...(override?.resume
         ? { resume: override.resume }
         : override?.fork
@@ -2502,7 +2800,64 @@ export const createManagedConversationService = (options: {
       permissionMode: permission.permissionMode,
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
+      executionPolicy: () => {
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (activeCommand && isSummaryDraftCommand(activeCommand))
+          return "summary";
+        if (activeCommand && isPendingTeamReviewCommand(activeCommand))
+          return "planning";
+        return "work";
+      },
+      personalAgentToolsEnabled: () => {
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (!activeCommand || isSummaryDraftCommand(activeCommand))
+          return false;
+        return personalAgentExecutionContextSchema.safeParse(
+          managedPromptPersonalAgentContext(activeCommand.payload)
+        ).success;
+      },
+      personalAgentIntentHandler: async (signal) => {
+        const active = personalAgentSignalCommand(execution.id, "claude");
+        return recordPersonalAgentIntent(
+          active.command,
+          active.providerTurnId,
+          signal
+        );
+      },
+      personalAgentTurnStatusHandler: async (status) => {
+        const active = personalAgentSignalCommand(execution.id, "claude");
+        await recordPersonalAgentTurnStatus(
+          active.command,
+          active.providerTurnId,
+          status
+        );
+      },
       canUseTool: async (toolName, input, callback) => {
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (activeCommand && isSummaryDraftCommand(activeCommand)) {
+          return {
+            behavior: "deny",
+            message:
+              "Summary drafting is discussion only and cannot use execution tools."
+          };
+        }
+        if (
+          activeCommand &&
+          isPendingTeamReviewCommand(activeCommand) &&
+          !["Read", "Glob", "Grep", "LS", "AskUserQuestion"].includes(toolName)
+        ) {
+          return {
+            behavior: "deny",
+            message:
+              "This private Team request is awaiting owner acceptance. You may discuss or inspect context, but cannot perform work yet."
+          };
+        }
         const isQuestion = toolName === "AskUserQuestion";
         if (!isQuestion && permission.permissionMode === "bypassPermissions") {
           return { behavior: "allow", updatedInput: input };
@@ -2659,7 +3014,11 @@ export const createManagedConversationService = (options: {
         ? { reasoningEffort: execution.reasoningEffort }
         : {}),
       permissionMode: execution.permissionMode,
-      env: { ...clientEnvironmentFor(execution), KOED_HOME: options.koedHome },
+      env: {
+        ...clientEnvironmentFor(execution),
+        KOED_HOME: options.koedHome,
+        KOED_MANAGED_AGENT_TOOL_GATE: "1"
+      },
       sessionDirectory,
       ...(fork
         ? {
@@ -2709,6 +3068,22 @@ export const createManagedConversationService = (options: {
       },
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
+      personalAgentIntentHandler: async (signal) => {
+        const active = personalAgentSignalCommand(execution.id, "pi");
+        return recordPersonalAgentIntent(
+          active.command,
+          active.providerTurnId,
+          signal
+        );
+      },
+      personalAgentTurnStatusHandler: async (status) => {
+        const active = personalAgentSignalCommand(execution.id, "pi");
+        await recordPersonalAgentTurnStatus(
+          active.command,
+          active.providerTurnId,
+          status
+        );
+      },
       onUiRequest: async (request, signal) => {
         if (request.method !== "select" || typeof request.title !== "string") {
           return { cancelled: true };
@@ -2720,6 +3095,40 @@ export const createManagedConversationService = (options: {
           payload.kind !== "koed_tool_approval" ||
           typeof payload.toolName !== "string" ||
           typeof payload.toolCallId !== "string"
+        ) {
+          if (
+            payload.kind === "koed_tool_gate" &&
+            typeof payload.toolName === "string"
+          ) {
+            const activeCommand = activePersonalAgentCommandByExecution.get(
+              execution.id
+            );
+            if (activeCommand && isSummaryDraftCommand(activeCommand)) {
+              return { value: "Deny" };
+            }
+            if (activeCommand && isPendingTeamReviewCommand(activeCommand)) {
+              return {
+                value: ["read", "ls", "find", "grep", "glob"].includes(
+                  payload.toolName.toLowerCase()
+                )
+                  ? "Allow"
+                  : "Deny"
+              };
+            }
+            return { value: "Use configured permissions" };
+          }
+          return { cancelled: true };
+        }
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (
+          activeCommand &&
+          (isSummaryDraftCommand(activeCommand) ||
+            (isPendingTeamReviewCommand(activeCommand) &&
+              !["read", "ls", "find", "grep", "glob"].includes(
+                payload.toolName.toLowerCase()
+              )))
         ) {
           return { cancelled: true };
         }
@@ -2745,7 +3154,10 @@ export const createManagedConversationService = (options: {
             accept: "Approve",
             acceptForSession: "Always allow this session",
             decline: "Decline",
-            cancel: "Cancel"
+            cancel: "Cancel",
+            allow: "Allow",
+            deny: "Deny",
+            configured: "Use configured permissions"
           };
           const value =
             typeof response.decision === "string"
@@ -5268,6 +5680,7 @@ export const createManagedConversationService = (options: {
     const isPromptTurn = command.commandKind === "prompt";
     if (isPromptTurn) {
       activePromptProviderTurns.set(command.executionId, command.id);
+      activePersonalAgentCommandByExecution.set(command.executionId, command);
     }
     try {
       return await heartbeat.withSession(session, operation);
@@ -5277,6 +5690,13 @@ export const createManagedConversationService = (options: {
         activePromptProviderTurns.get(command.executionId) === command.id
       ) {
         activePromptProviderTurns.delete(command.executionId);
+      }
+      if (
+        isPromptTurn &&
+        activePersonalAgentCommandByExecution.get(command.executionId)?.id ===
+          command.id
+      ) {
+        activePersonalAgentCommandByExecution.delete(command.executionId);
       }
     }
   };
@@ -5339,6 +5759,9 @@ export const createManagedConversationService = (options: {
       command.executionId,
       (activeCommandExecutionCounts.get(command.executionId) ?? 0) + 1
     );
+    if (command.commandKind === "prompt") {
+      activePersonalAgentCommandByExecution.set(command.executionId, command);
+    }
     heartbeat.start();
     try {
       heartbeat.assertCurrent();
@@ -5349,6 +5772,13 @@ export const createManagedConversationService = (options: {
       heartbeat.stop();
       if (commandLeaseHeartbeats.get(command.id) === heartbeat) {
         commandLeaseHeartbeats.delete(command.id);
+      }
+      if (
+        command.commandKind === "prompt" &&
+        activePersonalAgentCommandByExecution.get(command.executionId)?.id ===
+          command.id
+      ) {
+        activePersonalAgentCommandByExecution.delete(command.executionId);
       }
       const activeCount =
         (activeCommandExecutionCounts.get(command.executionId) ?? 1) - 1;

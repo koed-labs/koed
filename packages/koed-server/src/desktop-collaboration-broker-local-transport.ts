@@ -17,6 +17,7 @@ import {
   collaborationSubscriptionSchema,
   isTeamCollaborationSelection,
   readBoundedJsonObject,
+  teamAgentRequestInvalidationSchema,
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
@@ -602,17 +603,19 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       return "terminal";
     }
     if (eventName === "collaboration_event") {
+      const expectedEventKeys = [
+        "protocolVersion",
+        "deliveryId",
+        "eventId",
+        "type",
+        "occurredAt",
+        "subscription",
+        "resource",
+        "actor",
+        ...(payload.type === "team_agent_request_changed" ? ["update"] : [])
+      ];
       if (
-        !hasExactKeys(payload, [
-          "protocolVersion",
-          "deliveryId",
-          "eventId",
-          "type",
-          "occurredAt",
-          "subscription",
-          "resource",
-          "actor"
-        ]) ||
+        !hasExactKeys(payload, expectedEventKeys) ||
         !isRecord(payload.subscription) ||
         !hasExactKeys(payload.subscription, ["id"]) ||
         payload.subscription.id !== subscription.id ||
@@ -664,6 +667,64 @@ export const createDesktopCollaborationBrokerLocalTransport = (
             publicationId:
               resource.type === "public_square_publication" ? resource.id : null
           }
+        });
+        if (!update.success) {
+          emitTerminalControl(subscription, "requires_snapshot");
+          return "terminal";
+        }
+        emit(subscription, update.data);
+        return "continue";
+      }
+      if (payload.type === "team_agent_request_changed") {
+        const resource = payload.resource;
+        const invalidation = teamAgentRequestInvalidationSchema.safeParse(
+          payload.update
+        );
+        const isRequest =
+          invalidation.success && invalidation.data.kind === "request";
+        if (
+          subscription.scope !== "team" ||
+          !subscription.teamId ||
+          resource.scope !== "team" ||
+          resource.teamId !== subscription.teamId ||
+          typeof resource.id !== "string" ||
+          !invalidation.success ||
+          invalidation.data.teamId !== subscription.teamId ||
+          (isRequest &&
+            (resource.type !== "team_agent_request" ||
+              resource.id !== invalidation.data.requestId ||
+              resource.threadId !== invalidation.data.channelId)) ||
+          (!isRequest &&
+            (invalidation.data.kind !== "offers" ||
+              resource.type !== "team_agent_offer" ||
+              (resource.threadId !== null && resource.threadId !== undefined) ||
+              (resource.messageId !== null &&
+                resource.messageId !== undefined)))
+        ) {
+          emitTerminalControl(subscription, "requires_snapshot");
+          return "terminal";
+        }
+        const update = collaborationRendererEventSchema.safeParse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "update",
+          subscriptionId: subscription.id,
+          deliveryId: payload.deliveryId,
+          eventId: payload.eventId,
+          occurredAt: payload.occurredAt,
+          family: "team_agent_request_changed",
+          resource: {
+            scope: "team",
+            teamId: subscription.teamId,
+            workspaceId: null,
+            threadId: isRequest ? invalidation.data.channelId : null,
+            messageId:
+              isRequest && typeof resource.messageId === "string"
+                ? resource.messageId
+                : null,
+            sharedSessionId: null,
+            shareGrantId: null
+          },
+          update: invalidation.data
         });
         if (!update.success) {
           emitTerminalControl(subscription, "requires_snapshot");

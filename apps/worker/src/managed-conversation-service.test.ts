@@ -35,6 +35,8 @@ import {
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
+  managedPersonalAgentTurnDeclaredComplete,
+  managedPersonalAgentSignalThreadMatchesCurrentCommand,
   managedConversationOriginSourceGeneration,
   managedConversationAssistantOutputForTurn,
   codexAssistantFinalTextForTurn,
@@ -54,6 +56,59 @@ import {
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("managed Personal Agent turn status recovery", () => {
+  it("uses a persisted completion only for the successful provider turn it names", () => {
+    const payload = {
+      personalAgentTurnStatus: "complete",
+      personalAgentTurnStatusProviderTurnId: "codex-turn-2"
+    };
+    expect(
+      managedPersonalAgentTurnDeclaredComplete(
+        payload,
+        undefined,
+        "codex-turn-2"
+      )
+    ).toBe(true);
+    expect(
+      managedPersonalAgentTurnDeclaredComplete(
+        payload,
+        undefined,
+        "codex-turn-3"
+      )
+    ).toBe(false);
+    expect(
+      managedPersonalAgentTurnDeclaredComplete(
+        { ...payload, personalAgentTurnStatus: "awaiting_owner" },
+        undefined,
+        "codex-turn-2"
+      )
+    ).toBe(false);
+    expect(
+      managedPersonalAgentTurnDeclaredComplete(payload, "complete", undefined)
+    ).toBe(true);
+  });
+
+  it("fences provider signals against the claimed command, not a stale session snapshot", () => {
+    const capturedAtSessionStart = { providerThreadId: null };
+    const activeCommand = {
+      execution: { providerThreadId: "current-thread" }
+    } as never;
+    expect(capturedAtSessionStart.providerThreadId).toBeNull();
+    expect(
+      managedPersonalAgentSignalThreadMatchesCurrentCommand(
+        activeCommand,
+        "current-thread"
+      )
+    ).toBe(true);
+    expect(
+      managedPersonalAgentSignalThreadMatchesCurrentCommand(
+        activeCommand,
+        "stale-thread"
+      )
+    ).toBe(false);
+  });
+});
 
 describe("Managed Conversation runtime session singleflight", () => {
   it("shares a gated Pi start between recovery and command lookup", async () => {
@@ -1545,6 +1600,7 @@ describe("deferred Managed Conversation runner starts", () => {
   it("discovers an assigned start, prepares its local binding, and is idempotent after reconnect", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "koed-deferred-start-"));
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    await mkdir(resolve(root, "project"), { recursive: true });
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
     const deploymentId = randomUUID();
@@ -1602,7 +1658,7 @@ describe("deferred Managed Conversation runner starts", () => {
           deploymentId,
           deviceId,
           executionGeneration: 1,
-          projectPath: resolve(root, "project")
+          projectPath: await realpath(resolve(root, "project"))
         })
       );
       expect(
@@ -1673,7 +1729,7 @@ describe("deferred Managed Conversation runner starts", () => {
     const service = harness.createService({
       deploymentId,
       deviceId,
-      localOwnerUserId,
+      localOwnerUserId: ownerUserId,
       koedHome
     });
     try {
@@ -1722,6 +1778,7 @@ describe("deferred Managed Conversation runner starts", () => {
   it("discovers a browser start on the next runner wake after startup", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "koed-deferred-start-wake-"));
     const restoreRegistry = await configureLocalCodexInstanceRegistry(root);
+    await mkdir(resolve(root, "project"), { recursive: true });
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
     const deploymentId = randomUUID();

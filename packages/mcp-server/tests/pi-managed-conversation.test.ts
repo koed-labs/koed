@@ -178,7 +178,7 @@ describe("Pi managed RPC conversation", () => {
       const args = mocks.spawn.mock.calls[0]?.[1] as string[];
       const passedConfig = JSON.parse(args.at(-1)!) as Record<string, unknown>;
       expect(passedConfig).toMatchObject({
-        sessionDirectory: f.config.sessionDirectory,
+        sessionDirectory: fs.realpathSync(f.config.sessionDirectory),
         resumeSessionPath: identity.transcriptPath
       });
       const original = fs.readFileSync(transcriptPath, "utf8");
@@ -435,5 +435,122 @@ describe("Pi managed RPC conversation", () => {
     const prompt = f.session.prompt("hello");
     f.child.emit("close");
     await expect(prompt).rejects.toThrow("closed");
+  });
+});
+
+describe("Pi managed native Agent signals", () => {
+  it("awaits command authority in the existing turn without routing metadata to human UI", async () => {
+    const f = fixture();
+    const assignment = {
+      jobId: "job",
+      attemptId: "attempt",
+      title: "Review",
+      state: "running" as const,
+      continuation: false
+    };
+    const intent = vi.fn(async () => assignment);
+    const outcome = vi.fn(async () => {});
+    f.config.personalAgentIntentHandler = intent;
+    f.config.personalAgentTurnStatusHandler = outcome;
+    await f.session.start();
+    const pending = f.session.prompt("Perform the discussed work");
+    f.emit({
+      type: "extension_ui_request",
+      id: "intent",
+      method: "input",
+      title: JSON.stringify({
+        kind: "koed_agent_intent",
+        signal: { kind: "assign", goal: "Review" }
+      })
+    });
+    await vi.waitFor(() =>
+      expect(f.requests.find((r) => r.id === "intent")).toMatchObject({
+        type: "extension_ui_response",
+        value: JSON.stringify({ recorded: true, ...assignment })
+      })
+    );
+    f.emit({
+      type: "extension_ui_request",
+      id: "outcome",
+      method: "input",
+      title: JSON.stringify({
+        kind: "koed_agent_turn_status",
+        status: "complete"
+      })
+    });
+    await vi.waitFor(() =>
+      expect(f.requests.find((r) => r.id === "outcome")).toMatchObject({
+        value: JSON.stringify({ recorded: true, status: "complete" })
+      })
+    );
+    expect(intent).toHaveBeenCalledExactlyOnceWith({
+      kind: "assign",
+      goal: "Review"
+    });
+    expect(outcome).toHaveBeenCalledExactlyOnceWith("complete");
+    expect(f.onUiRequest).not.toHaveBeenCalled();
+    f.emit({ type: "agent_settled" });
+    await pending;
+    expect(f.requests.filter((r) => r.type === "prompt")).toHaveLength(1);
+    f.emit({
+      type: "extension_ui_request",
+      id: "late",
+      method: "input",
+      title: JSON.stringify({
+        kind: "koed_agent_intent",
+        signal: { kind: "continue" }
+      })
+    });
+    await vi.waitFor(() =>
+      expect(f.requests.find((r) => r.id === "late")).toMatchObject({
+        cancelled: true
+      })
+    );
+    expect(intent).toHaveBeenCalledTimes(1);
+    await f.session.closeAndWait();
+  });
+
+  it("rejects forged input and authority failure without forwarding it to human approvals", async () => {
+    const f = fixture();
+    const handler = vi.fn(async () => {
+      throw new Error("Stale claim");
+    });
+    f.config.personalAgentIntentHandler = handler;
+    await f.session.start();
+    const pending = f.session.prompt("Discuss the work");
+    f.emit({
+      type: "extension_ui_request",
+      id: "forged",
+      method: "input",
+      title: JSON.stringify({
+        kind: "koed_agent_intent",
+        signal: { kind: "assign", goal: "Review", jobId: "forged" }
+      })
+    });
+    await vi.waitFor(() =>
+      expect(f.requests.find((r) => r.id === "forged")).toMatchObject({
+        cancelled: true
+      })
+    );
+    expect(handler).not.toHaveBeenCalled();
+    f.emit({
+      type: "extension_ui_request",
+      id: "failed",
+      method: "input",
+      title: JSON.stringify({
+        kind: "koed_agent_intent",
+        signal: { kind: "assign", goal: "Review" }
+      })
+    });
+    await vi.waitFor(() =>
+      expect(f.requests.find((r) => r.id === "failed")).toMatchObject({
+        cancelled: true
+      })
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(f.onUiRequest).not.toHaveBeenCalled();
+    f.emit({ type: "agent_settled" });
+    await pending;
+    await f.session.closeAndWait();
   });
 });

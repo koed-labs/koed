@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { searchMemory } from "@koed/core";
 import type {
   MemorySourceRepository,
+  PersonalAgentRepository,
   SharedMemorySemanticCandidate
 } from "@koed/db";
 import {
@@ -411,10 +412,12 @@ export const buildPersonalMemoryTurnContext = async (input: {
 };
 
 export const buildPersonalAgentTurnContext = async (input: {
-  repository: MemorySourceRepository;
+  repository: MemorySourceRepository &
+    Pick<PersonalAgentRepository, "listPersonalAgentExecutionJobs">;
   ownerUserId: string;
   agentId: string;
   expectedAgentVersion?: number;
+  conversationId?: string;
   projectId: string | null;
   prompt: string;
   fetchFn?: typeof fetch;
@@ -481,6 +484,28 @@ export const buildPersonalAgentTurnContext = async (input: {
     continueWithoutMemory: input.continueWithoutMemory
   });
 
+  const activeJob = input.conversationId
+    ? (
+        await input.repository.listPersonalAgentExecutionJobs(actor, {
+          conversationId: input.conversationId,
+          agentId: input.agentId,
+          limit: 20
+        })
+      ).jobs.find(
+        (job) =>
+          job.state === "queued" ||
+          job.state === "running" ||
+          job.state === "waiting"
+      )
+    : undefined;
+  const pendingTeamRequest =
+    input.conversationId &&
+    typeof input.repository.getAwaitingOwnerRequestForExecution === "function"
+      ? await input.repository.getAwaitingOwnerRequestForExecution(actor, {
+          executionId: input.conversationId
+        })
+      : null;
+
   const context = personalAgentExecutionContextSchema.parse({
     schemaVersion: 1,
     identity: {
@@ -495,6 +520,10 @@ export const buildPersonalAgentTurnContext = async (input: {
       projectId: input.projectId,
       name: projectName
     },
+    activeJob: activeJob
+      ? { jobId: activeJob.id, state: activeJob.state, goal: activeJob.title }
+      : null,
+    pendingTeamRequestId: pendingTeamRequest?.requestId ?? null,
     memory: { searchDomain: "global", evidence: memoryContext.evidence }
   });
 

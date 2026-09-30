@@ -422,6 +422,20 @@
       "when": 1790714235718,
       "tag": "0059_public_square",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790776809000,
+      "tag": "0060_team_agent_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790776809001,
+      "tag": "0061_personal_agent_attempt_command_binding",
+      "breakpoints": true
     }
   ]
 }

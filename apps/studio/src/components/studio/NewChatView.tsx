@@ -18,6 +18,7 @@ import {
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
 import { MemoryAttributionNote } from "./MemoryAttributionNote";
+import type { ManagedAgentJobMarker } from "@/lib/managed-agent-job-markers";
 
 export type NewChatMode = "demo" | "live";
 
@@ -68,6 +69,7 @@ export type NewChatRuntime = Readonly<{
   enabled: boolean;
   status?: string;
   messages: readonly NewChatRuntimeMessage[];
+  jobMarkers?: readonly ManagedAgentJobMarker[];
   isSending: boolean;
   error?: string | null;
   memoryRecallFailure?: string | null;
@@ -76,6 +78,7 @@ export type NewChatRuntime = Readonly<{
     selection: ChatComposerSelection,
     continueWithoutMemory?: true
   ) => Promise<void>;
+  onSelectTeamQuestion?: (text: string) => void;
   onInterrupt?: () => void;
   canInterrupt?: boolean;
   canCancelPendingPrompt?: boolean;
@@ -345,6 +348,19 @@ export function NewChatView({
                           <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground-secondary">
                             {content}
                           </p>
+                          {runtime?.onSelectTeamQuestion &&
+                            typeof content === "string" &&
+                            content.trim() && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runtime.onSelectTeamQuestion?.(content)
+                                }
+                                className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
+                              >
+                                Prepare Team question
+                              </button>
+                            )}
                           {"memory" in message && message.memory ? (
                             <MemoryAttributionNote memory={message.memory} />
                           ) : null}
@@ -355,6 +371,38 @@ export function NewChatView({
                 })}
               </div>
             )}
+
+            {runtime?.jobMarkers?.map((marker) => (
+              <article
+                key={`job-marker:${marker.id}`}
+                aria-label="Assigned Agent Job"
+                className="my-4 rounded-lg border border-accent/25 bg-accent/5 px-3 py-2.5"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-accent">
+                  {marker.state === "queued"
+                    ? "Job queued"
+                    : marker.state === "running"
+                      ? "Job started"
+                      : marker.state === "succeeded"
+                        ? "Job completed"
+                        : marker.state === "failed"
+                          ? "Job failed"
+                          : marker.state === "canceled"
+                            ? "Job canceled"
+                            : marker.state === "waiting"
+                              ? "Job waiting for you"
+                              : marker.state === "interrupted"
+                                ? "Job interrupted"
+                                : "Job status"}
+                </p>
+                <p className="mt-1 text-xs font-medium text-foreground">
+                  {marker.agentName} · {marker.projectName}
+                </p>
+                <p className="mt-0.5 text-xs text-foreground-secondary">
+                  {marker.goal || "Assigned work"}
+                </p>
+              </article>
+            ))}
 
             <div className="mt-auto pb-8 pt-8">
               {mode === "live" ? (

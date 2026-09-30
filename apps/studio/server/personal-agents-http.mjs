@@ -45,9 +45,11 @@ export async function handlePersonalAgents({
       ? "/studio-api/public-square"
       : routeFamily === "managed-conversations"
         ? "/studio-api/managed-conversations"
-        : routeFamily === "personal-agent-role-templates"
-          ? "/studio-api/personal-agent-role-templates"
-          : prefix;
+        : routeFamily === "team-agent-requests"
+          ? "/studio-api/collaboration"
+          : routeFamily === "personal-agent-role-templates"
+            ? "/studio-api/personal-agent-role-templates"
+            : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -57,24 +59,30 @@ export async function handlePersonalAgents({
   const match = detail.exec(suffix);
   const squareRoute =
     routeFamily === "public-square" ? publicSquareRoute(suffix) : null;
+  const teamAgentRequestRoute =
+    routeFamily === "team-agent-requests"
+      ? teamAgentRequestsRoute(suffix)
+      : null;
   const methods =
-    routeFamily === "public-square"
-      ? (squareRoute?.methods ?? [])
-      : routeFamily === "personal-agent-role-templates"
-        ? suffix === ""
-          ? ["GET"]
-          : []
-        : routeFamily === "managed-conversations"
-          ? managedMethods(suffix)
-          : suffix === ""
-            ? ["GET", "POST"]
-            : suffix === "/capabilities"
-              ? ["GET"]
-              : match
-                ? match[2]
-                  ? ["POST"]
-                  : ["GET", "PATCH"]
-                : [];
+    routeFamily === "team-agent-requests"
+      ? (teamAgentRequestRoute?.methods ?? [])
+      : routeFamily === "public-square"
+        ? (squareRoute?.methods ?? [])
+        : routeFamily === "personal-agent-role-templates"
+          ? suffix === ""
+            ? ["GET"]
+            : []
+          : routeFamily === "managed-conversations"
+            ? managedMethods(suffix)
+            : suffix === ""
+              ? ["GET", "POST"]
+              : suffix === "/capabilities"
+                ? ["GET"]
+                : match
+                  ? match[2]
+                    ? ["POST"]
+                    : ["GET", "PATCH"]
+                  : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -83,11 +91,15 @@ export async function handlePersonalAgents({
     send(405, { error: "method_not_allowed" });
     return true;
   }
+  const teamAgentRequestList =
+    routeFamily === "team-agent-requests" &&
+    request.method === "GET" &&
+    Boolean(teamAgentRequestRoute?.list);
   const recoveryLookup =
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   const squareList =
     routeFamily === "public-square" && squareRoute?.list === true;
-  if (url.search && !recoveryLookup && !squareList) {
+  if (url.search && !recoveryLookup && !squareList && !teamAgentRequestList) {
     send(400, { error: "query_not_allowed" });
     return true;
   }
@@ -97,6 +109,16 @@ export async function handlePersonalAgents({
   }
   if (squareList && !validPublicSquareQuery(url.searchParams)) {
     send(400, { error: "invalid_public_square_query" });
+    return true;
+  }
+  if (
+    teamAgentRequestList &&
+    !validTeamAgentRequestQuery(
+      url.searchParams,
+      teamAgentRequestRoute?.list === "inbox"
+    )
+  ) {
+    send(400, { error: "invalid_team_agent_request_query" });
     return true;
   }
   try {
@@ -163,9 +185,11 @@ export async function handlePersonalAgents({
     }
     const upstream = await fetchImpl(
       new URL(
-        squareRoute
-          ? `${squareRoute.path}${squareList ? url.search : ""}`
-          : `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
+        teamAgentRequestRoute
+          ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
+          : squareRoute
+            ? `${squareRoute.path}${squareList ? url.search : ""}`
+            : `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
         base
       ),
       {
@@ -271,7 +295,9 @@ export async function handlePersonalAgents({
       error:
         routeFamily === "public-square"
           ? "Public Square is unavailable. Check the Koed connection and try again."
-          : "Agents are unavailable. Check the local Koed connection and try again."
+          : routeFamily === "team-agent-requests"
+            ? "Team Agent requests are unavailable. Check the Koed connection and try again."
+            : "Agents are unavailable. Check the local Koed connection and try again."
     });
   }
   return true;
@@ -374,6 +400,76 @@ export function handlePersonalAgentRoleTemplates(options) {
 
 export function handlePublicSquare(options) {
   return handlePersonalAgents({ ...options, routeFamily: "public-square" });
+}
+
+export function handleTeamAgentRequests(options) {
+  return handlePersonalAgents({
+    ...options,
+    routeFamily: "team-agent-requests"
+  });
+}
+
+function teamAgentRequestsRoute(suffix) {
+  const team = new RegExp(
+    `^/teams/(${uuid})(/agent-offers(?:/${uuid})?|/agent-requests(?:/inbox|/${uuid}(?:/review|/decision|/outcome))?)$`
+  ).exec(suffix);
+  if (!team) return null;
+  const tail = team[2];
+  const path = `/v1/collaboration/teams/${team[1]}${tail}`;
+  if (tail === "/agent-offers") return { path, methods: ["GET"] };
+  if (new RegExp(`^/agent-offers/${uuid}$`).test(tail))
+    return { path, methods: ["PUT"] };
+  if (tail === "/agent-requests")
+    return { path, methods: ["GET", "POST"], list: "requests" };
+  if (tail === "/agent-requests/inbox")
+    return { path, methods: ["GET"], list: "inbox" };
+  if (new RegExp(`^/agent-requests/${uuid}/review$`).test(tail))
+    return { path, methods: ["GET", "PUT"] };
+  if (new RegExp(`^/agent-requests/${uuid}/decision$`).test(tail))
+    return { path, methods: ["PUT"] };
+  if (new RegExp(`^/agent-requests/${uuid}/outcome$`).test(tail))
+    return { path, methods: ["POST"] };
+  if (new RegExp(`^/agent-requests/${uuid}$`).test(tail))
+    return { path, methods: ["DELETE"] };
+  return null;
+}
+
+function validTeamAgentRequestQuery(params, inbox = false) {
+  const allowed = inbox
+    ? new Set(["limit", "cursor"])
+    : new Set(["teamProjectId", "channelId", "status", "limit", "cursor"]);
+  const keys = [...params.keys()];
+  if (
+    keys.length !== new Set(keys).size ||
+    keys.some((key) => !allowed.has(key))
+  )
+    return false;
+  for (const key of ["teamProjectId", "channelId"]) {
+    const value = params.get(key);
+    if (value !== null && !validUuid(value)) return false;
+  }
+  const status = params.get("status");
+  if (
+    status !== null &&
+    ![
+      "awaiting_owner",
+      "accepted",
+      "declined",
+      "withdrawn",
+      "unavailable"
+    ].includes(status)
+  )
+    return false;
+  const limit = params.get("limit");
+  if (limit !== null && (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > 100))
+    return false;
+  const cursor = params.get("cursor");
+  return (
+    cursor === null ||
+    (cursor.length > 0 &&
+      cursor.length <= 512 &&
+      !/[\u0000-\u001f\u007f]/.test(cursor))
+  );
 }
 
 function publicSquareRoute(suffix) {

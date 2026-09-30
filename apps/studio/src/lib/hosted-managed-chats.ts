@@ -164,6 +164,25 @@ export function hostedRecoverySelectionIsCurrent(
   return selectedExecutionAtStart === selectedExecutionNow;
 }
 
+export function hostedNewStartPromptForVerifiedScope(input: {
+  recoveryRecord: { draft: string } | null;
+  handoffDraft: string;
+  promptWasEdited: boolean;
+  selectedExecutionAtStart: string | null;
+  selectedExecutionNow: string | null;
+}): string | null {
+  if (
+    input.promptWasEdited ||
+    !hostedRecoverySelectionIsCurrent(
+      input.selectedExecutionAtStart,
+      input.selectedExecutionNow
+    )
+  )
+    return null;
+  if (input.recoveryRecord) return input.recoveryRecord.draft;
+  return input.handoffDraft.slice(0, 8_000);
+}
+
 export type HostedConversationState = {
   executionId: string;
   executionGeneration: number;
@@ -175,6 +194,7 @@ export type HostedConversationState = {
     lifecycle: string;
     currentVersion: number;
   }>;
+  jobs?: unknown[];
   messages: HostedConversationMessage[];
 };
 
@@ -991,6 +1011,7 @@ export function parseHostedConversationState(
     executionState: payload.executionState,
     activeAgentId,
     participants,
+    jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
     messages
   };
 }
@@ -1119,6 +1140,12 @@ export async function startHostedManagedConversation(
     continueWithoutMemory?: true;
     agentId?: string;
     expectedAgentVersion?: number;
+    teamAgentRequest?: {
+      teamId: string;
+      requestId: string;
+      expectedRequestVersion: number;
+      expectedReviewVersion: number;
+    };
   },
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch
@@ -1399,7 +1426,11 @@ export async function queueHostedConversationPrompt(
   },
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
-  options: { continueWithoutMemory?: true } = {}
+  options: {
+    continueWithoutMemory?: true;
+    purpose?: "team_summary_draft";
+    teamSummary?: { teamId: string; requestId: string; jobId: string };
+  } = {}
 ): Promise<{ commandId: string; state: string }> {
   assertExecutionId(execution.id);
   const payload = await requestJson(
@@ -1419,6 +1450,9 @@ export async function queueHostedConversationPrompt(
           : {}),
         ...(options.continueWithoutMemory
           ? { continueWithoutMemory: true }
+          : {}),
+        ...(options.purpose
+          ? { purpose: options.purpose, teamSummary: options.teamSummary }
           : {})
       }
     },

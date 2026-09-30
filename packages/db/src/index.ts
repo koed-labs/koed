@@ -71,6 +71,7 @@ export {
   appendCollaborationOutboxEventWithClient,
   collaborationSubscriptionPrincipalHash,
   createCollaborationRepository,
+  sendCollaborationMessageWithClient,
   CollaborationIdempotencyConflictError,
   CollaborationStateConflictError,
   CollaborationVersionConflictError,
@@ -206,6 +207,9 @@ export {
   type ManagedConversationExecutionCheckpointRecord,
   type ManagedConversationExecutionDiffRecord,
   type ManagedConversationExecutionState,
+  type ManagedConversationAcceptedAgentAssignment,
+  type ManagedConversationAcceptedAgentAssignmentInput,
+  type ManagedConversationPersonalAgentIntentResult,
   type ManagedConversationProjectMoveRecord,
   type ManagedConversationProjectMoveState,
   type ManagedConversationRepository,
@@ -329,7 +333,20 @@ export {
   type PersonalAgentHistoryJob,
   type PersonalAgentRepository
 } from "./personal-agent-repository.js";
-export { createPublicSquareRepository, type PublicSquareRepository, type PublicSquarePublicationRecord } from "./public-square-repository.js";
+export {
+  createPublicSquareRepository,
+  type PublicSquareRepository,
+  type PublicSquarePublicationRecord
+} from "./public-square-repository.js";
+export {
+  createTeamAgentRequestsRepository,
+  TeamAgentRequestUnavailableError,
+  TeamAgentRequestVersionConflictError,
+  type CreateOwnerJobWithClient,
+  type TeamAgentRequestJobContext,
+  type PendingTeamAgentRequestExecutionBinding,
+  type TeamAgentRequestsRepository
+} from "./team-agent-requests-repository.js";
 export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,

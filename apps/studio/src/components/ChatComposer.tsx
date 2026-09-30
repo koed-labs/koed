@@ -69,12 +69,16 @@ export type ChatMentionAgent = Readonly<{
   id: string;
   currentVersion?: number;
   name: string;
+  /** Canonical parser-safe token; the display label may include owner context. */
+  mentionToken?: string;
   role: string;
   avatar?: { image?: string; spec?: Record<string, unknown> };
   lifecycle: "active" | "retired";
   defaultProvider: string | null;
   defaultModel: string | null;
   defaultReasoningEffort: string | null;
+  /** Team requests route to the owner's private execution; requester runtime controls do not apply. */
+  teamRequestOnly?: boolean;
 }>;
 
 export type ChatComposerSelection = Readonly<{
@@ -320,9 +324,13 @@ export function ChatComposer({
       }))
     : MODELS.map((name) => ({ id: name, label: name }));
   const modelIncompatible = Boolean(
-    selectedAgent && modelOptions.length > 0 && !selectedCapability
+    !selectedAgent?.teamRequestOnly &&
+    selectedAgent &&
+    modelOptions.length > 0 &&
+    !selectedCapability
   );
   const agentNeedsExplicitModelSelection = Boolean(
+    !selectedAgent?.teamRequestOnly &&
     selectedAgent &&
     (!selectedAgent.defaultProvider || !selectedAgent.defaultModel) &&
     confirmedAgentModelFor !== selectedAgent.id
@@ -334,6 +342,7 @@ export function ChatComposer({
       .filter((index) => index >= 0)
   );
   const effortIncompatible = Boolean(
+    !selectedAgent?.teamRequestOnly &&
     selectedAgent &&
     selectedCapability &&
     modelOptions.length > 0 &&
@@ -460,7 +469,8 @@ export function ChatComposer({
 
   const selectMention = (agent: ChatMentionAgent) => {
     if (!mentionQuery) return;
-    const mention = `@${agent.name.replace(/\s+/g, "_")} `;
+    const token = agent.mentionToken ?? agent.name.replace(/\s+/g, "_");
+    const mention = `@${token} `;
     const nextDraft = `${draft.slice(0, mentionQuery.start)}${mention}${draft.slice(mentionQuery.end)}`;
     setDraft(nextDraft);
     setMentionQuery(null);
@@ -468,7 +478,7 @@ export function ChatComposer({
     onActiveAgentChange?.(agent.id);
     setResolvedMentionIds((current) => ({
       ...current,
-      [agent.name.toLocaleLowerCase().replace(/\s+/g, "_")]: agent.id
+      [token.toLocaleLowerCase().replace(/\s+/g, "_")]: agent.id
     }));
     if (agent.defaultProvider && agent.defaultModel) {
       setModel(`${agent.defaultProvider}:${agent.defaultModel}`);

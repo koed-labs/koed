@@ -49,6 +49,7 @@ export interface CodexConversationStartupTiming {
 export interface CodexManagedConversationConfig {
   memoryClient: MemoryApiClient;
   appServer: CodexAppServerRunConfig;
+  appServerForTurn?: (base: CodexAppServerRunConfig) => CodexAppServerRunConfig;
   projectId?: string;
   onStartupTiming?: (timing: CodexConversationStartupTiming) => void;
   transcriptReadMaxBytes?: number;
@@ -652,7 +653,8 @@ export class CodexManagedConversationSession {
         client.startTurn(
           thread.id,
           prompt,
-          this.config.appServer,
+          this.config.appServerForTurn?.(this.config.appServer) ??
+            this.config.appServer,
           clientUserMessageId
         ),
         timeoutPromise

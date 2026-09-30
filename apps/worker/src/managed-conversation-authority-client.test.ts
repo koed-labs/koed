@@ -213,6 +213,96 @@ describe("Managed Conversation authority client", () => {
     });
   });
 
+  it("sends only strict runner fields for Personal Agent intent and turn status", async () => {
+    const commandId = "00000000-0000-4000-8000-000000000061";
+    const executionId = "00000000-0000-4000-8000-000000000062";
+    const leaseToken = "00000000-0000-4000-8000-000000000063";
+    const deviceId = "00000000-0000-4000-8000-000000000064";
+    const deploymentId = "00000000-0000-4000-8000-000000000065";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("/personal-agent-intent")
+            ? {
+                assignment: {
+                  jobId: "job-1",
+                  agentId: "agent-1",
+                  agentVersion: 1,
+                  title: "Implement feature",
+                  continuation: false
+                }
+              }
+            : {}
+        ),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await client.recordPersonalAgentIntentForManagedCommand(
+      { userId: ids.session },
+      {
+        commandId,
+        executionId,
+        executionGeneration: 4,
+        leaseToken,
+        runnerId: "runner-1",
+        deviceId,
+        deploymentId,
+        providerTurnId: "turn-1",
+        intent: { kind: "assign", goal: "Implement feature" }
+      } as never
+    );
+    await client.recordPersonalAgentTurnStatusForManagedCommand(
+      { userId: ids.session },
+      {
+        commandId,
+        executionId,
+        executionGeneration: 4,
+        leaseToken,
+        runnerId: "runner-1",
+        deviceId,
+        deploymentId,
+        providerTurnId: "turn-1",
+        status: "complete"
+      } as never
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const intentBody = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    const statusBody = JSON.parse(String(fetch.mock.calls[1]?.[1]?.body));
+    expect(Object.keys(intentBody).sort()).toEqual(
+      [
+        "executionGeneration",
+        "executionId",
+        "intent",
+        "leaseToken",
+        "providerTurnId",
+        "runnerId"
+      ].sort()
+    );
+    expect(Object.keys(statusBody).sort()).toEqual(
+      [
+        "executionGeneration",
+        "executionId",
+        "leaseToken",
+        "providerTurnId",
+        "runnerId",
+        "status"
+      ].sort()
+    );
+    expect(intentBody.deviceId).toBeUndefined();
+    expect(intentBody.deploymentId).toBeUndefined();
+    expect(statusBody.deviceId).toBeUndefined();
+    expect(statusBody.deploymentId).toBeUndefined();
+  });
+
   it("sends Project Move claims and completion to authority without local paths", async () => {
     const moveId = "00000000-0000-4000-8000-000000000040";
     const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {

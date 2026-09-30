@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, hostedNewStartPromptForVerifiedScope, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -154,6 +154,57 @@ test("keeps a delayed new-start recovery result from replacing a newly selected 
 
   assert.equal(selectedExecutionId, "healthy-execution");
   assert.equal(persistedNewStartIdentity, "accepted-new-start");
+});
+
+test("seeds a verified fresh hosted start from handoff draft without replacing recovery or edits", () => {
+  const base = {
+    handoffDraft: "Discuss the request before starting work.",
+    promptWasEdited: false,
+    selectedExecutionAtStart: null,
+    selectedExecutionNow: null
+  };
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({ ...base, recoveryRecord: null }),
+    base.handoffDraft
+  );
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({
+      ...base,
+      recoveryRecord: { draft: "Recovered local draft" }
+    }),
+    "Recovered local draft"
+  );
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({
+      ...base,
+      recoveryRecord: { draft: "" }
+    }),
+    ""
+  );
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({
+      ...base,
+      recoveryRecord: null,
+      promptWasEdited: true
+    }),
+    null
+  );
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({
+      ...base,
+      recoveryRecord: null,
+      selectedExecutionNow: "another-chat"
+    }),
+    null
+  );
+  assert.equal(
+    hostedNewStartPromptForVerifiedScope({
+      ...base,
+      recoveryRecord: null,
+      handoffDraft: "x".repeat(9_000)
+    })?.length,
+    8_000
+  );
 });
 
 test("shows only the active execution generation's approved transient output and reconciles canonical IDs", () => {

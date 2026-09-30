@@ -223,6 +223,46 @@ test("retries only the exact retained request with its original idempotency iden
   );
 });
 
+test("binds a fresh Team request start fingerprint to both server versions", () => {
+  const start = {
+    kind: "start" as const,
+    projectId: "project-a",
+    executionId: null,
+    executionGeneration: null,
+    agentId: "agent-a",
+    agentVersion: 4,
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-test",
+    reasoningEffort: "high",
+    permissionMode: "supervised",
+    expectedSettings: null,
+    teamAgentRequestBinding: ["request-a", 2, 5] as const
+  };
+  const fingerprint = managedChatSendRequestFingerprint(start);
+  assert.notEqual(
+    managedChatSendRequestFingerprint({
+      ...start,
+      teamAgentRequestBinding: ["request-b", 2, 5]
+    }),
+    fingerprint
+  );
+  assert.notEqual(
+    managedChatSendRequestFingerprint({
+      ...start,
+      teamAgentRequestBinding: ["request-a", 3, 5]
+    }),
+    fingerprint
+  );
+  assert.notEqual(
+    managedChatSendRequestFingerprint({
+      ...start,
+      teamAgentRequestBinding: ["request-a", 2, 6]
+    }),
+    fingerprint
+  );
+});
+
 test("reuses a retained first prompt identity after its bare start completed", () => {
   const prompt = "Reply exactly: local recovery verified.";
   const startFingerprint = managedChatSendRequestFingerprint({

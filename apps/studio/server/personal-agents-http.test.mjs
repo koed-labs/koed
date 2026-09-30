@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {
   handlePersonalAgents,
-  handlePersonalAgentRoleTemplates
+  handlePersonalAgentRoleTemplates,
+  handleTeamAgentRequests
 } from "./personal-agents-http.mjs";
 
 async function call(overrides = {}) {
@@ -126,6 +127,138 @@ test("preserves conflict status so stale edits cannot masquerade as saved", asyn
     ).status,
     409
   );
+});
+
+test("Team Agent request proxy allowlists routes and forwards scoped writes", async () => {
+  const teamId = "11111111-1111-4111-8111-111111111111";
+  const requestId = "22222222-2222-4222-8222-222222222222";
+  const payload = { expectedVersion: 2, decision: "accept" };
+  const request = Readable.from([Buffer.from(JSON.stringify(payload))]);
+  request.method = "PUT";
+  request.headers = { "content-type": "application/json" };
+  let result;
+  await handleTeamAgentRequests({
+    request,
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests/${requestId}/decision`
+    ),
+    validCsrf: () => true,
+    resolveAccess: async () => ({
+      apiOrigin: "http://127.0.0.1:59451",
+      apiToken: "paired-secret"
+    }),
+    fetchImpl: async (url, init) => {
+      assert.equal(
+        url.href,
+        `http://127.0.0.1:59451/v1/collaboration/teams/${teamId}/agent-requests/${requestId}/decision`
+      );
+      assert.equal(init.method, "PUT");
+      assert.equal(init.headers.authorization, "Bearer paired-secret");
+      assert.deepEqual(JSON.parse(init.body), payload);
+      return Response.json({ request: { id: requestId } });
+    },
+    send: (status, body) => {
+      result = { status, body };
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.request.id, requestId);
+
+  const rejected = await call({
+    request: Object.assign(Readable.from([]), { method: "GET", headers: {} }),
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests/not-a-route`
+    ),
+    routeFamily: "team-agent-requests",
+    fetchImpl: () => assert.fail("unknown Team Agent route must not fetch")
+  });
+  assert.equal(rejected.status, 404);
+});
+
+test("Team Agent request proxy validates list query and requires CSRF for mutations", async () => {
+  const teamId = "11111111-1111-4111-8111-111111111111";
+  const listRequest = Readable.from([]);
+  listRequest.method = "GET";
+  listRequest.headers = {};
+  let result;
+  await handleTeamAgentRequests({
+    request: listRequest,
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests?limit=20&status=awaiting_owner`
+    ),
+    validCsrf: () => false,
+    resolveToken: async () => "secret",
+    apiBase: "http://127.0.0.1:43300",
+    fetchImpl: async (url) => {
+      assert.equal(
+        url.pathname,
+        `/v1/collaboration/teams/${teamId}/agent-requests`
+      );
+      assert.equal(url.search, "?limit=20&status=awaiting_owner");
+      return Response.json({ requests: [] });
+    },
+    send: (status, body) => {
+      result = { status, body };
+    }
+  });
+  assert.equal(result.status, 200);
+
+  const validInbox = await call({
+    request: listRequest,
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests/inbox?limit=50&cursor=opaque`
+    ),
+    routeFamily: "team-agent-requests",
+    fetchImpl: async (url) => {
+      assert.equal(
+        url.pathname,
+        `/v1/collaboration/teams/${teamId}/agent-requests/inbox`
+      );
+      assert.equal(url.search, "?limit=50&cursor=opaque");
+      return Response.json({ requests: [] });
+    }
+  });
+  assert.equal(validInbox.status, 200);
+
+  const invalid = await call({
+    request: listRequest,
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests?ownerId=other`
+    ),
+    routeFamily: "team-agent-requests",
+    fetchImpl: () => assert.fail("unknown query must not fetch")
+  });
+  assert.equal(invalid.status, 400);
+
+  for (const query of [
+    "ownerId=other",
+    "channelId=22222222-2222-4222-8222-222222222222"
+  ]) {
+    const inbox = await call({
+      request: listRequest,
+      url: new URL(
+        `http://localhost/studio-api/collaboration/teams/${teamId}/agent-requests/inbox?${query}`
+      ),
+      routeFamily: "team-agent-requests",
+      fetchImpl: () =>
+        assert.fail("inbox identity and scope must be server-derived")
+    });
+    assert.equal(inbox.status, 400);
+  }
+
+  const writeRequest = Readable.from([Buffer.from('{"enabled":false}')]);
+  writeRequest.method = "PUT";
+  writeRequest.headers = { "content-type": "application/json" };
+  const forbidden = await call({
+    request: writeRequest,
+    url: new URL(
+      `http://localhost/studio-api/collaboration/teams/${teamId}/agent-offers/22222222-2222-4222-8222-222222222222`
+    ),
+    routeFamily: "team-agent-requests",
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("CSRF failure must not fetch")
+  });
+  assert.equal(forbidden.status, 403);
 });
 
 test("maps only the bounded Agent name conflict without leaking backend details", async () => {

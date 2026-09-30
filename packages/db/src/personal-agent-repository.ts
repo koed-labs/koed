@@ -123,10 +123,13 @@ export interface PersonalAgentExecutionJobInput {
 
 export interface PersonalAgentJobOutputReference {
   runtimeItemIds: string[];
+  attemptOutputs?: Array<{ attemptId: string; runtimeItemIds: string[] }>;
+  legacyRuntimeItemIds?: string[];
 }
 
 export interface PersonalAgentExecutionAttemptInput {
   jobId: string;
+  commandId?: string | null;
   attemptNumber: number;
   attribution: PersonalAgentAttribution;
   provider: string | null;
@@ -291,6 +294,7 @@ export interface PersonalAgentRepository {
     jobId: string;
     attemptId: string;
     outcome: PersonalAgentAttemptOutcome;
+    jobState?: "waiting";
     eventId?: string;
     observedAt?: string;
   }): Promise<{
@@ -382,6 +386,7 @@ type AttemptRow = {
   id: string;
   owner_user_id: string;
   job_id: string;
+  command_id: string | null;
   attempt_number: number;
   attribution_kind: "agent" | "legacy";
   agent_id: string | null;
@@ -489,6 +494,7 @@ const mapAttempt = (row: AttemptRow): PersonalAgentExecutionAttempt =>
     id: row.id,
     ownerUserId: row.owner_user_id,
     jobId: row.job_id,
+    commandId: row.command_id,
     attemptNumber: row.attempt_number,
     attribution: mapAttribution(
       row.attribution_kind,
@@ -641,7 +647,7 @@ export const createPersonalAgentRepository = (
       requireProvider(),
       {
         sourceTable: OUTPUT_SOURCE_TABLE,
-        sourceId: jobId,
+        sourceId: attemptId,
         sourceColumn: OUTPUT_SOURCE_COLUMN,
         plaintext: outputText,
         visibility: "personal",
@@ -655,7 +661,7 @@ export const createPersonalAgentRepository = (
   const decryptTurnOutput = async (
     client: pg.Pool | pg.PoolClient,
     actor: ActorContext,
-    jobId: string
+    sourceId: string
   ): Promise<string | null> => {
     const result = await decryptAuthorizedEncryptedFieldPayloadWithClient(
       client,
@@ -663,7 +669,7 @@ export const createPersonalAgentRepository = (
       requireProvider(),
       {
         sourceTable: OUTPUT_SOURCE_TABLE,
-        sourceId: jobId,
+        sourceId,
         sourceColumn: OUTPUT_SOURCE_COLUMN
       }
     );
@@ -1903,7 +1909,7 @@ export const createPersonalAgentRepository = (
       const jobRow = result.rows[0];
       if (!jobRow) throw new Error("Personal Agent job was not found");
       const attempt = await client.query<AttemptRow>(
-        `select id, owner_user_id, job_id, attempt_number, attribution_kind,
+        `select id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
@@ -1916,7 +1922,11 @@ export const createPersonalAgentRepository = (
         throw new Error("Personal Agent attempt was not found");
       const eventId = input.eventId ?? `output:${input.attemptId}`;
       const event = await client.query<{
-        payload: { runtimeItemIds?: string[]; outputDigest?: string };
+        payload: {
+          attemptId?: string;
+          runtimeItemIds?: string[];
+          outputDigest?: string;
+        };
       }>(
         `select payload from personal_agent_execution_job_events
          where owner_user_id = $1 and job_id = $2 and event_id = $3`,
@@ -1924,6 +1934,9 @@ export const createPersonalAgentRepository = (
       );
       if (event.rows[0]) {
         if (
+          (event.rows[0].payload.attemptId !== undefined
+            ? event.rows[0].payload.attemptId !== input.attemptId
+            : eventId !== `output:${input.attemptId}`) ||
           event.rows[0].payload.outputDigest !== outputDigest ||
           JSON.stringify(event.rows[0].payload.runtimeItemIds) !==
             JSON.stringify(refs)
@@ -1939,23 +1952,31 @@ export const createPersonalAgentRepository = (
         jobRow,
         attempt.rows[0]
       );
-      const existing = jobRow.output_reference?.runtimeItemIds;
-      if (existing && JSON.stringify(existing) !== JSON.stringify(refs)) {
+      const previousReference = jobRow.output_reference;
+      const attemptOutputs = [...(previousReference?.attemptOutputs ?? [])];
+      const priorAttemptOutput = attemptOutputs.find(
+        (entry) => entry.attemptId === input.attemptId
+      );
+      if (
+        priorAttemptOutput &&
+        JSON.stringify(priorAttemptOutput.runtimeItemIds) !==
+          JSON.stringify(refs)
+      ) {
         throw idempotencyConflict(
-          "Personal Agent job output was already recorded"
+          "Personal Agent attempt output was already recorded"
         );
       }
       const existingOutput = await decryptTurnOutput(
         client,
         input.actor,
-        input.jobId
+        input.attemptId
       );
       if (
         existingOutput !== null &&
         requestFingerprint({ outputText: existingOutput }) !== outputDigest
       ) {
         throw idempotencyConflict(
-          "Personal Agent job output was already recorded"
+          "Personal Agent attempt output was already recorded"
         );
       }
       if (existingOutput === null) {
@@ -1967,6 +1988,28 @@ export const createPersonalAgentRepository = (
           outputText
         );
       }
+      if (!priorAttemptOutput) {
+        if (attemptOutputs.length >= 100) {
+          throw idempotencyConflict(
+            "Personal Agent output history limit was reached"
+          );
+        }
+        attemptOutputs.push({
+          attemptId: input.attemptId,
+          runtimeItemIds: refs
+        });
+      }
+      const legacyRuntimeItemIds =
+        previousReference?.legacyRuntimeItemIds ??
+        (previousReference?.runtimeItemIds?.length &&
+        !previousReference.attemptOutputs?.length
+          ? previousReference.runtimeItemIds
+          : undefined);
+      const nextReference: PersonalAgentJobOutputReference = {
+        runtimeItemIds: refs,
+        attemptOutputs,
+        ...(legacyRuntimeItemIds ? { legacyRuntimeItemIds } : {})
+      };
       const sequence = await client.query<{ sequence: number }>(
         `select coalesce(max(sequence), 0) + 1 as sequence
          from personal_agent_execution_job_events where owner_user_id = $1 and job_id = $2`,
@@ -1981,7 +2024,11 @@ export const createPersonalAgentRepository = (
           input.jobId,
           sequence.rows[0]!.sequence,
           eventId,
-          JSON.stringify({ runtimeItemIds: refs, outputDigest }),
+          JSON.stringify({
+            attemptId: input.attemptId,
+            runtimeItemIds: refs,
+            outputDigest
+          }),
           observedAt
         ]
       );
@@ -1998,7 +2045,7 @@ export const createPersonalAgentRepository = (
         [
           input.jobId,
           input.actor.userId,
-          JSON.stringify(input.outputReference),
+          JSON.stringify(nextReference),
           observedAt
         ]
       );
@@ -2021,7 +2068,8 @@ export const createPersonalAgentRepository = (
       [input.jobId, actor.userId]
     );
     if (!job.rows[0]) return null;
-    if (!job.rows[0].output_reference?.runtimeItemIds?.length) return null;
+    const reference = job.rows[0].output_reference;
+    if (!reference?.runtimeItemIds?.length) return null;
     const policySnapshot =
       await loadConversationPresentationPolicySnapshot(pool);
     const presentation = decideConversationItemPresentation({
@@ -2034,7 +2082,26 @@ export const createPersonalAgentRepository = (
     if (presentation.mode === "hidden" || presentation.renderer !== "message") {
       return null;
     }
-    return decryptTurnOutput(pool, actor, input.jobId);
+    const outputTexts: string[] = [];
+    if (reference.legacyRuntimeItemIds?.length) {
+      const legacy = await decryptTurnOutput(pool, actor, input.jobId);
+      if (legacy) outputTexts.push(legacy);
+    } else if (!reference.attemptOutputs?.length) {
+      const legacy = await decryptTurnOutput(pool, actor, input.jobId);
+      if (legacy) outputTexts.push(legacy);
+    }
+    for (const entry of reference.attemptOutputs ?? []) {
+      const output = await decryptTurnOutput(pool, actor, entry.attemptId);
+      if (output) outputTexts.push(output);
+    }
+    if (!outputTexts.length) return null;
+    const joined = outputTexts.join("\n\n");
+    if (Buffer.byteLength(joined, "utf8") <= 262_144) return joined;
+    let bounded = joined;
+    while (Buffer.byteLength(bounded, "utf8") > 262_144) {
+      bounded = bounded.slice(0, Math.max(0, bounded.length - 1024));
+    }
+    return bounded;
   };
 
   const getPersonalAgentExecutionJob = async (
@@ -2176,6 +2243,7 @@ export const createPersonalAgentRepository = (
         id: randomUUID(),
         ownerUserId: actor.userId,
         jobId: input.jobId,
+        commandId: input.commandId ?? null,
         attemptNumber: input.attemptNumber,
         attribution: input.attribution,
         provider: input.provider,
@@ -2191,8 +2259,51 @@ export const createPersonalAgentRepository = (
         completedAt: input.completedAt
       });
       assertPersonalAgentAttemptRuntimeIdentity(attempt);
+      // A command is the idempotency boundary for a provider turn. The runner
+      // may retry after the attempt transaction committed but its response was
+      // lost; its refreshed Job counters then suggest the next attempt number.
+      // Look up this exact command before attempt-number replay so that retry
+      // cannot collide with the command unique index or create another attempt.
+      if (attempt.commandId) {
+        const commandAttemptResult = await client.query<AttemptRow>(
+          `select id, owner_user_id, job_id, command_id, attempt_number,
+              attribution_kind, agent_id, agent_version, provider, model,
+              ai_client_instance_id, reasoning_effort, permission_mode,
+              managed_execution_id, managed_execution_generation, status,
+              outcome, started_at, completed_at
+           from personal_agent_execution_attempts
+           where owner_user_id = $1 and command_id = $2
+           limit 1`,
+          [actor.userId, attempt.commandId]
+        );
+        const commandAttemptRow = commandAttemptResult.rows[0];
+        if (commandAttemptRow) {
+          const existing = mapAttempt(commandAttemptRow);
+          const sameCommandBinding =
+            existing.jobId === attempt.jobId &&
+            existing.commandId === attempt.commandId &&
+            existing.attribution.kind === attempt.attribution.kind &&
+            existing.attribution.agentId === attempt.attribution.agentId &&
+            existing.attribution.agentVersion ===
+              attempt.attribution.agentVersion &&
+            existing.provider === attempt.provider &&
+            existing.model === attempt.model &&
+            existing.aiClientInstanceId === attempt.aiClientInstanceId &&
+            existing.reasoningEffort === attempt.reasoningEffort &&
+            existing.permissionMode === attempt.permissionMode &&
+            existing.managedExecutionId === attempt.managedExecutionId &&
+            existing.managedExecutionGeneration ===
+              attempt.managedExecutionGeneration;
+          if (!sameCommandBinding) {
+            throw idempotencyConflict(
+              "Personal Agent command was reused with different attempt input"
+            );
+          }
+          return existing;
+        }
+      }
       const existingAttempt = await client.query<AttemptRow>(
-        `select id, owner_user_id, job_id, attempt_number, attribution_kind,
+        `select id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
@@ -2205,6 +2316,7 @@ export const createPersonalAgentRepository = (
         const existing = mapAttempt(existingAttempt.rows[0]);
         const comparable = (value: PersonalAgentExecutionAttempt) => ({
           jobId: value.jobId,
+          commandId: value.commandId,
           attemptNumber: value.attemptNumber,
           attribution: value.attribution,
           provider: value.provider,
@@ -2266,14 +2378,14 @@ export const createPersonalAgentRepository = (
       await validateAttribution(client, actor, input.attribution, true);
       const result = await client.query<AttemptRow>(
         `insert into personal_agent_execution_attempts
-          (id, owner_user_id, job_id, attempt_number, attribution_kind,
+          (id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
            agent_id, agent_version, provider, model, ai_client_instance_id,
            reasoning_effort, permission_mode, managed_execution_id,
            managed_execution_generation, status, outcome, started_at,
            completed_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14, $15, $16, $17, $18)
-         returning id, owner_user_id, job_id, attempt_number,
+                 $13, $14, $15, $16, $17, $18, $19)
+         returning id, owner_user_id, job_id, command_id, attempt_number,
            attribution_kind, agent_id, agent_version, provider, model,
            ai_client_instance_id, reasoning_effort, permission_mode,
            managed_execution_id, managed_execution_generation, status,
@@ -2282,6 +2394,7 @@ export const createPersonalAgentRepository = (
           attempt.id,
           actor.userId,
           attempt.jobId,
+          attempt.commandId,
           attempt.attemptNumber,
           attempt.attribution.kind,
           attempt.attribution.agentId,
@@ -2342,6 +2455,7 @@ export const createPersonalAgentRepository = (
     jobId: string;
     attemptId: string;
     outcome: PersonalAgentAttemptOutcome;
+    jobState?: "waiting";
     eventId?: string;
     observedAt?: string;
   }): Promise<{
@@ -2368,7 +2482,7 @@ export const createPersonalAgentRepository = (
       const job = jobResult.rows[0];
       if (!job) throw new Error("Personal Agent job was not found");
       const attemptResult = await client.query<AttemptRow>(
-        `select id, owner_user_id, job_id, attempt_number, attribution_kind,
+        `select id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
@@ -2381,7 +2495,7 @@ export const createPersonalAgentRepository = (
       if (!attemptRow) throw new Error("Personal Agent attempt was not found");
       const attempt = mapAttempt(attemptRow);
       const previousEvent = await client.query<{
-        payload: { attemptId?: string; outcome?: string };
+        payload: { attemptId?: string; outcome?: string; jobState?: string };
       }>(
         `select payload from personal_agent_execution_job_events
          where owner_user_id = $1 and job_id = $2 and event_id = $3`,
@@ -2390,7 +2504,9 @@ export const createPersonalAgentRepository = (
       if (previousEvent.rows[0]) {
         if (
           previousEvent.rows[0].payload.attemptId !== input.attemptId ||
-          previousEvent.rows[0].payload.outcome !== input.outcome
+          previousEvent.rows[0].payload.outcome !== input.outcome ||
+          (previousEvent.rows[0].payload.jobState ?? null) !==
+            (input.jobState ?? null)
         ) {
           throw idempotencyConflict(
             "Personal Agent attempt event ID was reused"
@@ -2412,7 +2528,7 @@ export const createPersonalAgentRepository = (
         `update personal_agent_execution_attempts
             set status = $3, outcome = $3, completed_at = $4, updated_at = now()
           where id = $1 and job_id = $2 and owner_user_id = $5 and status = 'running'
-          returning id, owner_user_id, job_id, attempt_number, attribution_kind,
+          returning id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at, completed_at`,
@@ -2427,12 +2543,18 @@ export const createPersonalAgentRepository = (
           }
         );
       }
+      if (input.jobState === "waiting" && input.outcome !== "succeeded") {
+        throw new TypeError(
+          "Only a successful provider turn can leave a Job waiting"
+        );
+      }
       const jobState =
-        input.outcome === "succeeded"
+        input.jobState ??
+        (input.outcome === "succeeded"
           ? "succeeded"
           : input.outcome === "canceled"
             ? "canceled"
-            : "failed";
+            : "failed");
       const counterColumn = {
         succeeded: "attempts_succeeded",
         failed: "attempts_failed",
@@ -2457,7 +2579,8 @@ export const createPersonalAgentRepository = (
           attempt.managedExecutionGeneration,
           JSON.stringify({
             attemptId: input.attemptId,
-            outcome: input.outcome
+            outcome: input.outcome,
+            ...(input.jobState ? { jobState: input.jobState } : {})
           }),
           completedAt
         ]
@@ -2491,7 +2614,7 @@ export const createPersonalAgentRepository = (
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
     const cursor = input.before ? decodeCursor(input.before) : null;
     const result = await pool.query<AttemptRow>(
-      `select id, owner_user_id, job_id, attempt_number, attribution_kind,
+      `select id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
           agent_id, agent_version, provider, model, ai_client_instance_id,
           reasoning_effort, permission_mode, managed_execution_id,
           managed_execution_generation, status, outcome, started_at,

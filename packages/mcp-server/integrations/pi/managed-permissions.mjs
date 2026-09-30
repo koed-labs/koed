@@ -4,6 +4,10 @@ import process from "node:process";
 const modes = new Set(["supervised", "auto_edit", "auto", "full_access"]);
 const reads = new Set(["read", "grep", "find", "ls"]);
 const edits = new Set(["write", "edit"]);
+const managedAgentSignals = new Set([
+  "koed_agent_intent",
+  "koed_agent_turn_status"
+]);
 
 // Loaded explicitly by the managed runner, not by normal Pi discovery.
 export default function managedPermissions(pi, environment = process.env) {
@@ -13,9 +17,36 @@ export default function managedPermissions(pi, environment = process.env) {
   pi.on("session_start", () => sessionGrants.clear());
   pi.on("session_shutdown", () => sessionGrants.clear());
   pi.on("tool_call", async (event, context) => {
-    if (mode === "full_access") return;
     if (context.signal?.aborted)
       return { block: true, reason: "Request canceled." };
+    if (managedAgentSignals.has(event.toolName)) return;
+    const gated = environment.KOED_MANAGED_AGENT_TOOL_GATE === "1";
+    if (gated) {
+      if (!context.hasUI)
+        return {
+          block: true,
+          reason: "Managed Agent tool authorization requires the Koed runner."
+        };
+      const carrier = JSON.stringify({
+        kind: "koed_tool_gate",
+        toolName: event.toolName,
+        input: event.input
+      });
+      const decision = await context.ui.select(
+        carrier,
+        ["Allow", "Deny", "Use configured permissions"],
+        { signal: context.signal }
+      );
+      if (context.signal?.aborted)
+        return { block: true, reason: "Request canceled." };
+      if (decision !== "Allow" && decision !== "Use configured permissions")
+        return {
+          block: true,
+          reason: "Managed Agent tool authorization denied."
+        };
+      if (decision === "Allow") return;
+    }
+    if (mode === "full_access") return;
     if (reads.has(event.toolName) || sessionGrants.has(event.toolName)) return;
     if (mode === "auto_edit" && edits.has(event.toolName)) return;
     // Pi has no native automatic reviewer. Auto falls back to asking.

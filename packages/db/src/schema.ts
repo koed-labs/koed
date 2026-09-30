@@ -214,6 +214,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "pending_share_lifecycle",
   "managed_conversation_changed",
   "public_square_changed",
+  "team_agent_request_changed",
   "access_revoked"
 ]);
 export const collaborationStreamState = pgEnum("collaboration_stream_state", [
@@ -4532,7 +4533,7 @@ export const personalAgentExecutionJobs = pgTable(
     ),
     check(
       "personal_agent_execution_jobs_state_check",
-      sql`${table.state} in ('queued', 'running', 'succeeded', 'failed', 'canceled')`
+      sql`${table.state} in ('queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled')`
     ),
     check(
       "personal_agent_execution_jobs_version_check",
@@ -4608,6 +4609,10 @@ export const personalAgentExecutionAttempts = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     jobId: uuid("job_id").notNull(),
+    commandId: uuid("command_id").references(
+      () => managedConversationCommands.id,
+      { onDelete: "cascade" }
+    ),
     attemptNumber: integer("attempt_number").notNull(),
     attributionKind: text("attribution_kind").notNull().default("agent"),
     agentId: uuid("agent_id"),
@@ -4629,6 +4634,9 @@ export const personalAgentExecutionAttempts = pgTable(
     updatedAt: updatedNow()
   },
   (table) => [
+    uniqueIndex("personal_agent_execution_attempts_command_unique")
+      .on(table.ownerUserId, table.commandId)
+      .where(sql`${table.commandId} is not null`),
     unique("personal_agent_execution_attempts_job_number_unique").on(
       table.jobId,
       table.attemptNumber
@@ -9900,6 +9908,184 @@ export const collaborationMessages = pgTable(
       "collaboration_messages_retention_check",
       sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
         or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    )
+  ]
+);
+
+export const teamAgentOffers = pgTable(
+  "team_agent_offers",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").notNull(),
+    enabled: boolean("enabled").notNull().default(false),
+    descriptionMarker: text("description_marker")
+      .notNull()
+      .default("[koed encrypted Team Agent offer description]"),
+    version: integer("version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("team_agent_offers_id_team_unique").on(table.id, table.teamId),
+    unique("team_agent_offers_team_owner_agent_unique").on(
+      table.teamId,
+      table.ownerUserId,
+      table.agentId
+    ),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentIdentities.id,
+        personalAgentIdentities.ownerUserId
+      ],
+      name: "team_agent_offers_owner_agent_fk"
+    }).onDelete("restrict"),
+    check(
+      "team_agent_offers_description_marker_check",
+      sql`${table.descriptionMarker} = '[koed encrypted Team Agent offer description]'`
+    ),
+    check("team_agent_offers_version_check", sql`${table.version} > 0`),
+    index("team_agent_offers_team_enabled_idx").on(
+      table.teamId,
+      table.updatedAt.desc()
+    )
+  ]
+);
+
+export const teamAgentRequests = pgTable(
+  "team_agent_requests",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamProjectId: uuid("team_project_id").notNull(),
+    channelId: uuid("channel_id").notNull(),
+    requestMessageId: uuid("request_message_id").notNull(),
+    requesterUserId: uuid("requester_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    agentName: text("agent_name").notNull(),
+    status: text("status").notNull().default("awaiting_owner"),
+    jobId: uuid("job_id"),
+    outcomeMessageId: uuid("outcome_message_id"),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    version: integer("version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("team_agent_requests_id_team_unique").on(table.id, table.teamId),
+    unique("team_agent_requests_job_unique").on(table.jobId),
+    unique("team_agent_requests_request_message_unique").on(
+      table.channelId,
+      table.requestMessageId
+    ),
+    unique("team_agent_requests_request_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    uniqueIndex("team_agent_requests_idempotency_unique").on(
+      table.teamId,
+      table.requesterUserId,
+      table.idempotencyKeyHash
+    ),
+    foreignKey({
+      columns: [table.teamProjectId, table.teamId],
+      foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
+      name: "team_agent_requests_team_project_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.agentId, table.ownerUserId, table.agentVersion],
+      foreignColumns: [
+        personalAgentIdentityVersions.agentId,
+        personalAgentIdentityVersions.ownerUserId,
+        personalAgentIdentityVersions.version
+      ],
+      name: "team_agent_requests_owner_agent_version_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.channelId, table.teamId],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.teamId],
+      name: "team_agent_requests_channel_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.channelId, table.requestMessageId],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id
+      ],
+      name: "team_agent_requests_request_message_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.jobId, table.ownerUserId],
+      foreignColumns: [
+        personalAgentExecutionJobs.id,
+        personalAgentExecutionJobs.ownerUserId
+      ],
+      name: "team_agent_requests_owner_job_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.channelId, table.outcomeMessageId],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id
+      ],
+      name: "team_agent_requests_outcome_message_fk"
+    }).onDelete("restrict"),
+    check(
+      "team_agent_requests_members_distinct_check",
+      sql`${table.requesterUserId} <> ${table.ownerUserId}
+        and ${table.agentVersion} > 0
+        and length(trim(${table.agentName})) between 1 and 128`
+    ),
+    check(
+      "team_agent_requests_status_shape_check",
+      sql`(${table.status} = 'accepted' and ${table.jobId} is not null)
+        or (${table.status} <> 'accepted' and ${table.jobId} is null)`
+    ),
+    check(
+      "team_agent_requests_status_check",
+      sql`${table.status} in ('awaiting_owner','accepted','declined','withdrawn','unavailable')`
+    ),
+    check(
+      "team_agent_requests_outcome_check",
+      sql`${table.outcomeMessageId} is null or ${table.status} = 'accepted'`
+    ),
+    check(
+      "team_agent_requests_hash_version_check",
+      sql`${table.version} > 0
+        and ${table.idempotencyKeyHash} ~ '^[0-9a-f]{64}$'
+        and ${table.requestHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    index("team_agent_requests_team_project_status_idx").on(
+      table.teamId,
+      table.teamProjectId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    index("team_agent_requests_owner_status_idx").on(
+      table.ownerUserId,
+      table.teamId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    index("team_agent_requests_requester_idx").on(
+      table.requesterUserId,
+      table.teamId,
+      table.createdAt.desc()
     )
   ]
 );

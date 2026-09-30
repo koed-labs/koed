@@ -1,6 +1,7 @@
 export type MentionCandidate = Readonly<{
   id: string;
   name: string;
+  mentionToken?: string;
   lifecycle: "active" | "retired";
 }>;
 
@@ -31,6 +32,19 @@ function normalizedName(value: string): string {
   return value.trim().toLocaleLowerCase().replace(/\s+/g, "_");
 }
 
+export function canonicalAgentMentionToken(name: string, id: string): string {
+  const readable = name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+  const suffix = id
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}_-]/gu, "")
+    .slice(-8);
+  return `${readable || "agent"}_${suffix || "selected"}`;
+}
+
 export function matchMentionCandidates<T extends MentionCandidate>(
   query: string,
   agents: readonly T[]
@@ -41,7 +55,10 @@ export function matchMentionCandidates<T extends MentionCandidate>(
       (agent) =>
         agent.lifecycle === "active" &&
         (!normalizedQuery ||
-          normalizedName(agent.name).startsWith(normalizedQuery))
+          normalizedName(agent.name).startsWith(normalizedQuery) ||
+          normalizedName(agent.mentionToken ?? agent.name).startsWith(
+            normalizedQuery
+          ))
     )
     .slice()
     .sort((left, right) =>
@@ -67,7 +84,10 @@ export function unresolvedAgentMentions(
   const issues: MentionIssue[] = [];
   for (const name of unquotedMentionNames(text)) {
     const matching = agents.filter(
-      (agent) => normalizedName(agent.name) === normalizedName(name)
+      (agent) =>
+        normalizedName(agent.name) === normalizedName(name) ||
+        normalizedName(agent.mentionToken ?? agent.name) ===
+          normalizedName(name)
     );
     const active = matching.filter((agent) => agent.lifecycle === "active");
     if (active.length > 1) {

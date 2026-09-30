@@ -36,6 +36,9 @@
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
       ],
+      "@koed/shared/team-agent-requests": [
+        "packages/shared/src/team-agent-requests-contract.ts"
+      ],
       "@koed/shared/collaboration-client-runtime": [
         "packages/shared/src/collaboration-client-runtime.ts"
       ],

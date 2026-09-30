@@ -665,9 +665,19 @@ export const createDesktopCollaborationBroker = (
       const directMessage = team.directMessages.find(
         (candidate) => candidate.id === record.thread.threadId
       );
+      const teamChannel = team.channels.find(
+        (candidate) => candidate.id === record.thread.threadId
+      );
+      const sharedProject = team.sharedProjects.find(
+        (candidate) => candidate.thread.id === record.thread.threadId
+      );
       let workspaceId: string | null = null;
-      let canPost = directMessage?.canPost ?? false;
-      if (!directMessage) {
+      let canPost =
+        directMessage?.canPost ??
+        teamChannel?.canPost ??
+        sharedProject?.thread.canPost ??
+        false;
+      if (!directMessage && !teamChannel && !sharedProject) {
         for (const workspace of team.workspaces) {
           if (
             workspace.lifecycle !== "active" ||

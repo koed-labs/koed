@@ -999,6 +999,138 @@ describe("Desktop collaboration local transport", () => {
     owner.abort();
   });
 
+  it("materializes a scoped Team Agent request invalidation from the authorized broker update", async () => {
+    const requestMessageId = "00000000-0000-4000-8000-000000000008";
+    const agentRequestId = "00000000-0000-4000-8000-000000000009";
+    const agentOwnerId = "00000000-0000-4000-8000-000000000010";
+    const agentDeliveryId = "delivery_id_00000000000000000000000000000006";
+    const agentEventId = "703af56b-8e88-4945-b395-eeac7c68a4a9";
+    const { events, owner, transport, transportContext } =
+      await startTeamTransportWithEvent({
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
+        deliveryId: agentDeliveryId,
+        eventId: agentEventId,
+        type: "team_agent_request_changed",
+        occurredAt: timestamp,
+        subscription: { id: subscriptionId },
+        resource: {
+          scope: "team",
+          type: "team_agent_request",
+          id: agentRequestId,
+          teamId,
+          teamWorkspaceId: workspaceId,
+          threadId: channelId,
+          messageId: requestMessageId,
+          shareGrantId: null,
+          logicalMemoryId: null
+        },
+        update: {
+          type: "team_agent_request_invalidated",
+          teamId,
+          requestId: agentRequestId,
+          channelId,
+          ownerId: agentOwnerId,
+          kind: "request"
+        },
+        actor: { principalId: userId }
+      });
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "update" &&
+          event.update.type === "team_agent_request_invalidated"
+      )
+    );
+    const update = events.find(
+      (event) =>
+        event.type === "update" &&
+        event.update.type === "team_agent_request_invalidated"
+    );
+    expect(update).toMatchObject({
+      type: "update",
+      subscriptionId,
+      deliveryId: agentDeliveryId,
+      eventId: agentEventId,
+      family: "team_agent_request_changed",
+      resource: {
+        scope: "team",
+        teamId,
+        threadId: channelId,
+        messageId: requestMessageId
+      },
+      update: {
+        type: "team_agent_request_invalidated",
+        teamId,
+        requestId: agentRequestId,
+        channelId,
+        ownerId: agentOwnerId,
+        kind: "request"
+      }
+    });
+    await expect(
+      transport.request(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: "9231a495-fdd1-49d2-bb24-0a9ec0f2a560",
+          command: "collaboration.acknowledge_delivery",
+          input: {
+            subscriptionId,
+            deliveryId: agentDeliveryId,
+            eventId: agentEventId,
+            expectedSubscriptionVersion: 1
+          }
+        }),
+        transportContext
+      )
+    ).resolves.toMatchObject({ ok: true });
+    owner.abort();
+  });
+
+  it("stops closed when Team Agent invalidation identifiers disagree with their resource", async () => {
+    const { events, owner } = await startTeamTransportWithEvent({
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      deliveryId: "delivery_id_00000000000000000000000000000007",
+      eventId: "703af56b-8e88-4945-b395-eeac7c68a4aa",
+      type: "team_agent_request_changed",
+      occurredAt: timestamp,
+      subscription: { id: subscriptionId },
+      resource: {
+        scope: "team",
+        type: "team_agent_request",
+        id: "00000000-0000-4000-8000-000000000009",
+        teamId,
+        teamWorkspaceId: workspaceId,
+        threadId: channelId,
+        messageId: null,
+        shareGrantId: null,
+        logicalMemoryId: null
+      },
+      update: {
+        type: "team_agent_request_invalidated",
+        teamId,
+        requestId: "00000000-0000-4000-8000-000000000010",
+        channelId,
+        ownerId: userId,
+        kind: "request"
+      },
+      actor: { principalId: userId }
+    });
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "control" && event.reason === "requires_snapshot"
+      )
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "update" &&
+          event.update.type === "team_agent_request_invalidated"
+      )
+    ).toBe(false);
+    owner.abort();
+  });
+
   it.each([404, 409])(
     "requires an authoritative snapshot when acknowledgement returns %s",
     async (status) => {

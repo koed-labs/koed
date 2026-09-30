@@ -386,21 +386,165 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
-  const publicSquareTeam = "/v1/collaboration/teams/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/public-square";
-  if (operationFamily === "team_chat_read") {
-    if (method === "GET" && new RegExp(`^${publicSquareTeam}$`, "i").test(pathname)) {
-      const keys = [...parsed.searchParams.keys()];
-      if (keys.some(key => key !== "limit" && key !== "cursor") || new Set(keys).size !== keys.length) deny();
+  const agentRequestId =
+    "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+  const agentTeam = `/v1/collaboration/teams/${agentRequestId}`;
+  const offerPath = new RegExp(`^${agentTeam}/agent-offers$`, "i");
+  const requestPath = new RegExp(`^${agentTeam}/agent-requests$`, "i");
+  const inboxPath = new RegExp(`^${agentTeam}/agent-requests/inbox$`, "i");
+  const reviewPath = new RegExp(
+    `^${agentTeam}/agent-requests/${agentRequestId}/review$`,
+    "i"
+  );
+  if (operationFamily === "team_chat_read" && method === "GET") {
+    if (offerPath.test(pathname) || reviewPath.test(pathname)) {
+      if (parsed.search !== "") deny();
       return;
     }
-    if (method === "GET" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`, "i").test(pathname)) return;
-    if (method === "GET" && new RegExp(`^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief-draft$`, "i").test(pathname)) return;
+    if (requestPath.test(pathname) || inboxPath.test(pathname)) {
+      const keys = [...parsed.searchParams.keys()];
+      if (
+        inboxPath.test(pathname) &&
+        keys.some((key) => !["limit", "cursor"].includes(key))
+      )
+        deny();
+      if (
+        new Set(keys).size !== keys.length ||
+        keys.some(
+          (key) =>
+            ![
+              "channelId",
+              "teamProjectId",
+              "status",
+              "limit",
+              "cursor"
+            ].includes(key)
+        )
+      )
+        deny();
+      for (const key of ["channelId", "teamProjectId"]) {
+        const value = parsed.searchParams.get(key);
+        if (
+          value !== null &&
+          !new RegExp(`^${agentRequestId}$`, "i").test(value)
+        )
+          deny();
+      }
+      const status = parsed.searchParams.get("status");
+      if (
+        status !== null &&
+        ![
+          "awaiting_owner",
+          "accepted",
+          "declined",
+          "withdrawn",
+          "unavailable"
+        ].includes(status)
+      )
+        deny();
+      const limit = parsed.searchParams.get("limit");
+      if (
+        limit !== null &&
+        (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > 100)
+      )
+        deny();
+      const cursor = parsed.searchParams.get("cursor");
+      if (
+        cursor !== null &&
+        (cursor.length === 0 ||
+          cursor.length > 512 ||
+          Array.from(cursor).some((character) => {
+            const code = character.charCodeAt(0);
+            return code < 32 || code === 127;
+          }))
+      )
+        deny();
+      return;
+    }
+  }
+  if (operationFamily === "team_chat_write" && parsed.search === "") {
+    if (
+      (method === "POST" && requestPath.test(pathname)) ||
+      (method === "PUT" &&
+        (new RegExp(`^${agentTeam}/agent-offers/${agentRequestId}$`, "i").test(
+          pathname
+        ) ||
+          reviewPath.test(pathname) ||
+          new RegExp(
+            `^${agentTeam}/agent-requests/${agentRequestId}/decision$`,
+            "i"
+          ).test(pathname))) ||
+      (method === "DELETE" &&
+        new RegExp(`^${agentTeam}/agent-requests/${agentRequestId}$`, "i").test(
+          pathname
+        )) ||
+      (method === "POST" &&
+        new RegExp(
+          `^${agentTeam}/agent-requests/${agentRequestId}/outcome$`,
+          "i"
+        ).test(pathname))
+    )
+      return;
+  }
+
+  const publicSquareTeam =
+    "/v1/collaboration/teams/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/public-square";
+  if (operationFamily === "team_chat_read") {
+    if (
+      method === "GET" &&
+      new RegExp(`^${publicSquareTeam}$`, "i").test(pathname)
+    ) {
+      const keys = [...parsed.searchParams.keys()];
+      if (
+        keys.some((key) => key !== "limit" && key !== "cursor") ||
+        new Set(keys).size !== keys.length
+      )
+        deny();
+      return;
+    }
+    if (
+      method === "GET" &&
+      new RegExp(
+        `^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
+    if (
+      method === "GET" &&
+      new RegExp(
+        `^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief-draft$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
     deny();
   }
   if (operationFamily === "team_chat_write") {
-    if (method === "PUT" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`, "i").test(pathname)) return;
-    if (method === "POST" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/unshare$`, "i").test(pathname)) return;
-    if (method === "PUT" && new RegExp(`^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief$`, "i").test(pathname)) return;
+    if (
+      method === "PUT" &&
+      new RegExp(
+        `^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
+    if (
+      method === "POST" &&
+      new RegExp(
+        `^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/unshare$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
+    if (
+      method === "PUT" &&
+      new RegExp(
+        `^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
     deny();
   }
 
@@ -440,6 +584,21 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "managed_execution") {
+    if (
+      /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/personal-agent-(?:intent|turn-status)$/.test(
+        pathname
+      )
+    ) {
+      if (
+        method === "POST" &&
+        parsed.searchParams.size === 0 &&
+        /^\/v1\/managed-conversation-runner\/commands\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/personal-agent-(?:intent|turn-status)$/i.test(
+          pathname
+        )
+      )
+        return;
+      deny();
+    }
     if (
       (method === "GET" &&
         (pathname === "/v1/personal-agent-role-templates" ||
