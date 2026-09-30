@@ -22,13 +22,22 @@ const liveCommands = (payload: unknown): ManagedConversationSlashCommand[] => {
   const entries = Array.isArray(root.skills)
     ? root.skills
     : Array.isArray(root.data)
-      ? root.data
+      ? root.data.flatMap((entry: unknown) => {
+          if (!entry || typeof entry !== "object") return [];
+          const group = entry as Record<string, unknown>;
+          return Array.isArray(group.skills) ? (group.skills as unknown[]) : [];
+        })
       : [];
   return entries.flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const skill = entry as Record<string, unknown>;
+    // Draft discovery must not admit disabled or repository-scoped skills.
+    if (skill.enabled === false || skill.scope === "repo") return [];
     // Strip leading slash; catalog names are slash-free.
-    const name = (typeof skill.name === "string" ? skill.name.trim().replace(/^\//, "") : "");
+    const name =
+      typeof skill.name === "string"
+        ? skill.name.trim().replace(/^\//, "")
+        : "";
     if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/.test(name)) return [];
     return [
       {
@@ -63,11 +72,11 @@ export const listCodexDraftCommands = async (input: {
   const configured = environmentForCommandDiscoveryInstance("codex", key, env);
   if (!configured) return [];
   let temporaryCwd: string | undefined;
-  let discovered: ManagedConversationSlashCommand[] = [];
+  let discovered: ManagedConversationSlashCommand[];
   try {
     temporaryCwd = await mkdtemp(join(tmpdir(), "koed-codex-draft-"));
     const skills = await listCodexAppServerSkills({
-      appServerBinary: configured.CODEX_APP_SERVER_BINARY ?? "codex",
+      appServerBinary: configured.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
       cwd: temporaryCwd,
       env: configured
     });

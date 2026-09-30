@@ -215,12 +215,16 @@ export function ConversationInput({
             value={value}
           />
         </label>
-        {autocompleteOpen && menuOptions.length > 0 && (
+        {autocompleteOpen && (
           <div className="ai-suggestion-popover">
             {autocompleteLoading ? (
               <span className="ai-suggestion-loading">Loading commands…</span>
             ) : autocompleteError ? (
               <span className="ai-suggestion-error">{autocompleteError}</span>
+            ) : menuOptions.length === 0 ? (
+              <span role="status" className="ai-suggestion-empty">
+                No matching commands.
+              </span>
             ) : (
               <SlashCommandMenu
                 options={menuOptions}

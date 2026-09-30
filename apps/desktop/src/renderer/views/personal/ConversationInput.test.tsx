@@ -189,6 +189,44 @@ describe("ConversationInput", () => {
     );
     expect(onSubmit).toHaveBeenCalledOnce(); // still only once
   });
+  it.each([
+    [true, null, "Loading commands…"],
+    [false, "Command discovery failed.", "Command discovery failed."],
+    [false, null, "No matching commands."]
+  ] as const)(
+    "shows discovery state with no suggestions (loading=%s)",
+    async (loading, error, message) => {
+      function Harness() {
+        const [value, setValue] = useState("");
+        return (
+          <ConversationInput
+            action={{ kind: "send", label: "Send", disabled: false }}
+            label="Prompt"
+            onChange={setValue}
+            onSubmit={vi.fn()}
+            placeholder="Prompt"
+            settings={DUMMY_SETTINGS}
+            value={value}
+            autocompleteOptions={[]}
+            autocompleteLoading={loading}
+            autocompleteError={error}
+          />
+        );
+      }
+      await act(async () => root.render(<Harness />));
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )!.set!.call(textarea, "/");
+        textarea.setSelectionRange(1, 1);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(container.textContent).toContain(message);
+    }
+  );
+
   it("renders autocomplete menu popover with commands", async () => {
     // The popover only renders when autocomplete is open AND there are filtered commands.
     // Since input events don't trigger React's synthetic onChange in happy-dom, we verify

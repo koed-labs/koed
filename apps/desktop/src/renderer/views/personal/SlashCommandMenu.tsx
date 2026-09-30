@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { type ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
 export function SlashCommandMenu({
@@ -11,10 +12,18 @@ export function SlashCommandMenu({
   onSelect: (command: ManagedConversationSlashCommand) => void;
   onHover?: (index: number) => void;
 }) {
+  const menuRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    const selected = menuRef.current?.children.item(selectedIndex);
+    if (selected instanceof HTMLElement) {
+      selected.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    }
+  }, [selectedIndex, options]);
+
   if (options.length === 0) return null;
 
   return (
-    <ul className="ai-suggestion-menu" role="listbox">
+    <ul ref={menuRef} className="ai-suggestion-menu" role="listbox">
       {options.map((cmd, index) => (
         <li
           key={cmd.name}

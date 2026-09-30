@@ -143,9 +143,11 @@ export function ConversationSettings({
   const blocked = Boolean(disabledReason) || !instance?.ready;
   const reason =
     disabledReason ??
-    (!instance?.ready
-      ? "This AI Client is unavailable. Refresh its status in Preferences."
-      : undefined);
+    (!options
+      ? "Loading AI Clients…"
+      : !instance?.ready
+        ? "This AI Client is unavailable. Refresh its status in Preferences."
+        : undefined);
   const permissions = instance?.capabilities.permissionModes ?? [];
   const currentPermission = selection.permissionMode
     ? permissionLabels[selection.permissionMode]

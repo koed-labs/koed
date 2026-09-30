@@ -75,9 +75,15 @@ operation families; none grants an AI Client permission or a remote mutation app
 
 ## Slash command suggestions
 
-Desktop command discovery currently reaches the bounded file fallback through
+Desktop command discovery reaches the Worker adapters through
 `discoverCommands` IPC → the Koed Server manager →
-`POST /v1/managed-conversations/commands` → the Worker command-discovery adapter.
+`POST /v1/managed-conversations/commands`. Draft Codex discovery uses a temporary,
+non-Project working directory and normalizes the nested `skills/list` response
+(`data[].skills`), excluding disabled and repository-scoped entries. It uses the
+selected instance's configured executable. Claude Code draft discovery reads only
+the selected instance's global commands and skills through the bounded file
+adapter; it does not inherit the API process's Project directory. Pi draft
+discovery remains a bounded file fallback.
 The route requires an owned, enabled instance and a fresh capability snapshot that
 marks slash-command discovery ready. Hosted execution does not read an Operator's
 local command files. Codex managed sessions now expose read-only `listCommands()`
@@ -111,7 +117,22 @@ Project root are ignored. Discovery scans at most 128 returned commands, bounds
 Markdown size and directory traversal, and fails closed after a two-second
 adapter deadline. The Desktop hook debounces requests by 500 ms and keeps
 instance-and-scope-keyed results for up to 30 seconds when a refresh fails;
-unauthorized and stale results clear the cached suggestions. Suggestions do not execute a provider command when selected. End-to-end exact
+unauthorized and stale results clear the cached suggestions. Typing `/` also
+shows loading, failure, and no-match states when there are no suggestions;
+an empty list no longer hides discovery diagnostics. The suggestion popup is
+anchored to the composer with a bounded, scrollable height and an opaque themed
+background, rather than positioned above the page's clipped content. Keyboard
+navigation scrolls the selected suggestion into view without moving textarea
+focus. Before launch options arrive, the AI Client picker shows
+“Loading AI Clients…” instead of reporting the selected client unavailable.
+To validate
+visibility in a local Electron test window on the new Chat screen, launch with
+`--remote-debugging-port=9223` and run
+`node apps/desktop/scripts/validate-slash-suggestions.mjs`. Use localhost-only
+debugging for testing and restart without the port afterward.
+Pi's file fallback does not
+include package-provided skills or symlinks outside its configured roots, so such
+installations can legitimately return no entries. Suggestions do not execute a provider command when selected. End-to-end exact
 invocation parsing and control-action dispatch remain pending; until then, do not
 route `/compact` through ordinary prompt submission.
 

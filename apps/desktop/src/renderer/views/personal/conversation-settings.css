@@ -247,19 +247,26 @@
 }
 
 /* Slash command autocomplete */
+.personal-managed-composer-field.conversation-input {
+  position: relative;
+}
+
 .ai-suggestion-popover {
   position: absolute;
   bottom: 100%;
   left: 0;
   z-index: 50;
   margin-bottom: 4px;
-  max-width: 320px;
-  width: max-content;
-  background: var(--popover-background);
+  max-width: min(480px, calc(100vw - 32px));
+  width: 100%;
+  max-height: min(280px, 35vh);
+  overflow-y: auto;
+  background: var(--popover);
+  color: var(--popover-foreground);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  box-shadow: 0 12px 36px #0003;
+  overflow-x: hidden;
 }
 
 .ai-suggestion-menu {
@@ -280,7 +287,7 @@
 
 .ai-suggestion-item:hover,
 .ai-suggestion-item-selected {
-  background: var(--accent-background);
+  background: var(--accent);
 }
 
 .ai-suggestion-name {
@@ -292,6 +299,7 @@
 .ai-suggestion-description {
   color: var(--muted-foreground);
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
