@@ -108,9 +108,11 @@ execution capabilities ready without reinstalling the profile. Claude Desktop
 uses a separate authentication context: Koed never inspects, copies, or reuses
 Claude Desktop credentials. Koed also does not read or store Anthropic API keys.
 
-Before replacing an existing user-scoped MCP entry, setup verifies that its
-command and `KOED_HOME` identify a Koed-owned adapter. An unrelated entry using
-the configured MCP name is preserved and reported as a collision. Claude Code
+Setup and repair treat an existing user-scoped MCP entry under the configured
+name (`koed` by default, or `MEMORY_MCP_NAME`) as a reinstall and replace it with
+this Koed instance's adapter, even when it points to another installation or an
+unrelated server. App setup retains the previous entry for rollback if setup
+fails. Removal still requires the entry to identify this Koed instance. Claude Code
 setup subprocesses receive a strict system/profile environment allowlist; Koed
 service secrets and provider credential environment variables are not passed
 through.
@@ -255,3 +257,8 @@ Installing one integration neither configures nor disables the other.
   must select `claude`, its explicit instance, and an exposed Claude model for each
   flow it wants Claude Code to run. Resetting one flow leaves other assignments
   unchanged.
+
+Onboarding verifies both the integration profile and AI Client registration.
+An existing MCP Server and Capture Hooks can be configured while the Claude
+instance is absent from Koed's registry. In that case, onboarding repairs the
+registration so capability discovery can publish a Local Synthesis snapshot.

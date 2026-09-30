@@ -117,7 +117,7 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
   }
 });
 
-test("claude configure preserves an unrelated user-scoped MCP name collision", async () => {
+test("claude configure replaces an unrelated user-scoped MCP name collision", async () => {
   const directory = path.join(
     realpathSync(tmpdir()),
     `koed-configure-claude-collision-${process.pid}-${Date.now()}`
@@ -145,28 +145,32 @@ test("claude configure preserves an unrelated user-scoped MCP name collision", a
   chmodSync(executable, 0o700);
 
   try {
-    await assert.rejects(
-      execFileAsync(process.execPath, [scriptPath], {
-        cwd: directory,
-        env: {
-          ...process.env,
-          HOME: directory,
-          KOED_CLAUDE_CODE_EXECUTABLE: executable,
-          KOED_HOME: path.join(directory, "koed")
-        }
-      }),
-      /unrelated user-scoped MCP server/
-    );
+    await execFileAsync(process.execPath, [scriptPath], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        HOME: directory,
+        KOED_CLAUDE_CODE_EXECUTABLE: executable,
+        KOED_HOME: path.join(directory, "koed")
+      }
+    });
     const invocations = readFileSync(argsPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    assert.equal(
-      invocations.some(
-        (args) =>
-          args[0] === "mcp" && (args[1] === "remove" || args[1] === "add")
-      ),
-      false
+    assert.deepEqual(
+      invocations
+        .filter((args) => args[0] === "mcp")
+        .map((args) => args.slice(0, 2)),
+      [
+        ["mcp", "get"],
+        ["mcp", "remove"],
+        ["mcp", "add"]
+      ]
+    );
+    assert.deepEqual(
+      invocations.find((args) => args[1] === "remove"),
+      ["mcp", "remove", "--scope", "user", "koed"]
     );
   } finally {
     rmSync(directory, { force: true, recursive: true });

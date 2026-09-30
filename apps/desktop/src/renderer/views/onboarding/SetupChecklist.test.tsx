@@ -383,7 +383,8 @@ describe("SetupChecklist", () => {
     expect(container.textContent).toContain(
       "Complete the preceding setup steps before final verification."
     );
-    expect(container.textContent).toContain("Ready to set up");
+    expect(container.textContent).not.toContain("Ready to set up");
+    expect(container.querySelector(".koed-setup-footer > span")).toBeNull();
   });
 
   it("refreshes shared readiness when inspection finds setup complete", async () => {
@@ -489,7 +490,7 @@ describe("SetupChecklist", () => {
           .click()
       );
       await vi.waitFor(() =>
-        expect(container.textContent).toContain(`${label}: configured`)
+        expect(container.textContent).toContain(`${label}: ready`)
       );
       expect(invoke).toHaveBeenCalledWith(command, {
         operatorConsented: true
@@ -743,7 +744,7 @@ describe("SetupChecklist", () => {
 
     resolveSetup();
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Codex: configured")
+      expect(container.textContent).toContain("Codex: ready")
     );
   });
 
@@ -821,7 +822,7 @@ describe("SetupChecklist", () => {
 
     await vi.waitFor(() => {
       for (const { label } of singleClientCases) {
-        expect(container.textContent).toContain(`${label}: configured`);
+        expect(container.textContent).toContain(`${label}: ready`);
       }
     });
     expect(
@@ -910,7 +911,7 @@ describe("SetupChecklist", () => {
     );
   });
 
-  it("shows static capability support before client setup", async () => {
+  it("shows unknown capability indicators and version without authentication before client setup", async () => {
     const status = statusWithClientProfiles({
       codex: "not_configured",
       claude: "not_configured",
@@ -962,13 +963,20 @@ describe("SetupChecklist", () => {
     expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
     expect(
       codexCard
-        .querySelector('[aria-label="Auto-capture"]')
+        .querySelector('[aria-label="Auto-capture: Unknown"]')
         ?.getAttribute("title")
-    ).toBe("Auto-capture");
-    expect(codexCard.querySelectorAll(".koed-client-cap-dot")).toHaveLength(0);
+    ).toBe("Auto-capture: Unknown");
+    expect(
+      codexCard.querySelectorAll(".koed-client-cap-dot.is-unknown")
+    ).toHaveLength(3);
+    expect(codexCard.querySelector(".koed-client-meta")?.textContent).toBe(
+      "v1.0.0"
+    );
+    expect(container.textContent).not.toContain("Authenticated");
+    expect(container.textContent).not.toContain("Auth unknown");
     expect(
       container.querySelector('[aria-label="Capability status legend"]')
-    ).toBeNull();
+    ).toBeTruthy();
   });
 
   it("shows capability readiness after a client is configured", async () => {
@@ -1111,7 +1119,7 @@ describe("SetupChecklist", () => {
     expect(onComplete).toHaveBeenCalledOnce();
   });
 
-  it("records setup as configured without requiring capability check refresh", async () => {
+  it("labels successful setup Ready without requiring capability check refresh", async () => {
     let configured = false;
     const status = {
       ...statusFixture("healthy"),
@@ -1171,13 +1179,16 @@ describe("SetupChecklist", () => {
         .click()
     );
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Codex: configured")
+      expect(container.textContent).toContain("Codex: ready")
     );
 
     expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
       "check_codex"
     );
     expect(container.textContent).toContain("Auto-capture");
+    expect(container.querySelector(".koed-client-pill")?.textContent).toBe(
+      "Ready"
+    );
   });
 
   it("keeps healthy client selection strict and records ready", async () => {
@@ -1235,6 +1246,84 @@ describe("SetupChecklist", () => {
 
     expect(invoke.mock.calls.map(([command]) => command)).toContain(
       "check_codex"
+    );
+  });
+
+  it("repairs Claude registration even when its MCP and hook profile is healthy", async () => {
+    const status = {
+      ...statusFixture("healthy"),
+      aiClients: {
+        claude: {
+          ...clientReadiness("claude", "healthy"),
+          capabilities: [
+            {
+              id: "local_synthesis" as const,
+              support: "supported" as const,
+              readiness: "not_ready" as const,
+              diagnostics: [
+                {
+                  code: "instance_not_registered",
+                  message: "Repair registration",
+                  severity: "warning" as const
+                }
+              ]
+            }
+          ]
+        }
+      }
+    };
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "status") return status;
+      if (command === "repair_claude") return { ok: true };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (await invoke(command)) as T,
+      setup: {
+        inspect: async () => ({
+          ...setupFixture("complete"),
+          stages: setupFixture().stages.map((stage) => ({
+            ...stage,
+            state: "complete" as const
+          }))
+        }),
+        run: async () => setupFixture("complete"),
+        subscribe: () => () => undefined
+      }
+    };
+    const statusStore = new DesktopStatusStore();
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={statusStore}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelectorAll<HTMLInputElement>("input[type=checkbox]")[1]!
+        .click()
+    );
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Claude Code: ready")
+    );
+
+    expect(invoke.mock.calls.map(([command]) => command)).toContain(
+      "repair_claude"
     );
   });
 

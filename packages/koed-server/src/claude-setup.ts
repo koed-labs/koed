@@ -454,6 +454,7 @@ export const setupClaude = (
   let originalSettings: string | null = null;
   let registrySnapshot;
   let previousMcp: ClaudeMcpEntry | null = null;
+  let previousMcpJson: string | undefined;
   let removedExistingMcp = false;
   let addedMcp = false;
   const failure = (
@@ -543,25 +544,24 @@ export const setupClaude = (
         timeout: 10_000
       }
     );
-    if (
-      existingMcp.status === 0 &&
-      !claudeMcpEntryIsKoedOwned(
-        existingMcp.stdout ?? "",
-        runtime.mcpCli,
-        paths.koedHome
-      )
-    ) {
-      return failure(
-        `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}.`,
-        `Rename or remove that MCP entry, or set MEMORY_MCP_NAME to a distinct name before setup.`
-      );
-    }
     if (existingMcp.status === 0) {
+      // Keep the exact user-scoped entry for rollback, including non-stdio
+      // transports and argument boundaries that `mcp get` does not preserve.
+      const configPath = environment.CLAUDE_CONFIG_DIR?.trim()
+        ? resolve(environment.CLAUDE_CONFIG_DIR, ".claude.json")
+        : resolve(environment.HOME?.trim() || homedir(), ".claude.json");
+      if (existsSync(configPath)) {
+        const config = JSON.parse(readFileSync(configPath, "utf8")) as {
+          mcpServers?: Record<string, unknown>;
+        };
+        const entry = config.mcpServers?.[mcpName];
+        if (entry) previousMcpJson = JSON.stringify(entry);
+      }
       previousMcp = parseClaudeMcpEntry(existingMcp.stdout ?? "");
-      if (!previousMcp) {
+      if (!previousMcpJson && !previousMcp) {
         return failure(
-          "Claude Code Koed MCP entry could not be parsed for safe replacement.",
-          "Inspect the Koed-owned Claude MCP entry, then retry setup."
+          "Claude Code MCP entry could not be read for safe replacement.",
+          "Inspect the existing Claude MCP entry, then retry setup."
         );
       }
       const remove = spawnClaude(
@@ -579,7 +579,7 @@ export const setupClaude = (
           remove.error?.message ??
             remove.stderr?.trim() ??
             "Claude MCP removal failed.",
-          "Fix the existing Koed-owned Claude MCP entry, then retry setup.",
+          "Fix the existing Claude MCP entry, then retry setup.",
           remove
         );
       }
@@ -681,12 +681,14 @@ export const setupClaude = (
         );
       }
     }
-    if (removedExistingMcp && previousMcp) {
+    if (removedExistingMcp && (previousMcpJson || previousMcp)) {
       try {
         const restored = spawnClaude(
           spawnSync,
           executable,
-          claudeMcpAddArgs(mcpName, previousMcp),
+          previousMcpJson
+            ? ["mcp", "add-json", "--scope", "user", mcpName, previousMcpJson]
+            : claudeMcpAddArgs(mcpName, previousMcp!),
           {
             encoding: "utf8",
             env: claudeProcessEnvironment(environment),

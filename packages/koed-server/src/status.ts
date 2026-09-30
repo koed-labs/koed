@@ -1810,6 +1810,26 @@ export const inspectAiClientReadiness = (input: {
         descriptorFor(snapshot, "local_synthesis"),
         profileAuthentication
       );
+      if (
+        input.capabilityReadModel &&
+        !input.capabilityReadModel.instances.some(
+          (instance) =>
+            instance.driverId === driverId &&
+            instance.instanceId ===
+              (input.instanceId ?? `${driverId}.default`) &&
+            instance.enabled !== false
+        )
+      ) {
+        synthesisDescriptor.readiness = "not_ready";
+        synthesisDescriptor.diagnostics = [
+          ...synthesisDescriptor.diagnostics,
+          {
+            code: "instance_not_registered",
+            message: `${displayName} must be registered with Koed. Repair the integration to enable capability discovery.`,
+            severity: "warning"
+          }
+        ];
+      }
       const managedCapabilityIds = [
         "managed_conversation_start",
         "managed_conversation_resume",

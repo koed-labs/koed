@@ -188,15 +188,6 @@ if (mode === "remove") {
 }
 
 const existingMcp = runClaude(["mcp", "get", mcpName]);
-if (
-  existingMcp.status === 0 &&
-  !mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
-) {
-  console.error(
-    `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}. Rename it or set MEMORY_MCP_NAME to a distinct name.`
-  );
-  process.exit(1);
-}
 if (existingMcp.status === 0) {
   const remove = runClaude(["mcp", "remove", "--scope", "user", mcpName]);
   if (remove.status !== 0) {

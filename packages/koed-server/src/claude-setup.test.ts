@@ -502,7 +502,72 @@ describe("Claude Code setup", () => {
     ]);
   });
 
-  it("refuses to replace an unrelated user-scoped MCP name collision", () => {
+  it.each([false, true])(
+    "restores the exact unrelated HTTP entry after setup fails (add succeeds: %s)",
+    (addSucceeds) => {
+      const root = mkdtempSync(resolve(tmpdir(), "koed-claude-rollback-http-"));
+      temporaryDirectories.push(root);
+      mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+      writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+      writeFileSync(
+        resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+        ""
+      );
+      const configHome = resolve(root, "claude-profile");
+      mkdirSync(configHome);
+      const prior = {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { "X-Test": "fixture" }
+      };
+      writeFileSync(
+        resolve(configHome, ".claude.json"),
+        JSON.stringify({ mcpServers: { koed: prior } })
+      );
+      const registry = resolve(root, "koed/config/ai-client-instances.json");
+      const calls: string[][] = [];
+      const result = setupClaude(
+        {
+          HOME: root,
+          CLAUDE_CONFIG_DIR: configHome,
+          KOED_HOME: resolve(root, "koed"),
+          KOED_REPO_ROOT: root,
+          KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh",
+          KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
+        },
+        ((_command: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "--version")
+            return spawnResult("2.1.227 (Claude Code)");
+          if (args[0] === "auth") return spawnResult('{"loggedIn":true}');
+          if (args[1] === "get")
+            return spawnResult(
+              "koed:\n  Type: http\n  URL: https://example.invalid/mcp\n"
+            );
+          if (args[1] === "add") {
+            if (!addSucceeds) return spawnResult("", 1, "add failed");
+            mkdirSync(resolve(registry, ".."), { recursive: true });
+            writeFileSync(registry, "{");
+          }
+          return spawnResult();
+        }) as never
+      );
+      expect(result.ok).toBe(false);
+      expect(calls.at(-1)).toEqual([
+        "mcp",
+        "add-json",
+        "--scope",
+        "user",
+        "koed",
+        JSON.stringify(prior)
+      ]);
+      expect(calls.filter((args) => args[1] === "remove")).toHaveLength(
+        addSucceeds ? 2 : 1
+      );
+    }
+  );
+
+  it("replaces an unrelated user-scoped MCP name collision", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-collision-"));
     temporaryDirectories.push(root);
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -536,11 +601,21 @@ describe("Claude Code setup", () => {
     );
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "needs_attention"
+      ok: true,
+      state: "healthy"
     });
-    expect(result.error).toContain("unrelated user-scoped MCP server");
-    expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "remove"]));
-    expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "add"]));
+    expect(calls).toContainEqual(["mcp", "remove", "--scope", "user", "koed"]);
+    expect(calls).toContainEqual([
+      "mcp",
+      "add",
+      "--scope",
+      "user",
+      "koed",
+      "--env",
+      `KOED_HOME=${resolve(root, "koed")}`,
+      "--",
+      "node",
+      resolve(root, "packages/mcp-server/dist/cli.js")
+    ]);
   });
 });

@@ -582,6 +582,45 @@ describe("status state aggregation", () => {
     expect(clients.claude!.profile.state).toBe("needs_attention");
     expect(clients.codex!.profile.state).toBe("healthy");
   });
+  it("identifies missing AI Client registration separately from unknown discovery", () => {
+    const component = (
+      state: "healthy" | "needs_attention" | "not_configured"
+    ) => ({
+      state,
+      message: `${state} check`
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...component("healthy"), configured: true },
+      claudeCode: {
+        ...component("needs_attention"),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...component("healthy"),
+        configured: true,
+        detected: true,
+        details: { version: "0.84.2", authenticated: true }
+      },
+      codexTranscriptWatcher: component("healthy"),
+      claudeTranscriptWatcher: component("healthy"),
+      mcpServer: component("healthy"),
+      localAiRuntime: component("healthy"),
+      capabilityReadModel: { instances: [], capabilitySnapshots: [] },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+
+    const synthesis = clients.claude!.capabilities.find(
+      (capability) => capability.id === "local_synthesis"
+    );
+    expect(synthesis?.readiness).toBe("not_ready");
+    expect(
+      synthesis?.diagnostics.some(
+        (diagnostic) => diagnostic.code === "instance_not_registered"
+      )
+    ).toBe(true);
+  });
+
   it("keeps Claude capture ready when MCP profile configuration needs repair", () => {
     const clients = inspectAiClientReadiness({
       codex: { ...notConfigured("Codex unavailable"), configured: false },

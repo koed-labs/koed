@@ -20,7 +20,10 @@ import type {
 } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { useDesktopStatus } from "../../state/use-status.js";
-import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
+import {
+  clientVersionLabel,
+  summarizeCapabilities
+} from "../ai-client-card.js";
 import { compactHealthSummary } from "./setup-model.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
 import "../ai-client-card.css";
@@ -310,16 +313,6 @@ export function SetupChecklist({
               ))}
             </ol>
             <footer className="koed-setup-footer">
-              <span aria-live="polite">
-                {running
-                  ? snapshot.stages.find(({ state }) => state === "running")
-                      ?.message
-                  : complete
-                    ? "Koed is ready"
-                    : failed
-                      ? "Setup stopped"
-                      : "Ready to set up"}
-              </span>
               {complete ? (
                 <Button
                   onClick={() => {
@@ -363,7 +356,6 @@ export function SetupChecklist({
 
 type OnboardingClientId = "codex" | "claude" | "pi";
 type AiClientSetupResultState =
-  | "configured"
   | "configured_sign_in_required"
   | "configured_auth_unknown"
   | "ready"
@@ -396,11 +388,17 @@ const clientCommand = (
   | "check_pi"
   | "setup_pi"
   | "repair_pi" => {
-  if (status?.aiClients?.[id]?.profile.state === "healthy") {
+  const readiness = status?.aiClients?.[id];
+  const missingRegistration = readiness?.capabilities.some((capability) =>
+    capability.diagnostics.some(
+      (diagnostic) => diagnostic.code === "instance_not_registered"
+    )
+  );
+  if (readiness?.profile.state === "healthy" && !missingRegistration) {
     return `check_${id}` as "check_codex" | "check_claude" | "check_pi";
   }
   const configured =
-    status?.aiClients?.[id]?.profile.state === "needs_attention";
+    readiness?.profile.state === "needs_attention" || missingRegistration;
   if (id === "codex") return configured ? "repair_codex" : "setup_codex";
   if (id === "claude") return configured ? "repair_claude" : "setup_claude";
   return configured ? "repair_pi" : "setup_pi";
@@ -462,14 +460,6 @@ function AiClientSetup({
   statusStore: DesktopStatusStore;
 }) {
   const { status, busyCommand } = useDesktopStatus(statusStore);
-  const showCapabilityLegend = onboardingClients.some(({ id }) => {
-    const profileState = status?.aiClients?.[id]?.profile.state;
-    return (
-      profileState === "healthy" ||
-      (profileState === "needs_attention" &&
-        clientProfileIsConfigured(id, status))
-    );
-  });
   const [selected, setSelected] = useState<Set<OnboardingClientId>>(
     () => new Set()
   );
@@ -571,7 +561,7 @@ function AiClientSetup({
               ? "configured_sign_in_required"
               : authentication === "unknown"
                 ? "configured_auth_unknown"
-                : "configured"
+                : "ready"
         });
       }
     } catch (cause) {
@@ -619,7 +609,9 @@ function AiClientSetup({
                 readiness?.profile.state === "healthy" ||
                 (readiness?.profile.state === "needs_attention" &&
                   clientProfileIsConfigured(id, status));
-              const metaLine = clientMetaLine(readiness, detected);
+              const metaLine = detected
+                ? clientVersionLabel(readiness?.version)
+                : "Not installed";
               const result = results[id];
               const isActive = activeClient === id;
               const isQueued = !isActive && queue.includes(id);
@@ -655,11 +647,9 @@ function AiClientSetup({
                       : "Configured — sign in required"
                     : result.state === "configured_auth_unknown"
                       ? "Configured — check sign-in"
-                      : result.state === "configured"
-                        ? "Configured"
-                        : result.state === "ready"
-                          ? "Ready"
-                          : "Skipped"
+                      : result.state === "ready"
+                        ? "Ready"
+                        : "Skipped"
                 : isActive
                   ? "Setting up…"
                   : isQueued
@@ -720,25 +710,15 @@ function AiClientSetup({
                   <span className="koed-client-caps">
                     {capabilitySummaries.map((capability) => (
                       <span
-                        aria-label={
-                          showCapabilityReadiness
-                            ? `${capability.label}: ${capability.statusLabel}`
-                            : capability.label
-                        }
+                        aria-label={`${capability.label}: ${showCapabilityReadiness ? capability.statusLabel : "Unknown"}`}
                         className="koed-client-cap"
                         key={capability.id}
-                        title={
-                          showCapabilityReadiness
-                            ? `${capability.label}: ${capability.statusLabel}`
-                            : capability.label
-                        }
+                        title={`${capability.label}: ${showCapabilityReadiness ? capability.statusLabel : "Unknown"}`}
                       >
-                        {showCapabilityReadiness ? (
-                          <span
-                            aria-hidden="true"
-                            className={`koed-client-cap-dot ${capability.dotClass}`}
-                          />
-                        ) : null}
+                        <span
+                          aria-hidden="true"
+                          className={`koed-client-cap-dot ${showCapabilityReadiness ? capability.dotClass : "is-unknown"}`}
+                        />
                         {capability.label}
                       </span>
                     ))}
@@ -747,41 +727,39 @@ function AiClientSetup({
               );
             })}
           </div>
-          {showCapabilityLegend ? (
-            <div
-              aria-label="Capability status legend"
-              className="koed-client-cap-legend"
-            >
-              <span>
-                <span
-                  aria-hidden="true"
-                  className="koed-client-cap-dot is-ready"
-                />
-                Ready
-              </span>
-              <span>
-                <span
-                  aria-hidden="true"
-                  className="koed-client-cap-dot is-attention"
-                />
-                Needs attention
-              </span>
-              <span>
-                <span
-                  aria-hidden="true"
-                  className="koed-client-cap-dot is-unknown"
-                />
-                Unknown
-              </span>
-              <span>
-                <span
-                  aria-hidden="true"
-                  className="koed-client-cap-dot is-unsupported"
-                />
-                Unsupported
-              </span>
-            </div>
-          ) : null}
+          <div
+            aria-label="Capability status legend"
+            className="koed-client-cap-legend"
+          >
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-ready"
+              />
+              Ready
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-attention"
+              />
+              Needs attention
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unknown"
+              />
+              Unknown
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unsupported"
+              />
+              Unsupported
+            </span>
+          </div>
         </fieldset>
         {Object.keys(results).length > 0 ? (
           <ul
