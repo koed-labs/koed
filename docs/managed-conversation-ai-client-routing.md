@@ -107,7 +107,11 @@ shell. Supported roots are:
 
 - Codex: `<CODEX_HOME>/prompts` and `<Project>/.codex/prompts`.
 - Claude Code: `<CLAUDE_CONFIG_DIR>/commands` and `skills`, plus the corresponding
-  `<Project>/.claude/commands` and `skills` roots.
+  `<Project>/.claude/commands` and `skills` roots. Skill names use `SKILL.md`
+  frontmatter `name`, falling back to the containing directory name. Nested sync
+  directories are storage paths, not slash-command namespaces; their UUID prefixes
+  must not consume the command-name length budget. Command files retain relative
+  path namespaces.
 - Pi: `<PI_CODING_AGENT_DIR>/prompts` and `skills`, plus the corresponding
   `<Project>/.pi/prompts` and `skills` roots.
 

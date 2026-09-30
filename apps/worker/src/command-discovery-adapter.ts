@@ -34,6 +34,7 @@ type SourceRoot = {
   boundary: string;
   scope: "global" | "project";
   kind: "command" | "skill";
+  claudeSkillNames?: boolean;
 };
 
 type FileCommand = Omit<ManagedConversationSlashCommand, "scope" | "source">;
@@ -90,7 +91,8 @@ const commandFromFile = async (
   sourceRoot: string,
   filePath: string,
   kind: SourceRoot["kind"],
-  fileName?: string
+  fileName?: string,
+  useClaudeSkillName = false
 ): Promise<FileCommand | null> => {
   try {
     const resolvedFile = await realpath(filePath);
@@ -98,9 +100,12 @@ const commandFromFile = async (
     const fileStat = await stat(resolvedFile);
     if (!fileStat.isFile() || fileStat.size > MAX_FILE_BYTES) return null;
     const content = await readFile(resolvedFile, "utf8");
-    const rawName =
+    const defaultName =
       fileName ??
       relative(sourceRoot, filePath).slice(0, -extname(filePath).length);
+    const rawName = useClaudeSkillName
+      ? (frontmatterValue(content, "name") ?? defaultName)
+      : defaultName;
     const name = validName(rawName);
     if (!name) return null;
     const description =
@@ -160,10 +165,19 @@ const commandsInRoot = async (
           : !entry.isFile() || extname(entry.name).toLowerCase() !== ".md"
       )
         continue;
+      const skillDirectory = relative(root, directory).split(/[\\/]/);
       const rawName = isSkill
-        ? relative(root, directory).split(/[\\/]/).join("/")
+        ? source.claudeSkillNames
+          ? skillDirectory[skillDirectory.length - 1]
+          : skillDirectory.join("/")
         : relative(root, path).slice(0, -extname(path).length);
-      const command = await commandFromFile(root, path, source.kind, rawName);
+      const command = await commandFromFile(
+        root,
+        path,
+        source.kind,
+        rawName,
+        source.claudeSkillNames
+      );
       if (command)
         commands.push({
           ...command,
@@ -215,7 +229,8 @@ const commandRoots = (
         path: join(configHome, "skills"),
         boundary: configHome,
         scope: "global",
-        kind: "skill"
+        kind: "skill",
+        claudeSkillNames: true
       }
     );
     if (projectRoot)
@@ -230,7 +245,8 @@ const commandRoots = (
           path: join(projectRoot, ".claude", "skills"),
           boundary: projectRoot,
           scope: "project",
-          kind: "skill"
+          kind: "skill",
+          claudeSkillNames: true
         }
       );
   } else {

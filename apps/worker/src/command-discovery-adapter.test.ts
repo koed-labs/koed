@@ -190,6 +190,50 @@ describe("AI Client command discovery adapters", () => {
     ]);
   });
 
+  it("uses Claude skill frontmatter names and leaf directories for synced nested skills", async () => {
+    const root = makeRoot();
+    const configHome = join(root, "claude-home");
+    const directSkill = join(configHome, "skills", "review", "SKILL.md");
+    writeCommand(directSkill, "Direct review");
+    writeFileSync(
+      directSkill,
+      `---\nname: review-from-frontmatter\ndescription: Direct review\n---\nPrompt body.\n`
+    );
+    const syncedSkill = join(
+      configHome,
+      "skills",
+      "synced",
+      "12345678_1234_1234_1234_123456789abc",
+      "private-sync-folder-name",
+      "SKILL.md"
+    );
+    writeCommand(syncedSkill, "Synced skill");
+    const environment = configureInstance(root, "claude", configHome);
+    const adapter = createCommandDiscoveryAdapter("claude", environment);
+
+    await expect(
+      adapter.discoverCommands({ aiClientInstanceId: "claude.work" })
+    ).resolves.toEqual([
+      {
+        name: "review-from-frontmatter",
+        description: "Direct review",
+        kind: "skill",
+        source: "global-file",
+        verification: "unverified",
+        scope: "global"
+      },
+      {
+        name: "private-sync-folder-name",
+        description: "Synced skill",
+        argumentHint: "<target>",
+        kind: "skill",
+        source: "global-file",
+        verification: "unverified",
+        scope: "global"
+      }
+    ]);
+  });
+
   it("discovers Pi global prompts and skills without requiring a Project", async () => {
     const root = makeRoot();
     const configHome = join(root, "pi-home");
