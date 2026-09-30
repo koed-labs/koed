@@ -188,31 +188,60 @@ if (mode === "remove") {
 }
 
 const existingMcp = runClaude(["mcp", "get", mcpName]);
+let previousMcp;
 if (existingMcp.status === 0) {
+  const configPath = process.env.CLAUDE_CONFIG_DIR?.trim()
+    ? resolve(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
+    : resolve(process.env.HOME?.trim() || homedir(), ".claude.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  previousMcp = config.mcpServers?.[mcpName];
+  if (!previousMcp) {
+    console.error("Claude MCP entry could not be read for safe replacement.");
+    process.exit(1);
+  }
   const remove = runClaude(["mcp", "remove", "--scope", "user", mcpName]);
-  if (remove.status !== 0) {
-    console.error(remove.stderr?.trim() || "Claude MCP removal failed.");
+  if (remove.error || remove.status !== 0) {
+    console.error(
+      remove.error?.message ||
+        remove.stderr?.trim() ||
+        "Claude MCP removal failed."
+    );
     process.exit(1);
   }
 }
-const add = spawnSync(
-  claudeCommand,
-  [
-    "mcp",
-    "add",
-    "--scope",
-    "user",
-    mcpName,
-    "--env",
-    `KOED_HOME=${koedHome}`,
-    "--",
-    nodeCommand,
-    mcpCliPath
-  ],
-  { encoding: "utf8", env: childEnvironment, timeout: 30_000 }
-);
-if (add.status !== 0) {
-  console.error(add.stderr?.trim() || "Claude MCP setup failed.");
+const add = runClaude([
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  mcpName,
+  "--env",
+  `KOED_HOME=${koedHome}`,
+  "--",
+  nodeCommand,
+  mcpCliPath
+]);
+if (add.error || add.status !== 0) {
+  console.error(
+    add.error?.message || add.stderr?.trim() || "Claude MCP setup failed."
+  );
+  if (previousMcp) {
+    // A failed or timed-out add may still have written the replacement.
+    runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+    const restore = runClaude([
+      "mcp",
+      "add-json",
+      "--scope",
+      "user",
+      mcpName,
+      JSON.stringify(previousMcp)
+    ]);
+    if (restore.error || restore.status !== 0) {
+      console.error(
+        `Claude MCP rollback failed: ${restore.error?.message || restore.stderr?.trim() || "restore failed"}`
+      );
+    }
+  }
   process.exit(1);
 }
 

@@ -144,6 +144,19 @@ test("claude configure replaces an unrelated user-scoped MCP name collision", as
   );
   chmodSync(executable, 0o700);
 
+  writeFileSync(
+    path.join(directory, ".claude.json"),
+    JSON.stringify({
+      mcpServers: {
+        koed: {
+          type: "stdio",
+          command: "node",
+          args: ["/other/mcp-server/dist/cli.js"],
+          env: { KOED_HOME: "/other" }
+        }
+      }
+    })
+  );
   try {
     await execFileAsync(process.execPath, [scriptPath], {
       cwd: directory,
@@ -176,3 +189,85 @@ test("claude configure replaces an unrelated user-scoped MCP name collision", as
     rmSync(directory, { force: true, recursive: true });
   }
 });
+
+for (const failRestore of [false, true]) {
+  test(`claude configure rolls back a failed replacement (restore fails: ${failRestore})`, async () => {
+    const directory = path.join(
+      realpathSync(tmpdir()),
+      `koed-claude-rollback-${process.pid}-${Date.now()}-${failRestore}`
+    );
+    const configPath = path.join(directory, ".claude.json");
+    const executable = path.join(directory, "claude-fixture.mjs");
+    const prior = {
+      type: "http",
+      url: "https://example.invalid/mcp",
+      headers: { "X-Test": "fixture" }
+    };
+    mkdirSync(path.join(directory, "packages/mcp-server/dist"), {
+      recursive: true
+    });
+    writeFileSync(path.join(directory, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      path.join(directory, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          koed: prior,
+          other: { type: "http", url: "https://other.invalid" }
+        }
+      })
+    );
+    writeFileSync(
+      executable,
+      [
+        "#!/usr/bin/env node",
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        `const configPath = ${JSON.stringify(configPath)};`,
+        'const config = JSON.parse(readFileSync(configPath, "utf8"));',
+        "const args = process.argv.slice(2);",
+        'if (args[0] === "auth") process.exit(0);',
+        'if (args[1] === "get") { console.log("koed: HTTP fixture"); process.exit(0); }',
+        'if (args[1] === "remove") delete config.mcpServers.koed;',
+        'if (args[1] === "add") { config.mcpServers.koed = { command: "partial replacement" }; writeFileSync(configPath, JSON.stringify(config)); console.error("add failed"); process.exit(1); }',
+        `if (args[1] === "add-json") { if (${failRestore}) { console.error("restore failed"); process.exit(1); } config.mcpServers.koed = JSON.parse(args.at(-1)); }`,
+        "writeFileSync(configPath, JSON.stringify(config));"
+      ].join("\n")
+    );
+    chmodSync(executable, 0o700);
+    try {
+      await assert.rejects(
+        execFileAsync(process.execPath, [scriptPath], {
+          cwd: directory,
+          env: {
+            ...process.env,
+            HOME: directory,
+            CLAUDE_CONFIG_DIR: directory,
+            CLAUDE_SETTINGS_PATH: path.join(directory, "settings.json"),
+            KOED_CLAUDE_CODE_EXECUTABLE: executable,
+            KOED_HOME: path.join(directory, "koed")
+          }
+        }),
+        (error) => {
+          assert.match(error.stderr, /add failed/);
+          if (failRestore)
+            assert.match(
+              error.stderr,
+              /Claude MCP rollback failed: restore failed/
+            );
+          return true;
+        }
+      );
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      if (!failRestore) assert.deepEqual(config.mcpServers.koed, prior);
+      assert.deepEqual(config.mcpServers.other, {
+        type: "http",
+        url: "https://other.invalid"
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}

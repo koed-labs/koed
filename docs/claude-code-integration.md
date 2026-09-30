@@ -112,7 +112,8 @@ Setup and repair treat an existing user-scoped MCP entry under the configured
 name (`koed` by default, or `MEMORY_MCP_NAME`) as a reinstall and replace it with
 this Koed instance's adapter, even when it points to another installation or an
 unrelated server. App setup retains the previous entry for rollback if setup
-fails. Removal still requires the entry to identify this Koed instance. Claude Code
+fails. The Local Operator Script also restores the exact displaced entry if
+MCP replacement fails and reports any rollback failure. Removal still requires the entry to identify this Koed instance. Claude Code
 setup subprocesses receive a strict system/profile environment allowlist; Koed
 service secrets and provider credential environment variables are not passed
 through.
@@ -260,5 +261,7 @@ Installing one integration neither configures nor disables the other.
 
 Onboarding verifies both the integration profile and AI Client registration.
 An existing MCP Server and Capture Hooks can be configured while the Claude
-instance is absent from Koed's registry. In that case, onboarding repairs the
+instance is absent from Koed's local registry. Backend instance records may
+remain after a local registry reset; status checks the local registration that
+capability discovery consumes. In that case, onboarding repairs the
 registration so capability discovery can publish a Local Synthesis snapshot.
