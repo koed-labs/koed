@@ -93,6 +93,36 @@ const route = (
 const managedConversationRunnerRoutes = [
   [
     "GET",
+    "/v1/managed-conversation-runner/personal-agent/jobs",
+    "List Personal Agent jobs for a conversation assigned to this runner."
+  ],
+  [
+    "GET",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}",
+    "Read a Personal Agent job assigned to this runner."
+  ],
+  [
+    "GET",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/attempts",
+    "List attempts for a Personal Agent job assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/attempts",
+    "Create an attempt for a Personal Agent job assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/attempts/{attemptId}/output",
+    "Persist output for an attempt on a Personal Agent job assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/attempts/{attemptId}/complete",
+    "Complete an attempt on a Personal Agent job assigned to this runner."
+  ],
+  [
+    "GET",
     "/v1/managed-conversation-runner/executions",
     "List active managed Conversation executions assigned to this runner."
   ],

@@ -48,6 +48,94 @@ describe("Managed Conversation authority client", () => {
     expect(remoteClaim).toHaveBeenCalledOnce();
   });
 
+  it("routes every hosted Personal Agent job and attempt operation to authority with no local fallback", async () => {
+    const localMethods = Object.fromEntries(
+      [
+        "getPersonalAgentExecutionJob",
+        "listPersonalAgentExecutionJobs",
+        "listPersonalAgentExecutionAttempts",
+        "createPersonalAgentExecutionAttempt",
+        "recordPersonalAgentTurnOutput",
+        "completePersonalAgentExecutionAttempt"
+      ].map((name) => [
+        name,
+        vi.fn(async () => {
+          throw new Error(`local ${name} called`);
+        })
+      ])
+    );
+    const remoteMethods = {
+      getPersonalAgentExecutionJob: vi.fn(async () => null),
+      listPersonalAgentExecutionJobs: vi.fn(async () => ({
+        jobs: [],
+        hasMore: false,
+        nextCursor: null
+      })),
+      listPersonalAgentExecutionAttempts: vi.fn(async () => ({
+        attempts: [],
+        hasMore: false,
+        nextCursor: null
+      })),
+      createPersonalAgentExecutionAttempt: vi.fn(async () => ({
+        id: "attempt"
+      })),
+      recordPersonalAgentTurnOutput: vi.fn(async () => ({ id: "job" })),
+      completePersonalAgentExecutionAttempt: vi.fn(async () => ({
+        replayed: false
+      }))
+    };
+    const repository = combineManagedConversationRepositories(
+      localMethods as never,
+      remoteMethods as never,
+      ids.session
+    );
+    const actor = { userId: "hosted-owner" };
+
+    await repository.getPersonalAgentExecutionJob(actor, "job");
+    await repository.listPersonalAgentExecutionJobs(actor, {
+      conversationId: "conversation"
+    });
+    await repository.listPersonalAgentExecutionAttempts(actor, {
+      jobId: "job"
+    });
+    await repository.createPersonalAgentExecutionAttempt(actor, {
+      jobId: "job",
+      attemptNumber: 1,
+      attribution: { kind: "agent", agentId: "agent", agentVersion: 1 },
+      provider: "codex",
+      model: "model",
+      aiClientInstanceId: "codex.default",
+      reasoningEffort: null,
+      permissionMode: "supervised",
+      managedExecutionId: "conversation",
+      managedExecutionGeneration: 1,
+      status: "running",
+      outcome: null,
+      startedAt: new Date().toISOString(),
+      completedAt: null
+    });
+    await repository.recordPersonalAgentTurnOutput({
+      actor,
+      jobId: "job",
+      attemptId: "attempt",
+      outputText: "done",
+      outputReference: { runtimeItemIds: ["runtime-item"] }
+    });
+    await repository.completePersonalAgentExecutionAttempt({
+      actor,
+      jobId: "job",
+      attemptId: "attempt",
+      outcome: "succeeded"
+    });
+
+    for (const method of Object.values(localMethods)) {
+      expect(method).not.toHaveBeenCalled();
+    }
+    for (const method of Object.values(remoteMethods)) {
+      expect(method).toHaveBeenCalledOnce();
+    }
+  });
+
   it("revalidates hosted turns against the execution device's native AI Client catalog", async () => {
     const instance = {
       instanceId: "codex.default",
@@ -95,11 +183,12 @@ describe("Managed Conversation authority client", () => {
 
   it("forwards the explicit transient-output retention flag to runtime cleanup", async () => {
     const executionId = "00000000-0000-4000-8000-000000000099";
-    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
-      new Response(JSON.stringify({ canceled: 2 }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ canceled: 2 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
     );
     const client = createManagedConversationAuthorityClient({
       baseUrl: "https://team.example.test",

@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptRuntimeSnapshot,
   managedConversationControls,
+  ManagedChatError,
+  managedRequest,
   managedMessagesWithTransientOutput,
+  managedAgentRecallRecoveryHref,
   parseManagedChatMemoryAttribution,
   parseLaunchInstances,
   parseRuntime,
   resolveLaunchSelection,
+  shouldNavigateToExecutionAfterSendFailure,
   type RuntimeSnapshot
 } from "./managed-agent-chat";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const instances = parseLaunchInstances({
   instances: [
@@ -45,6 +51,47 @@ const execution = {
 };
 
 describe("managed agent chat boundary", () => {
+  it("navigates to a reload-safe execution and Agent recovery URL after recall pauses", () => {
+    expect(shouldNavigateToExecutionAfterSendFailure(true, "execution-1")).toBe(
+      true
+    );
+    expect(
+      shouldNavigateToExecutionAfterSendFailure(false, "execution-1")
+    ).toBe(false);
+    const recoveryUrl = new URL(
+      managedAgentRecallRecoveryHref("execution-1", "agent-1"),
+      "https://studio.local"
+    );
+    expect(recoveryUrl.searchParams.get("execution")).toBe("execution-1");
+    expect(recoveryUrl.searchParams.get("agent")).toBe("agent-1");
+    expect(recoveryUrl.searchParams.get("chat")).toBe("1");
+  });
+
+  it("preserves the bounded local Memory recall error code", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ csrfToken: "csrf" }))
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            error: {
+              code: "MEMORY_RECALL_UNAVAILABLE",
+              message:
+                "Memory could not be checked. Retry or continue without Memory."
+            }
+          },
+          { status: 503 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      managedRequest("/execution/prompts", { prompt: "goal" })
+    ).rejects.toMatchObject({
+      status: 503,
+      code: "MEMORY_RECALL_UNAVAILABLE"
+    } satisfies Partial<ManagedChatError>);
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toContain('"prompt":"goal"');
+  });
   it("strictly parses optional owner-authorized memory attribution", () => {
     expect(
       parseManagedChatMemoryAttribution({
@@ -64,6 +111,13 @@ describe("managed agent chat boundary", () => {
         citations: []
       })
     ).toEqual({ used: false, status: "unavailable", citations: [] });
+    expect(
+      parseManagedChatMemoryAttribution({
+        used: false,
+        status: "skipped",
+        citations: []
+      })
+    ).toEqual({ used: false, status: "skipped", citations: [] });
     for (const malformed of [
       { used: "true", status: "available", citations: [] },
       { used: true, status: "pending", citations: [] },

@@ -9,7 +9,7 @@ export function MemoryAttributionNote({
 }: {
   memory: ManagedChatMemoryAttribution;
 }) {
-  if (!memory.used && memory.status !== "unavailable") return null;
+  if (!memory.used && memory.status === "available") return null;
 
   return (
     <div className="mt-2 rounded-md border border-accent/25 bg-accent/[0.06] px-2 py-1.5">
@@ -19,7 +19,11 @@ export function MemoryAttributionNote({
           aria-hidden="true"
         />
         <div className="min-w-0 space-y-0.5">
-          {memory.status === "unavailable" ? (
+          {memory.status === "skipped" ? (
+            <p className="text-[11px] leading-snug text-foreground-secondary">
+              Continued without Memory
+            </p>
+          ) : memory.status === "unavailable" ? (
             <p className="text-[11px] leading-snug text-foreground-secondary">
               Memory could not be checked
             </p>

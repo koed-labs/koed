@@ -126,8 +126,10 @@ type ChatComposerProps = {
   onChange?: (value: string) => void;
   onSend?: (
     text: string,
-    selection: ChatComposerSelection
+    selection: ChatComposerSelection,
+    continueWithoutMemory?: true
   ) => void | Promise<void>;
+  memoryRecallFailure?: string | null;
   sendEnabled?: boolean;
   sendDisabledReason?: string;
   showExecutionControls?: boolean;
@@ -155,6 +157,7 @@ export function ChatComposer({
   value,
   onChange,
   onSend,
+  memoryRecallFailure,
   sendEnabled = true,
   sendDisabledReason,
   showExecutionControls = true,
@@ -215,6 +218,9 @@ export function ChatComposer({
       return preferred && effortIndexFor(preferred) < 0 ? preferred : null;
     }
   );
+  const [confirmedAgentModelFor, setConfirmedAgentModelFor] = useState<
+    string | null
+  >(null);
   const [accessMode, setAccessMode] = useState<AccessMode>(
     restoreSelection?.permissionMode ?? initialPermissionMode
   );
@@ -316,6 +322,11 @@ export function ChatComposer({
   const modelIncompatible = Boolean(
     selectedAgent && modelOptions.length > 0 && !selectedCapability
   );
+  const agentNeedsExplicitModelSelection = Boolean(
+    selectedAgent &&
+    (!selectedAgent.defaultProvider || !selectedAgent.defaultModel) &&
+    confirmedAgentModelFor !== selectedAgent.id
+  );
   const supportedEffortIndex = (value: string) => effortIndexFor(value);
   const supportedEffortIndices = new Set(
     (selectedCapability?.supportedReasoningEfforts ?? [])
@@ -335,6 +346,7 @@ export function ChatComposer({
     draft.trim().length > 0 &&
     mentionIssues.length === 0 &&
     !modelIncompatible &&
+    !agentNeedsExplicitModelSelection &&
     !effortIncompatible;
 
   const setDraft = (nextValue: string) => {
@@ -374,7 +386,7 @@ export function ChatComposer({
     });
   };
 
-  const submitDraft = async () => {
+  const submitDraft = async (continueWithoutMemory = false) => {
     const trimmed = draft.trim();
     if (!trimmed || !canSend) return;
     const selection: ChatComposerSelection = Object.freeze({
@@ -395,7 +407,11 @@ export function ChatComposer({
     });
     const submittedDraftVersion = draftVersionRef.current;
     try {
-      await onSend?.(trimmed, selection);
+      await onSend?.(
+        trimmed,
+        selection,
+        continueWithoutMemory ? true : undefined
+      );
       if (draftVersionRef.current === submittedDraftVersion) setDraft("");
       setMentionQuery(null);
     } catch {
@@ -824,10 +840,11 @@ export function ChatComposer({
                   : `No available agent named ${mentionIssues[0].name}.`}
           </p>
         )}
-        {modelIncompatible && (
+        {(modelIncompatible || agentNeedsExplicitModelSelection) && (
           <p className="px-2 pb-2 text-xs text-warning" role="status">
-            The active agent&apos;s preferred model is unavailable. Select a
-            supported model before sending.
+            {selectedAgent?.defaultProvider && selectedAgent.defaultModel
+              ? "The active Agent’s default model is unavailable. Choose an available model for this Job from the model control. The Agent profile defaults will stay unchanged."
+              : "This Agent has no default model. Choose an available model for this Job from the model control. The Agent profile will stay unchanged."}
           </p>
         )}
         {effortIncompatible && (
@@ -1030,6 +1047,9 @@ export function ChatComposer({
                               onClick={() => {
                                 if (disabled) return;
                                 setModel(option.id);
+                                setConfirmedAgentModelFor(
+                                  selectedAgent?.id ?? null
+                                );
                                 setIsModelListOpen(false);
                               }}
                               title={
@@ -1054,7 +1074,7 @@ export function ChatComposer({
               className="rounded-full bg-chip p-1.5 text-chip-foreground transition-colors hover:bg-white disabled:opacity-40 disabled:hover:bg-chip"
               disabled={!canSend}
               title={sendEnabled ? "Send message" : sendDisabledReason}
-              onClick={submitDraft}
+              onClick={() => void submitDraft()}
               aria-label="Send message"
             >
               <ArrowUp className="h-4 w-4" />
@@ -1066,6 +1086,31 @@ export function ChatComposer({
       {footer && (
         <div className="mt-2 text-center text-[10px] text-faint">{footer}</div>
       )}
+      {memoryRecallFailure ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2">
+          <p role="status" className="text-xs text-foreground-secondary">
+            {memoryRecallFailure}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={!draft.trim() || !canSend}
+              onClick={() => void submitDraft()}
+              className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-foreground disabled:opacity-40"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              disabled={!draft.trim() || !canSend}
+              onClick={() => void submitDraft(true)}
+              className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
+            >
+              Continue without Memory
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

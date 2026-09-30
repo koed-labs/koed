@@ -79,6 +79,12 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "prepareManagedConversationForkChild"
   | "completeManagedConversationFork"
   | "failManagedConversationFork"
+  | "getPersonalAgentExecutionJob"
+  | "listPersonalAgentExecutionJobs"
+  | "listPersonalAgentExecutionAttempts"
+  | "createPersonalAgentExecutionAttempt"
+  | "recordPersonalAgentTurnOutput"
+  | "completePersonalAgentExecutionAttempt"
 > & {
   createManagedConversationSourceDownloadAuthorization(input: {
     transferKind: "handoff" | "fork";
@@ -219,6 +225,98 @@ export const createManagedConversationAuthorityClient = (options: {
     }/${encodeURIComponent(input.operationId)}/workspace-snapshots`;
 
   return {
+    async getPersonalAgentExecutionJob(_actor, jobId) {
+      const payload = await request(
+        "GET",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(jobId)}`
+      );
+      return payload.job === null
+        ? null
+        : (object(payload.job, "Personal Agent job") as never);
+    },
+
+    async listPersonalAgentExecutionJobs(_actor, input = {}) {
+      if (!input.conversationId) {
+        throw new ManagedConversationAuthorityError(
+          400,
+          "Hosted Personal Agent job lookup requires a conversation"
+        );
+      }
+      const query: Record<string, string> = {
+        conversationId: input.conversationId
+      };
+      if (input.limit !== undefined) query.limit = String(input.limit);
+      if (input.before !== undefined) query.before = input.before;
+      const payload = await request(
+        "GET",
+        "/v1/managed-conversation-runner/personal-agent/jobs",
+        undefined,
+        ordinaryResponseBytes,
+        query
+      );
+      return object(payload, "Personal Agent job page") as never;
+    },
+
+    async listPersonalAgentExecutionAttempts(_actor, input) {
+      const query: Record<string, string> = {};
+      if (input.limit !== undefined) query.limit = String(input.limit);
+      if (input.before !== undefined) query.before = input.before;
+      const payload = await request(
+        "GET",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(input.jobId)}/attempts`,
+        undefined,
+        ordinaryResponseBytes,
+        query
+      );
+      return object(payload, "Personal Agent attempt page") as never;
+    },
+
+    async createPersonalAgentExecutionAttempt(_actor, input) {
+      const { jobId, ...body } = input;
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(jobId)}/attempts`,
+        body
+      );
+      return object(payload.attempt, "Personal Agent attempt") as never;
+    },
+
+    async recordPersonalAgentTurnOutput(input) {
+      const {
+        jobId,
+        attemptId,
+        outputText,
+        outputReference,
+        eventId,
+        observedAt
+      } = input;
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(jobId)}/attempts/${encodeURIComponent(attemptId)}/output`,
+        {
+          outputText,
+          outputReference,
+          ...(eventId ? { eventId } : {}),
+          ...(observedAt ? { observedAt } : {})
+        }
+      );
+      return object(payload.job, "Personal Agent job") as never;
+    },
+
+    async completePersonalAgentExecutionAttempt(input) {
+      const { jobId, attemptId, outcome, eventId, observedAt } = input;
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(jobId)}/attempts/${encodeURIComponent(attemptId)}/complete`,
+        {
+          outcome,
+          ...(eventId ? { eventId } : {}),
+          ...(observedAt ? { observedAt } : {})
+        }
+      );
+      return object(payload, "Personal Agent attempt completion") as never;
+    },
+
     async listManagedConversationExecutionsForRunner() {
       const payload = await request(
         "GET",
@@ -870,7 +968,9 @@ export const createManagedConversationAuthorityClient = (options: {
         {
           leaseToken: input.leaseToken,
           ...(input.result ? { result: input.result } : {}),
-          ...(input.assistantOutput !== undefined ? { assistantOutput: input.assistantOutput } : {})
+          ...(input.assistantOutput !== undefined
+            ? { assistantOutput: input.assistantOutput }
+            : {})
         }
       );
       return boolean(payload.completed, "command completion result");

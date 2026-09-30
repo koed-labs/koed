@@ -1,16 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Award, Pencil, Plus, Sparkles, StickyNote, Trash2, X } from "lucide-react";
+import {
+  Award,
+  Pencil,
+  Plus,
+  Sparkles,
+  StickyNote,
+  Trash2,
+  X
+} from "lucide-react";
 import {
   CURRENT_USER_ID,
-  TOKEN_BUDGET_LABEL,
   relativeTime,
   statusLabel,
   type AgentDefinition,
   type AgentStatus,
-  type ChannelJobThread,
-  type TokenBudget,
+  type ChannelJobThread
 } from "@/lib/collab";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import { CreateAgentModal } from "@/components/CreateAgentModal";
@@ -21,10 +27,13 @@ import {
   moodExpression,
   relationshipNarrative,
   tenureTitle,
-  withMoodExpression,
+  withMoodExpression
 } from "@/lib/agentRelationship";
 
-type ModalState = { type: "create" } | { type: "edit"; definition: AgentDefinition } | null;
+type ModalState =
+  | { type: "create" }
+  | { type: "edit"; definition: AgentDefinition }
+  | null;
 
 type Assignment = {
   agentId: string;
@@ -34,28 +43,33 @@ type Assignment = {
   focus: string;
   model: string;
   effort: string;
-  tokenBudget: TokenBudget;
 };
 
 export default function AgentsPage() {
   const { workspace, deleteAgentDefinition } = useWorkspace();
   const [modal, setModal] = useState<ModalState>(null);
-  const [deleteTarget, setDeleteTarget] = useState<AgentDefinition | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentDefinition | null>(
+    null
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const myAgents = workspace.agentDefinitions.filter(
     (definition) => definition.ownerId === CURRENT_USER_ID
   );
-  const selected = selectedId ? myAgents.find((item) => item.id === selectedId) ?? null : null;
+  const selected = selectedId
+    ? (myAgents.find((item) => item.id === selectedId) ?? null)
+    : null;
 
   // Every project this definition is currently unleashed into, each with
   // its OWN runtime config - the same agent can be running a different
-  // model, effort and token budget on each one.
+  // model and effort on each one.
   const assignmentsFor = (definitionId: string): Assignment[] =>
     workspace.projectAgents
       .filter((agent) => agent.definitionId === definitionId)
       .map((agent) => {
-        const project = workspace.projects.find((item) => item.id === agent.projectId);
+        const project = workspace.projects.find(
+          (item) => item.id === agent.projectId
+        );
         if (!project) return null;
         return {
           agentId: agent.id,
@@ -64,8 +78,7 @@ export default function AgentsPage() {
           status: agent.status,
           focus: agent.focus,
           model: agent.model,
-          effort: agent.effort,
-          tokenBudget: agent.tokenBudget,
+          effort: agent.effort
         };
       })
       .filter((item): item is Assignment => item !== null);
@@ -78,9 +91,10 @@ export default function AgentsPage() {
             <div>
               <h1 className="text-3xl font-semibold">Agents</h1>
               <p className="mt-2 text-sm text-muted">
-                Create an agent once here, then unleash it into any project you&rsquo;re working
-                on. The same agent can work in more than one project at a time — its identity
-                stays put, and each project just adds its own live context.
+                Create an agent once here, then unleash it into any project
+                you&rsquo;re working on. The same agent can work in more than
+                one project at a time — its identity stays put, and each project
+                just adds its own live context.
               </p>
             </div>
             <button
@@ -96,7 +110,8 @@ export default function AgentsPage() {
           {myAgents.length === 0 ? (
             <div className="mt-10 rounded-xl border border-border bg-surface/50 px-6 py-16 text-center">
               <p className="text-sm text-subtle">
-                No agents yet. Create one and it&rsquo;s yours to reuse across every project.
+                No agents yet. Create one and it&rsquo;s yours to reuse across
+                every project.
               </p>
             </div>
           ) : (
@@ -124,8 +139,12 @@ export default function AgentsPage() {
                         className="ring-1 ring-border-strong"
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-lg font-semibold text-foreground">{definition.name}</p>
-                        <p className="mt-0.5 truncate text-sm text-subtle">{definition.role}</p>
+                        <p className="truncate text-lg font-semibold text-foreground">
+                          {definition.name}
+                        </p>
+                        <p className="mt-0.5 truncate text-sm text-subtle">
+                          {definition.role}
+                        </p>
                       </div>
                     </div>
                     <div className="mt-3 border-t border-border pt-3">
@@ -134,7 +153,8 @@ export default function AgentsPage() {
                       </p>
                       {assignments.length === 0 ? (
                         <p className="mt-1.5 text-xs text-subtle">
-                          Not unleashed anywhere yet. Add it from a project&rsquo;s Agents section.
+                          Not unleashed anywhere yet. Add it from a
+                          project&rsquo;s Agents section.
                         </p>
                       ) : (
                         <div className="mt-1.5 space-y-1.5">
@@ -147,8 +167,7 @@ export default function AgentsPage() {
                                 {assignment.projectName}
                               </span>
                               <span className="flex-shrink-0 truncate text-[11px] text-subtle">
-                                {assignment.model} · {assignment.effort} ·{" "}
-                                {TOKEN_BUDGET_LABEL[assignment.tokenBudget]}
+                                {assignment.model} · {assignment.effort}
                               </span>
                             </div>
                           ))}
@@ -184,7 +203,9 @@ export default function AgentsPage() {
       {deleteTarget && (
         <DeleteAgentDialog
           definition={deleteTarget}
-          activeIn={assignmentsFor(deleteTarget.id).map((assignment) => assignment.projectName)}
+          activeIn={assignmentsFor(deleteTarget.id).map(
+            (assignment) => assignment.projectName
+          )}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={() => {
             deleteAgentDefinition(deleteTarget.id);
@@ -202,7 +223,7 @@ function AgentDetailPanel({
   assignments,
   onClose,
   onEdit,
-  onDelete,
+  onDelete
 }: {
   definition: AgentDefinition;
   assignments: Assignment[];
@@ -213,7 +234,9 @@ function AgentDetailPanel({
   const { workspace, setJobThreadNote } = useWorkspace();
   const [soulOpen, setSoulOpen] = useState(false);
 
-  const assignmentByAgentId = new Map(assignments.map((assignment) => [assignment.agentId, assignment]));
+  const assignmentByAgentId = new Map(
+    assignments.map((assignment) => [assignment.agentId, assignment])
+  );
 
   // This agent's full job history, across every project it's ever been
   // unleashed into - not just the ones it's still in. Every status change
@@ -229,22 +252,32 @@ function AgentDetailPanel({
   const blockers = workspace.whispers
     .filter(
       (whisper) =>
-        whisper.recipientId === CURRENT_USER_ID && !whisper.read && assignmentByAgentId.has(whisper.agentId)
+        whisper.recipientId === CURRENT_USER_ID &&
+        !whisper.read &&
+        assignmentByAgentId.has(whisper.agentId)
     )
     .sort((left, right) => right.createdAt - left.createdAt);
 
-  const runningNow = assignments.filter((assignment) => assignment.status === "running").length;
+  const runningNow = assignments.filter(
+    (assignment) => assignment.status === "running"
+  ).length;
 
   // The actual finished work, not the status-change chatter - real jobs
   // this agent has seen through to done, across every project, newest
   // first. This is the substance behind the relationship stats below and
   // the highlights strip.
   const completedJobs = workspace.channelJobThreads
-    .filter((thread) => assignmentByAgentId.has(thread.agentId) && thread.status === "done")
+    .filter(
+      (thread) =>
+        assignmentByAgentId.has(thread.agentId) && thread.status === "done"
+    )
     .map((thread) => ({
       thread,
       project: assignmentByAgentId.get(thread.agentId) ?? null,
-      at: thread.messages.length > 0 ? thread.messages[thread.messages.length - 1].createdAt : 0,
+      at:
+        thread.messages.length > 0
+          ? thread.messages[thread.messages.length - 1].createdAt
+          : 0
     }))
     .sort((left, right) => right.at - left.at);
 
@@ -253,11 +286,16 @@ function AgentDetailPanel({
   const mood = moodExpression(assignments);
   const avatarSpec = withMoodExpression(definition.avatar?.spec, mood);
   const relationshipTitle = tenureTitle(shippedCount, definition.createdAt);
-  const narrative = relationshipNarrative(definition.name, shippedCount, assignments.length, definition.createdAt);
+  const narrative = relationshipNarrative(
+    definition.name,
+    shippedCount,
+    assignments.length,
+    definition.createdAt
+  );
   const milestones = milestonesFor({
     shippedCount,
     projectCount: assignments.length,
-    createdAt: definition.createdAt,
+    createdAt: definition.createdAt
   });
 
   return (
@@ -272,7 +310,9 @@ function AgentDetailPanel({
             className="ring-1 ring-border-strong"
           />
           <div className="min-w-0">
-            <p className="truncate text-lg font-semibold text-foreground">{definition.name}</p>
+            <p className="truncate text-lg font-semibold text-foreground">
+              {definition.name}
+            </p>
             <p className="truncate text-sm text-subtle">{definition.role}</p>
             <p className="mt-0.5 truncate text-[11px] text-faint">
               Created {relativeTime(definition.createdAt)}
@@ -319,7 +359,9 @@ function AgentDetailPanel({
             {relationshipTitle}
           </span>
         </div>
-        <p className="mt-2 text-sm leading-relaxed text-foreground-secondary">{narrative}</p>
+        <p className="mt-2 text-sm leading-relaxed text-foreground-secondary">
+          {narrative}
+        </p>
         {milestones.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {milestones.map((milestone) => (
@@ -355,13 +397,21 @@ function AgentDetailPanel({
                   className="rounded-lg border border-warning/30 bg-warning/10 p-3"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-medium text-foreground">{blocker.title}</p>
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {blocker.title}
+                    </p>
                     <span className="flex-shrink-0 text-[11px] text-subtle">
                       {relativeTime(blocker.createdAt)}
                     </span>
                   </div>
-                  {project && <p className="mt-0.5 text-[11px] text-subtle">{project.projectName}</p>}
-                  <p className="mt-1 text-xs text-foreground-secondary">{blocker.body}</p>
+                  {project && (
+                    <p className="mt-0.5 text-[11px] text-subtle">
+                      {project.projectName}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-foreground-secondary">
+                    {blocker.body}
+                  </p>
                 </div>
               );
             })}
@@ -375,8 +425,8 @@ function AgentDetailPanel({
         </p>
         {assignments.length === 0 ? (
           <p className="mt-2 text-sm text-subtle">
-            Not unleashed anywhere yet. Add {definition.name} from a project&rsquo;s Agents
-            section.
+            Not unleashed anywhere yet. Add {definition.name} from a
+            project&rsquo;s Agents section.
           </p>
         ) : (
           <div className="mt-2 space-y-2">
@@ -393,10 +443,11 @@ function AgentDetailPanel({
                     {statusLabel(assignment.status)}
                   </span>
                 </div>
-                <p className="mt-1 truncate text-xs text-subtle">{assignment.focus}</p>
+                <p className="mt-1 truncate text-xs text-subtle">
+                  {assignment.focus}
+                </p>
                 <p className="mt-2 text-[11px] text-subtle">
-                  {assignment.model} · {assignment.effort} ·{" "}
-                  {TOKEN_BUDGET_LABEL[assignment.tokenBudget]}
+                  {assignment.model} · {assignment.effort}
                 </p>
               </div>
             ))}
@@ -411,8 +462,8 @@ function AgentDetailPanel({
         </p>
         {highlights.length === 0 ? (
           <p className="mt-2 text-sm text-subtle">
-            No finished jobs yet - the standout ones will show up here once {definition.name} ships
-            something.
+            No finished jobs yet - the standout ones will show up here once{" "}
+            {definition.name} ships something.
           </p>
         ) : (
           <div className="mt-2 space-y-2">
@@ -435,8 +486,8 @@ function AgentDetailPanel({
         </p>
         {history.length === 0 ? (
           <p className="mt-2 text-sm text-subtle">
-            No activity yet. It&rsquo;ll show up here once {definition.name} starts working
-            somewhere.
+            No activity yet. It&rsquo;ll show up here once {definition.name}{" "}
+            starts working somewhere.
           </p>
         ) : (
           <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
@@ -449,7 +500,9 @@ function AgentDetailPanel({
                   </span>
                   <p className="min-w-0 text-foreground-secondary">
                     {project && (
-                      <span className="mr-1 text-subtle">{project.projectName} ·</span>
+                      <span className="mr-1 text-subtle">
+                        {project.projectName} ·
+                      </span>
                     )}
                     {event.label}
                   </p>
@@ -469,7 +522,9 @@ function AgentDetailPanel({
           onClick={() => setSoulOpen((open) => !open)}
         >
           soul.md · identity
-          <span className="text-foreground-secondary">{soulOpen ? "Hide" : "Show"}</span>
+          <span className="text-foreground-secondary">
+            {soulOpen ? "Hide" : "Show"}
+          </span>
         </button>
         {soulOpen && (
           <pre
@@ -488,7 +543,7 @@ function HighlightCard({
   thread,
   projectName,
   at,
-  onSaveNote,
+  onSaveNote
 }: {
   thread: ChannelJobThread;
   projectName?: string;
@@ -500,10 +555,16 @@ function HighlightCard({
   return (
     <div className="rounded-lg border border-border bg-surface p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-sm font-medium text-foreground">{thread.title}</p>
-        <span className="flex-shrink-0 text-[11px] text-subtle">{relativeTime(at)}</span>
+        <p className="truncate text-sm font-medium text-foreground">
+          {thread.title}
+        </p>
+        <span className="flex-shrink-0 text-[11px] text-subtle">
+          {relativeTime(at)}
+        </span>
       </div>
-      {projectName && <p className="mt-0.5 text-[11px] text-subtle">{projectName}</p>}
+      {projectName && (
+        <p className="mt-0.5 text-[11px] text-subtle">{projectName}</p>
+      )}
       <div className="mt-2 flex items-start gap-1.5">
         <StickyNote className="mt-1 h-3 w-3 flex-shrink-0 text-subtle" />
         <input
@@ -525,7 +586,9 @@ function StatTile({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border border-border bg-surface px-2 py-2 text-center">
       <p className="text-lg font-semibold text-foreground">{value}</p>
-      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-subtle">{label}</p>
+      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-subtle">
+        {label}
+      </p>
     </div>
   );
 }
@@ -534,7 +597,7 @@ function DeleteAgentDialog({
   definition,
   activeIn,
   onCancel,
-  onConfirm,
+  onConfirm
 }: {
   definition: AgentDefinition;
   activeIn: string[];
@@ -558,7 +621,9 @@ function DeleteAgentDialog({
         className="w-[400px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface p-5 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="text-base font-semibold text-foreground">Delete {definition.name}?</h2>
+        <h2 className="text-base font-semibold text-foreground">
+          Delete {definition.name}?
+        </h2>
         <p className="mt-2 text-sm text-muted">
           This can&rsquo;t be undone.{" "}
           {activeIn.length === 0

@@ -46,7 +46,7 @@ export type RuntimeSnapshot = {
 export type ManagedChatMemoryCitation = Readonly<{ label: string }>;
 export type ManagedChatMemoryAttribution = Readonly<{
   used: boolean;
-  status: "available" | "unavailable";
+  status: "available" | "unavailable" | "skipped";
   citations: readonly ManagedChatMemoryCitation[];
 }>;
 
@@ -57,7 +57,9 @@ export function parseManagedChatMemoryAttribution(
   if (
     !record(value) ||
     typeof value.used !== "boolean" ||
-    (value.status !== "available" && value.status !== "unavailable") ||
+    (value.status !== "available" &&
+      value.status !== "unavailable" &&
+      value.status !== "skipped") ||
     !Array.isArray(value.citations)
   )
     return null;
@@ -212,11 +214,33 @@ export const validExecutionId = (id: string): boolean => uuidPattern.test(id);
 
 export class ManagedChatError extends Error {
   readonly status?: number;
+  readonly code?: string;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+/** A fresh local execution needs a URL that can recover its draft after reload. */
+export function shouldNavigateToExecutionAfterSendFailure(
+  startedNewExecution: boolean,
+  executionId: string | null
+): boolean {
+  return Boolean(startedNewExecution && executionId);
+}
+
+export function managedAgentRecallRecoveryHref(
+  executionId: string,
+  agentId: string
+): string {
+  const query = new URLSearchParams({
+    chat: "1",
+    execution: executionId,
+    agent: agentId
+  });
+  return `/?${query.toString()}`;
 }
 
 export async function managedRequest(
@@ -252,11 +276,16 @@ export async function managedRequest(
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
+    const envelope =
+      record(payload) && record(payload.error) ? payload.error : null;
     throw new ManagedChatError(
-      record(payload) && typeof payload.error === "string"
-        ? payload.error
-        : "The conversation request failed.",
-      response.status
+      envelope && typeof envelope.message === "string"
+        ? envelope.message
+        : record(payload) && typeof payload.error === "string"
+          ? payload.error
+          : "The conversation request failed.",
+      response.status,
+      envelope && typeof envelope.code === "string" ? envelope.code : undefined
     );
   }
   if (!record(payload))

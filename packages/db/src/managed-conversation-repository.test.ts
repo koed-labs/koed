@@ -218,6 +218,216 @@ describe("managed Conversation prompt cancellation", () => {
   });
 });
 
+describe("managed Conversation initial Agent start", () => {
+  it("binds one Job to the encrypted start command and replays without another Job", async () => {
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "22222222-2222-4222-8222-222222222222";
+    const identityVersionId = "33333333-3333-4333-8333-333333333333";
+    const clientMessageId = "44444444-4444-4444-8444-444444444444";
+    const now = new Date("2026-09-30T00:00:00.000Z");
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 9).toString("base64")
+    );
+    const memoryContext = {
+      schemaVersion: 1,
+      status: "skipped",
+      attributionNonce: "55555555-5555-4555-8555-555555555555",
+      searchDomain: "global",
+      projectId: null,
+      evidence: []
+    };
+    const agentContext = {
+      schemaVersion: 1,
+      identity: {
+        agentId,
+        version: 4,
+        identityVersionId,
+        name: "Mira",
+        role: "Reviewer",
+        soulInstructions: "Be precise."
+      },
+      project: { projectId: null, name: null },
+      memory: { searchDomain: "global", evidence: [] }
+    };
+    const executionRow = {
+      id: "66666666-6666-4666-8666-666666666666",
+      owner_user_id: ownerUserId,
+      project_id: null,
+      provider: "codex",
+      ai_client_instance_id: "codex.default",
+      model: "gpt-test",
+      reasoning_effort: "low",
+      permission_mode: "supervised",
+      runner_kind: "local_device",
+      state: "starting",
+      state_version: 1,
+      execution_generation: 1,
+      runner_deployment_id: "77777777-7777-4777-8777-777777777777",
+      runner_device_id: "88888888-8888-4888-8888-888888888888",
+      runner_id: null,
+      runner_lease_expires_at: null,
+      logical_session_id: null,
+      provider_thread_id: null,
+      provider_cli_version: null,
+      source_generation_id: null,
+      last_error_code: null,
+      created_at: now,
+      updated_at: now,
+      started_at: null,
+      quiesced_at: null,
+      stopped_at: null
+    };
+    let startCommandRow: Record<string, unknown> | null = null;
+    const jobInsertCalls: Array<unknown[]> = [];
+    const outboxRow = {
+      id: "99999999-9999-4999-8999-999999999999",
+      cursor: "1",
+      protocol_version: 1,
+      family: "managed_conversation_changed",
+      scope: "personal",
+      personal_owner_user_id: ownerUserId,
+      team_id: null,
+      team_workspace_id: null,
+      thread_id: null,
+      message_id: null,
+      share_grant_id: null,
+      logical_memory_id: null,
+      resource_type: "managed_conversation_execution",
+      resource_id: executionRow.id,
+      actor_principal_id: ownerUserId,
+      mutation_id: "managed-conversation-created",
+      occurred_at: now
+    };
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+      if (
+        sql.includes("from managed_conversation_commands") &&
+        sql.includes("idempotency_key = $2")
+      ) {
+        return { rows: startCommandRow ? [startCommandRow] : [] };
+      }
+      if (
+        sql.includes("from managed_conversation_executions") &&
+        sql.includes("where owner_user_id = $1 and id = $2")
+      ) {
+        return { rows: [executionRow] };
+      }
+      if (sql.includes("insert into managed_conversation_executions")) {
+        executionRow.id = params[0] as string;
+        return { rows: [executionRow] };
+      }
+      if (sql.includes("from personal_agent_identities")) {
+        return { rows: [{ current_version: 4, lifecycle: "active" }] };
+      }
+      if (sql.includes("from personal_agent_identity_versions")) {
+        return { rows: [{ id: identityVersionId }] };
+      }
+      if (sql.includes("from personal_agent_conversations")) {
+        return { rows: [{ owner_user_id: ownerUserId }] };
+      }
+      if (sql.includes("insert into managed_conversation_commands")) {
+        const encryptedPayload = params[5] as EncryptedPayloadEnvelope;
+        startCommandRow = {
+          id: params[0],
+          owner_user_id: params[1],
+          execution_id: params[2],
+          idempotency_key: params[3],
+          sequence: 0,
+          command_kind: "start",
+          target_deployment_id: null,
+          target_device_id: null,
+          request_digest: params[4],
+          client_user_message_id: null,
+          execution_generation: 1,
+          encrypted_payload: encryptedPayload,
+          state: params[6],
+          attempts: 0,
+          lease_token: null,
+          lease_expires_at: null,
+          result: null,
+          blocked_on_kind: "runtime_binding",
+          blocked_on_id: executionRow.id,
+          last_error_code: null,
+          created_at: now,
+          updated_at: now,
+          dispatching_at: null,
+          completed_at: null
+        };
+        return { rows: [startCommandRow] };
+      }
+      if (sql.includes("insert into personal_agent_execution_jobs")) {
+        jobInsertCalls.push(params);
+      }
+      if (sql.includes("insert into collaboration_outbox")) {
+        return { rows: [outboxRow] };
+      }
+      return { rows: [] };
+    });
+    const repository = createManagedConversationRepository(
+      {
+        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+      } as unknown as pg.Pool,
+      { envelopeEncryptionProvider: provider }
+    );
+    const input = {
+      projectId: null,
+      contextKind: "independent" as const,
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      reasoningEffort: "low",
+      permissionMode: "supervised" as const,
+      runnerKind: "local_device" as const,
+      runnerDeploymentId: executionRow.runner_deployment_id,
+      runnerDeviceId: executionRow.runner_device_id,
+      idempotencyKey: "agent-start-replay-key",
+      initialPrompt: "Ship the small fix.",
+      initialPromptClientUserMessageId: clientMessageId,
+      initialPersonalMemoryContext: memoryContext,
+      initialAgentId: agentId,
+      initialExpectedAgentVersion: 4,
+      initialPersonalAgentContext: agentContext,
+      deferUntilRuntimeBinding: true
+    };
+
+    const first = await repository.createManagedConversation(
+      { userId: ownerUserId },
+      input
+    );
+    const replay = await repository.createManagedConversation(
+      { userId: ownerUserId },
+      input
+    );
+
+    expect(first.execution.id).toBe(executionRow.id);
+    expect(replay.command.id).toBe(first.command.id);
+    expect(first.command.commandKind).toBe("start");
+    const encryptedStartPayload =
+      startCommandRow?.encrypted_payload as EncryptedPayloadEnvelope;
+    const decodedStartPayload = JSON.parse(
+      await decryptEnvelopeToUtf8(provider, encryptedStartPayload)
+    ) as Record<string, unknown>;
+    expect(decodedStartPayload).toMatchObject({
+      prompt: "Ship the small fix.",
+      continueWithoutMemory: true,
+      personalAgent: {
+        agentId,
+        agentVersion: 4,
+        identityVersionId
+      },
+      personalAgentContext: agentContext
+    });
+    expect(jobInsertCalls).toHaveLength(1);
+    expect(jobInsertCalls[0]?.[2]).toBe(first.execution.id);
+    expect(jobInsertCalls[0]?.[3]).toBe(agentId);
+    expect(jobInsertCalls[0]?.[6]).toBe(first.command.id);
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.includes("insert into managed_conversation_commands")
+      )
+    ).toHaveLength(1);
+  });
+});
+
 describe("managed Conversation start prompt dispatch", () => {
   const ownerUserId = "owner-user-id";
   const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
@@ -240,11 +450,31 @@ describe("managed Conversation start prompt dispatch", () => {
       }
     ]
   };
+  const personalAgent = {
+    jobId: "33333333-3333-4333-8333-333333333333",
+    agentId: "44444444-4444-4444-8444-444444444444",
+    agentVersion: 2,
+    identityVersionId: "55555555-5555-4555-8555-555555555555",
+    replayed: false
+  };
+  const personalAgentContext = {
+    schemaVersion: 1,
+    identity: {
+      agentId: personalAgent.agentId,
+      version: personalAgent.agentVersion,
+      identityVersionId: personalAgent.identityVersionId,
+      name: "Mira",
+      role: "Reviewer",
+      soulInstructions: "Be precise."
+    },
+    project: { projectId: null, name: null },
+    memory: { searchDomain: "global", evidence: personalMemoryContext.evidence }
+  };
   const provider = createLocalTestKeyEnvelopeEncryptionProvider(
     Buffer.alloc(32, 7).toString("base64")
   );
 
-  it("queues one encrypted child prompt with the caller recovery identity", async () => {
+  it("queues one encrypted child prompt and binds the existing Job to it", async () => {
     const encryptedPayload = await provider.encrypt({
       plaintext: JSON.stringify({
         prompt: "  Say hello  ",
@@ -254,7 +484,9 @@ describe("managed Conversation start prompt dispatch", () => {
           reasoningEffort: null,
           permissionMode: "supervised"
         },
-        personalMemoryContext
+        personalMemoryContext,
+        personalAgent,
+        personalAgentContext
       }),
       scope: {
         tenantId: ownerUserId,
@@ -269,6 +501,7 @@ describe("managed Conversation start prompt dispatch", () => {
     });
     let completed = false;
     let childInsertParams: unknown[] | undefined;
+    let personalAgentJobBindingParams: unknown[] | undefined;
     const outboxRow = {
       id: "outbox-id",
       cursor: "1",
@@ -327,6 +560,10 @@ describe("managed Conversation start prompt dispatch", () => {
         childInsertParams = params;
         return { rows: [{ id: "child-command-id" }] };
       }
+      if (sql.includes("update personal_agent_execution_jobs")) {
+        personalAgentJobBindingParams = params;
+        return { rowCount: 1, rows: [] };
+      }
       if (sql.includes("insert into collaboration_outbox")) {
         return { rows: [outboxRow] };
       }
@@ -363,12 +600,21 @@ describe("managed Conversation start prompt dispatch", () => {
     expect(childInsertParams?.[4]).toBe(4);
     expect(childInsertParams?.[6]).toBe(clientUserMessageId);
     expect(childInsertParams?.[7]).toBe(2);
+    expect(personalAgentJobBindingParams).toEqual([
+      ownerUserId,
+      personalAgent.jobId,
+      "child-command-id",
+      startCommandId,
+      executionId,
+      personalAgent.agentId,
+      personalAgent.agentVersion
+    ]);
     const childPayload = JSON.parse(
       await decryptEnvelopeToUtf8(
         provider,
         childInsertParams?.[8] as EncryptedPayloadEnvelope
       )
-    );
+    ) as Record<string, unknown>;
     expect(childPayload).toMatchObject({
       prompt: "Say hello",
       clientUserMessageId,
@@ -377,9 +623,16 @@ describe("managed Conversation start prompt dispatch", () => {
         reasoningEffort: "high",
         permissionMode: "auto_edit"
       },
-      personalMemoryContext
+      personalMemoryContext,
+      personalAgent: { ...personalAgent, replayed: false },
+      personalAgentContext
     });
     expect(JSON.stringify(childPayload)).toContain("private-node-id");
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.includes("insert into personal_agent_execution_jobs")
+      )
+    ).toHaveLength(0);
   });
 
   it("does not dispatch the prompt when a pending start was canceled", async () => {
@@ -518,7 +771,7 @@ describe("managed provider encrypted history", () => {
       updated_at: now,
       encrypted_payload: encrypted
     };
-    const query = vi.fn(async (_sql: string, _params: unknown[] = []) => ({
+    const query = vi.fn(async () => ({
       rows: [row, { ...row, sequence: 3 }]
     }));
     const repository = createManagedConversationRepository(

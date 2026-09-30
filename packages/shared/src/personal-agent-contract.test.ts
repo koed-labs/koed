@@ -14,6 +14,7 @@ import {
   parsePersonalAgentIdentityVersion,
   personalAgentRunningAttemptCount,
   personalAgentTerminalAttemptCount,
+  personalAgentExecutionContextSchema,
   retirePersonalAgent,
   setPersonalAgentActiveRespondent
 } from "./personal-agent-contract.js";
@@ -111,6 +112,50 @@ const attempt = () =>
   });
 
 describe("Personal Agent domain contract", () => {
+  it("requires Workspace attribution for Team evidence in Agent context", () => {
+    const context = {
+      schemaVersion: 1,
+      identity: {
+        agentId: ids.agent,
+        version: 1,
+        identityVersionId: ids.version,
+        name: "Planner",
+        role: "Planning assistant",
+        soulInstructions: "Be precise."
+      },
+      project: { projectId: null, name: null },
+      memory: {
+        searchDomain: "global",
+        evidence: [
+          {
+            nodeId: "team-item",
+            summaryText: "A Team-shared fact.",
+            visibility: "team",
+            citation: { nodeId: "team-item", visibility: "team" }
+          }
+        ]
+      }
+    };
+
+    expect(personalAgentExecutionContextSchema.safeParse(context).success).toBe(
+      false
+    );
+    expect(
+      personalAgentExecutionContextSchema.safeParse({
+        ...context,
+        memory: {
+          ...context.memory,
+          evidence: [
+            {
+              ...context.memory.evidence[0],
+              teamWorkspaceId: ids.execution
+            }
+          ]
+        }
+      }).success
+    ).toBe(true);
+  });
+
   it("allows an unset paired provider and model without inventing defaults", () => {
     expect(
       parsePersonalAgentIdentity({

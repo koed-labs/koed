@@ -3,6 +3,7 @@ import type pg from "pg";
 import {
   assertPersonalAgentAttemptRuntimeIdentity,
   assertPersonalAgentIsActive,
+  decryptEnvelopeToUtf8,
   decideConversationItemPresentation,
   parsePersonalAgentExecutionAttempt,
   parsePersonalAgentExecutionJob,
@@ -10,6 +11,7 @@ import {
   parsePersonalAgentIdentity,
   parsePersonalAgentIdentityVersion,
   type AiClientPermissionMode,
+  type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type PersonalAgentAttemptOutcome,
   type PersonalAgentAttribution,
@@ -33,6 +35,21 @@ const SOUL_SOURCE_TABLE = "personal_agent_identity_versions" as const;
 const SOUL_SOURCE_COLUMN = "soul_instructions" as const;
 const OUTPUT_SOURCE_TABLE = "personal_agent_execution_jobs" as const;
 const OUTPUT_SOURCE_COLUMN = "assistant_output" as const;
+
+// Job goals live in encrypted command payloads. Keep their short display
+// titles out of the plaintext job row as well.
+const originalJobGoal = (prompt: string): string =>
+  prompt.split(/\n\s*\nKoed attached terminal context\b/u, 1)[0] ?? prompt;
+
+const titleFromJobGoal = (goal: string): string => {
+  const compact = goal.replace(/\s+/gu, " ").trim();
+  if (!compact) return "Agent task";
+  const characters = Array.from(compact);
+  if (characters.length <= 64) return compact;
+  const prefix = characters.slice(0, 64).join("");
+  const lastSpace = prefix.lastIndexOf(" ");
+  return `${lastSpace >= 32 ? prefix.slice(0, lastSpace) : prefix}…`;
+};
 
 const requestFingerprint = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -101,7 +118,6 @@ export interface PersonalAgentExecutionJobInput {
   conversationId: string;
   commandId?: string | null;
   attribution: PersonalAgentAttribution;
-  title?: string;
   projectId?: string | null;
 }
 
@@ -148,6 +164,7 @@ export interface PersonalAgentHistory {
 
 export interface PersonalAgentHistoryJob extends PersonalAgentExecutionJob {
   title: string;
+  goal: string | null;
   agentName: string | null;
   attempts: PersonalAgentExecutionAttempt[];
   latestAttempt: PersonalAgentExecutionAttempt | null;
@@ -775,6 +792,69 @@ export const createPersonalAgentRepository = (
     }
   };
 
+  const authorizedJobGoals = async (
+    actor: ActorContext,
+    jobs: PersonalAgentExecutionJob[]
+  ): Promise<Map<string, string>> => {
+    const commandIds = jobs
+      .map((job) => job.commandId)
+      .filter((id): id is string => Boolean(id));
+    if (commandIds.length === 0) return new Map();
+    const commands = await pool.query<{
+      id: string;
+      execution_id: string;
+      encrypted_payload: EncryptedPayloadEnvelope | null;
+    }>(
+      `select id, execution_id, encrypted_payload
+       from managed_conversation_commands
+       where owner_user_id = $1 and id = any($2::uuid[])
+         and command_kind in ('start', 'prompt')`,
+      [actor.userId, commandIds]
+    );
+    const byId = new Map(commands.rows.map((row) => [row.id, row]));
+    const goals = await Promise.all(
+      jobs.map(async (job) => {
+        const command = job.commandId ? byId.get(job.commandId) : undefined;
+        if (
+          !command?.encrypted_payload ||
+          command.execution_id !== job.conversationId
+        )
+          return null;
+        const plaintext = await decryptEnvelopeToUtf8(
+          requireProvider(),
+          command.encrypted_payload
+        );
+        const payload: unknown = JSON.parse(plaintext);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload))
+          return null;
+        const prompt = (payload as Record<string, unknown>).prompt;
+        return typeof prompt === "string"
+          ? { jobId: job.id, goal: originalJobGoal(prompt) }
+          : null;
+      })
+    );
+    return new Map(
+      goals
+        .filter((value): value is { jobId: string; goal: string } =>
+          Boolean(value)
+        )
+        .map((value) => [value.jobId, value.goal])
+    );
+  };
+
+  const withAuthorizedJobTitles = async (
+    actor: ActorContext,
+    jobs: PersonalAgentExecutionJob[]
+  ): Promise<PersonalAgentExecutionJob[]> => {
+    const goals = await authorizedJobGoals(actor, jobs);
+    return jobs.map((job) => ({
+      ...job,
+      title: goals.has(job.id)
+        ? titleFromJobGoal(goals.get(job.id)!)
+        : "Agent task"
+    }));
+  };
+
   const loadPersonalAgentDetail = async (
     actor: ActorContext,
     agentId: string
@@ -793,6 +873,7 @@ export const createPersonalAgentRepository = (
       agentId,
       limit: 50
     });
+    const goals = await authorizedJobGoals(actor, jobs.jobs);
     const historyJobs: PersonalAgentHistoryJob[] = await Promise.all(
       jobs.jobs.map(async (job) => {
         const attempts = await listPersonalAgentExecutionAttempts(actor, {
@@ -813,7 +894,7 @@ export const createPersonalAgentRepository = (
             : null;
         return {
           ...job,
-          title: "Agent task",
+          goal: goals.get(job.id) ?? null,
           agentName: historicalIdentity?.rows[0]?.name ?? null,
           attempts: attempts.attempts,
           latestAttempt: attempts.attempts[0] ?? null
@@ -1770,7 +1851,7 @@ export const createPersonalAgentRepository = (
           input.attribution.kind,
           input.attribution.agentId,
           input.attribution.agentVersion,
-          input.title?.trim().slice(0, 512) || "Agent task",
+          "Agent task",
           input.projectId ?? null
         ]
       );
@@ -1821,8 +1902,13 @@ export const createPersonalAgentRepository = (
       );
       const jobRow = result.rows[0];
       if (!jobRow) throw new Error("Personal Agent job was not found");
-      const attempt = await client.query<{ id: string; job_id: string }>(
-        `select id, job_id from personal_agent_execution_attempts
+      const attempt = await client.query<AttemptRow>(
+        `select id, owner_user_id, job_id, attempt_number, attribution_kind,
+            agent_id, agent_version, provider, model, ai_client_instance_id,
+            reasoning_effort, permission_mode, managed_execution_id,
+            managed_execution_generation, status, outcome, started_at,
+            completed_at
+         from personal_agent_execution_attempts
          where id = $1 and job_id = $2 and owner_user_id = $3`,
         [input.attemptId, input.jobId, input.actor.userId]
       );
@@ -1848,6 +1934,11 @@ export const createPersonalAgentRepository = (
         }
         return mapJob(jobRow);
       }
+      await assertCurrentRunningPersonalAgentAttempt(
+        client,
+        jobRow,
+        attempt.rows[0]
+      );
       const existing = jobRow.output_reference?.runtimeItemIds;
       if (existing && JSON.stringify(existing) !== JSON.stringify(refs)) {
         throw idempotencyConflict(
@@ -1960,7 +2051,36 @@ export const createPersonalAgentRepository = (
        where id = $1 and owner_user_id = $2`,
       [jobId, actor.userId]
     );
-    return result.rows[0] ? mapJob(result.rows[0]) : null;
+    if (!result.rows[0]) return null;
+    return (await withAuthorizedJobTitles(actor, [mapJob(result.rows[0])]))[0]!;
+  };
+
+  const assertCurrentRunningPersonalAgentAttempt = async (
+    client: pg.PoolClient,
+    job: JobRow,
+    attempt: Pick<
+      AttemptRow,
+      "id" | "status" | "managed_execution_id" | "managed_execution_generation"
+    >
+  ): Promise<void> => {
+    const execution = await client.query<{ execution_generation: number }>(
+      `select execution_generation from managed_conversation_executions
+       where id = $1 and owner_user_id = $2
+       for share`,
+      [job.conversation_id, job.owner_user_id]
+    );
+    if (
+      job.last_attempt_id !== attempt.id ||
+      attempt.status !== "running" ||
+      attempt.managed_execution_id !== job.conversation_id ||
+      attempt.managed_execution_generation !==
+        execution.rows[0]?.execution_generation
+    ) {
+      throw Object.assign(
+        new Error("Personal Agent attempt is not current for this execution"),
+        { code: "PERSONAL_AGENT_STATE_CONFLICT" }
+      );
+    }
   };
 
   const listPersonalAgentExecutionJobs = async (
@@ -1998,7 +2118,7 @@ export const createPersonalAgentRepository = (
     );
     const rows = result.rows.slice(0, limit);
     return {
-      jobs: rows.map(mapJob),
+      jobs: await withAuthorizedJobTitles(actor, rows.map(mapJob)),
       hasMore: result.rows.length > limit,
       nextCursor:
         result.rows.length > limit
@@ -2050,20 +2170,6 @@ export const createPersonalAgentRepository = (
         job.attribution.agentVersion !== input.attribution.agentVersion
       ) {
         throw new Error("Attempt attribution does not match its job");
-      }
-      if (input.managedExecutionId !== null) {
-        const execution = await client.query<{ id: string }>(
-          `select id
-           from managed_conversation_executions
-           where id = $1 and owner_user_id = $2
-           limit 1`,
-          [input.managedExecutionId, actor.userId]
-        );
-        if (!execution.rows[0]) {
-          throw new Error(
-            "Managed execution is not owned by the Personal Agent owner"
-          );
-        }
       }
       const attempt = parsePersonalAgentExecutionAttempt({
         contractVersion: 1,
@@ -2122,6 +2228,40 @@ export const createPersonalAgentRepository = (
           );
         }
         return existing;
+      }
+      if (input.managedExecutionId !== null) {
+        if (input.managedExecutionId !== job.conversationId) {
+          throw Object.assign(
+            new Error(
+              "Attempt execution does not match its Personal Agent job"
+            ),
+            { code: "PERSONAL_AGENT_STATE_CONFLICT" }
+          );
+        }
+        const execution = await client.query<{
+          id: string;
+          execution_generation: number;
+        }>(
+          `select id, execution_generation
+           from managed_conversation_executions
+           where id = $1 and owner_user_id = $2
+           for share`,
+          [job.conversationId, actor.userId]
+        );
+        if (!execution.rows[0]) {
+          throw new Error(
+            "Managed execution is not owned by the Personal Agent owner"
+          );
+        }
+        if (
+          input.managedExecutionGeneration !==
+          execution.rows[0].execution_generation
+        ) {
+          throw Object.assign(
+            new Error("Attempt execution generation is stale"),
+            { code: "PERSONAL_AGENT_STATE_CONFLICT" }
+          );
+        }
       }
       await validateAttribution(client, actor, input.attribution, true);
       const result = await client.query<AttemptRow>(
@@ -2258,6 +2398,7 @@ export const createPersonalAgentRepository = (
         }
         return { attempt, job: mapJob(job), replayed: true };
       }
+      await assertCurrentRunningPersonalAgentAttempt(client, job, attemptRow);
       if (attempt.status !== "running") {
         throw Object.assign(
           new Error("Personal Agent attempt is already terminal"),

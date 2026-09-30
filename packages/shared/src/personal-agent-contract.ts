@@ -208,6 +208,8 @@ export const personalAgentExecutionContextSchema = z
                   .optional(),
                 sourceId: z.string().trim().min(1).max(512).optional(),
                 summaryText: z.string().max(8_000),
+                visibility: z.enum(["personal", "team"]).default("personal"),
+                teamWorkspaceId: z.uuid().optional(),
                 citation: z.record(z.string(), z.unknown()),
                 sourceTime: z.string().max(64).optional()
               })
@@ -217,7 +219,21 @@ export const personalAgentExecutionContextSchema = z
       })
       .strict()
   })
-  .strict();
+  .strict()
+  .superRefine((context, issueContext) => {
+    for (const [index, evidence] of context.memory.evidence.entries()) {
+      if (
+        evidence.visibility === "team" &&
+        evidence.teamWorkspaceId === undefined
+      ) {
+        issueContext.addIssue({
+          code: "custom",
+          path: ["memory", "evidence", index, "teamWorkspaceId"],
+          message: "Team evidence requires its authorized Workspace"
+        });
+      }
+    }
+  });
 
 export type PersonalAgentExecutionContext = z.infer<
   typeof personalAgentExecutionContextSchema

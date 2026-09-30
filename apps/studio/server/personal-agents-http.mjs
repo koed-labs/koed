@@ -78,8 +78,7 @@ export async function handlePersonalAgents({
     return true;
   }
   const recoveryLookup =
-    routeFamily === "managed-conversations" &&
-    suffix === "/recovery/lookup";
+    routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   if (url.search && !recoveryLookup) {
     send(400, { error: "query_not_allowed" });
     return true;
@@ -151,7 +150,10 @@ export async function handlePersonalAgents({
       }
     }
     const upstream = await fetchImpl(
-      new URL(`/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`, base),
+      new URL(
+        `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
+        base
+      ),
       {
         method: request.method,
         headers: {
@@ -165,29 +167,71 @@ export async function handlePersonalAgents({
       }
     );
     if (!upstream.ok) {
+      let memoryRecallError = null;
+      if (
+        routeFamily === "managed-conversations" &&
+        upstream.status === 503 &&
+        upstream.body
+      ) {
+        try {
+          const reader = upstream.body.getReader();
+          const chunks = [];
+          let size = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > 4096) {
+              await reader.cancel();
+              break;
+            }
+            chunks.push(Buffer.from(value));
+          }
+          reader.releaseLock();
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          if (
+            payload?.error?.code === "MEMORY_RECALL_UNAVAILABLE" &&
+            typeof payload?.error?.message === "string"
+          ) {
+            memoryRecallError = {
+              error: {
+                code: "MEMORY_RECALL_UNAVAILABLE",
+                message:
+                  "Memory could not be checked. Retry or continue without Memory."
+              }
+            };
+          }
+        } catch {
+          memoryRecallError = null;
+        }
+      }
       const conflictCode =
         routeFamily === "personal-agents" && upstream.status === 409
           ? await boundedConflictCode(upstream)
           : null;
-      if (conflictCode === null) await upstream.body?.cancel?.();
+      if (conflictCode === null && memoryRecallError === null)
+        await upstream.body?.cancel?.();
       const status = [400, 401, 403, 404, 409, 422, 429].includes(
         upstream.status
       )
         ? upstream.status
         : 503;
-      send(status, {
-        error:
-          conflictCode === "name_conflict"
-            ? "An Agent with this name or a previous name already exists. Choose another name."
-            : status === 409
-            ? "The request conflicts with the current state. Refresh and check agent, model, and runtime availability before trying again."
-            : status === 429
-              ? "Koed is receiving too many requests. Wait a minute, then try again. Your changes have not been confirmed."
-              : status === 503
-                ? "The runtime service is unavailable. Check the configured local or remote connection before retrying."
-                : "The request could not be completed.",
-        ...(conflictCode ? { code: conflictCode } : {})
-      });
+      send(
+        status,
+        memoryRecallError ?? {
+          error:
+            conflictCode === "name_conflict"
+              ? "An Agent with this name or a previous name already exists. Choose another name."
+              : status === 409
+                ? "The request conflicts with the current state. Refresh and check agent, model, and runtime availability before trying again."
+                : status === 429
+                  ? "Koed is receiving too many requests. Wait a minute, then try again. Your changes have not been confirmed."
+                  : status === 503
+                    ? "The runtime service is unavailable. Check the configured local or remote connection before retrying."
+                    : "The request could not be completed.",
+          ...(conflictCode ? { code: conflictCode } : {})
+        }
+      );
       return true;
     }
     const reader = upstream.body.getReader();
@@ -225,8 +269,7 @@ function validLocalApiBase(value, { requireOrigin = false } = {}) {
       !["localhost", "127.0.0.1", "[::1]"].includes(base.hostname) ||
       base.username ||
       base.password ||
-      (requireOrigin &&
-        (base.pathname !== "/" || base.search || base.hash))
+      (requireOrigin && (base.pathname !== "/" || base.search || base.hash))
     ) {
       return null;
     }
@@ -241,7 +284,8 @@ function managedMethods(suffix) {
   if (suffix === "/recovery/lookup") return ["GET"];
   if (suffix === "/access" || suffix === "/launch-options") return ["GET"];
   if (new RegExp(`^/${uuid}/project-moves$`).test(suffix)) return ["POST"];
-  if (new RegExp(`^/${uuid}/project-moves/latest$`).test(suffix)) return ["GET"];
+  if (new RegExp(`^/${uuid}/project-moves/latest$`).test(suffix))
+    return ["GET"];
   if (new RegExp(`^/${uuid}/project-moves/${uuid}/cancel$`).test(suffix))
     return ["POST"];
   if (new RegExp(`^/${uuid}(?:/runtime|/agent-state)?$`).test(suffix))
@@ -259,18 +303,28 @@ function validRecoveryLookupQuery(params) {
   const kind = params.get("kind");
   const keys = [...params.keys()];
   if (kind === "start") {
-    return keys.length === 2 &&
+    return (
+      keys.length === 2 &&
       keys.includes("idempotencyKey") &&
-      validIdempotencyKey(params.get("idempotencyKey"));
+      validIdempotencyKey(params.get("idempotencyKey"))
+    );
   }
   if (kind === "prompt") {
-    const expected = ["kind", "idempotencyKey", "clientUserMessageId", "executionId", "executionGeneration"];
-    return keys.length === expected.length &&
+    const expected = [
+      "kind",
+      "idempotencyKey",
+      "clientUserMessageId",
+      "executionId",
+      "executionGeneration"
+    ];
+    return (
+      keys.length === expected.length &&
       expected.every((key) => keys.includes(key)) &&
       validIdempotencyKey(params.get("idempotencyKey")) &&
       validUuid(params.get("clientUserMessageId")) &&
       validUuid(params.get("executionId")) &&
-      /^[1-9][0-9]*$/.test(params.get("executionGeneration") ?? "");
+      /^[1-9][0-9]*$/.test(params.get("executionGeneration") ?? "")
+    );
   }
   return false;
 }
@@ -280,9 +334,12 @@ function validUuid(value) {
 }
 
 function validIdempotencyKey(value) {
-  return typeof value === "string" &&
-    value.length >= 8 && value.length <= 255 &&
-    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+  return (
+    typeof value === "string" &&
+    value.length >= 8 &&
+    value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
 }
 
 export function handleManagedConversations(options) {

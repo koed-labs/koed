@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -1162,6 +1162,112 @@ test("sends prompt and control mutations with generation and idempotency data", 
   );
 });
 
+test("attributes hosted follow-up prompts to the verified active Agent version", async () => {
+  const state = parseHostedConversationState(
+    {
+      executionId: id,
+      executionGeneration: 3,
+      executionState: "running",
+      activeAgentId: "agent-1",
+      participants: [
+        {
+          agentId: "agent-1",
+          name: "Researcher",
+          lifecycle: "active",
+          currentVersion: 7
+        }
+      ],
+      messages: []
+    },
+    id,
+    3
+  );
+  const attribution = hostedActiveAgentAttribution(state);
+  assert.deepEqual(attribution, {
+    agentId: "agent-1",
+    expectedAgentVersion: 7
+  });
+  let sent: Record<string, unknown> | null = null;
+  await queueHostedConversationPrompt(
+    execution,
+    "Continue the research",
+    {
+      idempotencyKey: "follow-up-key",
+      clientUserMessageId: "follow-up-message",
+      ...attribution
+    },
+    undefined,
+    async (_input, init) => {
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return json({ command: { id: commandId, state: "queued" } }, 202);
+    }
+  );
+  assert.deepEqual(sent, {
+    executionGeneration: 3,
+    idempotencyKey: "follow-up-key",
+    clientUserMessageId: "follow-up-message",
+    prompt: "Continue the research",
+    agentId: "agent-1",
+    expectedAgentVersion: 7
+  });
+  assert.throws(
+    () =>
+      hostedActiveAgentAttribution({
+        ...state,
+        participants: state.participants?.map((participant) => ({
+          ...participant,
+          lifecycle: "retired"
+        }))
+      }),
+    /no longer active/
+  );
+});
+
+test("sends the one-shot Continue without Memory flag only with the accepted prompt", async () => {
+  const sent: Record<string, unknown>[] = [];
+  await queueHostedConversationPrompt(
+    execution,
+    "Continue this goal",
+    { idempotencyKey: "continue-key", clientUserMessageId: "continue-message" },
+    undefined,
+    async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return json({ command: { id: commandId, state: "queued" } }, 202);
+    },
+    { continueWithoutMemory: true }
+  );
+  assert.equal(sent[0]?.continueWithoutMemory, true);
+});
+
+test("surfaces the bounded hosted recall pause code for Studio recovery actions", async () => {
+  await assert.rejects(
+    queueHostedConversationPrompt(
+      execution,
+      "Continue this goal",
+      {
+        idempotencyKey: "recall-pause-key",
+        clientUserMessageId: "recall-pause-message"
+      },
+      undefined,
+      async () =>
+        json(
+          {
+            error: {
+              code: "MEMORY_RECALL_UNAVAILABLE",
+              message:
+                "Memory could not be checked. Retry or continue without Memory."
+            }
+          },
+          503
+        )
+    ),
+    (error: unknown) =>
+      error instanceof HostedManagedChatError &&
+      error.status === 503 &&
+      error.code === "MEMORY_RECALL_UNAVAILABLE"
+  );
+});
+
 test("cancels only through the queued command endpoint and preserves a race result", async () => {
   let call: { url: string; init?: RequestInit } | undefined;
   const fetcher: typeof fetch = async (input, init) => {
@@ -1516,6 +1622,58 @@ test("starts an independent hosted Conversation with no Project", async () => {
     permissionMode: "supervised",
     targetDeviceId: "device-a",
     idempotencyKey: "standalone-start-key",
+    runnerKind: "local_device"
+  });
+});
+
+test("starts a hosted Agent Job with its owner version and clear goal", async () => {
+  let request: { url: string; init?: RequestInit } | undefined;
+  await startHostedManagedConversation(
+    {
+      projectId: null,
+      contextKind: "independent",
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-6-sol",
+      reasoningEffort: "high",
+      permissionMode: "supervised",
+      targetDeviceId: "device-a",
+      idempotencyKey: "agent-job-start-key",
+      initialPrompt: "Review the billing implementation and report risks.",
+      initialPromptClientUserMessageId: "33333333-3333-4333-8333-333333333333",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      expectedAgentVersion: 7,
+      continueWithoutMemory: true
+    },
+    undefined,
+    async (input, init) => {
+      request = { url: String(input), init };
+      return json(
+        {
+          execution: { ...execution, projectId: null },
+          command: { id: commandId, state: "queued" }
+        },
+        202
+      );
+    }
+  );
+
+  assert.equal(request?.url, "/v1/managed-conversations");
+  assert.deepEqual(JSON.parse(String(request?.init?.body)), {
+    projectId: null,
+    contextKind: "independent",
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-6-sol",
+    reasoningEffort: "high",
+    permissionMode: "supervised",
+    targetDeviceId: "device-a",
+    idempotencyKey: "agent-job-start-key",
+    initialPrompt: "Review the billing implementation and report risks.",
+    initialPromptClientUserMessageId: "33333333-3333-4333-8333-333333333333",
+    agentId: "11111111-1111-4111-8111-111111111111",
+    expectedAgentVersion: 7,
+    continueWithoutMemory: true,
     runnerKind: "local_device"
   });
 });

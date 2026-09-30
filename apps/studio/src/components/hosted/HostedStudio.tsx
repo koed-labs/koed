@@ -49,6 +49,15 @@ export function HostedStudio({ view }: HostedStudioProps) {
   const loginSequence = useRef(0);
   const mounted = useRef(false);
   const requestedTeamId = searchParams.get("team");
+  const initialNewConversation =
+    view === "home" &&
+    searchParams.get("chat") === "1" &&
+    !searchParams.get("execution");
+  const initialAgentId = initialNewConversation
+    ? (searchParams.get("agent") ?? undefined)
+    : undefined;
+  const initialExecutionId =
+    view === "home" ? (searchParams.get("execution") ?? undefined) : undefined;
 
   const storeResult = useCallback((result: HostedSessionResult) => {
     if (result.status === "authenticated") {
@@ -162,40 +171,43 @@ export function HostedStudio({ view }: HostedStudioProps) {
         }
       />
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        {view !== "collaboration" && <header className="z-10 flex h-14 shrink-0 items-center justify-between bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
-          <div className="flex min-w-0 items-center gap-3 no-drag">
-            {activeTeam && (
-              <>
-              </>
-            )}
-            <div className="truncate text-sm text-muted">
-              <span className="text-foreground-secondary">Studio</span>
-              <span className="mx-2 text-faint">/</span>
-              <span className="text-foreground">
-                {view === "home" ? "Home" : (activeTeam?.name ?? "Team")}
-              </span>
+        {view !== "collaboration" && (
+          <header className="z-10 flex h-14 shrink-0 items-center justify-between bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
+            <div className="flex min-w-0 items-center gap-3 no-drag">
+              {activeTeam && <></>}
+              <div className="truncate text-sm text-muted">
+                <span className="text-foreground-secondary">Studio</span>
+                <span className="mx-2 text-faint">/</span>
+                <span className="text-foreground">
+                  {view === "home" ? "Home" : (activeTeam?.name ?? "Team")}
+                </span>
+              </div>
             </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-3 no-drag">
-            {currentUser && (
-              <span className="hidden max-w-56 truncate text-xs text-muted sm:inline">
-                {currentUser.email}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              disabled={busy}
-              aria-label="Refresh Studio"
-              title="Refresh Studio"
-              className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-        </header>}
+            <div className="flex shrink-0 items-center gap-3 no-drag">
+              {currentUser && (
+                <span className="hidden max-w-56 truncate text-xs text-muted sm:inline">
+                  {currentUser.email}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                disabled={busy}
+                aria-label="Refresh Studio"
+                title="Refresh Studio"
+                className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${busy ? "animate-spin" : ""}`}
+                />
+              </button>
+            </div>
+          </header>
+        )}
 
-        <div className={`relative min-h-0 flex-1 ${view === "collaboration" ? "flex overflow-hidden" : "overflow-y-auto p-4"}`}>
+        <div
+          className={`relative min-h-0 flex-1 ${view === "collaboration" ? "flex overflow-hidden" : "overflow-y-auto p-4"}`}
+        >
           {session === null || (busy && session.status === "unavailable") ? (
             <LoadingState />
           ) : session.status === "signed_out" ? (
@@ -250,13 +262,28 @@ export function HostedStudio({ view }: HostedStudioProps) {
               <HostedManagedChats
                 key={session.user.id}
                 onAuthorizationLost={refresh}
+                initialNewConversation={initialNewConversation}
+                initialAgentId={initialAgentId}
+                initialExecutionId={initialExecutionId}
               />
               <HostedOverview teams={session.teams} />
             </>
           ) : activeTeam ? (
-            <HostedTeamChannels key={`${typeof window === "undefined" ? "" : window.location.origin}:${session.user.id}:${activeTeam.id}`} team={activeTeam} user={session.user} allTeams={session.teams} onAuthorizationLost={refresh} />
+            <HostedTeamChannels
+              key={`${typeof window === "undefined" ? "" : window.location.origin}:${session.user.id}:${activeTeam.id}`}
+              team={activeTeam}
+              user={session.user}
+              allTeams={session.teams}
+              onAuthorizationLost={refresh}
+            />
           ) : (
-            <HostedTeamNavigation teams={session.teams} selectedTeamId={activeTeamId} onSelect={(id) => router.push(`/collaboration?team=${encodeURIComponent(id)}`)} />
+            <HostedTeamNavigation
+              teams={session.teams}
+              selectedTeamId={activeTeamId}
+              onSelect={(id) =>
+                router.push(`/collaboration?team=${encodeURIComponent(id)}`)
+              }
+            />
           )}
         </div>
       </main>

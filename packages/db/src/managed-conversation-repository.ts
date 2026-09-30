@@ -365,6 +365,9 @@ export interface ManagedConversationRepository {
       initialPrompt?: string;
       initialPromptClientUserMessageId?: string;
       initialPersonalMemoryContext?: PersonalMemoryTurnContext;
+      initialAgentId?: string;
+      initialExpectedAgentVersion?: number;
+      initialPersonalAgentContext?: PersonalAgentExecutionContext;
       deferUntilRuntimeBinding?: boolean;
     }
   ): Promise<{
@@ -1300,6 +1303,9 @@ const startDigest = (input: {
   runnerDeviceId: string;
   initialPrompt?: string;
   initialPromptClientUserMessageId?: string;
+  initialAgentId?: string;
+  initialExpectedAgentVersion?: number;
+  initialMemoryStatus?: PersonalMemoryTurnContext["status"];
   deferUntilRuntimeBinding?: boolean;
 }): string =>
   sha256(
@@ -1324,6 +1330,15 @@ const startDigest = (input: {
             initialPromptClientUserMessageId:
               input.initialPromptClientUserMessageId
           }
+        : {}),
+      ...(input.initialAgentId !== undefined
+        ? {
+            initialAgentId: input.initialAgentId,
+            initialExpectedAgentVersion: input.initialExpectedAgentVersion
+          }
+        : {}),
+      ...(input.initialMemoryStatus === "skipped"
+        ? { continueWithoutMemory: true }
         : {}),
       deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
     })
@@ -1522,6 +1537,9 @@ export const createManagedConversationRepository = (
           : {}),
         ...(input.personalMemoryContext
           ? { personalMemoryContext: input.personalMemoryContext }
+          : {}),
+        ...(input.personalMemoryContext?.status === "skipped"
+          ? { continueWithoutMemory: true }
           : {}),
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
@@ -2158,6 +2176,13 @@ export const createManagedConversationRepository = (
       if (
         (input.contextKind !== "independent" && !projectId) ||
         (input.contextKind === "independent" && projectId !== null) ||
+        (input.initialAgentId === undefined) !==
+          (input.initialExpectedAgentVersion === undefined) ||
+        (input.initialAgentId === undefined) !==
+          (input.initialPersonalAgentContext === undefined) ||
+        (input.initialAgentId !== undefined &&
+          (!input.initialPrompt?.trim() ||
+            !input.initialPromptClientUserMessageId)) ||
         (input.initialPromptClientUserMessageId !== undefined &&
           (!input.initialPrompt?.trim() ||
             !UUID_PATTERN.test(input.initialPromptClientUserMessageId))) ||
@@ -2207,6 +2232,9 @@ export const createManagedConversationRepository = (
             initialPrompt: input.initialPrompt,
             initialPromptClientUserMessageId:
               input.initialPromptClientUserMessageId,
+            initialAgentId: input.initialAgentId,
+            initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+            initialMemoryStatus: input.initialPersonalMemoryContext?.status,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
           });
           if (existing.rows[0].request_digest !== expectedDigest) {
@@ -2242,6 +2270,9 @@ export const createManagedConversationRepository = (
           initialPrompt: input.initialPrompt,
           initialPromptClientUserMessageId:
             input.initialPromptClientUserMessageId,
+          initialAgentId: input.initialAgentId,
+          initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+          initialMemoryStatus: input.initialPersonalMemoryContext?.status,
           deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
         });
         const executionResult = await client.query<ExecutionRow>(
@@ -2277,6 +2308,122 @@ export const createManagedConversationRepository = (
         ) {
           throw statusError("Personal Memory turn context is stale", 409);
         }
+        let initialPersonalAgentContext:
+          | PersonalAgentExecutionContext
+          | undefined;
+        let initialPersonalAgent:
+          | NonNullable<ManagedConversationCommandRecord["personalAgent"]>
+          | undefined;
+        if (
+          input.initialAgentId !== undefined &&
+          input.initialExpectedAgentVersion !== undefined &&
+          input.initialPersonalAgentContext !== undefined
+        ) {
+          initialPersonalAgentContext =
+            personalAgentExecutionContextSchema.parse(
+              input.initialPersonalAgentContext
+            );
+          if (
+            initialPersonalAgentContext.identity.agentId !==
+              input.initialAgentId ||
+            initialPersonalAgentContext.identity.version !==
+              input.initialExpectedAgentVersion ||
+            initialPersonalAgentContext.project.projectId !== projectId ||
+            initialPersonalMemoryContext === undefined ||
+            JSON.stringify(initialPersonalAgentContext.memory.evidence) !==
+              JSON.stringify(initialPersonalMemoryContext.evidence)
+          ) {
+            throw statusError("Personal Agent turn context is stale", 409);
+          }
+          if (
+            !Number.isSafeInteger(input.initialExpectedAgentVersion) ||
+            input.initialExpectedAgentVersion <= 0
+          ) {
+            throw statusError("Personal Agent version is invalid", 400);
+          }
+          const identity = await client.query<{
+            current_version: number;
+            lifecycle: string;
+          }>(
+            `select current_version, lifecycle
+               from personal_agent_identities
+              where owner_user_id = $1 and id = $2
+              for update`,
+            [actor.userId, input.initialAgentId]
+          );
+          if (
+            !identity.rows[0] ||
+            identity.rows[0].lifecycle !== "active" ||
+            identity.rows[0].current_version !==
+              input.initialExpectedAgentVersion
+          ) {
+            throw statusError(
+              "Personal Agent changed; reload it before sending",
+              409
+            );
+          }
+          const version = await client.query<{ id: string }>(
+            `select id from personal_agent_identity_versions
+              where owner_user_id = $1 and agent_id = $2 and version = $3`,
+            [
+              actor.userId,
+              input.initialAgentId,
+              input.initialExpectedAgentVersion
+            ]
+          );
+          const identityVersionId = version.rows[0]?.id;
+          if (
+            !identityVersionId ||
+            identityVersionId !==
+              initialPersonalAgentContext.identity.identityVersionId
+          ) {
+            throw statusError("Personal Agent version is unavailable", 409);
+          }
+          await client.query(
+            `insert into personal_agent_conversations
+              (conversation_id, owner_user_id, active_agent_id)
+             values ($1, $2, $3)
+             on conflict (conversation_id) do nothing`,
+            [executionId, actor.userId, input.initialAgentId]
+          );
+          const conversationOwner = await client.query<{
+            owner_user_id: string;
+          }>(
+            `select owner_user_id from personal_agent_conversations
+              where conversation_id = $1 for update`,
+            [executionId]
+          );
+          if (conversationOwner.rows[0]?.owner_user_id !== actor.userId) {
+            throw statusError(
+              "Personal Agent conversation is unavailable",
+              409
+            );
+          }
+          await client.query(
+            `insert into personal_agent_conversation_participants
+              (conversation_id, owner_user_id, agent_id, ordinal)
+             select $1, $2, $3, coalesce(max(ordinal), -1) + 1
+               from personal_agent_conversation_participants
+              where conversation_id = $1
+             on conflict (conversation_id, agent_id) do nothing`,
+            [executionId, actor.userId, input.initialAgentId]
+          );
+          await client.query(
+            `update personal_agent_conversations
+                set active_agent_id = $3,
+                    version = version + case when active_agent_id is distinct from $3 then 1 else 0 end,
+                    updated_at = now()
+              where conversation_id = $1 and owner_user_id = $2`,
+            [executionId, actor.userId, input.initialAgentId]
+          );
+          initialPersonalAgent = {
+            jobId: randomUUID(),
+            agentId: input.initialAgentId,
+            agentVersion: input.initialExpectedAgentVersion,
+            identityVersionId,
+            replayed: false
+          };
+        }
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
               ownerUserId: actor.userId,
@@ -2285,6 +2432,12 @@ export const createManagedConversationRepository = (
               prompt: input.initialPrompt,
               clientUserMessageId: input.initialPromptClientUserMessageId,
               personalMemoryContext: initialPersonalMemoryContext,
+              ...(initialPersonalAgent
+                ? { personalAgent: initialPersonalAgent }
+                : {}),
+              ...(initialPersonalAgentContext
+                ? { personalAgentContext: initialPersonalAgentContext }
+                : {}),
               settings: {
                 model: input.model,
                 reasoningEffort: input.reasoningEffort ?? null,
@@ -2315,6 +2468,36 @@ export const createManagedConversationRepository = (
             input.deferUntilRuntimeBinding === true ? executionId : null
           ]
         );
+        if (initialPersonalAgent) {
+          await client.query(
+            `insert into personal_agent_execution_jobs
+              (id, owner_user_id, conversation_id, attribution_kind, agent_id,
+               agent_version, idempotency_key, command_id, title, project_id, state)
+             values ($1, $2, $3, 'agent', $4, $5, $6, $7, $8, $9, 'queued')`,
+            [
+              initialPersonalAgent.jobId,
+              actor.userId,
+              executionId,
+              initialPersonalAgent.agentId,
+              initialPersonalAgent.agentVersion,
+              input.idempotencyKey,
+              commandId,
+              "Agent task",
+              projectId
+            ]
+          );
+          await client.query(
+            `insert into personal_agent_execution_job_events
+              (owner_user_id, job_id, sequence, event_id, execution_generation,
+               event_type, payload, observed_at)
+             values ($1, $2, 1, $3, 1, 'job_enqueued', '{}'::jsonb, now())`,
+            [
+              actor.userId,
+              initialPersonalAgent.jobId,
+              `command:${commandId}:job_enqueued`
+            ]
+          );
+        }
         await appendManagedConversationEvent(client, {
           ownerUserId: actor.userId,
           executionId,
@@ -2474,6 +2657,9 @@ export const createManagedConversationRepository = (
                   agentId: input.agentId,
                   expectedAgentVersion: input.expectedAgentVersion
                 }
+              : {}),
+            ...(personalMemoryContext?.status === "skipped"
+              ? { continueWithoutMemory: true }
               : {}),
             ...(settingsChange ? { settingsChange } : {})
           })
@@ -4970,6 +5156,56 @@ export const createManagedConversationRepository = (
                         `managed-conversation-start-prompt:${row.id}:client-user-message`
                       );
                 const idempotencyKey = `managed-conversation-start-prompt:${row.id}`;
+                const startAgentValue = startPayload?.personalAgent;
+                const startAgent =
+                  startAgentValue &&
+                  typeof startAgentValue === "object" &&
+                  "jobId" in startAgentValue &&
+                  typeof startAgentValue.jobId === "string" &&
+                  UUID_PATTERN.test(startAgentValue.jobId) &&
+                  "agentId" in startAgentValue &&
+                  typeof startAgentValue.agentId === "string" &&
+                  UUID_PATTERN.test(startAgentValue.agentId) &&
+                  "agentVersion" in startAgentValue &&
+                  Number.isSafeInteger(startAgentValue.agentVersion) &&
+                  "identityVersionId" in startAgentValue &&
+                  typeof startAgentValue.identityVersionId === "string" &&
+                  UUID_PATTERN.test(startAgentValue.identityVersionId)
+                    ? {
+                        jobId: startAgentValue.jobId,
+                        agentId: startAgentValue.agentId,
+                        agentVersion: startAgentValue.agentVersion as number,
+                        identityVersionId: startAgentValue.identityVersionId,
+                        replayed: false
+                      }
+                    : undefined;
+                const startAgentContextResult =
+                  personalAgentExecutionContextSchema.safeParse(
+                    startPayload?.personalAgentContext
+                  );
+                const startAgentContext = startAgentContextResult.success
+                  ? startAgentContextResult.data
+                  : undefined;
+                if (
+                  Boolean(startAgent) !== Boolean(startAgentContext) ||
+                  (startAgent &&
+                    (startAgentContext?.identity.agentId !==
+                      startAgent.agentId ||
+                      startAgentContext.identity.version !==
+                        startAgent.agentVersion ||
+                      startAgentContext.identity.identityVersionId !==
+                        startAgent.identityVersionId))
+                ) {
+                  throw statusError(
+                    "Personal Agent start context is invalid",
+                    409
+                  );
+                }
+                const startMemoryContext = startPayload?.personalMemoryContext
+                  ? personalMemoryTurnContextSchema.parse(
+                      startPayload.personalMemoryContext
+                    )
+                  : undefined;
                 const settings: ManagedConversationSettings = {
                   model: current.model,
                   reasoningEffort: current.reasoning_effort,
@@ -4982,7 +5218,16 @@ export const createManagedConversationRepository = (
                     executionGeneration: current.execution_generation,
                     clientUserMessageId,
                     prompt,
-                    fileMentionCommandIds: []
+                    fileMentionCommandIds: [],
+                    ...(startAgent
+                      ? {
+                          agentId: startAgent.agentId,
+                          expectedAgentVersion: startAgent.agentVersion
+                        }
+                      : {}),
+                    ...(startMemoryContext
+                      ? { memoryStatus: startMemoryContext.status }
+                      : {})
                   })
                 );
                 const sequence = await client.query<{ sequence: number }>(
@@ -4999,13 +5244,12 @@ export const createManagedConversationRepository = (
                   prompt,
                   clientUserMessageId,
                   settings,
-                  ...(startPayload?.personalMemoryContext
-                    ? {
-                        personalMemoryContext:
-                          personalMemoryTurnContextSchema.parse(
-                            startPayload.personalMemoryContext
-                          )
-                      }
+                  ...(startAgent ? { personalAgent: startAgent } : {}),
+                  ...(startAgentContext
+                    ? { personalAgentContext: startAgentContext }
+                    : {}),
+                  ...(startMemoryContext
+                    ? { personalMemoryContext: startMemoryContext }
                     : {})
                 });
                 const queued = await client.query<{ id: string }>(
@@ -5028,19 +5272,62 @@ export const createManagedConversationRepository = (
                     encryptedPayload
                   ]
                 );
+                const childCommandId =
+                  queued.rows[0]?.id ??
+                  (
+                    await client.query<{ id: string }>(
+                      `select id from managed_conversation_commands
+                        where owner_user_id = $1 and idempotency_key = $2`,
+                      [row.owner_user_id, idempotencyKey]
+                    )
+                  ).rows[0]?.id;
+                if (!childCommandId) {
+                  throw statusError(
+                    "Initial Conversation prompt could not be resolved",
+                    409
+                  );
+                }
                 if (queued.rows[0]) {
                   initialPromptCommandQueued = true;
-                  await client.query(
-                    `update managed_conversation_commands
-                        set result = coalesce(result, '{}'::jsonb) || $2::jsonb
-                      where id = $1`,
-                    [row.id, { initialPromptCommandId: promptCommandId }]
-                  );
                   await appendManagedConversationEvent(client, {
                     ownerUserId: row.owner_user_id,
                     executionId: row.execution_id,
-                    mutationId: `managed-conversation-command:${promptCommandId}:queued`
+                    mutationId: `managed-conversation-command:${childCommandId}:queued`
                   });
+                }
+                await client.query(
+                  `update managed_conversation_commands
+                      set result = coalesce(result, '{}'::jsonb) || $2::jsonb
+                    where id = $1`,
+                  [row.id, { initialPromptCommandId: childCommandId }]
+                );
+                if (startAgent) {
+                  const rebound = await client.query(
+                    `update personal_agent_execution_jobs
+                        set command_id = $3,
+                            version = version + case when command_id is distinct from $3 then 1 else 0 end,
+                            updated_at = case when command_id is distinct from $3 then now() else updated_at end
+                      where owner_user_id = $1 and id = $2
+                        and conversation_id = $5
+                        and attribution_kind = 'agent' and agent_id = $6
+                        and agent_version = $7
+                        and command_id in ($4, $3)`,
+                    [
+                      row.owner_user_id,
+                      startAgent.jobId,
+                      childCommandId,
+                      row.id,
+                      row.execution_id,
+                      startAgent.agentId,
+                      startAgent.agentVersion
+                    ]
+                  );
+                  if (rebound.rowCount !== 1) {
+                    throw statusError(
+                      "Personal Agent start Job could not be bound to its initial prompt",
+                      409
+                    );
+                  }
                 }
               }
             }

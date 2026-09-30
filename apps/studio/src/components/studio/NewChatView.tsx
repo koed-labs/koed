@@ -70,7 +70,12 @@ export type NewChatRuntime = Readonly<{
   messages: readonly NewChatRuntimeMessage[];
   isSending: boolean;
   error?: string | null;
-  onSend: (text: string, selection: ChatComposerSelection) => Promise<void>;
+  memoryRecallFailure?: string | null;
+  onSend: (
+    text: string,
+    selection: ChatComposerSelection,
+    continueWithoutMemory?: true
+  ) => Promise<void>;
   onInterrupt?: () => void;
   canInterrupt?: boolean;
   canCancelPendingPrompt?: boolean;
@@ -685,6 +690,9 @@ export function NewChatView({
                     : runtime?.enabled
                       ? runtime.onSend
                       : undefined
+                }
+                memoryRecallFailure={
+                  mode === "live" ? runtime?.memoryRecallFailure : null
                 }
                 sendEnabled={
                   mode === "demo" ||

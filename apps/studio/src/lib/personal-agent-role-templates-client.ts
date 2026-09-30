@@ -115,21 +115,19 @@ export async function listPersonalAgentRoleTemplates(
   signal?: AbortSignal,
   fetchImpl: typeof fetch = fetch
 ): Promise<PersonalAgentRoleTemplate[]> {
+  const pathname =
+    typeof window !== "undefined" ? window.location.pathname : "";
   const path =
-    typeof window !== "undefined" &&
-    window.location.pathname.startsWith("/studio/")
+    pathname === "/studio" || pathname.startsWith("/studio/")
       ? "/v1/personal-agent-role-templates"
       : "/studio-api/personal-agent-role-templates";
-  const response = await fetchImpl(
-    path,
-    {
-      signal,
-      cache: "no-store",
-      credentials: "include",
-      redirect: "error",
-      headers: { accept: "application/json" }
-    }
-  );
+  const response = await fetchImpl(path, {
+    signal,
+    cache: "no-store",
+    credentials: "include",
+    redirect: "error",
+    headers: { accept: "application/json" }
+  });
   if (!response.ok) throw new Error("Role templates are unavailable.");
   return parsePersonalAgentRoleTemplates(await response.json());
 }

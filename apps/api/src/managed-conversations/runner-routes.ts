@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  aiClientPermissionModes,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   managedConversationFileOperationResultSchema,
@@ -27,6 +28,67 @@ const claimSchema = z
 const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
+const personalAgentJobParamsSchema = z.object({ jobId: uuid }).strict();
+const personalAgentAttemptParamsSchema = z
+  .object({ jobId: uuid, attemptId: uuid })
+  .strict();
+const personalAgentJobListQuerySchema = z
+  .object({
+    conversationId: uuid,
+    limit: z.coerce.number().int().safe().min(1).max(100).optional(),
+    before: z.string().trim().min(1).max(512).optional()
+  })
+  .strict();
+const personalAgentAttemptsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().safe().min(1).max(100).optional(),
+    before: z.string().trim().min(1).max(512).optional()
+  })
+  .strict();
+const personalAgentAttributionSchema = z
+  .object({
+    kind: z.literal("agent"),
+    agentId: uuid,
+    agentVersion: z.number().int().safe().positive()
+  })
+  .strict();
+const createPersonalAgentAttemptSchema = z
+  .object({
+    attemptNumber: z.number().int().safe().positive(),
+    attribution: personalAgentAttributionSchema,
+    provider: z.string().trim().min(1).max(120).nullable(),
+    model: z.string().trim().min(1).max(240).nullable(),
+    aiClientInstanceId: z.string().trim().min(1).max(240).nullable(),
+    reasoningEffort: z.string().trim().min(1).max(120).nullable(),
+    permissionMode: z.enum(aiClientPermissionModes).nullable(),
+    managedExecutionId: uuid.nullable(),
+    managedExecutionGeneration: z.number().int().safe().positive().nullable(),
+    status: z.literal("running"),
+    outcome: z.null(),
+    startedAt: z.iso.datetime(),
+    completedAt: z.null()
+  })
+  .strict();
+const recordPersonalAgentOutputSchema = z
+  .object({
+    outputText: z
+      .string()
+      .max(65_536)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
+    outputReference: z
+      .object({ runtimeItemIds: z.array(uuid).min(1).max(256) })
+      .strict(),
+    eventId: z.string().trim().min(1).max(240).optional(),
+    observedAt: z.iso.datetime().optional()
+  })
+  .strict();
+const completePersonalAgentAttemptSchema = z
+  .object({
+    outcome: z.enum(["succeeded", "failed", "canceled", "interrupted"]),
+    eventId: z.string().trim().min(1).max(240).optional(),
+    observedAt: z.iso.datetime().optional()
+  })
+  .strict();
 const checkpointQuerySchema = z
   .object({
     executionGeneration: z.coerce.number().int().safe().positive()
@@ -154,10 +216,16 @@ const completeCommandSchema = z
   .object({
     leaseToken: uuid,
     result: z.record(z.string(), z.unknown()).optional(),
-    assistantOutput: z.object({
-      text: z.string().max(65_536).refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
-      truncated: z.boolean()
-    }).strict().optional()
+    assistantOutput: z
+      .object({
+        text: z
+          .string()
+          .max(65_536)
+          .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
+        truncated: z.boolean()
+      })
+      .strict()
+      .optional()
   })
   .strict();
 
@@ -695,6 +763,55 @@ const requireExecutionForRunner = async (
   return execution;
 };
 
+const requirePersonalAgentJobForRunner = async (
+  context: ApiRouteContext,
+  auth: RunnerAuth,
+  jobId: string
+) => {
+  const repository = context.requireRepository();
+  const actor = { userId: auth.userId };
+  const job = await repository.getPersonalAgentExecutionJob(actor, jobId);
+  if (!job) {
+    throw Object.assign(new Error("Personal Agent job not found"), {
+      statusCode: 404
+    });
+  }
+  const execution = await requireExecutionForRunner(
+    context,
+    auth,
+    job.conversationId
+  );
+  return { repository, actor, job, execution };
+};
+
+const requireCurrentPersonalAgentAttemptForRunner = async (
+  context: ApiRouteContext,
+  auth: RunnerAuth,
+  jobId: string,
+  attemptId: string
+) => {
+  const result = await requirePersonalAgentJobForRunner(context, auth, jobId);
+  const attempts = await result.repository.listPersonalAgentExecutionAttempts(
+    result.actor,
+    { jobId, limit: 100 }
+  );
+  const attempt = attempts.attempts.find((entry) => entry.id === attemptId);
+  if (
+    !attempt ||
+    (attempt.status === "running" &&
+      (result.job.lastAttemptId !== attemptId ||
+        attempt.managedExecutionId !== result.execution.id ||
+        attempt.managedExecutionGeneration !==
+          result.execution.executionGeneration))
+  ) {
+    throw Object.assign(
+      new Error("Personal Agent attempt is not current for this execution"),
+      { statusCode: 409 }
+    );
+  }
+  return { ...result, attempt };
+};
+
 const requireCommandForRunner = async (
   context: ApiRouteContext,
   auth: RunnerAuth,
@@ -1016,6 +1133,131 @@ export const registerManagedConversationRunnerRoutes = (
           limit: 500
         });
       return { executions };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/personal-agent/jobs",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const query = personalAgentJobListQuerySchema.parse(request.query);
+      await requireExecutionForRunner(context, auth, query.conversationId);
+      const page = await context
+        .requireRepository()
+        .listPersonalAgentExecutionJobs({ userId: auth.userId }, query);
+      return page;
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId } = personalAgentJobParamsSchema.parse(request.params);
+      const { job } = await requirePersonalAgentJobForRunner(
+        context,
+        auth,
+        jobId
+      );
+      return { job };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId } = personalAgentJobParamsSchema.parse(request.params);
+      const query = personalAgentAttemptsQuerySchema.parse(request.query);
+      const { repository, actor } = await requirePersonalAgentJobForRunner(
+        context,
+        auth,
+        jobId
+      );
+      return repository.listPersonalAgentExecutionAttempts(actor, {
+        jobId,
+        ...query
+      });
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId } = personalAgentJobParamsSchema.parse(request.params);
+      const input = createPersonalAgentAttemptSchema.parse(request.body);
+      const { repository, actor, execution } =
+        await requirePersonalAgentJobForRunner(context, auth, jobId);
+      if (
+        input.managedExecutionId !== execution.id ||
+        input.managedExecutionGeneration !== execution.executionGeneration
+      ) {
+        throw Object.assign(
+          new Error("Personal Agent attempt execution identity conflicted"),
+          { statusCode: 409 }
+        );
+      }
+      const attempt = await repository.createPersonalAgentExecutionAttempt(
+        actor,
+        { jobId, ...input }
+      );
+      return { attempt };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts/:attemptId/output",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId, attemptId } = personalAgentAttemptParamsSchema.parse(
+        request.params
+      );
+      const input = recordPersonalAgentOutputSchema.parse(request.body);
+      const { repository, actor } =
+        await requireCurrentPersonalAgentAttemptForRunner(
+          context,
+          auth,
+          jobId,
+          attemptId
+        );
+      const job = await repository.recordPersonalAgentTurnOutput({
+        actor,
+        jobId,
+        attemptId,
+        ...input
+      });
+      return { job };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/attempts/:attemptId/complete",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId, attemptId } = personalAgentAttemptParamsSchema.parse(
+        request.params
+      );
+      const input = completePersonalAgentAttemptSchema.parse(request.body);
+      const { repository, actor } =
+        await requireCurrentPersonalAgentAttemptForRunner(
+          context,
+          auth,
+          jobId,
+          attemptId
+        );
+      return repository.completePersonalAgentExecutionAttempt({
+        actor,
+        jobId,
+        attemptId,
+        ...input
+      });
     }
   );
 

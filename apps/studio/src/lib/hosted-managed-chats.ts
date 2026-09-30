@@ -168,8 +168,33 @@ export type HostedConversationState = {
   executionId: string;
   executionGeneration: number;
   executionState: string;
+  activeAgentId?: string | null;
+  participants?: Array<{
+    agentId: string;
+    name: string;
+    lifecycle: string;
+    currentVersion: number;
+  }>;
   messages: HostedConversationMessage[];
 };
+
+/** Use the owner-authorized active participant for future prompt attribution. */
+export function hostedActiveAgentAttribution(
+  state: HostedConversationState
+): { agentId: string; expectedAgentVersion: number } | null {
+  if (!state.activeAgentId) return null;
+  const participant = state.participants?.find(
+    (candidate) => candidate.agentId === state.activeAgentId
+  );
+  if (!participant || participant.lifecycle !== "active")
+    throw new HostedManagedChatError(
+      "The selected Agent is no longer active. Refresh this Conversation before continuing."
+    );
+  return {
+    agentId: participant.agentId,
+    expectedAgentVersion: participant.currentVersion
+  };
+}
 
 export type HostedConversationRecoveryLookup =
   | { found: false }
@@ -329,10 +354,12 @@ export type LocalRetainedWorkspace = {
 
 export class HostedManagedChatError extends Error {
   readonly status?: number;
+  readonly code?: string;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
     this.name = "HostedManagedChatError";
   }
 }
@@ -820,19 +847,24 @@ const requestJson = async (
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
+    const envelope =
+      record(payload) && record(payload.error) ? payload.error : null;
     const gatewayError =
       record(payload) && typeof payload.error === "string"
         ? payload.error
         : null;
     throw new HostedManagedChatError(
-      gatewayError === "retained_workspace_unavailable"
-        ? "This retained workspace is no longer available on this computer."
-        : gatewayError
-          ? gatewayError
-          : response.status === 401 || response.status === 403
-            ? "Your Koed session is no longer authorized. Sign in again."
-            : "The Conversation request failed. Retry to connect.",
-      response.status
+      envelope && typeof envelope.message === "string"
+        ? envelope.message
+        : gatewayError === "retained_workspace_unavailable"
+          ? "This retained workspace is no longer available on this computer."
+          : gatewayError
+            ? gatewayError
+            : response.status === 401 || response.status === 403
+              ? "Your Koed session is no longer authorized. Sign in again."
+              : "The Conversation request failed. Retry to connect.",
+      response.status,
+      envelope && typeof envelope.code === "string" ? envelope.code : undefined
     );
   }
   if (!record(payload))
@@ -931,10 +963,34 @@ export function parseHostedConversationState(
       }
     ];
   });
+  const participants = Array.isArray(payload.participants)
+    ? payload.participants.flatMap((value) =>
+        record(value) &&
+        typeof value.agentId === "string" &&
+        typeof value.name === "string" &&
+        typeof value.lifecycle === "string" &&
+        Number.isSafeInteger(value.currentVersion)
+          ? [
+              {
+                agentId: value.agentId,
+                name: value.name,
+                lifecycle: value.lifecycle,
+                currentVersion: Number(value.currentVersion)
+              }
+            ]
+          : []
+      )
+    : [];
+  const activeAgentId =
+    typeof payload.activeAgentId === "string" || payload.activeAgentId === null
+      ? payload.activeAgentId
+      : null;
   return {
     executionId: expectedExecutionId,
     executionGeneration: expectedGeneration,
     executionState: payload.executionState,
+    activeAgentId,
+    participants,
     messages
   };
 }
@@ -1060,6 +1116,9 @@ export async function startHostedManagedConversation(
     idempotencyKey: string;
     initialPrompt?: string;
     initialPromptClientUserMessageId?: string;
+    continueWithoutMemory?: true;
+    agentId?: string;
+    expectedAgentVersion?: number;
   },
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch
@@ -1077,7 +1136,20 @@ export async function startHostedManagedConversation(
     );
   const payload = await requestJson(
     "/v1/managed-conversations",
-    { body: { ...input, runnerKind: "local_device" }, signal },
+    {
+      body: {
+        ...input,
+        runnerKind: "local_device",
+        ...(input.agentId
+          ? {
+              agentId: input.agentId,
+              expectedAgentVersion: input.expectedAgentVersion
+            }
+          : {}),
+        ...(input.continueWithoutMemory ? { continueWithoutMemory: true } : {})
+      },
+      signal
+    },
     fetcher
   );
   const execution = projectExecution(payload.execution);
@@ -1319,9 +1391,15 @@ export async function respondToHostedRuntimeItem(
 export async function queueHostedConversationPrompt(
   execution: Pick<AgentExecution, "id" | "executionGeneration">,
   prompt: string,
-  ids: { idempotencyKey: string; clientUserMessageId: string },
+  ids: {
+    idempotencyKey: string;
+    clientUserMessageId: string;
+    agentId?: string;
+    expectedAgentVersion?: number;
+  },
   signal?: AbortSignal,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = fetch,
+  options: { continueWithoutMemory?: true } = {}
 ): Promise<{ commandId: string; state: string }> {
   assertExecutionId(execution.id);
   const payload = await requestJson(
@@ -1332,7 +1410,16 @@ export async function queueHostedConversationPrompt(
         executionGeneration: execution.executionGeneration,
         idempotencyKey: ids.idempotencyKey,
         clientUserMessageId: ids.clientUserMessageId,
-        prompt
+        prompt,
+        ...(ids.agentId
+          ? {
+              agentId: ids.agentId,
+              expectedAgentVersion: ids.expectedAgentVersion
+            }
+          : {}),
+        ...(options.continueWithoutMemory
+          ? { continueWithoutMemory: true }
+          : {})
       }
     },
     fetcher

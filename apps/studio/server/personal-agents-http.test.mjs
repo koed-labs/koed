@@ -79,6 +79,44 @@ test("does not expose backend error details", async () => {
   assert.equal(result.status, 503);
   assert.ok(!JSON.stringify(result).includes("secret"));
 });
+
+test("preserves the bounded managed Memory recall error contract", async () => {
+  const request = Readable.from([Buffer.from('{"prompt":"goal"}')]);
+  request.method = "POST";
+  request.headers = { "content-type": "application/json" };
+  let result;
+  await handlePersonalAgents({
+    request,
+    url: new URL(
+      "http://localhost/studio-api/managed-conversations/11111111-1111-4111-8111-111111111111/prompts"
+    ),
+    validCsrf: () => true,
+    resolveToken: async () => "secret",
+    apiBase: "http://127.0.0.1:43300",
+    routeFamily: "managed-conversations",
+    fetchImpl: async () =>
+      Response.json(
+        {
+          error: {
+            code: "MEMORY_RECALL_UNAVAILABLE",
+            message:
+              "Memory could not be checked. Retry or continue without Memory."
+          }
+        },
+        { status: 503 }
+      ),
+    send: (status, body) => {
+      result = { status, body };
+    }
+  });
+  assert.equal(result.status, 503);
+  assert.deepEqual(result.body, {
+    error: {
+      code: "MEMORY_RECALL_UNAVAILABLE",
+      message: "Memory could not be checked. Retry or continue without Memory."
+    }
+  });
+});
 test("preserves conflict status so stale edits cannot masquerade as saved", async () => {
   assert.equal(
     (
@@ -92,14 +130,22 @@ test("preserves conflict status so stale edits cannot masquerade as saved", asyn
 
 test("maps only the bounded Agent name conflict without leaking backend details", async () => {
   const named = await call({
-    fetchImpl: async () => Response.json({ code: "name_conflict", error: "private details" }, { status: 409 })
+    fetchImpl: async () =>
+      Response.json(
+        { code: "name_conflict", error: "private details" },
+        { status: 409 }
+      )
   });
   assert.equal(named.status, 409);
   assert.equal(named.body.code, "name_conflict");
   assert.match(named.body.error, /Choose another name/);
   assert.equal(JSON.stringify(named).includes("private details"), false);
   const other = await call({
-    fetchImpl: async () => Response.json({ code: "stale_version", error: "private details" }, { status: 409 })
+    fetchImpl: async () =>
+      Response.json(
+        { code: "stale_version", error: "private details" },
+        { status: 409 }
+      )
   });
   assert.equal(other.status, 409);
   assert.equal(other.body.code, undefined);
@@ -164,7 +210,10 @@ test("uses paired local access for each route family and never falls back after 
 test("forwards only an authenticated, CSRF-checked Agent restore", async () => {
   const id = "11111111-1111-4111-8111-111111111111";
   const path = `http://localhost/studio-api/personal-agents/${id}/restore`;
-  const payload = { requestId: "22222222-2222-4222-8222-222222222222", expectedVersion: 2 };
+  const payload = {
+    requestId: "22222222-2222-4222-8222-222222222222",
+    expectedVersion: 2
+  };
   const makeRequest = (method) => {
     const request = Readable.from([Buffer.from(JSON.stringify(payload))]);
     request.method = method;
@@ -184,17 +233,27 @@ test("forwards only an authenticated, CSRF-checked Agent restore", async () => {
   });
   assert.equal(result.status, 200);
   assert.equal(result.body.agent.id, id);
-  assert.equal((await call({
-    request: makeRequest("GET"),
-    url: new URL(path),
-    fetchImpl: () => assert.fail("restore must be POST only")
-  })).status, 405);
-  assert.equal((await call({
-    request: makeRequest("POST"),
-    url: new URL(path),
-    validCsrf: () => false,
-    fetchImpl: () => assert.fail("restore requires CSRF")
-  })).status, 403);
+  assert.equal(
+    (
+      await call({
+        request: makeRequest("GET"),
+        url: new URL(path),
+        fetchImpl: () => assert.fail("restore must be POST only")
+      })
+    ).status,
+    405
+  );
+  assert.equal(
+    (
+      await call({
+        request: makeRequest("POST"),
+        url: new URL(path),
+        validCsrf: () => false,
+        fetchImpl: () => assert.fail("restore requires CSRF")
+      })
+    ).status,
+    403
+  );
 });
 
 test("role template catalogue is a read-only authenticated API proxy", async () => {
@@ -260,7 +319,9 @@ test("managed transport allows only scoped conversation actions", async () => {
     }
   });
   assert.equal(result.status, 202);
-  const cancelRequest = Readable.from([Buffer.from('{"executionGeneration":1}')]);
+  const cancelRequest = Readable.from([
+    Buffer.from('{"executionGeneration":1}')
+  ]);
   cancelRequest.method = "POST";
   cancelRequest.headers = { "content-type": "application/json" };
   const canceled = await call({
@@ -268,11 +329,16 @@ test("managed transport allows only scoped conversation actions", async () => {
     routeFamily: "managed-conversations",
     url: new URL(`${base}/${id}/prompts/${commandId}/cancel`),
     fetchImpl: async (url, init) => {
-      assert.equal(url.pathname, `/v1/managed-conversations/${id}/prompts/${commandId}/cancel`);
+      assert.equal(
+        url.pathname,
+        `/v1/managed-conversations/${id}/prompts/${commandId}/cancel`
+      );
       assert.equal(init.method, "POST");
       assert.equal(init.body, '{"executionGeneration":1}');
       assert.equal(init.headers.authorization, "Bearer secret");
-      return Response.json({ command: { id: commandId, state: "canceled", canceled: true } });
+      return Response.json({
+        command: { id: commandId, state: "canceled", canceled: true }
+      });
     }
   });
   assert.equal(canceled.status, 200);
@@ -280,13 +346,15 @@ test("managed transport allows only scoped conversation actions", async () => {
   csrfRequest.method = "POST";
   csrfRequest.headers = { "content-type": "application/json" };
   assert.equal(
-    (await call({
-      request: csrfRequest,
-      routeFamily: "managed-conversations",
-      url: new URL(`${base}/${id}/prompts/${commandId}/cancel`),
-      validCsrf: () => false,
-      fetchImpl: () => assert.fail("CSRF must be required before cancel")
-    })).status,
+    (
+      await call({
+        request: csrfRequest,
+        routeFamily: "managed-conversations",
+        url: new URL(`${base}/${id}/prompts/${commandId}/cancel`),
+        validCsrf: () => false,
+        fetchImpl: () => assert.fail("CSRF must be required before cancel")
+      })
+    ).status,
     403
   );
   for (const path of ["/runner/commands", `/${id}/terminals`, `/${id}/files`]) {
@@ -315,7 +383,8 @@ test("managed transport allows only scoped conversation actions", async () => {
 });
 
 test("managed recovery lookup forwards only exact read-only identities", async () => {
-  const base = "http://localhost/studio-api/managed-conversations/recovery/lookup";
+  const base =
+    "http://localhost/studio-api/managed-conversations/recovery/lookup";
   const key = "send-key";
   const id = "11111111-1111-4111-8111-111111111111";
   const messageId = "22222222-2222-4222-8222-222222222222";
@@ -346,12 +415,17 @@ test("managed recovery lookup forwards only exact read-only identities", async (
   const write = Readable.from([Buffer.from("{}")]);
   write.method = "POST";
   write.headers = { "content-type": "application/json" };
-  assert.equal((await call({
-    request: write,
-    routeFamily: "managed-conversations",
-    url: new URL(`${base}?kind=start&idempotencyKey=${key}`),
-    fetchImpl: () => assert.fail("lookup must be read only")
-  })).status, 405);
+  assert.equal(
+    (
+      await call({
+        request: write,
+        routeFamily: "managed-conversations",
+        url: new URL(`${base}?kind=start&idempotencyKey=${key}`),
+        fetchImpl: () => assert.fail("lookup must be read only")
+      })
+    ).status,
+    405
+  );
 });
 
 test("managed transport forwards scoped Project Move status and cancellation", async () => {
@@ -365,16 +439,23 @@ test("managed transport forwards scoped Project Move status and cancellation", a
   ]) {
     const request = Readable.from(method === "GET" ? [] : [Buffer.from("{}")]);
     request.method = method;
-    request.headers = method === "GET" ? {} : { "content-type": "application/json" };
+    request.headers =
+      method === "GET" ? {} : { "content-type": "application/json" };
     const result = await call({
       request,
       routeFamily: "managed-conversations",
       url: new URL(base + suffix),
       fetchImpl: async (url, init) => {
-        assert.equal(url.pathname, `/v1/managed-conversations/${id}/project-moves${suffix}`);
+        assert.equal(
+          url.pathname,
+          `/v1/managed-conversations/${id}/project-moves${suffix}`
+        );
         assert.equal(init.method, method);
         assert.equal(init.headers.authorization, "Bearer secret");
-        return Response.json({ move: null }, { status: method === "GET" ? 200 : 202 });
+        return Response.json(
+          { move: null },
+          { status: method === "GET" ? 200 : 202 }
+        );
       }
     });
     assert.equal(result.status, method === "GET" ? 200 : 202);

@@ -21,11 +21,8 @@ export const AGENT_EFFORTS = [
   "Max"
 ] as const;
 
-// Token budget replaces the old "workday" idea. It's not how long an agent
-// works, it's how much it's allowed to spend doing it - and it's set per
-// deployment (below), not on the agent's identity, because the same agent
-// can reasonably get a bigger budget on the project that matters most this
-// week and a smaller one everywhere else.
+// Retained for compatibility with existing prototype engagement records.
+// Studio does not present this value as a runtime limit.
 export const TOKEN_BUDGETS = [
   "trial",
   "standard",
@@ -35,13 +32,6 @@ export const TOKEN_BUDGETS = [
 
 export type TokenBudget = (typeof TOKEN_BUDGETS)[number];
 export type AgentStatus = "idle" | "running" | "waiting";
-
-export const TOKEN_BUDGET_LABEL: Record<TokenBudget, string> = {
-  trial: "50K tokens / day",
-  standard: "250K tokens / day",
-  extended: "1M tokens / day",
-  unlimited: "No daily cap"
-};
 
 // A Channel belongs to a team. It may additionally be tied to one of that
 // team's projects (a "project channel" - one per project, per team it's
@@ -182,8 +172,8 @@ export type AgentAvatar = {
 // An AgentDefinition is the reusable, personally-owned agent identity: its
 // name, personality and avatar. It is created once on the Personal side and
 // does not belong to any project. Deliberately NOT here: which model runs
-// it, how hard it's pushed, or its token budget - those are properties of
-// each deployment below, not of who the agent is.
+// it or how hard it's pushed - those are properties of each deployment below,
+// not of who the agent is.
 export type AgentDefinition = {
   id: string;
   ownerId: string;
@@ -196,10 +186,9 @@ export type AgentDefinition = {
 
 // A ProjectAgent is one definition unleashed into one project: the
 // per-engagement state (status, current focus) AND the per-engagement
-// runtime configuration (model, effort, token budget). The same definition
-// can have many ProjectAgent rows across many projects at once, each free to
-// run a different model at a different budget - "Bob" can be Codex Astra at
-// Medium effort on one project and Sonnet 5 at High effort on another.
+// runtime configuration (model and effort). The same definition can have many
+// ProjectAgent rows across many projects at once, each with its own runtime
+// settings.
 export type ProjectAgent = {
   id: string;
   definitionId: string;
@@ -215,7 +204,7 @@ export type ProjectAgent = {
 
 // A ProjectAgent merged with its AgentDefinition, for anywhere the UI needs
 // to display an agent (name, avatar, role, ...) without looking up both.
-// model/effort/tokenBudget already live on ProjectAgent itself, so only the
+// model/effort already live on ProjectAgent itself, so only the
 // identity fields need merging in.
 export type ResolvedAgent = ProjectAgent & {
   name: string;
@@ -300,15 +289,12 @@ Your owner refers to you as ${name}. Answer to that name in memory and in any wo
 // The live half of soul.md: this project's context, pulled from that
 // project's own memory, plus this deployment's own runtime configuration.
 // Regenerate this on every visit rather than caching it, so neither the
-// memory briefing nor the runtime line ever goes stale — and so the same
-// agent can honestly show a different model/effort/budget on every project
-// it's unleashed into.
+// memory briefing nor the runtime line ever goes stale.
 export function generateProjectContextBrief(input: {
   name: string;
   projectName: string;
   model: string;
   effort: string;
-  tokenBudget: TokenBudget;
 }) {
   const name = input.name.trim() || "This agent";
   return `## Working in: ${input.projectName}
@@ -318,7 +304,6 @@ ${name} is drawing on ${input.projectName}'s shared memory here: channels, revie
 ## Running here
 - Model: ${input.model}
 - Effort: ${input.effort}
-- Token budget: ${TOKEN_BUDGET_LABEL[input.tokenBudget]}
 `;
 }
 

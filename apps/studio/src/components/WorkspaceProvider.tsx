@@ -912,7 +912,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   // Put an existing agent definition to work in a project. This is what
   // "unleash" means now - the agent's identity already exists, this just
-  // creates its engagement here, with its own model/effort/token budget.
+  // creates its engagement here, with its own model and effort settings.
   // The same definition can be unleashed elsewhere with completely
   // different runtime settings - that's the whole point.
   const unleashAgent = useCallback(

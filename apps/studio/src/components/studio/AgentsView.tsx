@@ -40,6 +40,8 @@ type AgentsViewProps = Readonly<{
   api?: PersonalAgentsApi;
   onHome?: () => void;
   onNewChat?: () => void;
+  onGiveAJob?: (agent: PersonalAgent) => void;
+  onOpenConversation?: (conversationId: string) => void;
   onPullRequests?: () => void;
   onPlugins?: () => void;
 }>;
@@ -120,6 +122,8 @@ export function AgentsView({
   api = personalAgentsHttpAdapter,
   onHome,
   onNewChat,
+  onGiveAJob,
+  onOpenConversation,
   onPullRequests,
   onPlugins
 }: AgentsViewProps) {
@@ -147,6 +151,7 @@ export function AgentsView({
   const [retireError, setRetireError] = useState<string | null>(null);
   const [retiring, setRetiring] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [clockNow, setClockNow] = useState(() => Date.now());
   const detailSequenceRef = useRef(0);
   const agentCardRefs = useRef(new Map<string, HTMLButtonElement>());
   const mutationRequestRef = useRef<{ key: string; id: string } | null>(null);
@@ -160,6 +165,13 @@ export function AgentsView({
     selectedDetailForSelection ??
     agents.find((agent) => agent.id === selectedId) ??
     null;
+
+  useEffect(() => {
+    if (!selected?.jobs.some((job) => job.state === "running" && job.startedAt))
+      return;
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [selected?.id, selected?.jobs]);
 
   const closeDetail = useCallback(() => {
     const previousId = selectedId;
@@ -569,6 +581,9 @@ export function AgentsView({
             error={detailError}
             onClose={closeDetail}
             onEdit={() => setModal({ type: "edit", agent: selected })}
+            onGiveAJob={() => onGiveAJob?.(selected)}
+            onOpenConversation={onOpenConversation}
+            clockNow={clockNow}
             onRetire={() => setRetireTarget(selected)}
             onClone={() => void cloneAgent(selected)}
             onRestore={() => void restoreAgent(selected)}
@@ -659,6 +674,9 @@ function AgentDetailPanel({
   loading,
   error,
   onClose,
+  onGiveAJob,
+  onOpenConversation,
+  clockNow,
   onEdit,
   onRetire,
   onClone,
@@ -671,6 +689,9 @@ function AgentDetailPanel({
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  onGiveAJob?: () => void;
+  onOpenConversation?: (conversationId: string) => void;
+  clockNow: number;
   onEdit: () => void;
   onRetire: () => void;
   onClone: () => void;
@@ -827,6 +848,20 @@ function AgentDetailPanel({
         </div>
       </div>
 
+      {agent.lifecycle === "active" && onGiveAJob && (
+        <div className="mt-4 px-5">
+          <button
+            type="button"
+            onClick={onGiveAJob}
+            disabled={loading}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Sparkles className="h-4 w-4" />
+            Give a job
+          </button>
+        </div>
+      )}
+
       {lifecycleError && (
         <p role="alert" className="mt-3 px-5 text-xs text-danger">
           {lifecycleError}
@@ -954,7 +989,13 @@ function AgentDetailPanel({
             ) : (
               <div className="mt-2 space-y-2">
                 {agent.runningNow.map((job) => (
-                  <JobCard key={job.id} job={job} />
+                  <JobCard
+                    key={job.id}
+                    job={job}
+                    detailed
+                    now={clockNow}
+                    onOpenConversation={onOpenConversation}
+                  />
                 ))}
               </div>
             )}
@@ -1018,7 +1059,13 @@ function AgentDetailPanel({
             ) : (
               <div className="mt-2 max-h-80 space-y-2 overflow-y-auto pr-1">
                 {agent.jobs.map((job) => (
-                  <JobCard key={job.id} job={job} detailed />
+                  <JobCard
+                    key={job.id}
+                    job={job}
+                    detailed
+                    now={clockNow}
+                    onOpenConversation={onOpenConversation}
+                  />
                 ))}
               </div>
             )}
@@ -1053,10 +1100,14 @@ function AgentDetailPanel({
 
 function JobCard({
   job,
-  detailed = false
+  detailed = false,
+  now,
+  onOpenConversation
 }: {
   job: PersonalAgentJob;
   detailed?: boolean;
+  now: number;
+  onOpenConversation?: (conversationId: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-border bg-surface p-3">
@@ -1087,6 +1138,34 @@ function JobCard({
       {detailed && job.summary && (
         <p className="mt-2 text-xs text-foreground-secondary">{job.summary}</p>
       )}
+      {detailed && job.goal && (
+        <div className="mt-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-subtle">
+            Job goal
+          </p>
+          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground-secondary">
+            {job.goal}
+          </p>
+        </div>
+      )}
+      {detailed && job.state === "running" && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-subtle">
+            {job.startedAt
+              ? `Elapsed ${elapsedLabel(job.startedAt, now)}`
+              : "Elapsed time unavailable"}
+          </p>
+          {job.conversationId && onOpenConversation ? (
+            <button
+              type="button"
+              onClick={() => onOpenConversation(job.conversationId!)}
+              className="text-[11px] font-medium text-accent underline underline-offset-2"
+            >
+              Open running Conversation
+            </button>
+          ) : null}
+        </div>
+      )}
       {job.attempts.length > 0 && (
         <details className="mt-3 border-t border-border pt-2">
           <summary className="cursor-pointer text-[11px] font-medium text-subtle hover:text-foreground-secondary">
@@ -1115,6 +1194,16 @@ function JobCard({
       )}
     </div>
   );
+}
+
+function elapsedLabel(startedAt: number, now: number): string {
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+  const hours = Math.floor(elapsedSeconds / 3_600);
+  const minutes = Math.floor((elapsedSeconds % 3_600) / 60);
+  const seconds = elapsedSeconds % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
 }
 
 function StatTile({ label, value }: { label: string; value: number | string }) {

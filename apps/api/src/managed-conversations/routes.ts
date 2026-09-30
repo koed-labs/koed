@@ -55,6 +55,23 @@ const isLoopbackRequest = (request: FastifyRequest): boolean =>
   );
 const maximumTerminalTransportQueueBytes = 1024 * 1024;
 const terminalReauthorizationIntervalMs = 15_000;
+const memoryRecallUnavailableResponse = (reply: {
+  status(code: number): { send(payload: unknown): unknown };
+}) =>
+  reply.status(503).send({
+    error: {
+      code: "MEMORY_RECALL_UNAVAILABLE",
+      message: "Memory could not be checked. Retry or continue without Memory."
+    }
+  });
+const isMemoryRecallUnavailable = (error: unknown): boolean =>
+  Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "MEMORY_RECALL_UNAVAILABLE"
+  );
+
 const idempotencyKeySchema = z
   .string()
   .trim()
@@ -103,9 +120,27 @@ const browserStartSchema = startSchema
     contextKind: z.enum(["project", "independent"]).default("project"),
     targetDeviceId: z.string().trim().min(1).max(128),
     initialPrompt: z.string().trim().min(1).max(256_000).optional(),
-    initialPromptClientUserMessageId: z.string().uuid().optional()
+    initialPromptClientUserMessageId: z.string().uuid().optional(),
+    agentId: z.uuid().optional(),
+    expectedAgentVersion: z.number().int().positive().optional(),
+    continueWithoutMemory: z.literal(true).optional()
   })
   .strict()
+  .refine(
+    (input) =>
+      (input.agentId === undefined) ===
+        (input.expectedAgentVersion === undefined) &&
+      (input.agentId === undefined ||
+        Boolean(
+          input.initialPrompt?.trim() && input.initialPromptClientUserMessageId
+        )) &&
+      (input.continueWithoutMemory === undefined ||
+        Boolean(input.agentId && input.initialPrompt?.trim())),
+    {
+      message:
+        "Initial Personal Agent context requires an initial prompt, message ID, and immutable version"
+    }
+  )
   .refine(
     (input) =>
       input.contextKind === "independent"
@@ -280,9 +315,15 @@ const promptSchema = z
     terminalContextReferences: z
       .array(z.string().regex(/^mtc1_[A-Za-z0-9_-]{43}$/))
       .max(8)
-      .optional()
+      .optional(),
+    continueWithoutMemory: z.literal(true).optional()
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      input.continueWithoutMemory === undefined || input.agentId !== undefined,
+    { message: "Continue without Memory is available for Personal Agent Jobs" }
+  );
 
 const fileOperationSchema = z
   .object({
@@ -2198,14 +2239,46 @@ export const registerManagedConversationRoutes = (
             );
           }
         }
-        const initialPersonalMemoryContext = input.initialPrompt?.trim()
-          ? await buildPersonalMemoryTurnContext({
-              repository,
-              ownerUserId: user.id,
-              projectId: input.projectId,
-              prompt: input.initialPrompt
-            })
-          : undefined;
+        let initialAgentContext: Awaited<
+          ReturnType<typeof buildPersonalAgentTurnContext>
+        > | null = null;
+        let initialPersonalMemoryContext: PersonalMemoryTurnContext | undefined;
+        if (input.initialPrompt?.trim()) {
+          try {
+            if (input.agentId) {
+              initialAgentContext = await buildPersonalAgentTurnContext({
+                repository,
+                ownerUserId: user.id,
+                agentId: input.agentId,
+                expectedAgentVersion: input.expectedAgentVersion,
+                projectId: input.projectId,
+                prompt: input.initialPrompt,
+                fetchFn: context.internalServices?.fetch,
+                continueWithoutMemory: input.continueWithoutMemory
+              });
+              initialPersonalMemoryContext = initialAgentContext.memoryContext;
+            } else {
+              initialPersonalMemoryContext =
+                await buildPersonalMemoryTurnContext({
+                  repository,
+                  ownerUserId: user.id,
+                  projectId: input.projectId,
+                  prompt: input.initialPrompt
+                });
+            }
+          } catch (error) {
+            if (isMemoryRecallUnavailable(error)) {
+              return memoryRecallUnavailableResponse(reply);
+            }
+            throw error;
+          }
+          if (
+            input.agentId &&
+            initialPersonalMemoryContext.status === "unavailable"
+          ) {
+            return memoryRecallUnavailableResponse(reply);
+          }
+        }
         const created = await repository.createManagedConversation(
           { userId: user.id },
           {
@@ -2225,6 +2298,14 @@ export const registerManagedConversationRoutes = (
               input.initialPromptClientUserMessageId,
             ...(initialPersonalMemoryContext
               ? { initialPersonalMemoryContext }
+              : {}),
+            ...(initialAgentContext
+              ? {
+                  initialAgentId: initialAgentContext.context.identity.agentId,
+                  initialExpectedAgentVersion:
+                    initialAgentContext.expectedAgentVersion,
+                  initialPersonalAgentContext: initialAgentContext.context
+                }
               : {}),
             deferUntilRuntimeBinding: true
           }
@@ -2874,24 +2955,40 @@ export const registerManagedConversationRoutes = (
           ...input.settingsChange.next
         });
       }
-      const agentContext = input.agentId
-        ? await buildPersonalAgentTurnContext({
+      let agentContext: Awaited<
+        ReturnType<typeof buildPersonalAgentTurnContext>
+      > | null;
+      let personalMemoryContext: PersonalMemoryTurnContext;
+      try {
+        agentContext = input.agentId
+          ? await buildPersonalAgentTurnContext({
+              repository,
+              ownerUserId: user.id,
+              agentId: input.agentId,
+              expectedAgentVersion: input.expectedAgentVersion,
+              projectId: execution.projectId,
+              prompt: input.prompt,
+              fetchFn: context.internalServices?.fetch,
+              continueWithoutMemory: input.continueWithoutMemory
+            })
+          : null;
+        personalMemoryContext =
+          agentContext?.memoryContext ??
+          (await buildPersonalMemoryTurnContext({
             repository,
             ownerUserId: user.id,
-            agentId: input.agentId,
-            expectedAgentVersion: input.expectedAgentVersion,
-            projectId: execution.projectId,
+            projectId: execution.projectId ?? null,
             prompt: input.prompt
-          })
-        : null;
-      const personalMemoryContext =
-        agentContext?.memoryContext ??
-        (await buildPersonalMemoryTurnContext({
-          repository,
-          ownerUserId: user.id,
-          projectId: execution.projectId ?? null,
-          prompt: input.prompt
-        }));
+          }));
+      } catch (error) {
+        if (isMemoryRecallUnavailable(error)) {
+          return memoryRecallUnavailableResponse(reply);
+        }
+        throw error;
+      }
+      if (input.agentId && personalMemoryContext.status === "unavailable") {
+        return memoryRecallUnavailableResponse(reply);
+      }
       const terminalContexts = (input.terminalContextReferences ?? []).map(
         (contextReference) =>
           context.managedConversations.terminalRuntime.resolveContext({
@@ -3718,8 +3815,11 @@ export const registerManagedConversationRoutes = (
         providerItemId?: string | null;
         memory?: {
           used: boolean;
-          status: "available" | "unavailable";
-          citations: Array<{ label: string }>;
+          status: "available" | "unavailable" | "skipped";
+          citations: Array<{
+            label: string;
+            visibility: "personal" | "team";
+          }>;
         };
         author?: {
           agentId: string;
@@ -3772,6 +3872,52 @@ export const registerManagedConversationRoutes = (
           return date ? `${name} · ${date}` : name;
         };
         try {
+          if (evidence.visibility === "team") {
+            const teamWorkspaceId = evidence.teamWorkspaceId;
+            if (!teamWorkspaceId) return ["Source no longer available"];
+            const workspace = await repository.getTeamWorkspaceContext(
+              actor,
+              teamWorkspaceId
+            );
+            if (!workspace?.access.canRecall) {
+              return ["Source no longer available"];
+            }
+            const authorizationBoundary =
+              await repository.freezeSharedMemorySemanticRecallBoundary(actor, {
+                teamWorkspaceId,
+                maximumGrantCount: 128
+              });
+            const expanded =
+              await repository.expandAuthorizedSharedMemorySemanticItem(actor, {
+                teamWorkspaceId,
+                candidateId: evidence.nodeId,
+                searchDomain: "global",
+                authorizationBoundary
+              });
+            if (!expanded) return ["Source no longer available"];
+            const teamName = workspace.teamWorkspace.name.trim();
+            const safeTeamName =
+              teamName.length > 0 &&
+              teamName.length <= 160 &&
+              !/[\\/]/u.test(teamName) &&
+              !/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu.test(
+                teamName
+              )
+                ? teamName
+                : "Team";
+            const date =
+              expanded.parent.occurredAt &&
+              Number.isFinite(Date.parse(expanded.parent.occurredAt))
+                ? new Date(expanded.parent.occurredAt)
+                    .toISOString()
+                    .slice(0, 10)
+                : null;
+            return [
+              date
+                ? `${safeTeamName} · Team-shared Memory · ${date}`
+                : `${safeTeamName} · Team-shared Memory`
+            ];
+          }
           if (
             evidence.sourceType === "memory_event" ||
             evidence.sourceType === "message"
@@ -3836,8 +3982,12 @@ export const registerManagedConversationRoutes = (
         const context = personalMemoryTurnContextSchema.safeParse(contextValue);
         if (!context.success) return undefined;
         const memoryContext = context.data;
-        if (memoryContext.status === "unavailable") {
-          return { used: false, status: "unavailable" as const, citations: [] };
+        if (memoryContext.status !== "available") {
+          return {
+            used: false,
+            status: memoryContext.status,
+            citations: []
+          };
         }
         const parsed = parsePersonalMemoryAttributionFooter(output, {
           commandId,
@@ -3856,13 +4006,25 @@ export const registerManagedConversationRoutes = (
         const selected = parsed.attribution.citationNodeIds
           .map((nodeId) => authorized.get(nodeId))
           .filter((item): item is NonNullable<typeof item> => Boolean(item));
-        const labels = (
-          await Promise.all(selected.map(displayMemorySource))
-        ).flat();
+        const labelEntries = await Promise.all(
+          selected.map(async (item) => ({
+            visibility: item.visibility,
+            labels: await displayMemorySource(item)
+          }))
+        );
         return {
           used: true,
           status: "available" as const,
-          citations: [...new Set(labels)].map((label) => ({ label }))
+          citations: [
+            ...new Map(
+              labelEntries.flatMap(({ visibility, labels }) =>
+                labels.map((label) => [
+                  `${visibility}:${label}`,
+                  { label, visibility }
+                ])
+              )
+            ).values()
+          ]
         };
       };
       for (const job of jobsPage.jobs) {

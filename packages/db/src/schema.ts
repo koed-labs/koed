@@ -4459,6 +4459,8 @@ export const personalAgentExecutionJobs = pgTable(
     state: text("state").notNull().default("queued"),
     idempotencyKey: text("idempotency_key"),
     commandId: uuid("command_id"),
+    // Neutral marker only: user goal-derived titles are read from the
+    // encrypted command payload for the authorized owner.
     title: text("title").notNull().default("Agent task"),
     projectId: text("project_id"),
     outputReference: jsonb("output_reference"),

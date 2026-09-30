@@ -469,6 +469,14 @@ export const assertUpstreamOperationPathAllowed = (
       pathname === "/v1/managed-conversation-runner/commands/claim-controls" ||
       pathname === "/v1/managed-conversation-runner/runtime-items" ||
       pathname === "/v1/managed-conversation-runner/wake" ||
+      (method === "GET" &&
+        /^\/v1\/managed-conversation-runner\/personal-agent\/jobs(?:\/[^/]+(?:\/attempts)?)?$/.test(
+          pathname
+        )) ||
+      (method === "POST" &&
+        /^\/v1\/managed-conversation-runner\/personal-agent\/jobs\/[^/]+\/attempts(?:\/[^/]+\/(?:output|complete))?$/.test(
+          pathname
+        )) ||
       pathname === "/v1/managed-conversations" ||
       (method === "GET" &&
         pathname === "/v1/managed-conversations/recovery/lookup") ||

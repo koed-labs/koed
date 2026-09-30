@@ -73,6 +73,42 @@ describe("managed Personal Memory prompt formatting", () => {
     expect(unavailable).toContain("always set used=false");
   });
 
+  it("records an explicit one-request skip without inviting Memory claims", () => {
+    const skipped = formatPersonalMemoryManagedPrompt(
+      "Question",
+      memoryContext([], "skipped"),
+      commandId
+    );
+
+    expect(skipped).toContain("explicitly chose Continue without Memory");
+    expect(skipped).toContain("Memory was not checked");
+    expect(skipped).toContain("always set used=false");
+  });
+
+  it("marks Team-shared evidence as distinct authorized evidence", () => {
+    const prompt = formatPersonalMemoryManagedPrompt(
+      "Question",
+      memoryContext([
+        {
+          nodeId: "team-node",
+          sourceType: "memory_node",
+          sourceId: "opaque-team-source",
+          summaryText: "A shared decision.",
+          visibility: "team",
+          teamWorkspaceId: "33333333-3333-4333-8333-333333333333",
+          citation: { nodeId: "team-node", visibility: "team" }
+        }
+      ]),
+      commandId
+    );
+
+    expect(prompt).toContain("Personal or Team visibility");
+    expect(prompt).toContain('"visibility":"team"');
+    expect(prompt).toContain(
+      '"teamWorkspaceId":"33333333-3333-4333-8333-333333333333"'
+    );
+  });
+
   it("keeps legacy named-agent evidence when replaying an older queued turn", () => {
     const prompt = formatPersonalAgentManagedPrompt("Question", {
       ...agentContext,

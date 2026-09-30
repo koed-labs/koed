@@ -11,10 +11,9 @@ const HOSTED_BASE_PATH = "/v1/personal-agents";
 const MAX_AVATAR_JSON_LENGTH = 2_048;
 
 function isHostedStudio(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    window.location.pathname.startsWith("/studio/")
-  );
+  if (typeof window === "undefined") return false;
+  const pathname = window.location.pathname;
+  return pathname === "/studio" || pathname.startsWith("/studio/");
 }
 
 export type PersonalAgentLifecycle = "active" | "retired";
@@ -45,6 +44,8 @@ export type PersonalAgentAttempt = Readonly<{
 export type PersonalAgentJob = Readonly<{
   id: string;
   title: string;
+  goal?: string | null;
+  conversationId?: string | null;
   agentName?: string | null;
   agentVersion?: number | null;
   projectId?: string | null;
@@ -277,6 +278,8 @@ function parseJob(value: unknown): PersonalAgentJob {
   return {
     id: requiredText(value.id, "job id"),
     title: text(value.title ?? value.objective) ?? "Untitled job",
+    goal: text(value.goal),
+    conversationId: text(value.conversationId),
     agentName: text(value.agentName ?? attribution.agentName),
     agentVersion:
       typeof attribution.agentVersion === "number"
@@ -544,17 +547,14 @@ async function call(
     path.startsWith("/studio-api/") || path.startsWith("/v1/")
       ? path
       : `${hosted ? HOSTED_BASE_PATH : BASE_PATH}${path}`;
-  const response = await fetch(
-    route,
-    {
-      ...init,
-      headers,
-      cache: "no-store",
-      credentials: "include",
-      redirect: "error",
-      signal
-    }
-  );
+  const response = await fetch(route, {
+    ...init,
+    headers,
+    cache: "no-store",
+    credentials: "include",
+    redirect: "error",
+    signal
+  });
   return assertOk(response, "The agent service is unavailable.");
 }
 

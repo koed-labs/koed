@@ -2,14 +2,7 @@
 
 import { useState } from "react";
 import { ArrowLeft, Plus, Search, X } from "lucide-react";
-import {
-  AGENT_EFFORTS,
-  AGENT_MODELS,
-  CURRENT_USER_ID,
-  TOKEN_BUDGETS,
-  TOKEN_BUDGET_LABEL,
-  type TokenBudget
-} from "@/lib/collab";
+import { AGENT_EFFORTS, AGENT_MODELS, CURRENT_USER_ID } from "@/lib/collab";
 import { CreateAgentModal } from "./CreateAgentModal";
 import { AgentAvatarView } from "./AgentAvatarView";
 import { useWorkspace } from "./WorkspaceProvider";
@@ -18,9 +11,8 @@ import { useWorkspace } from "./WorkspaceProvider";
 // already own into this project, or create a brand new one and unleash it
 // in the same step. This is the Collaborative-side half of "agents live on
 // the Personal side, projects add them" - it never creates an identity
-// itself, only an engagement, and every engagement gets its own model,
-// effort and token budget: the same agent can run Codex Astra at Medium
-// here and Sonnet 5 at High somewhere else.
+// itself, only an engagement. Each engagement can use different model and
+// effort settings in its project.
 export function AddAgentModal({
   projectId,
   projectName,
@@ -38,7 +30,6 @@ export function AddAgentModal({
   const [query, setQuery] = useState("");
   const [model, setModel] = useState<string>(AGENT_MODELS[0]);
   const [effort, setEffort] = useState<string>(AGENT_EFFORTS[1]);
-  const [tokenBudget, setTokenBudget] = useState<TokenBudget>("standard");
 
   const myDefinitions = workspace.agentDefinitions.filter(
     (item) => item.ownerId === CURRENT_USER_ID
@@ -67,7 +58,7 @@ export function AddAgentModal({
       projectId,
       model,
       effort,
-      tokenBudget
+      tokenBudget: "standard"
     });
     onAdded(agent.id);
   };
@@ -159,27 +150,6 @@ export function AddAgentModal({
                     onClick={() => setEffort(item)}
                   >
                     {item}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <span className="mb-2 block text-sm text-muted">
-                Token budget
-              </span>
-              <div className="flex flex-wrap gap-1">
-                {TOKEN_BUDGETS.map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-                      tokenBudget === item
-                        ? "bg-chip text-chip-foreground"
-                        : "bg-surface-hover text-muted hover:text-foreground-secondary"
-                    }`}
-                    onClick={() => setTokenBudget(item)}
-                  >
-                    {TOKEN_BUDGET_LABEL[item]}
                   </button>
                 ))}
               </div>

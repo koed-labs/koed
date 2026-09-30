@@ -467,7 +467,9 @@ describe("managed Conversation capability admission", () => {
       expectedMemory: {
         used: true,
         status: "available",
-        citations: [{ label: "Earlier decision · 2026-08-09" }]
+        citations: [
+          { label: "Earlier decision · 2026-08-09", visibility: "personal" }
+        ]
       },
       expectedLookup: true
     },
@@ -480,7 +482,9 @@ describe("managed Conversation capability admission", () => {
       expectedMemory: {
         used: true,
         status: "available",
-        citations: [{ label: "Source no longer available" }]
+        citations: [
+          { label: "Source no longer available", visibility: "personal" }
+        ]
       },
       expectedLookup: true
     },
@@ -518,6 +522,15 @@ describe("managed Conversation capability admission", () => {
       footer: "unused",
       sourceReadable: false,
       expectedMemory: { used: false, status: "unavailable", citations: [] },
+      expectedLookup: false
+    },
+    {
+      name: "explicit Continue without Memory after reload",
+      status: "skipped",
+      evidencePresent: false,
+      footer: "unused",
+      sourceReadable: false,
+      expectedMemory: { used: false, status: "skipped", citations: [] },
       expectedLookup: false
     },
     {
@@ -667,6 +680,146 @@ describe("managed Conversation capability admission", () => {
     expect(response.body).not.toContain(sourceId);
     expect(response.body).not.toContain(nodeId);
     expect(response.body).not.toContain(nonce);
+  });
+
+  it("rechecks Team citation authority and labels its Workspace after reload", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const nonce = randomUUID();
+    const workspaceId = randomUUID();
+    const nodeId = randomUUID();
+    const getTeamWorkspaceContext = vi.fn(async () => ({
+      teamWorkspace: {
+        id: workspaceId,
+        teamId: randomUUID(),
+        name: "Research"
+      },
+      access: { canRecall: true }
+    }));
+    const freezeSharedMemorySemanticRecallBoundary = vi.fn(async () => ({
+      teamId: randomUUID(),
+      teamWorkspaceId: workspaceId,
+      shareGrantIds: []
+    }));
+    const expandAuthorizedSharedMemorySemanticItem = vi.fn(async () => ({
+      parent: { occurredAt: "2026-09-01T00:00:00.000Z" }
+    }));
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-team-memory-history-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ownerUserId: userId,
+          executionGeneration: 1,
+          projectId: null,
+          state: "running"
+        }),
+        getPersonalAgentConversation: async () => null,
+        listManagedConversationPromptHistory: async () => ({
+          turns: [
+            {
+              commandId,
+              clientUserMessageId: randomUUID(),
+              prompt: "What did our Team decide?",
+              createdAt: "2026-09-01T00:00:00.000Z",
+              completedAt: "2026-09-01T00:01:00.000Z",
+              providerTurnId: null,
+              providerItemId: null,
+              assistantOutput: {
+                text: `We agreed on the shared direction.\n<!-- koed-memory-attribution:v1:${commandId}:${nonce}:{"used":true,"citationNodeIds":["${nodeId}"]} -->`,
+                truncated: false
+              }
+            }
+          ],
+          hasMore: false,
+          nextCursor: null
+        }),
+        getManagedConversationCommand: async () => ({
+          id: commandId,
+          payload: {
+            personalMemoryContext: {
+              schemaVersion: 1,
+              status: "available",
+              attributionNonce: nonce,
+              searchDomain: "global",
+              projectId: null,
+              evidence: [
+                {
+                  nodeId,
+                  sourceType: "memory_node",
+                  sourceId: "pseudonymous-source",
+                  summaryText: "Shared decision.",
+                  visibility: "team",
+                  teamWorkspaceId: workspaceId,
+                  citation: {
+                    nodeId,
+                    visibility: "team",
+                    teamWorkspaceId: workspaceId
+                  }
+                }
+              ]
+            }
+          }
+        }),
+        getTeamWorkspaceContext,
+        freezeSharedMemorySemanticRecallBoundary,
+        expandAuthorizedSharedMemorySemanticItem,
+        listPersonalAgentExecutionJobs: async () => ({ jobs: [] })
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/agent-state`
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().messages[1]).toMatchObject({
+      memory: {
+        used: true,
+        citations: [
+          {
+            label: "Research · Team-shared Memory · 2026-09-01",
+            visibility: "team"
+          }
+        ]
+      }
+    });
+    expect(getTeamWorkspaceContext).toHaveBeenCalledWith(
+      { userId },
+      workspaceId
+    );
+    expect(freezeSharedMemorySemanticRecallBoundary).toHaveBeenCalledWith(
+      { userId },
+      { teamWorkspaceId: workspaceId, maximumGrantCount: 128 }
+    );
+    expect(expandAuthorizedSharedMemorySemanticItem).toHaveBeenCalledWith(
+      { userId },
+      expect.objectContaining({
+        teamWorkspaceId: workspaceId,
+        candidateId: nodeId,
+        searchDomain: "global"
+      })
+    );
+    expect(response.body).not.toContain("pseudonymous-source");
+    expect(response.body).not.toContain(nodeId);
   });
 
   it("looks up recovery only by the exact owner-scoped prompt identity", async () => {
@@ -3114,7 +3267,6 @@ describe("managed Conversation routes", () => {
       }
     });
     await app.close();
-
     expect(response.statusCode).toBe(202);
     expect(resolveContext).toHaveBeenCalledWith({
       ownerUserId: userId,
@@ -3137,7 +3289,7 @@ describe("managed Conversation routes", () => {
     expect(queuedPrompt).not.toContain(contextReference);
   });
 
-  it("binds an agent prompt to its owner version and Personal Project evidence", async () => {
+  it("binds an agent prompt to its owner version and global Personal plus Team evidence", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const agentId = randomUUID();
@@ -3266,6 +3418,7 @@ describe("managed Conversation routes", () => {
             threads: []
           }
         ],
+        listTeamWorkspaceContexts: vi.fn(async () => []),
         searchMemoryNodes,
         enqueueManagedConversationPrompt: enqueue
       })
@@ -3282,7 +3435,6 @@ describe("managed Conversation routes", () => {
         agentId
       }
     });
-    await app.close();
 
     expect(response.statusCode).toBe(202);
     const payload = response.json();
@@ -3304,7 +3456,7 @@ describe("managed Conversation routes", () => {
           identity: expect.objectContaining({ identityVersionId, version: 3 }),
           project: { projectId, name: "Koed" },
           memory: {
-            searchDomain: "project",
+            searchDomain: "global",
             evidence: [
               expect.objectContaining({
                 nodeId: "memory-node-1",
@@ -3319,10 +3471,91 @@ describe("managed Conversation routes", () => {
       { userId },
       expect.objectContaining({
         scope: "personal",
-        searchDomain: "project",
-        projectId
+        searchDomain: "global"
       })
     );
+    searchMemoryNodes.mockRejectedValueOnce(
+      new Error("temporary Memory retrieval failure")
+    );
+    const paused = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "personal-agent-turn-retry",
+        clientUserMessageId: randomUUID(),
+        prompt: "Retry after Memory becomes available.",
+        agentId
+      }
+    });
+    expect(paused.statusCode).toBe(503);
+    expect(paused.json()).toEqual({
+      error: {
+        code: "MEMORY_RECALL_UNAVAILABLE",
+        message:
+          "Memory could not be checked. Retry or continue without Memory."
+      }
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("rejects Continue without Memory for a non-Agent managed chat", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const enqueue = vi.fn();
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-non-agent-memory-option-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          projectId: null,
+          provider: "codex",
+          aiClientInstanceId: "codex.default"
+        }),
+        enqueueManagedConversationPrompt: enqueue
+      })
+    } as unknown as ApiRouteContext);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/managed-conversations/${executionId}/prompts`,
+      payload: {
+        executionGeneration: 1,
+        idempotencyKey: "generic-chat-continue-without-memory",
+        clientUserMessageId: randomUUID(),
+        prompt: "Continue this chat.",
+        continueWithoutMemory: true
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("admits bounded terminal WebSockets only with terminal authority and an allowed browser origin", async () => {
@@ -4222,7 +4455,7 @@ describe("managed Conversation routes", () => {
     }
   );
 
-  it("accepts a hosted independent Conversation for the selected device without a Project", async () => {
+  it("accepts a projectless hosted Agent Job and fails before start on recall or version errors", async () => {
     const userId = randomUUID();
     const deviceId = randomUUID();
     const deploymentId = randomUUID();
@@ -4230,6 +4463,9 @@ describe("managed Conversation routes", () => {
     const hostedInstanceId = `runner.${"d".repeat(40)}`;
     const executionId = randomUUID();
     const commandId = randomUUID();
+    const agentId = randomUUID();
+    const identityVersionId = randomUUID();
+    const initialPromptClientUserMessageId = randomUUID();
     const start = vi.fn(async () => ({
       execution: {
         id: executionId,
@@ -4257,6 +4493,10 @@ describe("managed Conversation routes", () => {
       command: { id: commandId, state: "blocked" }
     }));
     const listProjects = vi.fn(async () => []);
+    const searchMemoryNodes = vi.fn(async () => ({
+      results: [],
+      metadata: {}
+    }));
     const upsert = vi.fn();
     const app = Fastify({ logger: false });
     app.setErrorHandler((error, _request, reply) => {
@@ -4341,6 +4581,48 @@ describe("managed Conversation routes", () => {
           }
         ],
         listLcmGraphThreads: listProjects,
+        getPersonalAgent: async (_actor: unknown, requestedAgentId: string) =>
+          requestedAgentId === agentId
+            ? {
+                agent: {
+                  contractVersion: 1,
+                  id: agentId,
+                  ownerUserId: userId,
+                  name: "Mira",
+                  role: "Reviewer",
+                  avatarReference: null,
+                  lifecycle: "active",
+                  defaultProvider: "codex",
+                  defaultModel: "gpt-test",
+                  defaultReasoningEffort: "low",
+                  currentVersion: 4,
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                  updatedAt: "2026-02-01T00:00:00.000Z",
+                  retiredAt: null
+                },
+                soulInstructions: "Be precise.",
+                history: {}
+              }
+            : null,
+        getPersonalAgentVersion: async () => ({
+          contractVersion: 1,
+          id: identityVersionId,
+          agentId,
+          ownerUserId: userId,
+          version: 4,
+          name: "Mira",
+          role: "Reviewer",
+          avatarReference: null,
+          defaultProvider: "codex",
+          defaultModel: "gpt-test",
+          defaultReasoningEffort: "low",
+          soulInstructions: "Be precise.",
+          instructionSource: "custom",
+          createdByUserId: userId,
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }),
+        listTeamWorkspaceContexts: async () => [],
+        searchMemoryNodes,
         createManagedConversation: start,
         upsertManagedConversationRuntimeBinding: upsert
       })
@@ -4355,8 +4637,78 @@ describe("managed Conversation routes", () => {
           ...launchSelection,
           aiClientInstanceId: hostedInstanceId,
           targetDeviceId: deviceId,
+          initialPromptClientUserMessageId,
+          agentId,
+          expectedAgentVersion: 4,
           initialPrompt: "Start a standalone chat on Computer A.",
           idempotencyKey: "hosted-independent-start-1"
+        }
+      });
+      const replay = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
+          targetDeviceId: deviceId,
+          initialPromptClientUserMessageId,
+          agentId,
+          expectedAgentVersion: 4,
+          initialPrompt: "Start a standalone chat on Computer A.",
+          idempotencyKey: "hosted-independent-start-1"
+        }
+      });
+      const staleVersion = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
+          targetDeviceId: deviceId,
+          initialPromptClientUserMessageId: randomUUID(),
+          agentId,
+          expectedAgentVersion: 3,
+          initialPrompt: "Use an old version.",
+          idempotencyKey: "hosted-agent-stale-version"
+        }
+      });
+      const anotherOwnersAgent = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
+          targetDeviceId: deviceId,
+          initialPromptClientUserMessageId: randomUUID(),
+          agentId: randomUUID(),
+          expectedAgentVersion: 4,
+          initialPrompt: "Use another owner's Agent.",
+          idempotencyKey: "hosted-agent-owner-denial"
+        }
+      });
+      searchMemoryNodes.mockRejectedValueOnce(
+        new Error("temporary Memory retrieval failure")
+      );
+      const recallUnavailable = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId: null,
+          contextKind: "independent",
+          ...launchSelection,
+          aiClientInstanceId: hostedInstanceId,
+          targetDeviceId: deviceId,
+          initialPromptClientUserMessageId: randomUUID(),
+          agentId,
+          expectedAgentVersion: 4,
+          initialPrompt: "Wait for Memory before starting.",
+          idempotencyKey: "hosted-agent-memory-unavailable"
         }
       });
       const invalidProjectless = await app.inject({
@@ -4379,7 +4731,10 @@ describe("managed Conversation routes", () => {
         },
         command: { id: commandId, state: "blocked" }
       });
-      expect(start).toHaveBeenCalledWith(
+      expect(replay.statusCode).toBe(202);
+      expect(replay.json().command.id).toBe(commandId);
+      expect(start).toHaveBeenNthCalledWith(
+        1,
         { userId },
         expect.objectContaining({
           projectId: null,
@@ -4390,9 +4745,15 @@ describe("managed Conversation routes", () => {
           deferUntilRuntimeBinding: true,
           idempotencyKey: "hosted-independent-start-1",
           initialPrompt: "Start a standalone chat on Computer A.",
+          initialPromptClientUserMessageId,
+          initialAgentId: agentId,
+          initialExpectedAgentVersion: 4,
+          initialPersonalAgentContext: expect.objectContaining({
+            identity: expect.objectContaining({ agentId, version: 4 })
+          }),
           initialPersonalMemoryContext: expect.objectContaining({
             schemaVersion: 1,
-            status: expect.stringMatching(/^(available|unavailable)$/u),
+            status: "available",
             attributionNonce: expect.any(String),
             searchDomain: "global",
             projectId: null
@@ -4401,8 +4762,18 @@ describe("managed Conversation routes", () => {
       );
       expect(listProjects).not.toHaveBeenCalled();
       expect(upsert).not.toHaveBeenCalled();
+      expect(staleVersion.statusCode).toBe(409);
+      expect(anotherOwnersAgent.statusCode).toBe(404);
+      expect(recallUnavailable.statusCode).toBe(503);
+      expect(recallUnavailable.json()).toEqual({
+        error: {
+          code: "MEMORY_RECALL_UNAVAILABLE",
+          message:
+            "Memory could not be checked. Retry or continue without Memory."
+        }
+      });
       expect(invalidProjectless.statusCode).toBe(400);
-      expect(start).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledTimes(2);
     } finally {
       await app.close();
     }

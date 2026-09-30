@@ -149,6 +149,161 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
+  it("keeps Personal Agent job attempts owner and assigned-execution scoped", async () => {
+    const jobId = randomUUID();
+    const agentId = randomUUID();
+    const job = { id: jobId, conversationId: ids.execution };
+    const createAttempt = vi.fn(async (_actor, input) => ({
+      id: randomUUID(),
+      ...input
+    }));
+    const fixture = await buildServer({
+      repository: {
+        getPersonalAgentExecutionJob: vi.fn(async (actor, requestedJobId) => {
+          expect(actor).toEqual({ userId: ids.user });
+          expect(requestedJobId).toBe(jobId);
+          return job;
+        }),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 4,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        createPersonalAgentExecutionAttempt: createAttempt
+      }
+    });
+    try {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts`,
+        headers: runnerHeaders,
+        payload: {
+          attemptNumber: 1,
+          attribution: { kind: "agent", agentId, agentVersion: 2 },
+          provider: "codex",
+          model: "model",
+          aiClientInstanceId: "codex.default",
+          reasoningEffort: null,
+          permissionMode: "supervised",
+          managedExecutionId: ids.execution,
+          managedExecutionGeneration: 4,
+          status: "running",
+          outcome: null,
+          startedAt: new Date().toISOString(),
+          completedAt: null
+        }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(createAttempt).toHaveBeenCalledOnce();
+      expect(createAttempt.mock.calls[0]?.[0]).toEqual({ userId: ids.user });
+      expect(createAttempt.mock.calls[0]?.[1]).toMatchObject({ jobId });
+    } finally {
+      await fixture.app.close();
+    }
+
+    const deniedCreateAttempt = vi.fn(async () => ({ id: randomUUID() }));
+    const denied = await buildServer({
+      repository: {
+        getPersonalAgentExecutionJob: vi.fn(async () => job),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 4,
+          runnerDeviceId: ids.otherDevice,
+          runnerDeploymentId: ids.deployment
+        })),
+        createPersonalAgentExecutionAttempt: deniedCreateAttempt
+      }
+    });
+    try {
+      const response = await denied.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts`,
+        headers: runnerHeaders,
+        payload: {
+          attemptNumber: 1,
+          attribution: { kind: "agent", agentId, agentVersion: 2 },
+          provider: "codex",
+          model: "model",
+          aiClientInstanceId: "codex.default",
+          reasoningEffort: null,
+          permissionMode: "supervised",
+          managedExecutionId: ids.execution,
+          managedExecutionGeneration: 4,
+          status: "running",
+          outcome: null,
+          startedAt: new Date().toISOString(),
+          completedAt: null
+        }
+      });
+      expect(response.statusCode).toBe(403);
+      expect(deniedCreateAttempt).not.toHaveBeenCalled();
+    } finally {
+      await denied.app.close();
+    }
+  });
+
+  it("rejects Personal Agent output and completion from a stale attempt", async () => {
+    const jobId = randomUUID();
+    const currentAttemptId = randomUUID();
+    const staleAttemptId = randomUUID();
+    const recordOutput = vi.fn(async () => ({ id: jobId }));
+    const completeAttempt = vi.fn(async () => ({ replayed: false }));
+    const fixture = await buildServer({
+      repository: {
+        getPersonalAgentExecutionJob: vi.fn(async () => ({
+          id: jobId,
+          conversationId: ids.execution,
+          lastAttemptId: currentAttemptId
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 3,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        listPersonalAgentExecutionAttempts: vi.fn(async () => ({
+          attempts: [
+            {
+              id: staleAttemptId,
+              status: "running",
+              managedExecutionId: ids.execution,
+              managedExecutionGeneration: 2
+            }
+          ],
+          hasMore: false,
+          nextCursor: null
+        })),
+        recordPersonalAgentTurnOutput: recordOutput,
+        completePersonalAgentExecutionAttempt: completeAttempt
+      }
+    });
+    try {
+      const output = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts/${staleAttemptId}/output`,
+        headers: runnerHeaders,
+        payload: {
+          outputText: "old output",
+          outputReference: { runtimeItemIds: [randomUUID()] }
+        }
+      });
+      const completion = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/attempts/${staleAttemptId}/complete`,
+        headers: runnerHeaders,
+        payload: { outcome: "succeeded" }
+      });
+
+      expect(output.statusCode).toBe(409);
+      expect(completion.statusCode).toBe(409);
+      expect(recordOutput).not.toHaveBeenCalled();
+      expect(completeAttempt).not.toHaveBeenCalled();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("keeps command control available when memory writes are exhausted and enforces the control quota", async () => {
     const memoryWrite = vi.fn(async () => {
       throw Object.assign(new Error("Memory write budget exhausted"), {

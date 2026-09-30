@@ -23,6 +23,7 @@ import {
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
 import { homeProjects, type HomeProject } from "@/lib/studio-home";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
+import { personalAgentsHttpAdapter } from "@/lib/personal-agents-client";
 
 function LiveHome({
   onPlugins,
@@ -30,7 +31,8 @@ function LiveHome({
   initialChatOpen,
   initialProjectRequest,
   executionId,
-  requestedProjectId
+  requestedProjectId,
+  requestedAgentId
 }: {
   onPlugins: () => void;
   onPullRequests: () => void;
@@ -38,6 +40,7 @@ function LiveHome({
   initialProjectRequest: boolean;
   executionId?: string;
   requestedProjectId?: string;
+  requestedAgentId?: string;
 }) {
   const [chatOpen, setChatOpen] = useState(initialChatOpen);
   const [collapsed, setCollapsed] = useState(false);
@@ -46,9 +49,25 @@ function LiveHome({
   const [initialChatSelection, setInitialChatSelection] = useState<
     ChatComposerSelection | undefined
   >();
+  const [agentSelectionResult, setAgentSelectionResult] = useState<{
+    id: string;
+    state: "ready" | "error";
+    error?: string;
+  } | null>(null);
+  const agentSelectionState = !requestedAgentId
+    ? "ready"
+    : agentSelectionResult?.id === requestedAgentId
+      ? agentSelectionResult.state
+      : "loading";
+  const agentSelectionError =
+    requestedAgentId && agentSelectionResult?.id === requestedAgentId
+      ? (agentSelectionResult.error ?? null)
+      : null;
   const [resumeId, setResumeId] = useState(executionId);
   const [projects, setProjects] = useState<HomeProject[]>([]);
-  const [managedConversations, setManagedConversations] = useState<HomeExecution[]>([]);
+  const [managedConversations, setManagedConversations] = useState<
+    HomeExecution[]
+  >([]);
   const [registeredProjects, setRegisteredProjects] = useState<HomeProject[]>(
     []
   );
@@ -95,6 +114,42 @@ function LiveHome({
     projectCapabilitiesLoading,
     router
   ]);
+
+  useEffect(() => {
+    if (!requestedAgentId) return;
+    const controller = new AbortController();
+    void personalAgentsHttpAdapter
+      .get(requestedAgentId, controller.signal)
+      .then((agent) => {
+        if (controller.signal.aborted) return;
+        if (agent.lifecycle !== "active") {
+          throw new Error("Retired Agents cannot start a new Conversation.");
+        }
+        setInitialChatSelection({
+          agentId: agent.id,
+          expectedAgentVersion: agent.currentVersion,
+          provider: agent.defaultProvider,
+          model: agent.defaultModel ?? "",
+          effort: agent.defaultReasoningEffort ?? "",
+          permissionMode: "full"
+        });
+        setChatKey((value) => value + 1);
+        setAgentSelectionResult({ id: requestedAgentId, state: "ready" });
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setInitialChatSelection(undefined);
+        setAgentSelectionResult({
+          id: requestedAgentId,
+          state: "error",
+          error:
+            reason instanceof Error
+              ? reason.message
+              : "The selected Agent could not be loaded."
+        });
+      });
+    return () => controller.abort();
+  }, [requestedAgentId]);
 
   const loadRegisteredProjects = useCallback(async () => {
     registeredProjectsSequence.current += 1;
@@ -373,24 +428,54 @@ function LiveHome({
             </div>
           ) : null}
           <div className="min-h-0 flex-1">
-            <LiveAgentChat
-              key={chatKey}
-              initialDraft={initialChatDraft}
-              initialSelection={initialChatSelection}
-              executionId={resumeId}
-              sidebarMoveTarget={pendingSidebarMove}
-              onSidebarMoveTargetHandled={(requestId) => {
-                setPendingSidebarMove((current) =>
-                  current?.requestId === requestId ? null : current
-                );
-              }}
-              projectId={selectedProject ?? undefined}
-              projectName={selectedProjectName}
-              registeredProjects={registeredProjects.filter((project) =>
-                /^lp_[0-9a-f]{32}$/iu.test(project.id)
-              )}
-              onProjectMoveCompleted={handleProjectMoveCompleted}
-            />
+            {requestedAgentId && agentSelectionState === "loading" ? (
+              <div className="flex h-full items-center justify-center text-sm text-subtle">
+                Loading the selected Agent…
+              </div>
+            ) : requestedAgentId && agentSelectionState === "error" ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+                <p role="alert" className="max-w-md text-sm text-danger">
+                  {agentSelectionError ?? "The selected Agent is unavailable."}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => router.push("/agents")}
+                    className="rounded-md border border-border px-3 py-2 text-xs text-foreground-secondary"
+                  >
+                    Back to Agents
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => router.replace("/?chat=1")}
+                    className="rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-foreground"
+                  >
+                    Start a separate New Chat
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <LiveAgentChat
+                  key={chatKey}
+                  initialDraft={initialChatDraft}
+                  initialSelection={initialChatSelection}
+                  executionId={resumeId}
+                  sidebarMoveTarget={pendingSidebarMove}
+                  onSidebarMoveTargetHandled={(requestId) => {
+                    setPendingSidebarMove((current) =>
+                      current?.requestId === requestId ? null : current
+                    );
+                  }}
+                  projectId={selectedProject ?? undefined}
+                  projectName={selectedProjectName}
+                  registeredProjects={registeredProjects.filter((project) =>
+                    /^lp_[0-9a-f]{32}$/iu.test(project.id)
+                  )}
+                  onProjectMoveCompleted={handleProjectMoveCompleted}
+                />
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -423,6 +508,7 @@ function HomeMode() {
       initialProjectRequest={initialProjectRequest}
       executionId={searchParams.get("execution") ?? undefined}
       requestedProjectId={searchParams.get("project") ?? undefined}
+      requestedAgentId={searchParams.get("agent") ?? undefined}
     />
   );
 }

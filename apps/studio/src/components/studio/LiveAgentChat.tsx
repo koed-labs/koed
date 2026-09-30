@@ -30,15 +30,18 @@ import {
 import type { BuildActivity } from "@/lib/studio-build-activity";
 import {
   acceptRuntimeSnapshot,
+  ManagedChatError,
   managedRequest,
   managedConversationControls,
   managedMessagesWithTransientOutput,
   parseManagedChatMemoryAttribution,
+  managedAgentRecallRecoveryHref,
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
   record,
   resolveLaunchSelection,
+  shouldNavigateToExecutionAfterSendFailure,
   validExecutionId,
   type LaunchInstance,
   type RuntimeSnapshot
@@ -129,6 +132,9 @@ export function LiveAgentChat({
   const [activity, setActivity] = useState<BuildActivity | null>(null);
   const [messages, setMessages] = useState<NewChatRuntimeMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [memoryRecallFailure, setMemoryRecallFailure] = useState<string | null>(
+    null
+  );
   const [status, setStatus] = useState("Connecting to the local runtime");
   const [historyNotice, setHistoryNotice] = useState("");
   const [latestProjectMove, setLatestProjectMove] =
@@ -176,7 +182,7 @@ export function LiveAgentChat({
   const projectMoveRequestInFlightRef = useRef(false);
   const retainedWorkspaceSequenceRef = useRef(0);
   const handledSidebarMoveRequestRef = useRef<number | null>(null);
-  const selectionDirty = useRef(false);
+  const selectionDirty = useRef(Boolean(initialSelection?.agentId));
   const pending = useRef<{
     key: string;
     id: string;
@@ -918,7 +924,11 @@ export function LiveAgentChat({
     }
   };
 
-  const send = async (text: string, selection: ChatComposerSelection) => {
+  const send = async (
+    text: string,
+    selection: ChatComposerSelection,
+    continueWithoutMemory?: true
+  ) => {
     if (operationRef.current)
       throw new Error("A submission is already in progress.");
     const signal = lifecycle.current?.signal;
@@ -931,6 +941,7 @@ export function LiveAgentChat({
     operationRef.current = true;
     setSending(true);
     setError(null);
+    setMemoryRecallFailure(null);
     const startedNewExecution = !executionId;
     let navigableExecutionId: string | null = executionId;
     try {
@@ -1211,6 +1222,7 @@ export function LiveAgentChat({
           prompt: text,
           agentId: selected.id,
           expectedAgentVersion: selected.currentVersion,
+          ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
           ...(JSON.stringify(expected) === JSON.stringify(next)
             ? {}
             : { settingsChange: { expected, next } })
@@ -1240,7 +1252,17 @@ export function LiveAgentChat({
         cause instanceof Error ? cause.message : "Unable to send the task.";
       if (!signal.aborted) {
         const existing = recoveryStore.current?.read();
-        if (existing?.pendingOperation) {
+        if (
+          cause instanceof ManagedChatError &&
+          cause.code === "MEMORY_RECALL_UNAVAILABLE"
+        ) {
+          pending.current = null;
+          recoveryStore.current?.write({
+            schemaVersion: 1,
+            draft: latestDraft.current !== text ? latestDraft.current : text
+          });
+          setMemoryRecallFailure(message);
+        } else if (existing?.pendingOperation) {
           recoveryStore.current?.write({
             ...existing,
             pendingOperation: {
@@ -1251,10 +1273,25 @@ export function LiveAgentChat({
         }
         setError(message);
         setStatus("");
-        if (startedNewExecution && navigableExecutionId)
+        if (
+          shouldNavigateToExecutionAfterSendFailure(
+            startedNewExecution,
+            navigableExecutionId
+          ) &&
+          navigableExecutionId
+        ) {
+          const recallPaused =
+            cause instanceof ManagedChatError &&
+            cause.code === "MEMORY_RECALL_UNAVAILABLE";
           router.replace(
-            `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`
+            recallPaused && selection.agentId
+              ? managedAgentRecallRecoveryHref(
+                  navigableExecutionId,
+                  selection.agentId
+                )
+              : `/?chat=1&execution=${encodeURIComponent(navigableExecutionId)}`
           );
+        }
       }
       throw cause;
     } finally {
@@ -1669,6 +1706,7 @@ export function LiveAgentChat({
             messages: displayedMessages,
             isSending: sending,
             error,
+            memoryRecallFailure,
             status: [status, historyNotice].filter(Boolean).join(" · "),
             onSend: send,
             onInterrupt: () => void interrupt(),

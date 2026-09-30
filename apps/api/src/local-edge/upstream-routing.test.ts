@@ -822,6 +822,44 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("routes the Personal Agent runner job lifecycle only on its declared methods", () => {
+    const allowed = [
+      [
+        "GET",
+        "/v1/managed-conversation-runner/personal-agent/jobs?conversationId=execution-id"
+      ],
+      ["GET", "/v1/managed-conversation-runner/personal-agent/jobs/job-id"],
+      [
+        "GET",
+        "/v1/managed-conversation-runner/personal-agent/jobs/job-id/attempts"
+      ],
+      [
+        "POST",
+        "/v1/managed-conversation-runner/personal-agent/jobs/job-id/attempts"
+      ],
+      [
+        "POST",
+        "/v1/managed-conversation-runner/personal-agent/jobs/job-id/attempts/attempt-id/output"
+      ],
+      [
+        "POST",
+        "/v1/managed-conversation-runner/personal-agent/jobs/job-id/attempts/attempt-id/complete"
+      ]
+    ] as const;
+    for (const [method, path] of allowed) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).not.toThrow();
+    }
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "DELETE",
+        "/v1/managed-conversation-runner/personal-agent/jobs/job-id"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
   it("routes only the Project Move methods required by owner and runner", () => {
     const allowed = [
       ["POST", "/v1/managed-conversations/execution-id/project-moves"],

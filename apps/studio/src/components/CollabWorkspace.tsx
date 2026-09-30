@@ -5,7 +5,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   CURRENT_USER_ID,
-  TOKEN_BUDGET_LABEL,
   relativeTime,
   dmLabel,
   generateProjectContextBrief,
@@ -418,8 +417,7 @@ function AgentWorkshop({ agentId }: { agentId: string }) {
     name: agent.name,
     projectName,
     model: agent.model,
-    effort: agent.effort,
-    tokenBudget: agent.tokenBudget
+    effort: agent.effort
   });
 
   // Same identity, but possibly unleashed into several of this team's
@@ -471,8 +469,7 @@ function AgentWorkshop({ agentId }: { agentId: string }) {
               <p className="text-sm text-foreground-secondary">{agent.name}</p>
               <p className="mt-1 text-xs text-subtle">
                 {agent.role} · {owner?.name ?? "Unknown"} ·{" "}
-                {statusLabel(agent.status)} · {agent.model} · {agent.effort} ·{" "}
-                {TOKEN_BUDGET_LABEL[agent.tokenBudget]}
+                {statusLabel(agent.status)} · {agent.model} · {agent.effort}
               </p>
             </div>
           </div>
@@ -606,27 +603,45 @@ function AgentWorkshop({ agentId }: { agentId: string }) {
 function ForYouView() {
   const router = useRouter();
   const { workspace, activeTeam, previousTeamVisitAt } = useWorkspace();
-  const { team: actions, personalBadge, clearAction, restoreAction } = useActionItems();
+  const {
+    team: actions,
+    personalBadge,
+    clearAction,
+    restoreAction
+  } = useActionItems();
   const openTarget = useOpenTarget();
   const [teamFilter, setTeamFilter] = useState("all");
   if (!activeTeam) return null;
 
   const teams = workspace.teams
-    .filter((team) => team.members.some((member) => member.id === CURRENT_USER_ID))
-    .sort((left, right) => Number(right.id === activeTeam.id) - Number(left.id === activeTeam.id));
+    .filter((team) =>
+      team.members.some((member) => member.id === CURRENT_USER_ID)
+    )
+    .sort(
+      (left, right) =>
+        Number(right.id === activeTeam.id) - Number(left.id === activeTeam.id)
+    );
   const inTeam = (teamId: string) => (item: (typeof actions.visible)[number]) =>
     item.source.side === "team" && item.source.teamId === teamId;
-  const visible = teamFilter === "all" ? actions.visible : actions.visible.filter(inTeam(teamFilter));
-  const cleared = teamFilter === "all" ? actions.cleared : actions.cleared.filter(inTeam(teamFilter));
+  const visible =
+    teamFilter === "all"
+      ? actions.visible
+      : actions.visible.filter(inTeam(teamFilter));
+  const cleared =
+    teamFilter === "all"
+      ? actions.cleared
+      : actions.cleared.filter(inTeam(teamFilter));
   const blocking = visible.filter((item) => item.tier === "blocking").length;
   const waiting = visible.filter((item) => item.tier === "waiting").length;
-  const catchUp = previousTeamVisitAt ? catchUpFor(workspace, activeTeam, previousTeamVisitAt) : [];
+  const catchUp = previousTeamVisitAt
+    ? catchUpFor(workspace, activeTeam, previousTeamVisitAt)
+    : [];
   const subline =
     blocking + waiting === 0
       ? "Nothing is waiting on you."
       : [
           blocking > 0 ? `${blocking} blocking work` : null,
-          waiting > 0 ? `${waiting} waiting on your reply` : null,
+          waiting > 0 ? `${waiting} waiting on your reply` : null
         ]
           .filter(Boolean)
           .join(" · ");
@@ -635,25 +650,42 @@ function ForYouView() {
     <TeamShell>
       <div className="mx-auto max-w-3xl space-y-7 pb-16 pt-6">
         <div>
-          <h1 className="text-[22px] font-medium tracking-tight text-foreground">For you</h1>
+          <h1 className="text-[22px] font-medium tracking-tight text-foreground">
+            For you
+          </h1>
           <p className="mt-1 text-sm text-subtle">
-            Everything across your {teams.length === 1 ? "team" : `${teams.length} teams`} that needs you. {subline}
+            Everything across your{" "}
+            {teams.length === 1 ? "team" : `${teams.length} teams`} that needs
+            you. {subline}
           </p>
           <p className="mt-1 text-[11px] text-faint">
-            This is a browser-local Studio preview; action changes stay in this browser.
+            This is a browser-local Studio preview; action changes stay in this
+            browser.
           </p>
         </div>
 
         {teams.length > 1 && (
           <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip active={teamFilter === "all"} onClick={() => setTeamFilter("all")}>
-              All teams <span className="text-faint">{badgeCount(actions.visible)}</span>
+            <FilterChip
+              active={teamFilter === "all"}
+              onClick={() => setTeamFilter("all")}
+            >
+              All teams{" "}
+              <span className="text-faint">{badgeCount(actions.visible)}</span>
             </FilterChip>
             {teams.map((team) => (
-              <FilterChip key={team.id} active={teamFilter === team.id} onClick={() => setTeamFilter(team.id)}>
-                <span className={`h-1.5 w-1.5 rounded-full ${teamTone(team.id).solid}`} />
+              <FilterChip
+                key={team.id}
+                active={teamFilter === team.id}
+                onClick={() => setTeamFilter(team.id)}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${teamTone(team.id).solid}`}
+                />
                 {team.name}
-                <span className="text-faint">{badgeCount(actions.visible.filter(inTeam(team.id)))}</span>
+                <span className="text-faint">
+                  {badgeCount(actions.visible.filter(inTeam(team.id)))}
+                </span>
               </FilterChip>
             ))}
           </div>
@@ -662,7 +694,10 @@ function ForYouView() {
         {previousTeamVisitAt && (
           <div className="rounded-xl border border-border bg-surface/30 px-4 py-3">
             <p className="text-xs text-subtle">
-              Since you were last in <span className="text-foreground-secondary">{activeTeam.name}</span>{" "}
+              Since you were last in{" "}
+              <span className="text-foreground-secondary">
+                {activeTeam.name}
+              </span>{" "}
               {relativeTime(previousTeamVisitAt)}
               {catchUp.length === 0 ? ": nothing new." : ":"}
             </p>
@@ -686,10 +721,15 @@ function ForYouView() {
         {visible.length === 0 ? (
           <div className="flex items-center gap-2.5 rounded-xl border border-dashed border-border px-4 py-6 text-sm text-subtle">
             <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-success" />
-            You&rsquo;re all caught up{teamFilter === "all" ? " across your teams" : ""}.
+            You&rsquo;re all caught up
+            {teamFilter === "all" ? " across your teams" : ""}.
           </div>
         ) : (
-          <ActionGroups items={visible} idPrefix="studio-foryou" clearAction={clearAction} />
+          <ActionGroups
+            items={visible}
+            idPrefix="studio-foryou"
+            clearAction={clearAction}
+          />
         )}
 
         <ClearedItems items={cleared} restoreAction={restoreAction} />
@@ -703,7 +743,10 @@ function ForYouView() {
             className="flex w-full items-center justify-between gap-3 rounded-xl border border-border px-4 py-3 text-left text-sm text-muted transition-colors hover:border-border-strong hover:text-foreground"
           >
             <span>
-              {personalBadge === 1 ? "1 personal item is" : `${personalBadge} personal items are`} waiting on Home
+              {personalBadge === 1
+                ? "1 personal item is"
+                : `${personalBadge} personal items are`}{" "}
+              waiting on Home
             </span>
             <ArrowRight className="h-4 w-4 flex-shrink-0" />
           </button>
@@ -716,7 +759,7 @@ function ForYouView() {
 function FilterChip({
   active,
   onClick,
-  children,
+  children
 }: {
   active: boolean;
   onClick: () => void;

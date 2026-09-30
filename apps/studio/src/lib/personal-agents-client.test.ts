@@ -109,6 +109,8 @@ describe("personal agents HTTP adapter", () => {
           {
             id: "job-1",
             title: "Review",
+            goal: "Review the billing implementation and report risks.",
+            conversationId: "11111111-1111-4111-8111-111111111111",
             state: "succeeded",
             createdAt: "2026-09-20T12:00:00.000Z",
             updatedAt: "2026-09-20T12:05:00.000Z",
@@ -155,6 +157,8 @@ describe("personal agents HTTP adapter", () => {
     expect(result.jobsHasMore).toBe(true);
     expect(result.jobsNextCursor).toBe("next-page");
     expect(result.jobs[0]).toMatchObject({
+      goal: "Review the billing implementation and report risks.",
+      conversationId: "11111111-1111-4111-8111-111111111111",
       provider: "codex",
       model: "gpt-5.6",
       effort: "high",
@@ -229,8 +233,9 @@ describe("personal agents HTTP adapter", () => {
   it("uses authenticated hosted routes for the complete Agent workflow", async () => {
     vi.stubGlobal("window", { location: { pathname: "/studio/agents" } });
     const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
-      async (input, init) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
         const url = String(input);
         calls.push({ url, init });
         if (url.startsWith("/studio-api/")) {
@@ -251,8 +256,7 @@ describe("personal agents HTTP adapter", () => {
           return Response.json({ models: [] });
         }
         return Response.json({ agent });
-      }
-    );
+      });
 
     await personalAgentsHttpAdapter.list();
     await personalAgentsHttpAdapter.get(agent.id);
@@ -300,6 +304,22 @@ describe("personal agents HTTP adapter", () => {
       }
     }
     expect(fetchMock).toHaveBeenCalledTimes(8);
+  });
+
+  it("uses hosted Agent detail routes at the basePath root without a trailing slash", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/studio" } });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ agent }));
+
+    await expect(personalAgentsHttpAdapter.get(agent.id)).resolves.toEqual(
+      agent
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/v1/personal-agents/${agent.id}`,
+      expect.objectContaining({ credentials: "include", cache: "no-store" })
+    );
   });
 
   it("reads the Agent name captured in each Job profile version", async () => {

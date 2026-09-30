@@ -73,9 +73,9 @@ describe("personal agent role template client", () => {
       Response.json({ templates: [template("researcher", 1, "Researcher")] })
     );
 
-    await expect(listPersonalAgentRoleTemplates(undefined, fetcher)).resolves.toEqual([
-      template("researcher", 1, "Researcher")
-    ]);
+    await expect(
+      listPersonalAgentRoleTemplates(undefined, fetcher)
+    ).resolves.toEqual([template("researcher", 1, "Researcher")]);
     expect(fetcher).toHaveBeenCalledWith(
       "/v1/personal-agent-role-templates",
       expect.objectContaining({
@@ -84,6 +84,20 @@ describe("personal agent role template client", () => {
         redirect: "error",
         headers: { accept: "application/json" }
       })
+    );
+  });
+
+  it("uses the hosted role-template route at the basePath root without a trailing slash", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/studio" } });
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({ templates: [template("researcher", 1, "Researcher")] })
+    );
+
+    await listPersonalAgentRoleTemplates(undefined, fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/v1/personal-agent-role-templates",
+      expect.objectContaining({ credentials: "include" })
     );
   });
 
