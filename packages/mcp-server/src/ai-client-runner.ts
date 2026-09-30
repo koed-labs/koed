@@ -627,7 +627,13 @@ export const claudeAgentSdkEnvironment = (
     ...allowedNames
       .map((name) => [name, env[name]] as const)
       .filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
-    ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`]
+    ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`],
+    // SessionStore resume relocates CLAUDE_CONFIG_DIR. Keep the CLI's original
+    // secure-storage identity, including its empty/default Keychain namespace.
+    [
+      "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+      env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR ?? ""
+    ]
   ]);
 };
 

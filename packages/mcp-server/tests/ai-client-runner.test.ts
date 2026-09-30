@@ -601,7 +601,8 @@ exit 1
       HOME: "/home/alice",
       PATH: "/usr/bin",
       CLAUDE_CONFIG_DIR: "/home/alice/.claude-work",
-      CLAUDE_AGENT_SDK_CLIENT_APP: "koed/test"
+      CLAUDE_AGENT_SDK_CLIENT_APP: "koed/test",
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/alice/.claude-work"
     });
   });
 

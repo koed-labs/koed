@@ -108,6 +108,21 @@ execution capabilities ready without reinstalling the profile. Claude Desktop
 uses a separate authentication context: Koed never inspects, copies, or reuses
 Claude Desktop credentials. Koed also does not read or store Anthropic API keys.
 
+Managed Conversations canonicalize the selected config home, and the Agent SDK
+may temporarily relocate that home when resuming from the managed Session Store.
+Koed pins `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the original CLI authentication
+context before either change: an inherited override wins, otherwise the original
+`CLAUDE_CONFIG_DIR` is used, or an empty value preserves the default secure-storage
+identity. This keeps macOS Keychain lookup from selecting a different service
+merely because a transcript is resumed. The value is a config path, not a
+credential; Koed does not extract or copy Keychain contents.
+
+A successful `claude auth status` proves reported login state, not that a model
+request will authenticate or that token refresh and account authorization will
+succeed. An SDK authentication rejection preserves the prompt without automatically
+resending it. Diagnose the exact selected instance, executable, config-home path,
+and safe auth state before retrying; never dump authentication files or tokens.
+
 Before replacing an existing user-scoped MCP entry, setup verifies that its
 command and `KOED_HOME` identify a Koed-owned adapter. An unrelated entry using
 the configured MCP name is preserved and reported as a collision. Claude Code

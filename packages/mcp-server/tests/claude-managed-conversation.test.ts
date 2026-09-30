@@ -457,6 +457,100 @@ describe("ClaudeManagedConversationSession", () => {
     expect(queryOptions(1).sessionId).toBeUndefined();
   });
 
+  it.each([
+    { explicitHome: false, secureStorageOverride: undefined },
+    { explicitHome: true, secureStorageOverride: undefined },
+    { explicitHome: true, secureStorageOverride: "" },
+    { explicitHome: true, secureStorageOverride: "/synthetic/auth-profile" }
+  ])(
+    "keeps original secure-storage identity across SDK resume config relocation: %j",
+    async ({ explicitHome, secureStorageOverride }) => {
+      const { config, cwd } = fixture();
+      const sessionId = randomUUID();
+      const alias = path.join(cwd, "claude-config-alias");
+      fs.symlinkSync(path.join(cwd, ".claude"), alias);
+      const env = {
+        ...config.env,
+        ...(explicitHome ? { CLAUDE_CONFIG_DIR: alias } : {}),
+        ...(secureStorageOverride !== undefined
+          ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: secureStorageOverride }
+          : {})
+      };
+      sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+        // SessionStore resume relocates config; credential identity must not
+        // follow that temporary directory or config-home canonicalization.
+        const relocatedEnvironment = {
+          ...options?.env,
+          CLAUDE_CONFIG_DIR: path.join(cwd, "sdk-resume-config")
+        };
+        expect(relocatedEnvironment.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(
+          secureStorageOverride ?? (explicitHome ? alias : "")
+        );
+        return queryFrom([successResult(sessionId)]);
+      });
+      const session = new ClaudeManagedConversationSession({
+        ...config,
+        env,
+        resumeSessionId: sessionId
+      });
+      try {
+        expect((await session.prompt("synthetic test input")).sessionId).toBe(
+          sessionId
+        );
+      } finally {
+        session.close();
+      }
+    }
+  );
+
+  it("preserves secure-storage identity through the real SDK SessionStore resume relocation", async () => {
+    const { config, cwd } = fixture();
+    const sessionId = randomUUID();
+    sdk.query.mockImplementation(() => queryFrom([successResult(sessionId)]));
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      resumeSessionId: sessionId
+    });
+    await session.prompt("synthetic test input");
+    session.close();
+    const options = queryOptions();
+    const projectKey = fs.realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+    await options.sessionStore!.append({ projectKey, sessionId }, [
+      {
+        type: "user",
+        sessionId,
+        message: { role: "user", content: "synthetic stored input" }
+      }
+    ]);
+    const actualSdk = await vi.importActual<
+      typeof import("@anthropic-ai/claude-agent-sdk")
+    >("@anthropic-ai/claude-agent-sdk");
+    let subprocessEnvironment: NodeJS.ProcessEnv | undefined;
+    const stopBeforeSpawn = new Error("test stops before any CLI execution");
+    const stream = actualSdk.query({
+      prompt: "synthetic test input",
+      options: {
+        ...options,
+        spawnClaudeCodeProcess: ({ env }) => {
+          subprocessEnvironment = env;
+          throw stopBeforeSpawn;
+        }
+      }
+    });
+    try {
+      await expect(stream.next()).rejects.toThrow(stopBeforeSpawn.message);
+      expect(subprocessEnvironment?.CLAUDE_CONFIG_DIR).not.toBe(
+        options.env?.CLAUDE_CONFIG_DIR
+      );
+      expect(subprocessEnvironment?.CLAUDE_CONFIG_DIR).toContain(
+        "claude-resume-"
+      );
+      expect(subprocessEnvironment?.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe("");
+    } finally {
+      stream.close();
+    }
+  });
+
   it("fails clearly when the configured Claude home is missing", () => {
     const { config, cwd } = fixture();
 
