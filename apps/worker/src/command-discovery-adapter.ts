@@ -79,7 +79,7 @@ const validName = (value: string): string | null => {
     name.length > MAX_NAME_LENGTH ||
     name.startsWith("/") ||
     name.split("/").some((part) => !part || part === "." || part === "..") ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(name)
   ) {
     return null;
   }

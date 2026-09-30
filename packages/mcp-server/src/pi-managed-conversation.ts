@@ -348,86 +348,52 @@ export class PiManagedConversationSession {
   }
 
   async listCommands(): Promise<ManagedConversationCommand[]> {
-    const roots = [
-      {
-        path: path.join(
-          this.config.env.PI_CODING_AGENT_DIR?.trim() ||
-            path.join(this.config.env.HOME ?? process.cwd(), ".pi", "agent"),
-          "prompts"
-        ),
-        scope: "global" as const,
-        source: "global-file" as const,
-        kind: "command" as const
-      },
-      {
-        path: path.join(
-          this.config.env.PI_CODING_AGENT_DIR?.trim() ||
-            path.join(this.config.env.HOME ?? process.cwd(), ".pi", "agent"),
-          "skills"
-        ),
-        scope: "global" as const,
-        source: "global-file" as const,
-        kind: "skill" as const
-      },
-      {
-        path: path.join(this.config.cwd, ".pi", "prompts"),
-        scope: "project" as const,
-        source: "project-file" as const,
-        kind: "command" as const
-      },
-      {
-        path: path.join(this.config.cwd, ".pi", "skills"),
-        scope: "project" as const,
-        source: "project-file" as const,
-        kind: "skill" as const
+    try {
+      const response = await this.request({ type: "get_commands" });
+      if (!Array.isArray(response?.commands)) return [];
+      const commands: ManagedConversationCommand[] = [];
+      for (const raw of response.commands.slice(0, 128)) {
+        if (!raw || typeof raw !== "object") continue;
+        const item = raw as Record<string, unknown>;
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        if (!name || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/.test(name))
+          continue;
+        const description =
+          typeof item.description === "string" && item.description.trim()
+            ? item.description.trim().slice(0, 512)
+            : "";
+        const sourceType =
+          typeof item.source === "string" ? item.source : "prompt";
+        const sourceInfo =
+          item.sourceInfo && typeof item.sourceInfo === "object"
+            ? (item.sourceInfo as Record<string, unknown>)
+            : {};
+        const scope =
+          (typeof sourceInfo.scope === "string"
+            ? sourceInfo.scope
+            : "project") === "user"
+            ? "global"
+            : "project";
+        const sourceKind =
+          sourceType === "extension"
+            ? "provider"
+            : sourceType === "skill"
+              ? "global-file"
+              : "project-file";
+        commands.push({
+          name,
+          description,
+          kind: sourceType === "skill" ? "skill" : "command",
+          scope,
+          source: sourceKind,
+          verification: "unverified",
+          invocation: { type: "prompt" }
+        });
       }
-    ];
-    const commands: ManagedConversationCommand[] = [];
-    for (const root of roots) {
-      let entries: string[];
-      try {
-        entries = fs.readdirSync(root.path).sort().slice(0, 128);
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (commands.length >= 128) return commands;
-        const filePath = path.join(root.path, entry);
-        const name =
-          root.kind === "command" ? path.basename(entry, ".md") : entry;
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) continue;
-        try {
-          const entryStat = fs.lstatSync(filePath);
-          if (entryStat.isSymbolicLink()) continue;
-          const target =
-            root.kind === "command"
-              ? filePath
-              : path.join(filePath, "SKILL.md");
-          const stat = fs.lstatSync(target);
-          if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 64 * 1024)
-            continue;
-          const content = fs.readFileSync(target, "utf8");
-          commands.push({
-            name,
-            description:
-              content
-                .match(
-                  /^---\r?\n[\s\S]*?description\s*:\s*(.*?)\r?\n[\s\S]*?---/i
-                )?.[1]
-                ?.trim()
-                .slice(0, 512) ?? "",
-            kind: root.kind,
-            scope: root.scope,
-            source: root.source,
-            verification: "unverified",
-            invocation: { type: "prompt" }
-          });
-        } catch {
-          // Ignore inaccessible or malformed custom entries.
-        }
-      }
+      return commands;
+    } catch {
+      return [];
     }
-    return commands;
   }
 
   async executeControlAction(
