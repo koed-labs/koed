@@ -308,6 +308,19 @@ export const rewrapPdsCheckpointSourceEnvelope = (input: {
   return rewrapped;
 };
 
+export const pdsLifecycleDataPlaneReadyForRuntime = (input: {
+  dataPlaneReady: unknown;
+  authorityHeadHash: string;
+  certificateEpoch: unknown;
+  certificateStatementHash: unknown;
+  runtimeAuthorityHead: string;
+  runtimeEpoch: string;
+}): boolean =>
+  input.dataPlaneReady !== false &&
+  input.authorityHeadHash === input.runtimeAuthorityHead &&
+  input.certificateEpoch === input.runtimeEpoch &&
+  input.certificateStatementHash === input.authorityHeadHash;
+
 export const resolvePdsLifecycleAuthorizationPublicKey = (
   secret: RuntimeSecret,
   signerKeyId: unknown
@@ -1084,7 +1097,10 @@ const createPdsWorkerRuntimeFromSecret = (
         const waitForRelay = async (relaySignal?: AbortSignal) => {
           await relay.waitForWake(
             relaySignal,
-            Array.from(pendingOutboundTransports)
+            Array.from(pendingOutboundTransports),
+            // Tunnel server frames are serialized; client cancellation cannot
+            // cancel the already forwarded Authority request.
+            relayFetch ? 5 : undefined
           );
           // The wake may have been caused by one of these ACK cursors. Durable
           // committed-outbox reconciliation adds back any still-pending cursor.
@@ -1251,6 +1267,10 @@ const createPdsWorkerRuntimeFromSecret = (
           !head.statement
         )
           throw new TypeError("PdsCryptoAuthorityError");
+        const refreshedCertificate = record(
+          parseCanonicalPdsJson(lifecycleCertificate),
+          "certificate"
+        );
         const headStatement = record(
           typeof head.statement === "string"
             ? parseCanonicalPdsJson(head.statement)
@@ -1320,10 +1340,8 @@ const createPdsWorkerRuntimeFromSecret = (
           else validatePdsConflictResolution(tombstone, validation);
           const statement = record(control.statement, "lifecycle statement");
           validatePdsGroupStatement(statement as never, {
-            authorizationPublicKey: record(
-              parseCanonicalPdsJson(lifecycleCertificate),
-              "certificate"
-            ).deviceSigningPublicKey as string,
+            authorizationPublicKey:
+              refreshedCertificate.deviceSigningPublicKey as string,
             authorityPublicKey: secret.authority.publicKey,
             expectedGroupId: secret.groupId
           });
@@ -1391,6 +1409,15 @@ const createPdsWorkerRuntimeFromSecret = (
             }
           });
         }
+        const dataPlaneReady = pdsLifecycleDataPlaneReadyForRuntime({
+          dataPlaneReady: lifecycle.data_plane_ready,
+          authorityHeadHash: head.hash,
+          certificateEpoch: refreshedCertificate.epoch,
+          certificateStatementHash: refreshedCertificate.statementHash,
+          runtimeAuthorityHead: runtime.authorityHead,
+          runtimeEpoch: runtime.epoch
+        });
+        return dataPlaneReady;
       },
       async poll() {
         const sources: Array<{
@@ -1874,7 +1901,7 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
       await runtime.waitForWake?.(signal);
     },
     async pollLifecycle() {
-      await requiredRuntime().pollLifecycle?.();
+      return await requiredRuntime().pollLifecycle?.();
     },
     async poll() {
       return await requiredRuntime().poll();

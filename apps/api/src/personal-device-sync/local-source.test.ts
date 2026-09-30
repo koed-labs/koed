@@ -47,6 +47,25 @@ describe("PDS source closure sanitizer", () => {
     ]);
   });
 
+  it("does not mistake ordinary database chunk defaults for chunk records", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      items: [
+        {
+          ...source.items[0]!,
+          logicalSourceId: null,
+          transportChunkIndex: 0,
+          transportChunkCount: 1,
+          transportChunkText: null,
+          transportChunkEncoding: null,
+          sourceHash: null
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("captured source");
+  });
+
   it("does not serialize ignored raw or canonical metadata fields", () => {
     const [item] = pdsConversationItemsForClosure({
       ...source,
@@ -113,6 +132,31 @@ describe("PDS source closure sanitizer", () => {
       })
     );
     expect(JSON.stringify(item)).not.toContain("private-provider-turn-id");
+  });
+
+  it("exports Codex event messages from the supported payload field", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      items: [
+        {
+          ...source.items[0]!,
+          rawText: null,
+          rawJson: {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: "captured Codex prompt",
+              turn_id: "provider-private-turn-id"
+            }
+          },
+          sourceRecordType: "event_msg",
+          sourceEventType: "user_message"
+        }
+      ]
+    });
+
+    expect(item?.content).toBe("captured Codex prompt");
+    expect(JSON.stringify(item)).not.toContain("provider-private-turn-id");
   });
 
   it("never serializes arbitrary raw JSON when raw text is unavailable", () => {

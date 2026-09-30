@@ -91,6 +91,8 @@ describe("PDS Paseo relay fetch", () => {
         string,
         unknown
       >;
+      // A cancelled long poll's reply may arrive on the replacement client.
+      serverSocket.send(JSON.stringify({ request_id: "cancelled-request" }));
       serverSocket.send(
         JSON.stringify({
           protocol: "koed/pds-http-tunnel/v1",

@@ -27,6 +27,11 @@ const publicError = (): Error =>
     statusCode: 404
   });
 
+export const pdsRelayControlAllowedDuringPending = (
+  pendingEpoch: unknown,
+  allowStaleHead: boolean
+): boolean => pendingEpoch === null || allowStaleHead;
+
 export const pdsRelayCertificateEpochAllowed = (
   certificateEpoch: unknown,
   currentEpoch: unknown,
@@ -168,7 +173,10 @@ const assertCurrentRelayAuth = async (
   const certificate = input.certificate;
   if (
     group.state !== "active" ||
-    group.pending_epoch !== null ||
+    !pdsRelayControlAllowedDuringPending(
+      group.pending_epoch,
+      input.allowStaleHead === true
+    ) ||
     (!input.allowStaleHead && group.head_hash !== input.headHash) ||
     group.current_epoch !== input.epoch ||
     !certificateIsPdsValid(
@@ -323,7 +331,10 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       const group = row<Record<string, unknown>>(groups.rows[0]);
       if (
         group.state !== "active" ||
-        group.pending_epoch !== null ||
+        !pdsRelayControlAllowedDuringPending(
+          group.pending_epoch,
+          input.allowStaleHead === true
+        ) ||
         !certificateIsPdsValid(
           certificate,
           group.authority_public_key as string,
@@ -759,7 +770,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
        join personal_device_group_members m on m.id=c.member_id
        join personal_device_groups g on g.id=c.group_id
        where c.group_id=$1 and m.device_id=$2 and m.status='active'
-         and c.epoch=g.current_epoch and c.statement_hash=g.head_hash
+         and c.epoch=g.current_epoch
+         and (c.statement_hash=g.head_hash or g.pending_epoch is not null)
          and c.revoked_at is null and c.expires_at>now()`,
       [input.groupDbId, input.deviceId]
     );

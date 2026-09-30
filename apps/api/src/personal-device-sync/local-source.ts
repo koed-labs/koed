@@ -110,12 +110,26 @@ const record = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 /** Rehydrate only the explicit v2 transport envelope, never arbitrary raw JSON. */
+const isTransportChunk = (item: PdsClosureSource["items"][number]): boolean => {
+  const marker = record(item.rawJson);
+  return (
+    (item.transportChunkEncoding !== null &&
+      item.transportChunkEncoding !== undefined) ||
+    (item.transportChunkText !== null &&
+      item.transportChunkText !== undefined) ||
+    marker?.transportChunk === true ||
+    (item.transportChunkCount !== null &&
+      item.transportChunkCount !== undefined &&
+      item.transportChunkCount !== 1)
+  );
+};
+
 const restoreTransportChunks = (
   items: PdsClosureSource["items"]
 ): PdsClosureSource["items"] => {
   const groups = new Map<string, PdsClosureSource["items"]>();
   for (const item of items) {
-    if (item.transportChunkCount == null) continue;
+    if (!isTransportChunk(item)) continue;
     const key = item.logicalSourceId;
     if (!key) throw new TypeError("PDS transport chunk identity is incomplete");
     groups.set(key, [...(groups.get(key) ?? []), item]);
@@ -124,7 +138,7 @@ const restoreTransportChunks = (
   const restored: PdsClosureSource["items"] = [];
   for (const item of items) {
     const key = item.logicalSourceId;
-    if (key && groups.has(key)) {
+    if (isTransportChunk(item) && key && groups.has(key)) {
       if (consumed.has(key)) continue;
       consumed.add(key);
       const group = groups.get(key)!;
@@ -217,6 +231,14 @@ const codexContent = (raw: unknown): string | null => {
   const value = raw as Record<string, unknown>;
   const direct = textValue(value.content) ?? boundedText(value.text);
   if (direct !== null) return direct;
+  const payload = record(value.payload);
+  if (
+    value.type === "event_msg" &&
+    (payload?.type === "user_message" || payload?.type === "agent_message")
+  ) {
+    const message = boundedText(payload.message);
+    if (message !== null) return message;
+  }
   const params = record(value.params);
   const item = record(params?.item);
   if (!item) return null;

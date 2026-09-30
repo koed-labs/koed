@@ -32,8 +32,8 @@ export interface PdsWorkerSecureRuntime {
     groupId: string;
     transportId: string;
   }): Promise<"committed" | "acked" | "missing">;
-  /** Durable lifecycle controls run before mailbox, publication, or Recall work. */
-  pollLifecycle?(): Promise<void>;
+  /** Reconcile lifecycle controls; false pauses package work during an epoch transition. */
+  pollLifecycle?(): Promise<boolean | void>;
   poll(): Promise<
     Array<{
       userId: string;
@@ -144,6 +144,7 @@ export const createPdsLocalSyncService = (input: {
   let lastPeerRouteRefreshAt = 0;
   let reconciliationFailureAttempt = 0;
   let runtimeAvailable = false;
+  let dataPlaneReady = true;
 
   const retryAt = (attempt: number) =>
     new Date(
@@ -184,6 +185,7 @@ export const createPdsLocalSyncService = (input: {
   const processOnce = async (): Promise<{
     failed: boolean;
     needsDrain: boolean;
+    deferred?: boolean;
   }> => {
     let needsDrain = false;
     try {
@@ -208,11 +210,9 @@ export const createPdsLocalSyncService = (input: {
           })
         ]);
       }
-      await input.secureRuntime.pollLifecycle?.();
-      await refreshPeerRoutesIfDue();
-      const stagedArtifacts =
-        (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
-      needsDrain ||= stagedArtifacts >= 50;
+      dataPlaneReady = (await input.secureRuntime.pollLifecycle?.()) !== false;
+      if (!dataPlaneReady)
+        return { failed: false, needsDrain: false, deferred: true };
       const outbox = await input.repository.claimPdsOutbox({ workerId });
       needsDrain ||= outbox.length >= 10;
       for (const entry of outbox) {
@@ -267,6 +267,10 @@ export const createPdsLocalSyncService = (input: {
           });
         }
       }
+      await refreshPeerRoutesIfDue();
+      const stagedArtifacts =
+        (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
+      needsDrain ||= stagedArtifacts >= 50;
       const artifactOutbox = await input.repository.claimPdsArtifactOutbox({
         workerId
       });
@@ -582,9 +586,11 @@ export const createPdsLocalSyncService = (input: {
   const scheduleRemoteWake = (): void => {
     if (
       stopped ||
+      running ||
       remoteWakeAbort ||
       remoteWakeReconnectTimer ||
       !runtimeAvailable ||
+      !dataPlaneReady ||
       !input.secureRuntime.waitForWake
     )
       return;
@@ -632,15 +638,26 @@ export const createPdsLocalSyncService = (input: {
 
   const requestProcessing = (): void => {
     if (stopped || reconciliationRetryTimer) return;
+    remoteWakeAbort?.abort();
     if (running) {
       runAgain = true;
       return;
     }
     running = true;
+    // A remote long poll owns the serialized tunnel route. Release it before
+    // lifecycle/package requests; local work must not queue behind idle wake.
     void (async () => {
       do {
         runAgain = false;
         const outcome = await processOnce();
+        if (outcome.deferred) {
+          reconciliationRetryTimer = setTimeout(() => {
+            reconciliationRetryTimer = null;
+            requestProcessing();
+          }, 3_000);
+          reconciliationRetryTimer.unref?.();
+          break;
+        }
         if (outcome.failed) {
           const delayMs = Math.min(
             1_000 * 2 ** reconciliationFailureAttempt,
@@ -663,6 +680,7 @@ export const createPdsLocalSyncService = (input: {
     })().finally(() => {
       running = false;
       if (!stopped && runAgain) requestProcessing();
+      else scheduleRemoteWake();
     });
   };
 

@@ -72,6 +72,18 @@ outbound WebSocket connections to configured relay. Pairing-control and PDS
 traffic use distinct random relay capabilities, so competing processes cannot
 replace one another's route. Durable PDS synchronization still uses existing
 Authority/Relay mailbox protocol through its authenticated application tunnel.
+During a membership epoch transition, an active device may use its prior-head
+certificate for certificate, lifecycle, and wake control only. Package publication
+and mailbox reconciliation pause until the Authority reports the data plane ready;
+the local worker retries lifecycle reconciliation rather than treating this
+expected transition window as a transport failure.
+Tunneled wake requests are bounded to five seconds because the Authority processes
+frames serially; cancelling a client connection does not cancel an already
+forwarded long poll. Direct HTTP wake requests retain their longer wait. Local
+work cancels the client wake and rearms it after reconciliation completes.
+Epoch refresh retains previous membership certificates as historical signature
+proof for retained checkpoints. They do not grant current access or add devices
+to the active recipient set.
 
 Requests use a separate `koed/pds-device-request/v1` authenticated encrypted
 transport. The URL fragment carries a random 256-bit secret and is never included
@@ -116,8 +128,10 @@ checkpoint publication, successive turns in one received Session, verified origi
 badges, and semantic recall in both directions. It does not call the permanent
 close/publish endpoint. This is an ingestion-to-replication smoke; physical
 AI Client watcher validation remains a separate end-to-end check.
-Use `KOED_SMOKE_ASSET_HOME` for another prepared asset directory. Temporary homes
-are removed after the test unless `KOED_KEEP_SMOKE_HOME=1` is selected explicitly.
+Use `KOED_SMOKE_ASSET_HOME` for another prepared asset directory. Set
+`KOED_PDS_SMOKE_REVOKE_JOINING=1` to also revoke the joining test device at the
+end and assert the Authority reports it revoked. Temporary homes are removed
+after the test unless `KOED_KEEP_SMOKE_HOME=1` is selected explicitly.
 
 Local publication on joined installations uses the enrolled device's secure key
 context, not an Authority private key. Closing a session, retrying the local

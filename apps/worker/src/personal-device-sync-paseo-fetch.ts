@@ -118,6 +118,16 @@ const exchangePaseoFrameUnlocked = (
     };
     const received = (data: WebSocket.RawData) => {
       const response = rawDataText(data);
+      // The persistent server may finish a cancelled client's long poll after
+      // a replacement client connects. Ignore replies for that older request.
+      try {
+        const reply = JSON.parse(response) as Record<string, unknown>;
+        const request = JSON.parse(frame) as Record<string, unknown>;
+        if (reply.request_id !== request.request_id) return;
+      } catch {
+        fail("PDS relay response is invalid.");
+        return;
+      }
       cleanup();
       socket.close();
       resolve(response);
@@ -126,7 +136,7 @@ const exchangePaseoFrameUnlocked = (
     const closed = () => fail("PDS relay disconnected.");
     const abort = () => fail("PDS relay request was cancelled.");
     socket.once("open", opened);
-    socket.once("message", received);
+    socket.on("message", received);
     socket.once("error", errored);
     socket.once("close", closed);
     signal?.addEventListener("abort", abort, { once: true });

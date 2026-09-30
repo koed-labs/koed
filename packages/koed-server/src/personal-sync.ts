@@ -2799,6 +2799,15 @@ const refreshActiveDevice = async (
   const nextRuntime = validatedRuntimeSecret(
     {
       ...runtimeWithoutCertificates,
+      // Retained source manifests keep their original signed head and epoch.
+      // These certificates prove historical signatures, not current access.
+      historicalOriginCertificates: [
+        ...new Set([
+          ...(runtime.historicalOriginCertificates ?? []),
+          runtime.certificate,
+          ...runtime.recipientCertificates
+        ])
+      ],
       authority: { ...runtime.authority, head: head.hash as string },
       groupSecrets: {
         currentEpoch,

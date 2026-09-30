@@ -430,8 +430,20 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     { preHandler: context.rateLimit.memoryRead },
     async (request, reply) => {
       requireDataPlane(context);
-      const input = await authenticate(request as RawRequest, context);
-      const query = request.query as { transportId?: string | string[] };
+      // Wake carries no package contents; an active prior-head certificate may
+      // use it to bridge an in-flight membership transition and refresh control.
+      const input = await authenticate(request as RawRequest, context, true);
+      const query = request.query as {
+        transportId?: string | string[];
+        waitSeconds?: string;
+      };
+      const requestedWait = Number(query.waitSeconds ?? "1800");
+      const waitSeconds =
+        Number.isInteger(requestedWait) &&
+        requestedWait >= 1 &&
+        requestedWait <= 1800
+          ? requestedWait
+          : 1800;
       const transportIds = (
         Array.isArray(query.transportId)
           ? query.transportId
@@ -478,7 +490,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
             }
           });
           reply.raw.once("close", done);
-          timeout = setTimeout(done, 30 * 60_000);
+          timeout = setTimeout(done, waitSeconds * 1_000);
           timeout.unref?.();
         });
         return { wake: true };
@@ -604,6 +616,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
       });
       return {
         authority_head: lifecycle.authorityHead,
+        data_plane_ready: lifecycle.dataPlaneReady,
         deletion_floors: lifecycle.deletionFloors,
         controls: lifecycle.controls.map((control) => ({
           sequence: control.sequence,

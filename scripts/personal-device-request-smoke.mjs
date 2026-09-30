@@ -343,6 +343,39 @@ try {
   };
   await replicate(authority, joining, "Electron-to-headless");
   await replicate(joining, authority, "headless-to-Electron");
+  if (process.env.KOED_PDS_SMOKE_REVOKE_JOINING === "1") {
+    const status = await manager.handlers.personal_sync_status();
+    const group = status.groups?.[0];
+    const target = group?.members?.find(
+      (member) => member.device_id !== status.local_device_id
+    );
+    assert(group?.group_id && target?.device_id);
+    const revoked = await manager.handlers.personal_sync_revoke({
+      groupId: group.group_id,
+      deviceId: target.device_id
+    });
+    assert.equal(revoked.ok, true);
+    assert.equal(revoked.state, "removed");
+    const afterRevoke = await manager.handlers.personal_sync_status();
+    const updatedGroup = afterRevoke.groups?.find(
+      (candidate) => candidate.group_id === group.group_id
+    );
+    assert.equal(
+      updatedGroup?.members?.find(
+        (member) => member.device_id === target.device_id
+      )?.status,
+      "revoked"
+    );
+    assert.equal(
+      updatedGroup?.members?.filter((member) => member.status === "active")
+        .length,
+      1
+    );
+    console.log(
+      "PASS: live Personal Device revocation advanced the Authority epoch."
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
 } finally {
   await manager?.stop().catch(() => undefined);
   await Promise.all(

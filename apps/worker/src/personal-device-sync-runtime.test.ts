@@ -21,6 +21,7 @@ import {
   fetchPdsLifecycleWithCertificateRefresh,
   materializePdsSession,
   pdsCheckpointMaterializationSource,
+  pdsLifecycleDataPlaneReadyForRuntime,
   rewrapPdsCheckpointSourceEnvelope,
   resolvePdsEmbeddingCapability,
   resolvePdsLifecycleAuthorizationPublicKey,
@@ -185,6 +186,34 @@ describe("PDS direct package delivery", () => {
 });
 
 describe("PDS lifecycle certificate refresh", () => {
+  it("defers package work when refreshed Authority state differs from the pinned runtime", () => {
+    const current = {
+      dataPlaneReady: true,
+      authorityHeadHash: "head-3",
+      certificateEpoch: "3",
+      certificateStatementHash: "head-3",
+      runtimeAuthorityHead: "head-2",
+      runtimeEpoch: "2"
+    };
+
+    expect(pdsLifecycleDataPlaneReadyForRuntime(current)).toBe(false);
+    expect(
+      pdsLifecycleDataPlaneReadyForRuntime({
+        ...current,
+        runtimeAuthorityHead: "head-3",
+        runtimeEpoch: "3"
+      })
+    ).toBe(true);
+    expect(
+      pdsLifecycleDataPlaneReadyForRuntime({
+        ...current,
+        dataPlaneReady: false,
+        runtimeAuthorityHead: "head-3",
+        runtimeEpoch: "3"
+      })
+    ).toBe(false);
+  });
+
   it("refreshes the certificate once when the Authority head changes before lifecycle auth", async () => {
     let authorityHead = "head-before-revoke";
     const fetchCertificate = vi.fn(async () => ({

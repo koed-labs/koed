@@ -425,6 +425,7 @@ describe("PDS relay routes", () => {
       consumePdsRelayRequestNonce: vi.fn(async () => undefined),
       getPdsLifecycleControl: vi.fn(async () => ({
         authorityHead: { sequence: "2", hash: "head", statement: "{}" },
+        dataPlaneReady: false,
         deletionFloors: [],
         controls: [],
         nextCursor: null
@@ -446,6 +447,9 @@ describe("PDS relay routes", () => {
       }
     });
     expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(
+      expect.objectContaining({ data_plane_ready: false })
+    );
     expect(authenticatePdsRelayRequest).toHaveBeenCalledWith(
       expect.objectContaining({ allowStaleHead: true })
     );
@@ -563,6 +567,9 @@ describe("PDS relay routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ wake: true });
+    expect(repository.authenticatePdsRelayRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ allowStaleHead: true })
+    );
     expect(wakeClient.query).toHaveBeenNthCalledWith(
       1,
       "listen koed_pds_relay_wake"

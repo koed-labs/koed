@@ -1522,6 +1522,10 @@ describe("Personal Sync control client", () => {
     const targetDeviceId = Buffer.alloc(16, 13).toString("base64url");
     const sourceSigningKeyId = Buffer.alloc(16, 14).toString("base64url");
     const sourceKemKeyId = Buffer.alloc(16, 15).toString("base64url");
+    fixture.runtime.certificate = canonicalizePdsJson({
+      fixture: "previous-source"
+    });
+    fixture.runtime.recipientCertificates = [fixture.runtime.certificate];
     fixture.runtime.groupId = groupId;
     fixture.runtime.device.id = sourceDeviceId;
     fixture.runtime.device.signingKeyId = sourceSigningKeyId;
@@ -1726,6 +1730,10 @@ describe("Personal Sync control client", () => {
       groupSecrets: { currentEpoch: "2" },
       authority: { head: pdsFinalizedStatementHash(finalizedStatement!) }
     });
+    expect(
+      (JSON.parse(storedRuntime ?? "{}") as Record<string, unknown>)
+        .historicalOriginCertificates
+    ).toEqual(expect.arrayContaining([fixture.runtime.certificate]));
     expect(certificateLookups).toEqual([sourceDeviceId]);
     expect(certificateLookups).not.toContain(targetDeviceId);
   });

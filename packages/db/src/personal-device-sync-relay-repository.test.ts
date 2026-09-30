@@ -4,6 +4,7 @@ import {
   pdsCanonicalRelayRecipients,
   pdsRedactedRelayReceipt,
   pdsRelayCertificateEpochAllowed,
+  pdsRelayControlAllowedDuringPending,
   pdsRelayDeliveryRecipients
 } from "./personal-device-sync-relay-repository.js";
 
@@ -15,6 +16,12 @@ describe("Personal Device Sync relay receipts", () => {
     expect(pdsRelayCertificateEpochAllowed("4", "3", true)).toBe(false);
     expect(pdsRelayCertificateEpochAllowed("02", "3", true)).toBe(false);
   });
+  it("allows only stale-head control operations through pending epoch transitions", () => {
+    expect(pdsRelayControlAllowedDuringPending(null, false)).toBe(true);
+    expect(pdsRelayControlAllowedDuringPending("4", false)).toBe(false);
+    expect(pdsRelayControlAllowedDuringPending("4", true)).toBe(true);
+  });
+
   it("serializes numeric audit fields as canonical decimal strings", () => {
     const receipt = pdsRedactedRelayReceipt({
       groupId: "group",

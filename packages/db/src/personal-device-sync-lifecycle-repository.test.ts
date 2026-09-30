@@ -15,6 +15,7 @@ describe("Personal Device Sync lifecycle repository", () => {
               {
                 head_sequence: "1",
                 head_hash: "head",
+                pending_epoch: null,
                 canonical_statement: "{}"
               }
             ]
@@ -34,11 +35,44 @@ describe("Personal Device Sync lifecycle repository", () => {
     });
 
     expect(result.controls).toEqual([]);
+    expect(result.dataPlaneReady).toBe(true);
     expect(
       queries.find((query) => query.includes("pds_conflict_resolution_records"))
     ).toMatch(
       /from \(\s*select[\s\S]*union all[\s\S]*\) lifecycle\s*order by lifecycle\.sequence::numeric/
     );
+  });
+
+  it("marks the relay data plane unavailable during a pending epoch", async () => {
+    const pool = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("from personal_device_groups g")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                head_sequence: "2",
+                head_hash: "head-2",
+                pending_epoch: "3",
+                canonical_statement: "{}"
+              }
+            ]
+          };
+        }
+        return { rowCount: 0, rows: [] };
+      })
+    } as unknown as pg.Pool;
+
+    const result = await createPersonalDeviceSyncLifecycleRepository(
+      pool
+    ).getPdsLifecycleControl({
+      groupDbId: "group-db",
+      groupId: "group",
+      cursor: "0",
+      limit: 10
+    });
+
+    expect(result.dataPlaneReady).toBe(false);
   });
 
   it("accepts an identical repeated lifecycle checkpoint", async () => {
