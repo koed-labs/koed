@@ -111,9 +111,11 @@ Claude Desktop credentials. Koed also does not read or store Anthropic API keys.
 Setup and repair treat an existing user-scoped MCP entry under the configured
 name (`koed` by default, or `MEMORY_MCP_NAME`) as a reinstall and replace it with
 this Koed instance's adapter, even when it points to another installation or an
-unrelated server. App setup retains the previous entry for rollback if setup
-fails. The Local Operator Script also restores the exact displaced entry if
-MCP replacement fails and reports any rollback failure. Removal still requires the entry to identify this Koed instance. Claude Code
+unrelated server. App setup removes any partially written replacement and
+restores the exact previous entry if setup fails, including when the add command
+fails after writing it. The Local Operator Script also restores the exact
+displaced entry if MCP replacement fails and reports any rollback failure.
+Removal still requires the entry to identify this Koed instance. Claude Code
 setup subprocesses receive a strict system/profile environment allowlist; Koed
 service secrets and provider credential environment variables are not passed
 through.

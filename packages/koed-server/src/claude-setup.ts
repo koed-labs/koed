@@ -456,7 +456,7 @@ export const setupClaude = (
   let previousMcp: ClaudeMcpEntry | null = null;
   let previousMcpJson: string | undefined;
   let removedExistingMcp = false;
-  let addedMcp = false;
+  let attemptedMcpAdd = false;
   const failure = (
     error: string,
     action: string,
@@ -585,6 +585,7 @@ export const setupClaude = (
       }
       removedExistingMcp = true;
     }
+    attemptedMcpAdd = true;
     const add = spawnClaude(
       spawnSync,
       executable,
@@ -611,8 +612,6 @@ export const setupClaude = (
         add.error?.message ?? add.stderr?.trim() ?? "Claude MCP setup failed."
       );
     }
-    addedMcp = true;
-
     for (const eventName of CLAUDE_HOOK_EVENTS) {
       settings.hooks[eventName] = [
         ...withoutKoedHook(settings.hooks[eventName], runtime.captureHook),
@@ -657,7 +656,8 @@ export const setupClaude = (
     };
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
-    if (addedMcp) {
+    // A failed or timed-out add may still have written the replacement.
+    if (attemptedMcpAdd) {
       try {
         const removed = spawnClaude(
           spawnSync,
