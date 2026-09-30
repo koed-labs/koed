@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import cookie from "@fastify/cookie";
 import type {
   ActorContext,
@@ -14,6 +17,7 @@ import {
   CollaborationVersionConflictError
 } from "@koed/db";
 import {
+  COLLABORATION_CONTRACT_VERSION,
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
 } from "@koed/shared";
@@ -781,7 +785,12 @@ const buildTestServer = async (
   projectPersonalNote: (input: {
     ownerUserId: string;
     note: PersonalNoteRecord;
-  }) => Promise<void> = async () => undefined
+  }) => Promise<void> = async () => undefined,
+  options: {
+    deploymentProfile?: string;
+    koedHome?: string;
+    localEdge?: Record<string, unknown>;
+  } = {}
 ) => {
   const app = Fastify({ logger: false });
   await app.register(cookie);
@@ -817,6 +826,11 @@ const buildTestServer = async (
     return user;
   };
   registerCollaborationRoutes(app, {
+    config: {
+      deploymentProfile: options.deploymentProfile ?? "hosted",
+      koedHome: options.koedHome ?? "/tmp/koed-test"
+    } as never,
+    localEdge: options.localEdge ?? ({} as never),
     requireCollaborationRepository: () => fixture.repository,
     requireSharedMemoryRepository: () => ({
       async listWorkspaceGrants(_actor, input) {
@@ -866,7 +880,8 @@ const buildTestServer = async (
     authenticateApiToken: async (request) => {
       const authorization = request.headers.authorization?.trim() ?? "";
       const user =
-        authorization === "Bearer personal-api-token"
+        authorization === "Bearer personal-api-token" ||
+        authorization === "Bearer paired-local-token"
           ? fixture.users.get(fixture.ids.alice)
           : null;
       if (!user) {
@@ -941,6 +956,169 @@ const deviceHeaders = (
 });
 
 describe("collaboration HTTP routes", () => {
+  it("does not allow a personal API Token to read hosted Team Public Square data", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/public-square`,
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(jsonBody<{ error: string }>(response).error).toContain(
+      "API Tokens cannot authorize hosted Team operations"
+    );
+    await app.close();
+  });
+
+  it("rejects a valid but unpaired local API Token before any upstream access", async () => {
+    const fixture = createCollaborationFixture();
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-public-square-auth-"));
+    const configDirectory = resolve(koedHome, "config");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      resolve(configDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "paired-local-token" })
+    );
+    const upstreamPath = resolve(configDirectory, "upstream-backends.json");
+    writeFileSync(
+      upstreamPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: { teamWorkspaceRead: "enabled" },
+            credential: { status: "configured" },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              enabled: ["memory.collaboration"]
+            }
+          }
+        ]
+      })
+    );
+    let upstreamCalls = 0;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      deploymentProfile: "local_personal",
+      koedHome,
+      localEdge: {
+        upstreamBackendsPath: upstreamPath,
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Bearer enrolled-team-credential",
+        fetch: async () => {
+          upstreamCalls += 1;
+          return new Response(JSON.stringify({ page: null }), { status: 200 });
+        }
+      }
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/public-square`,
+        headers: { authorization: "Bearer personal-api-token" }
+      });
+      expect(response.statusCode).toBe(403);
+      expect(upstreamCalls).toBe(0);
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("proxies Public Square through a paired local credential when the enrolled backend supports partial collaboration", async () => {
+    const fixture = createCollaborationFixture();
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-public-square-partial-")
+    );
+    const configDirectory = resolve(koedHome, "config");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      resolve(configDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "paired-local-token" })
+    );
+    const upstreamPath = resolve(configDirectory, "upstream-backends.json");
+    writeFileSync(
+      upstreamPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: { teamWorkspaceRead: "enabled" },
+            credential: { status: "configured" },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:15:00.000Z",
+              schemaVersion: 9,
+              payload: {
+                capabilitySchemaVersion: 9,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                },
+                protocols: {
+                  collaborationRealtime: {
+                    version: COLLABORATION_CONTRACT_VERSION,
+                    transport: "sse"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      })
+    );
+    let upstreamCalls = 0;
+    let proxiedUrl: URL | null = null;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      deploymentProfile: "local_personal",
+      koedHome,
+      localEdge: {
+        upstreamBackendsPath: upstreamPath,
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Bearer enrolled-team-credential",
+        fetch: async (input) => {
+          upstreamCalls += 1;
+          proxiedUrl = new URL(
+            input instanceof URL ? input.href : String(input)
+          );
+          return new Response(
+            JSON.stringify({
+              page: {
+                teamId: fixture.ids.teamA,
+                items: [],
+                nextCursor: null,
+                serverTime: iso
+              }
+            }),
+            { status: 200 }
+          );
+        }
+      }
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/collaboration/teams/${fixture.ids.teamA}/public-square?limit=17&cursor=page%2Ftwo`,
+        headers: { authorization: "Bearer paired-local-token" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(upstreamCalls).toBe(1);
+      expect(proxiedUrl?.pathname).toBe(
+        `/v1/collaboration/teams/${fixture.ids.teamA}/public-square`
+      );
+      expect(proxiedUrl?.search).toBe("?limit=17&cursor=page%2Ftwo");
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("projects committed Personal Notes without projecting channel messages", async () => {
     const fixture = createCollaborationFixture();
     const projected: Array<{

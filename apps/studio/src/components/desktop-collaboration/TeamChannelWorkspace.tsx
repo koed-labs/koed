@@ -8,6 +8,7 @@ import {
   type CollaborationMessage,
   type CollaborationMessagePage,
   type CollaborationRendererCommand,
+  type CollaborationSelection,
   type CollaborationSendReceipt,
   type CollaborationSnapshot,
   type CollaborationThread
@@ -19,11 +20,14 @@ import { ChannelHeader } from "@/components/ChannelView";
 import { TeamDirectMessageBubble, directMessageTitle } from "@/components/TeamDirectMessage";
 import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
+import { PublicSquare } from "@/components/PublicSquare";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import { deleteTeamDraftAfterQueuedWrite, describeStudioCommandFailure, directMessageAttemptKey, directMessageParticipantsAreEligible, directMessageThreadMatchesRequest, draftAfterCompletedReceiptWrite, draftTextAfterSendPreflight, durableSendFailureDisposition, durableSendMatchesAuthority, durableSendStatus, mayCompleteDraftHydration, mayPersistTeamDraft, mergeTeamMessages, readCompletionMayApply, readSequenceFor, rememberReadSequence, resolvePendingSend, realtimeUpdateMayAcknowledge, retainPendingSendAfterUncertainOutcome, studioSelectionMatches, teamDraftAfterTextChange, teamDraftForAcceptedReceipt, teamDraftWithoutReceiptAck, teamDraftWriteMayApply, visibleReadMayAdvance } from "@/lib/team-channel-state";
-import { chooseLocalProjectFolder, registerLocalProject } from "@/lib/local-projects";
+import { chooseLocalProjectFolder, listRegisteredLocalProjects, registerLocalProject } from "@/lib/local-projects";
+import { PublicSquareClient } from "@/lib/public-square-client";
+import { usePublicSquare } from "@/lib/use-public-square";
 
 type DraftAuthority = StudioTeamDraftAuthority;
 type DraftStore = {
@@ -37,6 +41,35 @@ const teamChannels = (snapshot: CollaborationSnapshot, teamId: string) =>
   snapshot.navigation.teams.find((team) => team.id === teamId)?.channels ?? [];
 const projectChannels = (snapshot: CollaborationSnapshot, teamId: string) =>
   snapshot.navigation.teams.find((team) => team.id === teamId)?.sharedProjects ?? [];
+const teamSelectionForWorkspace = (
+  snapshot: CollaborationSnapshot,
+  teamId: string,
+  preferredThreadId: string
+): CollaborationSelection | null => {
+  const team = snapshot.navigation.teams.find((candidate) => candidate.id === teamId);
+  if (!team) return null;
+  const thread = [
+    ...team.channels,
+    ...team.sharedProjects.map((project) => project.thread),
+    ...team.directMessages
+  ].find((candidate) => candidate.id === preferredThreadId)
+    ?? team.channels.find((candidate) => candidate.name === "general")
+    ?? team.channels[0]
+    ?? team.sharedProjects[0]?.thread;
+  if (!thread) return { kind: "team_people", teamId };
+  if (thread.kind === "team_project_channel") {
+    return {
+      kind: "team_project_channel",
+      teamId,
+      teamProjectId: thread.teamProjectId,
+      threadId: thread.id
+    };
+  }
+  if (thread.kind === "dm" || thread.kind === "group_dm") {
+    return { kind: "team_direct_message", teamId, threadId: thread.id };
+  }
+  return { kind: "team_channel", teamId, threadId: thread.id };
+};
 
 export function TeamChannelWorkspace({
   snapshot: initialSnapshot,
@@ -55,6 +88,9 @@ export function TeamChannelWorkspace({
     const team = initialSnapshot.navigation.teams[0];
     return team?.channels.find((thread) => thread.name === "general")?.id ?? team?.channels[0]?.id ?? team?.sharedProjects[0]?.thread.id ?? "";
   });
+  const [squareOpen, setSquareOpen] = useState(false);
+  const publicSquareClient = useMemo(() => new PublicSquareClient("studio"), []);
+  const [localProjectsState, setLocalProjectsState] = useState<{ owner: string; loaded: boolean; projects: Array<{ id: string; name: string }> }>({ owner: "", loaded: false, projects: [] });
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
   const [messageSelection, setMessageSelection] = useState<{ teamId: string; threadId: string } | null>(null);
   const [page, setPage] = useState<CollaborationMessagePage | null>(null);
@@ -85,6 +121,22 @@ export function TeamChannelWorkspace({
   const threadSelectionGeneration = useRef(0);
   const localProjectRegistrations = useRef(new Map<string, Promise<{ id: string; name: string; lastSeenAt: string | null }>>());
   const activeTeam = snapshot?.navigation.teams.find((team) => team.id === teamId) ?? null;
+  const localProjectsOwner = snapshot?.connection.backendId && snapshot.navigation.teamPrincipal?.id
+    ? `${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal.id}`
+    : "";
+  const localProjects = localProjectsState.owner === localProjectsOwner ? localProjectsState.projects : [];
+  const loadingLocalProjects = !localProjectsOwner || localProjectsState.owner !== localProjectsOwner || !localProjectsState.loaded;
+  const squareProjects = useMemo(() => (activeTeam?.sharedProjects ?? []).map((project) => ({ id: project.id, name: project.name })), [activeTeam?.sharedProjects]);
+  const handleSquareAuthorizationLost = useCallback(() => { clearRevokedViewRef.current(); }, []);
+  const square = usePublicSquare({
+    client: publicSquareClient,
+    scope: { backendId: snapshot?.connection.backendId ?? "", principalUserId: snapshot?.navigation.teamPrincipal?.id ?? "", teamId },
+    projects: squareProjects,
+    localProjects,
+    enabled: Boolean(snapshot && activeTeam),
+    onAuthorizationLost: handleSquareAuthorizationLost
+  });
+  const refreshSquare = square.refresh;
   const threads = useMemo(() => [
     ...(snapshot ? teamChannels(snapshot, teamId) : []),
     ...(snapshot ? projectChannels(snapshot, teamId).map((project) => project.thread) : []),
@@ -311,6 +363,7 @@ export function TeamChannelWorkspace({
     setHydratedAuthorityKey(null);
     setVisibleRead(null);
     setStatus("Team access changed. Refresh to check your access.");
+    setSquareOpen(false);
     setCreateChannelOpen(false);
     setCreateProjectOpen(false);
     draftByAuthority.current.clear();
@@ -410,107 +463,186 @@ export function TeamChannelWorkspace({
   }, [teamId, threadId]);
 
   useEffect(() => {
-    void refreshSnapshot();
-    if (!teamId) return;
-    return client.subscribe(async (event) => {
-      if (event.type === "update") {
-        const selected = selectedRef.current;
-        if (selected.teamId !== teamId) return false;
-        if (event.resource.scope !== "team" || event.resource.teamId !== teamId) return true;
-        const changedThread = event.resource.threadId;
-        const historyApplied = changedThread && changedThread === selected.threadId
-          ? await loadPageRef.current(changedThread, selected.teamId)
-          : true;
-        const snapshotApplied = await refreshSnapshotRef.current();
-        const current = selectedRef.current;
-        return realtimeUpdateMayAcknowledge({
-          eventTeamId: teamId,
-          eventThreadId: changedThread,
-          currentTeamId: current.teamId,
-          currentThreadId: current.threadId,
-          historyApplied,
-          snapshotApplied
+    let active = true;
+    if (!snapshot || !activeTeam || revokedRef.current) {
+      return () => { active = false; };
+    }
+    void listRegisteredLocalProjects().then((projects) => {
+      if (active) setLocalProjectsState({
+        owner: localProjectsOwner,
+        loaded: true,
+        projects: projects.map((project) => ({ id: project.id, name: project.name }))
+      });
+    }).catch(() => {
+      if (active) setLocalProjectsState({ owner: localProjectsOwner, loaded: true, projects: [] });
+    });
+    return () => { active = false; };
+  }, [activeTeam, localProjectsOwner]);
+
+  useEffect(() => {
+    let active = true;
+    let unsubscribe: (() => void) | null = null;
+    const expectedBackendId = snapshot?.connection.backendId ?? null;
+    const expectedPrincipalId = snapshot?.navigation.teamPrincipal?.id ?? null;
+    if (!teamId || !expectedBackendId || !expectedPrincipalId || revokedRef.current) {
+      return () => { active = false; };
+    }
+    void (async () => {
+      const refreshed = await refreshSnapshotRef.current();
+      if (!active || !refreshed) return;
+      const current = client.current();
+      if (
+        !current ||
+        current.connection.backendId !== expectedBackendId ||
+        current.navigation.teamPrincipal?.id !== expectedPrincipalId ||
+        !current.navigation.teams.some((team) => team.id === teamId)
+      ) return;
+      const selection = teamSelectionForWorkspace(
+        current,
+        teamId,
+        selectedRef.current.threadId
+      );
+      if (!selection || selectedRef.current.teamId !== teamId) return;
+      let selected;
+      try {
+        selected = await client.run("collaboration.select", {
+          selection,
+          navigationIntent: "foreground"
         });
-      } else if (event.type === "durable_send") {
-        const sendAuthority = event.send.authority;
-        const currentAuthorityKey = authorityKeyRef.current;
-        if (sendAuthority.scope !== "team" || sendAuthority.teamId !== teamId ||
-          !studioSelectionMatches({ teamId: sendAuthority.teamId, threadId: sendAuthority.threadId }, selectedRef.current) ||
-          !durableSendMatchesAuthority(event.send, currentAuthorityKey)) return true;
-        if (event.send.state === "sent") {
-          const message = event.message;
-          if (!message || message.clientMessageId !== event.send.clientMessageId) return true;
-          const draftAuthority: DraftAuthority = {
-            backendId: sendAuthority.backendId,
-            principalUserId: sendAuthority.principalUserId,
-            teamId: sendAuthority.teamId,
-            threadId: sendAuthority.threadId
-          };
-          void completeAcceptedReceipt(draftAuthority, {
-            thread: { scope: "team", teamId: sendAuthority.teamId, threadId: sendAuthority.threadId },
-            clientMessageId: event.send.clientMessageId,
-            message
-          });
-        } else {
-          const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
-          if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
-            if (event.send.state === "failed" && durableSendFailureDisposition(event.send.failure?.code ?? null) === "authority_lost") {
-              clearRevokedView();
-              return true;
-            }
-            if (event.send.state === "failed" && currentAuthorityKey) {
-              const settled = resolvePendingSend(latest, event.send.clientMessageId, "not-sent", latest.pendingSend.body);
-              draftByAuthority.current.set(currentAuthorityKey, settled);
-              setDraftText(settled.text);
-              setPendingSend(settled.pendingSend);
-              setStatus(event.send.failure?.userMessage
-                ? `Not sent. ${event.send.failure.userMessage}`
-                : "Message was not sent. Your draft is ready to send again.");
-              const draftAuthority: DraftAuthority = {
-                backendId: sendAuthority.backendId,
-                principalUserId: sendAuthority.principalUserId,
-                teamId: sendAuthority.teamId,
-                threadId: sendAuthority.threadId
-              };
-              void persistDraft(draftAuthority, settled).catch(() => {
-                if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message was not sent. The updated draft could not be saved on this device.");
-              });
-            } else {
-              setStatus(durableSendStatus(event.send));
-            }
-          }
-        }
-      } else if (event.type === "connection" && event.connection.state === "access_revoked") {
-        clearRevokedView();
-      } else if (event.type === "connection" && event.connection.state === "live") {
-        const currentAuthority = authorityKeyRef.current ? JSON.parse(authorityKeyRef.current) as DraftAuthority : null;
-        const currentDraft = currentAuthority && draftByAuthority.current.get(JSON.stringify(currentAuthority));
-        if (currentAuthority?.teamId === teamId && currentDraft?.pendingSend) {
-          const recovery = await recoverPendingReceipt(currentAuthority, currentDraft.pendingSend.clientMessageId);
-          if (recovery === "error") return false;
-        }
-      } else if (event.type === "control" && event.reason === "access_revoked") {
-        clearRevokedView();
-      } else if (event.type === "snapshot" || event.type === "control" || event.type === "connection") {
-        if (selectedRef.current.teamId !== teamId) return false;
-        const snapshotApplied = await refreshSnapshotRef.current();
-        if (!snapshotApplied) return false;
-        const selected = selectedRef.current;
-        if (selected.teamId === teamId && selected.threadId) return await loadPageRef.current(selected.threadId, teamId);
-        return true;
-      }
-      return true;
-    }, async (next) => {
-      if (revokedRef.current || selectedRef.current.teamId !== teamId) return;
-      if (!next.navigation.teams.some((team) => team.id === teamId)) {
-        clearRevokedView();
+      } catch {
+        if (active) setStatus("The selected Team is not available. Refresh to try again.");
         return;
       }
-      setSnapshot(next);
-      const selected = selectedRef.current;
-      if (selected.threadId) await loadPageRef.current(selected.threadId, teamId);
-    }, teamId);
-  }, [client, clearRevokedView, completeAcceptedReceipt, drafts, persistDraft, recoverPendingReceipt, teamId]);
+      if (!active || selectedRef.current.teamId !== teamId) return;
+      if (!selected.ok) {
+        if (selected.error.code === "access_revoked") clearRevokedView();
+        else setStatus(selected.error.userMessage);
+        return;
+      }
+      const selectedSnapshot = client.current();
+      if (
+        !selectedSnapshot ||
+        selectedSnapshot.connection.backendId !== expectedBackendId ||
+        selectedSnapshot.navigation.teamPrincipal?.id !== expectedPrincipalId ||
+        !("teamId" in selectedSnapshot.selection) ||
+        selectedSnapshot.selection.teamId !== teamId
+      ) return;
+      unsubscribe = client.subscribe(async (event) => {
+        if (event.type === "update") {
+          if (event.update.type === "public_square_invalidated") {
+            const invalidation = event.update as { teamId: string };
+            if (invalidation.teamId !== teamId) return true;
+            await refreshSnapshotRef.current();
+            await refreshSquare();
+            // The invalidation was handled. Keep the durable event from hot-looping
+            // when the authoritative read is temporarily unavailable; Retry remains visible.
+            return true;
+          }
+          const selected = selectedRef.current;
+          if (selected.teamId !== teamId) return false;
+          if (event.resource.scope !== "team" || event.resource.teamId !== teamId) return true;
+          const changedThread = event.resource.threadId;
+          const historyApplied = changedThread && changedThread === selected.threadId
+            ? await loadPageRef.current(changedThread, selected.teamId)
+            : true;
+          const snapshotApplied = await refreshSnapshotRef.current();
+          const current = selectedRef.current;
+          return realtimeUpdateMayAcknowledge({
+            eventTeamId: teamId,
+            eventThreadId: changedThread,
+            currentTeamId: current.teamId,
+            currentThreadId: current.threadId,
+            historyApplied,
+            snapshotApplied
+          });
+        } else if (event.type === "durable_send") {
+          const sendAuthority = event.send.authority;
+          const currentAuthorityKey = authorityKeyRef.current;
+          if (sendAuthority.scope !== "team" || sendAuthority.teamId !== teamId ||
+            !studioSelectionMatches({ teamId: sendAuthority.teamId, threadId: sendAuthority.threadId }, selectedRef.current) ||
+            !durableSendMatchesAuthority(event.send, currentAuthorityKey)) return true;
+          if (event.send.state === "sent") {
+            const message = event.message;
+            if (!message || message.clientMessageId !== event.send.clientMessageId) return true;
+            const draftAuthority: DraftAuthority = {
+              backendId: sendAuthority.backendId,
+              principalUserId: sendAuthority.principalUserId,
+              teamId: sendAuthority.teamId,
+              threadId: sendAuthority.threadId
+            };
+            void completeAcceptedReceipt(draftAuthority, {
+              thread: { scope: "team", teamId: sendAuthority.teamId, threadId: sendAuthority.threadId },
+              clientMessageId: event.send.clientMessageId,
+              message
+            });
+          } else {
+            const latest = currentAuthorityKey ? draftByAuthority.current.get(currentAuthorityKey) : undefined;
+            if (latest?.pendingSend?.clientMessageId === event.send.clientMessageId) {
+              if (event.send.state === "failed" && durableSendFailureDisposition(event.send.failure?.code ?? null) === "authority_lost") {
+                clearRevokedView();
+                return true;
+              }
+              if (event.send.state === "failed" && currentAuthorityKey) {
+                const settled = resolvePendingSend(latest, event.send.clientMessageId, "not-sent", latest.pendingSend.body);
+                draftByAuthority.current.set(currentAuthorityKey, settled);
+                setDraftText(settled.text);
+                setPendingSend(settled.pendingSend);
+                setStatus(event.send.failure?.userMessage
+                  ? `Not sent. ${event.send.failure.userMessage}`
+                  : "Message was not sent. Your draft is ready to send again.");
+                const draftAuthority: DraftAuthority = {
+                  backendId: sendAuthority.backendId,
+                  principalUserId: sendAuthority.principalUserId,
+                  teamId: sendAuthority.teamId,
+                  threadId: sendAuthority.threadId
+                };
+                void persistDraft(draftAuthority, settled).catch(() => {
+                  if (authorityKeyRef.current === currentAuthorityKey) setStatus("Message was not sent. The updated draft could not be saved on this device.");
+                });
+              } else {
+                setStatus(durableSendStatus(event.send));
+              }
+            }
+          }
+        } else if (event.type === "connection" && event.connection.state === "access_revoked") {
+          clearRevokedView();
+        } else if (event.type === "connection" && event.connection.state === "live") {
+          if (selectedRef.current.teamId === teamId) await refreshSquare();
+          const currentAuthority = authorityKeyRef.current ? JSON.parse(authorityKeyRef.current) as DraftAuthority : null;
+          const currentDraft = currentAuthority && draftByAuthority.current.get(JSON.stringify(currentAuthority));
+          if (currentAuthority?.teamId === teamId && currentDraft?.pendingSend) {
+            const recovery = await recoverPendingReceipt(currentAuthority, currentDraft.pendingSend.clientMessageId);
+            if (recovery === "error") return false;
+          }
+        } else if (event.type === "control" && event.reason === "access_revoked") {
+          clearRevokedView();
+        } else if (event.type === "snapshot" || event.type === "control" || event.type === "connection") {
+          if (selectedRef.current.teamId !== teamId) return false;
+          const snapshotApplied = await refreshSnapshotRef.current();
+          if (!snapshotApplied) return false;
+          await refreshSquare();
+          const selected = selectedRef.current;
+          if (selected.teamId === teamId && selected.threadId) return await loadPageRef.current(selected.threadId, teamId);
+          return true;
+        }
+        return true;
+      }, async (next) => {
+        if (revokedRef.current || selectedRef.current.teamId !== teamId) return;
+        if (!next.navigation.teams.some((team) => team.id === teamId)) {
+          clearRevokedView();
+          return;
+        }
+        await refreshSquare();
+        setSnapshot(next);
+        const selected = selectedRef.current;
+        if (selected.threadId) await loadPageRef.current(selected.threadId, teamId);
+      }, teamId);
+    })();
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [client, clearRevokedView, completeAcceptedReceipt, drafts, persistDraft, recoverPendingReceipt, refreshSquare, setStatus, snapshot?.connection.backendId, snapshot?.navigation.teamPrincipal?.id, teamId]);
 
   useEffect(() => {
     if (teamId && !threads.some((thread) => thread.id === threadId)) {
@@ -938,9 +1070,16 @@ export function TeamChannelWorkspace({
         if (localProjectRegistrations.current.get(selectionId) === registration) localProjectRegistrations.current.delete(selectionId);
       });
     }
-    await registration;
+    const localProject = await registration;
+    setLocalProjectsState((current) => {
+      const available = current.owner === localProjectsOwner ? current.projects : [];
+      const projects = available.some((item) => item.id === localProject.id)
+        ? available.map((item) => item.id === localProject.id ? { id: localProject.id, name: localProject.name } : item)
+        : [...available, { id: localProject.id, name: localProject.name }];
+      return { owner: localProjectsOwner, loaded: true, projects };
+    });
     if (revokedRef.current) return;
-    const result = await run("collaboration.create_team_shared_project", { teamId, name: project.name }, requestId);
+    const result = await run("collaboration.create_team_shared_project", { teamId, name: project.name, localProjectId: localProject.id }, requestId);
     if (revokedRef.current) return;
     const createdProject = result.ok && "project" in result.data ? result.data.project : null;
     const candidateThread = result.ok && "thread" in result.data ? result.data.thread : null;
@@ -948,6 +1087,7 @@ export function TeamChannelWorkspace({
       throw new Error(!result.ok ? result.error.userMessage : "Koed returned an invalid Shared Project.");
     }
     const createdThread = candidateThread;
+    if (revokedRef.current) return;
     projectRequestIds.current.delete(selectionId);
     localProjectRegistrations.current.delete(selectionId);
     setSnapshot((current) => current && ({
@@ -977,6 +1117,7 @@ export function TeamChannelWorkspace({
         <div className="my-2 h-px w-8 bg-surface-hover" />
         {snapshot.navigation.teams.map((team, index) => <button key={team.id} type="button" aria-label={team.name} aria-current={team.id === teamId ? "page" : undefined} title={team.name} onClick={() => {
           threadSelectionGeneration.current += 1;
+          setSquareOpen(false);
           setTeamId(team.id);
           const next = snapshot.navigation.teams.find((item) => item.id === team.id);
           const initialThreadId = next?.channels.find((thread) => thread.name === "general")?.id ?? next?.channels[0]?.id ?? next?.sharedProjects[0]?.thread.id ?? "";
@@ -991,24 +1132,52 @@ export function TeamChannelWorkspace({
         people={activeTeam.people.filter((person) => person.membershipState === "enabled").map((person) => ({ id: person.id, name: person.displayName }))}
         principalUserId={snapshot.navigation.teamPrincipal?.id ?? ""}
         directMessages={activeTeam.directMessages}
-        selectedId={threadId}
-        onSelect={(id) => { const thread = threads.find((item) => item.id === id); if (thread) void selectThread(thread); }}
+        selectedId={squareOpen ? "public-square" : threadId}
+        squareSelected={squareOpen}
+        onOpenSquare={() => setSquareOpen(true)}
+        onSelect={(id) => { setSquareOpen(false); const thread = threads.find((item) => item.id === id); if (thread) void selectThread(thread); }}
         onCreate={() => { setChannelError(null); setCreateChannelOpen(true); }}
         onNewDirectMessage={startDirectMessage}
       />
       <section className="relative flex min-w-0 flex-1 flex-col">
         <TeamShell
-          wallpaper={!activeDirectMessage}
-          crumbs={activeDirectMessage ? [activeTeam.name, activeDirectMessageTitle] : undefined}
-          subheader={!activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
-          footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<fieldset disabled={!activeThread || hydratedAuthorityKey !== authorityKey} className="m-0 min-w-0 border-0 p-0"><ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? activeTeam.name : activeThread?.name ?? "Team"} branch="shared" value={visibleDraftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={visiblePendingSend ? "Resolve the earlier send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></fieldset></div></div></footer>}
+          heading={squareOpen ? "Public Square" : undefined}
+          wallpaper={!squareOpen && !activeDirectMessage}
+          crumbs={!squareOpen && activeDirectMessage ? [activeTeam.name, activeDirectMessageTitle] : undefined}
+          subheader={!squareOpen && !activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={activeTeam.people.map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
+          footer={!squareOpen && <footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Resolve it before retrying.</span><button type="button" onClick={() => void reconcilePendingSend()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<fieldset disabled={!activeThread || hydratedAuthorityKey !== authorityKey} className="m-0 min-w-0 border-0 p-0"><ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? activeTeam.name : activeThread?.name ?? "Team"} branch="shared" value={visibleDraftText} onChange={changeDraftText} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && hydratedAuthorityKey === authorityKey)} footer={visiblePendingSend ? "Resolve the earlier send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></fieldset></div></div></footer>}
         >
+          {squareOpen ? <PublicSquare
+            key={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${teamId}`}
+            teamName={activeTeam.name}
+            items={square.items}
+            projects={square.projects}
+            localProjects={square.localProjects}
+            loadingLocalProjects={loadingLocalProjects}
+            ownerBriefDrafts={square.ownerBriefDrafts}
+            connections={square.connections}
+            state={square.state}
+            error={square.error}
+            serverTime={square.serverTime}
+            hasMore={Boolean(square.nextCursor)}
+            loadingMore={square.loadingMore}
+            onRetry={() => { void square.refresh(); }}
+            onLoadMore={() => { void square.loadMore(); }}
+            onShareBrief={(id, brief, version) => square.setBrief(id, brief, version)}
+            onWithdrawBrief={(id, version) => square.setBrief(id, null, version)}
+            onRemoveRetainedBrief={(id, version) => square.setBrief(id, null, version)}
+            onRequestBriefDraft={square.loadBriefDraft}
+            onConnectProject={square.connectProject}
+            canUnshareProjects={activeTeam.role === "owner" || activeTeam.role === "admin"}
+            onUnshareProject={square.unshareProject}
+          /> : <>
           <div ref={bodyRef} className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}>
             {visiblePage?.hasOlder && <button type="button" onClick={loadOlder} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
             {visibleMessages.length === 0 && !loading && <p className="pt-8 text-sm text-subtle">{activeDirectMessage ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.` : "No messages yet. Start the conversation."}</p>}
             {visibleMessages.map((message) => <MessageRow key={message.id} message={message} onVisibility={onMessageVisibility} directMessagePrincipalUserId={activeDirectMessage ? snapshot.navigation.teamPrincipal?.id ?? "" : undefined} />)}
             {status && <p role="status" className="text-xs text-warning">{status}</p>}
           </div>
+          </>}
         </TeamShell>
       </section>
       </SidebarProvider>

@@ -23,7 +23,8 @@ import { handlePrChat } from "./pr-chat-http.mjs";
 import {
   handlePersonalAgents,
   handleManagedConversations,
-  handlePersonalAgentRoleTemplates
+  handlePersonalAgentRoleTemplates,
+  handlePublicSquare
 } from "./personal-agents-http.mjs";
 import { handleRetainedWorkspaces } from "./retained-workspaces-http.mjs";
 
@@ -942,7 +943,8 @@ const readStudioCollaborationCommand = async (request) => {
   await new Promise((resolveBody, rejectBody) => {
     request.on("data", (chunk) => {
       total += chunk.byteLength;
-      if (total <= STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES) chunks.push(chunk);
+      if (total <= STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES)
+        chunks.push(chunk);
     });
     request.on("end", resolveBody);
     request.on("error", rejectBody);
@@ -990,7 +992,10 @@ const readStudioTeamDraftAction = async (request) => {
   } catch {
     throw Object.assign(new Error("invalid_json"), { statusCode: 400 });
   }
-  if (!isRecord(payload) || Object.getPrototypeOf(payload) !== Object.prototype) {
+  if (
+    !isRecord(payload) ||
+    Object.getPrototypeOf(payload) !== Object.prototype
+  ) {
     throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
   }
   const keys = Object.keys(payload).sort().join(",");
@@ -1021,19 +1026,27 @@ const readStudioTeamDraftAction = async (request) => {
     if (
       !isRecord(draft) ||
       Object.keys(draft).some(
-        (key) => !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(key)
+        (key) =>
+          !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(
+            key
+          )
       ) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > 128 * 1024 ||
       !(draft.pendingSend === null || isRecord(draft.pendingSend)) ||
-      !(draft.receiptAckPending === undefined || draft.receiptAckPending === null || isRecord(draft.receiptAckPending))
+      !(
+        draft.receiptAckPending === undefined ||
+        draft.receiptAckPending === null ||
+        isRecord(draft.receiptAckPending)
+      )
     ) {
       throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
     }
     if (draft.pendingSend !== null) {
       const pending = draft.pendingSend;
       if (
-        Object.keys(pending).sort().join(",") !== "body,clientMessageId,createdAt" ||
+        Object.keys(pending).sort().join(",") !==
+          "body,clientMessageId,createdAt" ||
         typeof pending.body !== "string" ||
         Buffer.byteLength(pending.body, "utf8") > 128 * 1024 ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -1045,12 +1058,19 @@ const readStudioTeamDraftAction = async (request) => {
         throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
       }
     }
-    if (draft.receiptAckPending !== undefined && draft.receiptAckPending !== null) {
+    if (
+      draft.receiptAckPending !== undefined &&
+      draft.receiptAckPending !== null
+    ) {
       const receipt = draft.receiptAckPending;
       if (
         Object.keys(receipt).sort().join(",") !== "clientMessageId,messageId" ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.clientMessageId) ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.messageId)
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          receipt.clientMessageId
+        ) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          receipt.messageId
+        )
       ) {
         throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
       }
@@ -1315,7 +1335,8 @@ export const createStudioServer = ({
       return Boolean(
         options.allowExactCreateReplay === true &&
         previous.allowExactCreateReplay === true &&
-        fingerprint && previous.fingerprint === fingerprint
+        fingerprint &&
+        previous.fingerprint === fingerprint
       );
     }
     collaborationRequestIds.set(key, {
@@ -1484,8 +1505,7 @@ export const createStudioServer = ({
         send: (status, body) => sendJson(response, status, body)
       };
       if (
-        requestUrlObject.pathname ===
-        "/studio-api/collaboration/studio-session"
+        requestUrlObject.pathname === "/studio-api/collaboration/studio-session"
       ) {
         if (typeof loadStudioCollaborationSnapshot !== "function") {
           sendJson(response, 404, { error: "not_found" });
@@ -1520,8 +1540,7 @@ export const createStudioServer = ({
         return;
       }
       if (
-        requestUrlObject.pathname ===
-        "/studio-api/collaboration/team-draft"
+        requestUrlObject.pathname === "/studio-api/collaboration/team-draft"
       ) {
         if (
           typeof loadStudioTeamDraft !== "function" ||
@@ -1590,10 +1609,7 @@ export const createStudioServer = ({
         }
         return;
       }
-      if (
-        requestUrlObject.pathname ===
-        "/studio-api/collaboration/command"
-      ) {
+      if (requestUrlObject.pathname === "/studio-api/collaboration/command") {
         if (typeof runStudioCollaborationCommand !== "function") {
           sendJson(response, 404, { error: "not_found" });
           return;
@@ -1634,20 +1650,34 @@ export const createStudioServer = ({
           });
           return;
         }
-        const idempotentCreate = command.command === "collaboration.create_team_channel" ||
+        const idempotentCreate =
+          command.command === "collaboration.create_team_channel" ||
           command.command === "collaboration.create_team_shared_project" ||
           command.command === "collaboration.start_direct_message" ||
           command.command === "collaboration.start_group_direct_message";
-        const fingerprintInput = command.command === "collaboration.start_group_direct_message"
-          ? { ...command.input, participantUserIds: [...command.input.participantUserIds].sort() }
-          : command.input;
+        const fingerprintInput =
+          command.command === "collaboration.start_group_direct_message"
+            ? {
+                ...command.input,
+                participantUserIds: [...command.input.participantUserIds].sort()
+              }
+            : command.input;
         const fingerprint = idempotentCreate
-          ? createHash("sha256").update(JSON.stringify({ command: command.command, input: fingerprintInput })).digest("hex")
+          ? createHash("sha256")
+              .update(
+                JSON.stringify({
+                  command: command.command,
+                  input: fingerprintInput
+                })
+              )
+              .digest("hex")
           : null;
-        if (!consumeCollaborationRequestId(command.requestId, origin, {
-          allowExactCreateReplay: idempotentCreate,
-          fingerprint
-        })) {
+        if (
+          !consumeCollaborationRequestId(command.requestId, origin, {
+            allowExactCreateReplay: idempotentCreate,
+            fingerprint
+          })
+        ) {
           sendJson(response, 409, { error: "request_replayed" });
           return;
         }
@@ -1665,10 +1695,7 @@ export const createStudioServer = ({
         }
         return;
       }
-      if (
-        requestUrlObject.pathname ===
-        "/studio-api/collaboration/events"
-      ) {
+      if (requestUrlObject.pathname === "/studio-api/collaboration/events") {
         if (typeof subscribeStudioCollaborationEvents !== "function") {
           sendJson(response, 404, { error: "not_found" });
           return;
@@ -1949,6 +1976,7 @@ export const createStudioServer = ({
         return;
       if (
         (await handlePersonalAgents(localApiOptions)) ||
+        (await handlePublicSquare(localApiOptions)) ||
         (await handlePersonalAgentRoleTemplates(localApiOptions)) ||
         (await handleManagedConversations(localApiOptions))
       )

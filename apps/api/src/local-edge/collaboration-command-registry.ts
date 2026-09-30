@@ -337,7 +337,7 @@ export const collaborationCommandRegistry = {
       operationFamily: "team_chat_write",
       method: "POST",
       path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/projects`,
-      body: { name: command.input.name },
+      body: { name: command.input.name, ...(command.input.localProjectId ? { localProjectId: command.input.localProjectId } : {}) },
       resultKey: "thread",
       idempotencyKey: command.requestId
     }),

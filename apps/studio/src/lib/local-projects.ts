@@ -13,6 +13,27 @@ export type SelectedLocalProjectFolder = {
   selectionId: string;
 };
 
+export async function listRegisteredLocalProjects(): Promise<RegisteredLocalProject[]> {
+  const response = await fetch("/studio-api/projects", {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+    credentials: "same-origin"
+  });
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok || !body || typeof body !== "object" || !Array.isArray((body as { projects?: unknown }).projects)) {
+    throw new Error("The local Project list is unavailable.");
+  }
+  const projects = (body as { projects: unknown[] }).projects.flatMap((value): RegisteredLocalProject[] => {
+    if (!value || typeof value !== "object") return [];
+    const project = value as { id?: unknown; name?: unknown; lastSeenAt?: unknown };
+    return typeof project.id === "string" && typeof project.name === "string" &&
+      (project.lastSeenAt === null || typeof project.lastSeenAt === "string")
+      ? [{ id: project.id, name: project.name, lastSeenAt: project.lastSeenAt }]
+      : [];
+  });
+  return projects;
+}
+
 export function useLocalProjectCapabilities(): {
   canCreateLocalProject: boolean;
   loading: boolean;

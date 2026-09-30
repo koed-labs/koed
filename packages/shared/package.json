@@ -31,6 +31,10 @@
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
     },
+    "./public-square": {
+      "types": "./dist/public-square-contract.d.ts",
+      "import": "./dist/public-square-contract.js"
+    },
     "./private-network": {
       "types": "./dist/private-network.d.ts",
       "import": "./dist/private-network.js"

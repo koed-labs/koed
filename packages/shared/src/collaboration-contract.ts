@@ -2716,7 +2716,15 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.create_team_shared_project", {
       teamId: z.uuid(),
-      name: collaborationNameSchema
+      name: collaborationNameSchema,
+      localProjectId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(256)
+        .regex(/^[A-Za-z0-9._:-]+$/)
+        .refine((value) => value.toLowerCase() !== "unassigned")
+        .optional()
     }),
     command("collaboration.start_direct_message", {
       teamId: z.uuid(),
@@ -3749,6 +3757,14 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
         ])
         .nullable()
     })
+    .strict(),
+  z
+    .object({
+      type: z.literal("public_square_invalidated"),
+      teamId: z.uuid(),
+      projectId: z.uuid().nullable(),
+      publicationId: z.uuid().nullable()
+    })
     .strict()
 ]);
 
@@ -3770,6 +3786,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "personal_memory_changed",
   "pending_share_lifecycle",
   "managed_conversation_changed",
+  "public_square_changed",
   "access_revoked"
 ]);
 
@@ -3935,6 +3952,7 @@ const realtimeUpdateDeliverySchema = z
       personal_memory_changed: new Set(["personal_memory_upserted"]),
       pending_share_lifecycle: new Set(["owned_share_status_changed"]),
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
+      public_square_changed: new Set(["public_square_invalidated"]),
       access_revoked: new Set(["shared_session_removed"])
     };
 

@@ -329,6 +329,7 @@ export {
   type PersonalAgentHistoryJob,
   type PersonalAgentRepository
 } from "./personal-agent-repository.js";
+export { createPublicSquareRepository, type PublicSquareRepository, type PublicSquarePublicationRecord } from "./public-square-repository.js";
 export {
   createRetentionLifecycleRepository,
   type AuthorizeHoldActor,

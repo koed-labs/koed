@@ -179,6 +179,51 @@ The data model enforces valid scope combinations and durable identity:
 - same-thread read cursors and message references; and
 - immutable shared-source identity and complete summary provenance.
 
+### Public Square Job Activity
+
+Public Square adds a separate, per-member connection between a local Project
+and an existing Team-shared Project. The local Project identifier is opaque;
+its path and repository details never leave the local Studio. A connection
+publishes only that member's active and future Agent Jobs for the selected
+Project. Connecting a Project does not backfill completed Jobs. Creating a
+Team-shared Project with an explicit local Project identifier creates the
+connection in the same transaction.
+
+Each publication is a bounded activity card with the Agent, owner, Team
+Project, actual Job status, and reliable runner last-seen time. Job goals,
+private titles, prompts, paths, models, transcripts, and raw outputs remain
+private. The owner may review and edit a deterministic draft derived from the
+owner's encrypted Job goal. Only text the owner explicitly publishes is stored
+as an encrypted Team brief. Brief drafts are encrypted separately in Personal
+storage and are never included in Team events.
+
+The owner must remain an enabled Team member for a publication to update. When
+the owner leaves or is disabled, publication becomes a frozen snapshot and
+retains its last published brief; later Job changes cannot update it. The card
+shows that the owner left, and an authorized Team administrator may remove its
+retained brief. Unsharing the Team Project revokes its Public Square history
+and removes its Project channel from authorized navigation, reads, and writes.
+Stored channel messages remain retained; unsharing does not delete them.
+Sharing it again creates a new Project identity and starts a fresh publication
+epoch. Removing a member's local Project connection stops future publication
+and revokes that member's active cards for the Project. Changing the connection
+to another local Project also retires the former Project's current cards;
+previously published completed history remains while the Team Project is shared.
+
+Reads require current Team membership. Realtime carries only an invalidation
+for the Team, Project, and publication; clients re-read the authorized page.
+Team members have no Job stop or prompt-submission authority.
+
+Native execution can resolve a newly registered local Project before it has
+captured Memory. The worker uses the verified local catalog only for its exact
+assigned device and deployment. Local and hosted account identifiers may differ;
+the existing authenticated authority and command claim bind the execution to
+that device. Registered paths must resolve to an existing canonical directory,
+and a rejected registered path does not fall back to a captured Memory path.
+The no-Project sentinel cannot be connected to a Team Project. Pending commands
+that fail before provider startup become failed Jobs; waiting evidence from a
+later Job cannot change an earlier completed Job's status.
+
 Threads retain stable IDs, normalized keys, lifecycle timestamps, archive
 state, activity time, and optimistic versions. Archive hides a thread or
 Workspace from normal navigation without physically deleting retained content.

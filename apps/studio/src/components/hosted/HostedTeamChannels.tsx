@@ -9,9 +9,13 @@ import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { SidebarProvider } from "@/components/SidebarContext";
 import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
+import { PublicSquare } from "@/components/PublicSquare";
 import type { HostedTeam, HostedUser } from "@/lib/hosted-session";
+import { loadHostedLaunchOptions } from "@/lib/hosted-managed-chats";
 import { HostedTeamCollaborationClient, HostedTeamRequestError } from "@/lib/hosted-team-collaboration";
 import type { HostedTeamPerson } from "@/lib/hosted-team-collaboration";
+import { PublicSquareClient } from "@/lib/public-square-client";
+import { usePublicSquare } from "@/lib/use-public-square";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
 import { directMessageAttemptKey, directMessageParticipantsAreEligible, mergeTeamMessages, resolvePendingSend, retainPendingSendAfterUncertainOutcome, studioRequestMayApply, studioSelectionMatches, teamDraftForHydration } from "@/lib/team-channel-state";
 import type { StudioTeamDraft, StudioTeamDraftAuthority } from "@/lib/studio-collaboration-client";
@@ -30,6 +34,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   onAuthorizationLost: () => void;
 }) {
   const client = useMemo(() => new HostedTeamCollaborationClient(), []);
+  const publicSquareClient = useMemo(() => new PublicSquareClient("hosted"), []);
   const drafts = useMemo(() => {
     try { return createBrowserTeamDraftStore(); } catch { return null; }
   }, []);
@@ -39,6 +44,8 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const [directMessages, setDirectMessages] = useState<CollaborationThread[]>([]);
   const [navigationLoadedOwner, setNavigationLoadedOwner] = useState("");
   const [threadId, setThreadId] = useState("");
+  const [squareOpen, setSquareOpen] = useState(false);
+  const [localProjectsState, setLocalProjectsState] = useState<{ owner: string; loaded: boolean; projects: Array<{ id: string; name: string }> }>({ owner: "", loaded: false, projects: [] });
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
   const [messageSelection, setMessageSelection] = useState<{ teamId: string; threadId: string } | null>(null);
   const [loadedPage, setLoadedPage] = useState<{ teamId: string; threadId: string } | null>(null);
@@ -63,6 +70,9 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const selectedThreadRef = useRef(threadId);
   selectedThreadRef.current = threadId;
   const ownerKey = `${user.id}:${team.id}`;
+  const localProjectsOwner = `${typeof window === "undefined" ? "" : window.location.origin}:${user.id}`;
+  const localProjects = localProjectsState.owner === localProjectsOwner ? localProjectsState.projects : [];
+  const loadingLocalProjects = localProjectsState.owner !== localProjectsOwner || !localProjectsState.loaded;
   const navigationReady = navigationLoadedOwner === ownerKey;
   const visibleChannels = useMemo(() => navigationReady ? channels : [], [channels, navigationReady]);
   const visibleProjects = useMemo(() => navigationReady ? projects : [], [navigationReady, projects]);
@@ -70,6 +80,16 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   const visibleDirectMessages = useMemo(() => navigationReady ? directMessages : [], [directMessages, navigationReady]);
   const activeThreads = useMemo(() => [...visibleChannels, ...visibleProjects.map((project) => project.thread), ...visibleDirectMessages], [visibleChannels, visibleDirectMessages, visibleProjects]);
   const activeThread = activeThreads.find((thread) => thread.id === threadId) ?? null;
+  const squareProjects = useMemo(() => visibleProjects.map((project) => ({ id: project.id, name: project.name })), [visibleProjects]);
+  const square = usePublicSquare({
+    client: publicSquareClient,
+    scope: { backendId: typeof window === "undefined" ? "" : window.location.origin, principalUserId: user.id, teamId: team.id },
+    projects: squareProjects,
+    localProjects,
+    enabled: navigationReady,
+    onAuthorizationLost
+  });
+  const refreshSquare = square.refresh;
   const messageViewReady = Boolean(navigationReady && activeThread && messageSelection?.teamId === team.id && messageSelection.threadId === activeThread.id);
   const visibleMessages = messageViewReady ? messages : [];
   const visiblePage = messageViewReady && loadedPage?.teamId === team.id && loadedPage.threadId === activeThread?.id;
@@ -191,6 +211,15 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; navigationGeneration.current += 1; }; }, []);
   useEffect(() => { void refreshNavigation(); }, [refreshNavigation]);
   useEffect(() => {
+    let active = true;
+    void loadHostedLaunchOptions().then((options) => {
+      if (active) setLocalProjectsState({ owner: localProjectsOwner, loaded: true, projects: options.projects.map((project) => ({ id: project.id, name: project.name })) });
+    }).catch(() => {
+      if (active) setLocalProjectsState({ owner: localProjectsOwner, loaded: true, projects: [] });
+    });
+    return () => { active = false; };
+  }, [localProjectsOwner]);
+  useEffect(() => {
     if (!drafts) return;
     void drafts.retainAuthorizedTeams({ backendId: typeof window === "undefined" ? "" : window.location.origin, principalUserId: user.id, teamIds: allTeams.map((item) => item.id) });
   }, [allTeams, drafts, user.id]);
@@ -257,11 +286,17 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
     const unsubscribe = client.subscribeTeam(team.id, async (event) => {
       const resource = event.resource;
       const currentThreadId = selectedThreadRef.current;
+      const update = event.update;
+      if (update && typeof update === "object" && "type" in update && update.type === "public_square_invalidated") {
+        if ("teamId" in update && update.teamId === team.id) {
+          await refreshSquare();
+        }
+      }
       if (resource && typeof resource === "object" && "threadId" in resource && resource.threadId === currentThreadId) await loadPage(currentThreadId);
       await refreshNavigation();
     }, handleAuthorizationLost);
     return unsubscribe;
-  }, [client, handleAuthorizationLost, loadPage, refreshNavigation, team.id]);
+  }, [client, handleAuthorizationLost, loadPage, refreshNavigation, refreshSquare, team.id]);
   useEffect(() => {
     if (!navigationReady || !activeThread || !visibleRead || visibleRead.teamId !== team.id || visibleRead.threadId !== activeThread.id || !document.hasFocus() || document.visibilityState !== "visible" || visibleRead.sequence <= readCursor || visibleRead.sequence <= 0) return;
     const capturedOwnerKey = `${user.id}:${team.id}`;
@@ -403,14 +438,39 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
 
   return <div className="flex h-full min-h-0 min-w-0 flex-1 bg-background">
     <SidebarProvider>
-      <TeamChannelNavigation teamName={team.name} channels={activeThreads.filter((thread) => thread.kind !== "dm" && thread.kind !== "group_dm").map((thread) => ({ id: thread.id, name: thread.name }))} people={visiblePeople.map((person) => ({ id: person.id, name: person.displayName }))} principalUserId={user.id} directMessages={visibleDirectMessages.filter((thread): thread is Extract<CollaborationThread, { kind: "dm" | "group_dm" }> => thread.kind === "dm" || thread.kind === "group_dm")} selectedId={threadId} onSelect={setThreadId} onCreate={() => setCreateOpen(true)} onNewDirectMessage={startDirectMessage} />
+      <TeamChannelNavigation teamName={team.name} channels={activeThreads.filter((thread) => thread.kind !== "dm" && thread.kind !== "group_dm").map((thread) => ({ id: thread.id, name: thread.name }))} people={visiblePeople.map((person) => ({ id: person.id, name: person.displayName }))} principalUserId={user.id} directMessages={visibleDirectMessages.filter((thread): thread is Extract<CollaborationThread, { kind: "dm" | "group_dm" }> => thread.kind === "dm" || thread.kind === "group_dm")} selectedId={squareOpen ? "public-square" : threadId} squareSelected={squareOpen} onOpenSquare={() => setSquareOpen(true)} onSelect={(id) => { setSquareOpen(false); setThreadId(id); }} onCreate={() => { setSquareOpen(false); setCreateOpen(true); }} onNewDirectMessage={(participantIds) => { setSquareOpen(false); return startDirectMessage(participantIds); }} />
       <div className="relative min-h-0 min-w-0 flex-1">
       <TeamShell
-        wallpaper={!activeDirectMessage}
-        crumbs={activeDirectMessage ? [team.name, activeDirectMessageTitle] : undefined}
-        subheader={!activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={people.filter((person) => person.membershipState === "enabled").map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
-        footer={<footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Reconcile before retrying.</span><button type="button" onClick={() => void reconcile()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? team.name : activeThread?.name ?? team.name} branch="shared" value={visibleDraftText} onChange={updateDraft} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && drafts && hydrated && hydratedKey === authorityKey)} footer={visiblePendingSend ? "Resolve the previous send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></div></div></footer>}
+        heading={squareOpen ? "Public Square" : undefined}
+        wallpaper={!squareOpen && !activeDirectMessage}
+        crumbs={!squareOpen && activeDirectMessage ? [team.name, activeDirectMessageTitle] : undefined}
+        subheader={!squareOpen && !activeDirectMessage ? <ChannelHeader channelName={activeThread?.name ?? "Select a channel"} project={null} agents={[]} members={people.filter((person) => person.membershipState === "enabled").map((person) => ({ id: person.id, name: person.displayName }))} /> : undefined}
+        footer={!squareOpen && <footer className="border-t border-border bg-background p-4"><div className="mx-auto max-w-3xl"><div className="no-drag">{visiblePendingSend && <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted"><span>Previous send may have been accepted. Reconcile before retrying.</span><button type="button" onClick={() => void reconcile()} className="font-medium text-foreground hover:underline">Reconcile send</button></div>}<ChatComposer placeholder={activeDirectMessage ? `Message ${activeDirectMessageTitle}` : `Message #${activeThread?.name ?? "channel"}`} projectName={activeDirectMessage ? team.name : activeThread?.name ?? team.name} branch="shared" value={visibleDraftText} onChange={updateDraft} onSend={(text) => send(text)} showExecutionControls={false} showMetaBar={false} showFormattingToolbar sendEnabled={Boolean(activeThread && drafts && hydrated && hydratedKey === authorityKey)} footer={visiblePendingSend ? "Resolve the previous send before sending this edit." : activeDirectMessage ? "Direct messages stay among these people." : "Message everyone in this channel."} /></div></div></footer>}
       >
+        {squareOpen ? <PublicSquare
+          key={`${user.id}:${team.id}`}
+          teamName={team.name}
+          items={square.items}
+          projects={square.projects}
+          localProjects={square.localProjects}
+          loadingLocalProjects={loadingLocalProjects}
+          ownerBriefDrafts={square.ownerBriefDrafts}
+          connections={square.connections}
+          state={square.state}
+          error={square.error}
+          serverTime={square.serverTime}
+          hasMore={Boolean(square.nextCursor)}
+          loadingMore={square.loadingMore}
+          onRetry={() => { void square.refresh(); }}
+          onLoadMore={() => { void square.loadMore(); }}
+          onShareBrief={(id, brief, version) => square.setBrief(id, brief, version)}
+          onWithdrawBrief={(id, version) => square.setBrief(id, null, version)}
+          onRemoveRetainedBrief={(id, version) => square.setBrief(id, null, version)}
+          onRequestBriefDraft={square.loadBriefDraft}
+          onConnectProject={square.connectProject}
+          canUnshareProjects={team.membership.role === "owner" || team.membership.role === "admin"}
+          onUnshareProject={square.unshareProject}
+        /> : <>
         <div ref={messagesRef} className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}>
           {visiblePage && hasOlder && beforeSequence && <button type="button" onClick={() => activeThread && void loadPage(activeThread.id, beforeSequence, true)} className="mx-auto block text-xs text-muted hover:text-foreground">Load older messages</button>}
           {visibleMessages.length === 0 && <p className="text-sm text-subtle">{activeDirectMessage ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.` : "No messages yet. Start the conversation."}</p>}
@@ -421,6 +481,7 @@ export function HostedTeamChannels({ team, user, allTeams, onAuthorizationLost }
           }} />)}
         </div>
         {error && <p role="status" className="mx-auto w-full max-w-3xl pt-2 text-xs text-warning">{error}</p>}
+        </>}
       </TeamShell>
       </div>
     </SidebarProvider>

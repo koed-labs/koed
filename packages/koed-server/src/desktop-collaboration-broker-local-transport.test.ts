@@ -212,6 +212,110 @@ const waitFor = async (predicate: () => boolean) => {
   }
 };
 
+const startTeamTransportWithEvent = async (event: unknown) => {
+  let streamRequests = 0;
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async (url, init) => {
+      const value = String(url);
+      if (value.endsWith(collaborationCommandPath)) {
+        const body = JSON.parse(String(init?.body)) as {
+          command: CollaborationRendererCommand;
+        };
+        return commandSuccess(body.command, fullSnapshot(true));
+      }
+      if (value.endsWith("/realtime/subscriptions")) {
+        return Response.json(brokerSnapshot("team", 0));
+      }
+      if (value.endsWith("/ack")) {
+        return Response.json({
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
+          subscription: {
+            id: subscriptionId,
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
+            scope: { scope: "team", teamId },
+            state: "active",
+            version: 1,
+            expiresAt: "2026-07-17T02:00:00.000Z"
+          }
+        });
+      }
+      if (value.includes("/stream?")) {
+        streamRequests += 1;
+        if (streamRequests > 1) return new Response(null, { status: 503 });
+        return new Response(
+          `event: ready\ndata: ${JSON.stringify({ protocolVersion: COLLABORATION_CONTRACT_VERSION, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\nevent: collaboration_event\ndata: ${JSON.stringify(event)}\n\n`,
+          { headers: { "content-type": "text/event-stream" } }
+        );
+      }
+      throw new Error(`Unexpected URL ${value}`);
+    });
+  const owner = new AbortController();
+  const events: CollaborationRendererEvent[] = [];
+  const transport = createDesktopCollaborationBrokerLocalTransport({
+    fetch: fetchMock,
+    resolveConnection: async () => connection,
+    now: () => Date.parse(timestamp),
+    sleep: async (delayMs, signal) => {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(delayMs, 10));
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+    }
+  });
+  const transportContext = {
+    ownerId: "renderer-square-validation",
+    signal: owner.signal,
+    emitCollaborationEvent: (next: CollaborationRendererEvent) =>
+      events.push(next)
+  };
+  await transport.request(
+    collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.select",
+      input: { selection: fullSnapshot(true).selection }
+    }),
+    transportContext
+  );
+  await transport.request(
+    collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+      command: "collaboration.subscribe",
+      input: { scope: { scope: "team", teamId } }
+    }),
+    transportContext
+  );
+  await waitFor(() => events.some((next) => next.type === "snapshot"));
+  const initial = events.find((next) => next.type === "snapshot");
+  if (!initial || initial.type !== "snapshot") {
+    throw new Error("Initial Team snapshot was not delivered");
+  }
+  await transport.request(
+    collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "7159acdc-4c81-4a31-b2f0-221119a0d88d",
+      command: "collaboration.acknowledge_delivery",
+      input: {
+        subscriptionId,
+        deliveryId: initial.deliveryId,
+        eventId: null,
+        expectedSubscriptionVersion: initial.subscription.version
+      }
+    }),
+    transportContext
+  );
+  return { events, owner, transport, transportContext, fetchMock };
+};
+
 describe("Desktop collaboration local transport", () => {
   it("revokes persisted local subscriptions for exactly one backend", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
@@ -662,6 +766,237 @@ describe("Desktop collaboration local transport", () => {
       event_id: null,
       expected_version: 0
     });
+  });
+
+  it("materializes only a validated Public Square Team invalidation from the broker envelope", async () => {
+    const squareProjectId = "39d190d8-6b7d-4dfb-b6db-894adb208404";
+    const squareDeliveryId = "delivery_id_00000000000000000000000000000003";
+    const squareEventId = "703af56b-8e88-4945-b395-eeac7c68a4a6";
+    const brokerEvent = {
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      deliveryId: squareDeliveryId,
+      eventId: squareEventId,
+      type: "public_square_changed",
+      occurredAt: timestamp,
+      subscription: { id: subscriptionId },
+      resource: {
+        scope: "team",
+        type: "public_square_project",
+        id: squareProjectId,
+        teamId,
+        teamWorkspaceId: null,
+        threadId: null,
+        messageId: null,
+        shareGrantId: null,
+        logicalMemoryId: null
+      },
+      actor: { principalId: userId }
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (url, init) => {
+        const value = String(url);
+        if (value.endsWith(collaborationCommandPath)) {
+          const body = JSON.parse(String(init?.body)) as {
+            command: CollaborationRendererCommand;
+          };
+          return commandSuccess(body.command, fullSnapshot(true));
+        }
+        if (value.endsWith("/realtime/subscriptions")) {
+          return Response.json(brokerSnapshot("team", 0));
+        }
+        if (value.endsWith("/ack")) {
+          return Response.json({
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
+            subscription: {
+              id: subscriptionId,
+              protocolVersion: COLLABORATION_CONTRACT_VERSION,
+              scope: { scope: "team", teamId },
+              state: "active",
+              version: 1,
+              expiresAt: "2026-07-17T02:00:00.000Z"
+            }
+          });
+        }
+        if (value.includes("/stream?")) {
+          return new Response(
+            `event: ready\ndata: ${JSON.stringify({ protocolVersion: COLLABORATION_CONTRACT_VERSION, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\nevent: collaboration_event\ndata: ${JSON.stringify(brokerEvent)}\n\n`,
+            { headers: { "content-type": "text/event-stream" } }
+          );
+        }
+        throw new Error(`Unexpected URL ${value}`);
+      });
+    const owner = new AbortController();
+    const events: CollaborationRendererEvent[] = [];
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection: async () => connection,
+      now: () => Date.parse(timestamp)
+    });
+    const context = {
+      ownerId: "renderer-square",
+      signal: owner.signal,
+      emitCollaborationEvent: (event: CollaborationRendererEvent) =>
+        events.push(event)
+    };
+    await transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId,
+        command: "collaboration.select",
+        input: { selection: fullSnapshot(true).selection }
+      }),
+      context
+    );
+    await transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+        command: "collaboration.subscribe",
+        input: { scope: { scope: "team", teamId } }
+      }),
+      context
+    );
+    await waitFor(() => events.some((event) => event.type === "snapshot"));
+    const initialSnapshot = events.find((event) => event.type === "snapshot")!;
+    await transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "7159acdc-4c81-4a31-b2f0-221119a0d88d",
+        command: "collaboration.acknowledge_delivery",
+        input: {
+          subscriptionId,
+          deliveryId:
+            initialSnapshot.type === "snapshot"
+              ? initialSnapshot.deliveryId
+              : "",
+          eventId: null,
+          expectedSubscriptionVersion:
+            initialSnapshot.type === "snapshot"
+              ? initialSnapshot.subscription.version
+              : 1
+        }
+      }),
+      context
+    );
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "update" &&
+          event.update.type === "public_square_invalidated"
+      )
+    );
+    const update = events.find(
+      (event) =>
+        event.type === "update" &&
+        event.update.type === "public_square_invalidated"
+    );
+    expect(update).toMatchObject({
+      type: "update",
+      subscriptionId,
+      deliveryId: squareDeliveryId,
+      eventId: squareEventId,
+      family: "public_square_changed",
+      resource: { scope: "team", teamId },
+      update: {
+        type: "public_square_invalidated",
+        teamId,
+        projectId: squareProjectId,
+        publicationId: null
+      }
+    });
+    const acknowledgement = transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "9231a495-fdd1-49d2-bb24-0a9ec0f2a560",
+        command: "collaboration.acknowledge_delivery",
+        input: {
+          subscriptionId,
+          deliveryId: squareDeliveryId,
+          eventId: squareEventId,
+          expectedSubscriptionVersion: 1
+        }
+      }),
+      context
+    );
+    await expect(acknowledgement).resolves.toMatchObject({ ok: true });
+    owner.abort();
+  });
+
+  it("does not deliver a Public Square invalidation for another Team", async () => {
+    const otherTeamId = "cf9c6804-c83f-4a35-bb0d-12d8dc697e22";
+    const { events, owner } = await startTeamTransportWithEvent({
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      deliveryId: "delivery_id_00000000000000000000000000000004",
+      eventId: "703af56b-8e88-4945-b395-eeac7c68a4a7",
+      type: "public_square_changed",
+      occurredAt: timestamp,
+      subscription: { id: subscriptionId },
+      resource: {
+        scope: "team",
+        type: "public_square_project",
+        id: "39d190d8-6b7d-4dfb-b6db-894adb208404",
+        teamId: otherTeamId,
+        teamWorkspaceId: null,
+        threadId: null,
+        messageId: null,
+        shareGrantId: null,
+        logicalMemoryId: null
+      },
+      actor: { principalId: userId }
+    });
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "connection" &&
+          event.connection.state === "unavailable"
+      )
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "update" &&
+          event.update.type === "public_square_invalidated"
+      )
+    ).toBe(false);
+    owner.abort();
+  });
+
+  it("requires a fresh subscription for malformed Public Square resource IDs", async () => {
+    const { events, owner } = await startTeamTransportWithEvent({
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
+      deliveryId: "delivery_id_00000000000000000000000000000005",
+      eventId: "703af56b-8e88-4945-b395-eeac7c68a4a8",
+      type: "public_square_changed",
+      occurredAt: timestamp,
+      subscription: { id: subscriptionId },
+      resource: {
+        scope: "team",
+        type: "public_square_project",
+        id: "not-a-project-id",
+        teamId,
+        teamWorkspaceId: null,
+        threadId: null,
+        messageId: null,
+        shareGrantId: null,
+        logicalMemoryId: null
+      },
+      actor: { principalId: userId }
+    });
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "control" && event.reason === "requires_snapshot"
+      )
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "update" &&
+          event.update.type === "public_square_invalidated"
+      )
+    ).toBe(false);
+    owner.abort();
   });
 
   it.each([404, 409])(

@@ -8,6 +8,7 @@ import {
   COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
   COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES
 } from "@koed/shared";
+import { publicSquareLocalProjectIdSchema } from "@koed/shared/public-square";
 
 export const COLLABORATION_CHANNEL_NAME_MAX_CODE_POINTS =
   COLLABORATION_NAME_MAX_CODE_POINTS;
@@ -125,7 +126,10 @@ export const createCollaborationChannelSchema = z
   .strict();
 
 export const createTeamSharedProjectSchema = z
-  .object({ name: channelNameSchema })
+  .object({
+    name: channelNameSchema,
+    localProjectId: publicSquareLocalProjectIdSchema.optional()
+  })
   .strict();
 
 export const createCollaborationDmSchema = z

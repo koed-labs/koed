@@ -213,6 +213,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "personal_memory_changed",
   "pending_share_lifecycle",
   "managed_conversation_changed",
+  "public_square_changed",
   "access_revoked"
 ]);
 export const collaborationStreamState = pgEnum("collaboration_stream_state", [
@@ -2999,6 +3000,7 @@ export const encryptedFieldPayloads = pgTable(
         'personal_note_revisions',
         'personal_agent_identity_versions',
         'personal_agent_execution_jobs',
+        'personal_agent_team_job_publications',
         'memory_replica_revisions',
         'messages',
         'privacy_classification_results',
@@ -3950,6 +3952,7 @@ export const managedConversationExecutions = pgTable(
     runnerLeaseExpiresAt: timestamp("runner_lease_expires_at", {
       withTimezone: true
     }),
+    runnerLastSeenAt: timestamp("runner_last_seen_at", { withTimezone: true }),
     logicalSessionId: uuid("logical_session_id"),
     providerThreadId: text("provider_thread_id"),
     providerCliVersion: text("provider_cli_version"),
@@ -9253,7 +9256,8 @@ export const teamSharedProjects = pgTable(
     }),
     creationRequestHash: text("creation_request_hash").notNull(),
     createdAt: now(),
-    updatedAt: updatedNow()
+    updatedAt: updatedNow(),
+    unsharedAt: timestamp("unshared_at", { withTimezone: true })
   },
   (table) => [
     unique("collaboration_team_shared_projects_id_team_unique").on(
@@ -9269,6 +9273,99 @@ export const teamSharedProjects = pgTable(
       table.createdAt.desc(),
       table.id
     )
+  ]
+);
+
+export const publicSquareProjectConnections = pgTable(
+  "public_square_project_connections",
+  {
+    id: id(),
+    actorUserId: uuid("actor_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamProjectId: uuid("team_project_id").notNull(),
+    localProjectId: text("local_project_id"),
+    version: integer("version").notNull().default(0),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("public_square_project_connections_owner_project_unique").on(
+      table.actorUserId,
+      table.teamProjectId
+    ),
+    foreignKey({
+      columns: [table.teamProjectId, table.teamId],
+      foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
+      name: "public_square_project_connections_team_project_fk"
+    }).onDelete("restrict"),
+    check(
+      "public_square_project_connections_local_id_check",
+      sql`${table.localProjectId} is null or (length(trim(${table.localProjectId})) between 1 and 256 and ${table.localProjectId} ~ '^[A-Za-z0-9._:-]+$' and lower(trim(${table.localProjectId})) <> 'unassigned')`
+    ),
+    check(
+      "public_square_project_connections_active_check",
+      sql`(${table.localProjectId} is null) = (${table.connectedAt} is null)`
+    ),
+    check(
+      "public_square_project_connections_version_check",
+      sql`${table.version} >= 0`
+    ),
+    index("public_square_project_connections_project_active_idx")
+      .on(table.teamProjectId, table.actorUserId)
+      .where(sql`${table.localProjectId} is not null`)
+  ]
+);
+
+export const personalAgentTeamJobPublications = pgTable(
+  "personal_agent_team_job_publications",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamProjectId: uuid("team_project_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => personalAgentExecutionJobs.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => publicSquareProjectConnections.id, {
+        onDelete: "restrict"
+      }),
+    state: text("state").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    ownerLeftTeam: boolean("owner_left_team").notNull().default(false),
+    frozenStatus: text("frozen_status"),
+    frozenUpdatedAt: timestamp("frozen_updated_at", { withTimezone: true }),
+    frozenLastSeenAt: timestamp("frozen_last_seen_at", { withTimezone: true }),
+    frozenCompletedAt: timestamp("frozen_completed_at", { withTimezone: true }),
+    lastKnownStatus: text("last_known_status"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    publishedAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamProjectId, table.teamId],
+      foreignColumns: [teamSharedProjects.id, teamSharedProjects.teamId],
+      name: "personal_agent_team_job_publications_team_project_fk"
+    }).onDelete("restrict"),
+    unique("personal_agent_team_job_publications_connection_job_unique").on(
+      table.connectionId,
+      table.jobId
+    ),
+    index("personal_agent_team_job_publications_team_page_idx")
+      .on(table.teamId, table.publishedAt.desc(), table.id.desc())
+      .where(sql`${table.state} <> 'revoked'`)
   ]
 );
 

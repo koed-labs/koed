@@ -77,6 +77,7 @@ export type CollaborationEventFamily =
   | "personal_memory_changed"
   | "pending_share_lifecycle"
   | "managed_conversation_changed"
+  | "public_square_changed"
   | "access_revoked";
 
 export interface CollaborationParticipantRecord {
@@ -371,7 +372,12 @@ export interface CollaborationRepository {
   ): Promise<CollaborationThreadRecord | null>;
   createTeamSharedProject(
     actor: ActorContext,
-    input: { teamId: string; idempotencyKey: string; name: string }
+    input: {
+      teamId: string;
+      idempotencyKey: string;
+      name: string;
+      localProjectId?: string;
+    }
   ): Promise<{
     id: string;
     teamId: string;
@@ -1310,7 +1316,17 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
       and team.entitlement_status in ('active', 'grace')
       and actor_membership.user_id is not null
       and (
-        ct.kind in ('team_channel', 'team_project_channel')
+        ct.kind = 'team_channel'
+        or (
+          ct.kind = 'team_project_channel'
+          and exists (
+            select 1
+            from collaboration_team_shared_projects active_project
+            where active_project.id = ct.team_project_id
+              and active_project.team_id = ct.team_id
+              and active_project.unshared_at is null
+          )
+        )
         or (
         (
           ct.kind in ('dm', 'group_dm')
@@ -4505,6 +4521,11 @@ export const createCollaborationRepository = (
     async createTeamSharedProject(actor, input) {
       return withTransaction(pool, async (client) => {
         if (!(await activeTeamMember(client, actor, input.teamId))) return null;
+        const membershipLock = await client.query(
+          `select 1 from team_memberships where team_id=$1 and user_id=$2 and status='enabled' and disabled_at is null for share`,
+          [input.teamId, actor.userId]
+        );
+        if (!membershipLock.rowCount) return null;
         const idempotencyKey = requireBoundedText(
           input.idempotencyKey,
           "idempotencyKey",
@@ -4515,10 +4536,18 @@ export const createCollaborationRepository = (
           "name",
           MAX_THREAD_NAME_CODE_POINTS
         );
-        const creationRequestHash = requestHash({
+        const creationRequest = {
           teamId: input.teamId,
           normalizedName: normalizeName(name)
-        });
+        } as {
+          teamId: string;
+          normalizedName: string;
+          localProjectId?: string;
+        };
+        if (input.localProjectId !== undefined) {
+          creationRequest.localProjectId = input.localProjectId;
+        }
+        const creationRequestHash = requestHash(creationRequest);
         const projectId = uuidFromHash(
           `koed:team-shared-project-id:v1\n${input.teamId}\n${actor.userId}\n${hashDomain("team-project-idempotency", idempotencyKey)}`
         );
@@ -4535,12 +4564,14 @@ export const createCollaborationRepository = (
         if (inserted.rowCount === 0) {
           const existing = await client.query<{
             creation_request_hash: string;
+            unshared_at: Date | null;
           }>(
-            `select creation_request_hash from collaboration_team_shared_projects where id = $1 and team_id = $2`,
+            `select creation_request_hash,unshared_at from collaboration_team_shared_projects where id = $1 and team_id = $2`,
             [projectId, input.teamId]
           );
           if (
             !existing.rows[0] ||
+            existing.rows[0].unshared_at ||
             existing.rows[0].creation_request_hash !== creationRequestHash
           ) {
             throw new CollaborationIdempotencyConflictError(
@@ -4562,6 +4593,29 @@ export const createCollaborationRepository = (
           requireProvider("team"),
           prepared
         );
+        if (thread && input.localProjectId) {
+          const linked = await client.query<{ id: string }>(
+            `insert into public_square_project_connections(actor_user_id,team_id,team_project_id,local_project_id,version,connected_at)
+             values($1,$2,$3,$4,1,now()) on conflict(actor_user_id,team_project_id) do nothing returning id`,
+            [actor.userId, input.teamId, projectId, input.localProjectId]
+          );
+          if (linked.rowCount) {
+            await client.query(
+              `insert into personal_agent_team_job_publications(team_id,team_project_id,owner_user_id,job_id,connection_id,last_known_status,last_seen_at)
+               select $1,$2,$3,j.id,$4,j.state,e.runner_last_seen_at from personal_agent_execution_jobs j
+               join managed_conversation_executions e on e.id=j.conversation_id and e.owner_user_id=j.owner_user_id
+               where j.owner_user_id=$3 and j.project_id=$5 and j.state in ('queued','running')
+               on conflict(connection_id,job_id) do nothing`,
+              [
+                input.teamId,
+                projectId,
+                actor.userId,
+                linked.rows[0]!.id,
+                input.localProjectId
+              ]
+            );
+          }
+        }
         return thread ? { id: projectId, teamId: input.teamId, thread } : null;
       });
     },
@@ -4581,7 +4635,7 @@ export const createCollaborationRepository = (
            and thread.team_id = project.team_id
            and thread.kind = 'team_project_channel'
            and thread.lifecycle = 'active'
-          where project.team_id = $1
+          where project.team_id = $1 and project.unshared_at is null
           order by project.created_at, project.id
           limit $2
         `,

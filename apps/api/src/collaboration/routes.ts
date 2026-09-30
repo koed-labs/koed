@@ -2,16 +2,34 @@ import type {
   CollaborationRepository,
   MemorySourceRepository,
   PersonalNoteRecord,
+  PublicSquareRepository,
   SharedMemoryRepository
 } from "@koed/db";
-import { sharedMemoryGrantScopedSourceId } from "@koed/shared";
+import { timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import {
+  publicSquareBriefInputSchema,
+  publicSquareListQuerySchema,
+  teamProjectMemberConnectionInputSchema,
+  sharedMemoryGrantScopedSourceId,
+  fetchBoundedJsonObject,
+  readLocalEdgeUpstreamRegistry,
+  upstreamApiUrl,
+  upstreamBackendById
+} from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
   enforceCollaborationAdmission,
   type CollaborationAdmissionController
 } from "./admission.js";
+import {
+  assertUpstreamOperationPathAllowed,
+  upstreamSupportsCollaborationRealtime
+} from "../local-edge/upstream-routing.js";
 import {
   advanceCollaborationReadStateSchema,
   collaborationIdempotencyHeadersSchema,
@@ -47,8 +65,12 @@ const forbidden = (message = "Collaboration resource is not available") =>
 const badRequest = (message: string) =>
   Object.assign(new Error(message), { statusCode: 400 });
 
-export interface CollaborationRouteContext {
+export interface CollaborationRouteContext extends Pick<
+  ApiRouteContext,
+  "config" | "localEdge"
+> {
   requireCollaborationRepository(): CollaborationRepository &
+    PublicSquareRepository &
     Pick<MemorySourceRepository, "getPersonalNoteMemoryEvent">;
   requireSharedMemoryRepository(): Pick<
     SharedMemoryRepository,
@@ -182,6 +204,166 @@ export const registerCollaborationRoutes = (
   context: CollaborationRouteContext
 ): void => {
   const { readRateLimit, writeRateLimit } = context;
+  const localProfiles = new Set(["developer", "local_personal"]);
+  type PublicSquareUpstreamAuthority = {
+    backend: ReturnType<typeof upstreamBackendById> & {};
+    authorization: string;
+  };
+  const resolvePublicSquareAuthority =
+    (): PublicSquareUpstreamAuthority | null => {
+      if (!localProfiles.has(context.config.deploymentProfile)) return null;
+      const registry = readLocalEdgeUpstreamRegistry(
+        context.localEdge.upstreamBackendsPath
+      );
+      const backend = registry.activeBackendId
+        ? upstreamBackendById(registry, registry.activeBackendId)
+        : null;
+      if (!backend || backend.routePolicy.teamWorkspaceRead !== "enabled")
+        return null;
+      if (!context.localEdge.remoteOperationsAllowed())
+        throw Object.assign(
+          new Error("Public Square upstream operations are suspended"),
+          { statusCode: 503 }
+        );
+      const capability = backend.capabilities;
+      if (
+        capability?.state !== "validated" ||
+        (capability.expiresAt &&
+          Date.parse(capability.expiresAt) <= Date.now()) ||
+        !upstreamSupportsCollaborationRealtime(backend)
+      )
+        throw Object.assign(
+          new Error("Public Square upstream capabilities are unavailable"),
+          { statusCode: 503 }
+        );
+      const authorization =
+        context.localEdge.resolveUpstreamAuthorization(backend);
+      if (!authorization)
+        throw Object.assign(
+          new Error("Public Square upstream is not enrolled"),
+          { statusCode: 503 }
+        );
+      return { backend, authorization };
+    };
+  const authenticatePublicSquare = async (
+    request: FastifyRequest,
+    operationFamily: "team_chat_read" | "team_chat_write"
+  ) => {
+    const localProfile = localProfiles.has(context.config.deploymentProfile);
+    const bearer = /^Bearer(?:\s|$)/i.test(
+      request.headers.authorization?.trim() ?? ""
+    );
+    if (bearer) {
+      if (!localProfile)
+        throw Object.assign(
+          new Error("API Tokens cannot authorize hosted Team operations"),
+          { statusCode: 403 }
+        );
+      const user = await context.authenticateApiToken(request);
+      const remoteAddress = request.socket.remoteAddress?.replace(
+        /^::ffff:/u,
+        ""
+      );
+      if (remoteAddress !== "127.0.0.1" && remoteAddress !== "::1")
+        throw forbidden("Paired local application credential required");
+      const supplied = /^Bearer\s+(.+)$/i.exec(
+        request.headers.authorization?.trim() ?? ""
+      )?.[1];
+      let paired = false;
+      try {
+        const content = JSON.parse(
+          await readFile(
+            resolve(
+              context.config.koedHome,
+              "config",
+              "local-app-credential.json"
+            ),
+            "utf8"
+          )
+        ) as { apiToken?: unknown };
+        const expected =
+          typeof content.apiToken === "string"
+            ? Buffer.from(content.apiToken.trim())
+            : Buffer.alloc(0);
+        const actual =
+          typeof supplied === "string"
+            ? Buffer.from(supplied)
+            : Buffer.alloc(0);
+        paired =
+          expected.length > 0 &&
+          expected.length === actual.length &&
+          timingSafeEqual(expected, actual);
+      } catch {
+        paired = false;
+      }
+      if (!paired)
+        throw forbidden("Paired local application credential required");
+      const authority = resolvePublicSquareAuthority();
+      if (!authority)
+        throw Object.assign(
+          new Error("A local API Token cannot authorize local Team data"),
+          { statusCode: 403 }
+        );
+      return { user, authority };
+    }
+    const user = await authenticateTeamCollaboration(
+      request,
+      context,
+      operationFamily
+    );
+    const authority = resolvePublicSquareAuthority();
+    if (localProfile && authority)
+      throw Object.assign(
+        new Error(
+          "A paired local API Token is required for remote Public Square"
+        ),
+        { statusCode: 403 }
+      );
+    return { user, authority };
+  };
+  const proxyPublicSquare = async (
+    request: FastifyRequest,
+    operationFamily: "team_chat_read" | "team_chat_write",
+    authority: PublicSquareUpstreamAuthority | null,
+    body?: unknown
+  ): Promise<Record<string, unknown> | null> => {
+    if (!authority) return null;
+    const method = request.method as "GET" | "POST" | "PUT";
+    const requestUrl = new URL(request.url, "http://localhost");
+    const path = `${requestUrl.pathname}${requestUrl.search}`;
+    assertUpstreamOperationPathAllowed(operationFamily, method, path);
+    const upstreamUrl = upstreamApiUrl(
+      authority.backend.baseUrl,
+      requestUrl.pathname
+    );
+    upstreamUrl.search = requestUrl.search;
+    const { response, payload } = await fetchBoundedJsonObject(
+      context.localEdge.fetch,
+      upstreamUrl,
+      {
+        method,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: authority.authorization,
+          ...(body === undefined ? {} : { "content-type": "application/json" })
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      },
+      { timeoutMs: 15_000, maxBytes: 384 * 1_024, readErrorBody: true }
+    );
+    if (!response.ok) {
+      throw Object.assign(
+        new Error(
+          typeof payload.error === "string"
+            ? payload.error
+            : `Public Square authority returned HTTP ${response.status}`
+        ),
+        { statusCode: response.status >= 500 ? 502 : response.status }
+      );
+    }
+    return payload;
+  };
 
   app.get(
     "/v1/collaboration/personal/snapshot",
@@ -530,7 +712,8 @@ export const registerCollaborationRoutes = (
           {
             teamId,
             idempotencyKey: parseIdempotencyKey(request),
-            name: input.name
+            name: input.name,
+            localProjectId: input.localProjectId
           }
         );
       if (!project) throw forbidden();
@@ -542,6 +725,164 @@ export const registerCollaborationRoutes = (
         },
         thread: publicCollaborationThread(project.thread)
       });
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/public-square",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      const { teamId } = teamCollaborationParamsSchema.parse(request.params);
+      const query = publicSquareListQuerySchema.parse(request.query);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_read",
+        authority
+      );
+      if (proxied) return proxied;
+      const page = await context
+        .requireCollaborationRepository()
+        .listPublicSquare({ userId: user.id }, { teamId, ...query });
+      if (!page) throw forbidden();
+      return { page };
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/public-square/projects/:teamProjectId/connection",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), teamProjectId: z.uuid() })
+        .parse(request.params);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_read",
+        authority
+      );
+      if (proxied) return proxied;
+      const connection = await context
+        .requireCollaborationRepository()
+        .getPublicSquareConnection({ userId: user.id }, params);
+      if (!connection) throw forbidden();
+      return { connection };
+    }
+  );
+
+  app.put(
+    "/v1/collaboration/teams/:teamId/public-square/projects/:teamProjectId/connection",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), teamProjectId: z.uuid() })
+        .parse(request.params);
+      const input = teamProjectMemberConnectionInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const connection = await context
+        .requireCollaborationRepository()
+        .setPublicSquareConnection(
+          { userId: user.id },
+          { ...params, ...input }
+        );
+      if (!connection) throw forbidden();
+      return { connection };
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/teams/:teamId/public-square/projects/:teamProjectId/unshare",
+    { preHandler: writeRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), teamProjectId: z.uuid() })
+        .parse(request.params);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority
+      );
+      if (proxied) return proxied;
+      if (
+        !(await context
+          .requireCollaborationRepository()
+          .unsharePublicSquareProject({ userId: user.id }, params))
+      )
+        throw forbidden();
+      return { ...params, unshared: true as const };
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/teams/:teamId/public-square/:publicationId/brief-draft",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), publicationId: z.uuid() })
+        .parse(request.params);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_read",
+        authority
+      );
+      if (proxied) return proxied;
+      const draft = await context
+        .requireCollaborationRepository()
+        .getPublicSquareBriefDraft({ userId: user.id }, params);
+      if (!draft) throw forbidden();
+      return { draft };
+    }
+  );
+
+  app.put(
+    "/v1/collaboration/teams/:teamId/public-square/:publicationId/brief",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({ teamId: z.uuid(), publicationId: z.uuid() })
+        .parse(request.params);
+      const input = publicSquareBriefInputSchema.parse(request.body);
+      const proxied = await proxyPublicSquare(
+        request,
+        "team_chat_write",
+        authority,
+        input
+      );
+      if (proxied) return proxied;
+      const publication = await context
+        .requireCollaborationRepository()
+        .updatePublicSquareBrief({ userId: user.id }, { ...params, ...input });
+      if (!publication) throw forbidden();
+      return { publication };
     }
   );
 

@@ -4780,6 +4780,7 @@ export const createManagedConversationRepository = (
            update managed_conversation_executions
               set runner_lease_expires_at =
                     now() + ($5::bigint * interval '1 millisecond'),
+                  runner_last_seen_at = now(),
                   updated_at = now()
             where id = $3
               and runner_id = $4
@@ -4821,6 +4822,7 @@ export const createManagedConversationRepository = (
         `update managed_conversation_executions
             set runner_lease_expires_at =
                   now() + ($4::bigint * interval '1 millisecond'),
+                runner_last_seen_at = now(),
                 updated_at = now()
           where id = $1
             and execution_generation = $2
@@ -4846,6 +4848,7 @@ export const createManagedConversationRepository = (
             set runner_id = $5,
                 runner_lease_expires_at =
                   now() + ($6::bigint * interval '1 millisecond'),
+                runner_last_seen_at = now(),
                 updated_at = now()
           where id = $1
             and execution_generation = $2
@@ -5768,7 +5771,10 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        const command = await client.query<{ execution_id: string }>(
+        const command = await client.query<{
+          execution_id: string;
+          id: string;
+        }>(
           `update managed_conversation_commands command
               set state = 'failed',
                   blocked_on_kind = null,
@@ -5790,7 +5796,7 @@ export const createManagedConversationRepository = (
               and execution.state = 'starting'
               and execution.runner_deployment_id = $4
               and execution.runner_device_id = $5
-          returning command.execution_id`,
+          returning command.execution_id, command.id`,
           [
             input.ownerUserId,
             input.executionId,
@@ -5863,6 +5869,39 @@ export const createManagedConversationRepository = (
           throw statusError(
             "Managed Conversation runtime binding failure conflicted",
             409
+          );
+        }
+        const failedJobs = await client.query<{ id: string }>(
+          `update personal_agent_execution_jobs
+              set state = 'failed', version = version + 1,
+                  last_observed_at = now(), updated_at = now()
+            where owner_user_id = $1 and conversation_id = $2
+              and command_id = $3
+              and state in ('queued', 'running')
+          returning id`,
+          [input.ownerUserId, input.executionId, command.rows[0]!.id]
+        );
+        for (const job of failedJobs.rows) {
+          const sequence = await client.query<{ sequence: number }>(
+            `select coalesce(max(sequence), 0) + 1 as sequence
+               from personal_agent_execution_job_events
+              where owner_user_id = $1 and job_id = $2`,
+            [input.ownerUserId, job.id]
+          );
+          await client.query(
+            `insert into personal_agent_execution_job_events
+               (owner_user_id, job_id, sequence, event_id,
+                execution_generation, event_type, payload, observed_at)
+             values ($1, $2, $3, $4, $5, 'job_failed', $6::jsonb, now())
+             on conflict (owner_user_id, job_id, event_id) do nothing`,
+            [
+              input.ownerUserId,
+              job.id,
+              sequence.rows[0]!.sequence,
+              `runtime-binding-failed:${input.executionId}:${input.executionGeneration}`,
+              input.executionGeneration,
+              JSON.stringify({ errorCode: input.errorCode })
+            ]
           );
         }
         await appendManagedConversationEvent(client, {

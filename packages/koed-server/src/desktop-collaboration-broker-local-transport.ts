@@ -625,6 +625,53 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         throw new Error("Collaboration broker event frame is invalid");
       }
       collaborationDeliveryIdSchema.parse(payload.deliveryId);
+      if (payload.type === "public_square_changed") {
+        const resource = payload.resource;
+        if (
+          subscription.scope !== "team" ||
+          !subscription.teamId ||
+          resource.scope !== "team" ||
+          resource.teamId !== subscription.teamId ||
+          (resource.type !== "public_square_project" &&
+            resource.type !== "public_square_publication") ||
+          typeof resource.id !== "string"
+        ) {
+          emitTerminalControl(subscription, "requires_snapshot");
+          return "terminal";
+        }
+        const update = collaborationRendererEventSchema.safeParse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "update",
+          subscriptionId: subscription.id,
+          deliveryId: payload.deliveryId,
+          eventId: payload.eventId,
+          occurredAt: payload.occurredAt,
+          family: "public_square_changed",
+          resource: {
+            scope: "team",
+            teamId: subscription.teamId,
+            workspaceId: null,
+            threadId: null,
+            messageId: null,
+            sharedSessionId: null,
+            shareGrantId: null
+          },
+          update: {
+            type: "public_square_invalidated",
+            teamId: subscription.teamId,
+            projectId:
+              resource.type === "public_square_project" ? resource.id : null,
+            publicationId:
+              resource.type === "public_square_publication" ? resource.id : null
+          }
+        });
+        if (!update.success) {
+          emitTerminalControl(subscription, "requires_snapshot");
+          return "terminal";
+        }
+        emit(subscription, update.data);
+        return "continue";
+      }
       // The broker envelope intentionally carries identifiers only. Applying it
       // as a renderer update would invent protected DTO data, so stop closed.
       emitTerminalControl(subscription, "requires_snapshot");

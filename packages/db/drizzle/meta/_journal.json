@@ -415,6 +415,13 @@
       "when": 1790714230718,
       "tag": "0058_windy_warpath",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790714235718,
+      "tag": "0059_public_square",
+      "breakpoints": true
     }
   ]
 }

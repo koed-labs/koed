@@ -41,11 +41,13 @@ export async function handlePersonalAgents({
   routeFamily = "personal-agents"
 }) {
   const routePrefix =
-    routeFamily === "managed-conversations"
-      ? "/studio-api/managed-conversations"
-      : routeFamily === "personal-agent-role-templates"
-        ? "/studio-api/personal-agent-role-templates"
-        : prefix;
+    routeFamily === "public-square"
+      ? "/studio-api/public-square"
+      : routeFamily === "managed-conversations"
+        ? "/studio-api/managed-conversations"
+        : routeFamily === "personal-agent-role-templates"
+          ? "/studio-api/personal-agent-role-templates"
+          : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -53,22 +55,26 @@ export async function handlePersonalAgents({
     return false;
   const suffix = url.pathname.slice(routePrefix.length);
   const match = detail.exec(suffix);
+  const squareRoute =
+    routeFamily === "public-square" ? publicSquareRoute(suffix) : null;
   const methods =
-    routeFamily === "personal-agent-role-templates"
-      ? suffix === ""
-        ? ["GET"]
-        : []
-      : routeFamily === "managed-conversations"
-        ? managedMethods(suffix)
-        : suffix === ""
-          ? ["GET", "POST"]
-          : suffix === "/capabilities"
-            ? ["GET"]
-            : match
-              ? match[2]
-                ? ["POST"]
-                : ["GET", "PATCH"]
-              : [];
+    routeFamily === "public-square"
+      ? (squareRoute?.methods ?? [])
+      : routeFamily === "personal-agent-role-templates"
+        ? suffix === ""
+          ? ["GET"]
+          : []
+        : routeFamily === "managed-conversations"
+          ? managedMethods(suffix)
+          : suffix === ""
+            ? ["GET", "POST"]
+            : suffix === "/capabilities"
+              ? ["GET"]
+              : match
+                ? match[2]
+                  ? ["POST"]
+                  : ["GET", "PATCH"]
+                : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -79,12 +85,18 @@ export async function handlePersonalAgents({
   }
   const recoveryLookup =
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
-  if (url.search && !recoveryLookup) {
+  const squareList =
+    routeFamily === "public-square" && squareRoute?.list === true;
+  if (url.search && !recoveryLookup && !squareList) {
     send(400, { error: "query_not_allowed" });
     return true;
   }
   if (recoveryLookup && !validRecoveryLookupQuery(url.searchParams)) {
     send(400, { error: "invalid_recovery_lookup" });
+    return true;
+  }
+  if (squareList && !validPublicSquareQuery(url.searchParams)) {
+    send(400, { error: "invalid_public_square_query" });
     return true;
   }
   try {
@@ -151,7 +163,9 @@ export async function handlePersonalAgents({
     }
     const upstream = await fetchImpl(
       new URL(
-        `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
+        squareRoute
+          ? `${squareRoute.path}${squareList ? url.search : ""}`
+          : `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
         base
       ),
       {
@@ -255,7 +269,9 @@ export async function handlePersonalAgents({
   } catch {
     send(503, {
       error:
-        "Agents are unavailable. Check the local Koed connection and try again."
+        routeFamily === "public-square"
+          ? "Public Square is unavailable. Check the Koed connection and try again."
+          : "Agents are unavailable. Check the local Koed connection and try again."
     });
   }
   return true;
@@ -354,4 +370,44 @@ export function handlePersonalAgentRoleTemplates(options) {
     ...options,
     routeFamily: "personal-agent-role-templates"
   });
+}
+
+export function handlePublicSquare(options) {
+  return handlePersonalAgents({ ...options, routeFamily: "public-square" });
+}
+
+function publicSquareRoute(suffix) {
+  const team = new RegExp(`^/teams/(${uuid})(.*)$`).exec(suffix);
+  if (!team) return null;
+  const tail = team[2];
+  const path = `/v1/collaboration/teams/${team[1]}/public-square${tail}`;
+  if (tail === "") return { path, methods: ["GET"], list: true };
+  if (new RegExp(`^/projects/${uuid}/connection$`).test(tail))
+    return { path, methods: ["GET", "PUT"] };
+  if (new RegExp(`^/projects/${uuid}/unshare$`).test(tail))
+    return { path, methods: ["POST"] };
+  if (new RegExp(`^/${uuid}/brief-draft$`).test(tail))
+    return { path, methods: ["GET"] };
+  if (new RegExp(`^/${uuid}/brief$`).test(tail))
+    return { path, methods: ["PUT"] };
+  return null;
+}
+
+function validPublicSquareQuery(params) {
+  const keys = [...params.keys()];
+  if (
+    keys.length !== new Set(keys).size ||
+    keys.some((key) => !["limit", "cursor"].includes(key))
+  )
+    return false;
+  const limit = params.get("limit");
+  if (limit !== null && (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > 100))
+    return false;
+  const cursor = params.get("cursor");
+  return (
+    cursor === null ||
+    (cursor.length > 0 &&
+      cursor.length <= 512 &&
+      !/[\u0000-\u001f\u007f]/.test(cursor))
+  );
 }

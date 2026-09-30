@@ -66,6 +66,8 @@ export function TeamChannelNavigation({
   principalUserId,
   directMessages = [],
   selectedId,
+  squareSelected = false,
+  onOpenSquare,
   onSelect,
   onCreate,
   onNewDirectMessage
@@ -76,6 +78,8 @@ export function TeamChannelNavigation({
   principalUserId: string;
   directMessages?: Array<Extract<CollaborationThread, { kind: "dm" | "group_dm" }>>;
   selectedId: string;
+  squareSelected?: boolean;
+  onOpenSquare?: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onNewDirectMessage: (participantUserIds: string[]) => Promise<void>;
@@ -112,7 +116,7 @@ export function TeamChannelNavigation({
         <button type="button" disabled title="Team activity is unavailable here yet." className={`${NAV_ITEM} w-full ${NAV_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
           <Bell className="mr-2 h-4 w-4" />For you
         </button>
-        <button type="button" disabled title="Public Square is unavailable here yet." className={`${NAV_ITEM} w-full ${NAV_ITEM_INACTIVE} cursor-not-allowed opacity-60`}>
+        <button type="button" disabled={!onOpenSquare} aria-current={squareSelected ? "page" : undefined} onClick={onOpenSquare} title={!onOpenSquare ? "Public Square is unavailable here yet." : undefined} className={`${NAV_ITEM} w-full ${squareSelected ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE} ${!onOpenSquare ? "cursor-not-allowed opacity-60" : ""}`}>
           <Globe className="mr-2 h-4 w-4" />Public Square
         </button>
       </div>

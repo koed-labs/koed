@@ -691,6 +691,28 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("limits Public Square upstream routes to the exact Team read/write contract", () => {
+    const team = "018f47b2-3f6d-7a45-8c52-5a1f62090001";
+    const project = "018f47b2-3f6d-7a45-8c52-5a1f62090002";
+    const publication = "018f47b2-3f6d-7a45-8c52-5a1f62090003";
+    for (const path of [
+      `/v1/collaboration/teams/${team}/public-square?limit=50&cursor=abc`,
+      `/v1/collaboration/teams/${team}/public-square/projects/${project}/connection`,
+      `/v1/collaboration/teams/${team}/public-square/${publication}/brief-draft`
+    ]) expect(() => assertUpstreamOperationPathAllowed("team_chat_read", "GET", path)).not.toThrow();
+    for (const [method, path] of [
+      ["PUT", `/v1/collaboration/teams/${team}/public-square/projects/${project}/connection`],
+      ["POST", `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`],
+      ["PUT", `/v1/collaboration/teams/${team}/public-square/${publication}/brief`]
+    ] as const) expect(() => assertUpstreamOperationPathAllowed("team_chat_write", method, path)).not.toThrow();
+    for (const [family, method, path] of [
+      ["team_chat_read", "GET", `/v1/collaboration/teams/${team}/public-square?offset=1`],
+      ["team_chat_read", "POST", `/v1/collaboration/teams/${team}/public-square/projects/${project}/unshare`],
+      ["team_chat_write", "PUT", `/v1/collaboration/teams/${team}/public-square/${publication}/brief-draft`],
+      ["team_chat_read", "GET", `/v1/collaboration/teams/${team}/public-square/projects/not-a-uuid/connection`]
+    ] as const) expect(() => assertUpstreamOperationPathAllowed(family, method, path)).toThrow("not allowed for operation family");
+  });
+
   it("allows only the exact GET paths for Team memory retention settings", () => {
     const teamId = "11111111-1111-4111-8111-111111111111";
     for (const path of [

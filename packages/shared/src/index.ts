@@ -145,6 +145,24 @@ export type {
   SharedMemoryFidelityCeiling
 } from "./shared-memory-fidelity.js";
 
+export {
+  personalAgentTeamBriefDraftSchema,
+  publicSquareBriefInputSchema,
+  publicSquareJobStatusSchema,
+  publicSquareListQuerySchema,
+  publicSquarePageSchema,
+  publicSquarePublicationSchema,
+  teamProjectMemberConnectionInputSchema,
+  teamProjectMemberConnectionSchema
+} from "./public-square-contract.js";
+export type {
+  PersonalAgentTeamBriefDraft,
+  PublicSquareJobStatus,
+  PublicSquarePage,
+  PublicSquarePublication,
+  TeamProjectMemberConnection
+} from "./public-square-contract.js";
+
 // Internal bootstrap identity shared by local capture and Desktop credentials.
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
 export const MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS = 1_800_000;

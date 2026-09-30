@@ -27,6 +27,7 @@ export type EncryptedFieldSourceTable =
   | "memory_replica_revisions"
   | "personal_agent_identity_versions"
   | "personal_agent_execution_jobs"
+  | "personal_agent_team_job_publications"
   | "privacy_classification_results"
   | "privacy_sanitized_source_artifacts"
   | "privacy_sanitized_source_chunks"

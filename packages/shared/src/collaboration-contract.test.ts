@@ -1720,6 +1720,26 @@ describe("collaboration snapshots and DTOs", () => {
       }).success
     ).toBe(true);
     expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.create_team_shared_project",
+        input: { teamId: ids.team, name: "Koed", localProjectId: "unassigned" }
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.create_team_shared_project",
+        input: {
+          teamId: ids.team,
+          name: "Koed",
+          localProjectId: `project:${ids.thread}`
+        }
+      }).success
+    ).toBe(true);
+    expect(
       collaborationCommandResultSchema.safeParse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
         requestId: ids.request,

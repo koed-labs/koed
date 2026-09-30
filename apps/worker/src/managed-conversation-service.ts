@@ -206,7 +206,15 @@ const registeredLocalProject = async (
     value = JSON.parse(
       await readFile(resolve(koedHome, "config", "projects.json"), "utf8")
     );
-  } catch {
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return null;
+    }
     throw new Error("ManagedConversationProjectCatalogUnavailableError");
   }
   if (
@@ -2849,15 +2857,7 @@ export const createManagedConversationService = (options: {
       if (!execution.projectId) {
         projectPath = await prepareIndependentExecutionPath(execution.id);
       } else {
-        const projects = await options.repository.listLcmGraphThreads(actor, {
-          projectId: execution.projectId,
-          limit: 1
-        });
-        projectPath =
-          projects.find(
-            (candidate) =>
-              candidate.id === execution.projectId && candidate.path?.trim()
-          )?.path ?? undefined;
+        projectPath = await projectPathForExecution(execution, actor);
       }
     }
     if (!projectPath) {
@@ -2878,24 +2878,58 @@ export const createManagedConversationService = (options: {
     execution: ManagedConversationExecutionRecord
   ): Promise<string | null> => {
     if (!execution.projectId) return null;
-    const projects = await options.repository.listLcmGraphThreads(
-      { userId: execution.ownerUserId },
-      { projectId: execution.projectId, limit: 1 }
-    );
-    const projectPath = projects.find(
-      (project) => project.id === execution.projectId && project.path?.trim()
-    )?.path;
+    const projectPath = await projectPathForExecution(execution, {
+      userId: execution.ownerUserId
+    });
     if (!projectPath) {
       throw managedConversationError(
         "ManagedConversationProjectUnavailableError"
       );
     }
+    return projectPath;
+  };
+
+  const projectPathForExecution = async (
+    execution: ManagedConversationExecutionRecord,
+    actor: { userId: string }
+  ): Promise<string | undefined> => {
+    // Remote authority records keep their hosted owner UUID. A local worker's
+    // `localOwnerUserId` is the paired API identity and need not be that UUID;
+    // the authority has already claimed this execution for the exact local
+    // deployment and device before this resolver is reached.
+    if (
+      execution.runnerDeviceId === options.deviceId &&
+      execution.runnerDeploymentId === options.deploymentId
+    ) {
+      const registered = await registeredLocalProject(
+        options.koedHome,
+        execution.projectId ?? ""
+      );
+      if (registered) {
+        try {
+          const unresolved = resolve(registered.path);
+          const projectStat = await lstat(unresolved);
+          if (!projectStat.isDirectory() || projectStat.isSymbolicLink()) {
+            return undefined;
+          }
+          return await realpath(unresolved);
+        } catch {
+          return undefined;
+        }
+      }
+    }
+    const projects = await options.repository.listLcmGraphThreads(actor, {
+      projectId: execution.projectId ?? undefined,
+      limit: 1
+    });
+    const projectPath = projects.find(
+      (project) => project.id === execution.projectId && project.path?.trim()
+    )?.path;
+    if (!projectPath) return undefined;
     try {
       return await realpath(projectPath);
     } catch {
-      throw managedConversationError(
-        "ManagedConversationProjectUnavailableError"
-      );
+      return undefined;
     }
   };
 

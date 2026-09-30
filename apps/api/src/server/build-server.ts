@@ -1797,6 +1797,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerPersonalAgentRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
+    config: routeContext.config,
+    localEdge: routeContext.localEdge,
     requireCollaborationRepository: requireRepository,
     requireSharedMemoryRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,

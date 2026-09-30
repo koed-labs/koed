@@ -248,6 +248,7 @@ const requiredOperationFamiliesForEvent = (
     case "thread_lifecycle":
     case "message_created":
     case "receipt_state_updated":
+    case "public_square_changed":
       return ["team_chat_read"];
     case "share_grant_lifecycle":
       return ["share_grant_management"];
@@ -1064,6 +1065,15 @@ const materializeEvent = async (
         event,
         materializationRepository
       );
+    case "public_square_changed":
+      if (event.scope !== "team" || !event.teamId || !event.resourceType.startsWith("public_square_")) return { action: "requires_snapshot" };
+      update = {
+        type: "public_square_invalidated",
+        teamId: event.teamId,
+        projectId: event.resourceType === "public_square_project" ? event.resourceId : null,
+        publicationId: event.resourceType === "public_square_publication" ? event.resourceId : null
+      };
+      break;
     case "pending_share_lifecycle":
       return materializePendingShareLifecycleEvent(
         client.actor,

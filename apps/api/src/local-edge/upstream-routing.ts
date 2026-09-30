@@ -386,6 +386,24 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
+  const publicSquareTeam = "/v1/collaboration/teams/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/public-square";
+  if (operationFamily === "team_chat_read") {
+    if (method === "GET" && new RegExp(`^${publicSquareTeam}$`, "i").test(pathname)) {
+      const keys = [...parsed.searchParams.keys()];
+      if (keys.some(key => key !== "limit" && key !== "cursor") || new Set(keys).size !== keys.length) deny();
+      return;
+    }
+    if (method === "GET" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`, "i").test(pathname)) return;
+    if (method === "GET" && new RegExp(`^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief-draft$`, "i").test(pathname)) return;
+    deny();
+  }
+  if (operationFamily === "team_chat_write") {
+    if (method === "PUT" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/connection$`, "i").test(pathname)) return;
+    if (method === "POST" && new RegExp(`^${publicSquareTeam}/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/unshare$`, "i").test(pathname)) return;
+    if (method === "PUT" && new RegExp(`^${publicSquareTeam}/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/brief$`, "i").test(pathname)) return;
+    deny();
+  }
+
   if (operationFamily === "capture_writes") {
     if (method !== "POST") {
       deny();
