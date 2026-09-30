@@ -377,7 +377,7 @@ export class PiManagedConversationSession {
         const sourceKind =
           sourceType === "extension"
             ? "provider"
-            : sourceType === "skill"
+            : scope === "global"
               ? "global-file"
               : "project-file";
         commands.push({

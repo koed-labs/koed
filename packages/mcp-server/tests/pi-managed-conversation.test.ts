@@ -82,12 +82,15 @@ function fixture(startupDelayMs = 0, bundled = false) {
                 ).resumeSessionPath ??
                 path.join(root, "sessions", "session.jsonl")
             }
-          : {}
+          : request.type === "get_commands"
+            ? { commands: mockCommands }
+            : {}
     };
     if (request.type === "get_state" && startupDelayMs) {
       setTimeout(() => emit(response), startupDelayMs);
     } else emit(response);
   });
+  let mockCommands: Record<string, unknown>[] = [];
   const onTextDelta = vi.fn();
   const onUiRequest = vi.fn().mockResolvedValue({ value: "Approve" });
   const config: PiManagedConversationConfig = {
@@ -110,6 +113,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
     requests,
     onTextDelta,
     onUiRequest,
+    mockCommands,
     changeIdentity: () => {
       sessionId = "22222222-2222-4222-8222-222222222222";
     }
@@ -287,22 +291,23 @@ describe("Pi managed RPC conversation", () => {
     await session.closeAndWait();
   });
 
-  it("lists bounded file-backed commands with provenance and rejects actions", async () => {
+  it("lists commands via get_commands RPC and rejects actions", async () => {
     const f = fixture();
-    const globalRoot = path.join(f.root, "pi-agent");
-    const projectPromptRoot = path.join(f.root, ".pi", "prompts");
-    const globalPromptRoot = path.join(globalRoot, "prompts");
-    fs.mkdirSync(globalPromptRoot, { recursive: true });
-    fs.mkdirSync(projectPromptRoot, { recursive: true });
-    fs.writeFileSync(
-      path.join(globalPromptRoot, "review.md"),
-      "---\ndescription: Review changes\n---\nPrompt body"
-    );
-    fs.writeFileSync(path.join(projectPromptRoot, "test.md"), "Project prompt");
-    const session = new PiManagedConversationSession({
-      ...f.config,
-      env: { ...f.config.env, PI_CODING_AGENT_DIR: globalRoot }
-    });
+    f.mockCommands.length = 0;
+    f.mockCommands.push({
+        name: "review",
+        description: "Review changes",
+        source: "prompt",
+        sourceInfo: { path: "/tmp/review.md", scope: "user", origin: "top-level" }
+      },
+      {
+        name: "skill:test",
+        description: "Test skill",
+        source: "skill",
+        sourceInfo: { path: "/tmp/skill-test", scope: "project", origin: "package" }
+      });
+    const session = new PiManagedConversationSession(f.config);
+    await session.start();
 
     await expect(session.listCommands()).resolves.toEqual([
       expect.objectContaining({
@@ -314,7 +319,9 @@ describe("Pi managed RPC conversation", () => {
         invocation: { type: "prompt" }
       }),
       expect.objectContaining({
-        name: "test",
+        name: "skill:test",
+        description: "Test skill",
+        kind: "skill",
         scope: "project",
         source: "project-file",
         verification: "unverified"
@@ -328,7 +335,8 @@ describe("Pi managed RPC conversation", () => {
         arguments: []
       })
     ).resolves.toEqual({ status: "rejected", reason: "unsupported_action" });
-    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    await session.closeAndWait();
   });
 
   it("reports a provider-error turn as unsuccessful after it settles", async () => {
