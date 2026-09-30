@@ -66,6 +66,8 @@ export interface StudioTeamDraftAuthority {
   principalUserId: string;
   teamId: string;
   threadId: string;
+  rootMessageId?: string;
+  editMessageId?: string;
 }
 export interface StudioTeamDraft {
   text: string;
@@ -74,6 +76,12 @@ export interface StudioTeamDraft {
     body: string;
     createdAt: string;
   } | null;
+  receiptAckPending?: { clientMessageId: string; messageId: string } | null;
+  edit?: {
+    expectedVersion: number;
+    baseBodyText: string;
+    conflict?: { latestVersion: number; latestBodyText: string };
+  };
   updatedAt?: string;
 }
 export interface StudioTeamDraftStore {
@@ -406,6 +414,8 @@ export const createStudioWindowController = (input: {
     "collaboration.start_group_direct_message",
     "collaboration.send_message",
     "collaboration.retry_message",
+    "collaboration.edit_message",
+    "collaboration.set_message_reaction",
     "collaboration.get_send_receipt",
     "collaboration.acknowledge_send_receipt",
     "collaboration.load_message_page",
@@ -436,7 +446,8 @@ export const createStudioWindowController = (input: {
         if (
           lifecycle === collaborationLifecycle &&
           ownerId === collaborationOwnerId
-        ) emitCollaborationEvent(event);
+        )
+          emitCollaborationEvent(event);
       }
     };
     const result = collaborationCommandResultSchema.parse(
@@ -449,7 +460,9 @@ export const createStudioWindowController = (input: {
       result.requestId !== command.requestId ||
       result.command !== command.command
     ) {
-      throw new Error("Studio collaboration authority changed during the request.");
+      throw new Error(
+        "Studio collaboration authority changed during the request."
+      );
     }
     return result;
   };
@@ -497,7 +510,9 @@ export const createStudioWindowController = (input: {
               item.id === sessionId && item.logicalMemoryId === logicalMemoryId
           );
           if (!entry) {
-            throw new Error("The selected Conversation source is no longer available.");
+            throw new Error(
+              "The selected Conversation source is no longer available."
+            );
           }
           sourceIdentity = { sessionId, logicalMemoryId };
         } else if (source.data.kind === "personal_note") {
@@ -521,7 +536,9 @@ export const createStudioWindowController = (input: {
     const expectedAuthority = authorityFingerprint();
     const assertAuthorityCurrent = (): void => {
       if (authorityFingerprint() !== expectedAuthority) {
-        throw new Error("Team, account, or selected source changed during native review.");
+        throw new Error(
+          "Team, account, or selected source changed during native review."
+        );
       }
     };
     const actionCommand = async (
@@ -539,8 +556,14 @@ export const createStudioWindowController = (input: {
       });
       return runOwnedStudioCommand(grantCommand, lifecycle, ownerId);
     };
-    let grantResult = await actionCommand("collaboration.request_action_grant", { intent });
-    if (!grantResult.ok || grantResult.command !== "collaboration.request_action_grant") {
+    let grantResult = await actionCommand(
+      "collaboration.request_action_grant",
+      { intent }
+    );
+    if (
+      !grantResult.ok ||
+      grantResult.command !== "collaboration.request_action_grant"
+    ) {
       throw new Error("Native Action Grant request failed.");
     }
     let status = grantResult.data.status;
@@ -550,15 +573,27 @@ export const createStudioWindowController = (input: {
           throw new Error("Native review is unavailable.");
         }
         const approved = await input.confirmNativeReview(status.review);
-        if (lifecycle !== collaborationLifecycle || lifecycle.signal.aborted || ownerId !== collaborationOwnerId) {
-          throw new Error("Studio collaboration authority changed during review.");
+        if (
+          lifecycle !== collaborationLifecycle ||
+          lifecycle.signal.aborted ||
+          ownerId !== collaborationOwnerId
+        ) {
+          throw new Error(
+            "Studio collaboration authority changed during review."
+          );
         }
         assertAuthorityCurrent();
-        const decisionResult = await actionCommand("collaboration.confirm_action_grant", {
-          actionGrant: status.actionGrant,
-          decision: approved ? "approve" : "cancel"
-        });
-        if (!decisionResult.ok || decisionResult.command !== "collaboration.confirm_action_grant") {
+        const decisionResult = await actionCommand(
+          "collaboration.confirm_action_grant",
+          {
+            actionGrant: status.actionGrant,
+            decision: approved ? "approve" : "cancel"
+          }
+        );
+        if (
+          !decisionResult.ok ||
+          decisionResult.command !== "collaboration.confirm_action_grant"
+        ) {
           throw new Error("Native Action Grant decision failed.");
         }
         status = decisionResult.data.status;
@@ -594,7 +629,9 @@ export const createStudioWindowController = (input: {
           lifecycle.signal.aborted ||
           ownerId !== collaborationOwnerId
         ) {
-          throw new Error("Studio collaboration authority changed during the request.");
+          throw new Error(
+            "Studio collaboration authority changed during the request."
+          );
         }
         assertAuthorityCurrent();
         continue;
@@ -605,7 +642,8 @@ export const createStudioWindowController = (input: {
       status = awaited.data.status;
     }
     assertAuthorityCurrent();
-    if (status.state !== "approved") throw new Error("Action Grant was not approved.");
+    if (status.state !== "approved")
+      throw new Error("Action Grant was not approved.");
     return status.actionGrant;
   };
 

@@ -1,4 +1,7 @@
-import type { StudioTeamDraft } from "./studio-collaboration-client";
+import type {
+  StudioTeamDraft,
+  StudioTeamDraftAuthority
+} from "./studio-collaboration-client";
 import type {
   CollaborationDurableSend,
   CollaborationMessage,
@@ -22,6 +25,107 @@ export const teamDraftForHydration = (
   stored: StudioTeamDraft | null
 ): StudioTeamDraft => stored ?? { text: "", pendingSend: null };
 
+export const teamDraftAfterReplyHydration = (
+  stored: StudioTeamDraft | null,
+  current: StudioTeamDraft | undefined
+): StudioTeamDraft => {
+  const saved = teamDraftForHydration(stored);
+  if (!current) return saved;
+  const storedPendingWasAcknowledged =
+    current.receiptAckPending?.clientMessageId ===
+    saved.pendingSend?.clientMessageId;
+  return {
+    ...saved,
+    ...current,
+    text: current.text,
+    pendingSend:
+      current.pendingSend ??
+      (storedPendingWasAcknowledged ? null : (saved.pendingSend ?? null)),
+    receiptAckPending:
+      current.receiptAckPending ?? saved.receiptAckPending ?? null
+  };
+};
+
+export const pendingSendAfterReceiptResolution = (
+  draft: Pick<StudioTeamDraft, "pendingSend"> | undefined,
+  fallback: NonNullable<StudioTeamDraft["pendingSend"]>,
+  confirmed: boolean
+): StudioTeamDraft["pendingSend"] =>
+  confirmed
+    ? (draft?.pendingSend ?? null)
+    : draft
+      ? draft.pendingSend
+      : fallback;
+
+export const teamDraftAfterAcceptedSendResult = (
+  current: StudioTeamDraft | undefined,
+  accepted: NonNullable<StudioTeamDraft["pendingSend"]>,
+  acceptedMessageId: string,
+  acknowledgedMessageId: string | null
+): StudioTeamDraft => {
+  if (acknowledgedMessageId === acceptedMessageId) {
+    if (!current) return { text: "", pendingSend: null };
+    return {
+      ...current,
+      ...(current.pendingSend?.clientMessageId === accepted.clientMessageId
+        ? { pendingSend: null }
+        : {}),
+      ...(current.receiptAckPending?.clientMessageId ===
+      accepted.clientMessageId
+        ? { receiptAckPending: null }
+        : {})
+    };
+  }
+  if (current?.pendingSend?.clientMessageId === accepted.clientMessageId)
+    return current;
+  return {
+    text: current?.text ?? "",
+    pendingSend: accepted,
+    receiptAckPending: current?.receiptAckPending ?? null
+  };
+};
+
+export const teamDraftForReplyAttempt = (
+  current: StudioTeamDraft | undefined,
+  pendingSend: NonNullable<StudioTeamDraft["pendingSend"]>,
+  retryingExistingSend: boolean,
+  currentComposerText: string
+): StudioTeamDraft => ({
+  text: retryingExistingSend ? (current?.text ?? currentComposerText) : "",
+  pendingSend,
+  receiptAckPending: retryingExistingSend
+    ? (current?.receiptAckPending ?? null)
+    : null
+});
+
+export const teamDraftAfterReplyTextChange = (
+  current: StudioTeamDraft | undefined,
+  text: string,
+  fallbackPendingSend: StudioTeamDraft["pendingSend"]
+): StudioTeamDraft => ({
+  ...current,
+  text,
+  pendingSend: current ? current.pendingSend : fallbackPendingSend,
+  receiptAckPending: current?.receiptAckPending ?? null
+});
+
+export const threadReceiptMayUpdatePane = (input: {
+  draftAuthority: StudioTeamDraftAuthority;
+  currentAuthorityKey: string | null;
+  openRoot: { id: string; teamId: string | null; threadId: string } | null;
+}): boolean => {
+  const { rootMessageId, editMessageId, ...baseAuthority } =
+    input.draftAuthority;
+  return Boolean(
+    rootMessageId &&
+    !editMessageId &&
+    input.currentAuthorityKey === JSON.stringify(baseAuthority) &&
+    input.openRoot?.id === rootMessageId &&
+    input.openRoot.teamId === input.draftAuthority.teamId &&
+    input.openRoot.threadId === input.draftAuthority.threadId
+  );
+};
+
 export const teamDraftAfterTextChange = (input: {
   callbackAuthorityKey: string | null;
   currentAuthorityKey: string | null;
@@ -39,7 +143,12 @@ export const teamDraftAfterTextChange = (input: {
 };
 
 export const teamDraftForAcceptedReceipt = (input: {
-  authority: { teamId: string; threadId: string };
+  authority: {
+    teamId: string;
+    threadId: string;
+    rootMessageId?: string | null;
+    editMessageId?: string | null;
+  };
   draft: StudioTeamDraft;
   receipt: CollaborationSendReceipt;
 }): StudioTeamDraft | null => {
@@ -51,9 +160,16 @@ export const teamDraftForAcceptedReceipt = (input: {
     receipt.message.scope !== "team" ||
     receipt.message.teamId !== authority.teamId ||
     receipt.message.threadId !== authority.threadId ||
+    (authority.rootMessageId !== undefined &&
+      receipt.message.rootMessageId !== authority.rootMessageId) ||
+    authority.editMessageId !== undefined ||
     receipt.message.delivery !== "sent" ||
     receipt.message.clientMessageId !== receipt.clientMessageId ||
-    draft.pendingSend?.clientMessageId !== receipt.clientMessageId
+    draft.pendingSend?.clientMessageId !== receipt.clientMessageId ||
+    draft.pendingSend.body !==
+      (typeof receipt.acceptedBody === "string"
+        ? receipt.acceptedBody
+        : receipt.message.body)
   )
     return null;
   const settled = resolvePendingSend(
@@ -245,20 +361,229 @@ export const mergeTeamMessages = (
   current: CollaborationMessage[],
   incoming: CollaborationMessage[],
   limit = 250
-): CollaborationMessage[] =>
-  [...current, ...incoming]
-    .filter(
-      (message, index, all) =>
-        all.findIndex((other) => other.id === message.id) === index
+): CollaborationMessage[] => {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    const previous = byId.get(message.id);
+    if (
+      previous &&
+      (message.version < previous.version ||
+        (message.version === previous.version &&
+          Date.parse(message.updatedAt) < Date.parse(previous.updatedAt)))
     )
+      continue;
+    byId.set(message.id, message);
+  }
+  return [...byId.values()]
     .sort((left, right) => left.sequence - right.sequence)
     .slice(-limit);
+};
+
+export type RootedChannelMessage = {
+  id: string;
+  rootMessageId?: string | null;
+  sequence: number;
+};
+
+export const channelRootMessages = <T extends RootedChannelMessage>(
+  messages: readonly T[]
+): T[] => messages.filter((message) => message.rootMessageId == null);
+
+export const threadMessagesForRoot = <T extends RootedChannelMessage>(
+  root: T,
+  replies: readonly T[]
+): T[] => {
+  const byId = new Map<string, T>([[root.id, root]]);
+  for (const message of replies) {
+    if (message.rootMessageId === root.id && message.id !== root.id)
+      byId.set(message.id, message);
+  }
+  return [...byId.values()].sort(
+    (left, right) => left.sequence - right.sequence
+  );
+};
+
+export const messageReactionMayStart = (input: {
+  message: Pick<
+    CollaborationMessage,
+    "scope" | "teamId" | "threadId" | "rootMessageId"
+  >;
+  teamId: string;
+  threadId: string;
+  openRootMessageId: string | null;
+}): boolean =>
+  input.message.scope === "team" &&
+  input.message.teamId === input.teamId &&
+  input.message.threadId === input.threadId &&
+  (input.message.rootMessageId === null ||
+    input.message.rootMessageId === input.openRootMessageId);
+
+export const messageReactionMayUpdateOpenPane = (input: {
+  message: Pick<CollaborationMessage, "id" | "rootMessageId">;
+  openRootMessageId: string | null;
+}): boolean =>
+  Boolean(
+    input.openRootMessageId &&
+    (input.message.id === input.openRootMessageId ||
+      input.message.rootMessageId === input.openRootMessageId)
+  );
+
+export const repliesForChannelRoot = <T extends RootedChannelMessage>(
+  messages: readonly T[],
+  rootMessageId: string
+): T[] =>
+  messages
+    .filter((message) => message.rootMessageId === rootMessageId)
+    .slice()
+    .sort((left, right) => left.sequence - right.sequence);
+
+export const visibleReplyReadMayAdvance = (input: {
+  rootMessageId: string;
+  replyMessageId: string;
+  sequence: number;
+  senderId: string;
+  principalUserId: string;
+  focused: boolean;
+  rootPaneVisible: boolean;
+  lastReportedSequence: number;
+}): boolean =>
+  Boolean(
+    input.rootMessageId &&
+    input.replyMessageId &&
+    input.focused &&
+    input.rootPaneVisible &&
+    input.senderId !== input.principalUserId &&
+    Number.isSafeInteger(input.sequence) &&
+    input.sequence > input.lastReportedSequence
+  );
+
+export const threadReplyVisibleRatio = (input: {
+  element: { top: number; right: number; bottom: number; left: number };
+  container: { top: number; right: number; bottom: number; left: number };
+  viewport: { top: number; right: number; bottom: number; left: number };
+}): number => {
+  const top = Math.max(
+    input.element.top,
+    input.container.top,
+    input.viewport.top
+  );
+  const right = Math.min(
+    input.element.right,
+    input.container.right,
+    input.viewport.right
+  );
+  const bottom = Math.min(
+    input.element.bottom,
+    input.container.bottom,
+    input.viewport.bottom
+  );
+  const left = Math.max(
+    input.element.left,
+    input.container.left,
+    input.viewport.left
+  );
+  const width = Math.max(0, input.element.right - input.element.left);
+  const height = Math.max(0, input.element.bottom - input.element.top);
+  const area = width * height;
+  return area > 0
+    ? (Math.max(0, right - left) * Math.max(0, bottom - top)) / area
+    : 0;
+};
+
+export const visibleReplyPrefix = <T extends { id: string }>(
+  repliesInOrder: readonly T[],
+  visibleReplyIds: ReadonlySet<string>
+): T[] => {
+  const prefix: T[] = [];
+  for (const reply of repliesInOrder) {
+    if (!visibleReplyIds.has(reply.id)) break;
+    prefix.push(reply);
+  }
+  return prefix;
+};
+
+export const editDraftAfterConflict = <
+  T extends {
+    text: string;
+    edit?: {
+      expectedVersion: number;
+      baseBodyText: string;
+      conflict?: { latestVersion: number; latestBodyText: string };
+    };
+  }
+>(
+  draft: T,
+  latest: { version: number; bodyText: string }
+): T => {
+  if (
+    !draft.edit ||
+    !Number.isSafeInteger(latest.version) ||
+    latest.version <= draft.edit.expectedVersion
+  )
+    return draft;
+  return {
+    ...draft,
+    edit: {
+      ...draft.edit,
+      conflict: {
+        latestVersion: latest.version,
+        latestBodyText: latest.bodyText
+      }
+    }
+  };
+};
+
+export const editDraftAfterConflictReview = <
+  T extends {
+    text: string;
+    edit?: {
+      expectedVersion: number;
+      baseBodyText: string;
+      conflict?: { latestVersion: number; latestBodyText: string };
+    };
+  }
+>(
+  draft: T
+): T => {
+  if (!draft.edit?.conflict) return draft;
+  const { conflict, ...edit } = draft.edit;
+  return {
+    ...draft,
+    edit: {
+      ...edit,
+      expectedVersion: conflict.latestVersion,
+      baseBodyText: conflict.latestBodyText
+    }
+  };
+};
 
 export const studioSelectionMatches = (
   captured: { teamId: string; threadId: string },
   current: { teamId: string; threadId: string }
 ): boolean =>
   captured.teamId === current.teamId && captured.threadId === current.threadId;
+
+export const selectedTeamSnapshotMayStartSubscription = (input: {
+  active: boolean;
+  currentTeamId: string;
+  expectedBackendId: string;
+  expectedPrincipalId: string;
+  teamId: string;
+  selectedSnapshot: {
+    connection: { backendId: string | null };
+    navigation: { teamPrincipal: { id: string } | null };
+    selectionTeamId: string | null;
+  } | null;
+}): boolean =>
+  Boolean(
+    input.active &&
+    input.currentTeamId === input.teamId &&
+    input.selectedSnapshot &&
+    input.selectedSnapshot.connection.backendId === input.expectedBackendId &&
+    input.selectedSnapshot.navigation.teamPrincipal?.id ===
+      input.expectedPrincipalId &&
+    input.selectedSnapshot.selectionTeamId === input.teamId
+  );
 
 export const studioRequestMayApply = (input: {
   capturedGeneration: number;

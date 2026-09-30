@@ -260,6 +260,7 @@ const requiredOperationFamiliesForEvent = (
       return ["team_workspace_read"];
     case "thread_lifecycle":
     case "message_created":
+    case "message_updated":
     case "receipt_state_updated":
     case "public_square_changed":
     case "team_agent_request_changed":
@@ -826,7 +827,8 @@ const rendererThreadFromRecord = (
 
 const rendererMessageFromRecord = (
   message: CollaborationMessageRecord,
-  user: RealtimeAuth["user"]
+  user: RealtimeAuth["user"],
+  type: "message_created" | "message_updated" = "message_created"
 ): RendererUpdate | null => {
   if (
     message.senderKind !== "user" ||
@@ -836,10 +838,11 @@ const rendererMessageFromRecord = (
     return null;
   }
   return {
-    type: "message_created",
+    type,
     message: {
       id: message.id,
       threadId: message.threadId,
+      rootMessageId: message.rootMessageId ?? null,
       scope: message.scope,
       teamId: message.teamId,
       sequence: message.threadSequence,
@@ -857,7 +860,11 @@ const rendererMessageFromRecord = (
       body: message.bodyText,
       createdAt: message.createdAt,
       updatedAt: message.updatedAt,
-      editedAt: null,
+      version: message.version ?? 1,
+      replyCount: message.replyCount ?? 0,
+      unreadReplyCount: message.unreadReplyCount ?? 0,
+      reactions: message.reactions ?? [],
+      editedAt: message.editedAt ?? null,
       deletedAt: null,
       delivery: "sent",
       recipientStatus: message.recipientStatus,
@@ -872,6 +879,7 @@ const rendererReceiptStateFromRecord = (
   type: "receipt_state_updated",
   readState: {
     threadId: readState.threadId,
+    rootMessageId: readState.rootMessageId ?? null,
     deliveredMessageId: readState.lastDeliveredMessageId,
     deliveredSequence: readState.lastDeliveredSequence,
     deliveredAt: readState.lastDeliveredAt,
@@ -1160,6 +1168,38 @@ const materializeEvent = async (
         return { action: "requires_snapshot" };
       }
       update = rendererMessageFromRecord(message, client.user);
+      break;
+    }
+    case "message_updated": {
+      if (
+        !materializationRepository ||
+        !event.threadId ||
+        !event.messageId ||
+        event.resourceType !== "collaboration_message" ||
+        event.resourceId !== event.messageId
+      )
+        return { action: "requires_snapshot" };
+      const message = await materializationRepository.getMessageForRealtime(
+        client.actor,
+        {
+          threadId: event.threadId,
+          messageId: event.messageId
+        }
+      );
+      if (
+        !message ||
+        message.id !== event.messageId ||
+        message.threadId !== event.threadId ||
+        message.scope !== event.scope ||
+        message.teamId !== event.teamId
+      ) {
+        return { action: "requires_snapshot" };
+      }
+      update = rendererMessageFromRecord(
+        message,
+        client.user,
+        "message_updated"
+      );
       break;
     }
     case "receipt_state_updated": {

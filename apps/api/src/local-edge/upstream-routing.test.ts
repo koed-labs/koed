@@ -1103,3 +1103,86 @@ describe("Team Agent request upstream route grants", () => {
       ).toThrow();
   });
 });
+
+describe("Team message upstream route grants", () => {
+  const team = "8138c7cd-b96d-49eb-b647-6f03a8486033";
+  const thread = "0b014db6-a942-5e80-8ccf-4949130c51a7";
+  const message = "1c125efc-c053-4f91-9dd5-0a6e7761b32b";
+  const root = "2d236f0d-d164-40a2-8ee6-1b7f8872c43c";
+  const prefix = `/v1/collaboration/teams/${team}/threads/${thread}`;
+
+  it("permits bounded root-scoped message reads and read cursors", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "GET",
+        `${prefix}/messages?beforeSequence=20&limit=50&rootMessageId=${root}`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "GET",
+        `${prefix}/messages?afterSequence=101&beforeSequence=9007199254740991&limit=100&rootMessageId=${root}`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "GET",
+        `${prefix}/messages?afterSequence=0&limit=50`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_read",
+        "PUT",
+        `${prefix}/read-state`
+      )
+    ).not.toThrow();
+  });
+
+  it("permits only the message edit and reaction mutation paths", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_write",
+        "POST",
+        `${prefix}/messages`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_write",
+        "PATCH",
+        `${prefix}/messages/${message}`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_chat_write",
+        "PUT",
+        `${prefix}/messages/${message}/reactions`
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects unbounded filters and unrelated message mutation routes", () => {
+    for (const [family, method, path] of [
+      ["team_chat_read", "GET", `${prefix}/messages?rootMessageId=bad`],
+      ["team_chat_read", "GET", `${prefix}/messages?offset=0`],
+      ["team_chat_read", "GET", `${prefix}/messages?limit=101`],
+      [
+        "team_chat_read",
+        "GET",
+        `${prefix}/messages?beforeSequence=9007199254740992`
+      ],
+      ["team_chat_write", "PATCH", `${prefix}/messages/${message}/reactions`],
+      ["team_chat_write", "PUT", `${prefix}/messages/${message}`],
+      ["personal_collaboration_read", "GET", `${prefix}/messages`]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed(family, method, path)
+      ).toThrow();
+    }
+  });
+});

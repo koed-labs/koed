@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  COLLABORATION_REACTION_EMOJI,
   crossIdentitySyncDeterministicUuid,
   logicalMemorySourceRevisionIdentity,
   type EnvelopeEncryptionProvider
@@ -66,6 +67,7 @@ export type CollaborationEventFamily =
   | "workspace_lifecycle_access"
   | "thread_lifecycle"
   | "message_created"
+  | "message_updated"
   | "receipt_state_updated"
   | "share_grant_lifecycle"
   | "fidelity_changed"
@@ -124,7 +126,9 @@ export interface CollaborationMessageProvenance {
 export interface CollaborationMessageRecord {
   id: string;
   threadId: string;
+  rootMessageId: string | null;
   threadSequence: number;
+  version: number;
   audienceVersion: number;
   scope: CollaborationScope;
   personalOwnerUserId: string | null;
@@ -140,9 +144,23 @@ export interface CollaborationMessageRecord {
   provenance: CollaborationMessageProvenance;
   createdAt: string;
   updatedAt: string;
+  editedAt: string | null;
+  replyCount: number;
+  unreadReplyCount: number;
+  reactions: Array<{
+    emoji: (typeof COLLABORATION_REACTION_EMOJI)[number];
+    count: number;
+    reacted: boolean;
+  }>;
+}
+
+export interface CollaborationMessageSendResult {
+  message: CollaborationMessageRecord;
+  acceptedBody: string;
 }
 
 export interface CollaborationMessagePageRecord {
+  rootMessageId: string | null;
   messages: CollaborationMessageRecord[];
   hasMore: boolean;
   nextBeforeSequence: number | null;
@@ -178,6 +196,7 @@ export interface CollaborationMessageReceiptRecord {
 
 export interface CollaborationReadStateRecord {
   threadId: string;
+  rootMessageId: string | null;
   userId: string;
   lastDeliveredMessageId: string | null;
   lastDeliveredSequence: number;
@@ -433,18 +452,31 @@ export interface CollaborationRepository {
     actor: ActorContext,
     input: {
       threadId: string;
+      rootMessageId?: string | null;
       idempotencyKey: string;
       bodyText: string;
       metadata?: Record<string, unknown>;
       provenance?: CollaborationMessageProvenance;
     }
   ): Promise<CollaborationMessageRecord | null>;
+  sendMessageWithReceipt(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      rootMessageId?: string | null;
+      idempotencyKey: string;
+      bodyText: string;
+      metadata?: Record<string, unknown>;
+      provenance?: CollaborationMessageProvenance;
+    }
+  ): Promise<CollaborationMessageSendResult | null>;
   listMessages(
     actor: ActorContext,
     input: {
       threadId: string;
       afterSequence?: number;
       beforeSequence?: number;
+      rootMessageId?: string | null;
       limit?: number;
     }
   ): Promise<CollaborationMessagePageRecord | null>;
@@ -486,8 +518,30 @@ export interface CollaborationRepository {
   ): Promise<void>;
   advanceReadState(
     actor: ActorContext,
-    input: { threadId: string; messageId: string }
+    input: {
+      threadId: string;
+      rootMessageId?: string | null;
+      messageId: string;
+    }
   ): Promise<CollaborationReadStateRecord | null>;
+  editMessage(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      messageId: string;
+      bodyText: string;
+      expectedVersion: number;
+    }
+  ): Promise<CollaborationMessageRecord | null>;
+  setMessageReaction(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      messageId: string;
+      emoji: string;
+      active: boolean;
+    }
+  ): Promise<CollaborationMessageRecord | null>;
   advanceDeliveryState(
     actor: ActorContext,
     input: { threadId: string; messageId: string }
@@ -621,7 +675,9 @@ type AuthorizedThreadRow = {
 type MessageRow = {
   id: string;
   thread_id: string;
+  root_message_id: string | null;
   thread_sequence: string | number;
+  version: number;
   audience_version: number;
   scope: CollaborationScope;
   personal_owner_user_id: string | null;
@@ -633,6 +689,14 @@ type MessageRow = {
   sender_display_name: string | null;
   recipient_status: "sent" | "delivered" | "read" | null;
   request_hash: string | null;
+  edited_at: Date | null;
+  reply_count: string | number;
+  unread_reply_count: string | number;
+  reactions: Array<{
+    emoji: (typeof COLLABORATION_REACTION_EMOJI)[number];
+    count: string | number;
+    reacted: boolean;
+  }>;
   created_at: Date;
   updated_at: Date;
 };
@@ -1296,11 +1360,19 @@ const authorizedThreadJoinsSql = `
     on read_state.thread_id = ct.id
    and read_state.user_id = $1
   left join lateral (
-    select count(*)::bigint as unread_count
-    from collaboration_messages unread_message
-    where unread_message.thread_id = ct.id
-      and unread_message.thread_sequence > coalesce(read_state.last_read_sequence, 0)
-      and unread_message.sender_principal_id is distinct from $1
+    select (
+      (select count(*) from collaboration_messages unread_root
+        where unread_root.thread_id=ct.id and unread_root.root_message_id is null
+          and unread_root.thread_sequence>coalesce(read_state.last_read_sequence,0)
+          and unread_root.sender_principal_id is distinct from $1)
+      +
+      (select count(*) from collaboration_messages unread_reply
+        left join collaboration_root_receipt_states root_receipt
+          on root_receipt.root_message_id=unread_reply.root_message_id and root_receipt.user_id=$1
+        where unread_reply.thread_id=ct.id and unread_reply.root_message_id is not null
+          and unread_reply.thread_sequence>coalesce(root_receipt.last_read_sequence,0)
+          and unread_reply.sender_principal_id is distinct from $1)
+    )::bigint as unread_count
   ) unread_state on true
 `;
 
@@ -2001,7 +2073,9 @@ const mapMessageRow = async (
   return {
     id: row.id,
     threadId: row.thread_id,
+    rootMessageId: row.root_message_id,
     threadSequence: Number(row.thread_sequence),
+    version: row.version,
     audienceVersion: row.audience_version,
     scope: row.scope,
     personalOwnerUserId: row.personal_owner_user_id,
@@ -2016,14 +2090,24 @@ const mapMessageRow = async (
     metadata: metadata as Record<string, unknown>,
     provenance: provenance as CollaborationMessageProvenance,
     createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString()
+    updatedAt: row.updated_at.toISOString(),
+    editedAt: iso(row.edited_at),
+    replyCount: Number(row.reply_count ?? 0),
+    unreadReplyCount: Number(row.unread_reply_count ?? 0),
+    reactions: (row.reactions ?? []).map((reaction) => ({
+      emoji: reaction.emoji,
+      count: Number(reaction.count),
+      reacted: reaction.reacted
+    }))
   };
 };
 
 const selectMessageColumnsSql = `
   cm.id,
   cm.thread_id,
+  cm.root_message_id,
   cm.thread_sequence,
+  cm.version,
   cm.audience_version,
   cm.scope,
   cm.personal_owner_user_id,
@@ -2035,9 +2119,73 @@ const selectMessageColumnsSql = `
   sender.display_name as sender_display_name,
   null::text as recipient_status,
   cm.request_hash,
+  cm.edited_at,
+  (select count(*)::bigint from collaboration_messages reply where reply.thread_id=cm.thread_id and reply.root_message_id=cm.id) as reply_count,
+  0::bigint as unread_reply_count,
+  '[]'::jsonb as reactions,
   cm.created_at,
   cm.updated_at
 `;
+
+const attachMessageAugmentations = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  rows: MessageRow[]
+): Promise<void> => {
+  if (rows.length === 0) return;
+  const ids = rows.map((row) => row.id);
+  const [unread, reactions] = await Promise.all([
+    client.query<{ message_id: string; unread_count: string | number }>(
+      `select root.id as message_id, count(reply.id)::bigint as unread_count
+         from collaboration_messages root
+         left join collaboration_root_receipt_states receipt
+           on receipt.root_message_id=root.id and receipt.user_id=$2
+         left join collaboration_messages reply
+           on reply.thread_id=root.thread_id and reply.root_message_id=root.id
+          and reply.thread_sequence > coalesce(receipt.last_read_sequence,0)
+          and reply.sender_principal_id is distinct from $2
+        where root.id=any($1::uuid[]) and root.root_message_id is null
+        group by root.id`,
+      [ids, actor.userId]
+    ),
+    client.query<{
+      message_id: string;
+      emoji: string;
+      reaction_count: string | number;
+      reacted: boolean;
+    }>(
+      `select message_id,emoji,count(*)::bigint as reaction_count,bool_or(actor_user_id=$2) as reacted
+         from collaboration_message_reactions
+        where message_id=any($1::uuid[])
+        group by message_id,emoji order by message_id,emoji`,
+      [ids, actor.userId]
+    )
+  ]);
+  const unreadById = new Map(
+    unread.rows.map((row) => [row.message_id, Number(row.unread_count)])
+  );
+  const reactionsById = new Map<
+    string,
+    Array<{
+      emoji: (typeof COLLABORATION_REACTION_EMOJI)[number];
+      count: string | number;
+      reacted: boolean;
+    }>
+  >();
+  for (const reaction of reactions.rows) {
+    const current = reactionsById.get(reaction.message_id) ?? [];
+    current.push({
+      emoji: reaction.emoji as (typeof COLLABORATION_REACTION_EMOJI)[number],
+      count: reaction.reaction_count,
+      reacted: reaction.reacted
+    });
+    reactionsById.set(reaction.message_id, current);
+  }
+  for (const row of rows) {
+    row.unread_reply_count = unreadById.get(row.id) ?? 0;
+    row.reactions = reactionsById.get(row.id) ?? [];
+  }
+};
 
 const attachRecipientStatuses = async (
   client: pg.Pool | pg.PoolClient,
@@ -3542,6 +3690,7 @@ const updateThreadTopicValue = async (
   provider: EnvelopeEncryptionProvider,
   input: {
     threadId: string;
+    rootMessageId?: string | null;
     expectedVersion: number;
     topic: string | null;
   }
@@ -3713,12 +3862,13 @@ const sendCollaborationMessage = async (
   provider: EnvelopeEncryptionProvider,
   input: {
     threadId: string;
+    rootMessageId?: string | null;
     idempotencyKey: string;
     bodyText: string;
     metadata?: Record<string, unknown>;
     provenance?: CollaborationMessageProvenance;
   }
-): Promise<CollaborationMessageRecord | null> => {
+): Promise<CollaborationMessageSendResult | null> => {
   const idempotencyKey = requireBoundedText(
     input.idempotencyKey,
     "idempotencyKey",
@@ -3765,9 +3915,29 @@ const sendCollaborationMessage = async (
     forUpdate: true
   });
   if (!thread) return null;
+  const rootMessageId = input.rootMessageId ?? null;
+  if (rootMessageId) {
+    if (
+      thread.scope !== "team" ||
+      !["team_channel", "team_project_channel"].includes(thread.kind)
+    ) {
+      throw new CollaborationStateConflictError(
+        "Replies are only available in Team channels"
+      );
+    }
+    const root = await client.query<{ id: string }>(
+      `select id from collaboration_messages where id=$1 and thread_id=$2 and root_message_id is null limit 1`,
+      [rootMessageId, thread.id]
+    );
+    if (!root.rows[0])
+      throw new CollaborationStateConflictError(
+        "Reply root is not available in this channel"
+      );
+  }
   const idempotencyKeyHash = hashDomain("message-idempotency", idempotencyKey);
   const messageRequestHash = requestHash({
     threadId: thread.id,
+    ...(rootMessageId ? { rootMessageId } : {}),
     senderPrincipalId: actor.userId,
     bodyText,
     metadata,
@@ -3792,7 +3962,19 @@ const sendCollaborationMessage = async (
       );
     }
     await attachRecipientStatuses(client, actor, existing.rows);
-    return mapMessageRow(client, actor, provider, existing.rows[0]);
+    await attachMessageAugmentations(client, actor, existing.rows);
+    const message = await mapMessageRow(
+      client,
+      actor,
+      provider,
+      existing.rows[0]
+    );
+    return {
+      message,
+      // A matching immutable request hash proves this is the exact accepted input.
+      // The current DTO may have been edited since this send was first accepted.
+      acceptedBody: bodyText
+    };
   }
 
   const threadSequence = Number(thread.next_sequence);
@@ -3818,7 +4000,9 @@ const sendCollaborationMessage = async (
       insert into collaboration_messages (
         id,
         thread_id,
+        root_message_id,
         thread_sequence,
+        version,
         audience_version,
         scope,
         personal_owner_user_id,
@@ -3836,14 +4020,16 @@ const sendCollaborationMessage = async (
         provenance_marker
       )
       values (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        'user', $9, $9, $10, $11, $12, $13,
-        'encrypted', $14, $15
+        $1, $2, $3, $4, 1, $5, $6, $7, $8, $9,
+        'user', $10, $10, $11, $12, $13, $14,
+        'encrypted', $15, $16
       )
       returning
         id,
         thread_id,
+        root_message_id,
         thread_sequence,
+        version,
         audience_version,
         scope,
         personal_owner_user_id,
@@ -3855,12 +4041,17 @@ const sendCollaborationMessage = async (
         null::text as sender_display_name,
         null::text as recipient_status,
         request_hash,
+        edited_at,
+        0::bigint as reply_count,
+        0::bigint as unread_reply_count,
+        '[]'::jsonb as reactions,
         created_at,
         updated_at
     `,
     [
       messageId,
       thread.id,
+      rootMessageId,
       threadSequence,
       audienceVersion,
       thread.scope,
@@ -3925,19 +4116,248 @@ const sendCollaborationMessage = async (
       `koed:collaboration:message-event:v1\n${messageId}\n${messageRequestHash}`
     )
   });
+  if (rootMessageId) {
+    await appendCollaborationOutboxEventWithClient(client, {
+      family: "message_updated",
+      scope: thread.scope,
+      personalOwnerUserId: thread.personal_owner_user_id,
+      teamId: thread.team_id,
+      teamWorkspaceId: thread.team_workspace_id,
+      shareGrantId: null,
+      logicalMemoryId: null,
+      threadId: thread.id,
+      messageId: rootMessageId,
+      resourceType: "collaboration_message",
+      resourceId: rootMessageId,
+      actorPrincipalId: actor.userId,
+      mutationId: uuidFromHash(
+        `koed:collaboration:root-reply-update:v1\n${messageId}\n${rootMessageId}`
+      )
+    });
+  }
   const sender = await client.query<{ display_name: string | null }>(
     `select display_name from users where id = $1`,
     [actor.userId]
   );
   inserted.rows[0]!.sender_display_name = sender.rows[0]?.display_name ?? null;
   await attachRecipientStatuses(client, actor, inserted.rows);
-  return mapMessageRow(client, actor, provider, inserted.rows[0]!);
+  await attachMessageAugmentations(client, actor, inserted.rows);
+  return {
+    message: await mapMessageRow(client, actor, provider, inserted.rows[0]!),
+    acceptedBody: bodyText
+  };
 };
 
 // Collaborating repositories can include a message in their own transaction
 // while keeping the same Team authorization, encryption, idempotency, and
 // realtime outbox behavior as the public repository method.
-export const sendCollaborationMessageWithClient = sendCollaborationMessage;
+export const sendCollaborationMessageWithClient = async (
+  ...args: Parameters<typeof sendCollaborationMessage>
+) => {
+  const result = await sendCollaborationMessage(...args);
+  return result?.message ?? null;
+};
+
+const editCollaborationMessage = async (
+  client: pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    threadId: string;
+    messageId: string;
+    bodyText: string;
+    expectedVersion: number;
+  }
+): Promise<CollaborationMessageRecord | null> => {
+  const bodyText = requireBoundedUtf8(
+    input.bodyText,
+    "bodyText",
+    MAX_MESSAGE_BODY_BYTES
+  );
+  const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
+    required: "write",
+    includeArchived: false,
+    forUpdate: true
+  });
+  if (
+    !thread ||
+    thread.scope !== "team" ||
+    !["team_channel", "team_project_channel"].includes(thread.kind)
+  )
+    return null;
+  const selected = await client.query<MessageRow>(
+    `select ${selectMessageColumnsSql} from collaboration_messages cm
+       left join users sender on sender.id=cm.sender_user_id
+      where cm.id=$1 and cm.thread_id=$2 for update of cm`,
+    [input.messageId, thread.id]
+  );
+  const row = selected.rows[0];
+  if (
+    !row ||
+    row.sender_kind !== "user" ||
+    row.sender_principal_id !== actor.userId
+  )
+    return null;
+  if (row.version !== input.expectedVersion) {
+    throw new CollaborationStateConflictError(
+      "Message changed before edit was applied"
+    );
+  }
+  const oldBody = await decryptMessageField(
+    client,
+    actor,
+    provider,
+    row,
+    "body"
+  );
+  if (typeof oldBody !== "string")
+    throw new Error("Encrypted collaboration message body is unavailable");
+  const revisionColumn = `revision_${row.version}`;
+  await client.query(
+    `insert into collaboration_message_revisions(message_id,revision,editor_user_id,body_marker)
+     values($1,$2,$3,$4) on conflict(message_id,revision) do nothing`,
+    [row.id, row.version, actor.userId, MESSAGE_BODY_MARKER]
+  );
+  await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+    sourceTable: "collaboration_messages",
+    sourceId: row.id,
+    sourceColumn: revisionColumn,
+    plaintext: oldBody,
+    visibility: "team",
+    teamId: thread.team_id,
+    teamWorkspaceId: thread.team_workspace_id,
+    scope: {
+      teamId: thread.team_id,
+      workspaceId: thread.team_workspace_id,
+      objectClass: "collaboration_message"
+    },
+    rowFamily: "collaboration_message_revision",
+    aad: {
+      threadId: thread.id,
+      messageId: row.id,
+      revision: row.version,
+      collaborationScope: thread.scope
+    }
+  });
+  const updated = await client.query<MessageRow>(
+    `update collaboration_messages set version=version+1,edited_at=now(),edited_body_marker=$3,updated_at=now()
+      where id=$1 and thread_id=$2 and version=$4
+      returning id,thread_id,root_message_id,thread_sequence,version,audience_version,scope,
+        personal_owner_user_id,team_id,team_workspace_id,sender_kind,sender_principal_id,sender_user_id,
+        null::text as sender_display_name,null::text as recipient_status,request_hash,edited_at,
+        (select count(*)::bigint from collaboration_messages reply where reply.thread_id=$2 and reply.root_message_id=$1) as reply_count,
+        0::bigint as unread_reply_count,'[]'::jsonb as reactions,created_at,updated_at`,
+    [row.id, thread.id, MESSAGE_BODY_MARKER, input.expectedVersion]
+  );
+  if (!updated.rows[0])
+    throw new CollaborationStateConflictError(
+      "Message changed before edit was applied"
+    );
+  await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+    sourceTable: "collaboration_messages",
+    sourceId: row.id,
+    sourceColumn: "body",
+    plaintext: bodyText,
+    visibility: "team",
+    teamId: thread.team_id,
+    teamWorkspaceId: thread.team_workspace_id,
+    scope: {
+      teamId: thread.team_id,
+      workspaceId: thread.team_workspace_id,
+      objectClass: "collaboration_message"
+    },
+    rowFamily: "collaboration_message",
+    aad: {
+      threadId: thread.id,
+      threadSequence: Number(row.thread_sequence),
+      collaborationScope: thread.scope,
+      threadKind: thread.kind
+    }
+  });
+  await appendCollaborationOutboxEventWithClient(client, {
+    family: "message_updated",
+    scope: thread.scope,
+    personalOwnerUserId: thread.personal_owner_user_id,
+    teamId: thread.team_id,
+    teamWorkspaceId: thread.team_workspace_id,
+    shareGrantId: null,
+    logicalMemoryId: null,
+    threadId: thread.id,
+    messageId: row.id,
+    resourceType: "collaboration_message",
+    resourceId: row.id,
+    actorPrincipalId: actor.userId,
+    mutationId: uuidFromHash(
+      `koed:collaboration:message-edit:v1\n${row.id}\n${updated.rows[0]!.version}`
+    )
+  });
+  updated.rows[0]!.sender_display_name = row.sender_display_name;
+  await attachRecipientStatuses(client, actor, updated.rows);
+  await attachMessageAugmentations(client, actor, updated.rows);
+  return mapMessageRow(client, actor, provider, updated.rows[0]!);
+};
+
+const setCollaborationMessageReaction = async (
+  client: pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  input: { threadId: string; messageId: string; emoji: string; active: boolean }
+): Promise<CollaborationMessageRecord | null> => {
+  if (
+    !(COLLABORATION_REACTION_EMOJI as readonly string[]).includes(input.emoji)
+  )
+    throw new TypeError("Unsupported reaction emoji");
+  const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
+    required: "write",
+    includeArchived: false,
+    forUpdate: true
+  });
+  if (
+    !thread ||
+    thread.scope !== "team" ||
+    !["team_channel", "team_project_channel"].includes(thread.kind)
+  )
+    return null;
+  const message = await client.query<{ id: string }>(
+    `select id from collaboration_messages where id=$1 and thread_id=$2 limit 1`,
+    [input.messageId, thread.id]
+  );
+  if (!message.rows[0]) return null;
+  const mutation = input.active
+    ? await client.query(
+        `insert into collaboration_message_reactions(message_id,actor_user_id,emoji) values($1,$2,$3) on conflict do nothing returning message_id`,
+        [input.messageId, actor.userId, input.emoji]
+      )
+    : await client.query(
+        `delete from collaboration_message_reactions where message_id=$1 and actor_user_id=$2 and emoji=$3 returning message_id`,
+        [input.messageId, actor.userId, input.emoji]
+      );
+  if (mutation.rows.length > 0) {
+    await appendCollaborationOutboxEventWithClient(client, {
+      family: "message_updated",
+      scope: thread.scope,
+      personalOwnerUserId: thread.personal_owner_user_id,
+      teamId: thread.team_id,
+      teamWorkspaceId: thread.team_workspace_id,
+      shareGrantId: null,
+      logicalMemoryId: null,
+      threadId: thread.id,
+      messageId: input.messageId,
+      resourceType: "collaboration_message",
+      resourceId: input.messageId,
+      actorPrincipalId: actor.userId,
+      mutationId: randomUUID()
+    });
+  }
+  const selected = await client.query<MessageRow>(
+    `select ${selectMessageColumnsSql} from collaboration_messages cm left join users sender on sender.id=cm.sender_user_id where cm.id=$1 and cm.thread_id=$2`,
+    [input.messageId, thread.id]
+  );
+  if (!selected.rows[0]) return null;
+  await attachRecipientStatuses(client, actor, selected.rows);
+  await attachMessageAugmentations(client, actor, selected.rows);
+  return mapMessageRow(client, actor, provider, selected.rows[0]!);
+};
 
 const listCollaborationMessages = async (
   client: pg.Pool | pg.PoolClient,
@@ -3945,6 +4365,7 @@ const listCollaborationMessages = async (
   provider: EnvelopeEncryptionProvider,
   input: {
     threadId: string;
+    rootMessageId?: string | null;
     afterSequence?: number;
     beforeSequence?: number;
     limit?: number;
@@ -3955,6 +4376,17 @@ const listCollaborationMessages = async (
     includeArchived: true
   });
   if (!thread) return null;
+  const rootMessageId = input.rootMessageId ?? null;
+  if (rootMessageId) {
+    const root = await client.query<{ id: string }>(
+      `select id from collaboration_messages where id=$1 and thread_id=$2 and root_message_id is null limit 1`,
+      [rootMessageId, thread.id]
+    );
+    if (!root.rows[0])
+      throw new CollaborationStateConflictError(
+        "Reply root is not available in this channel"
+      );
+  }
   const afterSequence = requireNonNegativeInteger(
     input.afterSequence ?? 0,
     "afterSequence"
@@ -3974,21 +4406,32 @@ const listCollaborationMessages = async (
       from collaboration_messages cm
       left join users sender on sender.id = cm.sender_user_id
       where cm.thread_id = $1
+        and ($5::uuid is not null and cm.root_message_id=$5::uuid
+          or $5::uuid is null and ($6::text not in ('team_channel','team_project_channel') or cm.root_message_id is null))
         and cm.thread_sequence > $2
         and ($3::bigint is null or cm.thread_sequence < $3)
       order by cm.thread_sequence ${ascending ? "asc" : "desc"}
       limit $4
     `,
-    [thread.id, afterSequence, beforeSequence, limit + 1]
+    [
+      thread.id,
+      afterSequence,
+      beforeSequence,
+      limit + 1,
+      rootMessageId,
+      thread.kind
+    ]
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
   if (!ascending) pageRows.reverse();
   await attachRecipientStatuses(client, actor, pageRows);
+  await attachMessageAugmentations(client, actor, pageRows);
   const messages = await Promise.all(
     pageRows.map((row) => mapMessageRow(client, actor, provider, row))
   );
   return {
+    rootMessageId,
     messages,
     hasMore,
     nextBeforeSequence:
@@ -4021,6 +4464,7 @@ const getCollaborationMessageForRealtime = async (
     [input.messageId, thread.id]
   );
   if (!result.rows[0]) return null;
+  await attachMessageAugmentations(client, actor, result.rows);
   await attachRecipientStatuses(client, actor, result.rows);
   return mapMessageRow(client, actor, provider, result.rows[0]);
 };
@@ -4087,15 +4531,32 @@ const unreadCountAfter = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
   threadId: string,
-  sequence: number
+  sequence: number,
+  rootMessageId: string | null = null
 ): Promise<number> => {
+  if (rootMessageId) {
+    const rootResult = await client.query<{ unread_count: string | number }>(
+      `select count(*)::bigint as unread_count from collaboration_messages reply
+         where reply.thread_id=$1 and reply.root_message_id=$2
+           and reply.thread_sequence > coalesce((select last_read_sequence from collaboration_root_receipt_states where root_message_id=$2 and user_id=$3),0)
+           and reply.sender_principal_id is distinct from $3`,
+      [threadId, rootMessageId, actor.userId]
+    );
+    return Number(rootResult.rows[0]?.unread_count ?? 0);
+  }
   const result = await client.query<{ unread_count: string | number }>(
     `
-      select count(*)::bigint as unread_count
-      from collaboration_messages
-      where thread_id = $1
-        and thread_sequence > $2
-        and sender_principal_id is distinct from $3
+      select (
+        (select count(*) from collaboration_messages root
+          where root.thread_id=$1 and root.root_message_id is null
+            and root.thread_sequence>$2 and root.sender_principal_id is distinct from $3)
+        +
+        (select count(*) from collaboration_messages reply
+          left join collaboration_root_receipt_states receipt on receipt.root_message_id=reply.root_message_id and receipt.user_id=$3
+          where reply.thread_id=$1 and reply.root_message_id is not null
+            and reply.thread_sequence>coalesce(receipt.last_read_sequence,0)
+            and reply.sender_principal_id is distinct from $3)
+      )::bigint as unread_count
     `,
     [threadId, sequence, actor.userId]
   );
@@ -4111,6 +4572,7 @@ const receiptStateRecord = async (
   const lastReadSequence = Number(row?.last_read_sequence ?? 0);
   return {
     threadId,
+    rootMessageId: null,
     userId: actor.userId,
     lastDeliveredMessageId: row?.last_delivered_message_id ?? null,
     lastDeliveredSequence: Number(row?.last_delivered_sequence ?? 0),
@@ -4122,7 +4584,8 @@ const receiptStateRecord = async (
       client,
       actor,
       threadId,
-      lastReadSequence
+      lastReadSequence,
+      null
     ),
     version: row?.version ?? 1,
     updatedAt: (row?.updated_at ?? new Date(0)).toISOString()
@@ -4165,6 +4628,7 @@ const advanceCollaborationReceiptState = async (
   actor: ActorContext,
   input: {
     threadId: string;
+    rootMessageId?: string | null;
     messageId: string;
     state: "delivered" | "read";
   }
@@ -4178,9 +4642,10 @@ const advanceCollaborationReceiptState = async (
   const message = await client.query<{
     id: string;
     thread_sequence: string | number;
+    root_message_id: string | null;
   }>(
     `
-      select id, thread_sequence
+      select id, thread_sequence, root_message_id
       from collaboration_messages
       where id = $1
         and thread_id = $2
@@ -4195,6 +4660,87 @@ const advanceCollaborationReceiptState = async (
     );
   }
   const targetSequence = Number(target.thread_sequence);
+  const rootMessageId = input.rootMessageId ?? null;
+  if (rootMessageId) {
+    if (input.state !== "read" || thread.scope !== "team") {
+      throw new CollaborationStateConflictError(
+        "Root read cursors are only available for Team channel replies"
+      );
+    }
+    const root = await client.query<{ id: string }>(
+      `select id from collaboration_messages where id=$1 and thread_id=$2 and root_message_id is null limit 1`,
+      [rootMessageId, thread.id]
+    );
+    if (!root.rows[0] || target.root_message_id !== rootMessageId) {
+      throw new CollaborationStateConflictError(
+        "Read target does not belong to the selected reply thread"
+      );
+    }
+    const updatedRoot = await client.query<{
+      last_read_message_id: string | null;
+      last_read_sequence: string | number;
+      last_read_at: Date | null;
+      version: number;
+      updated_at: Date;
+    }>(
+      `insert into collaboration_root_receipt_states(thread_id,root_message_id,user_id,last_read_message_id,last_read_sequence,last_read_at)
+       values($1,$2,$3,$4,$5,now())
+       on conflict(root_message_id,user_id) do update set
+         last_read_message_id=case when collaboration_root_receipt_states.last_read_sequence < excluded.last_read_sequence then excluded.last_read_message_id else collaboration_root_receipt_states.last_read_message_id end,
+         last_read_sequence=greatest(collaboration_root_receipt_states.last_read_sequence,excluded.last_read_sequence),
+         last_read_at=case when collaboration_root_receipt_states.last_read_sequence < excluded.last_read_sequence then excluded.last_read_at else collaboration_root_receipt_states.last_read_at end,
+         version=collaboration_root_receipt_states.version+1, updated_at=now()
+       returning last_read_message_id,last_read_sequence,last_read_at,version,updated_at`,
+      [thread.id, rootMessageId, actor.userId, target.id, targetSequence]
+    );
+    const rootState = updatedRoot.rows[0]!;
+    await appendCollaborationOutboxEventWithClient(client, {
+      family: "message_updated",
+      scope: thread.scope,
+      personalOwnerUserId: thread.personal_owner_user_id,
+      teamId: thread.team_id,
+      teamWorkspaceId: thread.team_workspace_id,
+      shareGrantId: null,
+      logicalMemoryId: null,
+      threadId: thread.id,
+      messageId: rootMessageId,
+      resourceType: "collaboration_message",
+      resourceId: rootMessageId,
+      actorPrincipalId: actor.userId,
+      mutationId: uuidFromHash(
+        `koed:collaboration:root-read-update:v1\n${rootMessageId}\n${actor.userId}\n${rootState.version}`
+      )
+    });
+    return {
+      threadId: thread.id,
+      rootMessageId,
+      userId: actor.userId,
+      lastDeliveredMessageId: null,
+      lastDeliveredSequence: 0,
+      lastDeliveredAt: null,
+      lastReadMessageId: rootState.last_read_message_id,
+      lastReadSequence: Number(rootState.last_read_sequence),
+      lastReadAt: iso(rootState.last_read_at),
+      unreadCount: await unreadCountAfter(
+        client,
+        actor,
+        thread.id,
+        Number(rootState.last_read_sequence),
+        rootMessageId
+      ),
+      version: rootState.version,
+      updatedAt: rootState.updated_at.toISOString()
+    };
+  }
+  if (
+    target.root_message_id !== null &&
+    thread.scope === "team" &&
+    ["team_channel", "team_project_channel"].includes(thread.kind)
+  ) {
+    throw new CollaborationStateConflictError(
+      "Channel read cursors can only target root messages"
+    );
+  }
   const current = await client.query<ReceiptStateRow>(
     `
       select
@@ -4733,11 +5279,46 @@ export const createCollaborationRepository = (
     },
 
     async sendMessage(actor, input) {
+      const result = await withTransaction(pool, async (client) =>
+        sendCollaborationMessage(
+          client,
+          actor,
+          await requireThreadProvider(client, input.threadId),
+          input
+        )
+      );
+      return result?.message ?? null;
+    },
+
+    async sendMessageWithReceipt(actor, input) {
       return withTransaction(pool, async (client) =>
         sendCollaborationMessage(
           client,
           actor,
           await requireThreadProvider(client, input.threadId),
+          input
+        )
+      );
+    },
+
+    async editMessage(actor, input) {
+      return withTransaction(pool, (client) =>
+        editCollaborationMessage(client, actor, requireProvider("team"), {
+          ...input,
+          expectedVersion: requirePositiveInteger(
+            input.expectedVersion,
+            "expectedVersion"
+          )
+        })
+      );
+    },
+
+    async setMessageReaction(actor, input) {
+      return withTransaction(pool, (client) =>
+        setCollaborationMessageReaction(
+          client,
+          actor,
+          requireProvider("team"),
           input
         )
       );

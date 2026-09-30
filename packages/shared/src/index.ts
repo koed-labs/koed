@@ -698,6 +698,7 @@ export {
   COLLABORATION_RECONNECT_WINDOW_MS,
   COLLABORATION_RENDERED_ROW_MAX_COUNT,
   COLLABORATION_RENDERER_ACK_DEADLINE_MS,
+  COLLABORATION_REACTION_EMOJI,
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
   COLLABORATION_SEND_RETRY_MAX_ATTEMPTS,
@@ -736,6 +737,7 @@ export {
   personalMemoryEntrySchema,
   collaborationPersonSchema,
   collaborationReadStateSchema,
+  collaborationReactionEmojiSchema,
   collaborationSendReceiptSchema,
   collaborationRealtimeControlSchema,
   collaborationRealtimeCursorSchema,
@@ -959,6 +961,7 @@ export {
   deleteCollaborationPendingSend,
   listCollaborationPendingSends,
   readCollaborationSendReceipt,
+  readCollaborationSendReceiptByIdentity,
   storeCollaborationSendReceipt,
   storeCollaborationPendingSend,
   updateCollaborationPendingSendState

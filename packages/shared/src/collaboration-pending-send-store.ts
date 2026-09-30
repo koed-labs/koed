@@ -6,6 +6,7 @@ export {
   deleteCollaborationPendingSend,
   listCollaborationPendingSends,
   readCollaborationSendReceipt,
+  readCollaborationSendReceiptByIdentity,
   storeCollaborationSendReceipt,
   storeCollaborationPendingSend,
   updateCollaborationPendingSendState

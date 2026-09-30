@@ -511,7 +511,11 @@ describe("Studio window controller", () => {
       kind,
       name: kind === "dm" ? null : "Group",
       topic: null,
-      participants: [ownerId, firstMemberId, ...(kind === "group_dm" ? [secondMemberId] : [])].map((id) => ({
+      participants: [
+        ownerId,
+        firstMemberId,
+        ...(kind === "group_dm" ? [secondMemberId] : [])
+      ].map((id) => ({
         id,
         displayName: "Team member",
         membershipState: "enabled" as const
@@ -531,7 +535,10 @@ describe("Studio window controller", () => {
     const controller = createStudioWindowController({
       allowedRendererOrigins: new Set(),
       createWindow: () => fake.window,
-      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
       defaultApiOrigin: "http://127.0.0.1:43300",
       getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
       startGateway: async (options) => {
@@ -544,13 +551,23 @@ describe("Studio window controller", () => {
       registerProject: async () => ({ ok: true }),
       collaboration: async (command) => {
         commands.push(command);
-        if (command.command === "collaboration.load") return loadResult(command.requestId as string, collaborationSnapshot());
+        if (command.command === "collaboration.load")
+          return loadResult(
+            command.requestId as string,
+            collaborationSnapshot()
+          );
         return {
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: command.requestId,
           command: command.command,
           ok: true,
-          data: { thread: makeThread(command.command === "collaboration.start_direct_message" ? "dm" : "group_dm") }
+          data: {
+            thread: makeThread(
+              command.command === "collaboration.start_direct_message"
+                ? "dm"
+                : "group_dm"
+            )
+          }
         };
       },
       openExternal: async () => undefined
@@ -572,7 +589,8 @@ describe("Studio window controller", () => {
       }
     ];
     for (const request of requests) {
-      const result = await gatewayOptions!.runStudioCollaborationCommand!(request);
+      const result =
+        await gatewayOptions!.runStudioCollaborationCommand!(request);
       const command = request.command;
       expect(result).toMatchObject({ ok: true, command });
     }
@@ -580,6 +598,78 @@ describe("Studio window controller", () => {
       "collaboration.start_direct_message",
       "collaboration.start_group_direct_message"
     ]);
+    await controller.close();
+  });
+
+  it("routes channel edits and reactions through the native broker", async () => {
+    const fake = makeWindow();
+    const commands: string[] = [];
+    let gatewayOptions: StudioGatewayOptions | undefined;
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async (options) => {
+        gatewayOptions = options;
+        return { url: "http://127.0.0.1:49828", close: async () => undefined };
+      },
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async (command) => {
+        commands.push(command.command);
+        return {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: false,
+          error: {
+            code: "access_revoked",
+            userMessage: collaborationSafeErrorMessages.access_revoked,
+            retryable: false,
+            retryAfterMs: null
+          }
+        };
+      },
+      openExternal: async () => undefined
+    });
+    await controller.open();
+    const thread = {
+      scope: "team" as const,
+      teamId: "33333333-3333-4333-8333-333333333333",
+      threadId: "55555555-5555-4555-8555-555555555555"
+    };
+    const messageId = "66666666-6666-4666-8666-666666666666";
+    const requests: CollaborationRendererCommand[] = [
+      {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command: "collaboration.edit_message",
+        input: { thread, messageId, body: "Updated", expectedVersion: 1 }
+      },
+      {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: crypto.randomUUID(),
+        command: "collaboration.set_message_reaction",
+        input: { thread, messageId, emoji: "👀", active: true }
+      }
+    ];
+    for (const request of requests) {
+      const result =
+        await gatewayOptions!.runStudioCollaborationCommand!(request);
+      expect(result).toMatchObject({
+        ok: false,
+        command: request.command,
+        error: { code: "access_revoked" }
+      });
+    }
+    expect(commands).toEqual(requests.map((request) => request.command));
     await controller.close();
   });
 
@@ -616,7 +706,10 @@ describe("Studio window controller", () => {
     const controller = createStudioWindowController({
       allowedRendererOrigins: new Set(),
       createWindow: () => fake.window,
-      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
       defaultApiOrigin: "http://127.0.0.1:43300",
       getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
       startGateway: async (options) => {
@@ -643,7 +736,10 @@ describe("Studio window controller", () => {
           };
         }
         if (parsed.command === "collaboration.confirm_action_grant") {
-          expect(parsed.input).toEqual({ actionGrant: grantReference, decision: "approve" });
+          expect(parsed.input).toEqual({
+            actionGrant: grantReference,
+            decision: "approve"
+          });
           return {
             contractVersion: COLLABORATION_CONTRACT_VERSION,
             requestId: parsed.requestId,
@@ -663,7 +759,8 @@ describe("Studio window controller", () => {
               ok: false,
               error: {
                 code: "temporarily_unavailable",
-                userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+                userMessage:
+                  collaborationSafeErrorMessages.temporarily_unavailable,
                 retryable: true,
                 retryAfterMs: 0
               }
@@ -717,9 +814,14 @@ describe("Studio window controller", () => {
         reasonCode: "owner_revoked"
       }
     });
-    expect(result).toMatchObject({ ok: false, command: "collaboration.revoke_shared_memory" });
+    expect(result).toMatchObject({
+      ok: false,
+      command: "collaboration.revoke_shared_memory"
+    });
     expect(awaitCount).toBe(2);
-    const requested = sent.find((command) => command.command === "collaboration.request_action_grant");
+    const requested = sent.find(
+      (command) => command.command === "collaboration.request_action_grant"
+    );
     expect(requested).toMatchObject({
       input: {
         intent: {
@@ -729,7 +831,9 @@ describe("Studio window controller", () => {
         }
       }
     });
-    const mutation = sent.find((command) => command.command === "collaboration.revoke_shared_memory");
+    const mutation = sent.find(
+      (command) => command.command === "collaboration.revoke_shared_memory"
+    );
     expect(mutation).toMatchObject({
       requestId: originalRequestId,
       input: { actionGrant: grantReference }
@@ -757,7 +861,9 @@ describe("Studio window controller", () => {
     ).rejects.toThrow("Native Action Grant expired");
     expect(awaitCount).toBe(awaitCountBeforeExpiry);
     expect(
-      sent.filter((command) => command.command === "collaboration.revoke_shared_memory")
+      sent.filter(
+        (command) => command.command === "collaboration.revoke_shared_memory"
+      )
     ).toHaveLength(mutationCountBeforeExpiry);
 
     await expect(
@@ -794,7 +900,9 @@ describe("Studio window controller", () => {
       }
     });
     expect(
-      sent.filter((command) => command.command === "collaboration.request_action_grant")
+      sent.filter(
+        (command) => command.command === "collaboration.request_action_grant"
+      )
     ).toHaveLength(grantRequestsBeforeCandidate);
     await controller.close();
   });
@@ -802,10 +910,13 @@ describe("Studio window controller", () => {
   it("stops a pending native mutation when the active principal changes during a retry wait", async () => {
     const fake = makeWindow();
     let gatewayOptions: StudioGatewayOptions | undefined;
-    let activeSnapshot: ReturnType<typeof collaborationSnapshot> = collaborationSnapshot();
+    let activeSnapshot: ReturnType<typeof collaborationSnapshot> =
+      collaborationSnapshot();
     let releaseReview!: (approved: boolean) => void;
     let shownReview!: () => void;
-    const reviewShown = new Promise<void>((resolve) => { shownReview = resolve; });
+    const reviewShown = new Promise<void>((resolve) => {
+      shownReview = resolve;
+    });
     const grantReference = { id: "77777777-7777-4777-8777-777777777777" };
     const review = {
       version: 1 as const,
@@ -829,7 +940,10 @@ describe("Studio window controller", () => {
     const controller = createStudioWindowController({
       allowedRendererOrigins: new Set(),
       createWindow: () => fake.window,
-      getAccess: async () => ({ apiOrigin: "http://127.0.0.1:43300", apiToken: "secret" }),
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
       defaultApiOrigin: "http://127.0.0.1:43300",
       getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
       startGateway: async (options) => {
@@ -843,7 +957,8 @@ describe("Studio window controller", () => {
       collaboration: async (command) => {
         const parsed = collaborationRendererCommandSchema.parse(command);
         sent.push(parsed);
-        if (parsed.command === "collaboration.load") return loadResult(parsed.requestId, activeSnapshot);
+        if (parsed.command === "collaboration.load")
+          return loadResult(parsed.requestId, activeSnapshot);
         if (parsed.command === "collaboration.request_action_grant") {
           return {
             contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -902,7 +1017,8 @@ describe("Studio window controller", () => {
             ok: false,
             error: {
               code: "temporarily_unavailable",
-              userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+              userMessage:
+                collaborationSafeErrorMessages.temporarily_unavailable,
               retryable: true,
               retryAfterMs: 0
             }
@@ -923,7 +1039,9 @@ describe("Studio window controller", () => {
       },
       confirmNativeReview: async () => {
         shownReview();
-        return new Promise<boolean>((resolve) => { releaseReview = resolve; });
+        return new Promise<boolean>((resolve) => {
+          releaseReview = resolve;
+        });
       },
       openExternal: async () => undefined
     });
@@ -950,9 +1068,15 @@ describe("Studio window controller", () => {
     });
     await reviewShown;
     releaseReview(true);
-    await expect(pending).rejects.toThrow("Team, account, or selected source changed");
+    await expect(pending).rejects.toThrow(
+      "Team, account, or selected source changed"
+    );
     expect(awaitCount).toBe(1);
-    expect(sent.some((command) => command.command === "collaboration.revoke_shared_memory")).toBe(false);
+    expect(
+      sent.some(
+        (command) => command.command === "collaboration.revoke_shared_memory"
+      )
+    ).toBe(false);
     await controller.close();
   });
 

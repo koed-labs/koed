@@ -34,7 +34,9 @@ export type BrowserTeamDraftStore = {
     draft: StudioTeamDraft
   ): Promise<void>;
   delete(authority: StudioTeamDraftAuthority): Promise<void>;
-  deleteTeam(authority: Omit<StudioTeamDraftAuthority, "threadId">): Promise<void>;
+  deleteTeam(
+    authority: Omit<StudioTeamDraftAuthority, "threadId">
+  ): Promise<void>;
   retainAuthorizedTeams(input: {
     backendId: string;
     principalUserId: string;
@@ -49,9 +51,12 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 const validText = (value: unknown): value is string =>
-  typeof value === "string" && encoder.encode(value).byteLength <= maxDraftBytes;
+  typeof value === "string" &&
+  encoder.encode(value).byteLength <= maxDraftBytes;
 
-const validPendingSend = (value: unknown): value is StudioTeamDraft["pendingSend"] => {
+const validPendingSend = (
+  value: unknown
+): value is StudioTeamDraft["pendingSend"] => {
   if (value === null) return true;
   if (!value || typeof value !== "object") return false;
   const pending = value as Record<string, unknown>;
@@ -64,25 +69,65 @@ const validPendingSend = (value: unknown): value is StudioTeamDraft["pendingSend
   );
 };
 
-const validReceiptAckPending = (value: unknown): value is NonNullable<StudioTeamDraft["receiptAckPending"]> | null | undefined => {
+const validReceiptAckPending = (
+  value: unknown
+): value is
+  | NonNullable<StudioTeamDraft["receiptAckPending"]>
+  | null
+  | undefined => {
   if (value === undefined || value === null) return true;
   if (!value || typeof value !== "object") return false;
   const receipt = value as Record<string, unknown>;
   const isUuid = (candidate: unknown): candidate is string =>
-    typeof candidate === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
+    typeof candidate === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      candidate
+    );
   return isUuid(receipt.clientMessageId) && isUuid(receipt.messageId);
+};
+
+const validEditDraft = (value: unknown): value is StudioTeamDraft["edit"] => {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object") return false;
+  const edit = value as Record<string, unknown>;
+  if (
+    Object.keys(edit).some(
+      (key) => !["expectedVersion", "baseBodyText", "conflict"].includes(key)
+    ) ||
+    !Number.isSafeInteger(edit.expectedVersion) ||
+    Number(edit.expectedVersion) <= 0 ||
+    !validText(edit.baseBodyText)
+  )
+    return false;
+  if (edit.conflict === undefined) return true;
+  if (!edit.conflict || typeof edit.conflict !== "object") return false;
+  const conflict = edit.conflict as Record<string, unknown>;
+  return (
+    Object.keys(conflict).sort().join(",") === "latestBodyText,latestVersion" &&
+    Number.isSafeInteger(conflict.latestVersion) &&
+    Number(conflict.latestVersion) > Number(edit.expectedVersion) &&
+    validText(conflict.latestBodyText)
+  );
 };
 
 const assertAuthority = (
   authority: Omit<StudioTeamDraftAuthority, "threadId"> & { threadId?: string }
 ) => {
+  const validUuid = (value: unknown): value is string =>
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    );
   if (
     !authority ||
     typeof authority.backendId !== "string" ||
     !authority.backendId ||
     !authority.principalUserId ||
     !authority.teamId ||
-    ("threadId" in authority && typeof authority.threadId !== "string")
+    ("threadId" in authority && !validUuid(authority.threadId)) ||
+    (authority.rootMessageId != null && !validUuid(authority.rootMessageId)) ||
+    (authority.editMessageId != null && !validUuid(authority.editMessageId)) ||
+    (authority.rootMessageId != null && authority.editMessageId != null)
   ) {
     throw new Error("Team draft authority is invalid.");
   }
@@ -104,14 +149,19 @@ const digest = async (cryptoImpl: Crypto, value: unknown): Promise<string> =>
 const requestValue = <T>(request: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+    request.onerror = () =>
+      reject(request.error ?? new Error("IndexedDB request failed."));
   });
 
 const transactionDone = (transaction: IDBTransaction): Promise<void> =>
   new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction was aborted."));
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error("IndexedDB transaction failed."));
+    transaction.onabort = () =>
+      reject(
+        transaction.error ?? new Error("IndexedDB transaction was aborted.")
+      );
   });
 
 const openDatabase = (indexedDb: IDBFactory): Promise<IDBDatabase> =>
@@ -120,32 +170,41 @@ const openDatabase = (indexedDb: IDBFactory): Promise<IDBDatabase> =>
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains("drafts")) {
-        const drafts = database.createObjectStore("drafts", { keyPath: "scope" });
+        const drafts = database.createObjectStore("drafts", {
+          keyPath: "scope"
+        });
         drafts.createIndex("teamScope", "teamScope");
       } else {
         const drafts = request.transaction!.objectStore("drafts");
-        if (!drafts.indexNames.contains("teamScope")) drafts.createIndex("teamScope", "teamScope");
+        if (!drafts.indexNames.contains("teamScope"))
+          drafts.createIndex("teamScope", "teamScope");
       }
       if (!database.objectStoreNames.contains("keys")) {
         const keys = database.createObjectStore("keys", { keyPath: "scope" });
         keys.createIndex("teamScope", "teamScope");
       } else {
         const keys = request.transaction!.objectStore("keys");
-        if (!keys.indexNames.contains("teamScope")) keys.createIndex("teamScope", "teamScope");
+        if (!keys.indexNames.contains("teamScope"))
+          keys.createIndex("teamScope", "teamScope");
       }
       if (!database.objectStoreNames.contains("scope-index")) {
-        database.createObjectStore("scope-index", { keyPath: "principalScope" });
+        database.createObjectStore("scope-index", {
+          keyPath: "principalScope"
+        });
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB is unavailable."));
+    request.onerror = () =>
+      reject(request.error ?? new Error("IndexedDB is unavailable."));
     request.onblocked = () => reject(new Error("IndexedDB is blocked."));
   });
 
-export const createBrowserTeamDraftStore = (input: {
-  indexedDB?: IDBFactory;
-  crypto?: Crypto;
-} = {}): BrowserTeamDraftStore => {
+export const createBrowserTeamDraftStore = (
+  input: {
+    indexedDB?: IDBFactory;
+    crypto?: Crypto;
+  } = {}
+): BrowserTeamDraftStore => {
   const indexedDb = input.indexedDB ?? globalThis.indexedDB;
   const cryptoImpl = input.crypto ?? globalThis.crypto;
   if (!indexedDb || !cryptoImpl?.subtle) {
@@ -159,9 +218,16 @@ export const createBrowserTeamDraftStore = (input: {
     let release!: () => void;
     mutationTail = new Promise<void>((resolve) => (release = resolve));
     await previous;
-    try { return await operation(); } finally { release(); }
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   };
-  const serial = async <T>(scope: string, operation: () => Promise<T>): Promise<T> => {
+  const serial = async <T>(
+    scope: string,
+    operation: () => Promise<T>
+  ): Promise<T> => {
     const previous = queues.get(scope) ?? Promise.resolve();
     let resolveTail!: () => void;
     const tail = new Promise<void>((resolve) => (resolveTail = resolve));
@@ -181,12 +247,24 @@ export const createBrowserTeamDraftStore = (input: {
       authority.principalUserId,
       authority.teamId
     ]);
-    const scope = await digest(cryptoImpl, [
-      authority.backendId,
-      authority.principalUserId,
-      authority.teamId,
-      authority.threadId
-    ]);
+    const scope = await digest(
+      cryptoImpl,
+      authority.rootMessageId == null && authority.editMessageId == null
+        ? [
+            authority.backendId,
+            authority.principalUserId,
+            authority.teamId,
+            authority.threadId
+          ]
+        : [
+            authority.backendId,
+            authority.principalUserId,
+            authority.teamId,
+            authority.threadId,
+            authority.rootMessageId ?? null,
+            authority.editMessageId ?? null
+          ]
+    );
     return { scope, teamScope };
   };
   const principalScopeFor = (backendId: string, principalUserId: string) =>
@@ -201,9 +279,9 @@ export const createBrowserTeamDraftStore = (input: {
       teamScope,
       keyId: crypto.randomUUID(),
       key: await cryptoImpl.subtle.generateKey(
-      { name: "AES-GCM", length: 256 },
-      false,
-      ["encrypt", "decrypt"]
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
       )
     };
     const write = database.transaction("keys", "readwrite");
@@ -218,18 +296,26 @@ export const createBrowserTeamDraftStore = (input: {
     await transactionDone(write);
     return selected;
   };
-  const aadFor = (scope: string) => encoder.encode(`koed:studio:team-draft:v1\n${scope}`);
+  const aadFor = (scope: string) =>
+    encoder.encode(`koed:studio:team-draft:v1\n${scope}`);
 
   return {
     async load(authority) {
       const { scope, teamScope } = await scopeFor(authority);
       return await serial(scope, async () => {
         const database = await databasePromise;
-        const principalScope = await principalScopeFor(authority.backendId, authority.principalUserId);
-        const transaction = database.transaction(["drafts", "keys", "scope-index"], "readonly");
-        const record = (await requestValue<CipherRecord | undefined>(
-          transaction.objectStore("drafts").get(scope)
-        )) ?? null;
+        const principalScope = await principalScopeFor(
+          authority.backendId,
+          authority.principalUserId
+        );
+        const transaction = database.transaction(
+          ["drafts", "keys", "scope-index"],
+          "readonly"
+        );
+        const record =
+          (await requestValue<CipherRecord | undefined>(
+            transaction.objectStore("drafts").get(scope)
+          )) ?? null;
         const storedKey = await requestValue<KeyRecord | undefined>(
           transaction.objectStore("keys").get(scope)
         );
@@ -237,7 +323,8 @@ export const createBrowserTeamDraftStore = (input: {
           transaction.objectStore("scope-index").get(principalScope)
         );
         await transactionDone(transaction);
-        if (!index?.authorizedTeamScopes.includes(teamScope) || !record) return null;
+        if (!index?.authorizedTeamScopes.includes(teamScope) || !record)
+          return null;
         if (
           record.version !== 1 ||
           record.scope !== scope ||
@@ -259,7 +346,10 @@ export const createBrowserTeamDraftStore = (input: {
           typeof value !== "object" ||
           !validText((value as StudioTeamDraft).text) ||
           !validPendingSend((value as StudioTeamDraft).pendingSend) ||
-          !validReceiptAckPending((value as StudioTeamDraft).receiptAckPending)
+          !validReceiptAckPending(
+            (value as StudioTeamDraft).receiptAckPending
+          ) ||
+          !validEditDraft((value as StudioTeamDraft).edit)
         ) {
           throw new Error("Decrypted Team draft is invalid.");
         }
@@ -268,162 +358,253 @@ export const createBrowserTeamDraftStore = (input: {
     },
 
     async save(authority, draft) {
-      if (!validText(draft?.text) || !validPendingSend(draft?.pendingSend) || !validReceiptAckPending(draft?.receiptAckPending)) {
+      if (
+        !validText(draft?.text) ||
+        !validPendingSend(draft?.pendingSend) ||
+        !validReceiptAckPending(draft?.receiptAckPending) ||
+        !validEditDraft(draft?.edit)
+      ) {
         throw new Error("Team draft is invalid.");
       }
       const { scope, teamScope } = await scopeFor(authority);
-      await mutate(() => serial(scope, async () => {
-        const database = await databasePromise;
-        if (draft.text.length === 0 && draft.pendingSend === null && !draft.receiptAckPending) {
-          const transaction = database.transaction(["drafts", "keys"], "readwrite");
-          transaction.objectStore("drafts").delete(scope);
-          transaction.objectStore("keys").delete(scope);
-          await transactionDone(transaction);
-          return;
-        }
-        const keyRecord = await keyFor(database, scope, teamScope);
-        const iv = cryptoImpl.getRandomValues(new Uint8Array(12));
-        const ciphertext = await cryptoImpl.subtle.encrypt(
-          { name: "AES-GCM", iv, additionalData: aadFor(scope) },
-          keyRecord.key,
-          encoder.encode(JSON.stringify({
-            text: draft.text,
-            pendingSend: draft.pendingSend,
-            receiptAckPending: draft.receiptAckPending ?? null,
-            updatedAt: new Date().toISOString()
-          }))
-        );
-        const principalScope = await principalScopeFor(
-          authority.backendId,
-          authority.principalUserId
-        );
-        const transaction = database.transaction(["drafts", "keys", "scope-index"], "readwrite");
-        const keyRequest = transaction.objectStore("keys").get(scope);
-        const indexRequest = transaction.objectStore("scope-index").get(principalScope);
-        let authorized = false;
-        let readCount = 0;
-        const commit = () => {
-          readCount += 1;
-          if (readCount !== 2) return;
-          const latestKey = keyRequest.result as KeyRecord | undefined;
-          const index = indexRequest.result as ScopeIndexRecord | undefined;
-          if (!latestKey || latestKey.keyId !== keyRecord.keyId) return;
-          if (!index?.authorizedTeamScopes.includes(teamScope)) {
+      await mutate(() =>
+        serial(scope, async () => {
+          const database = await databasePromise;
+          if (
+            draft.text.length === 0 &&
+            draft.pendingSend === null &&
+            !draft.receiptAckPending &&
+            !draft.edit
+          ) {
+            const transaction = database.transaction(
+              ["drafts", "keys"],
+              "readwrite"
+            );
             transaction.objectStore("drafts").delete(scope);
             transaction.objectStore("keys").delete(scope);
+            await transactionDone(transaction);
             return;
           }
-          authorized = true;
-          transaction.objectStore("drafts").put({ scope, teamScope, keyId: keyRecord.keyId, version: 1, iv: iv.buffer, ciphertext } satisfies CipherRecord);
-          transaction.objectStore("scope-index").put({
-            principalScope,
-            authorizedTeamScopes: index.authorizedTeamScopes,
-            teamScopes: [...new Set([...index.teamScopes, teamScope])]
-          } satisfies ScopeIndexRecord);
-        };
-        keyRequest.onsuccess = commit;
-        indexRequest.onsuccess = commit;
-        await transactionDone(transaction);
-        if (!authorized) throw new Error("Team draft scope is no longer authorized.");
-      }));
+          const keyRecord = await keyFor(database, scope, teamScope);
+          const iv = cryptoImpl.getRandomValues(new Uint8Array(12));
+          const ciphertext = await cryptoImpl.subtle.encrypt(
+            { name: "AES-GCM", iv, additionalData: aadFor(scope) },
+            keyRecord.key,
+            encoder.encode(
+              JSON.stringify({
+                text: draft.text,
+                pendingSend: draft.pendingSend,
+                receiptAckPending: draft.receiptAckPending ?? null,
+                ...(draft.edit ? { edit: draft.edit } : {}),
+                updatedAt: new Date().toISOString()
+              })
+            )
+          );
+          const principalScope = await principalScopeFor(
+            authority.backendId,
+            authority.principalUserId
+          );
+          const transaction = database.transaction(
+            ["drafts", "keys", "scope-index"],
+            "readwrite"
+          );
+          const keyRequest = transaction.objectStore("keys").get(scope);
+          const indexRequest = transaction
+            .objectStore("scope-index")
+            .get(principalScope);
+          let authorized = false;
+          let readCount = 0;
+          const commit = () => {
+            readCount += 1;
+            if (readCount !== 2) return;
+            const latestKey = keyRequest.result as KeyRecord | undefined;
+            const index = indexRequest.result as ScopeIndexRecord | undefined;
+            if (!latestKey || latestKey.keyId !== keyRecord.keyId) return;
+            if (!index?.authorizedTeamScopes.includes(teamScope)) {
+              transaction.objectStore("drafts").delete(scope);
+              transaction.objectStore("keys").delete(scope);
+              return;
+            }
+            authorized = true;
+            transaction.objectStore("drafts").put({
+              scope,
+              teamScope,
+              keyId: keyRecord.keyId,
+              version: 1,
+              iv: iv.buffer,
+              ciphertext
+            } satisfies CipherRecord);
+            transaction.objectStore("scope-index").put({
+              principalScope,
+              authorizedTeamScopes: index.authorizedTeamScopes,
+              teamScopes: [...new Set([...index.teamScopes, teamScope])]
+            } satisfies ScopeIndexRecord);
+          };
+          keyRequest.onsuccess = commit;
+          indexRequest.onsuccess = commit;
+          await transactionDone(transaction);
+          if (!authorized)
+            throw new Error("Team draft scope is no longer authorized.");
+        })
+      );
     },
 
     async delete(authority) {
       const { scope } = await scopeFor(authority);
-      await mutate(() => serial(scope, async () => {
-        const database = await databasePromise;
-        const transaction = database.transaction(["drafts", "keys"], "readwrite");
-        transaction.objectStore("drafts").delete(scope);
-        transaction.objectStore("keys").delete(scope);
-        await transactionDone(transaction);
-      }));
+      await mutate(() =>
+        serial(scope, async () => {
+          const database = await databasePromise;
+          const transaction = database.transaction(
+            ["drafts", "keys"],
+            "readwrite"
+          );
+          transaction.objectStore("drafts").delete(scope);
+          transaction.objectStore("keys").delete(scope);
+          await transactionDone(transaction);
+        })
+      );
     },
 
     async deleteTeam(authority) {
       return await mutate(async () => {
         assertAuthority(authority);
-        const teamScope = await digest(cryptoImpl, [authority.backendId, authority.principalUserId, authority.teamId]);
-        const principalScope = await principalScopeFor(authority.backendId, authority.principalUserId);
+        const teamScope = await digest(cryptoImpl, [
+          authority.backendId,
+          authority.principalUserId,
+          authority.teamId
+        ]);
+        const principalScope = await principalScopeFor(
+          authority.backendId,
+          authority.principalUserId
+        );
         const database = await databasePromise;
         await new Promise<void>((resolve, reject) => {
-          const transaction = database.transaction(["drafts", "keys", "scope-index"], "readwrite");
+          const transaction = database.transaction(
+            ["drafts", "keys", "scope-index"],
+            "readwrite"
+          );
           const indexStore = transaction.objectStore("scope-index");
           const indexRequest = indexStore.get(principalScope);
           indexRequest.onsuccess = () => {
             const index = indexRequest.result as ScopeIndexRecord | undefined;
             for (const storeName of ["drafts", "keys"] as const) {
-              const cursorRequest = transaction.objectStore(storeName).index("teamScope").openCursor(IDBKeyRange.only(teamScope));
-              cursorRequest.onsuccess = () => { const cursor = cursorRequest.result; if (cursor) { cursor.delete(); cursor.continue(); } };
+              const cursorRequest = transaction
+                .objectStore(storeName)
+                .index("teamScope")
+                .openCursor(IDBKeyRange.only(teamScope));
+              cursorRequest.onsuccess = () => {
+                const cursor = cursorRequest.result;
+                if (cursor) {
+                  cursor.delete();
+                  cursor.continue();
+                }
+              };
             }
-            if (index) indexStore.put({
-              principalScope,
-              authorizedTeamScopes: index.authorizedTeamScopes.filter((scope) => scope !== teamScope),
-              teamScopes: index.teamScopes.filter((scope) => scope !== teamScope)
-            } satisfies ScopeIndexRecord);
+            if (index)
+              indexStore.put({
+                principalScope,
+                authorizedTeamScopes: index.authorizedTeamScopes.filter(
+                  (scope) => scope !== teamScope
+                ),
+                teamScopes: index.teamScopes.filter(
+                  (scope) => scope !== teamScope
+                )
+              } satisfies ScopeIndexRecord);
           };
           transaction.oncomplete = () => resolve();
-          transaction.onerror = () => reject(transaction.error ?? new Error("Draft purge failed."));
-          transaction.onabort = () => reject(transaction.error ?? new Error("Draft purge was aborted."));
+          transaction.onerror = () =>
+            reject(transaction.error ?? new Error("Draft purge failed."));
+          transaction.onabort = () =>
+            reject(transaction.error ?? new Error("Draft purge was aborted."));
         });
       });
     },
 
     async retainAuthorizedTeams(input) {
       return await mutate(async () => {
-      if (
-        typeof input.backendId !== "string" || !input.backendId ||
-        typeof input.principalUserId !== "string" || !input.principalUserId ||
-        !Array.isArray(input.teamIds) ||
-        input.teamIds.length > 5_000 ||
-        input.teamIds.some((teamId) => typeof teamId !== "string")
-      ) {
-        throw new Error("Authorized Team list is invalid.");
-      }
-      const allowed = new Set(
-        await Promise.all(
-          input.teamIds.map((teamId) =>
-            digest(cryptoImpl, [input.backendId, input.principalUserId, teamId])
+        if (
+          typeof input.backendId !== "string" ||
+          !input.backendId ||
+          typeof input.principalUserId !== "string" ||
+          !input.principalUserId ||
+          !Array.isArray(input.teamIds) ||
+          input.teamIds.length > 5_000 ||
+          input.teamIds.some((teamId) => typeof teamId !== "string")
+        ) {
+          throw new Error("Authorized Team list is invalid.");
+        }
+        const allowed = new Set(
+          await Promise.all(
+            input.teamIds.map((teamId) =>
+              digest(cryptoImpl, [
+                input.backendId,
+                input.principalUserId,
+                teamId
+              ])
+            )
           )
-        )
-      );
-      const principalScope = await principalScopeFor(input.backendId, input.principalUserId);
-      const database = await databasePromise;
-      return await new Promise<number>((resolve, reject) => {
-        const transaction = database.transaction(["drafts", "keys", "scope-index"], "readwrite");
-        const indexStore = transaction.objectStore("scope-index");
-        const indexRequest = indexStore.get(principalScope);
-        let removedScopes: string[] = [];
-        let pendingCursors = 0;
-        let readyToWrite = false;
-        const maybeCommitIndex = () => {
-          if (!readyToWrite || pendingCursors > 0) return;
-          indexStore.put({
-            principalScope,
-            authorizedTeamScopes: [...allowed],
-            teamScopes: [...allowed]
-          } satisfies ScopeIndexRecord);
-        };
-        indexRequest.onsuccess = () => {
-          const index = indexRequest.result as ScopeIndexRecord | undefined;
-          removedScopes = (index?.teamScopes ?? []).filter((scope) => !allowed.has(scope));
-          pendingCursors = removedScopes.length * 2;
-          readyToWrite = true;
-          for (const scope of removedScopes) {
-            for (const storeName of ["drafts", "keys"] as const) {
-              const request = transaction.objectStore(storeName).index("teamScope").openCursor(IDBKeyRange.only(scope));
-              request.onsuccess = () => {
-                const cursor = request.result;
-                if (cursor) { cursor.delete(); cursor.continue(); }
-                else { pendingCursors -= 1; maybeCommitIndex(); }
-              };
+        );
+        const principalScope = await principalScopeFor(
+          input.backendId,
+          input.principalUserId
+        );
+        const database = await databasePromise;
+        return await new Promise<number>((resolve, reject) => {
+          const transaction = database.transaction(
+            ["drafts", "keys", "scope-index"],
+            "readwrite"
+          );
+          const indexStore = transaction.objectStore("scope-index");
+          const indexRequest = indexStore.get(principalScope);
+          let removedScopes: string[] = [];
+          let pendingCursors = 0;
+          let readyToWrite = false;
+          const maybeCommitIndex = () => {
+            if (!readyToWrite || pendingCursors > 0) return;
+            indexStore.put({
+              principalScope,
+              authorizedTeamScopes: [...allowed],
+              teamScopes: [...allowed]
+            } satisfies ScopeIndexRecord);
+          };
+          indexRequest.onsuccess = () => {
+            const index = indexRequest.result as ScopeIndexRecord | undefined;
+            removedScopes = (index?.teamScopes ?? []).filter(
+              (scope) => !allowed.has(scope)
+            );
+            pendingCursors = removedScopes.length * 2;
+            readyToWrite = true;
+            for (const scope of removedScopes) {
+              for (const storeName of ["drafts", "keys"] as const) {
+                const request = transaction
+                  .objectStore(storeName)
+                  .index("teamScope")
+                  .openCursor(IDBKeyRange.only(scope));
+                request.onsuccess = () => {
+                  const cursor = request.result;
+                  if (cursor) {
+                    cursor.delete();
+                    cursor.continue();
+                  } else {
+                    pendingCursors -= 1;
+                    maybeCommitIndex();
+                  }
+                };
+              }
             }
-          }
-          maybeCommitIndex();
-        };
-        transaction.oncomplete = () => resolve(removedScopes.length);
-        transaction.onerror = () => reject(transaction.error ?? new Error("Draft reconciliation failed."));
-        transaction.onabort = () => reject(transaction.error ?? new Error("Draft reconciliation was aborted."));
-      });
+            maybeCommitIndex();
+          };
+          transaction.oncomplete = () => resolve(removedScopes.length);
+          transaction.onerror = () =>
+            reject(
+              transaction.error ?? new Error("Draft reconciliation failed.")
+            );
+          transaction.onabort = () =>
+            reject(
+              transaction.error ??
+                new Error("Draft reconciliation was aborted.")
+            );
+        });
       });
     }
   };

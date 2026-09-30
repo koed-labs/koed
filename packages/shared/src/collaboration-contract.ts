@@ -23,7 +23,7 @@ export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 import { teamAgentRequestInvalidationSchema } from "./team-agent-requests-contract.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 6;
+export const COLLABORATION_CONTRACT_VERSION = 7;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -54,6 +54,19 @@ export const COLLABORATION_DECRYPT_BATCH_MAX_ITEMS = 100;
 export const COLLABORATION_SPLIT_VIEW_BREAKPOINT_PX = 900;
 export const COLLABORATION_SPLIT_VIEW_SOURCE_MIN_PX = 360;
 export const COLLABORATION_SPLIT_VIEW_DISCUSSION_MIN_PX = 320;
+export const COLLABORATION_REACTION_EMOJI = [
+  "👍",
+  "🎉",
+  "❤️",
+  "😂",
+  "👀",
+  "🚀",
+  "✅",
+  "🔥"
+] as const;
+export const collaborationReactionEmojiSchema = z.enum(
+  COLLABORATION_REACTION_EMOJI
+);
 
 export const calculateCollaborationReconnectDelay = (input: {
   attempt: number;
@@ -783,6 +796,7 @@ export const collaborationMessageSchema = z
     id: z.uuid(),
     clientMessageId: z.uuid().nullable().optional(),
     threadId: z.uuid(),
+    rootMessageId: z.uuid().nullable().default(null),
     scope: z.enum(["personal", "team"]),
     teamId: z.uuid().nullable(),
     sequence: z.number().int().safe().positive(),
@@ -791,7 +805,22 @@ export const collaborationMessageSchema = z
     body: collaborationMessageBodySchema,
     createdAt: collaborationTimestampSchema,
     updatedAt: collaborationTimestampSchema,
-    editedAt: z.null(),
+    version: positiveVersionSchema.default(1),
+    replyCount: nonNegativeSequenceSchema.default(0),
+    unreadReplyCount: nonNegativeSequenceSchema.default(0),
+    reactions: z
+      .array(
+        z
+          .object({
+            emoji: collaborationReactionEmojiSchema,
+            count: nonNegativeSequenceSchema,
+            reacted: z.boolean()
+          })
+          .strict()
+      )
+      .max(COLLABORATION_REACTION_EMOJI.length)
+      .default([]),
+    editedAt: collaborationTimestampSchema.nullable(),
     deletedAt: z.null(),
     delivery: z.enum(["queued", "sent", "failed"]),
     recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
@@ -853,6 +882,7 @@ export const collaborationDurableSendSchema = z
   .object({
     clientMessageId: z.uuid(),
     authority: collaborationDurableSendAuthoritySchema,
+    rootMessageId: z.uuid().nullable().default(null),
     body: collaborationMessageBodySchema.nullable(),
     localCreationOrder: z.number().int().safe().positive(),
     state: z.enum(["queued", "manual_retry", "failed", "sent"]),
@@ -899,6 +929,7 @@ export const collaborationDurableSendSchema = z
 export const collaborationReadStateSchema = z
   .object({
     threadId: z.uuid(),
+    rootMessageId: z.uuid().nullable().default(null),
     deliveredMessageId: z.uuid().nullable(),
     deliveredSequence: nonNegativeSequenceSchema,
     deliveredAt: collaborationTimestampSchema.nullable(),
@@ -965,6 +996,7 @@ export const collaborationMessagePageSchema = z
   .object({
     ...pageMetadataShape,
     threadId: z.uuid(),
+    rootMessageId: z.uuid().nullable().default(null),
     items: z
       .array(collaborationMessageSchema)
       .max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
@@ -1712,7 +1744,8 @@ export const collaborationSendReceiptSchema = z
       })
       .strict(),
     clientMessageId: z.uuid(),
-    message: collaborationMessageSchema
+    message: collaborationMessageSchema,
+    acceptedBody: collaborationMessageBodySchema
   })
   .strict()
   .superRefine((receipt, context) => {
@@ -2768,12 +2801,26 @@ export const collaborationRendererCommandSchema = z
     command("collaboration.send_message", {
       thread: collaborationThreadReferenceSchema,
       clientMessageId: z.uuid(),
+      rootMessageId: z.uuid().nullable().default(null),
       body: collaborationMessageBodySchema
     }),
     command("collaboration.retry_message", {
       thread: collaborationThreadReferenceSchema,
       clientMessageId: z.uuid(),
+      rootMessageId: z.uuid().nullable().default(null),
       body: collaborationMessageBodySchema
+    }),
+    command("collaboration.edit_message", {
+      thread: collaborationThreadReferenceSchema,
+      messageId: z.uuid(),
+      body: collaborationMessageBodySchema,
+      expectedVersion: positiveVersionSchema
+    }),
+    command("collaboration.set_message_reaction", {
+      thread: collaborationThreadReferenceSchema,
+      messageId: z.uuid(),
+      emoji: collaborationReactionEmojiSchema,
+      active: z.boolean()
     }),
     command("collaboration.get_send_receipt", {
       thread: z
@@ -2783,7 +2830,8 @@ export const collaborationRendererCommandSchema = z
           threadId: z.uuid()
         })
         .strict(),
-      clientMessageId: z.uuid()
+      clientMessageId: z.uuid(),
+      rootMessageId: z.uuid().nullable().default(null)
     }),
     command("collaboration.acknowledge_send_receipt", {
       thread: z
@@ -2794,10 +2842,12 @@ export const collaborationRendererCommandSchema = z
         })
         .strict(),
       clientMessageId: z.uuid(),
-      messageId: z.uuid()
+      messageId: z.uuid(),
+      rootMessageId: z.uuid().nullable().default(null)
     }),
     command("collaboration.mark_read", {
       thread: collaborationThreadReferenceSchema,
+      rootMessageId: z.uuid().nullable().default(null),
       messageId: z.uuid()
     }),
     command("collaboration.mark_delivered", {
@@ -2806,6 +2856,7 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.load_message_page", {
       thread: collaborationThreadReferenceSchema,
+      rootMessageId: z.uuid().nullable().default(null),
       direction: z.enum(["older", "newer"]),
       cursor: collaborationOpaqueCursorSchema.nullable(),
       limit: z.number().int().min(1).max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
@@ -3208,6 +3259,8 @@ const commandNameSchema = z.enum([
   "collaboration.create_team_shared_project",
   "collaboration.send_message",
   "collaboration.retry_message",
+  "collaboration.edit_message",
+  "collaboration.set_message_reaction",
   "collaboration.get_send_receipt",
   "collaboration.acknowledge_send_receipt",
   "collaboration.mark_read",
@@ -3307,15 +3360,33 @@ export const collaborationCommandResultSchema = z.union([
     "collaboration.send_message",
     z.union([
       z.object({ durableSend: collaborationDurableSendSchema }).strict(),
-      z.object({ message: collaborationMessageSchema }).strict()
+      z
+        .object({
+          message: collaborationMessageSchema,
+          acceptedBody: collaborationMessageBodySchema
+        })
+        .strict()
     ])
   ),
   successResult(
     "collaboration.retry_message",
     z.union([
       z.object({ durableSend: collaborationDurableSendSchema }).strict(),
-      z.object({ message: collaborationMessageSchema }).strict()
+      z
+        .object({
+          message: collaborationMessageSchema,
+          acceptedBody: collaborationMessageBodySchema
+        })
+        .strict()
     ])
+  ),
+  successResult(
+    "collaboration.edit_message",
+    z.object({ message: collaborationMessageSchema }).strict()
+  ),
+  successResult(
+    "collaboration.set_message_reaction",
+    z.object({ message: collaborationMessageSchema }).strict()
   ),
   successResult(
     "collaboration.get_send_receipt",
@@ -3573,6 +3644,12 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("message_updated"),
+      message: collaborationMessageSchema
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("receipt_state_updated"),
       readState: collaborationReadStateSchema
     })
@@ -3777,6 +3854,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
+  "message_updated",
   "receipt_state_updated",
   "share_grant_lifecycle",
   "fidelity_changed",
@@ -3919,6 +3997,7 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_upserted"
       ]),
       message_created: new Set(["message_created"]),
+      message_updated: new Set(["message_updated"]),
       receipt_state_updated: new Set([
         "receipt_state_updated",
         "message_receipts_updated"
@@ -4022,6 +4101,19 @@ const realtimeUpdateDeliverySchema = z
 
     if (
       update.type === "message_created" &&
+      (update.message.threadId !== resource.threadId ||
+        update.message.id !== resource.messageId ||
+        update.message.scope !== resource.scope ||
+        update.message.teamId !== resource.teamId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update", "message"],
+        message: "Realtime message must match its authorized resource"
+      });
+    }
+    if (
+      update.type === "message_updated" &&
       (update.message.threadId !== resource.threadId ||
         update.message.id !== resource.messageId ||
         update.message.scope !== resource.scope ||

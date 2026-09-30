@@ -914,7 +914,7 @@ const resultPayloadFor = (
     command.command === "collaboration.send_message" ||
     command.command === "collaboration.retry_message"
   ) {
-    return { message: teamMessage };
+    return { message: teamMessage, acceptedBody: command.input.body };
   }
   if (
     command.command === "collaboration.mark_read" ||
@@ -1510,7 +1510,7 @@ const supportedMappings: Array<{
     },
     method: "POST",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
-    body: { bodyText: "hello" },
+    body: { bodyText: "hello", rootMessageId: null },
     idempotencyKey: ids.clientMessage
   },
   {
@@ -1525,7 +1525,7 @@ const supportedMappings: Array<{
     },
     method: "PUT",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/read-state`,
-    body: { messageId: ids.message }
+    body: { messageId: ids.message, rootMessageId: null }
   },
   {
     command: {
@@ -1554,7 +1554,7 @@ const supportedMappings: Array<{
     },
     method: "POST",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/messages`,
-    body: { bodyText: "hello" },
+    body: { bodyText: "hello", rootMessageId: null },
     idempotencyKey: ids.clientMessage
   },
   {
@@ -1764,12 +1764,9 @@ describe("local-edge collaboration command route", () => {
                 "/v1/shared-memory/teams/{teamId}/destination",
               retainedMemoryEndpoint:
                 "/v1/shared-memory/teams/{teamId}/retained",
-              memberSettingEndpoint:
-                "/v1/teams/{teamId}/memory-retention",
-              ownerReplicaPreviewEndpoint:
-                "/v1/shared-memory/preview-target",
-              ownerShareBundleEndpoint:
-                "/v1/shared-memory/share-bundles",
+              memberSettingEndpoint: "/v1/teams/{teamId}/memory-retention",
+              ownerReplicaPreviewEndpoint: "/v1/shared-memory/preview-target",
+              ownerShareBundleEndpoint: "/v1/shared-memory/share-bundles",
               ownerFidelityEndpoint:
                 "/v1/shared-memory/share-grants/{shareGrantId}/fidelity"
             }
@@ -2223,6 +2220,8 @@ describe("local-edge collaboration command route", () => {
         activationRepresentation: "memory_events",
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
+        retentionEnabled: true,
+        memberRetentionVersion: 1,
         mode: "continuous",
         actionGrant: { id: randomUUID() }
       }
@@ -4513,7 +4512,7 @@ describe("local-edge collaboration command route", () => {
       },
       {
         command: supportedMappings[7]!.command,
-        payload: { message: canonicalMessage },
+        payload: { message: canonicalMessage, acceptedBody: "hello" },
         expected: {
           data: {
             message: {

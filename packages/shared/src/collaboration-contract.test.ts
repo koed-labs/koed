@@ -166,6 +166,7 @@ const teamProjectChannel = () => ({
 const message = () => ({
   id: ids.message,
   threadId: ids.thread,
+  rootMessageId: null,
   scope: "personal" as const,
   teamId: null,
   sequence: 1,
@@ -174,6 +175,10 @@ const message = () => ({
   body: "A bounded collaboration message.",
   createdAt: timestamp,
   updatedAt: timestamp,
+  version: 1,
+  replyCount: 0,
+  unreadReplyCount: 0,
+  reactions: [],
   editedAt: null,
   deletedAt: null,
   delivery: "sent" as const,
@@ -188,6 +193,7 @@ const messagePage = () => ({
   hasOlder: false,
   hasNewer: false,
   threadId: ids.thread,
+  rootMessageId: null,
   items: [message()]
 });
 
@@ -525,6 +531,7 @@ describe("durable collaboration send DTOs", () => {
       workspaceId: ids.workspace,
       threadId: ids.thread
     },
+    rootMessageId: null,
     body: "A currently authorized durable body.",
     localCreationOrder: 3,
     state: "queued" as const,
@@ -577,6 +584,53 @@ describe("durable collaboration send DTOs", () => {
 });
 
 describe("collaboration renderer commands", () => {
+  it("normalizes durable receipt lookups and acknowledgments by Team root", () => {
+    const base = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      input: {
+        thread: {
+          scope: "team" as const,
+          teamId: ids.team,
+          threadId: ids.thread
+        },
+        clientMessageId: ids.message
+      }
+    };
+    const lookup = collaborationRendererCommandSchema.parse({
+      ...base,
+      command: "collaboration.get_send_receipt"
+    });
+    expect(lookup).toMatchObject({ input: { rootMessageId: null } });
+
+    const acknowledge = collaborationRendererCommandSchema.parse({
+      ...base,
+      command: "collaboration.acknowledge_send_receipt",
+      input: { ...base.input, messageId: ids.message }
+    });
+    expect(acknowledge).toMatchObject({ input: { rootMessageId: null } });
+
+    const replyRootMessageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(
+      collaborationRendererCommandSchema.parse({
+        ...base,
+        command: "collaboration.get_send_receipt",
+        input: { ...base.input, rootMessageId: replyRootMessageId }
+      })
+    ).toMatchObject({ input: { rootMessageId: replyRootMessageId } });
+    expect(
+      collaborationRendererCommandSchema.parse({
+        ...base,
+        command: "collaboration.acknowledge_send_receipt",
+        input: {
+          ...base.input,
+          messageId: ids.message,
+          rootMessageId: replyRootMessageId
+        }
+      })
+    ).toMatchObject({ input: { rootMessageId: replyRootMessageId } });
+  });
+
   it("keeps snapshot-bearing command routing in the shared contract", () => {
     expect(collaborationSnapshotResultCommands).toEqual([
       "collaboration.load",

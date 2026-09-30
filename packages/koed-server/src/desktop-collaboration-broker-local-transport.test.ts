@@ -504,6 +504,48 @@ describe("Desktop collaboration local transport", () => {
     }
   );
 
+  it("does not queue Team edits or reactions while offline", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection: async () => null
+    });
+    const edit = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.edit_message",
+      input: {
+        thread: { scope: "team", teamId, threadId: channelId },
+        messageId: personalChannelId,
+        body: "edited body",
+        expectedVersion: 1
+      }
+    });
+    const reaction = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+      command: "collaboration.set_message_reaction",
+      input: {
+        thread: { scope: "team", teamId, threadId: channelId },
+        messageId: personalChannelId,
+        emoji: "✅",
+        active: true
+      }
+    });
+
+    await expect(transport.request(edit, context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: "offline" }
+    });
+    await expect(transport.request(reaction, context())).resolves.toMatchObject(
+      {
+        ok: false,
+        error: { code: "offline" }
+      }
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("maps oversized and uncorrelated command responses to correlated safe errors", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

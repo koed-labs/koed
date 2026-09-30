@@ -1,4 +1,5 @@
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import type { CollaborationMessage } from "@koed/shared/collaboration";
 
 export function teamAnswerForwardDraft(input: {
   senderName: string;
@@ -25,6 +26,45 @@ export function canForwardTeamAnswer(
     request.status === "accepted" &&
     request.ownerId === viewerId &&
     Boolean(request.jobId)
+  );
+}
+
+export function forwardableTeamRequestsForReply(input: {
+  requests: readonly TeamAgentRequest[];
+  message: CollaborationMessage;
+  viewerId: string;
+  teamId: string;
+  threadId: string;
+  rootMessageId: string;
+}): TeamAgentRequest[] {
+  const { requests, message, viewerId, teamId, threadId, rootMessageId } =
+    input;
+  if (message.rootMessageId !== rootMessageId || message.sender.id === viewerId)
+    return [];
+  return requests.filter(
+    (request) =>
+      request.teamId === teamId &&
+      request.channelId === threadId &&
+      request.originRootMessageId === rootMessageId &&
+      canForwardTeamAnswer(request, viewerId)
+  );
+}
+
+export function forwardableTeamRequestsForChannelMessage(input: {
+  requests: readonly TeamAgentRequest[];
+  message: CollaborationMessage;
+  viewerId: string;
+  teamId: string;
+}): TeamAgentRequest[] {
+  const { requests, message, viewerId, teamId } = input;
+  if (message.sender.id === viewerId || message.rootMessageId != null)
+    return [];
+  return requests.filter(
+    (request) =>
+      request.teamId === teamId &&
+      request.channelId === message.threadId &&
+      request.originRootMessageId === null &&
+      canForwardTeamAnswer(request, viewerId)
   );
 }
 
@@ -97,6 +137,7 @@ export function teamQuestionReceiptMatches(
     threadId: string;
     clientMessageId: string;
     body: string;
+    rootMessageId?: string | null;
   }
 ): boolean {
   if (!receipt || typeof receipt !== "object") return false;
@@ -117,8 +158,12 @@ export function teamQuestionReceiptMatches(
     message?.scope === "team" &&
     message.teamId === expected.teamId &&
     message.threadId === expected.threadId &&
+    (expected.rootMessageId === undefined ||
+      message.rootMessageId === expected.rootMessageId) &&
     message.clientMessageId === expected.clientMessageId &&
-    message.body === expected.body &&
+    (typeof value.acceptedBody === "string"
+      ? value.acceptedBody
+      : message.body) === expected.body &&
     message.delivery === "sent" &&
     typeof message.id === "string"
   );

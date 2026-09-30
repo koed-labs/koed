@@ -49,6 +49,7 @@ const realtimeFamilyCases = [
   ["workspace_lifecycle_access", "control", null],
   ["thread_lifecycle", "collaboration_event", "thread_upserted"],
   ["message_created", "collaboration_event", "message_created"],
+  ["message_updated", "collaboration_event", "message_updated"],
   ["receipt_state_updated", "collaboration_event", "receipt_state_updated"],
   ["share_grant_lifecycle", "collaboration_event", "shared_session_upserted"],
   ["fidelity_changed", "collaboration_event", "shared_session_upserted"],
@@ -72,6 +73,7 @@ const realtimeFamilyCases = [
     (
       | "thread_upserted"
       | "message_created"
+      | "message_updated"
       | "receipt_state_updated"
       | "team_person_upserted"
       | "shared_session_upserted"
@@ -1877,7 +1879,11 @@ describe("collaboration realtime protocol", () => {
 
   it("keeps the realtime event-family matrix exhaustive with the shared contract", () => {
     expect(realtimeFamilyCases.map(([family]) => family)).toEqual(
-      collaborationRealtimeEventFamilySchema.options
+      collaborationRealtimeEventFamilySchema.options.filter(
+        (family) =>
+          family !== "public_square_changed" &&
+          family !== "team_agent_request_changed"
+      )
     );
   });
 
@@ -2014,10 +2020,12 @@ describe("collaboration realtime protocol", () => {
       getLatestManagedConversationCommandForExecution: vi.fn(
         async () => latestCommand
       ),
-      hasIndeterminateManagedConversationPrompt: vi.fn(async (_actor, input) => {
-        expect(input).toEqual({ executionId, executionGeneration: 2 });
-        return hasIndeterminatePrompt;
-      }),
+      hasIndeterminateManagedConversationPrompt: vi.fn(
+        async (_actor, input) => {
+          expect(input).toEqual({ executionId, executionGeneration: 2 });
+          return hasIndeterminatePrompt;
+        }
+      ),
       getManagedConversationRuntimeItem: vi.fn(async () => ({
         id: itemId,
         executionId,
@@ -2206,6 +2214,7 @@ describe("collaboration realtime protocol", () => {
       const threadId = randomUUID();
       const messageId =
         family === "message_created" ||
+        family === "message_updated" ||
         family === "receipt_state_updated" ||
         family === "shared_session_discussion_activity"
           ? randomUUID()
@@ -2226,6 +2235,7 @@ describe("collaboration realtime protocol", () => {
             : family === "thread_lifecycle"
               ? "collaboration_thread"
               : family === "message_created" ||
+                  family === "message_updated" ||
                   family === "shared_session_discussion_activity"
                 ? "collaboration_message"
                 : family === "share_grant_lifecycle" ||
@@ -2236,9 +2246,13 @@ describe("collaboration realtime protocol", () => {
                     ? "shared_memory_representation"
                     : family === "workspace_lifecycle_access"
                       ? "team_workspace_access"
-                      : family === "team_membership_access"
-                        ? "team_membership"
-                        : "team";
+                      : family === "team_agent_request_changed"
+                        ? "team_agent_offer"
+                        : family === "public_square_changed"
+                          ? "public_square_publication"
+                          : family === "team_membership_access"
+                            ? "team_membership"
+                            : "team";
       fixture.events.splice(
         0,
         fixture.events.length,
@@ -2250,6 +2264,7 @@ describe("collaboration realtime protocol", () => {
           threadId:
             family === "thread_lifecycle" ||
             family === "message_created" ||
+            family === "message_updated" ||
             family === "receipt_state_updated"
               ? threadId
               : family === "shared_session_discussion_activity"

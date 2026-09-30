@@ -114,6 +114,8 @@ const commandRequiresTeamBackend = (
     case "collaboration.restore_thread":
     case "collaboration.send_message":
     case "collaboration.retry_message":
+    case "collaboration.edit_message":
+    case "collaboration.set_message_reaction":
     case "collaboration.mark_read":
     case "collaboration.load_message_page":
       return command.input.thread.scope === "team";

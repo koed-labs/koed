@@ -12,6 +12,10 @@ import {
 } from "@/components/ChatComposer";
 import { ChannelHeader } from "@/components/ChannelView";
 import {
+  TeamMessageThreadPane,
+  type ThreadEditDraft
+} from "@/components/TeamMessageThreadPane";
+import {
   TeamDirectMessageBubble,
   directMessageTitle
 } from "@/components/TeamDirectMessage";
@@ -45,7 +49,9 @@ import {
 import {
   canForwardTeamAnswer,
   teamAgentRequestForwardLabel,
-  teamAnswerForwardDraft
+  teamAnswerForwardDraft,
+  forwardableTeamRequestsForChannelMessage,
+  forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
@@ -55,9 +61,14 @@ import {
   mergeTeamMessages,
   resolvePendingSend,
   retainPendingSendAfterUncertainOutcome,
+  editDraftAfterConflict,
+  editDraftAfterConflictReview,
   studioRequestMayApply,
   studioSelectionMatches,
-  teamDraftForHydration
+  teamDraftForHydration,
+  messageReactionMayStart,
+  messageReactionMayUpdateOpenPane,
+  visibleReplyReadMayAdvance
 } from "@/lib/team-channel-state";
 import type {
   StudioTeamDraft,
@@ -127,6 +138,33 @@ export function HostedTeamChannels({
     projects: Array<{ id: string; name: string }>;
   }>({ owner: "", loaded: false, projects: [] });
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [openRootMessage, setOpenRootMessage] =
+    useState<CollaborationMessage | null>(null);
+  const [openRootAuthorityKey, setOpenRootAuthorityKey] = useState<
+    string | null
+  >(null);
+  const [threadReplies, setThreadReplies] = useState<CollaborationMessage[]>(
+    []
+  );
+  const [threadBeforeSequence, setThreadBeforeSequence] = useState<
+    number | null
+  >(null);
+  const [threadHasOlder, setThreadHasOlder] = useState(false);
+  const [threadDraftText, setThreadDraftText] = useState("");
+  const [threadPendingSend, setThreadPendingSend] =
+    useState<StudioTeamDraft["pendingSend"]>(null);
+  const [threadSendStatus, setThreadSendStatus] = useState<
+    "pending" | "uncertain" | "retry_failed" | null
+  >(null);
+  const [threadEditDrafts, setThreadEditDrafts] = useState<
+    Map<string, ThreadEditDraft>
+  >(new Map());
+  const [threadRequests, setThreadRequests] = useState<TeamAgentRequest[]>([]);
+  const [browserOnline, setBrowserOnline] = useState(true);
+  const [realtimeConnection, setRealtimeConnection] = useState({
+    owner: "",
+    connected: false
+  });
   const [messageSelection, setMessageSelection] = useState<{
     teamId: string;
     threadId: string;
@@ -144,7 +182,6 @@ export function HostedTeamChannels({
     useState<StudioTeamDraft["pendingSend"]>(null);
   const [hydrated, setHydrated] = useState(false);
   const [hydratedKey, setHydratedKey] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [visibleRead, setVisibleRead] = useState<{
@@ -156,6 +193,11 @@ export function HostedTeamChannels({
   const [readCursor, setReadCursor] = useState(0);
   const messagesRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
+  const openRootRef = useRef<CollaborationMessage | null>(null);
+  openRootRef.current = openRootMessage;
+  const threadDraftEditGeneration = useRef(0);
+  const threadSendInFlight = useRef(new Set<string>());
+  const threadReadReported = useRef(new Map<string, number>());
   const revokedRef = useRef(false);
   const navigationGeneration = useRef(0);
   const directMessageRequestIds = useRef(new Map<string, string>());
@@ -173,6 +215,7 @@ export function HostedTeamChannels({
     localProjectsState.owner !== localProjectsOwner ||
     !localProjectsState.loaded;
   const navigationReady = navigationLoadedOwner === ownerKey;
+  const authorityKeyRef = useRef<string | null>(null);
   const visibleChannels = useMemo(
     () => (navigationReady ? channels : []),
     [channels, navigationReady]
@@ -240,6 +283,7 @@ export function HostedTeamChannels({
     agent: TeamAgentMention;
     text: string;
     idempotencyKey: string;
+    rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
   const openRequestReview = useCallback(
@@ -344,6 +388,9 @@ export function HostedTeamChannels({
     activeThread?.kind === "dm" || activeThread?.kind === "group_dm"
       ? activeThread
       : null;
+  const channelMessages = activeDirectMessage
+    ? visibleMessages
+    : visibleMessages.filter((message) => message.rootMessageId === null);
   const activeDirectMessageTitle = activeDirectMessage
     ? directMessageTitle(activeDirectMessage, user.id)
     : "";
@@ -351,6 +398,20 @@ export function HostedTeamChannels({
     ? makeAuthority(team.id, activeThread.id, user.id)
     : null;
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  authorityKeyRef.current = authorityKey;
+  const visibleOpenRoot =
+    openRootMessage &&
+    openRootAuthorityKey === authorityKey &&
+    openRootMessage.teamId === team.id &&
+    openRootMessage.threadId === activeThread?.id
+      ? openRootMessage
+      : null;
+  const connected =
+    browserOnline &&
+    navigationReady &&
+    !revokedRef.current &&
+    realtimeConnection.owner === ownerKey &&
+    realtimeConnection.connected;
   const visibleDraftText =
     authorityKey && hydratedKey === authorityKey ? draftText : "";
   const visiblePendingSend =
@@ -420,7 +481,6 @@ export function HostedTeamChannels({
       setVisibleRead(null);
       draftByAuthority.current.clear();
     }
-    setLoading(true);
     try {
       const [nextChannels, nextProjects, nextPeople, nextDirectMessages] =
         await Promise.all([
@@ -492,20 +552,11 @@ export function HostedTeamChannels({
             ? failure.message
             : "Team channels are unavailable."
         );
-    } finally {
-      if (
-        studioRequestMayApply({
-          capturedGeneration: generation,
-          currentGeneration: navigationGeneration.current,
-          mounted: mountedRef.current
-        })
-      )
-        setLoading(false);
     }
   }, [client, handleAuthorizationLost, team.id, user.id]);
 
   const loadPage = useCallback(
-    async (id: string, before: number | null = null, prepend = false) => {
+    async (id: string, before: number | null = null) => {
       const ownerKey = `${user.id}:${team.id}`;
       try {
         const page = await client.loadMessages(team.id, id, before, 50);
@@ -546,11 +597,652 @@ export function HostedTeamChannels({
     [client, handleAuthorizationLost, team.id, user.id]
   );
 
+  const loadRootReplies = useCallback(
+    async (root: CollaborationMessage, before: number | null = null) => {
+      const capturedAuthorityKey = authorityKey;
+      const capturedOwnerKey = `${user.id}:${team.id}`;
+      try {
+        const page = await client.loadMessages(
+          team.id,
+          root.threadId,
+          before,
+          50,
+          root.id
+        );
+        if (
+          !mountedRef.current ||
+          authorityKeyRef.current !== capturedAuthorityKey ||
+          navigationOwner.current !== capturedOwnerKey ||
+          selectedThreadRef.current !== root.threadId ||
+          openRootRef.current?.id !== root.id
+        )
+          return;
+        setThreadReplies((current) =>
+          before === null
+            ? page.items.filter((message) => message.rootMessageId === root.id)
+            : mergeTeamMessages(
+                current,
+                page.items.filter(
+                  (message) => message.rootMessageId === root.id
+                )
+              )
+        );
+        setThreadHasOlder(page.hasOlder);
+        setThreadBeforeSequence(page.nextBeforeSequence);
+        const updatedRoot = messages.find((message) => message.id === root.id);
+        if (updatedRoot) setOpenRootMessage(updatedRoot);
+      } catch (failure) {
+        if (
+          failure instanceof HostedTeamRequestError &&
+          [401, 403].includes(failure.status)
+        )
+          handleAuthorizationLost();
+      }
+    },
+    [authorityKey, client, handleAuthorizationLost, messages, team.id, user.id]
+  );
+
+  const openMessageThread = useCallback(
+    (root: CollaborationMessage) => {
+      const capturedAuthority = authority;
+      const capturedAuthorityKey = authorityKey;
+      const capturedDraftGeneration = ++threadDraftEditGeneration.current;
+      setOpenRootAuthorityKey(capturedAuthorityKey);
+      setThreadDraftText("");
+      setOpenRootMessage(root);
+      openRootRef.current = root;
+      setThreadReplies([]);
+      setThreadBeforeSequence(null);
+      setThreadHasOlder(false);
+      setThreadPendingSend(null);
+      setThreadSendStatus(null);
+      setThreadEditDrafts(new Map());
+      setThreadRequests([]);
+      if (capturedAuthority && drafts)
+        void drafts
+          .load({ ...capturedAuthority, rootMessageId: root.id })
+          .then((stored) => {
+            if (
+              authorityKeyRef.current !== capturedAuthorityKey ||
+              openRootRef.current?.id !== root.id
+            )
+              return;
+            if (threadDraftEditGeneration.current === capturedDraftGeneration)
+              setThreadDraftText(stored?.text ?? "");
+            setThreadPendingSend(stored?.pendingSend ?? null);
+            setThreadSendStatus(stored?.pendingSend ? "pending" : null);
+          })
+          .catch(() => {
+            if (
+              authorityKeyRef.current === capturedAuthorityKey &&
+              openRootRef.current?.id === root.id
+            )
+              setError("The encrypted reply draft could not be opened.");
+          });
+      void loadRootReplies(root);
+    },
+    [authority, authorityKey, drafts, loadRootReplies]
+  );
+
+  const saveReplyDraft = useCallback(
+    (rootMessageId: string, text: string, pending = threadPendingSend) => {
+      if (!authority || !drafts) return;
+      const capturedAuthorityKey = authorityKey;
+      const scopedAuthority = { ...authority, rootMessageId };
+      const value = { text, pendingSend: pending, receiptAckPending: null };
+      draftByAuthority.current.set(JSON.stringify(scopedAuthority), value);
+      void drafts.save(scopedAuthority, value).catch(() => {
+        if (
+          authorityKeyRef.current === capturedAuthorityKey &&
+          openRootRef.current?.id === rootMessageId
+        )
+          setError(
+            "The encrypted reply draft could not be saved on this device."
+          );
+      });
+    },
+    [authority, authorityKey, drafts, threadPendingSend]
+  );
+
+  const sendThreadReply = useCallback(
+    async (text: string, clientMessageId?: string) => {
+      const root = openRootMessage;
+      if (!root || !authority || !drafts || !text.trim()) return;
+      const scopedAuthority = { ...authority, rootMessageId: root.id };
+      const identity =
+        threadPendingSend?.body === text
+          ? threadPendingSend
+          : {
+              clientMessageId: clientMessageId ?? crypto.randomUUID(),
+              body: text,
+              createdAt: new Date().toISOString()
+            };
+      const sendKey = `${JSON.stringify(scopedAuthority)}:${identity.clientMessageId}`;
+      if (threadSendInFlight.current.has(sendKey)) return;
+      threadSendInFlight.current.add(sendKey);
+      const pendingDraft = {
+        text: "",
+        pendingSend: identity,
+        receiptAckPending: null
+      };
+      draftByAuthority.current.set(
+        JSON.stringify(scopedAuthority),
+        pendingDraft
+      );
+      setThreadPendingSend(identity);
+      setThreadSendStatus("pending");
+      setThreadDraftText("");
+      try {
+        await drafts.save(scopedAuthority, pendingDraft);
+      } catch {
+        draftByAuthority.current.set(JSON.stringify(scopedAuthority), {
+          text: identity.body,
+          pendingSend: null,
+          receiptAckPending: null
+        });
+        if (
+          authorityKeyRef.current === authorityKey &&
+          openRootRef.current?.id === root.id
+        ) {
+          setThreadPendingSend(null);
+          setThreadSendStatus(null);
+          setThreadDraftText(identity.body);
+          setError(
+            "The reply could not be saved on this device, so it was not sent."
+          );
+        }
+        threadSendInFlight.current.delete(sendKey);
+        return false;
+      }
+      if (!connected) {
+        threadSendInFlight.current.delete(sendKey);
+        return false;
+      }
+      try {
+        const receipt = await client.sendMessage(
+          team.id,
+          root.threadId,
+          identity.body,
+          identity.clientMessageId,
+          root.id
+        );
+        const message = receipt.message;
+        if (receipt.acceptedBody !== identity.body)
+          throw new HostedTeamRequestError(
+            "The accepted reply body did not match this pending send.",
+            502
+          );
+        if (message.rootMessageId !== root.id)
+          throw new HostedTeamRequestError(
+            "Koed returned a reply for a different thread root.",
+            502
+          );
+        const current =
+          authorityKeyRef.current === authorityKey &&
+          openRootRef.current?.id === root.id;
+        const settled = {
+          text: "",
+          pendingSend: null,
+          receiptAckPending: null
+        };
+        draftByAuthority.current.set(JSON.stringify(scopedAuthority), settled);
+        await drafts.save(scopedAuthority, settled);
+        if (current) {
+          if (message.rootMessageId !== null)
+            setThreadReplies((items) => mergeTeamMessages(items, [message]));
+          setThreadPendingSend(null);
+          setThreadSendStatus(null);
+          setOpenRootMessage((item) =>
+            item?.id === root.id
+              ? { ...item, replyCount: item.replyCount + 1 }
+              : item
+          );
+        }
+        return true;
+      } catch (failure) {
+        if (
+          failure instanceof HostedTeamRequestError &&
+          [401, 403].includes(failure.status)
+        )
+          handleAuthorizationLost();
+        else if (
+          authorityKeyRef.current === authorityKey &&
+          openRootRef.current?.id === root.id
+        ) {
+          setThreadSendStatus(
+            failure instanceof HostedTeamRequestError &&
+              [400, 404, 422].includes(failure.status)
+              ? "retry_failed"
+              : "uncertain"
+          );
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "Reply delivery is being confirmed."
+          );
+        }
+        return false;
+      } finally {
+        threadSendInFlight.current.delete(sendKey);
+      }
+    },
+    [
+      authority,
+      authorityKey,
+      client,
+      connected,
+      drafts,
+      handleAuthorizationLost,
+      openRootMessage,
+      team.id,
+      threadPendingSend
+    ]
+  );
+
+  const startThreadEdit = useCallback(
+    async (message: CollaborationMessage) => {
+      if (!authority || !drafts) return;
+      const rootId = openRootRef.current?.id;
+      const saved = await drafts
+        .load({ ...authority, editMessageId: message.id })
+        .catch(() => {
+          if (
+            authorityKeyRef.current === authorityKey &&
+            openRootRef.current?.id === rootId
+          )
+            setError("The encrypted edit draft could not be opened.");
+          return null;
+        });
+      if (
+        authorityKeyRef.current !== authorityKey ||
+        openRootRef.current?.id !== rootId
+      )
+        return;
+      const edit: ThreadEditDraft = saved?.edit
+        ? { text: saved.text, ...saved.edit }
+        : {
+            text: message.body,
+            expectedVersion: message.version,
+            baseBodyText: message.body
+          };
+      setThreadEditDrafts((current) => new Map(current).set(message.id, edit));
+    },
+    [authority, authorityKey, drafts]
+  );
+
+  const persistThreadEdit = useCallback(
+    (message: CollaborationMessage, edit: ThreadEditDraft) => {
+      if (!authority || !drafts) return;
+      setThreadEditDrafts((current) => new Map(current).set(message.id, edit));
+      const capturedAuthorityKey = authorityKey;
+      const capturedRootId = openRootRef.current?.id;
+      void drafts
+        .save(
+          { ...authority, editMessageId: message.id },
+          {
+            text: edit.text,
+            pendingSend: null,
+            receiptAckPending: null,
+            edit: {
+              expectedVersion: edit.expectedVersion,
+              baseBodyText: edit.baseBodyText,
+              ...(edit.conflict ? { conflict: edit.conflict } : {})
+            }
+          }
+        )
+        .catch(() => {
+          if (
+            authorityKeyRef.current === capturedAuthorityKey &&
+            openRootRef.current?.id === capturedRootId
+          )
+            setError(
+              "The encrypted edit draft could not be saved on this device."
+            );
+        });
+    },
+    [authority, authorityKey, drafts]
+  );
+
+  const saveThreadEdit = useCallback(
+    async (message: CollaborationMessage, edit: ThreadEditDraft) => {
+      if (!connected || !drafts || !openRootMessage) return;
+      const capturedAuthorityKey = authorityKey;
+      const capturedAuthority = authority;
+      const capturedRootId = openRootMessage.id;
+      try {
+        const updated = await client.editMessage(
+          team.id,
+          message.threadId,
+          message.id,
+          edit.text,
+          edit.expectedVersion
+        );
+        const current =
+          authorityKeyRef.current === authorityKey &&
+          openRootRef.current?.id === openRootMessage.id;
+        if (current) {
+          setMessages((items) => mergeTeamMessages(items, [updated]));
+          if (updated.rootMessageId !== null)
+            setThreadReplies((items) => mergeTeamMessages(items, [updated]));
+          setOpenRootMessage((item) =>
+            item?.id === updated.id ? updated : item
+          );
+          setThreadEditDrafts((items) => {
+            const next = new Map(items);
+            next.delete(message.id);
+            return next;
+          });
+        }
+        if (capturedAuthority)
+          await drafts.delete({
+            ...capturedAuthority,
+            editMessageId: message.id
+          });
+        if (!current) return;
+      } catch (failure) {
+        if (
+          failure instanceof HostedTeamRequestError &&
+          [401, 403].includes(failure.status)
+        ) {
+          handleAuthorizationLost();
+          return;
+        }
+        try {
+          const page = await client.loadMessages(
+            team.id,
+            message.threadId,
+            message.sequence + 1,
+            1,
+            message.rootMessageId
+          );
+          if (
+            authorityKeyRef.current !== capturedAuthorityKey ||
+            openRootRef.current?.id !== capturedRootId
+          )
+            return;
+          const latest = page.items.find((item) => item.id === message.id);
+          if (latest && latest.version > edit.expectedVersion)
+            persistThreadEdit(
+              message,
+              editDraftAfterConflict(
+                { text: edit.text, edit },
+                { version: latest.version, bodyText: latest.body }
+              ).edit!
+            );
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "The message edit could not be saved."
+          );
+        } catch {
+          if (
+            authorityKeyRef.current === capturedAuthorityKey &&
+            openRootRef.current?.id === capturedRootId
+          )
+            setError(
+              "The edit could not be saved and the latest message could not be loaded."
+            );
+        }
+      }
+    },
+    [
+      authority,
+      authorityKey,
+      client,
+      connected,
+      drafts,
+      handleAuthorizationLost,
+      openRootMessage,
+      persistThreadEdit,
+      team.id
+    ]
+  );
+
+  const toggleThreadReaction = useCallback(
+    async (message: CollaborationMessage, emoji: string) => {
+      if (!connected) return;
+      const capturedAuthorityKey = authorityKeyRef.current;
+      const capturedRoot = openRootRef.current;
+      if (
+        !capturedAuthorityKey ||
+        !messageReactionMayStart({
+          message,
+          teamId: team.id,
+          threadId: activeThread?.id ?? "",
+          openRootMessageId:
+            capturedRoot?.teamId === team.id &&
+            capturedRoot.threadId === activeThread?.id
+              ? capturedRoot.id
+              : null
+        })
+      )
+        return;
+      try {
+        const reaction = message.reactions.find((item) => item.emoji === emoji);
+        const updated = await client.setMessageReaction(
+          team.id,
+          message.threadId,
+          message.id,
+          emoji,
+          !reaction?.reacted
+        );
+        if (authorityKeyRef.current !== capturedAuthorityKey) return;
+        setMessages((items) => mergeTeamMessages(items, [updated]));
+        const currentRootId = openRootRef.current?.id ?? null;
+        if (
+          currentRootId &&
+          currentRootId === capturedRoot?.id &&
+          messageReactionMayUpdateOpenPane({
+            message: updated,
+            openRootMessageId: currentRootId
+          }) &&
+          updated.rootMessageId !== null
+        )
+          setThreadReplies((items) => mergeTeamMessages(items, [updated]));
+        if (
+          currentRootId &&
+          currentRootId === capturedRoot?.id &&
+          updated.id === currentRootId
+        )
+          setOpenRootMessage((item) =>
+            item?.id === updated.id ? updated : item
+          );
+      } catch (failure) {
+        if (
+          authorityKeyRef.current === capturedAuthorityKey &&
+          failure instanceof HostedTeamRequestError &&
+          [401, 403].includes(failure.status)
+        )
+          handleAuthorizationLost();
+      }
+    },
+    [activeThread?.id, client, connected, handleAuthorizationLost, team.id]
+  );
+
+  const markThreadReplyVisible = useCallback(
+    (message: CollaborationMessage) => {
+      const root = openRootRef.current;
+      const capturedAuthorityKey = authorityKeyRef.current;
+      if (
+        !root ||
+        message.rootMessageId !== root.id ||
+        !connected ||
+        !visibleReplyReadMayAdvance({
+          rootMessageId: root.id,
+          replyMessageId: message.id,
+          sequence: message.sequence,
+          senderId: message.sender.id,
+          principalUserId: user.id,
+          focused:
+            document.visibilityState === "visible" && document.hasFocus(),
+          rootPaneVisible: openRootRef.current?.id === root.id,
+          lastReportedSequence:
+            threadReadReported.current.get(
+              `${capturedAuthorityKey}:${root.id}`
+            ) ?? 0
+        })
+      )
+        return;
+      const readKey = `${capturedAuthorityKey}:${root.id}`;
+      if (message.sequence <= (threadReadReported.current.get(readKey) ?? 0))
+        return;
+      threadReadReported.current.set(readKey, message.sequence);
+      void client
+        .markRead(team.id, message.threadId, message.id, root.id)
+        .then(() => {
+          if (
+            authorityKeyRef.current !== capturedAuthorityKey ||
+            openRootRef.current?.id !== root.id
+          )
+            return;
+          setMessages((items) =>
+            items.map((item) =>
+              item.id === root.id
+                ? {
+                    ...item,
+                    unreadReplyCount: Math.max(0, item.unreadReplyCount - 1)
+                  }
+                : item
+            )
+          );
+          setOpenRootMessage((item) =>
+            item?.id === root.id
+              ? {
+                  ...item,
+                  unreadReplyCount: Math.max(0, item.unreadReplyCount - 1)
+                }
+              : item
+          );
+        })
+        .catch(() => undefined);
+    },
+    [client, connected, team.id, user.id]
+  );
+
+  useEffect(() => {
+    if (
+      !connected ||
+      !openRootMessage ||
+      !threadPendingSend ||
+      threadSendStatus !== "pending"
+    )
+      return;
+    void sendThreadReply(
+      threadPendingSend.body,
+      threadPendingSend.clientMessageId
+    );
+  }, [
+    connected,
+    openRootMessage?.id,
+    sendThreadReply,
+    threadPendingSend,
+    threadSendStatus
+  ]);
+
+  const updateThreadDraft = useCallback(
+    (text: string) => {
+      threadDraftEditGeneration.current += 1;
+      setThreadDraftText(text);
+      const root = openRootRef.current;
+      if (root) saveReplyDraft(root.id, text);
+    },
+    [saveReplyDraft]
+  );
+
+  const cancelThreadEdit = useCallback(
+    (message: CollaborationMessage) => {
+      setThreadEditDrafts((current) => {
+        const next = new Map(current);
+        next.delete(message.id);
+        return next;
+      });
+      if (authority && drafts)
+        void drafts.delete({ ...authority, editMessageId: message.id });
+    },
+    [authority, drafts]
+  );
+
+  const reviewThreadEdit = useCallback(
+    async (message: CollaborationMessage) => {
+      const edit = threadEditDrafts.get(message.id);
+      if (!edit || !authority || !openRootMessage) return;
+      const capturedAuthorityKey = authorityKey;
+      const capturedRootId = openRootMessage.id;
+      try {
+        const page = await client.loadMessages(
+          team.id,
+          message.threadId,
+          message.sequence + 1,
+          1,
+          message.rootMessageId
+        );
+        if (
+          authorityKeyRef.current !== capturedAuthorityKey ||
+          openRootRef.current?.id !== capturedRootId
+        )
+          return;
+        const latest = page.items.find((item) => item.id === message.id);
+        if (!latest) return;
+        const conflicted = editDraftAfterConflict(
+          { text: edit.text, edit },
+          { version: latest.version, bodyText: latest.body }
+        );
+        const reviewed = editDraftAfterConflictReview(conflicted);
+        if (!reviewed.edit) return;
+        persistThreadEdit(message, { ...reviewed.edit, text: reviewed.text });
+        setMessages((items) => mergeTeamMessages(items, [latest]));
+        if (latest.rootMessageId !== null)
+          setThreadReplies((items) => mergeTeamMessages(items, [latest]));
+        setOpenRootMessage((item) => (item?.id === latest.id ? latest : item));
+      } catch (failure) {
+        if (
+          authorityKeyRef.current === capturedAuthorityKey &&
+          openRootRef.current?.id === capturedRootId
+        )
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "The latest saved message could not be loaded."
+          );
+      }
+    },
+    [
+      authority,
+      authorityKey,
+      client,
+      openRootMessage,
+      persistThreadEdit,
+      team.id,
+      threadEditDrafts
+    ]
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       navigationGeneration.current += 1;
+    };
+  }, []);
+  useEffect(() => {
+    openRootRef.current = null;
+    setOpenRootMessage(null);
+    setOpenRootAuthorityKey(null);
+    setThreadReplies([]);
+    setThreadDraftText("");
+    setThreadPendingSend(null);
+    setThreadSendStatus(null);
+    setThreadEditDrafts(new Map());
+    setThreadRequests([]);
+  }, [authorityKey]);
+  useEffect(() => {
+    const update = () => setBrowserOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
     };
   }, []);
   useEffect(() => {
@@ -727,12 +1419,54 @@ export function HostedTeamChannels({
     setVisibleRead(null);
   }, [team.id, threadId]);
   useEffect(() => {
+    const capturedOwnerKey = ownerKey;
+    setRealtimeConnection({ owner: capturedOwnerKey, connected: false });
     const unsubscribe = client.subscribeTeam(
       team.id,
       async (event) => {
         const resource = event.resource;
         const currentThreadId = selectedThreadRef.current;
         const update = event.update;
+        const capturedAuthorityKey = authorityKeyRef.current;
+        const capturedRoot = openRootRef.current;
+        if (
+          update &&
+          typeof update === "object" &&
+          "type" in update &&
+          (update.type === "message_created" ||
+            update.type === "message_updated") &&
+          "message" in update &&
+          update.message &&
+          typeof update.message === "object"
+        ) {
+          const message = update.message as CollaborationMessage;
+          if (
+            message.teamId === team.id &&
+            message.threadId === currentThreadId &&
+            navigationOwner.current === capturedOwnerKey &&
+            authorityKeyRef.current === capturedAuthorityKey
+          ) {
+            setMessages((current) => mergeTeamMessages(current, [message]));
+            if (
+              capturedRoot &&
+              capturedRoot.teamId === team.id &&
+              capturedRoot.threadId === currentThreadId &&
+              openRootRef.current?.id === capturedRoot.id
+            ) {
+              if (
+                message.id === capturedRoot.id &&
+                message.rootMessageId === null
+              )
+                setOpenRootMessage((current) =>
+                  current?.id === capturedRoot.id ? message : current
+                );
+              else if (message.rootMessageId === capturedRoot.id)
+                setThreadReplies((current) =>
+                  mergeTeamMessages(current, [message])
+                );
+            }
+          }
+        }
         if (
           update &&
           typeof update === "object" &&
@@ -765,16 +1499,29 @@ export function HostedTeamChannels({
           await loadPage(currentThreadId);
         await refreshNavigation();
       },
-      handleAuthorizationLost
+      handleAuthorizationLost,
+      (connected) => {
+        if (
+          mountedRef.current &&
+          navigationOwner.current === capturedOwnerKey &&
+          !revokedRef.current
+        )
+          setRealtimeConnection({ owner: capturedOwnerKey, connected });
+      }
     );
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (navigationOwner.current === capturedOwnerKey)
+        setRealtimeConnection({ owner: capturedOwnerKey, connected: false });
+    };
   }, [
     client,
     handleAuthorizationLost,
     loadPage,
     refreshNavigation,
     refreshSquare,
-    team.id
+    team.id,
+    ownerKey
   ]);
   useEffect(() => {
     if (
@@ -844,12 +1591,18 @@ export function HostedTeamChannels({
       )
         return false;
       requestStarted = true;
-      const message = await client.sendMessage(
+      const receipt = await client.sendMessage(
         capturedTeamId,
         capturedThreadId,
         identity.body,
         identity.clientMessageId
       );
+      const message = receipt.message;
+      if (receipt.acceptedBody !== identity.body)
+        throw new HostedTeamRequestError(
+          "The accepted message body did not match this pending send.",
+          502
+        );
       if (
         revokedRef.current ||
         !mountedRef.current ||
@@ -863,11 +1616,7 @@ export function HostedTeamChannels({
           { teamId: team.id, threadId: selectedThreadRef.current }
         );
       if (currentlySelected)
-        setMessages((current) =>
-          [...current.filter((item) => item.id !== message.id), message].slice(
-            -250
-          )
-        );
+        setMessages((current) => mergeTeamMessages(current, [message]));
       const latest = draftByAuthority.current.get(capturedKey) ?? {
         text: "",
         pendingSend: identity
@@ -953,10 +1702,21 @@ export function HostedTeamChannels({
 
   const completeAgentMention = async (
     intent: NonNullable<typeof pendingAgentMention>,
-    teamProjectId: string
+    teamProjectId: string,
+    rootMessageId: string | null = null
   ): Promise<boolean> => {
+    const targetRootMessageId = rootMessageId ?? intent.rootMessageId ?? null;
     const capturedTeamId = team.id;
     const capturedThreadId = activeThread?.id;
+    if (
+      targetRootMessageId &&
+      openRootRef.current?.id !== targetRootMessageId
+    ) {
+      setError(
+        "This Agent request belongs to a different message thread. Reopen that thread to continue."
+      );
+      return false;
+    }
     setAgentMentionBusy(true);
     setError(null);
     try {
@@ -965,6 +1725,9 @@ export function HostedTeamChannels({
           idempotencyKey: intent.idempotencyKey,
           teamProjectId,
           channelId: capturedThreadId ?? "",
+          ...(targetRootMessageId
+            ? { rootMessageId: targetRootMessageId }
+            : {}),
           agentId: intent.agent.id,
           requestText: intent.text
         });
@@ -987,7 +1750,9 @@ export function HostedTeamChannels({
         );
         return false;
       }
-      const sent = await send(intent.text);
+      const sent = targetRootMessageId
+        ? await sendThreadReply(intent.text)
+        : await send(intent.text);
       if (!sent) return false;
       if (
         team.id !== capturedTeamId ||
@@ -1003,7 +1768,10 @@ export function HostedTeamChannels({
             agentName: intent.agent.name,
             channelName: activeThread?.name ?? "channel",
             typedMessage: intent.text,
-            recentMessages: visibleMessages.map((message) => ({
+            recentMessages: (targetRootMessageId && openRootMessage
+              ? [openRootMessage, ...threadReplies]
+              : visibleMessages
+            ).map((message) => ({
               senderName: message.sender.displayName,
               body: message.body,
               delivery: message.delivery
@@ -1027,6 +1795,37 @@ export function HostedTeamChannels({
       return false;
     } finally {
       setAgentMentionBusy(false);
+    }
+  };
+
+  const sendThreadComposer = async (
+    text: string,
+    selection: ChatComposerSelection
+  ) => {
+    if (!selection.agentId) {
+      await sendThreadReply(text);
+      return;
+    }
+    const agent = teamAgentMentions.options.find(
+      (candidate) => candidate.id === selection.agentId
+    );
+    const root = openRootRef.current;
+    if (!agent || !root) {
+      setError("This Agent cannot be routed from the selected thread.");
+      return;
+    }
+    const intent = {
+      agent,
+      text,
+      idempotencyKey: crypto.randomUUID(),
+      rootMessageId: root.id
+    };
+    if (activeThread?.kind === "team_project_channel") {
+      await completeAgentMention(intent, activeThread.teamProjectId, root.id);
+    } else if (visibleProjects.length === 0) {
+      setError("Share a Team Project before requesting an Agent.");
+    } else {
+      setPendingAgentMention(intent);
     }
   };
 
@@ -1073,12 +1872,18 @@ export function HostedTeamChannels({
     const capturedThreadId = activeThread.id;
     const capturedOwnerKey = `${user.id}:${team.id}`;
     try {
-      const message = await client.sendMessage(
+      const receipt = await client.sendMessage(
         team.id,
         capturedThreadId,
         pending.body,
         pending.clientMessageId
       );
+      const message = receipt.message;
+      if (receipt.acceptedBody !== pending.body)
+        throw new HostedTeamRequestError(
+          "The accepted message body did not match this pending send.",
+          502
+        );
       if (
         revokedRef.current ||
         !mountedRef.current ||
@@ -1092,11 +1897,7 @@ export function HostedTeamChannels({
           { teamId: team.id, threadId: selectedThreadRef.current }
         );
       if (currentlySelected)
-        setMessages((current) =>
-          [...current.filter((item) => item.id !== message.id), message].slice(
-            -250
-          )
-        );
+        setMessages((current) => mergeTeamMessages(current, [message]));
       const latest = draftByAuthority.current.get(capturedKey!) ?? {
         text: draftText,
         pendingSend: pending
@@ -1359,40 +2160,41 @@ export function HostedTeamChannels({
                           </button>
                         </div>
                       )}
-                      {pendingAgentMention && (
-                        <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
-                          <p className="mb-2 text-xs text-subtle">
-                            Choose a Team Project for{" "}
-                            {pendingAgentMention.agent.name}.
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            {visibleProjects.map((project) => (
+                      {pendingAgentMention &&
+                        !pendingAgentMention.rootMessageId && (
+                          <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
+                            <p className="mb-2 text-xs text-subtle">
+                              Choose a Team Project for{" "}
+                              {pendingAgentMention.agent.name}.
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {visibleProjects.map((project) => (
+                                <button
+                                  key={project.id}
+                                  type="button"
+                                  disabled={agentMentionBusy}
+                                  onClick={() =>
+                                    void completeAgentMention(
+                                      pendingAgentMention,
+                                      project.id
+                                    )
+                                  }
+                                  className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                >
+                                  {project.name}
+                                </button>
+                              ))}
                               <button
-                                key={project.id}
                                 type="button"
                                 disabled={agentMentionBusy}
-                                onClick={() =>
-                                  void completeAgentMention(
-                                    pendingAgentMention,
-                                    project.id
-                                  )
-                                }
-                                className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                onClick={() => setPendingAgentMention(null)}
+                                className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
                               >
-                                {project.name}
+                                Cancel
                               </button>
-                            ))}
-                            <button
-                              type="button"
-                              disabled={agentMentionBusy}
-                              onClick={() => setPendingAgentMention(null)}
-                              className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
-                            >
-                              Cancel
-                            </button>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
                       <ChatComposer
                         placeholder={
                           activeDirectMessage
@@ -1500,95 +2302,258 @@ export function HostedTeamChannels({
               />
             ) : (
               <>
-                <div
-                  ref={messagesRef}
-                  className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}
-                >
-                  {!activeDirectMessage && activeThread && (
-                    <TeamChannelAgentRequests
-                      teamId={team.id}
-                      channelId={activeThread.id}
-                      viewerId={user.id}
-                      authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}`}
-                      refreshRevision={agentRequestRevision}
-                      client={teamAgentRequestsClient}
-                      onAuthorizationLost={handleAuthorizationLost}
-                      onReview={(request) => void openRequestReview(request)}
-                      onViewWork={openRequestWork}
-                      onRequestsChanged={setChannelRequests}
-                    />
-                  )}
-                  {visiblePage && hasOlder && beforeSequence && (
-                    <button
-                      type="button"
-                      onClick={() =>
+                <div className="flex min-h-0 min-w-0 flex-1">
+                  <div
+                    ref={messagesRef}
+                    className={`mx-auto min-w-0 max-w-3xl flex-1 pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}
+                  >
+                    {!activeDirectMessage && activeThread && (
+                      <TeamChannelAgentRequests
+                        teamId={team.id}
+                        channelId={activeThread.id}
+                        viewerId={user.id}
+                        authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}`}
+                        refreshRevision={agentRequestRevision}
+                        client={teamAgentRequestsClient}
+                        onAuthorizationLost={handleAuthorizationLost}
+                        onReview={(request) => void openRequestReview(request)}
+                        onViewWork={openRequestWork}
+                        onRequestsChanged={setChannelRequests}
+                        originRootMessageId={null}
+                      />
+                    )}
+                    {visiblePage && hasOlder && beforeSequence && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          activeThread &&
+                          void loadPage(activeThread.id, beforeSequence)
+                        }
+                        className="mx-auto block text-xs text-muted hover:text-foreground"
+                      >
+                        Load older messages
+                      </button>
+                    )}
+                    {channelMessages.length === 0 && (
+                      <p className="text-sm text-subtle">
+                        {activeDirectMessage
+                          ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
+                          : "No messages yet. Start the conversation."}
+                      </p>
+                    )}
+                    {channelMessages.map((message) => (
+                      <HostedMessage
+                        key={message.id}
+                        message={message}
+                        forwardRequests={
+                          !activeDirectMessage && message.sender.id !== user.id
+                            ? forwardableTeamRequestsForChannelMessage({
+                                requests: channelRequests,
+                                message,
+                                viewerId: user.id,
+                                teamId: team.id
+                              })
+                            : []
+                        }
+                        forwardRequestTextById={Object.fromEntries(
+                          channelRequests.map((request) => [
+                            request.id,
+                            visibleMessages.find(
+                              (candidate) =>
+                                candidate.id === request.requestMessageId
+                            )?.body ?? ""
+                          ])
+                        )}
+                        onForwardAnswer={(request) =>
+                          void forwardChannelAnswer(request, message)
+                        }
+                        onReplyInThread={
+                          activeDirectMessage
+                            ? undefined
+                            : () => openMessageThread(message)
+                        }
+                        onEditMessage={
+                          !activeDirectMessage &&
+                          connected &&
+                          message.sender.id === user.id
+                            ? () => {
+                                openMessageThread(message);
+                                void startThreadEdit(message);
+                              }
+                            : undefined
+                        }
+                        onToggleReaction={
+                          !activeDirectMessage && connected
+                            ? toggleThreadReaction
+                            : undefined
+                        }
+                        principalUserId={user.id}
+                        directMessagePrincipalUserId={
+                          activeDirectMessage ? user.id : undefined
+                        }
+                        onVisible={() => {
+                          if (
+                            message.sender.id !== user.id &&
+                            activeThread?.id === message.threadId &&
+                            selectedThreadRef.current === message.threadId &&
+                            message.teamId === team.id &&
+                            document.visibilityState === "visible" &&
+                            document.hasFocus()
+                          ) {
+                            setVisibleRead((current) =>
+                              !current || message.sequence > current.sequence
+                                ? {
+                                    id: message.id,
+                                    sequence: message.sequence,
+                                    teamId: team.id,
+                                    threadId: message.threadId
+                                  }
+                                : current
+                            );
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                  {!activeDirectMessage && visibleOpenRoot && (
+                    <TeamMessageThreadPane
+                      key={`${authorityKey}:${visibleOpenRoot.id}`}
+                      root={visibleOpenRoot}
+                      replies={threadReplies}
+                      hasOlderReplies={threadHasOlder}
+                      principalUserId={user.id}
+                      connected={connected}
+                      replyDraft={threadDraftText}
+                      pendingSend={threadPendingSend}
+                      pendingStatus={threadSendStatus}
+                      editDrafts={threadEditDrafts}
+                      agents={teamAgentMentions.options}
+                      agentRequests={
                         activeThread &&
-                        void loadPage(activeThread.id, beforeSequence, true)
+                        activeThread.kind !== "dm" &&
+                        activeThread.kind !== "group_dm" ? (
+                          <>
+                            <TeamChannelAgentRequests
+                              key={`thread-requests:${authorityKey}:${visibleOpenRoot.id}`}
+                              teamId={team.id}
+                              channelId={activeThread.id}
+                              originRootMessageId={visibleOpenRoot.id}
+                              viewerId={user.id}
+                              authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}:root:${visibleOpenRoot.id}`}
+                              refreshRevision={agentRequestRevision}
+                              client={teamAgentRequestsClient}
+                              onAuthorizationLost={handleAuthorizationLost}
+                              onReview={(request) =>
+                                void openRequestReview(request)
+                              }
+                              onViewWork={openRequestWork}
+                              onRequestsChanged={setThreadRequests}
+                            />
+                            {pendingAgentMention?.rootMessageId ===
+                              visibleOpenRoot.id && (
+                              <div className="border-b border-border px-3 py-2">
+                                <p className="mb-2 text-xs text-subtle">
+                                  Choose a Team Project for{" "}
+                                  {pendingAgentMention.agent.name}.
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                  {visibleProjects.map((project) => (
+                                    <button
+                                      key={project.id}
+                                      type="button"
+                                      disabled={agentMentionBusy}
+                                      onClick={() =>
+                                        void completeAgentMention(
+                                          pendingAgentMention,
+                                          project.id,
+                                          visibleOpenRoot.id
+                                        )
+                                      }
+                                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                    >
+                                      {project.name}
+                                    </button>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    disabled={agentMentionBusy}
+                                    onClick={() => setPendingAgentMention(null)}
+                                    className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        ) : undefined
                       }
-                      className="mx-auto block text-xs text-muted hover:text-foreground"
-                    >
-                      Load older messages
-                    </button>
-                  )}
-                  {visibleMessages.length === 0 && (
-                    <p className="text-sm text-subtle">
-                      {activeDirectMessage
-                        ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
-                        : "No messages yet. Start the conversation."}
-                    </p>
-                  )}
-                  {visibleMessages.map((message) => (
-                    <HostedMessage
-                      key={message.id}
-                      message={message}
-                      forwardRequests={
-                        !activeDirectMessage && message.sender.id !== user.id
-                          ? channelRequests.filter(
-                              (request) =>
-                                request.teamId === team.id &&
-                                request.channelId === message.threadId &&
-                                canForwardTeamAnswer(request, user.id)
-                            )
-                          : []
-                      }
-                      forwardRequestTextById={Object.fromEntries(
-                        channelRequests.map((request) => [
-                          request.id,
-                          visibleMessages.find(
-                            (candidate) =>
-                              candidate.id === request.requestMessageId
-                          )?.body ?? ""
+                      forwardRequestsByMessage={Object.fromEntries(
+                        threadReplies.map((message) => [
+                          message.id,
+                          forwardableTeamRequestsForReply({
+                            requests: threadRequests,
+                            message,
+                            viewerId: user.id,
+                            teamId: team.id,
+                            threadId: visibleOpenRoot.threadId,
+                            rootMessageId: visibleOpenRoot.id
+                          })
                         ])
                       )}
-                      onForwardAnswer={(request) =>
+                      forwardRequestTextById={Object.fromEntries(
+                        threadRequests.map((request) => [
+                          request.id,
+                          visibleOpenRoot.body
+                        ])
+                      )}
+                      onClose={() => {
+                        setOpenRootMessage(null);
+                        openRootRef.current = null;
+                        setOpenRootAuthorityKey(null);
+                        setThreadReplies([]);
+                      }}
+                      onReplyDraftChange={updateThreadDraft}
+                      onSendReply={(text, selection) =>
+                        sendThreadComposer(text, selection)
+                      }
+                      onRetryPending={async () => {
+                        if (threadPendingSend)
+                          await sendThreadReply(
+                            threadPendingSend.body,
+                            threadPendingSend.clientMessageId
+                          );
+                      }}
+                      onStartEdit={(message) => void startThreadEdit(message)}
+                      onCancelEdit={cancelThreadEdit}
+                      onEditDraftChange={(message, text) => {
+                        const current = threadEditDrafts.get(message.id);
+                        if (current)
+                          persistThreadEdit(message, { ...current, text });
+                      }}
+                      onSaveEdit={(message, draft) =>
+                        void saveThreadEdit(message, draft)
+                      }
+                      onReviewEditConflict={(message) =>
+                        void reviewThreadEdit(message)
+                      }
+                      onToggleReaction={(message, emoji) =>
+                        void toggleThreadReaction(message, emoji)
+                      }
+                      onForwardAnswer={(request, message) =>
                         void forwardChannelAnswer(request, message)
                       }
-                      directMessagePrincipalUserId={
-                        activeDirectMessage ? user.id : undefined
+                      onReplyVisible={markThreadReplyVisible}
+                      onLoadOlderReplies={() =>
+                        visibleOpenRoot &&
+                        threadBeforeSequence !== null &&
+                        void loadRootReplies(
+                          visibleOpenRoot,
+                          threadBeforeSequence
+                        )
                       }
-                      onVisible={() => {
-                        if (
-                          message.sender.id !== user.id &&
-                          activeThread?.id === message.threadId &&
-                          selectedThreadRef.current === message.threadId &&
-                          message.teamId === team.id &&
-                          document.visibilityState === "visible" &&
-                          document.hasFocus()
-                        ) {
-                          setVisibleRead((current) =>
-                            !current || message.sequence > current.sequence
-                              ? {
-                                  id: message.id,
-                                  sequence: message.sequence,
-                                  teamId: team.id,
-                                  threadId: message.threadId
-                                }
-                              : current
-                          );
-                        }
-                      }}
                     />
-                  ))}
+                  )}
                 </div>
                 {error && (
                   <p
@@ -1621,6 +2586,10 @@ export function HostedTeamChannels({
 function HostedMessage({
   message,
   onVisible,
+  onReplyInThread,
+  onEditMessage,
+  onToggleReaction,
+  principalUserId = "",
   directMessagePrincipalUserId,
   forwardRequests = [],
   forwardRequestTextById = {},
@@ -1628,12 +2597,20 @@ function HostedMessage({
 }: {
   message: CollaborationMessage;
   onVisible: () => void;
+  onReplyInThread?: () => void;
+  onEditMessage?: (message: CollaborationMessage) => void;
+  onToggleReaction?: (
+    message: CollaborationMessage,
+    emoji: string
+  ) => void | Promise<void>;
+  principalUserId?: string;
   directMessagePrincipalUserId?: string;
   forwardRequests?: TeamAgentRequest[];
   forwardRequestTextById?: Record<string, string>;
   onForwardAnswer?: (request: TeamAgentRequest) => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   useEffect(() => {
     const element = ref.current;
     if (!element || typeof IntersectionObserver === "undefined") return;
@@ -1673,6 +2650,7 @@ function HostedMessage({
   return (
     <article
       ref={ref}
+      data-message-id={message.id}
       className={
         isDirectMessage
           ? isYou
@@ -1703,6 +2681,83 @@ function HostedMessage({
             <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">
               {message.body}
             </p>
+            {message.editedAt && (
+              <span className="ml-1 text-[10px] text-subtle">Edited</span>
+            )}
+            {onReplyInThread && (
+              <button
+                type="button"
+                onClick={onReplyInThread}
+                aria-label="Reply in thread"
+                className="mt-2 mr-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
+              >
+                Reply in thread
+                {message.replyCount > 0 ? ` · ${message.replyCount}` : ""}
+                {message.unreadReplyCount > 0
+                  ? ` · ${message.unreadReplyCount} unread`
+                  : ""}
+              </button>
+            )}
+            {!isDirectMessage && (
+              <div className="relative mt-1 flex flex-wrap items-center gap-2">
+                {onEditMessage && message.sender.id === principalUserId && (
+                  <button
+                    type="button"
+                    aria-label="Edit message"
+                    onClick={() => onEditMessage(message)}
+                    className="text-[11px] text-subtle hover:text-foreground"
+                  >
+                    Edit
+                  </button>
+                )}
+                {onToggleReaction && (
+                  <button
+                    type="button"
+                    aria-label="Add reaction"
+                    onClick={() => setReactionPickerOpen((open) => !open)}
+                    className="text-[11px] text-subtle hover:text-foreground"
+                  >
+                    React
+                  </button>
+                )}
+                {reactionPickerOpen && onToggleReaction && (
+                  <div className="absolute left-0 top-5 z-10 flex gap-1 rounded-md border border-border bg-surface p-1 shadow-lg">
+                    {["👍", "❤️", "😂", "🎉", "👀"].map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        aria-label={`React ${emoji}`}
+                        onClick={() => {
+                          setReactionPickerOpen(false);
+                          void onToggleReaction(message, emoji);
+                        }}
+                        className="rounded px-1.5 py-1 hover:bg-surface-hover"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {message.reactions.length > 0 && !isDirectMessage && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {message.reactions.map((reaction) => (
+                  <button
+                    key={reaction.emoji}
+                    type="button"
+                    disabled={!onToggleReaction}
+                    aria-pressed={reaction.reacted}
+                    onClick={() =>
+                      void onToggleReaction?.(message, reaction.emoji)
+                    }
+                    className={`rounded-full border px-2 py-0.5 text-xs disabled:opacity-50 ${reaction.reacted ? "border-accent/50 bg-accent/10 text-accent" : "border-border bg-surface-hover text-foreground-secondary hover:bg-surface-active"}`}
+                  >
+                    {reaction.emoji} {reaction.count}
+                  </button>
+                ))}
+              </div>
+            )}
             {forwardRequests.map((request) => {
               const label = teamAgentRequestForwardLabel(
                 request,

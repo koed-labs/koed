@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { createPdsApplicationSecretStore } from "@koed/shared";
 
 const MAX_DRAFT_BYTES = 128 * 1024;
-const MAX_THREADS_PER_TEAM = 500;
+const MAX_DRAFT_SCOPES_PER_TEAM = 2_000;
 const MAX_INDEX_TEAMS = 5_000;
 const INDEX_REFERENCE = "team-collaboration-drafts-index-v1";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const processOperationQueues = new Map();
 
 const assertAuthority = (authority) => {
@@ -16,7 +17,14 @@ const assertAuthority = (authority) => {
     authority.backendId.length > 240 ||
     !UUID.test(authority.principalUserId) ||
     !UUID.test(authority.teamId) ||
-    !UUID.test(authority.threadId)
+    !UUID.test(authority.threadId) ||
+    (authority.rootMessageId !== undefined &&
+      authority.rootMessageId !== null &&
+      !UUID.test(authority.rootMessageId)) ||
+    (authority.editMessageId !== undefined &&
+      authority.editMessageId !== null &&
+      !UUID.test(authority.editMessageId)) ||
+    (authority.rootMessageId != null && authority.editMessageId != null)
   ) {
     throw new Error("Team draft authority is invalid.");
   }
@@ -35,20 +43,49 @@ const assertTeamAuthority = (authority) => {
   }
 };
 
+const draftKeyFor = (authority) =>
+  authority.rootMessageId == null && authority.editMessageId == null
+    ? authority.threadId
+    : JSON.stringify([
+        authority.threadId,
+        authority.rootMessageId ?? null,
+        authority.editMessageId ?? null
+      ]);
+
+const validDraftKey = (key) => {
+  if (UUID.test(key)) return true;
+  try {
+    const value = JSON.parse(key);
+    return (
+      Array.isArray(value) &&
+      value.length === 3 &&
+      UUID.test(value[0]) &&
+      (value[1] === null || UUID.test(value[1])) &&
+      (value[2] === null || UUID.test(value[2])) &&
+      !(value[1] !== null && value[2] !== null)
+    );
+  } catch {
+    return false;
+  }
+};
+
 const referenceFor = (authority) => {
   const digest = createHash("sha256")
-    .update(JSON.stringify([
-      authority.backendId,
-      authority.principalUserId,
-      authority.teamId
-    ]))
+    .update(
+      JSON.stringify([
+        authority.backendId,
+        authority.principalUserId,
+        authority.teamId
+      ])
+    )
     .digest("hex");
   return `team-collaboration-drafts-${digest}`;
 };
 
-const principalScopeFor = (authority) => createHash("sha256")
-  .update(JSON.stringify([authority.backendId, authority.principalUserId]))
-  .digest("hex");
+const principalScopeFor = (authority) =>
+  createHash("sha256")
+    .update(JSON.stringify([authority.backendId, authority.principalUserId]))
+    .digest("hex");
 
 const validPendingSend = (pendingSend) => {
   if (pendingSend === null) return true;
@@ -63,11 +100,38 @@ const validPendingSend = (pendingSend) => {
 };
 
 const validReceiptAckPending = (receiptAckPending) => {
-  if (receiptAckPending === undefined || receiptAckPending === null) return true;
-  return Boolean(receiptAckPending &&
-    Object.keys(receiptAckPending).sort().join(",") === "clientMessageId,messageId" &&
-    UUID.test(receiptAckPending.clientMessageId) && UUID.test(receiptAckPending.messageId));
+  if (receiptAckPending === undefined || receiptAckPending === null)
+    return true;
+  return Boolean(
+    receiptAckPending &&
+    Object.keys(receiptAckPending).sort().join(",") ===
+      "clientMessageId,messageId" &&
+    UUID.test(receiptAckPending.clientMessageId) &&
+    UUID.test(receiptAckPending.messageId)
+  );
 };
+
+const validEditDraft = (edit) =>
+  edit === undefined ||
+  Boolean(
+    edit &&
+    Object.keys(edit).every((key) =>
+      ["expectedVersion", "baseBodyText", "conflict"].includes(key)
+    ) &&
+    Number.isSafeInteger(edit.expectedVersion) &&
+    edit.expectedVersion > 0 &&
+    typeof edit.baseBodyText === "string" &&
+    Buffer.byteLength(edit.baseBodyText, "utf8") <= MAX_DRAFT_BYTES &&
+    (edit.conflict === undefined ||
+      (edit.conflict &&
+        Object.keys(edit.conflict).sort().join(",") ===
+          "latestBodyText,latestVersion" &&
+        Number.isSafeInteger(edit.conflict.latestVersion) &&
+        edit.conflict.latestVersion > edit.expectedVersion &&
+        typeof edit.conflict.latestBodyText === "string" &&
+        Buffer.byteLength(edit.conflict.latestBodyText, "utf8") <=
+          MAX_DRAFT_BYTES))
+  );
 
 const parseTeamState = (value, authority) => {
   if (
@@ -81,18 +145,28 @@ const parseTeamState = (value, authority) => {
     throw new Error("Team draft state is invalid.");
   }
   const entries = Object.entries(value.drafts);
-  if (entries.length > MAX_THREADS_PER_TEAM) {
-    throw new Error("Team draft state has too many threads.");
+  if (entries.length > MAX_DRAFT_SCOPES_PER_TEAM) {
+    throw new Error("Team draft state has too many scopes.");
   }
-  for (const [threadId, draft] of entries) {
+  for (const [draftKey, draft] of entries) {
     if (
-      !UUID.test(threadId) ||
+      !validDraftKey(draftKey) ||
       !draft ||
-      Object.keys(draft).some((key) => !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(key)) ||
+      Object.keys(draft).some(
+        (key) =>
+          ![
+            "text",
+            "pendingSend",
+            "receiptAckPending",
+            "edit",
+            "updatedAt"
+          ].includes(key)
+      ) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
       !validPendingSend(draft.pendingSend) ||
       !validReceiptAckPending(draft.receiptAckPending) ||
+      !validEditDraft(draft.edit) ||
       typeof draft.updatedAt !== "string" ||
       !Number.isFinite(Date.parse(draft.updatedAt))
     ) {
@@ -121,10 +195,17 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
     const key = `${userDataPath}:${reference}`;
     const previous = processOperationQueues.get(key) ?? Promise.resolve();
     const next = previous.then(operation, operation);
-    processOperationQueues.set(key, next.then(() => undefined, () => undefined));
+    processOperationQueues.set(
+      key,
+      next.then(
+        () => undefined,
+        () => undefined
+      )
+    );
     return next;
   };
-  const mutate = (operation) => serial("team-drafts-global-mutation-queue", operation);
+  const mutate = (operation) =>
+    serial("team-drafts-global-mutation-queue", operation);
 
   const readTeam = (teamAuthority) => {
     const reference = referenceFor(teamAuthority);
@@ -174,9 +255,14 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
   };
 
   const writeIndex = (entries) => {
-    const unique = [...new Map(
-      entries.map((entry) => [`${entry.principalScope}:${entry.teamScope}`, entry])
-    ).values()];
+    const unique = [
+      ...new Map(
+        entries.map((entry) => [
+          `${entry.principalScope}:${entry.teamScope}`,
+          entry
+        ])
+      ).values()
+    ];
     if (unique.length > MAX_INDEX_TEAMS) {
       throw new Error("Team draft index has too many entries.");
     }
@@ -187,11 +273,13 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
   const registerTeam = async (authority) => {
     const principalScope = principalScopeFor(authority);
     const teamScope = createHash("sha256")
-      .update(JSON.stringify([
-        authority.backendId,
-        authority.principalUserId,
-        authority.teamId
-      ]))
+      .update(
+        JSON.stringify([
+          authority.backendId,
+          authority.principalUserId,
+          authority.teamId
+        ])
+      )
       .digest("hex");
     await serial(INDEX_REFERENCE, () => {
       const entries = readIndex();
@@ -202,11 +290,13 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
   const unregisterTeam = async (authority) => {
     const principalScope = principalScopeFor(authority);
     const teamScope = createHash("sha256")
-      .update(JSON.stringify([
-        authority.backendId,
-        authority.principalUserId,
-        authority.teamId
-      ]))
+      .update(
+        JSON.stringify([
+          authority.backendId,
+          authority.principalUserId,
+          authority.teamId
+        ])
+      )
       .digest("hex");
     await serial(INDEX_REFERENCE, () => {
       writeIndex(
@@ -230,7 +320,7 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
       const reference = referenceFor(teamAuthority);
       return await serial(reference, () => {
         const { value } = readTeam(teamAuthority);
-        const draft = value.drafts[authority.threadId];
+        const draft = value.drafts[draftKeyFor(authority)];
         return draft ? structuredClone(draft) : null;
       });
     },
@@ -242,7 +332,8 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         typeof draft.text !== "string" ||
         Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
         !validPendingSend(draft.pendingSend) ||
-        !validReceiptAckPending(draft.receiptAckPending)
+        !validReceiptAckPending(draft.receiptAckPending) ||
+        !validEditDraft(draft.edit)
       ) {
         throw new Error("Team draft is invalid.");
       }
@@ -252,37 +343,49 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         teamId: authority.teamId
       };
       const reference = referenceFor(teamAuthority);
-      await mutate(() => serial(reference, async () => {
-        const { value } = readTeam(teamAuthority);
-        const nextDrafts = { ...value.drafts };
-        if (draft.text.length === 0 && draft.pendingSend === null && !draft.receiptAckPending) {
-          delete nextDrafts[authority.threadId];
-        } else {
+      await mutate(() =>
+        serial(reference, async () => {
+          const { value } = readTeam(teamAuthority);
+          const nextDrafts = { ...value.drafts };
+          const draftKey = draftKeyFor(authority);
           if (
-            !Object.hasOwn(nextDrafts, authority.threadId) &&
-            Object.keys(nextDrafts).length >= MAX_THREADS_PER_TEAM
+            draft.text.length === 0 &&
+            draft.pendingSend === null &&
+            !draft.receiptAckPending &&
+            !draft.edit
           ) {
-            throw new Error("Team draft state has too many threads.");
+            delete nextDrafts[draftKey];
+          } else {
+            if (
+              !Object.hasOwn(nextDrafts, draftKey) &&
+              Object.keys(nextDrafts).length >= MAX_DRAFT_SCOPES_PER_TEAM
+            ) {
+              throw new Error("Team draft state has too many scopes.");
+            }
+            nextDrafts[draftKey] = {
+              text: draft.text,
+              pendingSend: draft.pendingSend,
+              receiptAckPending: draft.receiptAckPending ?? null,
+              ...(draft.edit ? { edit: draft.edit } : {}),
+              updatedAt: new Date().toISOString()
+            };
           }
-          nextDrafts[authority.threadId] = {
-            text: draft.text,
-            pendingSend: draft.pendingSend,
-            receiptAckPending: draft.receiptAckPending ?? null,
-            updatedAt: new Date().toISOString()
-          };
-        }
-        if (Object.keys(nextDrafts).length === 0) {
-          store.delete(reference);
-          await unregisterTeam(teamAuthority);
-        } else {
-          await registerTeam(teamAuthority);
-          store.put(reference, JSON.stringify({
-            schemaVersion: 1,
-            authority: teamAuthority,
-            drafts: nextDrafts
-          }));
-        }
-      }));
+          if (Object.keys(nextDrafts).length === 0) {
+            store.delete(reference);
+            await unregisterTeam(teamAuthority);
+          } else {
+            await registerTeam(teamAuthority);
+            store.put(
+              reference,
+              JSON.stringify({
+                schemaVersion: 1,
+                authority: teamAuthority,
+                drafts: nextDrafts
+              })
+            );
+          }
+        })
+      );
     },
 
     async delete(authority) {
@@ -293,22 +396,27 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         teamId: authority.teamId
       };
       const reference = referenceFor(teamAuthority);
-      await mutate(() => serial(reference, async () => {
-        const { value } = readTeam(teamAuthority);
-        if (!Object.hasOwn(value.drafts, authority.threadId)) return;
-        const nextDrafts = { ...value.drafts };
-        delete nextDrafts[authority.threadId];
-        if (Object.keys(nextDrafts).length === 0) {
-          store.delete(reference);
-          await unregisterTeam(teamAuthority);
-        } else {
-          store.put(reference, JSON.stringify({
-            schemaVersion: 1,
-            authority: teamAuthority,
-            drafts: nextDrafts
-          }));
-        }
-      }));
+      await mutate(() =>
+        serial(reference, async () => {
+          const { value } = readTeam(teamAuthority);
+          if (!Object.hasOwn(value.drafts, draftKeyFor(authority))) return;
+          const nextDrafts = { ...value.drafts };
+          delete nextDrafts[draftKeyFor(authority)];
+          if (Object.keys(nextDrafts).length === 0) {
+            store.delete(reference);
+            await unregisterTeam(teamAuthority);
+          } else {
+            store.put(
+              reference,
+              JSON.stringify({
+                schemaVersion: 1,
+                authority: teamAuthority,
+                drafts: nextDrafts
+              })
+            );
+          }
+        })
+      );
     },
 
     async deleteTeam(authority) {
@@ -332,35 +440,45 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         throw new Error("Authorized Team draft scope is invalid.");
       }
       return await mutate(async () => {
-      const principalScope = principalScopeFor(authority);
-      const authorized = new Set(
-        authority.teamIds.map((teamId) => createHash("sha256")
-          .update(JSON.stringify([
-            authority.backendId,
-            authority.principalUserId,
-            teamId
-          ]))
-          .digest("hex"))
-      );
-      const unauthorized = await serial(INDEX_REFERENCE, () => {
-        const index = readIndex();
-        const removed = index.filter(
-          (entry) =>
-            entry.principalScope === principalScope &&
-            !authorized.has(entry.teamScope)
+        const principalScope = principalScopeFor(authority);
+        const authorized = new Set(
+          authority.teamIds.map((teamId) =>
+            createHash("sha256")
+              .update(
+                JSON.stringify([
+                  authority.backendId,
+                  authority.principalUserId,
+                  teamId
+                ])
+              )
+              .digest("hex")
+          )
         );
-        return removed.map((entry) => entry.teamScope);
-      });
-      for (const teamScope of unauthorized) {
-        const referenceForScope = `team-collaboration-drafts-${teamScope}`;
-        await serial(referenceForScope, () => store.delete(referenceForScope));
-      }
-      await serial(INDEX_REFERENCE, () => {
-        writeIndex(readIndex().filter(
-          (entry) => entry.principalScope !== principalScope || authorized.has(entry.teamScope)
-        ));
-      });
-      return unauthorized.length;
+        const unauthorized = await serial(INDEX_REFERENCE, () => {
+          const index = readIndex();
+          const removed = index.filter(
+            (entry) =>
+              entry.principalScope === principalScope &&
+              !authorized.has(entry.teamScope)
+          );
+          return removed.map((entry) => entry.teamScope);
+        });
+        for (const teamScope of unauthorized) {
+          const referenceForScope = `team-collaboration-drafts-${teamScope}`;
+          await serial(referenceForScope, () =>
+            store.delete(referenceForScope)
+          );
+        }
+        await serial(INDEX_REFERENCE, () => {
+          writeIndex(
+            readIndex().filter(
+              (entry) =>
+                entry.principalScope !== principalScope ||
+                authorized.has(entry.teamScope)
+            )
+          );
+        });
+        return unauthorized.length;
       });
     }
   };

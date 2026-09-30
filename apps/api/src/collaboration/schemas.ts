@@ -6,7 +6,8 @@ import {
   COLLABORATION_MESSAGE_MAX_UTF8_BYTES,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
-  COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES
+  COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES,
+  collaborationReactionEmojiSchema
 } from "@koed/shared";
 import { publicSquareLocalProjectIdSchema } from "@koed/shared/public-square";
 
@@ -175,7 +176,8 @@ export const transitionCollaborationThreadSchema = z
 
 export const createCollaborationMessageSchema = z
   .object({
-    bodyText: messageBodySchema
+    bodyText: messageBodySchema,
+    rootMessageId: strictUuidSchema.nullable().optional()
   })
   .strict();
 
@@ -183,6 +185,7 @@ export const listCollaborationMessagesQuerySchema = z
   .object({
     afterSequence: z.coerce.number().int().safe().min(0).optional(),
     beforeSequence: z.coerce.number().int().safe().positive().optional(),
+    rootMessageId: strictUuidSchema.nullable().optional(),
     limit: pageLimitSchema
   })
   .strict()
@@ -193,7 +196,25 @@ export const listCollaborationMessagesQuerySchema = z
   );
 
 export const advanceCollaborationReadStateSchema = z
+  .object({
+    messageId: strictUuidSchema,
+    rootMessageId: strictUuidSchema.nullable().optional()
+  })
+  .strict();
+
+export const collaborationMessageParamsSchema = z
   .object({ messageId: strictUuidSchema })
+  .strict();
+
+export const editCollaborationMessageSchema = z
+  .object({
+    bodyText: messageBodySchema,
+    expectedVersion: z.number().int().safe().positive()
+  })
+  .strict();
+
+export const setCollaborationMessageReactionSchema = z
+  .object({ emoji: collaborationReactionEmojiSchema, active: z.boolean() })
   .strict();
 
 export const listPersonalNotesQuerySchema = z

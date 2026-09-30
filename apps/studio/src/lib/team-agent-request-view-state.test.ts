@@ -12,6 +12,7 @@ const request = (
   teamProjectId: "33333333-3333-4333-8333-333333333333",
   channelId: "44444444-4444-4444-8444-444444444444",
   requestMessageId: "55555555-5555-4555-8555-555555555555",
+  originRootMessageId: null,
   requesterId: "requester",
   requesterName: "Requester",
   ownerId: "owner",

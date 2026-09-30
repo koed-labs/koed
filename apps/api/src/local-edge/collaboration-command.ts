@@ -221,6 +221,8 @@ type SupportedCommand = Extract<
   | { command: "collaboration.restore_thread" }
   | { command: "collaboration.send_message" }
   | { command: "collaboration.retry_message" }
+  | { command: "collaboration.edit_message" }
+  | { command: "collaboration.set_message_reaction" }
   | { command: "collaboration.mark_read" }
   | { command: "collaboration.mark_delivered" }
   | { command: "collaboration.load_message_page" }
@@ -342,6 +344,23 @@ const canonicalMessageSchema = z
     audienceVersion: z.number().int().safe().positive(),
     recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     bodyText: z.string(),
+    rootMessageId: z.uuid().nullable().default(null),
+    version: z.number().int().safe().positive().default(1),
+    editedAt: z.string().nullable().default(null),
+    replyCount: z.number().int().safe().min(0).default(0),
+    unreadReplyCount: z.number().int().safe().min(0).default(0),
+    reactions: z
+      .array(
+        z
+          .object({
+            emoji: z.string().min(1).max(32),
+            count: z.number().int().safe().min(0),
+            reacted: z.boolean()
+          })
+          .strict()
+      )
+      .max(50)
+      .default([]),
     metadata: z.record(z.string(), z.unknown()),
     provenance: z
       .object({
@@ -358,6 +377,7 @@ const canonicalMessageSchema = z
 const canonicalReadStateSchema = z
   .object({
     threadId: z.uuid(),
+    rootMessageId: z.uuid().nullable().default(null),
     userId: z.uuid(),
     lastDeliveredMessageId: z.uuid().nullable(),
     lastDeliveredSequence: z.number().int().safe().min(0),
@@ -615,6 +635,7 @@ const teamMessageCursorPayloadSchema = z
     principalUserId: z.uuid(),
     teamId: z.uuid(),
     threadId: z.uuid(),
+    rootMessageId: z.uuid().nullable().default(null),
     direction: z.enum(["older", "newer"]),
     boundarySequence: z.number().int().safe().min(0),
     snapshotSequence: z.number().int().safe().min(0)
@@ -817,7 +838,12 @@ const personalMessageFromRecord = (
     body: message.bodyText,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
-    editedAt: null,
+    rootMessageId: message.rootMessageId ?? null,
+    version: message.version ?? 1,
+    editedAt: message.editedAt ?? null,
+    replyCount: message.replyCount ?? 0,
+    unreadReplyCount: message.unreadReplyCount ?? 0,
+    reactions: message.reactions ?? [],
     deletedAt: null,
     delivery: "sent",
     recipientStatus: message.recipientStatus,
@@ -836,6 +862,7 @@ const personalReadStateFromRecord = (
   }
   const parsed = collaborationReadStateSchema.safeParse({
     threadId: readState.threadId,
+    rootMessageId: readState.rootMessageId ?? null,
     deliveredMessageId: readState.lastDeliveredMessageId,
     deliveredSequence: readState.lastDeliveredSequence,
     deliveredAt: readState.lastDeliveredAt,
@@ -954,7 +981,12 @@ const decodeTeamMessageCursor = (
   cursor: string,
   expected: Pick<
     TeamMessageCursorPayload,
-    "backendId" | "principalUserId" | "teamId" | "threadId" | "direction"
+    | "backendId"
+    | "principalUserId"
+    | "teamId"
+    | "threadId"
+    | "rootMessageId"
+    | "direction"
   >
 ): TeamMessageCursorPayload | null => {
   const decoded = decodeSignedCursor(
@@ -970,6 +1002,7 @@ const decodeTeamMessageCursor = (
     parsed.data.principalUserId !== expected.principalUserId ||
     parsed.data.teamId !== expected.teamId ||
     parsed.data.threadId !== expected.threadId ||
+    parsed.data.rootMessageId !== expected.rootMessageId ||
     parsed.data.direction !== expected.direction ||
     parsed.data.boundarySequence > parsed.data.snapshotSequence
   ) {
@@ -1081,6 +1114,7 @@ const personalMessagePage = async (input: {
     hasOlder,
     hasNewer,
     threadId: input.thread.id,
+    rootMessageId: null,
     items: canonicalItems
   };
 };
@@ -1228,7 +1262,12 @@ const targetMessageFrom = (value: unknown): unknown => {
     body: message.bodyText,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
-    editedAt: null,
+    rootMessageId: message.rootMessageId,
+    version: message.version,
+    editedAt: message.editedAt,
+    replyCount: message.replyCount,
+    unreadReplyCount: message.unreadReplyCount,
+    reactions: message.reactions,
     deletedAt: null,
     delivery: "sent",
     recipientStatus: message.recipientStatus,
@@ -1243,6 +1282,7 @@ const targetReadStateFrom = (value: unknown): unknown => {
   if (!canonical.success) return null;
   return {
     threadId: canonical.data.threadId,
+    rootMessageId: canonical.data.rootMessageId,
     deliveredMessageId: canonical.data.lastDeliveredMessageId,
     deliveredSequence: canonical.data.lastDeliveredSequence,
     deliveredAt: canonical.data.lastDeliveredAt,
@@ -1283,12 +1323,27 @@ const successResult = (
     operation,
     payload[operation.resultKey]
   );
-  if (!teamCollaborationResultMatchesCommand(command, value)) return null;
-  const data =
-    command.command === "collaboration.create_team_shared_project" &&
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value)
+  const isSend =
+    command.command === "collaboration.send_message" ||
+    command.command === "collaboration.retry_message";
+  const acceptedBody = isSend
+    ? z.string().safeParse(payload.acceptedBody)
+    : null;
+  const matchValue =
+    isSend && acceptedBody?.success && value && typeof value === "object"
+      ? { ...value, acceptedBody: acceptedBody.data }
+      : value;
+  if (
+    (isSend && !acceptedBody?.success) ||
+    !teamCollaborationResultMatchesCommand(command, matchValue)
+  )
+    return null;
+  const data = isSend
+    ? { message: value, acceptedBody: acceptedBody!.data }
+    : command.command === "collaboration.create_team_shared_project" &&
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value)
       ? {
           thread: value,
           project: {
@@ -1425,13 +1480,18 @@ const teamPageRevision = (
   credential: DesktopLocalCredentialAuthorization,
   payload: Pick<
     TeamMessageCursorPayload,
-    "backendId" | "principalUserId" | "teamId" | "threadId" | "snapshotSequence"
+    | "backendId"
+    | "principalUserId"
+    | "teamId"
+    | "threadId"
+    | "rootMessageId"
+    | "snapshotSequence"
   >
 ): string =>
   `ctpr1.${credentialHmac(
     credential,
     "team-collaboration-page",
-    `${payload.backendId}\n${payload.principalUserId}\n${payload.teamId}\n${payload.threadId}\n${payload.snapshotSequence}`
+    `${payload.backendId}\n${payload.principalUserId}\n${payload.teamId}\n${payload.threadId}\n${payload.rootMessageId ?? ""}\n${payload.snapshotSequence}`
   )}`;
 
 const queryPath = (
@@ -1751,6 +1811,7 @@ const remotePersonalMessagePage = async (input: {
     hasOlder,
     hasNewer,
     threadId: input.thread.id,
+    rootMessageId: null,
     items: canonicalMessages
   };
 };
@@ -2189,6 +2250,7 @@ const teamMessagePage = async (input: {
   context: TeamReadContext;
   teamId: string;
   thread: Record<string, unknown>;
+  rootMessageId: string | null;
   direction: "older" | "newer";
   cursor: string | null;
   limit: number;
@@ -2208,6 +2270,7 @@ const teamMessagePage = async (input: {
         principalUserId: input.context.principal.id,
         teamId: input.teamId,
         threadId: input.thread.id,
+        rootMessageId: input.rootMessageId,
         direction: input.direction
       })
     : null;
@@ -2222,11 +2285,24 @@ const teamMessagePage = async (input: {
     input.direction === "older"
       ? {
           beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
-          limit: input.limit
+          limit: input.limit,
+          ...(input.rootMessageId ? { rootMessageId: input.rootMessageId } : {})
         }
       : decoded
-        ? { afterSequence: boundarySequence, limit: input.limit }
-        : { beforeSequence: snapshotSequence + 1, limit: input.limit };
+        ? {
+            afterSequence: boundarySequence,
+            limit: input.limit,
+            ...(input.rootMessageId
+              ? { rootMessageId: input.rootMessageId }
+              : {})
+          }
+        : {
+            beforeSequence: snapshotSequence + 1,
+            limit: input.limit,
+            ...(input.rootMessageId
+              ? { rootMessageId: input.rootMessageId }
+              : {})
+          };
   const payload =
     input.prefetchedPage ??
     (await requireRemoteJson(input.fetcher, {
@@ -2254,7 +2330,8 @@ const teamMessagePage = async (input: {
       (message) =>
         message.scope !== "team" ||
         message.teamId !== input.teamId ||
-        message.threadId !== input.thread.id
+        message.threadId !== input.thread.id ||
+        message.rootMessageId !== input.rootMessageId
     )
   ) {
     return null;
@@ -2273,6 +2350,7 @@ const teamMessagePage = async (input: {
     principalUserId: input.context.principal.id,
     teamId: input.teamId,
     threadId: input.thread.id,
+    rootMessageId: input.rootMessageId,
     snapshotSequence
   };
   return {
@@ -2294,6 +2372,7 @@ const teamMessagePage = async (input: {
     hasOlder,
     hasNewer,
     threadId: input.thread.id,
+    rootMessageId: input.rootMessageId,
     items: messages as CollaborationMessagePage["items"]
   };
 };
@@ -2432,6 +2511,7 @@ const loadTeamSelection = async (input: {
       context: input.context,
       teamId: selection.teamId,
       thread,
+      rootMessageId: null,
       direction: "older",
       cursor: null,
       limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems
@@ -2469,6 +2549,7 @@ const loadTeamSelection = async (input: {
       context: input.context,
       teamId: selection.teamId,
       thread,
+      rootMessageId: null,
       direction: "older",
       cursor: null,
       limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems,
@@ -2606,6 +2687,15 @@ const dispatchRemotePersonalCommand = async (input: {
   context: PersonalRemoteContext;
   user: ActiveLocalUser;
 }): Promise<CollaborationCommandResult> => {
+  if (
+    (input.command.command === "collaboration.send_message" ||
+      input.command.command === "collaboration.retry_message" ||
+      input.command.command === "collaboration.mark_read" ||
+      input.command.command === "collaboration.load_message_page") &&
+    input.command.input.rootMessageId != null
+  ) {
+    return failureResult(input.command, safeError("invalid_input"));
+  }
   const operation = personalCollaborationOperationFor(input.command);
   if (!operation) {
     return failureResult(input.command, safeError("not_available"));
@@ -2665,9 +2755,20 @@ const dispatchRemotePersonalCommand = async (input: {
     if (!value) {
       return failureResult(input.command, safeError("internal_error"));
     }
+    if (
+      (input.command.command === "collaboration.send_message" ||
+        input.command.command === "collaboration.retry_message") &&
+      payload.acceptedBody !== input.command.input.body
+    ) {
+      return failureResult(input.command, safeError("internal_error"));
+    }
     return (
       personalSuccessResult(input.command, {
-        [operation.resultKey]: value
+        [operation.resultKey]: value,
+        ...(input.command.command === "collaboration.send_message" ||
+        input.command.command === "collaboration.retry_message"
+          ? { acceptedBody: payload.acceptedBody }
+          : {})
       }) ?? failureResult(input.command, safeError("internal_error"))
     );
   } catch (error) {
@@ -2790,6 +2891,9 @@ const dispatchPersonalCommand = async (input: {
       }
       case "collaboration.send_message":
       case "collaboration.retry_message": {
+        if (command.input.rootMessageId != null) {
+          return failureResult(command, safeError("invalid_input"));
+        }
         const existing = await requirePersonalThreadRecord(
           repository,
           user.id,
@@ -2808,11 +2912,16 @@ const dispatchPersonalCommand = async (input: {
         if (!message) return unavailable();
         const mapped = personalMessageFromRecord(message, user, existing.id);
         return mapped?.body === command.input.body
-          ? (personalSuccessResult(command, { message: mapped }) ??
-              invalidResult())
+          ? (personalSuccessResult(command, {
+              message: mapped,
+              acceptedBody: command.input.body
+            }) ?? invalidResult())
           : invalidResult();
       }
       case "collaboration.mark_read": {
+        if (command.input.rootMessageId != null) {
+          return failureResult(command, safeError("invalid_input"));
+        }
         const existing = await requirePersonalThreadRecord(
           repository,
           user.id,
@@ -2859,6 +2968,9 @@ const dispatchPersonalCommand = async (input: {
           : invalidResult();
       }
       case "collaboration.load_message_page": {
+        if (command.input.rootMessageId != null) {
+          return failureResult(command, safeError("invalid_input"));
+        }
         const existing = await requirePersonalThreadRecord(
           repository,
           user.id,
@@ -3939,6 +4051,7 @@ export const registerCollaborationCommandRoute = (
             context,
             teamId: threadRef.teamId,
             thread,
+            rootMessageId: input.command.input.rootMessageId ?? null,
             direction: input.command.input.direction,
             cursor: input.command.input.cursor,
             limit: input.command.input.limit

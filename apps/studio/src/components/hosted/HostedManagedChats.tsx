@@ -1222,15 +1222,20 @@ export function HostedManagedChats({
       throw new Error(
         "Questions can only be posted for accepted work in its originating channel."
       );
-    const message = await teamCollaborationClient.sendMessage(
+    const receipt = await teamCollaborationClient.sendMessage(
       request.teamId,
       request.channelId,
       text,
-      clientMessageId
+      clientMessageId,
+      request.originRootMessageId
     );
-    if (message.delivery !== "sent")
+    if (receipt.message.delivery !== "sent")
       throw new Error(
         "The question send is still being reconciled. Retry this same reviewed question before editing it."
+      );
+    if (receipt.acceptedBody !== text)
+      throw new Error(
+        "The question receipt did not match this reviewed text. The send remains unconfirmed."
       );
   };
   const handleTeamReviewSaved = useCallback(

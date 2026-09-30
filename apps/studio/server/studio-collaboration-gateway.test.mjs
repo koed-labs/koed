@@ -44,7 +44,11 @@ after(async () => {
 });
 
 const start = async (options = {}) => {
-  const service = await startStudioServer({ port: 0, staticDir: "/missing", ...options });
+  const service = await startStudioServer({
+    port: 0,
+    staticDir: "/missing",
+    ...options
+  });
   services.push(service);
   return service;
 };
@@ -75,10 +79,14 @@ describe("Studio collaboration gateway", () => {
     assert.equal((await postJson(endpoint, {})).status, 403);
     assert.equal(
       (
-        await postJson(endpoint, {}, {
-          origin: "http://localhost:" + new URL(service.url).port,
-          "x-studio-csrf": session.csrfToken
-        })
+        await postJson(
+          endpoint,
+          {},
+          {
+            origin: "http://localhost:" + new URL(service.url).port,
+            "x-studio-csrf": session.csrfToken
+          }
+        )
       ).status,
       403
     );
@@ -148,19 +156,37 @@ describe("Studio collaboration gateway", () => {
           requestId: command.requestId,
           command: command.command,
           ok: true,
-          data: { thread: {
-            id: "44444444-4444-4444-8444-444444444444",
-            logicalId: "55555555-5555-4555-8555-555555555555",
-            scope: "team", teamId, kind: "team_channel", name: command.input.name,
-            topic: command.input.topic, systemKey: null, version: 1, lifecycle: "active",
-            canPost: true, latestSequence: 0, unreadCount: 0, lastReadMessageId: null,
-            lastReadSequence: 0, createdAt: timestamp, updatedAt: timestamp,
-            lastActivityAt: timestamp, archivedAt: null
-          } }
+          data: {
+            thread: {
+              id: "44444444-4444-4444-8444-444444444444",
+              logicalId: "55555555-5555-4555-8555-555555555555",
+              scope: "team",
+              teamId,
+              kind: "team_channel",
+              name: command.input.name,
+              topic: command.input.topic,
+              systemKey: null,
+              version: 1,
+              lifecycle: "active",
+              canPost: true,
+              latestSequence: 0,
+              unreadCount: 0,
+              lastReadMessageId: null,
+              lastReadSequence: 0,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              lastActivityAt: timestamp,
+              archivedAt: null
+            }
+          }
         };
       }
     });
-    const session = await (await fetch(`${service.url}/studio-api/collaboration/studio-session`, { headers: { origin: service.url } })).json();
+    const session = await (
+      await fetch(`${service.url}/studio-api/collaboration/studio-session`, {
+        headers: { origin: service.url }
+      })
+    ).json();
     const endpoint = `${service.url}/studio-api/collaboration/command`;
     const headers = { origin: service.url, "x-studio-csrf": session.csrfToken };
     const command = {
@@ -172,7 +198,10 @@ describe("Studio collaboration gateway", () => {
     assert.equal((await postJson(endpoint, command, headers)).status, 200);
     assert.equal((await postJson(endpoint, command, headers)).status, 200);
     assert.equal(calls.length, 2);
-    const changed = { ...command, input: { ...command.input, name: "different" } };
+    const changed = {
+      ...command,
+      input: { ...command.input, name: "different" }
+    };
     assert.equal((await postJson(endpoint, changed, headers)).status, 409);
     assert.equal(calls.length, 2);
   });
@@ -184,10 +213,14 @@ describe("Studio collaboration gateway", () => {
     const memberTwo = "88888888-8888-4888-8888-888888888888";
     const memberThree = "99999999-9999-4999-8999-999999999999";
     const threadFor = (command) => {
-      const kind = command.command === "collaboration.start_direct_message" ? "dm" : "group_dm";
-      const participantIds = kind === "dm"
-        ? [ownerId, command.input.participantUserId]
-        : [ownerId, ...command.input.participantUserIds];
+      const kind =
+        command.command === "collaboration.start_direct_message"
+          ? "dm"
+          : "group_dm";
+      const participantIds =
+        kind === "dm"
+          ? [ownerId, command.input.participantUserId]
+          : [ownerId, ...command.input.participantUserIds];
       return {
         id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         logicalId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -196,7 +229,11 @@ describe("Studio collaboration gateway", () => {
         kind,
         name: kind === "dm" ? null : "Team group",
         topic: null,
-        participants: participantIds.map((id) => ({ id, displayName: "Team member", membershipState: "enabled" })),
+        participants: participantIds.map((id) => ({
+          id,
+          displayName: "Team member",
+          membershipState: "enabled"
+        })),
         version: 1,
         lifecycle: "active",
         canPost: true,
@@ -223,7 +260,11 @@ describe("Studio collaboration gateway", () => {
         };
       }
     });
-    const session = await (await fetch(`${service.url}/studio-api/collaboration/studio-session`, { headers: { origin: service.url } })).json();
+    const session = await (
+      await fetch(`${service.url}/studio-api/collaboration/studio-session`, {
+        headers: { origin: service.url }
+      })
+    ).json();
     const endpoint = `${service.url}/studio-api/collaboration/command`;
     const headers = { origin: service.url, "x-studio-csrf": session.csrfToken };
     const dm = {
@@ -234,7 +275,16 @@ describe("Studio collaboration gateway", () => {
     };
     assert.equal((await postJson(endpoint, dm, headers)).status, 200);
     assert.equal((await postJson(endpoint, dm, headers)).status, 200);
-    assert.equal((await postJson(endpoint, { ...dm, input: { ...dm.input, participantUserId: memberTwo } }, headers)).status, 409);
+    assert.equal(
+      (
+        await postJson(
+          endpoint,
+          { ...dm, input: { ...dm.input, participantUserId: memberTwo } },
+          headers
+        )
+      ).status,
+      409
+    );
     const group = {
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -242,8 +292,38 @@ describe("Studio collaboration gateway", () => {
       input: { teamId, participantUserIds: [memberOne, memberTwo] }
     };
     assert.equal((await postJson(endpoint, group, headers)).status, 200);
-    assert.equal((await postJson(endpoint, { ...group, input: { ...group.input, participantUserIds: [memberTwo, memberOne] } }, headers)).status, 200);
-    assert.equal((await postJson(endpoint, { ...group, input: { ...group.input, participantUserIds: [memberOne, memberThree] } }, headers)).status, 409);
+    assert.equal(
+      (
+        await postJson(
+          endpoint,
+          {
+            ...group,
+            input: {
+              ...group.input,
+              participantUserIds: [memberTwo, memberOne]
+            }
+          },
+          headers
+        )
+      ).status,
+      200
+    );
+    assert.equal(
+      (
+        await postJson(
+          endpoint,
+          {
+            ...group,
+            input: {
+              ...group.input,
+              participantUserIds: [memberOne, memberThree]
+            }
+          },
+          headers
+        )
+      ).status,
+      409
+    );
     assert.equal(calls.length, 4);
   });
 
@@ -350,7 +430,8 @@ describe("Studio collaboration gateway", () => {
       },
       saveStudioTeamDraft: async (value) => calls.push(["save", value]),
       deleteStudioTeamDraft: async (value) => calls.push(["delete", value]),
-      deleteStudioTeamDraftsForTeam: async (value) => calls.push(["deleteTeam", value])
+      deleteStudioTeamDraftsForTeam: async (value) =>
+        calls.push(["deleteTeam", value])
     });
     const session = await (
       await fetch(`${service.url}/studio-api/collaboration/studio-session`, {
@@ -388,17 +469,110 @@ describe("Studio collaboration gateway", () => {
       clientMessageId: "44444444-4444-4444-8444-444444444444",
       messageId: "55555555-5555-4555-8555-555555555555"
     };
-    const saved = await postJson(endpoint, {
-      action: "save", authority: request.authority,
-      draft: { text: "", pendingSend: null, receiptAckPending }
-    }, { origin: service.url, "x-studio-csrf": session.csrfToken });
+    const saved = await postJson(
+      endpoint,
+      {
+        action: "save",
+        authority: request.authority,
+        draft: { text: "", pendingSend: null, receiptAckPending }
+      },
+      { origin: service.url, "x-studio-csrf": session.csrfToken }
+    );
     assert.equal(saved.status, 200);
-    assert.deepEqual(calls[1], ["save", { authority: request.authority, draft: { text: "", pendingSend: null, receiptAckPending } }]);
-    const malformedReceipt = await postJson(endpoint, {
-      action: "save", authority: request.authority,
-      draft: { text: "", pendingSend: null, receiptAckPending: { ...receiptAckPending, extra: true } }
-    }, { origin: service.url, "x-studio-csrf": session.csrfToken });
+    assert.deepEqual(calls[1], [
+      "save",
+      {
+        authority: request.authority,
+        draft: { text: "", pendingSend: null, receiptAckPending }
+      }
+    ]);
+    const malformedReceipt = await postJson(
+      endpoint,
+      {
+        action: "save",
+        authority: request.authority,
+        draft: {
+          text: "",
+          pendingSend: null,
+          receiptAckPending: { ...receiptAckPending, extra: true }
+        }
+      },
+      { origin: service.url, "x-studio-csrf": session.csrfToken }
+    );
     assert.equal(malformedReceipt.status, 400);
     assert.equal(calls.length, 2);
+    const rootMessageId = "66666666-6666-4666-8666-666666666666";
+    const editMessageId = "77777777-7777-4777-8777-777777777777";
+    const headers = { origin: service.url, "x-studio-csrf": session.csrfToken };
+    const replyAuthority = { ...request.authority, rootMessageId };
+    assert.equal(
+      (
+        await postJson(
+          endpoint,
+          {
+            action: "save",
+            authority: replyAuthority,
+            draft: { text: "thread reply", pendingSend: null }
+          },
+          headers
+        )
+      ).status,
+      200
+    );
+    const editAuthority = { ...request.authority, editMessageId };
+    const editDraft = {
+      text: "my unsaved change",
+      pendingSend: null,
+      edit: {
+        expectedVersion: 1,
+        baseBodyText: "original",
+        conflict: { latestVersion: 2, latestBodyText: "other saved change" }
+      }
+    };
+    assert.equal(
+      (
+        await postJson(
+          endpoint,
+          { action: "save", authority: editAuthority, draft: editDraft },
+          headers
+        )
+      ).status,
+      200
+    );
+    assert.deepEqual(calls.at(-1), [
+      "save",
+      { authority: editAuthority, draft: editDraft }
+    ]);
+    for (const invalid of [
+      { action: "load", authority: { ...replyAuthority, editMessageId } },
+      {
+        action: "load",
+        authority: { ...request.authority, rootMessageId: "not-a-message" }
+      },
+      { action: "save", authority: replyAuthority, draft: editDraft },
+      {
+        action: "save",
+        authority: editAuthority,
+        draft: { ...editDraft, edit: { ...editDraft.edit, expectedVersion: 0 } }
+      },
+      {
+        action: "save",
+        authority: editAuthority,
+        draft: {
+          ...editDraft,
+          edit: {
+            ...editDraft.edit,
+            conflict: { latestVersion: 2, latestBodyText: "saved", extra: true }
+          }
+        }
+      },
+      {
+        action: "save",
+        authority: editAuthority,
+        draft: { ...editDraft, receiptAckPending }
+      }
+    ])
+      assert.equal((await postJson(endpoint, invalid, headers)).status, 400);
+    assert.equal(calls.length, 4);
   });
 });

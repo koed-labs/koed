@@ -200,6 +200,7 @@ export function TeamAgentRequestInbox({
 export function TeamChannelAgentRequests({
   teamId,
   channelId,
+  originRootMessageId = null,
   viewerId,
   authorityKey,
   refreshRevision,
@@ -211,6 +212,7 @@ export function TeamChannelAgentRequests({
 }: {
   teamId: string;
   channelId: string;
+  originRootMessageId?: string | null;
   viewerId: string;
   authorityKey: string;
   refreshRevision: number;
@@ -226,7 +228,7 @@ export function TeamChannelAgentRequests({
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const viewKey = `${authorityKey}\u0000${teamId}\u0000${channelId}`;
+  const viewKey = `${authorityKey}\u0000${teamId}\u0000${channelId}\u0000${originRootMessageId ?? "channel"}`;
   const [loadedViewKey, setLoadedViewKey] = useState<string | null>(null);
   const generation = useRef(0);
   const onRequestsChangedRef = useRef(onRequestsChanged);
@@ -240,7 +242,11 @@ export function TeamChannelAgentRequests({
     try {
       const page = await client.listRequests(teamId, { channelId, limit: 100 });
       if (capturedGeneration !== generation.current) return;
-      setItems(page.requests);
+      setItems(
+        page.requests.filter(
+          (request) => request.originRootMessageId === originRootMessageId
+        )
+      );
       setNextCursor(page.nextCursor);
       setLoadedViewKey(viewKey);
       setState("ready");
@@ -264,7 +270,14 @@ export function TeamChannelAgentRequests({
         setState("unavailable");
       }
     }
-  }, [channelId, client, onAuthorizationLost, teamId, viewKey]);
+  }, [
+    channelId,
+    client,
+    onAuthorizationLost,
+    originRootMessageId,
+    teamId,
+    viewKey
+  ]);
 
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return;
@@ -286,7 +299,11 @@ export function TeamChannelAgentRequests({
         const ids = new Set(current.map((item) => item.id));
         return [
           ...current,
-          ...page.requests.filter((item) => !ids.has(item.id))
+          ...page.requests.filter(
+            (item) =>
+              item.originRootMessageId === originRootMessageId &&
+              !ids.has(item.id)
+          )
         ];
       });
       setNextCursor(page.nextCursor);
@@ -460,9 +477,7 @@ export function TeamAgentRequestReviewPanel({
     null
   );
   const [sharingQuestion, setSharingQuestion] = useState(false);
-  const questionSendIdentity = useRef<{ body: string; id: string } | null>(
-    null
-  );
+  const questionSendIdentities = useRef(new Map<string, string>());
   const [state, setState] = useState<RequestState>("loading");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -656,17 +671,16 @@ export function TeamAgentRequestReviewPanel({
     )
       return;
     const body = question.trim().slice(0, 2_000);
-    if (
-      !questionSendIdentity.current ||
-      questionSendIdentity.current.body !== body
-    ) {
-      questionSendIdentity.current = { body, id: crypto.randomUUID() };
-    }
+    const sendScope = `${request.teamId}\u0000${request.id}\u0000${request.originRootMessageId ?? "channel"}`;
+    const identityKey = `${sendScope}\u0000${body}`;
+    const clientMessageId =
+      questionSendIdentities.current.get(identityKey) ?? crypto.randomUUID();
+    questionSendIdentities.current.set(identityKey, clientMessageId);
     setSharingQuestion(true);
     setQuestionPostError(null);
     try {
-      await onShareQuestion(request, body, questionSendIdentity.current.id);
-      questionSendIdentity.current = null;
+      await onShareQuestion(request, body, clientMessageId);
+      questionSendIdentities.current.delete(identityKey);
       setQuestion("");
       setQuestionPostError(null);
       onQuestionDraftConsumed?.();

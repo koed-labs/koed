@@ -47,6 +47,7 @@ export interface TeamAgentRequest {
   teamProjectId: string;
   channelId: string;
   requestMessageId: string;
+  originRootMessageId: string | null;
   requesterId: string;
   requesterName: string;
   ownerId: string;
@@ -162,6 +163,7 @@ export interface TeamAgentRequestsRepository {
       idempotencyKey: string;
       teamProjectId: string;
       channelId: string;
+      rootMessageId?: string | null;
       agentId: string;
       requestText: string;
     }
@@ -246,6 +248,7 @@ interface RequestRow {
   team_project_id: string;
   channel_id: string;
   request_message_id: string;
+  origin_root_message_id: string | null;
   requester_user_id: string;
   requester_name: string | null;
   owner_user_id: string;
@@ -430,6 +433,7 @@ const offerSelect = `
 
 const requestSelect = `
   select r.id,r.team_id,r.team_project_id,r.channel_id,r.request_message_id,
+         request_message.root_message_id as origin_root_message_id,
          r.requester_user_id,requester.display_name as requester_name,
          r.owner_user_id,owner.display_name as owner_name,r.agent_id,r.agent_version,r.agent_name,
          r.status,r.job_id,
@@ -453,6 +457,7 @@ const requestSelect = `
     left join personal_agent_team_job_publications pub on pub.job_id=j.id and pub.owner_user_id=j.owner_user_id and pub.team_id=r.team_id and pub.team_project_id=r.team_project_id and pub.state in ('active','frozen')
     left join managed_conversation_executions e on e.id=j.conversation_id and e.owner_user_id=j.owner_user_id
     left join team_agent_offers o on o.team_id=r.team_id and o.owner_user_id=r.owner_user_id and o.agent_id=r.agent_id
+    left join collaboration_messages request_message on request_message.id=r.request_message_id and request_message.thread_id=r.channel_id
     join collaboration_team_shared_projects sp on sp.id=r.team_project_id and sp.team_id=r.team_id
 `;
 
@@ -462,6 +467,7 @@ const mapRequest = (row: RequestRow, viewerId: string): TeamAgentRequest => ({
   teamProjectId: row.team_project_id,
   channelId: row.channel_id,
   requestMessageId: row.request_message_id,
+  originRootMessageId: row.origin_root_message_id,
   requesterId: row.requester_user_id,
   requesterName: row.requester_name?.trim() || "Team member",
   ownerId: row.owner_user_id,
@@ -810,6 +816,7 @@ export const createTeamAgentRequestsRepository = (
       const requestHash = digestRequest({
         teamProjectId: input.teamProjectId,
         channelId: input.channelId,
+        ...(input.rootMessageId ? { rootMessageId: input.rootMessageId } : {}),
         agentId: input.agentId,
         requestText: input.requestText
       });
@@ -889,6 +896,7 @@ export const createTeamAgentRequestsRepository = (
         teamProvider(options),
         {
           threadId: input.channelId,
+          rootMessageId: input.rootMessageId ?? null,
           idempotencyKey: `team-agent-request:${input.teamId}:${actor.userId}:${input.idempotencyKey}`,
           bodyText: input.requestText,
           metadata: {
@@ -1555,6 +1563,7 @@ export const createTeamAgentRequestsRepository = (
         teamProvider(options),
         {
           threadId: row.channel_id,
+          rootMessageId: row.origin_root_message_id,
           idempotencyKey: `team-agent-request:${row.id}:outcome`,
           bodyText: input.summary,
           metadata: { kind: "team_agent_request_outcome", requestId: row.id },

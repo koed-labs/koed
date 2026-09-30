@@ -115,6 +115,18 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.edit_message": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
+  "collaboration.set_message_reaction": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.get_send_receipt": { scope: "unsupported", desktop: write },
   "collaboration.acknowledge_send_receipt": {
     scope: "unsupported",
@@ -196,6 +208,34 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     scope: "team",
     desktop: write
   },
+  "collaboration.ensure_team_memory_destination": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.get_team_memory_retention": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.list_team_memory_retention_members": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.update_team_memory_retention": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.list_team_retained_memory": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.remove_team_retained_memory": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.stop_owned_team_memory_updates": {
+    scope: "team",
+    desktop: write
+  },
   "collaboration.set_team_presence": {
     scope: "team",
     desktop: write,
@@ -221,6 +261,7 @@ const workspaceId = "00000000-0000-4000-8000-000000000003";
 const threadId = "00000000-0000-4000-8000-000000000004";
 const messageId = "00000000-0000-4000-8000-000000000005";
 const clientMessageId = "00000000-0000-4000-8000-000000000006";
+const rootMessageId = "00000000-0000-4000-8000-000000000007";
 
 const command = (
   name: CollaborationCommandName,
@@ -363,6 +404,107 @@ describe("collaboration command registry", () => {
       body: { messageId },
       resultKey: "readState"
     });
+
+    const teamThread = { scope: "team", teamId, threadId };
+    const teamSend = command("collaboration.send_message", {
+      thread: teamThread,
+      clientMessageId,
+      rootMessageId,
+      body: "reply"
+    });
+    expect(teamCollaborationOperationFor(teamSend)).toMatchObject({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: `/v1/collaboration/teams/${teamId}/threads/${threadId}/messages`,
+      body: { bodyText: "reply", rootMessageId },
+      idempotencyKey: clientMessageId
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(teamSend, {
+        id: messageId,
+        threadId,
+        teamId,
+        body: "reply edited elsewhere",
+        acceptedBody: "reply",
+        rootMessageId
+      })
+    ).toBe(true);
+    expect(
+      teamCollaborationResultMatchesCommand(teamSend, {
+        id: messageId,
+        threadId,
+        teamId,
+        body: "reply edited elsewhere",
+        acceptedBody: "wrong original",
+        rootMessageId
+      })
+    ).toBe(false);
+
+    const teamMarkRead = command("collaboration.mark_read", {
+      thread: teamThread,
+      rootMessageId,
+      messageId
+    });
+    expect(teamCollaborationOperationFor(teamMarkRead)).toMatchObject({
+      operationFamily: "team_chat_read",
+      method: "PUT",
+      path: `/v1/collaboration/teams/${teamId}/threads/${threadId}/read-state`,
+      body: { messageId, rootMessageId }
+    });
+
+    const replyPage = command("collaboration.load_message_page", {
+      thread: teamThread,
+      rootMessageId,
+      direction: "older",
+      cursor: null,
+      limit: 20
+    });
+    expect(teamCollaborationOperationFor(replyPage)).toMatchObject({
+      method: "GET",
+      path: `/v1/collaboration/teams/${teamId}/threads/${threadId}/messages?rootMessageId=${rootMessageId}`
+    });
+
+    const edit = command("collaboration.edit_message", {
+      thread: teamThread,
+      messageId,
+      body: "edited reply",
+      expectedVersion: 3
+    });
+    expect(teamCollaborationOperationFor(edit)).toMatchObject({
+      operationFamily: "team_chat_write",
+      method: "PATCH",
+      path: `/v1/collaboration/teams/${teamId}/threads/${threadId}/messages/${messageId}`,
+      body: { bodyText: "edited reply", expectedVersion: 3 }
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(edit, {
+        id: messageId,
+        threadId,
+        teamId,
+        body: "edited reply"
+      })
+    ).toBe(true);
+
+    const reaction = command("collaboration.set_message_reaction", {
+      thread: teamThread,
+      messageId,
+      emoji: "✅",
+      active: true
+    });
+    expect(teamCollaborationOperationFor(reaction)).toMatchObject({
+      operationFamily: "team_chat_write",
+      method: "PUT",
+      path: `/v1/collaboration/teams/${teamId}/threads/${threadId}/messages/${messageId}/reactions`,
+      body: { emoji: "✅", active: true }
+    });
+    expect(
+      teamCollaborationResultMatchesCommand(reaction, {
+        id: messageId,
+        threadId,
+        teamId,
+        reactions: [{ emoji: "✅", count: 1, reacted: true }]
+      })
+    ).toBe(true);
 
     const createChannel = command("collaboration.create_workspace_channel", {
       teamId,

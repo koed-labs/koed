@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { scryptSync } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -14,6 +15,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  decryptEncryptedStateValue,
+  encryptEncryptedStateValue,
+  resolveEncryptedStateTransactionDeps,
+  type EncryptedStateEnvelope
+} from "./encrypted-state-transaction-core.js";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearCollaborationActionGrantCustodyForBackend,
@@ -66,7 +73,8 @@ afterEach(() => {
 });
 
 const testFilePath = fileURLToPath(import.meta.url);
-const repositoryRoot = resolve(dirname(testFilePath), "../../..");
+const packageRoot = resolve(dirname(testFilePath), "..");
+const repositoryRoot = resolve(packageRoot, "../..");
 const vitestPath = resolve(repositoryRoot, "node_modules/vitest/vitest.mjs");
 
 const waitForFile = async (path: string, timeoutMs = 10_000): Promise<void> => {
@@ -112,7 +120,7 @@ const spawnConcurrencyChild = (
       "--testNamePattern=credential store concurrency child"
     ],
     {
-      cwd: repositoryRoot,
+      cwd: packageRoot,
       env: {
         ...process.env,
         KOED_CREDENTIAL_STORE_CHILD_OPERATION: operation,
@@ -216,7 +224,8 @@ describe("upstream credential secret store", () => {
         teamId: "22222222-2222-4222-8222-222222222222"
       },
       clientMessageId: "33333333-3333-4333-8333-333333333333",
-      body: "Sensitive retry body"
+      body: "Sensitive retry body",
+      rootMessageId: "66666666-6666-4666-8666-666666666666"
     };
     const stored = storeCollaborationPendingSend(koedHome, teamSend);
 
@@ -231,6 +240,7 @@ describe("upstream credential secret store", () => {
       "utf8"
     );
     expect(storeText).not.toContain(teamSend.body);
+    expect(storeText).not.toContain(teamSend.rootMessageId);
     expect(storeText).not.toContain("body");
 
     expect(
@@ -242,12 +252,22 @@ describe("upstream credential secret store", () => {
       })
     ).toMatchObject({ attemptCount: 5, state: "manual_retry" });
     expect(listCollaborationPendingSends(koedHome)).toEqual([
-      expect.objectContaining({ key: stored.key, body: teamSend.body })
+      expect.objectContaining({
+        key: stored.key,
+        body: teamSend.body,
+        rootMessageId: teamSend.rootMessageId
+      })
     ]);
     expect(() =>
       storeCollaborationPendingSend(koedHome, {
         ...teamSend,
         body: "Reused identity with different content"
+      })
+    ).toThrow("identity was reused");
+    expect(() =>
+      storeCollaborationPendingSend(koedHome, {
+        ...teamSend,
+        rootMessageId: "77777777-7777-4777-8777-777777777777"
       })
     ).toThrow("identity was reused");
     expect(clearCollaborationPendingTeamSends(koedHome, "other")).toBe(0);
@@ -271,19 +291,23 @@ describe("upstream credential secret store", () => {
       clientMessageId: "66666666-6666-4666-8666-666666666666"
     };
     const body = "Atomic receipt test body";
+    const rootMessageId = "88888888-8888-4888-8888-888888888888";
     const pending = storeCollaborationPendingSend(koedHome, {
       ...binding,
-      body
+      body,
+      rootMessageId
     });
     const receipt = {
       thread: binding.thread,
       clientMessageId: binding.clientMessageId,
+      acceptedBody: body,
       message: {
         id: "77777777-7777-4777-8777-777777777777",
         clientMessageId: binding.clientMessageId,
         threadId: binding.thread.threadId,
         scope: "team" as const,
         teamId: binding.thread.teamId,
+        rootMessageId,
         sequence: 1,
         sender: {
           id: binding.remotePrincipalId,
@@ -291,16 +315,40 @@ describe("upstream credential secret store", () => {
           membershipState: "enabled" as const
         },
         senderKind: "user" as const,
-        body,
+        body: "The message was edited after its original acceptance",
         createdAt: "2026-07-18T08:30:00.000Z",
         updatedAt: "2026-07-18T08:30:00.000Z",
+        version: 1,
         editedAt: null,
+        replyCount: 0,
+        unreadReplyCount: 0,
+        reactions: [],
         deletedAt: null,
         delivery: "sent" as const,
         recipientStatus: null,
         failure: null
       }
     };
+
+    expect(() =>
+      completeCollaborationPendingSendWithReceipt(koedHome, pending.key, {
+        ...binding,
+        receipt: { ...receipt, acceptedBody: "different request body" }
+      })
+    ).toThrow("does not match pending send");
+
+    expect(() =>
+      completeCollaborationPendingSendWithReceipt(koedHome, pending.key, {
+        ...binding,
+        receipt: {
+          ...receipt,
+          message: {
+            ...receipt.message,
+            rootMessageId: "99999999-9999-4999-8999-999999999999"
+          }
+        }
+      })
+    ).toThrow("does not match pending send");
 
     expect(
       completeCollaborationPendingSendWithReceipt(koedHome, pending.key, {
@@ -309,7 +357,18 @@ describe("upstream credential secret store", () => {
       })
     ).toEqual(receipt);
     expect(listCollaborationPendingSends(koedHome)).toEqual([]);
-    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        rootMessageId
+      })
+    ).toEqual(receipt);
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        rootMessageId: "99999999-9999-4999-8999-999999999999"
+      })
+    ).toBeNull();
   });
 
   it("retains encrypted completion receipts across restart until exact acknowledgment", () => {
@@ -329,12 +388,14 @@ describe("upstream credential secret store", () => {
     const receipt = {
       thread: binding.thread,
       clientMessageId: binding.clientMessageId,
+      acceptedBody: "The accepted message body is protected",
       message: {
         id: "77777777-7777-4777-8777-777777777777",
         clientMessageId: binding.clientMessageId,
         threadId: binding.thread.threadId,
         scope: "team" as const,
         teamId: binding.thread.teamId,
+        rootMessageId: null,
         sequence: 1,
         sender: {
           id: binding.remotePrincipalId,
@@ -345,7 +406,11 @@ describe("upstream credential secret store", () => {
         body: "The accepted message body is protected",
         createdAt: "2026-07-18T08:30:00.000Z",
         updatedAt: "2026-07-18T08:30:00.000Z",
+        version: 1,
         editedAt: null,
+        replyCount: 0,
+        unreadReplyCount: 0,
+        reactions: [],
         deletedAt: null,
         delivery: "sent" as const,
         recipientStatus: null,
@@ -430,6 +495,121 @@ describe("upstream credential secret store", () => {
     ).toBe(false);
   });
 
+  it("upgrades an authenticated legacy receipt with its immutable version-one body", () => {
+    const koedHome = tempHome();
+    const binding = {
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps",
+      remotePrincipalId: "22222222-2222-4222-8222-222222222222",
+      deviceCredentialId: "33333333-3333-4333-8333-333333333333",
+      thread: {
+        scope: "team" as const,
+        teamId: "44444444-4444-4444-8444-444444444444",
+        threadId: "55555555-5555-4555-8555-555555555555"
+      },
+      clientMessageId: "66666666-6666-4666-8666-666666666666"
+    };
+    const body = "Original immutable legacy receipt body";
+    const receipt = {
+      thread: binding.thread,
+      clientMessageId: binding.clientMessageId,
+      acceptedBody: body,
+      message: {
+        id: "77777777-7777-4777-8777-777777777777",
+        clientMessageId: binding.clientMessageId,
+        threadId: binding.thread.threadId,
+        scope: "team" as const,
+        teamId: binding.thread.teamId,
+        rootMessageId: null,
+        sequence: 1,
+        sender: {
+          id: binding.remotePrincipalId,
+          displayName: "Team member",
+          membershipState: "enabled" as const
+        },
+        senderKind: "user" as const,
+        body,
+        createdAt: "2026-07-18T08:30:00.000Z",
+        updatedAt: "2026-07-18T08:30:00.000Z",
+        version: 1,
+        editedAt: null,
+        replyCount: 0,
+        unreadReplyCount: 0,
+        reactions: [],
+        deletedAt: null,
+        delivery: "sent" as const,
+        recipientStatus: null,
+        failure: null
+      }
+    };
+    storeCollaborationSendReceipt(koedHome, { ...binding, receipt });
+
+    const storePath = resolve(koedHome, "secrets", "upstream-credentials.json");
+    const persisted = JSON.parse(readFileSync(storePath, "utf8")) as {
+      completedCollaborationSendReceipts: Record<
+        string,
+        { key: string; envelope: EncryptedStateEnvelope }
+      >;
+    };
+    const [record] = Object.values(
+      persisted.completedCollaborationSendReceipts
+    );
+    expect(record).toBeDefined();
+    const keyMaterial = readFileSync(
+      resolve(koedHome, "config", "local-secret-store.key"),
+      "utf8"
+    ).trim();
+    const encryptionKey = scryptSync(
+      keyMaterial,
+      "koed-upstream-credential-store-v1",
+      32
+    );
+    const aad = `koed:collaboration-send-receipt:v1\n${record!.key}`;
+    const legacy = JSON.parse(
+      decryptEncryptedStateValue(encryptionKey, record!.envelope, aad)
+    ) as {
+      acceptedBody?: string;
+      message: Record<string, unknown>;
+    };
+    delete legacy.acceptedBody;
+    delete legacy.message.version;
+    delete legacy.message.editedAt;
+    delete legacy.message.rootMessageId;
+    delete legacy.message.replyCount;
+    delete legacy.message.unreadReplyCount;
+    delete legacy.message.reactions;
+    record!.envelope = encryptEncryptedStateValue(
+      encryptionKey,
+      JSON.stringify(legacy),
+      new Date().toISOString(),
+      resolveEncryptedStateTransactionDeps(),
+      record!.envelope,
+      aad
+    );
+    writeFileSync(storePath, `${JSON.stringify(persisted)}\n`, "utf8");
+
+    expect(readCollaborationSendReceipt(koedHome, binding)).toEqual(receipt);
+    expect(
+      readCollaborationSendReceipt(koedHome, {
+        ...binding,
+        ownerId: "88888888-8888-4888-8888-888888888888"
+      })
+    ).toBeNull();
+
+    legacy.message.version = 2;
+    legacy.message.editedAt = "2026-07-18T08:31:00.000Z";
+    record!.envelope = encryptEncryptedStateValue(
+      encryptionKey,
+      JSON.stringify(legacy),
+      new Date().toISOString(),
+      resolveEncryptedStateTransactionDeps(),
+      record!.envelope,
+      aad
+    );
+    writeFileSync(storePath, `${JSON.stringify(persisted)}\n`, "utf8");
+    expect(readCollaborationSendReceipt(koedHome, binding)).toBeNull();
+  });
+
   it("clears Team completion receipts with the backend custody lifecycle", () => {
     const koedHome = tempHome();
     const binding = {
@@ -447,12 +627,14 @@ describe("upstream credential secret store", () => {
     const receipt = {
       thread: binding.thread,
       clientMessageId: binding.clientMessageId,
+      acceptedBody: "Clear this on backend revocation",
       message: {
         id: "77777777-7777-4777-8777-777777777777",
         clientMessageId: binding.clientMessageId,
         threadId: binding.thread.threadId,
         scope: "team" as const,
         teamId: binding.thread.teamId,
+        rootMessageId: null,
         sequence: 1,
         sender: {
           id: binding.remotePrincipalId,
@@ -463,7 +645,11 @@ describe("upstream credential secret store", () => {
         body: "Clear this on backend revocation",
         createdAt: "2026-07-18T08:30:00.000Z",
         updatedAt: "2026-07-18T08:30:00.000Z",
+        version: 1,
         editedAt: null,
+        replyCount: 0,
+        unreadReplyCount: 0,
+        reactions: [],
         deletedAt: null,
         delivery: "sent" as const,
         recipientStatus: null,

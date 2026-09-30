@@ -5,7 +5,9 @@ import {
   teamAgentRequestForwardLabel,
   teamQuestionReceiptMatches,
   teamQuestionSendStatus,
-  teamAnswerForwardDraft
+  teamAnswerForwardDraft,
+  forwardableTeamRequestsForChannelMessage,
+  forwardableTeamRequestsForReply
   // @ts-expect-error -- Node's native TypeScript test runner requires the .ts extension.
 } from "./team-agent-channel-sharing.ts";
 
@@ -21,6 +23,69 @@ test("answer forwarding is owner-only and only for accepted work", () => {
   assert.equal(
     canForwardTeamAnswer({ ...request, jobId: null }, "owner"),
     false
+  );
+});
+
+test("owner forwarding follows ordinary human replies in the exact origin root", () => {
+  const rootRequest = {
+    ...request,
+    teamId: "team-a",
+    channelId: "channel-a",
+    originRootMessageId: "root-a"
+  } as any;
+  const unrelatedRequest = {
+    ...rootRequest,
+    id: "other",
+    originRootMessageId: "root-b"
+  } as any;
+  const reply = {
+    id: "reply-a",
+    threadId: "channel-a",
+    rootMessageId: "root-a",
+    sender: { id: "member" }
+  } as any;
+  const otherRootReply = { ...reply, rootMessageId: "root-b" } as any;
+  const ownReply = { ...reply, sender: { id: "owner" } } as any;
+  const matched = forwardableTeamRequestsForReply({
+    requests: [rootRequest, unrelatedRequest],
+    message: reply,
+    viewerId: "owner",
+    teamId: "team-a",
+    threadId: "channel-a",
+    rootMessageId: "root-a"
+  });
+  assert.deepEqual(matched, [rootRequest]);
+  assert.deepEqual(
+    forwardableTeamRequestsForReply({
+      requests: [rootRequest],
+      message: otherRootReply,
+      viewerId: "owner",
+      teamId: "team-a",
+      threadId: "channel-a",
+      rootMessageId: "root-a"
+    }),
+    []
+  );
+  assert.deepEqual(
+    forwardableTeamRequestsForReply({
+      requests: [rootRequest],
+      message: ownReply,
+      viewerId: "owner",
+      teamId: "team-a",
+      threadId: "channel-a",
+      rootMessageId: "root-a"
+    }),
+    []
+  );
+  const channelRequest = { ...rootRequest, originRootMessageId: null } as any;
+  assert.deepEqual(
+    forwardableTeamRequestsForChannelMessage({
+      requests: [channelRequest],
+      message: { ...reply, rootMessageId: null },
+      viewerId: "owner",
+      teamId: "team-a"
+    }),
+    [channelRequest]
   );
 });
 
@@ -106,6 +171,23 @@ test("question receipt must match Team, channel, send ID, body, and sent state",
     }
   };
   assert.equal(teamQuestionReceiptMatches(receipt, expected), true);
+  const replayAfterEdit = {
+    ...receipt,
+    acceptedBody: expected.body,
+    message: {
+      ...receipt.message,
+      body: "edited on another device",
+      version: 2
+    }
+  };
+  assert.equal(teamQuestionReceiptMatches(replayAfterEdit, expected), true);
+  assert.equal(
+    teamQuestionReceiptMatches(
+      { ...replayAfterEdit, acceptedBody: "different text" },
+      expected
+    ),
+    false
+  );
   assert.equal(
     teamQuestionReceiptMatches(
       { ...receipt, message: { ...receipt.message, body: "Other text" } },

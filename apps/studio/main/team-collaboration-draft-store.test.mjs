@@ -14,7 +14,9 @@ const createPath = async () => {
 
 after(async () => {
   await Promise.all(
-    userDataPaths.splice(0).map((path) => rm(path, { recursive: true, force: true }))
+    userDataPaths
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true }))
   );
 });
 
@@ -64,22 +66,37 @@ describe("Studio Team draft store", () => {
       messageId: "88888888-8888-4888-8888-888888888888"
     };
     const first = createStudioTeamDraftStore({ userDataPath });
-    await first.save({ authority, draft: { text: "", pendingSend: null, receiptAckPending } });
+    await first.save({
+      authority,
+      draft: { text: "", pendingSend: null, receiptAckPending }
+    });
     const afterRestart = createStudioTeamDraftStore({ userDataPath });
     assert.deepEqual(await afterRestart.load(authority), {
-      text: "", pendingSend: null, receiptAckPending,
+      text: "",
+      pendingSend: null,
+      receiptAckPending,
       updatedAt: (await afterRestart.load(authority)).updatedAt
     });
-    await assert.rejects(first.save({
-      authority,
-      draft: { text: "", pendingSend: null, receiptAckPending: { ...receiptAckPending, messageId: "bad" } }
-    }), /invalid/);
+    await assert.rejects(
+      first.save({
+        authority,
+        draft: {
+          text: "",
+          pendingSend: null,
+          receiptAckPending: { ...receiptAckPending, messageId: "bad" }
+        }
+      }),
+      /invalid/
+    );
   });
 
   it("isolates by backend, principal, Team, and thread, then removes revoked Team state", async () => {
     const userDataPath = await createPath();
     const store = createStudioTeamDraftStore({ userDataPath });
-    await store.save({ authority, draft: { text: "Team one", pendingSend: null } });
+    await store.save({
+      authority,
+      draft: { text: "Team one", pendingSend: null }
+    });
     const otherTeam = {
       ...authority,
       teamId: "55555555-5555-4555-8555-555555555555"
@@ -100,7 +117,9 @@ describe("Studio Team draft store", () => {
   });
 
   it("preserves the original body and idempotency ID if the edited draft is saved separately", async () => {
-    const store = createStudioTeamDraftStore({ userDataPath: await createPath() });
+    const store = createStudioTeamDraftStore({
+      userDataPath: await createPath()
+    });
     const editedAuthority = {
       ...authority,
       threadId: "77777777-7777-4777-8777-777777777777"
@@ -110,9 +129,76 @@ describe("Studio Team draft store", () => {
       draft: { text: "New text after timeout", pendingSend }
     });
     const restored = await store.load(editedAuthority);
-    assert.equal(restored.pendingSend.clientMessageId, pendingSend.clientMessageId);
+    assert.equal(
+      restored.pendingSend.clientMessageId,
+      pendingSend.clientMessageId
+    );
     assert.equal(restored.pendingSend.body, pendingSend.body);
     assert.equal(restored.text, "New text after timeout");
+  });
+
+  it("isolates reply and edit drafts by root/message while preserving the edit conflict basis", async () => {
+    const store = createStudioTeamDraftStore({
+      userDataPath: await createPath()
+    });
+    const rootMessageId = "99999999-9999-4999-8999-999999999999";
+    const editMessageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const replyAuthority = { ...authority, rootMessageId };
+    const editAuthority = { ...authority, editMessageId };
+    const editDraft = {
+      text: "My unsaved revision",
+      pendingSend: null,
+      edit: {
+        expectedVersion: 2,
+        baseBodyText: "Original text",
+        conflict: {
+          latestVersion: 3,
+          latestBodyText: "Someone else's saved edit"
+        }
+      }
+    };
+    await store.save({
+      authority: replyAuthority,
+      draft: { text: "Reply draft", pendingSend: null }
+    });
+    await store.save({ authority: editAuthority, draft: editDraft });
+
+    assert.deepEqual(await store.load(replyAuthority), {
+      text: "Reply draft",
+      pendingSend: null,
+      receiptAckPending: null,
+      updatedAt: (await store.load(replyAuthority)).updatedAt
+    });
+    assert.deepEqual(await store.load(editAuthority), {
+      ...editDraft,
+      receiptAckPending: null,
+      updatedAt: (await store.load(editAuthority)).updatedAt
+    });
+    assert.equal(
+      await store.load({ ...authority, rootMessageId: editMessageId }),
+      null
+    );
+    assert.equal(
+      await store.load({ ...authority, editMessageId: rootMessageId }),
+      null
+    );
+    await assert.rejects(
+      store.load({ ...authority, rootMessageId, editMessageId }),
+      /invalid/
+    );
+    await assert.rejects(
+      store.save({
+        authority: { ...authority, editMessageId },
+        draft: {
+          ...editDraft,
+          edit: {
+            ...editDraft.edit,
+            conflict: { latestVersion: 2, latestBodyText: "stale" }
+          }
+        }
+      }),
+      /invalid/
+    );
   });
 
   it("purges a Team that disappeared while Studio was closed", async () => {
@@ -133,7 +219,10 @@ describe("Studio Team draft store", () => {
     );
     assert.equal(await afterRestart.load(authority), null);
     const state = JSON.parse(
-      await readFile(join(userDataPath, "team-collaboration-drafts.json"), "utf8")
+      await readFile(
+        join(userDataPath, "team-collaboration-drafts.json"),
+        "utf8"
+      )
     );
     assert.deepEqual(Object.keys(state.secrets), []);
   });
@@ -153,15 +242,20 @@ describe("Studio Team draft store", () => {
     });
     await Promise.all([save, prune]);
     assert.equal(await first.load(authority), null);
-    assert.equal(await second.retainAuthorizedTeams({
-      backendId: authority.backendId,
-      principalUserId: authority.principalUserId,
-      teamIds: []
-    }), 0);
+    assert.equal(
+      await second.retainAuthorizedTeams({
+        backendId: authority.backendId,
+        principalUserId: authority.principalUserId,
+        teamIds: []
+      }),
+      0
+    );
   });
 
   it("rejects malformed and oversized drafts before writing", async () => {
-    const store = createStudioTeamDraftStore({ userDataPath: await createPath() });
+    const store = createStudioTeamDraftStore({
+      userDataPath: await createPath()
+    });
     await assert.rejects(
       store.save({ authority, draft: { text: "bad", pendingSend: {} } }),
       /invalid/

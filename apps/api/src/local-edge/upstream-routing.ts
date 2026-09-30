@@ -389,6 +389,10 @@ export const assertUpstreamOperationPathAllowed = (
   const agentRequestId =
     "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
   const agentTeam = `/v1/collaboration/teams/${agentRequestId}`;
+  const chatTeam = `/v1/collaboration/teams/${agentRequestId}`;
+  const chatThread = `${chatTeam}/threads/${agentRequestId}`;
+  const chatMessages = `${chatThread}/messages`;
+  const chatMessage = `${chatMessages}/${agentRequestId}`;
   const offerPath = new RegExp(`^${agentTeam}/agent-offers$`, "i");
   const requestPath = new RegExp(`^${agentTeam}/agent-requests$`, "i");
   const inboxPath = new RegExp(`^${agentTeam}/agent-requests/inbox$`, "i");
@@ -396,7 +400,55 @@ export const assertUpstreamOperationPathAllowed = (
     `^${agentTeam}/agent-requests/${agentRequestId}/review$`,
     "i"
   );
+  if (
+    operationFamily === "team_chat_read" &&
+    method === "PUT" &&
+    parsed.search === "" &&
+    new RegExp(`^${chatThread}/(?:read-state|delivery-state)$`, "i").test(
+      pathname
+    )
+  ) {
+    return;
+  }
   if (operationFamily === "team_chat_read" && method === "GET") {
+    if (new RegExp(`^${chatMessages}$`, "i").test(pathname)) {
+      const keys = [...parsed.searchParams.keys()];
+      if (
+        new Set(keys).size !== keys.length ||
+        keys.some(
+          (key) =>
+            ![
+              "beforeSequence",
+              "afterSequence",
+              "limit",
+              "rootMessageId"
+            ].includes(key)
+        )
+      )
+        deny();
+      for (const key of ["beforeSequence", "afterSequence", "limit"]) {
+        const value = parsed.searchParams.get(key);
+        if (value === null) continue;
+        const validShape =
+          key === "afterSequence"
+            ? /^(0|[1-9][0-9]*)$/.test(value)
+            : /^[1-9][0-9]*$/.test(value);
+        const number = Number(value);
+        if (
+          !validShape ||
+          !Number.isSafeInteger(number) ||
+          (key === "limit" && number > 100)
+        )
+          deny();
+      }
+      const rootMessageId = parsed.searchParams.get("rootMessageId");
+      if (
+        rootMessageId !== null &&
+        !new RegExp(`^${agentRequestId}$`, "i").test(rootMessageId)
+      )
+        deny();
+      return;
+    }
     if (offerPath.test(pathname) || reviewPath.test(pathname)) {
       if (parsed.search !== "") deny();
       return;
@@ -465,6 +517,12 @@ export const assertUpstreamOperationPathAllowed = (
   if (operationFamily === "team_chat_write" && parsed.search === "") {
     if (
       (method === "POST" && requestPath.test(pathname)) ||
+      (method === "POST" &&
+        new RegExp(`^${chatMessages}$`, "i").test(pathname)) ||
+      (method === "PATCH" &&
+        new RegExp(`^${chatMessage}$`, "i").test(pathname)) ||
+      (method === "PUT" &&
+        new RegExp(`^${chatMessage}/reactions$`, "i").test(pathname)) ||
       (method === "PUT" &&
         (new RegExp(`^${agentTeam}/agent-offers/${agentRequestId}$`, "i").test(
           pathname

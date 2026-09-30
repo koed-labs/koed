@@ -508,7 +508,9 @@ const createCollaborationFixture = () => {
       const message: CollaborationMessageRecord = {
         id: randomUUID(),
         threadId: input.threadId,
+        rootMessageId: input.rootMessageId ?? null,
         threadSequence: threadMessages.length + 1,
+        version: 1,
         audienceVersion: 1,
         scope: thread.scope,
         personalOwnerUserId: thread.personalOwnerUserId,
@@ -522,6 +524,10 @@ const createCollaborationFixture = () => {
         bodyText: input.bodyText,
         metadata: {},
         provenance: { kind: "user_message", id: randomUUID() },
+        editedAt: null,
+        replyCount: 0,
+        unreadReplyCount: 0,
+        reactions: [],
         createdAt: iso,
         updatedAt: iso
       };
@@ -534,6 +540,60 @@ const createCollaborationFixture = () => {
       storedMessageCount += 1;
       thread.latestSequence = message.threadSequence;
       return message;
+    },
+    async sendMessageWithReceipt(actor, input) {
+      const message = await this.sendMessage(actor, input);
+      return message ? { message, acceptedBody: input.bodyText } : null;
+    },
+    async editMessage(actor, input) {
+      if (!authorizedThread(actor, input.threadId, "write")) return null;
+      const threadMessages = messages.get(input.threadId) ?? [];
+      const index = threadMessages.findIndex(
+        (candidate) => candidate.id === input.messageId
+      );
+      const message = threadMessages[index];
+      if (!message || message.senderUserId !== actor.userId) return null;
+      if (message.version !== input.expectedVersion) {
+        throw new CollaborationVersionConflictError();
+      }
+      const updated: CollaborationMessageRecord = {
+        ...message,
+        bodyText: input.bodyText,
+        version: message.version + 1,
+        editedAt: iso,
+        updatedAt: iso
+      };
+      threadMessages[index] = updated;
+      return updated;
+    },
+    async setMessageReaction(actor, input) {
+      if (!authorizedThread(actor, input.threadId, "write")) return null;
+      const message = (messages.get(input.threadId) ?? []).find(
+        (candidate) => candidate.id === input.messageId
+      );
+      if (!message) return null;
+      const existing = message.reactions.find(
+        (reaction) => reaction.emoji === input.emoji && reaction.reacted
+      );
+      const reactions = message.reactions.filter(
+        (reaction) => reaction.emoji !== input.emoji
+      );
+      if (input.active) {
+        reactions.push({ emoji: input.emoji, count: 1, reacted: true });
+      } else if (existing && existing.count > 1) {
+        reactions.push({
+          emoji: input.emoji,
+          count: existing.count - 1,
+          reacted: false
+        });
+      }
+      const updated = { ...message, reactions };
+      const threadMessages = messages.get(input.threadId) ?? [];
+      const index = threadMessages.findIndex(
+        (candidate) => candidate.id === input.messageId
+      );
+      threadMessages[index] = updated;
+      return updated;
     },
     async listMessages(actor, input) {
       if (!authorizedThread(actor, input.threadId, "read", true)) return null;
@@ -1596,6 +1656,12 @@ describe("collaboration HTTP routes", () => {
     });
     expect(first.statusCode).toBe(201);
     expect(retry.statusCode).toBe(201);
+    expect(jsonBody<{ acceptedBody: string }>(first).acceptedBody).toBe(
+      "Persist this once"
+    );
+    expect(jsonBody<{ acceptedBody: string }>(retry).acceptedBody).toBe(
+      "Persist this once"
+    );
     expect(
       jsonBody<{ message: CollaborationMessageRecord }>(retry).message.id
     ).toBe(jsonBody<{ message: CollaborationMessageRecord }>(first).message.id);
@@ -1876,6 +1942,80 @@ describe("collaboration HTTP routes", () => {
       ).statusCode
     ).toBe(413);
 
+    await app.close();
+  });
+
+  it("parses scoped message routes and authorizes edits and reactions", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const channel = await fixture.repository.ensureTeamGeneralChannel(
+      { userId: fixture.ids.alice },
+      fixture.ids.teamA
+    );
+    const threadUrl = `/v1/collaboration/teams/${fixture.ids.teamA}/threads/${channel!.id}`;
+    const created = await app.inject({
+      method: "POST",
+      url: `${threadUrl}/messages`,
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "message-route-edit-own"
+      }),
+      payload: { bodyText: "Original message" }
+    });
+    expect(created.statusCode).toBe(201);
+    const message = jsonBody<{ message: CollaborationMessageRecord }>(
+      created
+    ).message;
+
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `${threadUrl}/messages/${message.id}`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { bodyText: "Edited message", expectedVersion: 1 }
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(
+      jsonBody<{ message: CollaborationMessageRecord }>(edited).message
+    ).toMatchObject({ bodyText: "Edited message", version: 2 });
+
+    const reacted = await app.inject({
+      method: "PUT",
+      url: `${threadUrl}/messages/${message.id}/reactions`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { emoji: "👍", active: true }
+    });
+    expect(reacted.statusCode).toBe(200);
+    expect(
+      jsonBody<{ message: CollaborationMessageRecord }>(reacted).message
+        .reactions
+    ).toContainEqual({ emoji: "👍", count: 1, reacted: true });
+
+    const foreignMessage = await app.inject({
+      method: "POST",
+      url: `${threadUrl}/messages`,
+      headers: sessionHeaders(fixture.ids.bob, {
+        "idempotency-key": "message-route-edit-foreign"
+      }),
+      payload: { bodyText: "Bob's message" }
+    });
+    expect(foreignMessage.statusCode, foreignMessage.body).toBe(201);
+    const foreignId = jsonBody<{ message: CollaborationMessageRecord }>(
+      foreignMessage
+    ).message.id;
+    const deniedEdit = await app.inject({
+      method: "PATCH",
+      url: `${threadUrl}/messages/${foreignId}`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { bodyText: "Unauthorized edit", expectedVersion: 1 }
+    });
+    expect(deniedEdit.statusCode).toBe(403);
+
+    const malformed = await app.inject({
+      method: "PUT",
+      url: `${threadUrl}/messages/not-a-uuid/reactions`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { emoji: "👍", active: true }
+    });
+    expect(malformed.statusCode).toBe(400);
     await app.close();
   });
 

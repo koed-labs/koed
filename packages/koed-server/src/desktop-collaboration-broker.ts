@@ -19,6 +19,7 @@ import {
   deleteCollaborationPendingSend,
   listCollaborationPendingSends,
   readCollaborationSendReceipt,
+  readCollaborationSendReceiptByIdentity,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
   storeCollaborationPendingSend,
@@ -721,6 +722,7 @@ export const createDesktopCollaborationBroker = (
     return collaborationDurableSendSchema.parse({
       clientMessageId: record.clientMessageId,
       authority,
+      rootMessageId: record.rootMessageId ?? null,
       body: bodyAuthorized ? record.body : null,
       localCreationOrder: record.localCreationOrder,
       state,
@@ -780,6 +782,7 @@ export const createDesktopCollaborationBroker = (
     input: {
       thread: { scope: "team"; teamId: string; threadId: string };
       clientMessageId: string;
+      rootMessageId?: string | null;
     }
   ): CollaborationSendReceiptLookup | null => {
     const snapshot = ownerContext(ownerId).snapshot;
@@ -815,7 +818,8 @@ export const createDesktopCollaborationBroker = (
       remotePrincipalId: binding.principalUserId,
       deviceCredentialId: binding.deviceCredentialId,
       thread: input.thread,
-      clientMessageId: input.clientMessageId
+      clientMessageId: input.clientMessageId,
+      rootMessageId: input.rootMessageId ?? null
     };
   };
 
@@ -842,7 +846,10 @@ export const createDesktopCollaborationBroker = (
         }
       });
     }
-    const receipt = readCollaborationSendReceipt(paths.koedHome, lookup);
+    const receipt = readCollaborationSendReceiptByIdentity(
+      paths.koedHome,
+      lookup
+    );
     if (!receipt) {
       return collaborationCommandResultSchema.parse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -850,6 +857,19 @@ export const createDesktopCollaborationBroker = (
         command: command.command,
         ok: true,
         data: { acknowledged: true }
+      });
+    }
+    const requestedRootMessageId =
+      "rootMessageId" in command.input
+        ? (command.input.rootMessageId ?? null)
+        : null;
+    if ((receipt.message.rootMessageId ?? null) !== requestedRootMessageId) {
+      return collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: command.requestId,
+        command: command.command,
+        ok: true,
+        data: { acknowledged: false }
       });
     }
     if (receipt.message.id !== command.input.messageId) {
@@ -1238,9 +1258,16 @@ export const createDesktopCollaborationBroker = (
         remotePrincipalId: pending.remotePrincipalId!,
         deviceCredentialId: pending.deviceCredentialId!,
         thread: pending.thread,
-        clientMessageId: pending.clientMessageId
+        clientMessageId: pending.clientMessageId,
+        rootMessageId: pending.rootMessageId ?? null
       });
       if (receipt) {
+        if (
+          receipt.acceptedBody !== pending.body ||
+          receipt.message.rootMessageId !== (pending.rootMessageId ?? null)
+        ) {
+          return commandFailure(command, collaborationSafeError("conflict"));
+        }
         const sent = durableSendFromRecord(
           pending,
           ownerContext(context.ownerId).snapshot,
@@ -1259,7 +1286,10 @@ export const createDesktopCollaborationBroker = (
           requestId: command.requestId,
           command: command.command,
           ok: true,
-          data: { message: receipt.message }
+          data: {
+            message: receipt.message,
+            acceptedBody: receipt.acceptedBody
+          }
         });
       }
     }
@@ -1308,6 +1338,7 @@ export const createDesktopCollaborationBroker = (
           input: {
             thread: record.thread,
             clientMessageId: record.clientMessageId,
+            rootMessageId: record.rootMessageId ?? null,
             body: record.body
           }
         });
@@ -1317,7 +1348,8 @@ export const createDesktopCollaborationBroker = (
           if (
             (lastResult.command !== "collaboration.send_message" &&
               lastResult.command !== "collaboration.retry_message") ||
-            !("message" in lastResult.data)
+            !("message" in lastResult.data) ||
+            !("acceptedBody" in lastResult.data)
           ) {
             return commandFailure(
               command,
@@ -1341,6 +1373,7 @@ export const createDesktopCollaborationBroker = (
                   receipt: {
                     thread: record.thread,
                     clientMessageId: record.clientMessageId,
+                    acceptedBody: lastResult.data.acceptedBody,
                     message: confirmedMessage
                   }
                 }
@@ -1379,7 +1412,10 @@ export const createDesktopCollaborationBroker = (
           if (sent) emitDurableSend(context.ownerId, sent, confirmedMessage);
           return collaborationCommandResultSchema.parse({
             ...lastResult,
-            data: { message: confirmedMessage }
+            data: {
+              message: confirmedMessage,
+              acceptedBody: lastResult.data.acceptedBody
+            }
           });
         }
         if (!lastResult.error.retryable) {
@@ -1479,6 +1515,7 @@ export const createDesktopCollaborationBroker = (
       input: {
         thread: next.thread,
         clientMessageId: next.clientMessageId,
+        rootMessageId: next.rootMessageId ?? null,
         body: next.body
       }
     });
@@ -1495,6 +1532,12 @@ export const createDesktopCollaborationBroker = (
     >,
     context: CollaborationTransportContext
   ): CollaborationCommandResult => {
+    if (
+      command.input.thread.scope === "personal" &&
+      command.input.rootMessageId != null
+    ) {
+      return commandFailure(command, collaborationSafeError("invalid_input"));
+    }
     const pendingOwnerId = durablePendingSendOwnerId();
     if (!pendingOwnerId) {
       return commandFailure(command, collaborationSafeError("not_available"));
@@ -1531,7 +1574,8 @@ export const createDesktopCollaborationBroker = (
           record.ownerId === pendingOwnerId &&
           record.thread.scope === command.input.thread.scope &&
           record.thread.threadId === command.input.thread.threadId &&
-          record.clientMessageId === command.input.clientMessageId
+          record.clientMessageId === command.input.clientMessageId &&
+          record.rootMessageId === (command.input.rootMessageId ?? null)
       );
       if (
         existing?.backendId &&
@@ -1549,19 +1593,31 @@ export const createDesktopCollaborationBroker = (
         return commandFailure(command, collaborationSafeError("conflict"));
       }
     }
-    const pending = storeCollaborationPendingSend(
-      paths.koedHome,
-      {
-        ownerId: pendingOwnerId,
-        backendId,
-        remotePrincipalId: remoteBinding?.principalUserId ?? null,
-        deviceCredentialId: remoteBinding?.deviceCredentialId ?? null,
-        thread: command.input.thread,
-        clientMessageId: command.input.clientMessageId,
-        body: command.input.body
-      },
-      { resetAttempts: command.command === "collaboration.retry_message" }
-    );
+    let pending: CollaborationPendingSendRecord;
+    try {
+      pending = storeCollaborationPendingSend(
+        paths.koedHome,
+        {
+          ownerId: pendingOwnerId,
+          backendId,
+          remotePrincipalId: remoteBinding?.principalUserId ?? null,
+          deviceCredentialId: remoteBinding?.deviceCredentialId ?? null,
+          thread: command.input.thread,
+          clientMessageId: command.input.clientMessageId,
+          rootMessageId: command.input.rootMessageId ?? null,
+          body: command.input.body
+        },
+        { resetAttempts: command.command === "collaboration.retry_message" }
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("identity was reused")
+      ) {
+        return commandFailure(command, collaborationSafeError("conflict"));
+      }
+      throw error;
+    }
     const projected = durableSendFromRecord(
       pending,
       ownerContext(context.ownerId).snapshot
@@ -1646,6 +1702,7 @@ export const createDesktopCollaborationBroker = (
         input: {
           thread: earliestBlocking.thread,
           clientMessageId: earliestBlocking.clientMessageId,
+          rootMessageId: earliestBlocking.rootMessageId ?? null,
           body: earliestBlocking.body
         }
       });

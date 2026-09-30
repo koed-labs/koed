@@ -81,6 +81,7 @@ export {
   type CollaborationMessagePageRecord,
   type CollaborationMessageProvenance,
   type CollaborationMessageRecord,
+  type CollaborationMessageSendResult,
   type CollaborationOutboxEventRecord,
   type CollaborationParticipantRecord,
   type CollaborationReadStateRecord,

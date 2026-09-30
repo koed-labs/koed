@@ -75,6 +75,7 @@ export const teamAgentRequestSchema = z
     teamProjectId: uuid,
     channelId: uuid,
     requestMessageId: uuid,
+    originRootMessageId: uuid.nullable().default(null),
     requesterId: uuid,
     requesterName: z.string().trim().min(1).max(160),
     ownerId: uuid,
@@ -148,6 +149,7 @@ export const createTeamAgentRequestInputSchema = z
     idempotencyKey: uuid,
     teamProjectId: uuid,
     channelId: uuid,
+    rootMessageId: uuid.nullable().optional(),
     agentId: uuid,
     requestText: z.string().trim().min(1).max(8_000)
   })

@@ -202,6 +202,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
+  "message_updated",
   "receipt_state_updated",
   "share_grant_lifecycle",
   "fidelity_changed",
@@ -9781,7 +9782,9 @@ export const collaborationMessages = pgTable(
     threadId: uuid("thread_id")
       .notNull()
       .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    rootMessageId: uuid("root_message_id"),
     threadSequence: bigint("thread_sequence", { mode: "number" }).notNull(),
+    version: integer("version").notNull().default(1),
     audienceVersion: integer("audience_version").notNull(),
     scope: collaborationScope("scope").notNull(),
     personalOwnerUserId: uuid("personal_owner_user_id"),
@@ -9810,6 +9813,11 @@ export const collaborationMessages = pgTable(
     retainUntil: timestamp("retain_until", { withTimezone: true })
   },
   (table) => [
+    foreignKey({
+      columns: [table.threadId, table.rootMessageId],
+      foreignColumns: [table.threadId, table.id],
+      name: "collaboration_messages_root_fk"
+    }).onDelete("cascade"),
     foreignKey({
       columns: [table.threadId, table.audienceVersion],
       foreignColumns: [
@@ -9858,6 +9866,12 @@ export const collaborationMessages = pgTable(
       table.id,
       table.threadSequence
     ),
+    unique("collaboration_messages_thread_root_id_sequence_unique").on(
+      table.threadId,
+      table.rootMessageId,
+      table.id,
+      table.threadSequence
+    ),
     unique("collaboration_messages_thread_id_unique").on(
       table.threadId,
       table.id
@@ -9867,6 +9881,11 @@ export const collaborationMessages = pgTable(
       .where(sql`${table.idempotencyKeyHash} is not null`),
     index("collaboration_messages_thread_sequence_idx").on(
       table.threadId,
+      table.threadSequence.desc()
+    ),
+    index("collaboration_messages_thread_root_sequence_idx").on(
+      table.threadId,
+      table.rootMessageId,
       table.threadSequence.desc()
     ),
     check(
@@ -9899,15 +9918,70 @@ export const collaborationMessages = pgTable(
     ),
     check(
       "collaboration_messages_reserved_lifecycle_check",
-      sql`${table.editedAt} is null
-        and ${table.editedBodyMarker} is null
+      sql`((${table.editedAt} is null and ${table.editedBodyMarker} is null)
+          or (${table.editedAt} is not null and ${table.editedBodyMarker} = '[koed encrypted collaboration message]'))
         and ${table.deletedAt} is null
-        and ${table.deletedBodyMarker} is null`
+        and ${table.deletedBodyMarker} is null
+        and ${table.version} > 0
+        and (${table.rootMessageId} is null or ${table.rootMessageId} <> ${table.id})`
     ),
     check(
       "collaboration_messages_retention_check",
       sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
         or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    )
+  ]
+);
+
+export const collaborationMessageRevisions = pgTable(
+  "collaboration_message_revisions",
+  {
+    messageId: uuid("message_id").notNull(),
+    revision: integer("revision").notNull(),
+    editorUserId: uuid("editor_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    bodyMarker: text("body_marker").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.messageId, table.revision] }),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [collaborationMessages.id],
+      name: "collaboration_message_revisions_message_fk"
+    }).onDelete("cascade"),
+    check(
+      "collaboration_message_revisions_shape_check",
+      sql`${table.revision} > 0 and ${table.bodyMarker} = '[koed encrypted collaboration message]'`
+    )
+  ]
+);
+
+export const collaborationMessageReactions = pgTable(
+  "collaboration_message_reactions",
+  {
+    messageId: uuid("message_id").notNull(),
+    actorUserId: uuid("actor_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    emoji: text("emoji").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.messageId, table.actorUserId, table.emoji] }),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [collaborationMessages.id],
+      name: "collaboration_message_reactions_message_fk"
+    }).onDelete("cascade"),
+    index("collaboration_message_reactions_actor_idx").on(
+      table.actorUserId,
+      table.messageId
+    ),
+    check(
+      "collaboration_message_reactions_emoji_check",
+      sql`${table.emoji} in ('👍','🎉','❤️','😂','👀','🚀','✅','🔥')`
     )
   ]
 );
@@ -10156,6 +10230,58 @@ export const collaborationReceiptStates = pgTable(
           or (${table.lastDeliveredMessageId} is not null and ${table.lastDeliveredSequence} > 0 and ${table.lastDeliveredAt} is not null))
         and ((${table.lastReadMessageId} is null and ${table.lastReadSequence} = 0)
           or (${table.lastReadMessageId} is not null and ${table.lastReadSequence} > 0 and ${table.lastReadAt} is not null))`
+    )
+  ]
+);
+
+export const collaborationRootReceiptStates = pgTable(
+  "collaboration_root_receipt_states",
+  {
+    threadId: uuid("thread_id").notNull(),
+    rootMessageId: uuid("root_message_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    lastReadMessageId: uuid("last_read_message_id"),
+    lastReadSequence: bigint("last_read_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    lastReadAt: timestamp("last_read_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.rootMessageId, table.userId] }),
+    foreignKey({
+      columns: [table.threadId, table.rootMessageId],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id
+      ],
+      name: "collaboration_root_receipt_states_root_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [
+        table.threadId,
+        table.rootMessageId,
+        table.lastReadMessageId,
+        table.lastReadSequence
+      ],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.rootMessageId,
+        collaborationMessages.id,
+        collaborationMessages.threadSequence
+      ],
+      name: "collaboration_root_receipt_states_read_message_fk"
+    }).onDelete("cascade"),
+    index("collaboration_root_receipt_states_user_idx").on(
+      table.userId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "collaboration_root_receipt_states_cursor_check",
+      sql`${table.lastReadSequence} >= 0 and ${table.version} > 0 and ((${table.lastReadMessageId} is null and ${table.lastReadSequence} = 0) or (${table.lastReadMessageId} is not null and ${table.lastReadSequence} > 0 and ${table.lastReadAt} is not null))`
     )
   ]
 );

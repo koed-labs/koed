@@ -347,6 +347,7 @@ describe("desktop collaboration broker", () => {
           command: request.command.command,
           ok: true,
           data: {
+            acceptedBody: bodyText,
             message: {
               id: "44444444-4444-4444-8444-444444444444",
               threadId: "00000000-0000-4000-8000-000000000002",
@@ -473,6 +474,7 @@ describe("desktop collaboration broker", () => {
           command: request.command.command,
           ok: true,
           data: {
+            acceptedBody: bodyText,
             message: {
               id: "44444444-4444-4444-8444-444444444445",
               threadId: "00000000-0000-4000-8000-000000000002",
@@ -611,6 +613,7 @@ describe("desktop collaboration broker", () => {
           command: request.command.command,
           ok: true,
           data: {
+            acceptedBody: request.command.input.body,
             message: {
               id:
                 request.command.input.clientMessageId ===
@@ -760,6 +763,7 @@ describe("desktop collaboration broker", () => {
           command: request.command.command,
           ok: true,
           data: {
+            acceptedBody: bodyText,
             message: {
               id: "44444444-4444-4444-8444-444444444446",
               threadId,
@@ -1078,7 +1082,7 @@ describe("desktop collaboration broker", () => {
     await broker.shutdown();
   });
 
-  it("recovers an accepted Team send receipt before draining a leftover pending row", async () => {
+  it("resumes an accepted Team reply from its root-scoped receipt without replaying upstream", async () => {
     const koedHome = tempRoot();
     const environment = {
       KOED_HOME: koedHome,
@@ -1098,6 +1102,7 @@ describe("desktop collaboration broker", () => {
     const messageId = "77777777-7777-4777-8777-777777777777";
     const channelClientMessageId = "66666666-6666-4666-8666-666666666667";
     const channelMessageId = "77777777-7777-4777-8777-777777777778";
+    const rootMessageId = "99999999-9999-4999-8999-999999999999";
     const timestamp = "2026-07-20T00:00:00.000Z";
     const messageBody = "Accepted before the process stopped";
     const channelMessageBody = "Accepted top-level Team channel send";
@@ -1162,6 +1167,7 @@ describe("desktop collaboration broker", () => {
       deviceCredentialId: deviceId,
       thread: { scope: "team", teamId, threadId },
       clientMessageId,
+      rootMessageId,
       body: messageBody
     });
     storeCollaborationPendingSend(koedHome, {
@@ -1181,12 +1187,14 @@ describe("desktop collaboration broker", () => {
       receipt: {
         thread: { scope: "team" as const, teamId, threadId },
         clientMessageId,
+        acceptedBody: messageBody,
         message: {
           id: messageId,
           clientMessageId,
           threadId,
           scope: "team" as const,
           teamId,
+          rootMessageId,
           sequence: 1,
           sender: {
             id: principalId,
@@ -1194,7 +1202,7 @@ describe("desktop collaboration broker", () => {
             membershipState: "enabled" as const
           },
           senderKind: "user" as const,
-          body: messageBody,
+          body: "Edited on another device after the accepted send",
           createdAt: timestamp,
           updatedAt: timestamp,
           editedAt: null,
@@ -1213,6 +1221,7 @@ describe("desktop collaboration broker", () => {
       receipt: {
         thread: { scope: "team" as const, teamId, threadId: channelId },
         clientMessageId: channelClientMessageId,
+        acceptedBody: channelMessageBody,
         message: {
           id: channelMessageId,
           clientMessageId: channelClientMessageId,
@@ -1237,7 +1246,6 @@ describe("desktop collaboration broker", () => {
         }
       }
     };
-    // Simulate a crash after receipt persistence but before the pending-row cleanup.
     storeCollaborationSendReceipt(koedHome, receiptInput);
     storeCollaborationSendReceipt(koedHome, channelReceiptInput);
     const remoteThread = {
@@ -1360,15 +1368,43 @@ describe("desktop collaboration broker", () => {
     });
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
       const request = JSON.parse(String(init?.body)) as {
-        command: { requestId: string; command: string };
+        command: {
+          requestId: string;
+          command: string;
+          input: {
+            body?: string;
+            rootMessageId?: string | null;
+            thread?: { threadId: string };
+          };
+        };
       };
-      expect(request.command.command).toBe("collaboration.load");
+      if (request.command.command === "collaboration.load") {
+        return Response.json({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: request.command.requestId,
+          command: "collaboration.load",
+          ok: true,
+          data: { snapshot: teamSnapshot }
+        });
+      }
+      expect(request.command.command).toBe("collaboration.retry_message");
+      const isReply = request.command.input.thread?.threadId === threadId;
+      expect(request.command.input.body).toBe(
+        isReply ? messageBody : channelMessageBody
+      );
+      expect(request.command.input.rootMessageId ?? null).toBe(
+        isReply ? rootMessageId : null
+      );
+      const acceptedBody = isReply ? messageBody : channelMessageBody;
+      const message = isReply
+        ? receiptInput.receipt.message
+        : channelReceiptInput.receipt.message;
       return Response.json({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
         requestId: request.command.requestId,
-        command: "collaboration.load",
+        command: request.command.command,
         ok: true,
-        data: { snapshot: teamSnapshot }
+        data: { message, acceptedBody }
       });
     });
     const sent: DesktopCollaborationBrokerChildMessage[] = [];
@@ -1403,11 +1439,11 @@ describe("desktop collaboration broker", () => {
       });
 
     await dispatch(
-      "99999999-9999-4999-8999-999999999991",
-      "99999999-9999-4999-8999-999999999992",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
       { command: "collaboration.load", input: {} }
     );
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(listCollaborationPendingSends(koedHome)).toEqual([]);
     expect(
       sent.some(
@@ -1418,6 +1454,28 @@ describe("desktop collaboration broker", () => {
           entry.event.send.state === "sent"
       )
     ).toBe(true);
+    expect(
+      sent.filter(
+        (entry) =>
+          entry.type === "renderer_event" &&
+          entry.event.type === "durable_send" &&
+          entry.event.send.clientMessageId === clientMessageId &&
+          entry.event.send.state === "sent"
+      )
+    ).toHaveLength(1);
+    expect(
+      sent.find(
+        (entry) =>
+          entry.type === "renderer_event" &&
+          entry.event.type === "durable_send" &&
+          entry.event.send.clientMessageId === clientMessageId &&
+          entry.event.send.state === "sent"
+      )
+    ).toMatchObject({
+      event: {
+        message: { body: "Edited on another device after the accepted send" }
+      }
+    });
     expect(
       sent.some(
         (entry) =>
@@ -1446,7 +1504,11 @@ describe("desktop collaboration broker", () => {
       "99999999-9999-4999-8999-999999999994",
       {
         command: "collaboration.get_send_receipt",
-        input: { thread: receiptInput.receipt.thread, clientMessageId }
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          rootMessageId
+        }
       }
     );
     expect(sent[sent.length - 1]).toMatchObject({
@@ -1467,7 +1529,8 @@ describe("desktop collaboration broker", () => {
             ...receiptInput.receipt.thread,
             teamId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
           },
-          clientMessageId
+          clientMessageId,
+          rootMessageId
         }
       }
     );
@@ -1478,6 +1541,27 @@ describe("desktop collaboration broker", () => {
         error: { code: "access_revoked" }
       }
     });
+    const differentRootMessageId = "88888888-8888-4888-8888-888888888888";
+    await dispatch(
+      "99999999-9999-4999-8999-999999999991",
+      "99999999-9999-4999-8999-999999999992",
+      {
+        command: "collaboration.get_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          rootMessageId: differentRootMessageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.get_send_receipt",
+        data: { receipt: null }
+      }
+    });
     await dispatch(
       "99999999-9999-4999-8999-999999999997",
       "99999999-9999-4999-8999-999999999998",
@@ -1486,7 +1570,8 @@ describe("desktop collaboration broker", () => {
         input: {
           thread: receiptInput.receipt.thread,
           clientMessageId,
-          messageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+          messageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          rootMessageId
         }
       }
     );
@@ -1499,6 +1584,47 @@ describe("desktop collaboration broker", () => {
       }
     });
     await dispatch(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4",
+      {
+        command: "collaboration.acknowledge_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          messageId,
+          rootMessageId: differentRootMessageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.acknowledge_send_receipt",
+        data: { acknowledged: false }
+      }
+    });
+    await dispatch(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb5",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb6",
+      {
+        command: "collaboration.get_send_receipt",
+        input: {
+          thread: receiptInput.receipt.thread,
+          clientMessageId,
+          rootMessageId
+        }
+      }
+    );
+    expect(sent[sent.length - 1]).toMatchObject({
+      type: "command_result",
+      result: {
+        ok: true,
+        command: "collaboration.get_send_receipt",
+        data: { receipt: receiptInput.receipt }
+      }
+    });
+    await dispatch(
       "99999999-9999-4999-8999-999999999995",
       "99999999-9999-4999-8999-999999999996",
       {
@@ -1506,7 +1632,8 @@ describe("desktop collaboration broker", () => {
         input: {
           thread: receiptInput.receipt.thread,
           clientMessageId,
-          messageId
+          messageId,
+          rootMessageId
         }
       }
     );
@@ -1526,7 +1653,8 @@ describe("desktop collaboration broker", () => {
         input: {
           thread: receiptInput.receipt.thread,
           clientMessageId,
-          messageId
+          messageId,
+          rootMessageId
         }
       }
     );
@@ -1538,7 +1666,7 @@ describe("desktop collaboration broker", () => {
         data: { acknowledged: true }
       }
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(listCollaborationPendingSends(koedHome)).toEqual([]);
     await broker.shutdown();
   });

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Settings, User } from "lucide-react";
+import { MessageSquare, Pencil, Settings, SmilePlus, User } from "lucide-react";
 import {
   collaborationMessagePageSchema,
   type CollaborationMessage,
@@ -21,6 +21,10 @@ import {
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { ChannelHeader } from "@/components/ChannelView";
+import {
+  TeamMessageThreadPane,
+  type ThreadEditDraft
+} from "@/components/TeamMessageThreadPane";
 import {
   TeamDirectMessageBubble,
   directMessageTitle
@@ -52,7 +56,16 @@ import {
   mayCompleteDraftHydration,
   mayPersistTeamDraft,
   mergeTeamMessages,
+  editDraftAfterConflict,
+  editDraftAfterConflictReview,
   acknowledgedReceiptMessageId,
+  pendingSendAfterReceiptResolution,
+  teamDraftAfterAcceptedSendResult,
+  teamDraftAfterReplyTextChange,
+  teamDraftAfterReplyHydration,
+  teamDraftForReplyAttempt,
+  messageReactionMayStart,
+  messageReactionMayUpdateOpenPane,
   readCompletionMayApply,
   readSequenceFor,
   rememberReadSequence,
@@ -60,11 +73,14 @@ import {
   realtimeUpdateMayAcknowledge,
   retainPendingSendAfterUncertainOutcome,
   studioSelectionMatches,
+  selectedTeamSnapshotMayStartSubscription,
+  threadReceiptMayUpdatePane,
   teamDraftAfterTextChange,
   teamDraftForAcceptedReceipt,
   teamDraftWithoutReceiptAck,
   teamDraftWriteMayApply,
-  visibleReadMayAdvance
+  visibleReadMayAdvance,
+  visibleReplyReadMayAdvance
 } from "@/lib/team-channel-state";
 import {
   chooseLocalProjectFolder,
@@ -85,7 +101,9 @@ import {
 import {
   canForwardTeamAnswer,
   teamAgentRequestForwardLabel,
-  teamAnswerForwardDraft
+  teamAnswerForwardDraft,
+  forwardableTeamRequestsForChannelMessage,
+  forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
 
@@ -186,6 +204,28 @@ export function TeamChannelWorkspace({
     projects: Array<{ id: string; name: string }>;
   }>({ owner: "", loaded: false, projects: [] });
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [openRootMessage, setOpenRootMessage] =
+    useState<CollaborationMessage | null>(null);
+  const [openRootAuthorityKey, setOpenRootAuthorityKey] = useState<
+    string | null
+  >(null);
+  const [threadReplies, setThreadReplies] = useState<CollaborationMessage[]>(
+    []
+  );
+  const [threadPage, setThreadPage] = useState<CollaborationMessagePage | null>(
+    null
+  );
+  const [threadRequests, setThreadRequests] = useState<TeamAgentRequest[]>([]);
+  const [threadDraftText, setThreadDraftText] = useState("");
+  const [threadPendingSend, setThreadPendingSend] =
+    useState<StudioTeamDraft["pendingSend"]>(null);
+  const [threadSendStatus, setThreadSendStatus] = useState<
+    "pending" | "uncertain" | "retry_failed" | null
+  >(null);
+  const [threadEditDrafts, setThreadEditDrafts] = useState<
+    Map<string, ThreadEditDraft>
+  >(new Map());
+  const threadSendInFlight = useRef(new Set<string>());
   const [messageSelection, setMessageSelection] = useState<{
     teamId: string;
     threadId: string;
@@ -214,6 +254,8 @@ export function TeamChannelWorkspace({
   const bodyRef = useRef<HTMLDivElement>(null);
   const readReported = useRef(new Map<string, number>());
   const readPending = useRef(new Map<string, number>());
+  const threadReadReported = useRef(new Map<string, number>());
+  const threadReadPending = useRef(new Map<string, number>());
   const saveSequence = useRef(0);
   const snapshotEpoch = useRef(0);
   const revokedRef = useRef(false);
@@ -288,6 +330,7 @@ export function TeamChannelWorkspace({
     text: string;
     idempotencyKey: string;
     sendClientMessageId: string;
+    rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
   const openRequestReview = useCallback(
@@ -421,6 +464,13 @@ export function TeamChannelWorkspace({
         }
       : null;
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  const visibleOpenRoot =
+    openRootMessage &&
+    openRootAuthorityKey === authorityKey &&
+    openRootMessage.teamId === activeTeam?.id &&
+    openRootMessage.threadId === activeThread?.id
+      ? openRootMessage
+      : null;
   const teamMentionScopeKey = JSON.stringify({
     backendId: snapshot?.connection.backendId ?? "",
     principalId: snapshot?.navigation.teamPrincipal?.id ?? "",
@@ -437,6 +487,9 @@ export function TeamChannelWorkspace({
     messageSelection.threadId === activeThread.id
   );
   const visibleMessages = messagesMatchSelection ? messages : [];
+  const visibleChannelMessages = activeDirectMessage
+    ? visibleMessages
+    : visibleMessages.filter((message) => message.rootMessageId == null);
   const visiblePage = messagesMatchSelection ? page : null;
   const visibleDraftText =
     authorityKey && hydratedAuthorityKey === authorityKey ? draftText : "";
@@ -591,6 +644,7 @@ export function TeamChannelWorkspace({
             teamId: draftAuthority.teamId,
             threadId: draftAuthority.threadId
           },
+          rootMessageId: draftAuthority.rootMessageId ?? null,
           clientMessageId: marker.clientMessageId,
           messageId: marker.messageId
         });
@@ -671,7 +725,27 @@ export function TeamChannelWorkspace({
       receipt: CollaborationSendReceipt
     ): Promise<boolean> => {
       if (revokedRef.current) return false;
+      if (
+        receipt.thread.scope !== "team" ||
+        receipt.thread.teamId !== draftAuthority.teamId ||
+        receipt.thread.threadId !== draftAuthority.threadId ||
+        receipt.message.scope !== "team" ||
+        receipt.message.teamId !== draftAuthority.teamId ||
+        receipt.message.threadId !== draftAuthority.threadId ||
+        receipt.message.clientMessageId !== receipt.clientMessageId ||
+        receipt.message.delivery !== "sent" ||
+        receipt.message.rootMessageId !== (draftAuthority.rootMessageId ?? null)
+      )
+        return false;
       const key = JSON.stringify(draftAuthority);
+      const priorCompletion = receiptCompletions.current
+        .get(key)
+        ?.get(receipt.clientMessageId);
+      if (
+        priorCompletion?.acknowledged &&
+        priorCompletion.messageId === receipt.message.id
+      )
+        return true;
       const latest = draftByAuthority.current.get(key);
       if (!latest) return false;
       const settled = teamDraftForAcceptedReceipt({
@@ -728,6 +802,19 @@ export function TeamChannelWorkspace({
           setMessages((messagesNow) =>
             mergeTeamMessages(messagesNow, [receipt.message])
           );
+        } else if (
+          threadReceiptMayUpdatePane({
+            draftAuthority,
+            currentAuthorityKey: authorityKeyRef.current,
+            openRoot: openRootRef.current
+          })
+        ) {
+          setThreadDraftText(committed.text);
+          setThreadPendingSend(committed.pendingSend);
+          setThreadSendStatus(committed.pendingSend ? "pending" : null);
+          setThreadReplies((messagesNow) =>
+            mergeTeamMessages(messagesNow, [receipt.message])
+          );
         }
         await clearSavedReceiptMarker(draftAuthority, marker);
         return true;
@@ -773,6 +860,15 @@ export function TeamChannelWorkspace({
       setTeamId("");
       setThreadId("");
       setMessages([]);
+      openRootRef.current = null;
+      setOpenRootMessage(null);
+      setOpenRootAuthorityKey(null);
+      setThreadReplies([]);
+      setThreadDraftText("");
+      setThreadPendingSend(null);
+      setThreadSendStatus(null);
+      setThreadEditDrafts(new Map());
+      setThreadRequests([]);
       setMessageSelection(null);
       setPage(null);
       setDraftText("");
@@ -803,6 +899,52 @@ export function TeamChannelWorkspace({
       clientMessageId: string
     ): Promise<"recovered" | "missing" | "error"> => {
       const receiptAuthorityKey = JSON.stringify(draftAuthority);
+      const applyAcknowledgedThreadReceipt = async () => {
+        if (
+          !threadReceiptMayUpdatePane({
+            draftAuthority,
+            currentAuthorityKey: authorityKeyRef.current,
+            openRoot: openRootRef.current
+          })
+        )
+          return;
+        let latest = draftByAuthority.current.get(receiptAuthorityKey);
+        if (latest?.pendingSend?.clientMessageId === clientMessageId) {
+          latest = resolvePendingSend(
+            latest,
+            clientMessageId,
+            "accepted",
+            latest.pendingSend.body
+          );
+          draftByAuthority.current.set(receiptAuthorityKey, latest);
+          try {
+            await persistDraft(draftAuthority, latest);
+          } catch {
+            if (
+              threadReceiptMayUpdatePane({
+                draftAuthority,
+                currentAuthorityKey: authorityKeyRef.current,
+                openRoot: openRootRef.current
+              })
+            )
+              setStatus(
+                "Reply sent. The cleared device draft could not be saved."
+              );
+          }
+        }
+        if (
+          !threadReceiptMayUpdatePane({
+            draftAuthority,
+            currentAuthorityKey: authorityKeyRef.current,
+            openRoot: openRootRef.current
+          })
+        )
+          return;
+        latest = draftByAuthority.current.get(receiptAuthorityKey);
+        setThreadPendingSend(latest?.pendingSend ?? null);
+        setThreadSendStatus(latest?.pendingSend ? "pending" : null);
+        if (latest) setThreadDraftText(latest.text);
+      };
       const completion = receiptCompletions.current
         .get(receiptAuthorityKey)
         ?.get(clientMessageId);
@@ -814,14 +956,17 @@ export function TeamChannelWorkspace({
           receiptClientMessageId: clientMessageId,
           completion
         })
-      )
+      ) {
+        await applyAcknowledgedThreadReceipt();
         return "recovered";
+      }
       const result = await run("collaboration.get_send_receipt", {
         thread: {
           scope: "team",
           teamId: draftAuthority.teamId,
           threadId: draftAuthority.threadId
         },
+        rootMessageId: draftAuthority.rootMessageId ?? null,
         clientMessageId
       });
       if (!result.ok) {
@@ -840,12 +985,22 @@ export function TeamChannelWorkspace({
       }
       if (!("receipt" in result.data) || !result.data.receipt) return "missing";
       const receipt = result.data.receipt;
-      if (receipt.clientMessageId !== clientMessageId) return "error";
-      return (await completeAcceptedReceipt(draftAuthority, receipt))
-        ? "recovered"
-        : "error";
+      if (
+        receipt.clientMessageId !== clientMessageId ||
+        receipt.message.rootMessageId !== (draftAuthority.rootMessageId ?? null)
+      )
+        return "error";
+      const recovered = await completeAcceptedReceipt(draftAuthority, receipt);
+      if (recovered) await applyAcknowledgedThreadReceipt();
+      return recovered ? "recovered" : "error";
     },
-    [clearRevokedView, completeAcceptedReceipt, invalidateDraftAuthority, run]
+    [
+      clearRevokedView,
+      completeAcceptedReceipt,
+      invalidateDraftAuthority,
+      persistDraft,
+      run
+    ]
   );
   const refreshSnapshot = useCallback(async (): Promise<boolean> => {
     const epoch = snapshotEpoch.current;
@@ -936,6 +1091,742 @@ export function TeamChannelWorkspace({
   const loadPageRef = useRef(loadPage);
   loadPageRef.current = loadPage;
 
+  const loadRootReplies = useCallback(
+    async (root: CollaborationMessage, cursor: string | null = null) => {
+      if (!UUID.test(root.id) || !activeThread || !activeTeam) return;
+      const capturedAuthorityKey = authorityKey;
+      try {
+        const result = await run("collaboration.load_message_page", {
+          thread: {
+            scope: "team",
+            teamId: activeTeam.id,
+            threadId: activeThread.id
+          },
+          rootMessageId: root.id,
+          direction: cursor === null ? "newer" : "older",
+          cursor,
+          limit: 50
+        });
+        if (!result.ok || !("page" in result.data)) return;
+        const parsed = collaborationMessagePageSchema.safeParse(
+          result.data.page
+        );
+        if (
+          !parsed.success ||
+          parsed.data.threadId !== root.threadId ||
+          parsed.data.rootMessageId !== root.id
+        )
+          return;
+        if (
+          authorityKeyRef.current !== capturedAuthorityKey ||
+          selectedRef.current.threadId !== root.threadId ||
+          openRootRef.current?.id !== root.id
+        )
+          return;
+        setThreadPage(parsed.data);
+        setThreadReplies((current) =>
+          cursor === null
+            ? parsed.data.items.filter((item) => item.rootMessageId === root.id)
+            : mergeTeamMessages(
+                current,
+                parsed.data.items.filter(
+                  (item) => item.rootMessageId === root.id
+                )
+              )
+        );
+        const updatedRoot = messages.find((message) => message.id === root.id);
+        if (updatedRoot) setOpenRootMessage(updatedRoot);
+      } catch {
+        // The pane keeps its current snapshot and retries on the next update/open.
+      }
+    },
+    [activeTeam, activeThread, authorityKey, messages, run]
+  );
+  const openRootRef = useRef<CollaborationMessage | null>(openRootMessage);
+  openRootRef.current = openRootMessage;
+  const threadDraftEditGeneration = useRef(0);
+  useEffect(() => {
+    openRootRef.current = null;
+    setOpenRootMessage(null);
+    setOpenRootAuthorityKey(null);
+    setThreadReplies([]);
+    setThreadDraftText("");
+    setThreadPendingSend(null);
+    setThreadSendStatus(null);
+    setThreadEditDrafts(new Map());
+    setThreadRequests([]);
+  }, [authorityKey]);
+
+  const openMessageThread = useCallback(
+    (root: CollaborationMessage) => {
+      const capturedDraftGeneration = ++threadDraftEditGeneration.current;
+      setOpenRootAuthorityKey(authorityKey);
+      setThreadDraftText("");
+      setOpenRootMessage(root);
+      openRootRef.current = root;
+      setThreadReplies([]);
+      setThreadPage(null);
+      setThreadPendingSend(null);
+      setThreadSendStatus(null);
+      setThreadEditDrafts(new Map());
+      const capturedAuthority = authority;
+      const capturedAuthorityKey = authorityKey;
+      if (capturedAuthority) {
+        const replyAuthority = { ...capturedAuthority, rootMessageId: root.id };
+        const replyAuthorityKey = JSON.stringify(replyAuthority);
+        const hydrationGeneration =
+          draftAuthorityGenerations.current.get(replyAuthorityKey) ?? 0;
+        const queuedWrite = draftWriteTails.current.get(replyAuthorityKey);
+        void (async () => {
+          await queuedWrite?.catch(() => undefined);
+          return drafts.loadDraft(replyAuthority);
+        })()
+          .then((stored) => {
+            if (
+              authorityKeyRef.current !== capturedAuthorityKey ||
+              openRootRef.current?.id !== root.id ||
+              (draftAuthorityGenerations.current.get(replyAuthorityKey) ??
+                0) !== hydrationGeneration
+            )
+              return;
+            const current = draftByAuthority.current.get(replyAuthorityKey);
+            if (
+              threadDraftEditGeneration.current !== capturedDraftGeneration &&
+              !current
+            )
+              return;
+            let hydratedDraft = teamDraftAfterReplyHydration(stored, current);
+            const pending = hydratedDraft.pendingSend;
+            if (pending) {
+              const completion = receiptCompletions.current
+                .get(replyAuthorityKey)
+                ?.get(pending.clientMessageId);
+              const acknowledgedMessageId = acknowledgedReceiptMessageId({
+                requestedAuthorityKey: replyAuthorityKey,
+                receiptAuthorityKey: replyAuthorityKey,
+                requestedClientMessageId: pending.clientMessageId,
+                receiptClientMessageId: pending.clientMessageId,
+                completion
+              });
+              if (acknowledgedMessageId) {
+                hydratedDraft = resolvePendingSend(
+                  hydratedDraft,
+                  pending.clientMessageId,
+                  "accepted",
+                  pending.body
+                );
+                hydratedDraft = teamDraftWithoutReceiptAck(
+                  hydratedDraft,
+                  pending.clientMessageId,
+                  acknowledgedMessageId
+                );
+              }
+            }
+            draftByAuthority.current.set(replyAuthorityKey, hydratedDraft);
+            if (threadDraftEditGeneration.current === capturedDraftGeneration)
+              setThreadDraftText(hydratedDraft.text);
+            setThreadPendingSend(hydratedDraft.pendingSend);
+            setThreadSendStatus(hydratedDraft.pendingSend ? "pending" : null);
+            if (current)
+              void persistDraft(replyAuthority, hydratedDraft).catch(() => {
+                if (
+                  authorityKeyRef.current === capturedAuthorityKey &&
+                  openRootRef.current?.id === root.id
+                )
+                  setStatus(
+                    "The encrypted reply draft could not be saved on this device."
+                  );
+              });
+          })
+          .catch(() => {
+            if (
+              authorityKeyRef.current === capturedAuthorityKey &&
+              openRootRef.current?.id === root.id
+            )
+              setStatus("The encrypted reply draft could not be opened.");
+          });
+      }
+      void loadRootReplies(root);
+    },
+    [authority, authorityKey, drafts, loadRootReplies, persistDraft]
+  );
+
+  const saveReplyDraft = useCallback(
+    (rootMessageId: string, text: string) => {
+      if (
+        !authority ||
+        authorityKeyRef.current !== authorityKey ||
+        openRootRef.current?.id !== rootMessageId ||
+        openRootRef.current.teamId !== authority.teamId ||
+        openRootRef.current.threadId !== authority.threadId
+      )
+        return;
+      const replyAuthority = { ...authority, rootMessageId };
+      const key = JSON.stringify(replyAuthority);
+      const draft = teamDraftAfterReplyTextChange(
+        draftByAuthority.current.get(key),
+        text,
+        null
+      );
+      draftByAuthority.current.set(key, draft);
+      void persistDraft(replyAuthority, draft).catch(() => {
+        if (
+          authorityKeyRef.current === authorityKey &&
+          openRootRef.current?.id === rootMessageId
+        )
+          setStatus(
+            "The encrypted reply draft could not be saved on this device."
+          );
+      });
+    },
+    [authority, authorityKey, persistDraft]
+  );
+
+  const sendThreadReply = useCallback(
+    async (text: string, clientMessageId?: string) => {
+      const root = openRootMessage;
+      if (!root || !authority || !activeTeam || !text.trim()) return false;
+      const identity =
+        threadPendingSend?.body === text
+          ? threadPendingSend
+          : {
+              clientMessageId: clientMessageId ?? crypto.randomUUID(),
+              body: text,
+              createdAt: new Date().toISOString()
+            };
+      const replyAuthority = { ...authority, rootMessageId: root.id };
+      const replyAuthorityKey = JSON.stringify(replyAuthority);
+      const sendKey = `${replyAuthorityKey}:${identity.clientMessageId}`;
+      if (threadSendInFlight.current.has(sendKey)) return false;
+      threadSendInFlight.current.add(sendKey);
+      const existingDraft = draftByAuthority.current.get(replyAuthorityKey);
+      const retryingExistingSend =
+        existingDraft?.pendingSend?.clientMessageId ===
+          identity.clientMessageId ||
+        threadPendingSend?.clientMessageId === identity.clientMessageId;
+      const pendingDraft = teamDraftForReplyAttempt(
+        existingDraft,
+        identity,
+        retryingExistingSend,
+        threadDraftText
+      );
+      setThreadPendingSend(identity);
+      setThreadSendStatus("pending");
+      setThreadDraftText(pendingDraft.text);
+      draftByAuthority.current.set(
+        JSON.stringify(replyAuthority),
+        pendingDraft
+      );
+      try {
+        try {
+          await drafts.saveDraft(replyAuthority, pendingDraft);
+        } catch {
+          draftByAuthority.current.set(replyAuthorityKey, {
+            text: identity.body,
+            pendingSend: null,
+            receiptAckPending: null
+          });
+          if (
+            authorityKeyRef.current === JSON.stringify(authority) &&
+            openRootRef.current?.id === root.id
+          ) {
+            setThreadPendingSend(null);
+            setThreadSendStatus(null);
+            setThreadDraftText(identity.body);
+            setStatus(
+              "The reply could not be saved on this device, so it was not sent."
+            );
+          }
+          return false;
+        }
+        if (snapshot?.connection.state !== "live") {
+          setStatus(
+            "Pending · the reply is saved on this device until you reconnect."
+          );
+          return false;
+        }
+        const receiptRecovery = await recoverPendingReceipt(
+          replyAuthority,
+          identity.clientMessageId
+        );
+        if (receiptRecovery === "recovered") return true;
+        if (receiptRecovery !== "missing") return false;
+        if (
+          authorityKeyRef.current !== JSON.stringify(authority) ||
+          openRootRef.current?.id !== root.id
+        )
+          return false;
+        const result = await run("collaboration.send_message", {
+          thread: {
+            scope: "team",
+            teamId: root.teamId,
+            threadId: root.threadId
+          },
+          rootMessageId: root.id,
+          clientMessageId: identity.clientMessageId,
+          body: identity.body
+        });
+        if (
+          result.ok &&
+          "message" in result.data &&
+          result.data.message.rootMessageId === root.id
+        ) {
+          const acceptedMessage = result.data.message;
+          const priorCompletion = receiptCompletions.current
+            .get(replyAuthorityKey)
+            ?.get(identity.clientMessageId);
+          const acknowledgedMessageId = acknowledgedReceiptMessageId({
+            requestedAuthorityKey: replyAuthorityKey,
+            receiptAuthorityKey: replyAuthorityKey,
+            requestedClientMessageId: identity.clientMessageId,
+            receiptClientMessageId: identity.clientMessageId,
+            completion: priorCompletion
+          });
+          draftByAuthority.current.set(
+            replyAuthorityKey,
+            teamDraftAfterAcceptedSendResult(
+              draftByAuthority.current.get(replyAuthorityKey),
+              identity,
+              acceptedMessage.id,
+              acknowledgedMessageId
+            )
+          );
+          const confirmed = await completeAcceptedReceipt(replyAuthority, {
+            thread: {
+              scope: "team",
+              teamId: root.teamId ?? activeTeam.id,
+              threadId: root.threadId
+            },
+            clientMessageId: identity.clientMessageId,
+            message: acceptedMessage,
+            acceptedBody:
+              "acceptedBody" in result.data &&
+              typeof result.data.acceptedBody === "string"
+                ? result.data.acceptedBody
+                : acceptedMessage.body
+          });
+          const settled = draftByAuthority.current.get(replyAuthorityKey);
+          if (
+            authorityKeyRef.current === JSON.stringify(authority) &&
+            openRootRef.current?.id === root.id
+          ) {
+            setThreadReplies((current) =>
+              mergeTeamMessages(current, [acceptedMessage])
+            );
+            setThreadSendStatus(confirmed ? null : "uncertain");
+            setThreadPendingSend(
+              pendingSendAfterReceiptResolution(settled, identity, confirmed)
+            );
+            setThreadDraftText(settled?.text ?? "");
+            setOpenRootMessage((current) =>
+              current?.id === root.id
+                ? { ...current, replyCount: current.replyCount + 1 }
+                : current
+            );
+          }
+          return confirmed;
+        }
+        if (result.ok && "durableSend" in result.data) {
+          const completion = receiptCompletions.current
+            .get(replyAuthorityKey)
+            ?.get(identity.clientMessageId);
+          if (
+            acknowledgedReceiptMessageId({
+              requestedAuthorityKey: replyAuthorityKey,
+              receiptAuthorityKey: replyAuthorityKey,
+              requestedClientMessageId: identity.clientMessageId,
+              receiptClientMessageId: identity.clientMessageId,
+              completion
+            })
+          )
+            return true;
+          if (
+            authorityKeyRef.current === JSON.stringify(authority) &&
+            openRootRef.current?.id === root.id
+          ) {
+            setThreadSendStatus(
+              result.data.durableSend.state === "failed"
+                ? "retry_failed"
+                : "pending"
+            );
+            setStatus(durableSendStatus(result.data.durableSend));
+          }
+          return false;
+        }
+        if (!result.ok && result.error.code === "access_revoked")
+          clearRevokedView();
+        else if (
+          !result.ok &&
+          authorityKeyRef.current === JSON.stringify(authority) &&
+          openRootRef.current?.id === root.id
+        ) {
+          setThreadSendStatus(
+            result.error.retryable ? "uncertain" : "retry_failed"
+          );
+          setStatus(result.error.userMessage);
+        } else if (
+          result.ok &&
+          authorityKeyRef.current === JSON.stringify(authority) &&
+          openRootRef.current?.id === root.id
+        ) {
+          setThreadSendStatus("uncertain");
+          setStatus(
+            "Reply delivery is still being confirmed. Retry with the saved identity when connected."
+          );
+        }
+        return false;
+      } catch (failure) {
+        if (
+          authorityKeyRef.current === JSON.stringify(authority) &&
+          openRootRef.current?.id === root.id
+        ) {
+          setThreadSendStatus("uncertain");
+          setStatus(
+            failure instanceof Error
+              ? failure.message
+              : "Reply delivery is being confirmed."
+          );
+        }
+        return false;
+      } finally {
+        threadSendInFlight.current.delete(sendKey);
+      }
+    },
+    [
+      activeTeam,
+      authority,
+      clearRevokedView,
+      completeAcceptedReceipt,
+      drafts,
+      openRootMessage,
+      recoverPendingReceipt,
+      run,
+      snapshot?.connection.state,
+      threadDraftText,
+      threadPendingSend
+    ]
+  );
+
+  const startThreadEdit = useCallback(
+    async (message: CollaborationMessage) => {
+      if (!authority) return;
+      const capturedRootId = openRootRef.current?.id;
+      const capturedAuthorityKey = authorityKey;
+      const editAuthority = { ...authority, editMessageId: message.id };
+      const stored = await drafts.loadDraft(editAuthority).catch(() => null);
+      if (
+        authorityKeyRef.current !== capturedAuthorityKey ||
+        openRootRef.current?.id !== capturedRootId
+      )
+        return;
+      const edit: ThreadEditDraft = stored?.edit
+        ? { text: stored.text, ...stored.edit }
+        : {
+            text: message.body,
+            expectedVersion: message.version,
+            baseBodyText: message.body
+          };
+      setThreadEditDrafts((current) => new Map(current).set(message.id, edit));
+    },
+    [authority, authorityKey, drafts]
+  );
+
+  const persistThreadEdit = useCallback(
+    (message: CollaborationMessage, edit: ThreadEditDraft) => {
+      if (!authority) return;
+      setThreadEditDrafts((current) => new Map(current).set(message.id, edit));
+      void drafts
+        .saveDraft(
+          { ...authority, editMessageId: message.id },
+          {
+            text: edit.text,
+            pendingSend: null,
+            receiptAckPending: null,
+            edit: {
+              expectedVersion: edit.expectedVersion,
+              baseBodyText: edit.baseBodyText,
+              ...(edit.conflict ? { conflict: edit.conflict } : {})
+            }
+          }
+        )
+        .catch(() =>
+          setStatus(
+            "The encrypted edit draft could not be saved on this device."
+          )
+        );
+    },
+    [authority, drafts]
+  );
+
+  const saveThreadEdit = useCallback(
+    async (message: CollaborationMessage, edit: ThreadEditDraft) => {
+      if (!activeTeam || !activeThread || snapshot?.connection.state !== "live")
+        return;
+      const capturedAuthorityKey = authorityKey;
+      const capturedAuthority = authority;
+      const capturedRootId = openRootMessage?.id;
+      const result = await run("collaboration.edit_message", {
+        thread: {
+          scope: "team",
+          teamId: activeTeam.id,
+          threadId: activeThread.id
+        },
+        messageId: message.id,
+        body: edit.text,
+        expectedVersion: edit.expectedVersion
+      });
+      if (result.ok && "message" in result.data) {
+        const updated = result.data.message;
+        if (
+          authorityKeyRef.current !== capturedAuthorityKey ||
+          openRootRef.current?.id !== capturedRootId
+        ) {
+          if (capturedAuthority)
+            await drafts
+              .deleteDraft({ ...capturedAuthority, editMessageId: message.id })
+              .catch(() => undefined);
+          return;
+        }
+        setMessages((current) => mergeTeamMessages(current, [updated]));
+        if (updated.rootMessageId !== null)
+          setThreadReplies((current) => mergeTeamMessages(current, [updated]));
+        setOpenRootMessage((current) =>
+          current?.id === updated.id ? updated : current
+        );
+        setThreadEditDrafts((current) => {
+          const next = new Map(current);
+          next.delete(message.id);
+          return next;
+        });
+        if (capturedAuthority)
+          await drafts
+            .deleteDraft({ ...capturedAuthority, editMessageId: message.id })
+            .catch(() => undefined);
+      } else if (!result.ok && result.error.code === "access_revoked")
+        clearRevokedView();
+      else if (!result.ok) {
+        if (
+          authorityKeyRef.current !== capturedAuthorityKey ||
+          openRootRef.current?.id !== capturedRootId
+        )
+          return;
+        let cursor: string | null = null;
+        let latest: CollaborationMessage | undefined;
+        while (!latest) {
+          const latestPage = await run("collaboration.load_message_page", {
+            thread: {
+              scope: "team",
+              teamId: activeTeam.id,
+              threadId: activeThread.id
+            },
+            rootMessageId: message.rootMessageId ?? null,
+            direction: cursor === null ? "newer" : "older",
+            cursor,
+            limit: 50
+          });
+          if (!latestPage.ok || !("page" in latestPage.data)) return;
+          const parsed = collaborationMessagePageSchema.safeParse(
+            latestPage.data.page
+          );
+          if (
+            !parsed.success ||
+            authorityKeyRef.current !== capturedAuthorityKey ||
+            openRootRef.current?.id !== capturedRootId
+          )
+            return;
+          latest = parsed.data.items.find((item) => item.id === message.id);
+          if (latest || !parsed.data.hasOlder || !parsed.data.olderCursor)
+            break;
+          cursor = parsed.data.olderCursor;
+        }
+        if (latest) {
+          const conflict = editDraftAfterConflict(
+            { text: edit.text, edit },
+            { version: latest.version, bodyText: latest.body }
+          );
+          if (conflict.edit)
+            persistThreadEdit(message, { ...edit, ...conflict.edit });
+          setMessages((current) => mergeTeamMessages(current, [latest]));
+          if (latest.rootMessageId !== null)
+            setThreadReplies((current) => mergeTeamMessages(current, [latest]));
+        }
+        if (
+          authorityKeyRef.current === capturedAuthorityKey &&
+          openRootRef.current?.id === capturedRootId
+        )
+          setStatus(result.error.userMessage);
+      }
+    },
+    [
+      activeTeam,
+      activeThread,
+      authority,
+      authorityKey,
+      clearRevokedView,
+      drafts,
+      openRootMessage?.id,
+      persistThreadEdit,
+      run,
+      snapshot?.connection.state
+    ]
+  );
+
+  const toggleThreadReaction = useCallback(
+    async (message: CollaborationMessage, emoji: string) => {
+      if (!activeTeam || !activeThread || snapshot?.connection.state !== "live")
+        return;
+      const capturedAuthorityKey = authorityKey;
+      const capturedRoot = openRootRef.current;
+      if (
+        !capturedAuthorityKey ||
+        !messageReactionMayStart({
+          message,
+          teamId: activeTeam.id,
+          threadId: activeThread.id,
+          openRootMessageId:
+            capturedRoot?.teamId === activeTeam.id &&
+            capturedRoot.threadId === activeThread.id
+              ? capturedRoot.id
+              : null
+        })
+      )
+        return;
+      const existing = message.reactions.find((item) => item.emoji === emoji);
+      const result = await run("collaboration.set_message_reaction", {
+        thread: {
+          scope: "team",
+          teamId: activeTeam.id,
+          threadId: activeThread.id
+        },
+        messageId: message.id,
+        emoji,
+        active: !existing?.reacted
+      });
+      if (authorityKeyRef.current !== capturedAuthorityKey) return;
+      if (result.ok && "message" in result.data) {
+        const updated = result.data.message;
+        setMessages((current) => mergeTeamMessages(current, [updated]));
+        const currentRootId = openRootRef.current?.id ?? null;
+        if (
+          currentRootId &&
+          currentRootId === capturedRoot?.id &&
+          messageReactionMayUpdateOpenPane({
+            message: updated,
+            openRootMessageId: currentRootId
+          }) &&
+          updated.rootMessageId !== null
+        )
+          setThreadReplies((current) => mergeTeamMessages(current, [updated]));
+        if (
+          currentRootId &&
+          currentRootId === capturedRoot?.id &&
+          updated.id === currentRootId
+        )
+          setOpenRootMessage((current) =>
+            current?.id === updated.id ? updated : current
+          );
+      } else if (!result.ok && result.error.code === "access_revoked")
+        clearRevokedView();
+    },
+    [
+      activeTeam,
+      activeThread,
+      authorityKey,
+      clearRevokedView,
+      run,
+      snapshot?.connection.state
+    ]
+  );
+
+  const markThreadReplyVisible = useCallback(
+    (message: CollaborationMessage) => {
+      const root = openRootRef.current;
+      if (
+        !authority ||
+        !root ||
+        message.rootMessageId !== root.id ||
+        snapshot?.connection.state !== "live"
+      )
+        return;
+      const key = JSON.stringify({ ...authority, rootMessageId: root.id });
+      const lastReportedSequence = readSequenceFor(
+        threadReadReported.current,
+        key
+      );
+      if (
+        threadReadPending.current.get(key) === message.sequence ||
+        !visibleReplyReadMayAdvance({
+          rootMessageId: root.id,
+          replyMessageId: message.id,
+          sequence: message.sequence,
+          senderId: message.sender.id,
+          principalUserId: authority.principalUserId,
+          focused:
+            document.visibilityState === "visible" && document.hasFocus(),
+          rootPaneVisible: openRootRef.current?.id === root.id,
+          lastReportedSequence
+        })
+      )
+        return;
+      threadReadPending.current.set(key, message.sequence);
+      void run("collaboration.mark_read", {
+        thread: {
+          scope: "team",
+          teamId: root.teamId ?? teamId,
+          threadId: root.threadId
+        },
+        rootMessageId: root.id,
+        messageId: message.id
+      })
+        .then((result) => {
+          if (result.ok && authorityKeyRef.current === authorityKey) {
+            rememberReadSequence(
+              threadReadReported.current,
+              key,
+              message.sequence
+            );
+            void loadRootReplies(root);
+          }
+        })
+        .finally(() => {
+          if (threadReadPending.current.get(key) === message.sequence)
+            threadReadPending.current.delete(key);
+        });
+    },
+    [
+      authority,
+      authorityKey,
+      loadRootReplies,
+      run,
+      snapshot?.connection.state,
+      teamId
+    ]
+  );
+
+  const replyRetryAttempted = useRef<string | null>(null);
+  useEffect(() => {
+    if (snapshot?.connection.state !== "live") {
+      replyRetryAttempted.current = null;
+      return;
+    }
+    if (
+      !openRootMessage ||
+      !threadPendingSend ||
+      replyRetryAttempted.current === threadPendingSend.clientMessageId
+    )
+      return;
+    replyRetryAttempted.current = threadPendingSend.clientMessageId;
+    void sendThreadReply(
+      threadPendingSend.body,
+      threadPendingSend.clientMessageId
+    );
+  }, [
+    openRootMessage,
+    sendThreadReply,
+    snapshot?.connection.state,
+    threadPendingSend
+  ]);
+
   useEffect(() => {
     setVisibleRead(null);
   }, [teamId, threadId]);
@@ -1023,13 +1914,25 @@ export function TeamChannelWorkspace({
         else setStatus(selected.error.userMessage);
         return;
       }
-      const selectedSnapshot = client.current();
+      if (!("snapshot" in selected.data)) return;
+      const selectedSnapshot = selected.data.snapshot;
+      const selectedTeamId =
+        "teamId" in selectedSnapshot.selection
+          ? selectedSnapshot.selection.teamId
+          : null;
       if (
-        !selectedSnapshot ||
-        selectedSnapshot.connection.backendId !== expectedBackendId ||
-        selectedSnapshot.navigation.teamPrincipal?.id !== expectedPrincipalId ||
-        !("teamId" in selectedSnapshot.selection) ||
-        selectedSnapshot.selection.teamId !== teamId
+        !selectedTeamSnapshotMayStartSubscription({
+          active,
+          currentTeamId: selectedRef.current.teamId,
+          expectedBackendId,
+          expectedPrincipalId,
+          teamId,
+          selectedSnapshot: {
+            connection: selectedSnapshot.connection,
+            navigation: selectedSnapshot.navigation,
+            selectionTeamId: selectedTeamId
+          }
+        })
       )
         return;
       unsubscribe = client.subscribe(
@@ -1060,6 +1963,41 @@ export function TeamChannelWorkspace({
             )
               return true;
             const changedThread = event.resource.threadId;
+            if (
+              (event.update.type === "message_created" ||
+                event.update.type === "message_updated") &&
+              event.update.message.teamId === teamId &&
+              event.update.message.threadId === selected.threadId &&
+              authorityKeyRef.current ===
+                JSON.stringify({
+                  backendId: expectedBackendId,
+                  principalUserId: expectedPrincipalId,
+                  teamId,
+                  threadId: selected.threadId
+                })
+            ) {
+              const message = event.update.message;
+              const currentRoot = openRootRef.current;
+              setMessages((current) => mergeTeamMessages(current, [message]));
+              if (
+                currentRoot &&
+                currentRoot.teamId === teamId &&
+                currentRoot.threadId === selected.threadId &&
+                openRootRef.current?.id === currentRoot.id
+              ) {
+                if (
+                  message.id === currentRoot.id &&
+                  message.rootMessageId === null
+                )
+                  setOpenRootMessage((current) =>
+                    current?.id === currentRoot.id ? message : current
+                  );
+                else if (message.rootMessageId === currentRoot.id)
+                  setThreadReplies((current) =>
+                    mergeTeamMessages(current, [message])
+                  );
+              }
+            }
             const historyApplied =
               changedThread && changedThread === selected.threadId
                 ? await loadPageRef.current(changedThread, selected.teamId)
@@ -1090,6 +2028,16 @@ export function TeamChannelWorkspace({
               !durableSendMatchesAuthority(event.send, currentAuthorityKey)
             )
               return true;
+            const sendDraftAuthority: DraftAuthority = {
+              backendId: sendAuthority.backendId,
+              principalUserId: sendAuthority.principalUserId,
+              teamId: sendAuthority.teamId,
+              threadId: sendAuthority.threadId,
+              ...(event.send.rootMessageId
+                ? { rootMessageId: event.send.rootMessageId }
+                : {})
+            };
+            const sendDraftKey = JSON.stringify(sendDraftAuthority);
             if (event.send.state === "sent") {
               const message = event.message;
               if (
@@ -1097,25 +2045,12 @@ export function TeamChannelWorkspace({
                 message.clientMessageId !== event.send.clientMessageId
               )
                 return true;
-              const draftAuthority: DraftAuthority = {
-                backendId: sendAuthority.backendId,
-                principalUserId: sendAuthority.principalUserId,
-                teamId: sendAuthority.teamId,
-                threadId: sendAuthority.threadId
-              };
-              void completeAcceptedReceipt(draftAuthority, {
-                thread: {
-                  scope: "team",
-                  teamId: sendAuthority.teamId,
-                  threadId: sendAuthority.threadId
-                },
-                clientMessageId: event.send.clientMessageId,
-                message
-              });
+              void recoverPendingReceipt(
+                sendDraftAuthority,
+                event.send.clientMessageId
+              );
             } else {
-              const latest = currentAuthorityKey
-                ? draftByAuthority.current.get(currentAuthorityKey)
-                : undefined;
+              const latest = draftByAuthority.current.get(sendDraftKey);
               if (
                 latest?.pendingSend?.clientMessageId ===
                 event.send.clientMessageId
@@ -1129,34 +2064,47 @@ export function TeamChannelWorkspace({
                   clearRevokedView();
                   return true;
                 }
-                if (event.send.state === "failed" && currentAuthorityKey) {
+                if (event.send.state === "failed") {
                   const settled = resolvePendingSend(
                     latest,
                     event.send.clientMessageId,
                     "not-sent",
                     latest.pendingSend.body
                   );
-                  draftByAuthority.current.set(currentAuthorityKey, settled);
-                  setDraftText(settled.text);
-                  setPendingSend(settled.pendingSend);
+                  draftByAuthority.current.set(sendDraftKey, settled);
+                  if (
+                    event.send.rootMessageId &&
+                    openRootRef.current?.id === event.send.rootMessageId
+                  ) {
+                    setThreadDraftText(settled.text);
+                    setThreadPendingSend(settled.pendingSend);
+                    setThreadSendStatus("retry_failed");
+                  } else if (
+                    !event.send.rootMessageId &&
+                    authorityKeyRef.current === currentAuthorityKey
+                  ) {
+                    setDraftText(settled.text);
+                    setPendingSend(settled.pendingSend);
+                  }
                   setStatus(
                     event.send.failure?.userMessage
                       ? `Not sent. ${event.send.failure.userMessage}`
                       : "Message was not sent. Your draft is ready to send again."
                   );
-                  const draftAuthority: DraftAuthority = {
-                    backendId: sendAuthority.backendId,
-                    principalUserId: sendAuthority.principalUserId,
-                    teamId: sendAuthority.teamId,
-                    threadId: sendAuthority.threadId
-                  };
-                  void persistDraft(draftAuthority, settled).catch(() => {
+                  void persistDraft(sendDraftAuthority, settled).catch(() => {
                     if (authorityKeyRef.current === currentAuthorityKey)
                       setStatus(
                         "Message was not sent. The updated draft could not be saved on this device."
                       );
                   });
                 } else {
+                  if (
+                    event.send.rootMessageId &&
+                    openRootRef.current?.id === event.send.rootMessageId
+                  )
+                    setThreadSendStatus(
+                      durableSendStatus(event.send) ? "pending" : null
+                    );
                   setStatus(durableSendStatus(event.send));
                 }
               }
@@ -1785,8 +2733,18 @@ export function TeamChannelWorkspace({
         body
       });
       if (revokedRef.current) return false;
-      const sentMessage =
-        result.ok && "message" in result.data ? result.data.message : null;
+      const acceptedReceipt =
+        result.ok && "message" in result.data
+          ? {
+              message: result.data.message,
+              acceptedBody:
+                "acceptedBody" in result.data &&
+                typeof result.data.acceptedBody === "string"
+                  ? result.data.acceptedBody
+                  : result.data.message.body
+            }
+          : null;
+      const sentMessage = acceptedReceipt?.message ?? null;
       const currentlySelected = studioSelectionMatches(
         { teamId: capturedTeamId, threadId: capturedThreadId },
         selectedRef.current
@@ -1808,7 +2766,8 @@ export function TeamChannelWorkspace({
               threadId: capturedThreadId
             },
             clientMessageId: nextPending.clientMessageId,
-            message: sentMessage
+            message: sentMessage,
+            acceptedBody: acceptedReceipt!.acceptedBody
           });
         }
       } else if (result.ok && "durableSend" in result.data) {
@@ -1914,6 +2873,15 @@ export function TeamChannelWorkspace({
     teamProjectId: string
   ): Promise<boolean> => {
     if (!activeTeam || !snapshot?.navigation.teamPrincipal) return false;
+    if (
+      intent.rootMessageId &&
+      openRootRef.current?.id !== intent.rootMessageId
+    ) {
+      setStatus(
+        "This Agent request belongs to a different message thread. Reopen that thread to continue."
+      );
+      return false;
+    }
     const capturedTeamId = activeTeam.id;
     const capturedThreadId = activeThread?.id;
     setAgentMentionBusy(true);
@@ -1925,7 +2893,8 @@ export function TeamChannelWorkspace({
           teamProjectId,
           channelId: capturedThreadId ?? "",
           agentId: intent.agent.id,
-          requestText: intent.text
+          requestText: intent.text,
+          rootMessageId: intent.rootMessageId ?? null
         });
         setAgentRequestRevision((revision) => revision + 1);
         setStatus("Request sent to the Agent owner for private review.");
@@ -1941,6 +2910,11 @@ export function TeamChannelWorkspace({
         capturedTeamId,
         teamProjectId
       );
+      if (
+        intent.rootMessageId &&
+        openRootRef.current?.id !== intent.rootMessageId
+      )
+        return false;
       if (connection.localProjectId === null) {
         setStatus(
           "Connect this Team Project to a local Project in Public Square before opening your Agent."
@@ -1948,10 +2922,12 @@ export function TeamChannelWorkspace({
         return false;
       }
       if (!capturedThreadId) return false;
-      const sent = await send(intent.text, {
-        awaitReceipt: true,
-        clientMessageId: intent.sendClientMessageId
-      });
+      const sent = intent.rootMessageId
+        ? await sendThreadReply(intent.text, intent.sendClientMessageId)
+        : await send(intent.text, {
+            awaitReceipt: true,
+            clientMessageId: intent.sendClientMessageId
+          });
       if (!sent) return false;
       if (
         selectedRef.current.teamId !== capturedTeamId ||
@@ -1969,11 +2945,18 @@ export function TeamChannelWorkspace({
             agentName: intent.agent.name,
             channelName: activeThread?.name ?? "channel",
             typedMessage: intent.text,
-            recentMessages: visibleMessages.map((message) => ({
-              senderName: message.sender.displayName,
-              body: message.body,
-              delivery: message.delivery
-            }))
+            recentMessages: (intent.rootMessageId
+              ? [openRootMessage, ...threadReplies]
+              : visibleMessages
+            )
+              .filter((message): message is CollaborationMessage =>
+                Boolean(message)
+              )
+              .map((message) => ({
+                senderName: message.sender.displayName,
+                body: message.body,
+                delivery: message.delivery
+              }))
           })
         })
       );
@@ -2613,83 +3596,262 @@ export function TeamChannelWorkspace({
               />
             ) : (
               <>
-                <div
-                  ref={bodyRef}
-                  className={`mx-auto max-w-3xl pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}
-                >
-                  {!activeDirectMessage && activeThread && (
-                    <TeamChannelAgentRequests
-                      teamId={activeTeam.id}
-                      channelId={activeThread.id}
-                      viewerId={snapshot.navigation.teamPrincipal?.id ?? ""}
-                      authorityKey={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${activeTeam.id}`}
-                      refreshRevision={agentRequestRevision}
-                      client={teamAgentRequestsClient}
-                      onAuthorizationLost={handleSquareAuthorizationLost}
-                      onReview={(request) => void openRequestReview(request)}
-                      onViewWork={openRequestWork}
-                      onRequestsChanged={setChannelRequests}
-                    />
-                  )}
-                  {visiblePage?.hasOlder && (
-                    <button
-                      type="button"
-                      onClick={loadOlder}
-                      className="mx-auto block text-xs text-muted hover:text-foreground"
-                    >
-                      Load older messages
-                    </button>
-                  )}
-                  {visibleMessages.length === 0 && !loading && (
-                    <p className="pt-8 text-sm text-subtle">
-                      {activeDirectMessage
-                        ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
-                        : "No messages yet. Start the conversation."}
-                    </p>
-                  )}
-                  {visibleMessages.map((message) => (
-                    <MessageRow
-                      key={message.id}
-                      message={message}
-                      forwardRequests={
-                        !activeDirectMessage &&
-                        message.sender.id !==
-                          (snapshot.navigation.teamPrincipal?.id ?? "")
-                          ? channelRequests.filter(
-                              (request) =>
-                                request.teamId === activeTeam.id &&
-                                request.channelId === message.threadId &&
-                                canForwardTeamAnswer(
-                                  request,
-                                  snapshot.navigation.teamPrincipal?.id ?? ""
-                                )
-                            )
-                          : []
+                <div className="flex min-h-0 min-w-0 flex-1">
+                  <div
+                    ref={bodyRef}
+                    className={`mx-auto min-w-0 max-w-3xl flex-1 overflow-y-auto pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}
+                  >
+                    {!activeDirectMessage && activeThread && (
+                      <TeamChannelAgentRequests
+                        teamId={activeTeam.id}
+                        channelId={activeThread.id}
+                        viewerId={snapshot.navigation.teamPrincipal?.id ?? ""}
+                        authorityKey={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${activeTeam.id}`}
+                        refreshRevision={agentRequestRevision}
+                        client={teamAgentRequestsClient}
+                        onAuthorizationLost={handleSquareAuthorizationLost}
+                        onReview={(request) => void openRequestReview(request)}
+                        onViewWork={openRequestWork}
+                        onRequestsChanged={setChannelRequests}
+                      />
+                    )}
+                    {visiblePage?.hasOlder && (
+                      <button
+                        type="button"
+                        onClick={loadOlder}
+                        className="mx-auto block text-xs text-muted hover:text-foreground"
+                      >
+                        Load older messages
+                      </button>
+                    )}
+                    {visibleMessages.length === 0 && !loading && (
+                      <p className="pt-8 text-sm text-subtle">
+                        {activeDirectMessage
+                          ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
+                          : "No messages yet. Start the conversation."}
+                      </p>
+                    )}
+                    {visibleChannelMessages.map((message) => (
+                      <MessageRow
+                        key={message.id}
+                        message={message}
+                        forwardRequests={
+                          !activeDirectMessage &&
+                          message.sender.id !==
+                            (snapshot.navigation.teamPrincipal?.id ?? "")
+                            ? forwardableTeamRequestsForChannelMessage({
+                                requests: channelRequests,
+                                message,
+                                viewerId:
+                                  snapshot.navigation.teamPrincipal?.id ?? "",
+                                teamId: activeTeam.id
+                              })
+                            : []
+                        }
+                        forwardRequestTextById={Object.fromEntries(
+                          channelRequests.map((request) => [
+                            request.id,
+                            visibleMessages.find(
+                              (candidate) =>
+                                candidate.id === request.requestMessageId
+                            )?.body ?? ""
+                          ])
+                        )}
+                        onForwardAnswer={(request) =>
+                          void forwardChannelAnswer(request, message)
+                        }
+                        onVisibility={onMessageVisibility}
+                        onOpenThread={
+                          !activeDirectMessage ? openMessageThread : undefined
+                        }
+                        onEditMessage={
+                          !activeDirectMessage
+                            ? (item) => {
+                                openMessageThread(item);
+                                void startThreadEdit(item);
+                              }
+                            : undefined
+                        }
+                        onToggleReaction={
+                          !activeDirectMessage
+                            ? toggleThreadReaction
+                            : undefined
+                        }
+                        principalUserId={
+                          snapshot.navigation.teamPrincipal?.id ?? ""
+                        }
+                        directMessagePrincipalUserId={
+                          activeDirectMessage
+                            ? (snapshot.navigation.teamPrincipal?.id ?? "")
+                            : undefined
+                        }
+                      />
+                    ))}
+                    {status && (
+                      <p role="status" className="text-xs text-warning">
+                        {status}
+                      </p>
+                    )}
+                  </div>
+                  {!activeDirectMessage && visibleOpenRoot && (
+                    <TeamMessageThreadPane
+                      root={visibleOpenRoot}
+                      replies={threadReplies}
+                      hasOlderReplies={Boolean(
+                        threadPage?.hasOlder && threadPage.olderCursor
+                      )}
+                      principalUserId={
+                        snapshot.navigation.teamPrincipal?.id ?? ""
                       }
+                      connected={snapshot.connection.state === "live"}
+                      replyDraft={threadDraftText}
+                      pendingSend={threadPendingSend}
+                      pendingStatus={threadSendStatus}
+                      editDrafts={threadEditDrafts}
+                      agents={teamAgentMentions.options}
+                      key={`${authorityKey ?? ""}:${visibleOpenRoot.id}`}
+                      agentRequests={
+                        activeThread && (
+                          <TeamChannelAgentRequests
+                            key={`requests:${authorityKey ?? ""}:${visibleOpenRoot.id}`}
+                            teamId={activeTeam.id}
+                            channelId={activeThread.id}
+                            originRootMessageId={visibleOpenRoot.id}
+                            viewerId={
+                              snapshot.navigation.teamPrincipal?.id ?? ""
+                            }
+                            authorityKey={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${activeTeam.id}`}
+                            refreshRevision={agentRequestRevision}
+                            client={teamAgentRequestsClient}
+                            onAuthorizationLost={handleSquareAuthorizationLost}
+                            onReview={(request) =>
+                              void openRequestReview(request)
+                            }
+                            onViewWork={openRequestWork}
+                            onRequestsChanged={setThreadRequests}
+                          />
+                        )
+                      }
+                      forwardRequestsByMessage={Object.fromEntries(
+                        threadReplies.map((message) => [
+                          message.id,
+                          forwardableTeamRequestsForReply({
+                            requests: threadRequests,
+                            message,
+                            viewerId:
+                              snapshot.navigation.teamPrincipal?.id ?? "",
+                            teamId: activeTeam.id,
+                            threadId: visibleOpenRoot.threadId,
+                            rootMessageId: visibleOpenRoot.id
+                          })
+                        ])
+                      )}
                       forwardRequestTextById={Object.fromEntries(
-                        channelRequests.map((request) => [
+                        threadRequests.map((request) => [
                           request.id,
-                          visibleMessages.find(
+                          threadReplies.find(
                             (candidate) =>
                               candidate.id === request.requestMessageId
                           )?.body ?? ""
                         ])
                       )}
-                      onForwardAnswer={(request) =>
+                      onForwardAnswer={(request, message) =>
                         void forwardChannelAnswer(request, message)
                       }
-                      onVisibility={onMessageVisibility}
-                      directMessagePrincipalUserId={
-                        activeDirectMessage
-                          ? (snapshot.navigation.teamPrincipal?.id ?? "")
-                          : undefined
+                      onClose={() => {
+                        setOpenRootMessage(null);
+                        openRootRef.current = null;
+                        setOpenRootAuthorityKey(null);
+                      }}
+                      onReplyDraftChange={(text) => {
+                        threadDraftEditGeneration.current += 1;
+                        setThreadDraftText(text);
+                        saveReplyDraft(visibleOpenRoot.id, text);
+                      }}
+                      onSendReply={async (text, selection) => {
+                        if (selection.agentId) {
+                          const agent = teamAgentMentions.options.find(
+                            (item) => item.id === selection.agentId
+                          );
+                          if (!agent) {
+                            setStatus(
+                              "This Agent is no longer available. Refresh Team Agents and try again."
+                            );
+                            return;
+                          }
+                          const intent = {
+                            agent,
+                            text,
+                            idempotencyKey: crypto.randomUUID(),
+                            sendClientMessageId: crypto.randomUUID(),
+                            rootMessageId: visibleOpenRoot.id
+                          };
+                          if (activeThread?.kind === "team_project_channel")
+                            void completeAgentMention(
+                              intent,
+                              activeThread.teamProjectId
+                            );
+                          else if (activeTeam.sharedProjects.length === 0)
+                            setStatus(
+                              "Share a Team Project before requesting an Agent."
+                            );
+                          else setPendingAgentMention(intent);
+                          return;
+                        }
+                        await sendThreadReply(text);
+                      }}
+                      onRetryPending={async () => {
+                        if (threadPendingSend)
+                          await sendThreadReply(
+                            threadPendingSend.body,
+                            threadPendingSend.clientMessageId
+                          );
+                      }}
+                      onStartEdit={(message) => void startThreadEdit(message)}
+                      onCancelEdit={(message) => {
+                        setThreadEditDrafts((current) => {
+                          const next = new Map(current);
+                          next.delete(message.id);
+                          return next;
+                        });
+                        if (authority)
+                          void drafts.deleteDraft({
+                            ...authority,
+                            editMessageId: message.id
+                          });
+                      }}
+                      onEditDraftChange={(message, text) => {
+                        const current = threadEditDrafts.get(message.id);
+                        if (current)
+                          persistThreadEdit(message, { ...current, text });
+                      }}
+                      onSaveEdit={(message, edit) =>
+                        saveThreadEdit(message, edit)
                       }
+                      onReviewEditConflict={(message) => {
+                        const current = threadEditDrafts.get(message.id);
+                        if (current) {
+                          const reviewed = editDraftAfterConflictReview({
+                            text: current.text,
+                            edit: current
+                          });
+                          if (!reviewed.edit) return;
+                          persistThreadEdit(message, {
+                            ...reviewed.edit,
+                            text: reviewed.text
+                          });
+                        }
+                      }}
+                      onToggleReaction={toggleThreadReaction}
+                      onLoadOlderReplies={() => {
+                        if (threadPage?.olderCursor)
+                          void loadRootReplies(
+                            visibleOpenRoot,
+                            threadPage.olderCursor
+                          );
+                      }}
+                      onReplyVisible={markThreadReplyVisible}
                     />
-                  ))}
-                  {status && (
-                    <p role="status" className="text-xs text-warning">
-                      {status}
-                    </p>
                   )}
                 </div>
               </>
@@ -2744,7 +3906,11 @@ function MessageRow({
   directMessagePrincipalUserId,
   forwardRequests = [],
   forwardRequestTextById = {},
-  onForwardAnswer
+  onForwardAnswer,
+  onOpenThread,
+  onEditMessage,
+  onToggleReaction,
+  principalUserId = ""
 }: {
   message: CollaborationMessage;
   onVisibility: (message: CollaborationMessage, visible: boolean) => void;
@@ -2752,6 +3918,13 @@ function MessageRow({
   forwardRequests?: TeamAgentRequest[];
   forwardRequestTextById?: Record<string, string>;
   onForwardAnswer?: (request: TeamAgentRequest) => void;
+  onOpenThread?: (message: CollaborationMessage) => void;
+  onEditMessage?: (message: CollaborationMessage) => void;
+  onToggleReaction?: (
+    message: CollaborationMessage,
+    emoji: string
+  ) => void | Promise<void>;
+  principalUserId?: string;
 }) {
   const name = message.sender.displayName ?? "Team member";
   const rowRef = useRef<HTMLElement>(null);
@@ -2795,6 +3968,7 @@ function MessageRow({
   const isDirectMessage = directMessagePrincipalUserId !== undefined;
   const isYou =
     isDirectMessage && message.sender.id === directMessagePrincipalUserId;
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   return (
     <article
       ref={rowRef}
@@ -2828,6 +4002,9 @@ function MessageRow({
               <time className="text-[10px] text-subtle">
                 {new Date(message.createdAt).toLocaleString()}
               </time>
+              {message.editedAt && (
+                <span className="text-[10px] text-subtle">Edited</span>
+              )}
             </div>
             <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">
               {message.body}
@@ -2854,6 +4031,81 @@ function MessageRow({
                 </button>
               );
             })}
+            {message.reactions.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {message.reactions.map((reaction) => (
+                  <button
+                    key={reaction.emoji}
+                    type="button"
+                    disabled={!onToggleReaction}
+                    aria-pressed={reaction.reacted}
+                    onClick={() =>
+                      void onToggleReaction?.(message, reaction.emoji)
+                    }
+                    className={`rounded-full border px-2 py-0.5 text-xs disabled:opacity-50 ${reaction.reacted ? "border-accent/50 bg-accent/10 text-accent" : "border-border bg-surface-hover text-foreground-secondary hover:bg-surface-active"}`}
+                  >
+                    {reaction.emoji} {reaction.count}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!isDirectMessage && (
+              <div className="relative mt-1 flex items-center gap-3">
+                {onOpenThread && (
+                  <button
+                    type="button"
+                    aria-label={`Reply in thread to ${name}`}
+                    onClick={() => onOpenThread(message)}
+                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    {message.replyCount > 0
+                      ? `${message.replyCount} ${message.replyCount === 1 ? "reply" : "replies"}`
+                      : "Reply in thread"}
+                  </button>
+                )}
+                {onEditMessage && message.sender.id === principalUserId && (
+                  <button
+                    type="button"
+                    aria-label="Edit message"
+                    onClick={() => onEditMessage(message)}
+                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    Edit
+                  </button>
+                )}
+                {onToggleReaction && (
+                  <button
+                    type="button"
+                    aria-label="Add reaction"
+                    onClick={() => setReactionPickerOpen((value) => !value)}
+                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
+                  >
+                    <SmilePlus className="h-3.5 w-3.5" />
+                    React
+                  </button>
+                )}
+                {reactionPickerOpen && (
+                  <div className="absolute left-0 top-6 z-10 flex gap-1 rounded-md border border-border bg-surface p-1 shadow-lg">
+                    {["👍", "❤️", "😂", "🎉", "👀"].map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        aria-label={`React ${emoji}`}
+                        onClick={() => {
+                          setReactionPickerOpen(false);
+                          void onToggleReaction?.(message, emoji);
+                        }}
+                        className="rounded px-1.5 py-1 hover:bg-surface-hover"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </>
       )}

@@ -853,7 +853,8 @@ export function LiveAgentChat({
           );
         }
       }
-      if (!controller.signal.aborted) timer = setTimeout(poll, 2500);
+      if (!controller.signal.aborted)
+        timer = setTimeout(() => void poll(), 2500);
     };
     void poll();
     return () => {
@@ -1704,7 +1705,8 @@ export function LiveAgentChat({
         threadId: request.channelId
       },
       clientMessageId,
-      body: text
+      body: text,
+      rootMessageId: request.originRootMessageId
     });
     if (!result.ok) throw new Error(result.error.userMessage);
     const delivery = teamQuestionSendStatus(result.data);
@@ -1722,7 +1724,8 @@ export function LiveAgentChat({
             teamId: request.teamId,
             threadId: request.channelId
           },
-          clientMessageId
+          clientMessageId,
+          rootMessageId: request.originRootMessageId
         }),
         deadline
       );
@@ -1737,7 +1740,8 @@ export function LiveAgentChat({
             teamId: request.teamId,
             threadId: request.channelId,
             clientMessageId,
-            body: text
+            body: text,
+            rootMessageId: request.originRootMessageId
           })
         )
           throw new Error(
@@ -1750,6 +1754,7 @@ export function LiveAgentChat({
               teamId: request.teamId,
               threadId: request.channelId
             },
+            rootMessageId: request.originRootMessageId,
             clientMessageId,
             messageId: receipt.message.id
           }),

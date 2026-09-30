@@ -1,4 +1,5 @@
 import { createServer as createHttpServer } from "node:http";
+import { Buffer } from "node:buffer";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { extname, relative, resolve, sep } from "node:path";
@@ -46,7 +47,8 @@ const UPSTREAM_TIMEOUT_MS = 8_000;
 const GITHUB_BODY_MAX_BYTES = 4 * 1024;
 const COLLABORATION_ACTION_BODY_MAX_BYTES = 3 * 1024;
 const STUDIO_COLLABORATION_COMMAND_BODY_MAX_BYTES = 96 * 1024;
-const STUDIO_TEAM_DRAFT_BODY_MAX_BYTES = 192 * 1024;
+// Editing stores the draft, its base text and a conflicting saved version.
+const STUDIO_TEAM_DRAFT_BODY_MAX_BYTES = 1024 * 1024;
 const GITHUB_SESSION_TTL_MS = 10 * 60 * 1_000;
 const GITHUB_SESSION_MAX = 64;
 const PROJECT_SELECTION_TTL_MS = 10 * 60 * 1_000;
@@ -1005,8 +1007,30 @@ const readStudioTeamDraftAction = async (request) => {
     keys !== (hasDraft ? "action,authority,draft" : "action,authority") ||
     !["load", "save", "delete"].includes(payload.action) ||
     !isRecord(payload.authority) ||
-    Object.keys(payload.authority).sort().join(",") !==
-      "backendId,principalUserId,teamId,threadId" ||
+    Object.keys(payload.authority).some(
+      (key) =>
+        ![
+          "backendId",
+          "principalUserId",
+          "teamId",
+          "threadId",
+          "rootMessageId",
+          "editMessageId"
+        ].includes(key)
+    ) ||
+    !["backendId", "principalUserId", "teamId", "threadId"].every((key) =>
+      Object.hasOwn(payload.authority, key)
+    ) ||
+    (payload.authority.rootMessageId !== undefined &&
+      payload.authority.editMessageId !== undefined) ||
+    [payload.authority.rootMessageId, payload.authority.editMessageId].some(
+      (value) =>
+        value !== undefined &&
+        (typeof value !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            value
+          ))
+    ) ||
     typeof payload.authority.backendId !== "string" ||
     payload.authority.backendId.length < 1 ||
     payload.authority.backendId.length > 240 ||
@@ -1028,9 +1052,13 @@ const readStudioTeamDraftAction = async (request) => {
       !isRecord(draft) ||
       Object.keys(draft).some(
         (key) =>
-          !["text", "pendingSend", "receiptAckPending", "updatedAt"].includes(
-            key
-          )
+          ![
+            "text",
+            "pendingSend",
+            "receiptAckPending",
+            "updatedAt",
+            "edit"
+          ].includes(key)
       ) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > 128 * 1024 ||
@@ -1042,6 +1070,33 @@ const readStudioTeamDraftAction = async (request) => {
       )
     ) {
       throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
+    }
+    if (draft.edit !== undefined) {
+      const edit = draft.edit;
+      const boundedText = (value) =>
+        typeof value === "string" &&
+        Buffer.byteLength(value, "utf8") <= 128 * 1024;
+      const positiveVersion = (value) =>
+        Number.isSafeInteger(value) && value > 0;
+      if (
+        !payload.authority.editMessageId ||
+        draft.pendingSend !== null ||
+        draft.receiptAckPending != null ||
+        !isRecord(edit) ||
+        Object.keys(edit).some(
+          (key) =>
+            !["expectedVersion", "baseBodyText", "conflict"].includes(key)
+        ) ||
+        !positiveVersion(edit.expectedVersion) ||
+        !boundedText(edit.baseBodyText) ||
+        (edit.conflict !== undefined &&
+          (!isRecord(edit.conflict) ||
+            Object.keys(edit.conflict).sort().join(",") !==
+              "latestBodyText,latestVersion" ||
+            !positiveVersion(edit.conflict.latestVersion) ||
+            !boundedText(edit.conflict.latestBodyText)))
+      )
+        throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
     }
     if (draft.pendingSend !== null) {
       const pending = draft.pendingSend;

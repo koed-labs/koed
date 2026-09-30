@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -144,6 +144,22 @@ describeDb("Team Agent Requests repository", () => {
       requestText: "Please review this release"
     };
     const created = await requests.createRequest(actor(requesterId), input);
+    const legacyNullRootHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          teamProjectId: input.teamProjectId,
+          channelId: input.channelId,
+          agentId: input.agentId,
+          requestText: input.requestText
+        }),
+        "utf8"
+      )
+      .digest("hex");
+    const savedRequestHash = await pool.query<{ request_hash: string }>(
+      `select request_hash from team_agent_requests where id=$1`,
+      [created!.id]
+    );
+    expect(savedRequestHash.rows[0]?.request_hash).toBe(legacyNullRootHash);
     expect(created).toMatchObject({
       teamId,
       ownerId,
@@ -252,15 +268,23 @@ describeDb("Team Agent Requests repository", () => {
       actor(ownerId),
       teamId
     );
+    const generalRoot = await collaboration.sendMessage(actor(requesterId), {
+      threadId: general!.id,
+      idempotencyKey: `team-agent-origin:${randomUUID()}`,
+      bodyText: "Please have the agent review this channel discussion"
+    });
     const generalRequest = await requests.createRequest(actor(requesterId), {
       ...input,
       channelId: general!.id,
+      rootMessageId: generalRoot!.id,
       idempotencyKey: randomUUID()
     });
+    expect(generalRequest?.originRootMessageId).toBe(generalRoot!.id);
     const pending = await requests.createRequest(actor(requesterId), {
       ...input,
       idempotencyKey: randomUUID()
     });
+    expect(pending?.originRootMessageId).toBeNull();
     const executionId = randomUUID();
     await pool.query(
       `insert into public_square_project_connections(

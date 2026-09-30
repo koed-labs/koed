@@ -89,6 +89,8 @@ const threadScope = (
     | CommandFor<"collaboration.restore_thread">
     | CommandFor<"collaboration.send_message">
     | CommandFor<"collaboration.retry_message">
+    | CommandFor<"collaboration.edit_message">
+    | CommandFor<"collaboration.set_message_reaction">
     | CommandFor<"collaboration.mark_read">
     | CommandFor<"collaboration.mark_delivered">
     | CommandFor<"collaboration.load_message_page">
@@ -203,10 +205,42 @@ const teamMessageOperation = (
     operationFamily: "team_chat_write",
     method: "POST",
     path: `${teamThreadPath(command.input.thread)}/messages`,
-    body: { bodyText: command.input.body },
+    body: {
+      bodyText: command.input.body,
+      rootMessageId: command.input.rootMessageId ?? null
+    },
     resultKey: "message",
     idempotencyKey: command.input.clientMessageId
   };
+};
+
+const teamMessageMutationOperation = (
+  command:
+    | CommandFor<"collaboration.edit_message">
+    | CommandFor<"collaboration.set_message_reaction">
+): TeamCollaborationUpstreamOperation => {
+  if (command.input.thread.scope !== "team") {
+    throw new TypeError("Team operation requires a Team thread");
+  }
+  const messagePath = `${teamThreadPath(command.input.thread)}/messages/${encodeURIComponent(command.input.messageId)}`;
+  return command.command === "collaboration.edit_message"
+    ? {
+        operationFamily: "team_chat_write",
+        method: "PATCH",
+        path: messagePath,
+        body: {
+          bodyText: command.input.body,
+          expectedVersion: command.input.expectedVersion
+        },
+        resultKey: "message"
+      }
+    : {
+        operationFamily: "team_chat_write",
+        method: "PUT",
+        path: `${messagePath}/reactions`,
+        body: { emoji: command.input.emoji, active: command.input.active },
+        resultKey: "message"
+      };
 };
 
 const matchesThreadIdentity = (
@@ -230,7 +264,34 @@ const matchesMessage = (
   command.input.thread.scope === "team" &&
   result.threadId === command.input.thread.threadId &&
   result.teamId === command.input.thread.teamId &&
-  result.body === command.input.body;
+  result.acceptedBody === command.input.body &&
+  result.rootMessageId === (command.input.rootMessageId ?? null);
+
+const matchesMessageMutation = (
+  command:
+    | CommandFor<"collaboration.edit_message">
+    | CommandFor<"collaboration.set_message_reaction">,
+  result: Record<string, unknown>
+): boolean => {
+  if (
+    command.input.thread.scope !== "team" ||
+    result.id !== command.input.messageId ||
+    result.threadId !== command.input.thread.threadId ||
+    result.teamId !== command.input.thread.teamId
+  ) {
+    return false;
+  }
+  if (command.command === "collaboration.edit_message") {
+    return result.body === command.input.body;
+  }
+  if (!Array.isArray(result.reactions)) return false;
+  const reaction = (result.reactions as Array<Record<string, unknown>>).find(
+    (candidate) => candidate.emoji === command.input.emoji
+  );
+  return command.input.active
+    ? reaction?.reacted === true
+    : !reaction || reaction.reacted === false;
+};
 
 export const collaborationCommandRegistry = {
   "collaboration.load": { scope: "personal", desktopOperationFamily: read },
@@ -337,7 +398,12 @@ export const collaborationCommandRegistry = {
       operationFamily: "team_chat_write",
       method: "POST",
       path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/projects`,
-      body: { name: command.input.name, ...(command.input.localProjectId ? { localProjectId: command.input.localProjectId } : {}) },
+      body: {
+        name: command.input.name,
+        ...(command.input.localProjectId
+          ? { localProjectId: command.input.localProjectId }
+          : {})
+      },
       resultKey: "thread",
       idempotencyKey: command.requestId
     }),
@@ -487,6 +553,18 @@ export const collaborationCommandRegistry = {
     teamOperation: teamMessageOperation,
     matchesTeamResult: matchesMessage
   },
+  "collaboration.edit_message": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: teamMessageMutationOperation,
+    matchesTeamResult: matchesMessageMutation
+  },
+  "collaboration.set_message_reaction": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: teamMessageMutationOperation,
+    matchesTeamResult: matchesMessageMutation
+  },
   "collaboration.get_send_receipt": {
     scope: "unsupported",
     desktopOperationFamily: write
@@ -513,7 +591,10 @@ export const collaborationCommandRegistry = {
         operationFamily: "team_chat_read",
         method: "PUT",
         path: `${teamThreadPath(command.input.thread)}/read-state`,
-        body: { messageId: command.input.messageId },
+        body: {
+          messageId: command.input.messageId,
+          rootMessageId: command.input.rootMessageId ?? null
+        },
         resultKey: "readState"
       };
     },
@@ -559,7 +640,7 @@ export const collaborationCommandRegistry = {
       return {
         operationFamily: "team_chat_read",
         method: "GET",
-        path: `${teamThreadPath(command.input.thread)}/messages`,
+        path: `${teamThreadPath(command.input.thread)}/messages${command.input.rootMessageId ? `?rootMessageId=${encodeURIComponent(command.input.rootMessageId)}` : ""}`,
         body: {},
         resultKey: "message"
       };

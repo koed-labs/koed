@@ -271,6 +271,7 @@ describeDb("Collaboration repository", () => {
         personal_owner_user_id uuid,
         team_id uuid,
         team_workspace_id uuid,
+        team_project_id uuid,
         shared_logical_memory_id uuid,
         share_grant_id uuid,
         system_key text,
@@ -302,6 +303,7 @@ describeDb("Collaboration repository", () => {
       create temp table collaboration_messages (
         id uuid primary key,
         thread_id uuid not null,
+        root_message_id uuid,
         thread_sequence bigint not null,
         sender_principal_id uuid
       );
@@ -1038,16 +1040,19 @@ describeDb("Collaboration repository", () => {
     );
     const backendOriginHash = hash(`origin:${randomUUID()}`);
     const tokenHash = hash(`token:${randomUUID()}`);
-    const invite = await teamAccess.createTeamInvite(actor(fixture.ownerUserId), {
-      teamId: fixture.teamId,
-      defaultTeamWorkspaceId: fixture.teamWorkspaceId,
-      defaultWorkspaceAccess: "read",
-      email: joinerEmail.rows[0]!.email,
-      role: "member",
-      backendOriginHash,
-      tokenHash,
-      expiresAt: new Date(Date.now() + 60_000)
-    });
+    const invite = await teamAccess.createTeamInvite(
+      actor(fixture.ownerUserId),
+      {
+        teamId: fixture.teamId,
+        defaultTeamWorkspaceId: fixture.teamWorkspaceId,
+        defaultWorkspaceAccess: "read",
+        email: joinerEmail.rows[0]!.email,
+        role: "member",
+        backendOriginHash,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
     expect(invite).not.toBeNull();
     const accepted = await teamAccess.acceptTeamInvite({
       tokenHash,
@@ -1062,12 +1067,15 @@ describeDb("Collaboration repository", () => {
       [fixture.teamId, fixture.teamWorkspaceId]
     );
     await expect(
-      teamAccess.getTeamMemberMemoryRetentionSetting(
-        actor(joinerUserId),
-        { teamId: fixture.teamId, userId: joinerUserId }
-      )
+      teamAccess.getTeamMemberMemoryRetentionSetting(actor(joinerUserId), {
+        teamId: fixture.teamId,
+        userId: joinerUserId
+      })
     ).resolves.toMatchObject({ enabled: true, version: 1 });
-    const joinerAccess = await pool.query<{ access: string; can_share_owned_memory: boolean }>(
+    const joinerAccess = await pool.query<{
+      access: string;
+      can_share_owned_memory: boolean;
+    }>(
       `select access,can_share_owned_memory from team_workspace_access_grants
         where team_id=$1 and team_workspace_id=$2 and user_id=$3 and disabled_at is null`,
       [fixture.teamId, first.teamWorkspaceId, joinerUserId]
@@ -1101,13 +1109,21 @@ describeDb("Collaboration repository", () => {
       [fixture.teamId, first.teamWorkspaceId]
     );
     expect(grants.rows.map((row) => row.user_id).sort()).toEqual(
-      [fixture.ownerUserId, fixture.memberUserId, fixture.secondMemberUserId, joinerUserId].sort()
+      [
+        fixture.ownerUserId,
+        fixture.memberUserId,
+        fixture.secondMemberUserId,
+        joinerUserId
+      ].sort()
     );
     const versionsBefore = grants.rows.map((row) => [row.user_id, row.version]);
     await teamAccess.ensureTeamMemoryDestination(actor(fixture.ownerUserId), {
       teamId: fixture.teamId
     });
-    const versionsAfter = await pool.query<{ user_id: string; version: number }>(
+    const versionsAfter = await pool.query<{
+      user_id: string;
+      version: number;
+    }>(
       `select user_id,version from team_workspace_access_grants
         where team_id=$1 and team_workspace_id=$2 and disabled_at is null
         order by user_id`,
@@ -2044,6 +2060,9 @@ describeDb("Collaboration repository", () => {
           mode: "continuous",
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
+          retentionEnabled: false,
+          memberRetentionVersion: 1,
+          ownerUpdatesState: "active",
           fidelityPolicyRevision: 1,
           sourceRevision: 1,
           grantVersion: 1,
@@ -2996,6 +3015,320 @@ describeDb("Collaboration repository", () => {
         scope: "team",
         teamId: fixture.teamId,
         afterCursor: 0
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("keeps Team channel replies, per-root reads, edits, and reactions isolated", async () => {
+    const fixture = await createTeamFixture();
+    const thread = await repository.ensureTeamGeneralChannel(
+      actor(fixture.ownerUserId),
+      fixture.teamId
+    );
+    const rootAInput = {
+      threadId: thread!.id,
+      idempotencyKey: `thread-root-a:${randomUUID()}`,
+      bodyText: "Original root A",
+      metadata: {},
+      provenance: { kind: "user_message", id: randomUUID() }
+    };
+    const rootBInput = {
+      threadId: thread!.id,
+      idempotencyKey: `thread-root-b:${randomUUID()}`,
+      bodyText: "Original root B"
+    };
+    const [rootA, rootB] = await Promise.all([
+      repository.sendMessageWithReceipt(actor(fixture.ownerUserId), rootAInput),
+      repository.sendMessageWithReceipt(actor(fixture.ownerUserId), rootBInput)
+    ]);
+    expect(rootA?.acceptedBody).toBe(rootAInput.bodyText);
+    const legacyRootlessHash = createHash("sha256")
+      .update(
+        `koed:collaboration:request:v1\n${JSON.stringify({
+          bodyText: rootAInput.bodyText,
+          metadata: {},
+          provenance: {
+            id: rootAInput.provenance.id,
+            kind: rootAInput.provenance.kind
+          },
+          senderPrincipalId: fixture.ownerUserId,
+          threadId: thread!.id
+        })}`,
+        "utf8"
+      )
+      .digest("hex");
+    const storedRootlessHash = await pool.query<{ request_hash: string }>(
+      `select request_hash from collaboration_messages where id=$1`,
+      [rootA!.message.id]
+    );
+    expect(storedRootlessHash.rows[0]?.request_hash).toBe(legacyRootlessHash);
+    const [replyA, replyB] = await Promise.all([
+      repository.sendMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootA!.message.id,
+        idempotencyKey: `thread-reply-a:${randomUUID()}`,
+        bodyText: "Reply A"
+      }),
+      repository.sendMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootB!.message.id,
+        idempotencyKey: `thread-reply-b:${randomUUID()}`,
+        bodyText: "Reply B"
+      })
+    ]);
+    await expect(
+      repository.sendMessage(actor(fixture.ownerUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootB!.message.id,
+        idempotencyKey: rootAInput.idempotencyKey,
+        bodyText: rootAInput.bodyText,
+        metadata: rootAInput.metadata,
+        provenance: rootAInput.provenance
+      })
+    ).rejects.toBeInstanceOf(CollaborationIdempotencyConflictError);
+
+    const rootFeed = await repository.listMessages(actor(fixture.ownerUserId), {
+      threadId: thread!.id
+    });
+    expect(rootFeed?.messages.map(({ id }) => id)).toEqual([
+      rootA!.message.id,
+      rootB!.message.id
+    ]);
+    expect(rootFeed?.messages[0]).toMatchObject({
+      replyCount: 1,
+      unreadReplyCount: 1
+    });
+    expect(
+      await repository.listMessages(actor(fixture.ownerUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootA!.message.id
+      })
+    ).toMatchObject({
+      rootMessageId: rootA!.message.id,
+      messages: [{ id: replyA!.id }]
+    });
+    await expect(
+      repository.sendMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: replyA!.id,
+        idempotencyKey: `nested-reply:${randomUUID()}`,
+        bodyText: "Nested replies are rejected"
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+
+    const channelUnread = (
+      await repository.listThreads(actor(fixture.ownerUserId), {
+        scope: "team",
+        teamId: fixture.teamId
+      })
+    )?.find(({ id }) => id === thread!.id)?.unreadCount;
+    expect(channelUnread).toBe(2);
+    await repository.advanceReadState(actor(fixture.ownerUserId), {
+      threadId: thread!.id,
+      messageId: rootB!.message.id
+    });
+    const afterChannelRead = (
+      await repository.listThreads(actor(fixture.ownerUserId), {
+        scope: "team",
+        teamId: fixture.teamId
+      })
+    )?.find(({ id }) => id === thread!.id)?.unreadCount;
+    expect(afterChannelRead).toBe(2);
+    await repository.advanceReadState(actor(fixture.ownerUserId), {
+      threadId: thread!.id,
+      rootMessageId: rootA!.message.id,
+      messageId: replyA!.id
+    });
+    await expect(
+      pool.query(
+        `insert into collaboration_root_receipt_states
+           (thread_id,root_message_id,user_id,last_read_message_id,
+            last_read_sequence,last_read_at)
+         values ($1,$2,$3,$4,$5,now())`,
+        [
+          thread!.id,
+          rootA!.message.id,
+          fixture.secondMemberUserId,
+          replyB!.id,
+          replyB!.threadSequence
+        ]
+      )
+    ).rejects.toMatchObject({
+      code: "23503",
+      constraint: "collaboration_root_receipt_states_read_message_fk"
+    });
+    const afterRead = await repository.listMessages(
+      actor(fixture.ownerUserId),
+      {
+        threadId: thread!.id
+      }
+    );
+    expect(
+      afterRead?.messages.map(({ unreadReplyCount }) => unreadReplyCount)
+    ).toEqual([0, 1]);
+
+    const edited = await repository.editMessage(actor(fixture.ownerUserId), {
+      threadId: thread!.id,
+      messageId: rootA!.message.id,
+      bodyText: "Edited root A",
+      expectedVersion: 1
+    });
+    expect(edited).toMatchObject({ bodyText: "Edited root A", version: 2 });
+    await expect(
+      repository.editMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        messageId: rootA!.message.id,
+        bodyText: "Non-author edit",
+        expectedVersion: 2
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.editMessage(actor(fixture.ownerUserId), {
+        threadId: thread!.id,
+        messageId: rootA!.message.id,
+        bodyText: "Stale edit",
+        expectedVersion: 1
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+    const revision = await pool.query<{
+      body_marker: string;
+      ciphertext: Buffer | null;
+    }>(
+      `select revision.body_marker,payload.ciphertext
+         from collaboration_message_revisions revision
+         join encrypted_field_payloads payload
+           on payload.source_table='collaboration_messages'
+          and payload.source_id=revision.message_id
+          and payload.source_column='revision_' || revision.revision::text
+        where revision.message_id=$1 and revision.revision=1`,
+      [rootA!.message.id]
+    );
+    expect(revision.rows).toHaveLength(1);
+    expect(revision.rows[0]!.body_marker).toBe(
+      "[koed encrypted collaboration message]"
+    );
+    expect(revision.rows[0]!.ciphertext?.toString("utf8")).not.toContain(
+      "Original root A"
+    );
+    const acceptedReplay = await repository.sendMessageWithReceipt(
+      actor(fixture.ownerUserId),
+      rootAInput
+    );
+    expect(acceptedReplay).toMatchObject({
+      message: { id: rootA!.message.id, bodyText: "Edited root A", version: 2 },
+      acceptedBody: "Original root A"
+    });
+
+    const ownerReaction = await repository.setMessageReaction(
+      actor(fixture.ownerUserId),
+      {
+        threadId: thread!.id,
+        messageId: replyB!.id,
+        emoji: "👍",
+        active: true
+      }
+    );
+    const duplicateReaction = await repository.setMessageReaction(
+      actor(fixture.ownerUserId),
+      {
+        threadId: thread!.id,
+        messageId: replyB!.id,
+        emoji: "👍",
+        active: true
+      }
+    );
+    expect(ownerReaction?.reactions).toEqual([
+      { emoji: "👍", count: 1, reacted: true }
+    ]);
+    expect(duplicateReaction?.reactions).toEqual(ownerReaction?.reactions);
+    const memberReaction = await repository.setMessageReaction(
+      actor(fixture.memberUserId),
+      {
+        threadId: thread!.id,
+        messageId: replyB!.id,
+        emoji: "👍",
+        active: true
+      }
+    );
+    expect(memberReaction?.reactions).toEqual([
+      { emoji: "👍", count: 2, reacted: true }
+    ]);
+    const ownerRemoved = await repository.setMessageReaction(
+      actor(fixture.ownerUserId),
+      {
+        threadId: thread!.id,
+        messageId: replyB!.id,
+        emoji: "👍",
+        active: false
+      }
+    );
+    expect(ownerRemoved?.reactions).toEqual([
+      { emoji: "👍", count: 1, reacted: false }
+    ]);
+    expect(replyB!.rootMessageId).toBe(rootB!.message.id);
+
+    const otherFixture = await createTeamFixture();
+    const otherChannel = await repository.ensureTeamGeneralChannel(
+      actor(otherFixture.ownerUserId),
+      otherFixture.teamId
+    );
+    const otherRoot = await repository.sendMessage(
+      actor(otherFixture.ownerUserId),
+      {
+        threadId: otherChannel!.id,
+        idempotencyKey: `cross-team-root:${randomUUID()}`,
+        bodyText: "A root from another Team"
+      }
+    );
+    await expect(
+      repository.sendMessage(actor(fixture.ownerUserId), {
+        threadId: thread!.id,
+        rootMessageId: otherRoot!.id,
+        idempotencyKey: `cross-team-reply:${randomUUID()}`,
+        bodyText: "Cross-Team reply"
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now()
+        where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.memberUserId]
+    );
+    await expect(
+      repository.listMessages(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootB!.message.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.editMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        messageId: replyB!.id,
+        bodyText: "Revoked member edit",
+        expectedVersion: 1
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.setMessageReaction(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        messageId: rootA!.message.id,
+        emoji: "🔥",
+        active: true
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.sendMessage(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootA!.message.id,
+        idempotencyKey: `revoked-member-reply:${randomUUID()}`,
+        bodyText: "Revoked member reply"
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.advanceReadState(actor(fixture.memberUserId), {
+        threadId: thread!.id,
+        rootMessageId: rootA!.message.id,
+        messageId: replyA!.id
       })
     ).resolves.toBeNull();
   });

@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  CollaborationMessage,
+  CollaborationSendReceipt
+} from "@koed/shared/collaboration";
 import {
   acknowledgedReceiptMessageId,
+  channelRootMessages,
+  threadMessagesForRoot,
+  threadReceiptMayUpdatePane,
+  messageReactionMayStart,
+  messageReactionMayUpdateOpenPane,
   confirmedPendingSend,
   deleteTeamDraftAfterQueuedWrite,
   describeStudioCommandFailure,
   directMessageAttemptKey,
   directMessageParticipantsAreEligible,
   directMessageThreadMatchesRequest,
+  editDraftAfterConflict,
+  editDraftAfterConflictReview,
   draftAfterCompletedReceiptWrite,
   draftTextAfterSendPreflight,
   durableSendFailureDisposition,
@@ -15,22 +26,32 @@ import {
   durableSendStatus,
   mayCompleteDraftHydration,
   mayPersistTeamDraft,
+  pendingSendAfterReceiptResolution,
+  teamDraftAfterAcceptedSendResult,
+  teamDraftAfterReplyHydration,
+  teamDraftAfterReplyTextChange,
+  teamDraftForReplyAttempt,
   mergeTeamMessages,
   readCompletionMayApply,
   readSequenceFor,
   rememberReadSequence,
   resolvePendingSend,
   realtimeUpdateMayAcknowledge,
+  repliesForChannelRoot,
   retainPendingSendAfterUncertainOutcome,
   saveAcceptedReceiptBeforeAcknowledging,
   studioRequestMayApply,
   studioSelectionMatches,
+  selectedTeamSnapshotMayStartSubscription,
   teamDraftAfterTextChange,
   teamDraftForAcceptedReceipt,
   teamDraftForHydration,
   teamDraftWithoutReceiptAck,
   teamDraftWriteMayApply,
-  visibleReadMayAdvance
+  visibleReadMayAdvance,
+  visibleReplyReadMayAdvance,
+  threadReplyVisibleRatio,
+  visibleReplyPrefix
   // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
 } from "./team-channel-state.ts";
 
@@ -138,6 +159,7 @@ const receiptFixture = (overrides: Record<string, unknown> = {}) =>
   ({
     thread: { scope: "team", teamId: "team-a", threadId: "thread-a" },
     clientMessageId: "client-a",
+    acceptedBody: "sent body",
     message: {
       id: "message-a",
       scope: "team",
@@ -147,7 +169,7 @@ const receiptFixture = (overrides: Record<string, unknown> = {}) =>
       delivery: "sent"
     },
     ...overrides
-  }) as never;
+  }) as unknown as CollaborationSendReceipt;
 
 test("accepted receipt settlement requires exact authority and pending identity, preserving later edits", () => {
   const draft = {
@@ -189,6 +211,32 @@ test("accepted receipt settlement requires exact authority and pending identity,
   );
   assert.equal(
     teamDraftForAcceptedReceipt({
+      authority: {
+        teamId: "team-a",
+        threadId: "thread-a",
+        rootMessageId: "root-a"
+      },
+      draft,
+      receipt: receiptFixture()
+    }),
+    null
+  );
+  assert.deepEqual(
+    teamDraftForAcceptedReceipt({
+      authority: {
+        teamId: "team-a",
+        threadId: "thread-a",
+        rootMessageId: "root-a"
+      },
+      draft,
+      receipt: receiptFixture({
+        message: { ...receiptFixture().message, rootMessageId: "root-a" }
+      })
+    }),
+    expected
+  );
+  assert.equal(
+    teamDraftForAcceptedReceipt({
       authority: { teamId: "team-a", threadId: "thread-a" },
       draft: {
         ...draft,
@@ -206,6 +254,55 @@ test("accepted receipt settlement requires exact authority and pending identity,
     }),
     null
   );
+});
+
+test("creation receipt proof settles the original send while retaining a newer edited message DTO", () => {
+  const draft = {
+    text: "typed after send",
+    pendingSend: {
+      clientMessageId: "client-a",
+      body: "original accepted text",
+      createdAt: "2026-09-28T10:00:00.000Z"
+    }
+  };
+  const latestMessage = {
+    ...receiptFixture().message,
+    body: "edited on another device",
+    version: 2,
+    updatedAt: "2026-09-28T10:02:00.000Z"
+  };
+  const receipt = receiptFixture({
+    acceptedBody: "original accepted text",
+    message: latestMessage
+  });
+  const settled = teamDraftForAcceptedReceipt({
+    authority: { teamId: "team-a", threadId: "thread-a" },
+    draft,
+    receipt
+  });
+  assert.equal(settled?.text, "typed after send");
+  assert.equal(settled?.pendingSend, null);
+  assert.equal(settled?.receiptAckPending?.messageId, "message-a");
+  const wrongProof = teamDraftForAcceptedReceipt({
+    authority: { teamId: "team-a", threadId: "thread-a" },
+    draft,
+    receipt: receiptFixture({
+      acceptedBody: "different request body",
+      message: latestMessage
+    })
+  });
+  assert.equal(wrongProof, null);
+  const displayed = mergeTeamMessages(
+    [{ ...latestMessage, version: 2 } as CollaborationMessage],
+    [
+      {
+        ...latestMessage,
+        body: "original accepted text",
+        version: 1
+      } as CollaborationMessage
+    ]
+  );
+  assert.equal(displayed[0]?.body, "edited on another device");
 });
 
 test("receipt acknowledgement waits for durable draft clearing and remains pending if the save fails", async () => {
@@ -651,6 +748,7 @@ test("a realtime newest page merges without dropping the loaded older history", 
   const make = (id: string, sequence: number) => ({
     id,
     threadId: "thread",
+    rootMessageId: null,
     clientMessageId: null,
     scope: "team" as const,
     teamId: "team",
@@ -664,6 +762,10 @@ test("a realtime newest page merges without dropping the loaded older history", 
     senderKind: "user" as const,
     createdAt: new Date(1_000 + sequence).toISOString(),
     updatedAt: new Date(1_000 + sequence).toISOString(),
+    version: 1,
+    replyCount: 0,
+    unreadReplyCount: 0,
+    reactions: [],
     editedAt: null,
     deletedAt: null,
     delivery: "sent" as const,
@@ -826,6 +928,50 @@ test("created direct messages must match the requested Team, kind, and exact par
   );
 });
 
+test("Team subscription setup trusts the select response despite a concurrent mutable snapshot", () => {
+  const selectedSnapshot = {
+    connection: { backendId: "backend-a" },
+    navigation: { teamPrincipal: { id: "person-a" } },
+    selectionTeamId: "team-a"
+  };
+  assert.equal(
+    selectedTeamSnapshotMayStartSubscription({
+      active: true,
+      currentTeamId: "team-a",
+      expectedBackendId: "backend-a",
+      expectedPrincipalId: "person-a",
+      teamId: "team-a",
+      selectedSnapshot
+    }),
+    true
+  );
+  assert.equal(
+    selectedTeamSnapshotMayStartSubscription({
+      active: true,
+      currentTeamId: "team-a",
+      expectedBackendId: "backend-a",
+      expectedPrincipalId: "person-a",
+      teamId: "team-a",
+      selectedSnapshot: {
+        ...selectedSnapshot,
+        selectionTeamId: null
+      }
+    }),
+    false
+  );
+  assert.equal(
+    selectedTeamSnapshotMayStartSubscription({
+      active: true,
+      currentTeamId: "team-b",
+      expectedBackendId: "backend-a",
+      expectedPrincipalId: "person-a",
+      teamId: "team-a",
+      selectedSnapshot
+    }),
+    false
+  );
+});
+
 test("durable send events apply only to the exact account, Team, and thread", () => {
   const authority = {
     backendId: "backend",
@@ -906,4 +1052,436 @@ test("Desktop command rejection becomes visible history status without treating 
     describeStudioCommandFailure(new Error("transport failed")).message,
     "transport failed"
   );
+});
+
+test("channel feed presents flat replies under roots and sorts each root thread by sequence", () => {
+  const messages = [
+    { id: "reply-late", rootMessageId: "root-one", sequence: 4 },
+    { id: "root-two", rootMessageId: null, sequence: 3 },
+    { id: "reply-early", rootMessageId: "root-one", sequence: 2 },
+    { id: "root-one", rootMessageId: null, sequence: 1 }
+  ];
+  assert.deepEqual(
+    channelRootMessages(messages).map(({ id }) => id),
+    ["root-two", "root-one"]
+  );
+  assert.deepEqual(
+    repliesForChannelRoot(messages, "root-one").map(({ id }) => id),
+    ["reply-early", "reply-late"]
+  );
+  assert.deepEqual(repliesForChannelRoot(messages, "missing"), []);
+  assert.deepEqual(
+    threadMessagesForRoot(messages[3], [
+      messages[3],
+      messages[0],
+      messages[2],
+      messages[1]
+    ]).map(({ id }) => id),
+    ["root-one", "reply-early", "reply-late"]
+  );
+});
+
+test("reactions allow channel roots but keep replies and pane updates root-scoped", () => {
+  const root = {
+    scope: "team" as const,
+    teamId: "team-a",
+    threadId: "channel-a",
+    id: "root-a",
+    rootMessageId: null
+  };
+  const reply = { ...root, id: "reply-a", rootMessageId: "root-a" };
+  assert.equal(
+    messageReactionMayStart({
+      message: root,
+      teamId: "team-a",
+      threadId: "channel-a",
+      openRootMessageId: null
+    }),
+    true
+  );
+  assert.equal(
+    messageReactionMayStart({
+      message: reply,
+      teamId: "team-a",
+      threadId: "channel-a",
+      openRootMessageId: null
+    }),
+    false
+  );
+  assert.equal(
+    messageReactionMayStart({
+      message: reply,
+      teamId: "team-a",
+      threadId: "channel-a",
+      openRootMessageId: "root-a"
+    }),
+    true
+  );
+  assert.equal(
+    messageReactionMayStart({
+      message: root,
+      teamId: "team-b",
+      threadId: "channel-a",
+      openRootMessageId: null
+    }),
+    false
+  );
+  assert.equal(
+    messageReactionMayUpdateOpenPane({
+      message: reply,
+      openRootMessageId: "root-a"
+    }),
+    true
+  );
+  assert.equal(
+    messageReactionMayUpdateOpenPane({
+      message: root,
+      openRootMessageId: "root-b"
+    }),
+    false
+  );
+});
+
+test("confirmed receipt resolution clears a completed pending send after cache eviction", () => {
+  const pending = {
+    clientMessageId: "client-a",
+    body: "reply",
+    createdAt: "2026-09-28T10:00:00.000Z"
+  };
+  assert.equal(
+    pendingSendAfterReceiptResolution(undefined, pending, true),
+    null
+  );
+  assert.equal(
+    pendingSendAfterReceiptResolution({ pendingSend: null }, pending, false),
+    null
+  );
+  assert.deepEqual(
+    pendingSendAfterReceiptResolution(undefined, pending, false),
+    pending
+  );
+});
+
+test("late accepted results preserve newer text and do not resurrect acknowledged sends", () => {
+  const pending = {
+    clientMessageId: "client-a",
+    body: "sent reply",
+    createdAt: "2026-09-28T10:00:00.000Z"
+  };
+  const newerDraft = { text: "typed while sending", pendingSend: pending };
+  assert.deepEqual(
+    teamDraftAfterAcceptedSendResult(newerDraft, pending, "message-a", null),
+    newerDraft
+  );
+  assert.deepEqual(
+    teamDraftAfterAcceptedSendResult(
+      undefined,
+      pending,
+      "message-a",
+      "message-a"
+    ),
+    { text: "", pendingSend: null }
+  );
+  assert.deepEqual(
+    teamDraftAfterAcceptedSendResult(
+      {
+        text: "typed while sending",
+        pendingSend: pending,
+        receiptAckPending: {
+          clientMessageId: "client-a",
+          messageId: "message-a"
+        }
+      },
+      pending,
+      "message-a",
+      "message-a"
+    ),
+    { text: "typed while sending", pendingSend: null, receiptAckPending: null }
+  );
+  assert.deepEqual(
+    teamDraftAfterAcceptedSendResult(
+      { text: "keep this", pendingSend: null },
+      pending,
+      "message-a",
+      null
+    ),
+    { text: "keep this", pendingSend: pending, receiptAckPending: null }
+  );
+});
+
+test("receipt-first reply retries preserve the newer composer draft while new sends clear it", () => {
+  const pending = {
+    clientMessageId: "client-a",
+    body: "original reply",
+    createdAt: "2026-09-28T10:00:00.000Z"
+  };
+  const current = {
+    text: "newer composer text",
+    pendingSend: pending,
+    receiptAckPending: { clientMessageId: "client-a", messageId: "message-a" }
+  };
+  assert.deepEqual(
+    teamDraftForReplyAttempt(current, pending, true, "visible composer text"),
+    current
+  );
+  assert.deepEqual(
+    teamDraftForReplyAttempt(current, pending, false, "visible composer text"),
+    { text: "", pendingSend: pending, receiptAckPending: null }
+  );
+  assert.deepEqual(
+    teamDraftForReplyAttempt(undefined, pending, true, "visible composer text"),
+    {
+      text: "visible composer text",
+      pendingSend: pending,
+      receiptAckPending: null
+    }
+  );
+});
+
+test("reply composer updates preserve pending identity and receipt metadata", () => {
+  const pending = {
+    clientMessageId: "client-a",
+    body: "sent reply",
+    createdAt: "2026-09-28T10:00:00.000Z"
+  };
+  const marker = { clientMessageId: "client-a", messageId: "message-a" };
+  assert.deepEqual(
+    teamDraftAfterReplyTextChange(
+      { text: "", pendingSend: pending, receiptAckPending: marker },
+      "new composer text",
+      null
+    ),
+    {
+      text: "new composer text",
+      pendingSend: pending,
+      receiptAckPending: marker
+    }
+  );
+  assert.deepEqual(
+    teamDraftAfterReplyTextChange(undefined, "typed before hydration", null),
+    {
+      text: "typed before hydration",
+      pendingSend: null,
+      receiptAckPending: null
+    }
+  );
+});
+
+test("reply hydration merges stored pending state under newer composer edits", () => {
+  const pending = {
+    clientMessageId: "client-a",
+    body: "sent reply",
+    createdAt: "2026-09-28T10:00:00.000Z"
+  };
+  assert.deepEqual(
+    teamDraftAfterReplyHydration(
+      { text: "", pendingSend: pending },
+      { text: "newer text", pendingSend: null }
+    ),
+    { text: "newer text", pendingSend: pending, receiptAckPending: null }
+  );
+  assert.deepEqual(
+    teamDraftAfterReplyHydration(
+      { text: "old", pendingSend: pending },
+      {
+        text: "newer text",
+        pendingSend: null,
+        receiptAckPending: {
+          clientMessageId: "client-a",
+          messageId: "message-a"
+        }
+      }
+    ),
+    {
+      text: "newer text",
+      pendingSend: null,
+      receiptAckPending: { clientMessageId: "client-a", messageId: "message-a" }
+    }
+  );
+});
+
+test("receipt UI updates require the same account authority and open root", () => {
+  const draftAuthority = {
+    backendId: "backend-a",
+    principalUserId: "person-a",
+    teamId: "team-a",
+    threadId: "channel-a",
+    rootMessageId: "root-a"
+  };
+  const currentAuthorityKey = JSON.stringify({
+    backendId: "backend-a",
+    principalUserId: "person-a",
+    teamId: "team-a",
+    threadId: "channel-a"
+  });
+  const openRoot = {
+    id: "root-a",
+    teamId: "team-a",
+    threadId: "channel-a"
+  };
+  assert.equal(
+    threadReceiptMayUpdatePane({
+      draftAuthority,
+      currentAuthorityKey,
+      openRoot
+    }),
+    true
+  );
+  assert.equal(
+    threadReceiptMayUpdatePane({
+      draftAuthority,
+      currentAuthorityKey: JSON.stringify({
+        backendId: "backend-a",
+        principalUserId: "person-b",
+        teamId: "team-a",
+        threadId: "channel-a"
+      }),
+      openRoot
+    }),
+    false
+  );
+  assert.equal(
+    threadReceiptMayUpdatePane({
+      draftAuthority,
+      currentAuthorityKey,
+      openRoot: { ...openRoot, id: "root-b" }
+    }),
+    false
+  );
+});
+
+test("incoming message updates replace the current cached version", () => {
+  const original = {
+    id: "root",
+    sequence: 1,
+    body: "first",
+    version: 1,
+    updatedAt: "2026-09-28T12:00:00.000Z"
+  } as CollaborationMessage;
+  const updated = {
+    ...original,
+    body: "edited",
+    version: 2,
+    updatedAt: "2026-09-28T12:01:00.000Z"
+  };
+  assert.equal(mergeTeamMessages([original], [updated])[0]?.body, "edited");
+  const stale = {
+    ...original,
+    body: "creation receipt",
+    updatedAt: "2026-09-28T12:02:00.000Z"
+  };
+  assert.equal(mergeTeamMessages([updated], [stale])[0]?.body, "edited");
+  const olderAggregate = {
+    ...updated,
+    replyCount: 1,
+    updatedAt: "2026-09-28T12:00:30.000Z"
+  };
+  assert.equal(
+    mergeTeamMessages([updated], [olderAggregate])[0]?.replyCount,
+    updated.replyCount
+  );
+});
+
+test("reply read advances only while the selected root pane is visible", () => {
+  const base = {
+    rootMessageId: "root",
+    replyMessageId: "reply",
+    sequence: 9,
+    senderId: "other",
+    principalUserId: "me",
+    focused: true,
+    lastReportedSequence: 8
+  };
+  assert.equal(
+    visibleReplyReadMayAdvance({ ...base, rootPaneVisible: true }),
+    true
+  );
+  assert.equal(
+    visibleReplyReadMayAdvance({ ...base, rootPaneVisible: false }),
+    false
+  );
+  assert.equal(
+    visibleReplyReadMayAdvance({
+      ...base,
+      rootPaneVisible: true,
+      focused: false
+    }),
+    false
+  );
+  assert.equal(
+    visibleReplyReadMayAdvance({
+      ...base,
+      rootPaneVisible: true,
+      senderId: "me"
+    }),
+    false
+  );
+});
+
+test("thread reply visibility uses the pane viewport and cannot skip an unseen earlier reply", () => {
+  const element = { top: 20, right: 120, bottom: 120, left: 20 };
+  const viewport = { top: 0, right: 500, bottom: 500, left: 0 };
+  assert.equal(
+    threadReplyVisibleRatio({
+      element,
+      container: { top: 0, right: 500, bottom: 100, left: 0 },
+      viewport
+    }),
+    0.8
+  );
+  assert.equal(
+    threadReplyVisibleRatio({
+      element,
+      container: { top: 150, right: 500, bottom: 250, left: 0 },
+      viewport
+    }),
+    0
+  );
+  const replies = [{ id: "old" }, { id: "middle" }, { id: "new" }];
+  assert.deepEqual(visibleReplyPrefix(replies, new Set(["new"])), []);
+  assert.deepEqual(visibleReplyPrefix(replies, new Set(["old", "new"])), [
+    replies[0]
+  ]);
+  assert.deepEqual(
+    visibleReplyPrefix(replies, new Set(["old", "middle", "new"])),
+    replies
+  );
+});
+
+test("edit conflict retains the device text and basis until explicit review", () => {
+  const draft = {
+    text: "My unsaved edit",
+    pendingSend: null,
+    edit: { expectedVersion: 2, baseBodyText: "Original" }
+  };
+  const conflict = editDraftAfterConflict(draft, {
+    version: 3,
+    bodyText: "Latest saved"
+  });
+  assert.equal(conflict.text, "My unsaved edit");
+  assert.deepEqual(conflict.edit, {
+    expectedVersion: 2,
+    baseBodyText: "Original",
+    conflict: { latestVersion: 3, latestBodyText: "Latest saved" }
+  });
+  const reviewed = editDraftAfterConflictReview(conflict);
+  assert.equal(reviewed.text, "My unsaved edit");
+  assert.deepEqual(reviewed.edit, {
+    expectedVersion: 3,
+    baseBodyText: "Latest saved"
+  });
+  const adapterShape = editDraftAfterConflictReview({
+    text: "outer draft",
+    edit: {
+      text: "unsaved editor text",
+      expectedVersion: 2,
+      baseBodyText: "Original",
+      conflict: { latestVersion: 3, latestBodyText: "Latest saved" }
+    }
+  });
+  assert.equal(adapterShape.edit?.text, "unsaved editor text");
+  assert.equal(adapterShape.edit?.expectedVersion, 3);
+  assert.equal(adapterShape.edit?.baseBodyText, "Latest saved");
+  assert.equal("conflict" in (adapterShape.edit ?? {}), false);
+  assert.equal(editDraftAfterConflictReview(draft), draft);
 });

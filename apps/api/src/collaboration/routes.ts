@@ -42,6 +42,8 @@ import {
   createCollaborationDmSchema,
   createCollaborationGroupDmSchema,
   createCollaborationMessageSchema,
+  editCollaborationMessageSchema,
+  setCollaborationMessageReactionSchema,
   createSharedSessionDiscussionSchema,
   listCollaborationMessagesQuerySchema,
   listCollaborationThreadsQuerySchema,
@@ -1510,6 +1512,21 @@ export const registerCollaborationRoutes = (
         teamCollaborationThreadParamsSchema.parse(params);
       return { threadId, teamId };
     };
+    const parseScopedMessageParams = (
+      params: unknown
+    ): { threadId: string; teamId: string | null; messageId: string } => {
+      if (scope === "personal") {
+        return {
+          ...collaborationThreadParamsSchema
+            .extend({ messageId: z.uuid() })
+            .parse(params),
+          teamId: null
+        };
+      }
+      return teamCollaborationThreadParamsSchema
+        .extend({ messageId: z.uuid() })
+        .parse(params);
+    };
 
     app.get(
       `${basePath}/messages`,
@@ -1592,16 +1609,17 @@ export const registerCollaborationRoutes = (
             ...(params.teamId ? { teamId: params.teamId } : {})
           })
         );
-        const message = await repository.sendMessage(
+        const result = await repository.sendMessageWithReceipt(
           { userId: user.id },
           {
             threadId: params.threadId,
+            rootMessageId: input.rootMessageId ?? null,
             idempotencyKey: parseIdempotencyKey(request),
             ...input
           }
         );
-        if (!message) throw forbidden();
-        return reply.status(201).send({ message });
+        if (!result) throw forbidden();
+        return reply.status(201).send(result);
       }
     );
 
@@ -1623,6 +1641,10 @@ export const registerCollaborationRoutes = (
               );
         const params = parseScopedParams(request.params);
         const input = advanceCollaborationReadStateSchema.parse(request.body);
+        if (scope !== "team" && input.rootMessageId)
+          throw badRequest(
+            "Reply read cursors are only available for Team channels"
+          );
         const repository = context.requireCollaborationRepository();
         if (scope === "personal") {
           await requirePersonalThread(
@@ -1649,6 +1671,86 @@ export const registerCollaborationRoutes = (
       }
     );
 
+    app.patch(
+      `${basePath}/messages/:messageId`,
+      { preHandler: writeRateLimit, bodyLimit: MESSAGE_BODY_LIMIT_BYTES },
+      async (request) => {
+        const user =
+          scope === "personal"
+            ? await authenticatePersonalCollaboration(
+                request,
+                context,
+                "personal_collaboration_write"
+              )
+            : await authenticateTeamCollaboration(
+                request,
+                context,
+                "team_chat_write"
+              );
+        const params = parseScopedMessageParams(request.params);
+        const input = editCollaborationMessageSchema.parse(request.body);
+        if (scope !== "team") throw forbidden();
+        const repository = context.requireCollaborationRepository();
+        await requireTeamThread(
+          repository,
+          user.id,
+          params.teamId!,
+          params.threadId
+        );
+        const message = await repository.editMessage(
+          { userId: user.id },
+          {
+            threadId: params.threadId,
+            messageId: params.messageId,
+            bodyText: input.bodyText,
+            expectedVersion: input.expectedVersion
+          }
+        );
+        if (!message) throw forbidden();
+        return { message };
+      }
+    );
+
+    app.put(
+      `${basePath}/messages/:messageId/reactions`,
+      { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+      async (request) => {
+        const user =
+          scope === "personal"
+            ? await authenticatePersonalCollaboration(
+                request,
+                context,
+                "personal_collaboration_write"
+              )
+            : await authenticateTeamCollaboration(
+                request,
+                context,
+                "team_chat_write"
+              );
+        const params = parseScopedMessageParams(request.params);
+        const input = setCollaborationMessageReactionSchema.parse(request.body);
+        if (scope !== "team") throw forbidden();
+        const repository = context.requireCollaborationRepository();
+        await requireTeamThread(
+          repository,
+          user.id,
+          params.teamId!,
+          params.threadId
+        );
+        const message = await repository.setMessageReaction(
+          { userId: user.id },
+          {
+            threadId: params.threadId,
+            messageId: params.messageId,
+            emoji: input.emoji,
+            active: input.active
+          }
+        );
+        if (!message) throw forbidden();
+        return { message };
+      }
+    );
+
     app.put(
       `${basePath}/delivery-state`,
       { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
@@ -1667,6 +1769,8 @@ export const registerCollaborationRoutes = (
               );
         const params = parseScopedParams(request.params);
         const input = advanceCollaborationReadStateSchema.parse(request.body);
+        if (input.rootMessageId)
+          throw badRequest("Delivery cursors do not support reply threads");
         const repository = context.requireCollaborationRepository();
         if (scope === "personal") {
           await requirePersonalThread(
