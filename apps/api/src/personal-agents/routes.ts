@@ -4,10 +4,16 @@ import {
   aiClientPermissionContractFor,
   isSupportedAiClientDriverId,
   personalAgentIdentitySchema,
+  fetchBoundedJsonObject,
+  readLocalEdgeUpstreamRegistry,
+  upstreamAdvertisesCapability,
+  upstreamApiUrl,
+  upstreamBackendById,
   type PersonalAgentIdentity
 } from "@koed/shared";
 import type { MemorySourceRepository, PersonalAgentRepository } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
+import { assertUpstreamOperationPathAllowed } from "../local-edge/upstream-routing.js";
 import {
   personalAgentCreateSchema,
   personalAgentIdParamsSchema,
@@ -201,10 +207,103 @@ export const registerPersonalAgentRoutes = (
   } = context;
   const authenticatePersonalAgent = (
     request: Parameters<typeof authenticate>[0]
-  ) =>
-    localExecutionProfiles.has(context.config.deploymentProfile)
-      ? authenticate(request)
+  ) => {
+    if (localExecutionProfiles.has(context.config.deploymentProfile)) {
+      return authenticate(request);
+    }
+    return /^Koed-Device\s/i.test(request.headers.authorization?.trim() ?? "")
+      ? context.auth.authenticateSessionOrDeviceCredential(
+          request,
+          "managed_execution"
+        )
       : authenticateSession(request);
+  };
+
+  // Electron's local Studio keeps using its local API token, but its saved
+  // Agent library must live under the same hosted owner as managed Jobs when
+  // that managed-execution authority is enabled. The upstream device
+  // credential supplies the hosted owner identity; local owner IDs are never
+  // forwarded as authority.
+  const remoteAuthority = () => {
+    if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
+      return null;
+    }
+    const registry = readLocalEdgeUpstreamRegistry(
+      context.localEdge.upstreamBackendsPath
+    );
+    const backend = registry.activeBackendId
+      ? upstreamBackendById(registry, registry.activeBackendId)
+      : null;
+    if (!backend || backend.routePolicy.managedExecution !== "enabled") {
+      return null;
+    }
+    if (!context.localEdge.remoteOperationsAllowed()) {
+      throw Object.assign(
+        new Error("Personal Agent remote operations are suspended"),
+        { statusCode: 503 }
+      );
+    }
+    const capabilities = backend.capabilities;
+    const capabilitiesValid =
+      capabilities?.state === "validated" &&
+      (!capabilities.expiresAt ||
+        Date.parse(capabilities.expiresAt) > Date.now()) &&
+      upstreamAdvertisesCapability(backend, "memory.managedConversations");
+    if (!capabilitiesValid) {
+      throw Object.assign(
+        new Error("Personal Agent upstream capabilities are unavailable"),
+        { statusCode: 503 }
+      );
+    }
+    const authorization =
+      context.localEdge.resolveUpstreamAuthorization(backend);
+    if (!authorization) {
+      throw Object.assign(
+        new Error("Personal Agent upstream is not enrolled"),
+        { statusCode: 503 }
+      );
+    }
+    return { backend, authorization };
+  };
+
+  const proxyPersonalAgent = async (
+    method: "GET" | "POST" | "PATCH",
+    path: string,
+    body?: unknown
+  ): Promise<{ status: number; payload: Record<string, unknown> } | null> => {
+    const authority = remoteAuthority();
+    if (!authority) return null;
+    assertUpstreamOperationPathAllowed("managed_execution", method, path);
+    const { response, payload } = await fetchBoundedJsonObject(
+      context.localEdge.fetch,
+      upstreamApiUrl(authority.backend.baseUrl, path),
+      {
+        method,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: authority.authorization,
+          ...(body === undefined ? {} : { "content-type": "application/json" })
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      },
+      {
+        timeoutMs: 15_000,
+        maxBytes: 256 * 1_024,
+        readErrorBody: true
+      }
+    );
+    if (!response.ok) {
+      const message =
+        typeof payload.error === "string"
+          ? payload.error
+          : `Personal Agent authority returned HTTP ${response.status}`;
+      throw Object.assign(new Error(message), {
+        statusCode: response.status >= 500 ? 502 : response.status
+      });
+    }
+    return { status: response.status, payload };
+  };
 
   app.get(
     "/v1/personal-agent-role-templates",
@@ -212,6 +311,11 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       await authenticatePersonalAgent(request);
       personalAgentListQuerySchema.parse(request.query);
+      const proxied = await proxyPersonalAgent(
+        "GET",
+        "/v1/personal-agent-role-templates"
+      );
+      if (proxied) return proxied.payload;
       return {
         templates:
           await routeRepository(
@@ -238,6 +342,11 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       const user = await authenticatePersonalAgent(request);
       personalAgentListQuerySchema.parse(request.query);
+      const proxied = await proxyPersonalAgent(
+        "GET",
+        "/v1/personal-agents/capabilities"
+      );
+      if (proxied) return proxied.payload;
       const instances = await readyCapabilityInstances(
         requireRepository(),
         user.id
@@ -255,6 +364,8 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       const user = await authenticatePersonalAgent(request);
       personalAgentListQuerySchema.parse(request.query);
+      const proxied = await proxyPersonalAgent("GET", "/v1/personal-agents");
+      if (proxied) return proxied.payload;
       const agents = await routeRepository(
         requireRepository()
       ).listPersonalAgents({ userId: user.id }, { includeRetired: true });
@@ -268,6 +379,11 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       const user = await authenticatePersonalAgent(request);
       const { agentId } = personalAgentIdParamsSchema.parse(request.params);
+      const proxied = await proxyPersonalAgent(
+        "GET",
+        `/v1/personal-agents/${encodeURIComponent(agentId)}`
+      );
+      if (proxied) return proxied.payload;
       const detail = await routeRepository(
         requireRepository()
       ).getPersonalAgent({ userId: user.id }, agentId);
@@ -302,6 +418,12 @@ export const registerPersonalAgentRoutes = (
     async (request) => {
       const user = await authenticatePersonalAgent(request);
       const input = personalAgentCreateSchema.parse(request.body);
+      const proxied = await proxyPersonalAgent(
+        "POST",
+        "/v1/personal-agents",
+        input
+      );
+      if (proxied) return proxied.payload;
       await assertPublishedTemplate(
         input.sourceTemplateId,
         input.sourceTemplateVersion
@@ -328,6 +450,12 @@ export const registerPersonalAgentRoutes = (
       const user = await authenticatePersonalAgent(request);
       const { agentId } = personalAgentIdParamsSchema.parse(request.params);
       const input = personalAgentUpdateSchema.parse(request.body);
+      const proxied = await proxyPersonalAgent(
+        "PATCH",
+        `/v1/personal-agents/${encodeURIComponent(agentId)}`,
+        input
+      );
+      if (proxied) return proxied.payload;
       if (input.sourceTemplateId !== undefined) {
         await assertPublishedTemplate(
           input.sourceTemplateId,
@@ -396,6 +524,12 @@ export const registerPersonalAgentRoutes = (
       const user = await authenticatePersonalAgent(request);
       const { agentId } = personalAgentIdParamsSchema.parse(request.params);
       const input = personalAgentRestoreSchema.parse(request.body);
+      const proxied = await proxyPersonalAgent(
+        "POST",
+        `/v1/personal-agents/${encodeURIComponent(agentId)}/restore`,
+        input
+      );
+      if (proxied) return proxied.payload;
       const agent = await routeRepository(requireRepository())
         .restorePersonalAgent({ actor: { userId: user.id }, agentId, ...input })
         .catch(handleWriteConflict);
@@ -411,6 +545,12 @@ export const registerPersonalAgentRoutes = (
       const user = await authenticatePersonalAgent(request);
       const { agentId } = personalAgentIdParamsSchema.parse(request.params);
       const input = personalAgentRetireSchema.parse(request.body);
+      const proxied = await proxyPersonalAgent(
+        "POST",
+        `/v1/personal-agents/${encodeURIComponent(agentId)}/retire`,
+        input
+      );
+      if (proxied) return proxied.payload;
       const agent = await routeRepository(requireRepository())
         .retirePersonalAgent({ actor: { userId: user.id }, agentId, ...input })
         .catch(handleWriteConflict);

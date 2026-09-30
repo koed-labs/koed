@@ -35,7 +35,7 @@ import {
   managedConversationControls,
   managedMessagesWithTransientOutput,
   parseManagedChatMemoryAttribution,
-  managedAgentRecallRecoveryHref,
+  managedAgentRecoveryHref,
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
@@ -1174,7 +1174,11 @@ export function LiveAgentChat({
         recovered &&
         (recovered.state === "pending" || recovered.state === "reconciling") &&
         recovered.requestFingerprint !== undefined &&
-        recovered.requestFingerprint !== exactRequestFingerprint
+        !reusableManagedChatSendIdentity(
+          recoveryRecord,
+          text,
+          exactRequestFingerprint
+        )
       ) {
         throw new Error(
           "The previous send settings no longer match this conversation. Its identity is retained; restore the original settings before retrying."
@@ -1280,12 +1284,9 @@ export function LiveAgentChat({
           ) &&
           navigableExecutionId
         ) {
-          const recallPaused =
-            cause instanceof ManagedChatError &&
-            cause.code === "MEMORY_RECALL_UNAVAILABLE";
           router.replace(
-            recallPaused && selection.agentId
-              ? managedAgentRecallRecoveryHref(
+            selection.agentId
+              ? managedAgentRecoveryHref(
                   navigableExecutionId,
                   selection.agentId
                 )

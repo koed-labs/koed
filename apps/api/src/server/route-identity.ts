@@ -494,56 +494,56 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/personal-agent-role-templates",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Read the reviewed, immutable Personal Agent role template catalogue; local profiles also accept a Personal API token."
   ),
   route(
     "GET",
     "/v1/personal-agents",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "List the authenticated user's Personal Agent identities; local profiles also accept a Personal API token."
   ),
   route(
     "GET",
     "/v1/personal-agents/capabilities",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "List ready AI Client model capabilities for Personal Agent defaults; local profiles also accept a Personal API token."
   ),
   route(
     "GET",
     "/v1/personal-agents/{agentId}",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Read one Personal Agent identity, instructions, and retained activity; local profiles also accept a Personal API token."
   ),
   route(
     "POST",
     "/v1/personal-agents",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Create an owner-scoped Personal Agent identity; local profiles also accept a Personal API token."
   ),
   route(
     "PATCH",
     "/v1/personal-agents/{agentId}",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Update a Personal Agent with an expected-version check; local profiles also accept a Personal API token."
   ),
   route(
     "POST",
     "/v1/personal-agents/{agentId}/retire",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Retire a Personal Agent without deleting retained history; local profiles also accept a Personal API token."
   ),
   route(
     "POST",
     "/v1/personal-agents/{agentId}/restore",
-    "session_or_api_token",
+    "session_or_api_token_or_device_credential",
     "personal_memory",
     "Restore the owner's retired Personal Agent with its stable identity and retained history; local profiles also accept a Personal API token."
   ),

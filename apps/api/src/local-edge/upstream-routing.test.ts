@@ -764,6 +764,35 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("allows bounded Personal Agent library routes through managed execution credentials", () => {
+    const agentId = "7bd960fe-6ff0-4bff-8101-4232aa61cb69";
+    const allowed: Array<["GET" | "POST" | "PATCH", string]> = [
+      ["GET", "/v1/personal-agent-role-templates"],
+      ["GET", "/v1/personal-agents"],
+      ["GET", "/v1/personal-agents/capabilities"],
+      ["GET", `/v1/personal-agents/${agentId}`],
+      ["POST", "/v1/personal-agents"],
+      ["PATCH", `/v1/personal-agents/${agentId}`],
+      ["POST", `/v1/personal-agents/${agentId}/retire`],
+      ["POST", `/v1/personal-agents/${agentId}/restore`]
+    ];
+    for (const [method, path] of allowed) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).not.toThrow();
+    }
+    for (const [method, path] of [
+      ["DELETE", `/v1/personal-agents/${agentId}`],
+      ["POST", `/v1/personal-agents/${agentId}/clone`],
+      ["GET", `/v1/personal-agents/${agentId}/versions`],
+      ["POST", "/v1/personal-agents/not-a-uuid/retire"]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).toThrow("not allowed for operation family");
+    }
+  });
+
   it("allows only POST prompt cancellation through managed execution routing", () => {
     expect(() =>
       assertUpstreamOperationPathAllowed(

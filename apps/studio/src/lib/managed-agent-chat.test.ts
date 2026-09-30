@@ -5,7 +5,7 @@ import {
   ManagedChatError,
   managedRequest,
   managedMessagesWithTransientOutput,
-  managedAgentRecallRecoveryHref,
+  managedAgentRecoveryHref,
   parseManagedChatMemoryAttribution,
   parseLaunchInstances,
   parseRuntime,
@@ -51,7 +51,7 @@ const execution = {
 };
 
 describe("managed agent chat boundary", () => {
-  it("navigates to a reload-safe execution and Agent recovery URL after recall pauses", () => {
+  it("navigates to a reload-safe execution and Agent recovery URL", () => {
     expect(shouldNavigateToExecutionAfterSendFailure(true, "execution-1")).toBe(
       true
     );
@@ -59,7 +59,7 @@ describe("managed agent chat boundary", () => {
       shouldNavigateToExecutionAfterSendFailure(false, "execution-1")
     ).toBe(false);
     const recoveryUrl = new URL(
-      managedAgentRecallRecoveryHref("execution-1", "agent-1"),
+      managedAgentRecoveryHref("execution-1", "agent-1"),
       "https://studio.local"
     );
     expect(recoveryUrl.searchParams.get("execution")).toBe("execution-1");

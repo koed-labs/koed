@@ -1,4 +1,7 @@
 import Fastify from "fastify";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -85,7 +88,61 @@ const capabilitySnapshot = {
   createdAt: "2026-09-22T10:00:00.000Z"
 };
 
-const buildFixture = async (deploymentProfile = "developer") => {
+const writePersonalAgentUpstreamRegistry = (
+  routePolicy: "enabled" | "disabled" = "enabled"
+): string => {
+  const path = resolve(
+    mkdtempSync(resolve(tmpdir(), "koed-personal-agent-upstream-")),
+    "upstream-backends.json"
+  );
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 2,
+      updatedAt: "2026-09-22T10:00:00.000Z",
+      activeBackendId: "personal-authority",
+      backends: [
+        {
+          id: "personal-authority",
+          displayName: "Personal authority",
+          baseUrl: "https://personal.example.test/koed",
+          profile: "private_vps",
+          createdAt: "2026-09-22T10:00:00.000Z",
+          updatedAt: "2026-09-22T10:00:00.000Z",
+          routePolicy: { managedExecution: routePolicy },
+          credential: { status: "configured" },
+          capabilities: {
+            state: "validated",
+            checkedAt: "2026-09-22T10:00:00.000Z",
+            expiresAt: "2099-09-22T10:00:00.000Z",
+            schemaVersion: 3,
+            profile: "private_vps",
+            payload: {
+              capabilities: {
+                "memory.managedConversations": {
+                  availability: "available"
+                }
+              }
+            }
+          }
+        }
+      ]
+    })
+  );
+  return path;
+};
+
+const buildFixture = async (
+  deploymentProfile = "developer",
+  options: {
+    upstreamBackendsPath?: string;
+    remoteOperationsAllowed?: boolean;
+    upstreamAuthorization?: string | null;
+    fetch?: typeof globalThis.fetch;
+    ownerId?: string;
+  } = {}
+) => {
+  const authenticatedOwnerId = options.ownerId ?? ownerId;
   const repository = {
     listPersonalAgents: vi.fn(async () => [identity()]),
     listPersonalAgentRoleTemplates: vi.fn(async () => []),
@@ -132,27 +189,44 @@ const buildFixture = async (deploymentProfile = "developer") => {
           : 500;
     return reply.status(statusCode).send({ error: error.message });
   });
+  const auth = {
+    authenticate: vi.fn(async () => ({
+      id: authenticatedOwnerId,
+      email: "owner@example.test",
+      displayName: "Owner"
+    })),
+    authenticateSession: vi.fn(async (request) => {
+      if (request.headers.authorization) {
+        throw Object.assign(new Error("Session cookie required"), {
+          statusCode: 401
+        });
+      }
+      return {
+        id: authenticatedOwnerId,
+        email: "owner@example.test",
+        displayName: "Owner"
+      };
+    }),
+    authenticateSessionOrDeviceCredential: vi.fn(async () => ({
+      id: authenticatedOwnerId,
+      email: "owner@example.test",
+      displayName: "Owner"
+    }))
+  };
   registerPersonalAgentRoutes(app, {
     config: { deploymentProfile },
     requireRepository: () => repository,
-    auth: {
-      authenticate: vi.fn(async () => ({
-        id: ownerId,
-        email: "owner@example.test",
-        displayName: "Owner"
-      })),
-      authenticateSession: vi.fn(async (request) => {
-        if (request.headers.authorization) {
-          throw Object.assign(new Error("Session cookie required"), {
-            statusCode: 401
-          });
-        }
-        return {
-          id: ownerId,
-          email: "owner@example.test",
-          displayName: "Owner"
-        };
-      })
+    auth,
+    localEdge: {
+      upstreamBackendsPath:
+        options.upstreamBackendsPath ??
+        resolve(tmpdir(), `koed-no-upstream-${randomUUID()}.json`),
+      remoteOperationsAllowed: () => options.remoteOperationsAllowed ?? true,
+      resolveUpstreamAuthorization: () =>
+        options.upstreamAuthorization === undefined
+          ? "Koed-Device fixture:secret"
+          : options.upstreamAuthorization,
+      fetch: options.fetch ?? globalThis.fetch
     },
     rateLimit: {
       memoryRead: async () => undefined,
@@ -161,7 +235,7 @@ const buildFixture = async (deploymentProfile = "developer") => {
     }
   } as unknown as ApiRouteContext);
   await app.ready();
-  return { app, repository };
+  return { app, repository, auth };
 };
 
 describe("Personal Agent API", () => {
@@ -672,5 +746,250 @@ describe("Personal Agent API", () => {
     await fixture.app.close();
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("uses the managed authority for the full Personal Agent library when configured", async () => {
+    const upstreamPath = writePersonalAgentUpstreamRegistry();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ authority: "hosted" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: upstreamPath,
+      fetch
+    });
+    const createBody = {
+      requestId: randomUUID(),
+      name: "Hosted Planner",
+      role: "",
+      avatarReference: null,
+      soulInstructions: "Plan carefully.",
+      defaultProvider: null,
+      defaultModel: null,
+      defaultReasoningEffort: null,
+      sourceTemplateId: "code-reviewer",
+      sourceTemplateVersion: 1
+    };
+    const updateBody = {
+      requestId: randomUUID(),
+      expectedVersion: 1,
+      name: "Updated Planner"
+    };
+    const lifecycleBody = {
+      requestId: randomUUID(),
+      expectedVersion: 1
+    };
+    const requests = [
+      { method: "GET", url: "/v1/personal-agent-role-templates" },
+      { method: "GET", url: "/v1/personal-agents/capabilities" },
+      { method: "GET", url: "/v1/personal-agents" },
+      { method: "GET", url: `/v1/personal-agents/${agentId}` },
+      {
+        method: "POST",
+        url: "/v1/personal-agents",
+        payload: createBody
+      },
+      {
+        method: "PATCH",
+        url: `/v1/personal-agents/${agentId}`,
+        payload: updateBody
+      },
+      {
+        method: "POST",
+        url: `/v1/personal-agents/${agentId}/retire`,
+        payload: lifecycleBody
+      },
+      {
+        method: "POST",
+        url: `/v1/personal-agents/${agentId}/restore`,
+        payload: lifecycleBody
+      }
+    ] as const;
+
+    try {
+      for (const request of requests) {
+        const response = await fixture.app.inject({
+          ...request,
+          headers: { authorization: "Bearer local-personal-token" }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ authority: "hosted" });
+      }
+
+      expect(fetch).toHaveBeenCalledTimes(requests.length);
+      expect(
+        fetch.mock.calls.map(([url, init]) => ({
+          method: init?.method,
+          pathname: new URL(String(url)).pathname,
+          authorization: new Headers(init?.headers).get("authorization"),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        }))
+      ).toEqual([
+        {
+          method: "GET",
+          pathname: "/koed/v1/personal-agent-role-templates",
+          authorization: "Koed-Device fixture:secret",
+          body: undefined
+        },
+        {
+          method: "GET",
+          pathname: "/koed/v1/personal-agents/capabilities",
+          authorization: "Koed-Device fixture:secret",
+          body: undefined
+        },
+        {
+          method: "GET",
+          pathname: "/koed/v1/personal-agents",
+          authorization: "Koed-Device fixture:secret",
+          body: undefined
+        },
+        {
+          method: "GET",
+          pathname: `/koed/v1/personal-agents/${agentId}`,
+          authorization: "Koed-Device fixture:secret",
+          body: undefined
+        },
+        {
+          method: "POST",
+          pathname: "/koed/v1/personal-agents",
+          authorization: "Koed-Device fixture:secret",
+          body: createBody
+        },
+        {
+          method: "PATCH",
+          pathname: `/koed/v1/personal-agents/${agentId}`,
+          authorization: "Koed-Device fixture:secret",
+          body: updateBody
+        },
+        {
+          method: "POST",
+          pathname: `/koed/v1/personal-agents/${agentId}/retire`,
+          authorization: "Koed-Device fixture:secret",
+          body: lifecycleBody
+        },
+        {
+          method: "POST",
+          pathname: `/koed/v1/personal-agents/${agentId}/restore`,
+          authorization: "Koed-Device fixture:secret",
+          body: lifecycleBody
+        }
+      ]);
+      expect(fixture.repository.listPersonalAgents).not.toHaveBeenCalled();
+      expect(fixture.repository.createPersonalAgent).not.toHaveBeenCalled();
+      expect(fixture.repository.updatePersonalAgent).not.toHaveBeenCalled();
+      expect(fixture.repository.retirePersonalAgent).not.toHaveBeenCalled();
+      expect(fixture.repository.restorePersonalAgent).not.toHaveBeenCalled();
+      expect(
+        fixture.repository.getPersonalAgentRoleTemplate
+      ).not.toHaveBeenCalled();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("fails closed instead of using the local Agent library when hosted authority is unavailable", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      remoteOperationsAllowed: false,
+      fetch
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/personal-agents",
+      headers: { authorization: "Bearer local-personal-token" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(503);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(fixture.repository.listPersonalAgents).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back locally when the configured hosted credential is missing", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      upstreamAuthorization: null,
+      fetch
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/personal-agents",
+      headers: { authorization: "Bearer local-personal-token" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(503);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(fixture.repository.listPersonalAgents).not.toHaveBeenCalled();
+  });
+
+  it("does not expose a same-ID local Agent when hosted owner lookup returns not found", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ error: "Personal Agent not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      fetch
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}`,
+      headers: { authorization: "Bearer local-personal-token" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "Personal Agent not found" });
+    expect(fixture.repository.getPersonalAgent).not.toHaveBeenCalled();
+    expect(fixture.repository.getPersonalAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it("uses the local Agent library when no managed remote authority is configured", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const fixture = await buildFixture("developer", { fetch });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/personal-agents",
+      headers: { authorization: "Bearer local-personal-token" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.listPersonalAgents).toHaveBeenCalledWith(
+      { userId: ownerId },
+      { includeRetired: true }
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("allows only scoped managed-execution device credentials on hosted Agent routes", async () => {
+    const hostedOwnerId = randomUUID();
+    const fixture = await buildFixture("private_vps", {
+      ownerId: hostedOwnerId
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/personal-agents",
+      headers: { authorization: "Koed-Device upstream:credential" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(
+      fixture.auth.authenticateSessionOrDeviceCredential
+    ).toHaveBeenCalledWith(expect.anything(), "managed_execution");
+    expect(fixture.repository.listPersonalAgents).toHaveBeenCalledWith(
+      { userId: hostedOwnerId },
+      { includeRetired: true }
+    );
   });
 });

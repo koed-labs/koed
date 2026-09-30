@@ -231,7 +231,7 @@ export function shouldNavigateToExecutionAfterSendFailure(
   return Boolean(startedNewExecution && executionId);
 }
 
-export function managedAgentRecallRecoveryHref(
+export function managedAgentRecoveryHref(
   executionId: string,
   agentId: string
 ): string {

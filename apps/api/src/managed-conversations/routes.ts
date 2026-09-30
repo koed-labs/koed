@@ -1362,10 +1362,11 @@ export const registerManagedConversationRoutes = (
       provider: execution.provider,
       aiClientInstanceId: execution.aiClientInstanceId,
       capability: input.capability,
-      runnerDeviceId:
-        context.deploymentIdentity.inspect().deviceInstanceId ?? undefined,
-      runnerDeploymentId:
-        context.deploymentIdentity.inspect().deploymentId ?? undefined
+      // Local starts are admitted against the local API owner's unbound
+      // instance (sourceDeviceCredentialId: null). The local API credential
+      // is not a hosted Koed-Device credential, so filtering this instance by
+      // the runner's hosted device identity would reject a prompt after start.
+      sourceDeviceCredentialId: null
     });
     if (input.settings)
       await assertLocalSettingsSelection(
@@ -1375,12 +1376,7 @@ export const registerManagedConversationRoutes = (
           ...execution,
           ...input.settings
         },
-        {
-          runnerDeviceId:
-            context.deploymentIdentity.inspect().deviceInstanceId ?? undefined,
-          runnerDeploymentId:
-            context.deploymentIdentity.inspect().deploymentId ?? undefined
-        }
+        { sourceDeviceCredentialId: null }
       );
     return { backendId: authority.backend.id };
   };

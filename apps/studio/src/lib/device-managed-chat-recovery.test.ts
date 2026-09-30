@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-// @ts-ignore -- Node's native TypeScript test runner requires the .ts extension.
 import {
   createDeviceManagedChatRecoveryStore,
   createLocalManagedChatRecoveryStore,
@@ -9,6 +8,7 @@ import {
   managedChatSendRequestFingerprint,
   reusableManagedChatSendIdentity,
   settleManagedChatStartRecovery
+  // @ts-expect-error -- Node's native TypeScript test runner requires the .ts extension.
 } from "./device-managed-chat-recovery.ts";
 
 class MemoryStorage {
@@ -218,6 +218,145 @@ test("retries only the exact retained request with its original idempotency iden
       },
       operation.prompt,
       requestFingerprint
+    ),
+    null
+  );
+});
+
+test("reuses a retained first prompt identity after its bare start completed", () => {
+  const prompt = "Reply exactly: local recovery verified.";
+  const startFingerprint = managedChatSendRequestFingerprint({
+    kind: "start",
+    projectId: null,
+    executionId: null,
+    executionGeneration: null,
+    agentId: "agent-a",
+    agentVersion: 1,
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "low",
+    permissionMode: "full_access",
+    expectedSettings: null
+  });
+  const pendingOperation = {
+    kind: "start" as const,
+    startIdempotencyKey: "stable-start-key",
+    promptIdempotencyKey: "stable-prompt-key",
+    clientUserMessageId: "stable-message-id",
+    prompt,
+    requestFingerprint: startFingerprint,
+    state: "reconciling" as const
+  };
+  const record = {
+    schemaVersion: 1 as const,
+    draft: prompt,
+    pendingOperation
+  };
+  const firstPromptFingerprint = managedChatSendRequestFingerprint({
+    kind: "prompt",
+    projectId: null,
+    executionId: "execution-a",
+    executionGeneration: 1,
+    agentId: "agent-a",
+    agentVersion: 1,
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "low",
+    permissionMode: "full_access",
+    expectedSettings: {
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      permissionMode: "full_access"
+    }
+  });
+  const earlyRecoveryFingerprint = managedChatSendRequestFingerprint({
+    kind: "prompt",
+    projectId: null,
+    executionId: "execution-a",
+    executionGeneration: null,
+    agentId: "agent-a",
+    agentVersion: 1,
+    provider: "codex",
+    aiClientInstanceId: "codex.default",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "low",
+    permissionMode: "full_access",
+    expectedSettings: null
+  });
+
+  assert.deepEqual(
+    reusableManagedChatSendIdentity(record, prompt, firstPromptFingerprint),
+    {
+      promptIdempotencyKey: pendingOperation.promptIdempotencyKey,
+      clientUserMessageId: pendingOperation.clientUserMessageId,
+      startIdempotencyKey: pendingOperation.startIdempotencyKey
+    }
+  );
+  assert.deepEqual(
+    reusableManagedChatSendIdentity(record, prompt, earlyRecoveryFingerprint),
+    {
+      promptIdempotencyKey: pendingOperation.promptIdempotencyKey,
+      clientUserMessageId: pendingOperation.clientUserMessageId,
+      startIdempotencyKey: pendingOperation.startIdempotencyKey
+    }
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      prompt,
+      managedChatSendRequestFingerprint({
+        kind: "prompt",
+        projectId: null,
+        executionId: "execution-a",
+        executionGeneration: 1,
+        agentId: "agent-a",
+        agentVersion: 2,
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        expectedSettings: {
+          model: "gpt-5.6-luna",
+          reasoningEffort: "low",
+          permissionMode: "full_access"
+        }
+      })
+    ),
+    null
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      prompt,
+      managedChatSendRequestFingerprint({
+        kind: "prompt",
+        projectId: null,
+        executionId: "execution-a",
+        executionGeneration: 1,
+        agentId: "agent-a",
+        agentVersion: 1,
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-other",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        expectedSettings: {
+          model: "gpt-5.6-luna",
+          reasoningEffort: "low",
+          permissionMode: "full_access"
+        }
+      })
+    ),
+    null
+  );
+  assert.equal(
+    reusableManagedChatSendIdentity(
+      record,
+      "Changed goal",
+      firstPromptFingerprint
     ),
     null
   );

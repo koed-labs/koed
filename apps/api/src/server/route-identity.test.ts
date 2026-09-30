@@ -91,9 +91,20 @@ describe("route identity contract", () => {
       )
     ).toMatchObject({
       method: "GET",
-      identity: "session_or_api_token",
+      identity: "session_or_api_token_or_device_credential",
       domain: "personal_memory"
     });
+  });
+
+  it("allows delegated managed-execution credentials on the Personal Agent API", () => {
+    expect(
+      implementedRouteIdentityContracts
+        .filter((contract) => contract.path.startsWith("/v1/personal-agent"))
+        .every(
+          (contract) =>
+            contract.identity === "session_or_api_token_or_device_credential"
+        )
+    ).toBe(true);
   });
 
   it("has one implemented contract per method/path and exports all implemented routes through OpenAPI", () => {

@@ -1484,6 +1484,100 @@ describe("managed Conversation capability admission", () => {
 });
 
 describe("managed Conversation routes", () => {
+  it("uses the local unbound AI Client instance for a hosted-authority prompt", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const commandId = randomUUID();
+    const agentId = randomUUID();
+    const calls: Array<{ url: URL; init?: RequestInit }> = [];
+    const listDeviceCredentials = vi.fn(async () => []);
+    const repository = {
+      ...launchRepository,
+      listDeviceCredentials
+    };
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(typedError.statusCode ?? 500)
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () =>
+          "Koed-Device upstream-key:upstream-secret",
+        fetch: vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+          const url = new URL(String(input));
+          calls.push({ url, init });
+          if (init?.method === "POST") {
+            return new Response(
+              JSON.stringify({
+                command: { id: commandId, state: "queued" }
+              }),
+              {
+                status: 202,
+                headers: { "content-type": "application/json" }
+              }
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              execution: {
+                id: executionId,
+                provider: "codex",
+                aiClientInstanceId: "codex.default"
+              }
+            }),
+            { headers: { "content-type": "application/json" } }
+          );
+        })
+      },
+      requireRepository: () => repository,
+      deploymentIdentity: {
+        inspect: vi.fn(() => ({
+          health: "healthy",
+          deploymentId: "local-deployment",
+          deviceInstanceId: "local-device"
+        }))
+      }
+    } as unknown as ApiRouteContext);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        payload: {
+          executionGeneration: 1,
+          idempotencyKey: "hosted-authority-prompt",
+          clientUserMessageId: randomUUID(),
+          prompt: "Send this through the hosted authority.",
+          agentId,
+          expectedAgentVersion: 1
+        }
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        command: { id: commandId, state: "queued" }
+      });
+      expect(calls.map(({ url }) => url.pathname)).toEqual([
+        `/koed/v1/managed-conversations/${executionId}`,
+        `/koed/v1/managed-conversations/${executionId}/prompts`
+      ]);
+      expect(listDeviceCredentials).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it.each([
     ["canceled", true],
     ["dispatching", false]

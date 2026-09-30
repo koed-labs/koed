@@ -423,6 +423,26 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      (method === "GET" &&
+        (pathname === "/v1/personal-agent-role-templates" ||
+          pathname === "/v1/personal-agents" ||
+          pathname === "/v1/personal-agents/capabilities" ||
+          /^\/v1\/personal-agents\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            pathname
+          ))) ||
+      (method === "POST" &&
+        (pathname === "/v1/personal-agents" ||
+          /^\/v1\/personal-agents\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:retire|restore)$/i.test(
+            pathname
+          ))) ||
+      (method === "PATCH" &&
+        /^\/v1\/personal-agents\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          pathname
+        ))
+    ) {
+      return;
+    }
+    if (
       method === "GET" &&
       /^\/v1\/managed-conversations\/[^/]+\/agent-state$/.test(pathname)
     )

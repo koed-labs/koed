@@ -59,6 +59,15 @@ own authenticated User session. Hosted Studio serves the static UI at `/studio/`
 and calls the same-origin `/v1/personal-agents` API; the API checks browser
 write origins. The local transport is not hosted authentication.
 
+When Desktop has an enabled hosted managed-execution authority, its local API
+forwards Personal Agent profile, version, history, and role-template requests
+to that same authority using the enrolled device credential. The hosted
+authority supplies the account owner; local owner IDs are not forwarded. If
+there is no enabled hosted authority, Desktop uses its local Agent store. If a
+configured hosted authority is unavailable, Agent operations fail closed rather
+than switching to the local store. This keeps Desktop and browser Studio on one
+account-owned Agent library while preserving local-only installations.
+
 Create requests carry an idempotency identifier. Edits and retirement include
 the version the user saw, so a stale editor cannot overwrite a newer identity.
 Changing a name does not regenerate the saved soul. Avatar storage contains the
@@ -205,5 +214,10 @@ conversation, each with its own encrypted goal, automatic owner-visible title,
 immutable Agent attribution and actual model/effort. Both replies were visible
 in the chat. Focused tests cover authorized Personal and Team evidence,
 revocation and other-owner denial, temporary recall failure, the one-request
-skip, duplicate prevention and attempt fencing. The hosted review runner
-advertised Codex only; live Pi and Claude multi-Job checks remain unrun.
+skip, duplicate prevention and attempt fencing. A separate disposable Electron
+review used the same hosted account authority for Agent profiles and Jobs. It
+completed one fresh Codex Job with the exact reply, one durable Job and the
+saved Agent version/model/effort in Desktop history. Delayed local start
+recovery keeps the Agent and original send identity until the first prompt is
+accepted. The private runner advertised Codex only; live Pi and Claude
+multi-Job checks remain unrun.

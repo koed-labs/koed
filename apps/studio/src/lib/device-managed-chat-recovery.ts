@@ -69,10 +69,10 @@ export function managedChatCommandMatchesPendingPrompt(
 ): boolean {
   return Boolean(
     operation?.kind === "prompt" &&
-      command?.commandKind === "prompt" &&
-      command.clientUserMessageId === operation.clientUserMessageId &&
-      (operation.executionGeneration === undefined ||
-        operation.executionGeneration === executionGeneration)
+    command?.commandKind === "prompt" &&
+    command.clientUserMessageId === operation.clientUserMessageId &&
+    (operation.executionGeneration === undefined ||
+      operation.executionGeneration === executionGeneration)
   );
 }
 
@@ -118,18 +118,73 @@ export function reusableManagedChatSendIdentity(
   "promptIdempotencyKey" | "clientUserMessageId" | "startIdempotencyKey"
 > | null {
   const operation = record?.pendingOperation;
+  const fingerprintMatches =
+    operation?.requestFingerprint === undefined ||
+    operation.requestFingerprint === requestFingerprint ||
+    (operation.kind === "start" &&
+      isUnsubmittedStartToPromptTransition(
+        operation.requestFingerprint,
+        requestFingerprint
+      ));
   if (
     !operation ||
     operation.prompt !== prompt ||
-    (operation.requestFingerprint !== undefined &&
-      operation.requestFingerprint !== requestFingerprint) ||
+    !fingerprintMatches ||
     (operation.state !== "pending" && operation.state !== "reconciling")
-  ) return null;
+  )
+    return null;
   return {
     promptIdempotencyKey: operation.promptIdempotencyKey,
     clientUserMessageId: operation.clientUserMessageId,
     startIdempotencyKey: operation.startIdempotencyKey
   };
+}
+
+function isUnsubmittedStartToPromptTransition(
+  previousFingerprint: string | undefined,
+  nextFingerprint: string
+): boolean {
+  if (!previousFingerprint) return false;
+  try {
+    const previous: unknown = JSON.parse(previousFingerprint);
+    const next: unknown = JSON.parse(nextFingerprint);
+    if (
+      !Array.isArray(previous) ||
+      !Array.isArray(next) ||
+      previous.length !== 12 ||
+      next.length !== 12 ||
+      previous[0] !== "start" ||
+      next[0] !== "prompt" ||
+      previous[2] !== null ||
+      previous[3] !== null ||
+      previous[11] !== null ||
+      typeof next[2] !== "string" ||
+      next[2].length === 0 ||
+      !(
+        next[3] === null ||
+        (typeof next[3] === "number" &&
+          Number.isInteger(next[3]) &&
+          next[3] >= 1)
+      )
+    ) {
+      return false;
+    }
+    if (previous[1] !== next[1]) return false;
+    for (let index = 4; index <= 10; index += 1) {
+      if (previous[index] !== next[index]) return false;
+    }
+    const expectedSettings = next[11];
+    if (next[3] === null) return expectedSettings === null;
+    return (
+      Array.isArray(expectedSettings) &&
+      expectedSettings.length === 3 &&
+      expectedSettings[0] === next[8] &&
+      expectedSettings[1] === next[9] &&
+      expectedSettings[2] === next[10]
+    );
+  } catch {
+    return false;
+  }
 }
 
 export type DeviceManagedChatRecoveryStore = Readonly<{
@@ -140,11 +195,21 @@ export type DeviceManagedChatRecoveryStore = Readonly<{
   flush?: () => Promise<void>;
 }>;
 
-export type DeviceManagedChatStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type DeviceManagedChatStorage = Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem"
+>;
 
 type DesktopRecoveryBridge = Readonly<{
-  read: (input: { ownerId: string; executionId: string }) => Promise<string | null>;
-  write: (input: { ownerId: string; executionId: string; value: string }) => Promise<void>;
+  read: (input: {
+    ownerId: string;
+    executionId: string;
+  }) => Promise<string | null>;
+  write: (input: {
+    ownerId: string;
+    executionId: string;
+    value: string;
+  }) => Promise<void>;
   delete: (input: { ownerId: string; executionId: string }) => Promise<void>;
 }>;
 
@@ -152,8 +217,10 @@ let desktopWriteQueue: Promise<void> = Promise.resolve();
 
 function desktopRecoveryBridge(): DesktopRecoveryBridge | null {
   if (typeof window === "undefined") return null;
-  return (window as unknown as { koedStudioChatRecovery?: DesktopRecoveryBridge })
-    .koedStudioChatRecovery ?? null;
+  return (
+    (window as unknown as { koedStudioChatRecovery?: DesktopRecoveryBridge })
+      .koedStudioChatRecovery ?? null
+  );
 }
 
 const prefix = "koed.studio.managed-chat-recovery.v1";
@@ -164,13 +231,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function parseRecoveryRecord(value: string | null): DeviceManagedChatRecoveryRecord | null {
+export function parseRecoveryRecord(
+  value: string | null
+): DeviceManagedChatRecoveryRecord | null {
   if (!value || value.length > maxRecordLength) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || parsed.schemaVersion !== 1 || typeof parsed.draft !== "string") return null;
+    if (
+      !isRecord(parsed) ||
+      parsed.schemaVersion !== 1 ||
+      typeof parsed.draft !== "string"
+    )
+      return null;
     const candidate = parsed.pendingOperation;
-    if (candidate === undefined) return { schemaVersion: 1, draft: parsed.draft };
+    if (candidate === undefined)
+      return { schemaVersion: 1, draft: parsed.draft };
     if (
       !isRecord(candidate) ||
       (candidate.kind !== "start" && candidate.kind !== "prompt") ||
@@ -185,9 +260,13 @@ export function parseRecoveryRecord(value: string | null): DeviceManagedChatReco
       (candidate.requestFingerprint !== undefined &&
         (typeof candidate.requestFingerprint !== "string" ||
           candidate.requestFingerprint.length > 8192)) ||
-      !["pending", "reconciling", "accepted", "rejected"].includes(String(candidate.state)) ||
-      (candidate.commandId !== undefined && typeof candidate.commandId !== "string")
-    ) return null;
+      !["pending", "reconciling", "accepted", "rejected"].includes(
+        String(candidate.state)
+      ) ||
+      (candidate.commandId !== undefined &&
+        typeof candidate.commandId !== "string")
+    )
+      return null;
     return {
       schemaVersion: 1,
       draft: parsed.draft,
@@ -204,7 +283,9 @@ export function parseRecoveryRecord(value: string | null): DeviceManagedChatReco
           ? { requestFingerprint: candidate.requestFingerprint }
           : {}),
         state: candidate.state as DeviceManagedChatPendingOperation["state"],
-        ...(typeof candidate.commandId === "string" ? { commandId: candidate.commandId } : {})
+        ...(typeof candidate.commandId === "string"
+          ? { commandId: candidate.commandId }
+          : {})
       }
     };
   } catch {
@@ -219,7 +300,11 @@ export function parseRecoveryRecord(value: string | null): DeviceManagedChatReco
 export function createDesktopManagedChatRecoveryStore(input: {
   ownerId: string;
   executionId: string | null;
-}): (DeviceManagedChatRecoveryStore & { hydrate: () => Promise<DeviceManagedChatRecoveryRecord | null> }) | null {
+}):
+  | (DeviceManagedChatRecoveryStore & {
+      hydrate: () => Promise<DeviceManagedChatRecoveryRecord | null>;
+    })
+  | null {
   const bridge = desktopRecoveryBridge();
   const ownerId = input.ownerId.trim();
   if (!bridge || !ownerId) return null;
@@ -242,7 +327,8 @@ export function createDesktopManagedChatRecoveryStore(input: {
     flush: () => desktopWriteQueue,
     write: (record) => {
       const value = JSON.stringify(record);
-      if (value.length > maxRecordLength) throw new Error("Chat recovery record is too large.");
+      if (value.length > maxRecordLength)
+        throw new Error("Chat recovery record is too large.");
       current = record;
       enqueue(() => bridge.write({ ...scope, value }));
     },
@@ -257,7 +343,9 @@ export function createLocalManagedChatRecoveryStore(input: {
   ownerId: string;
   backendId: string;
   executionId: string | null;
-}): DeviceManagedChatRecoveryStore & { hydrate?: () => Promise<DeviceManagedChatRecoveryRecord | null> } {
+}): DeviceManagedChatRecoveryStore & {
+  hydrate?: () => Promise<DeviceManagedChatRecoveryRecord | null>;
+} {
   const desktop = createDesktopManagedChatRecoveryStore(input);
   if (desktop) return desktop;
   const browser = createDeviceManagedChatRecoveryStore(input);
@@ -279,13 +367,16 @@ export function createDeviceManagedChatRecoveryStore(input: {
   const ownerId = input.ownerId.trim();
   const backendId = input.backendId.trim();
   if (!ownerId || !backendId) return null;
-  const storage = input.storage ?? (typeof window === "undefined" ? undefined : window.localStorage);
+  const storage =
+    input.storage ??
+    (typeof window === "undefined" ? undefined : window.localStorage);
   if (!storage) return null;
   const conversation = input.executionId?.trim() || "new";
   const key = `${prefix}:${identityPart(backendId)}:${identityPart(ownerId)}:${identityPart(conversation)}`;
   const serialize = (record: DeviceManagedChatRecoveryRecord) => {
     const value = JSON.stringify(record);
-    if (value.length > maxRecordLength) throw new Error("Chat recovery record is too large.");
+    if (value.length > maxRecordLength)
+      throw new Error("Chat recovery record is too large.");
     return value;
   };
   return {
