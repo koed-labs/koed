@@ -1811,12 +1811,15 @@ export const inspectAiClientReadiness = (input: {
         profileAuthentication
       );
       if (
+        profileConfigured &&
         input.capabilityReadModel &&
         !input.capabilityReadModel.instances.some(
           (instance) =>
             instance.driverId === driverId &&
             instance.instanceId ===
-              (input.instanceId ?? `${driverId}.default`) &&
+              (snapshot?.instanceId ??
+                input.instanceId ??
+                `${driverId}.default`) &&
             instance.enabled !== false
         )
       ) {
