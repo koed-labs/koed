@@ -182,7 +182,7 @@ describe("Pi managed RPC conversation", () => {
       const args = mocks.spawn.mock.calls[0]?.[1] as string[];
       const passedConfig = JSON.parse(args.at(-1)!) as Record<string, unknown>;
       expect(passedConfig).toMatchObject({
-        sessionDirectory: f.config.sessionDirectory,
+        sessionDirectory: fs.realpathSync(f.config.sessionDirectory),
         resumeSessionPath: identity.transcriptPath
       });
       const original = fs.readFileSync(transcriptPath, "utf8");
