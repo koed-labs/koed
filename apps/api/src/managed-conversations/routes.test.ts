@@ -2071,6 +2071,48 @@ describe("managed Conversation routes", () => {
       },
       requireRepository: () => ({
         ...launchRepository,
+        listAiClientInstances: async () => [
+          ...(await launchRepository.listAiClientInstances()),
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            enabled: true,
+            configIdentityHash: "e".repeat(64)
+          }
+        ],
+        listCurrentAiClientCapabilitySnapshots: async () => [
+          ...(await launchRepository.listCurrentAiClientCapabilitySnapshots()),
+          {
+            instanceId: "claude.default",
+            installationIdentityHash: "e".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "claude-sonnet-5-5",
+                displayName: "Claude Sonnet 5.5",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              },
+              {
+                id: "claude-opus-5-5",
+                displayName: "Claude Opus 5.5",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              }
+            ]
+          }
+        ],
         listLcmGraphThreads: async () => [],
         upsertManagedConversationRuntimeBinding: upsert,
         getManagedConversationRuntimeBinding: async () => null
@@ -2121,6 +2163,22 @@ describe("managed Conversation routes", () => {
           displayName: "Codex",
           ready: true,
           models: [{ id: "gpt-test" }]
+        },
+        {
+          instanceId: "claude.default",
+          driverId: "claude",
+          displayName: "Claude Code",
+          ready: true,
+          models: expect.arrayContaining([
+            expect.objectContaining({
+              id: "claude-sonnet-5-5",
+              displayName: "Claude Sonnet 5.5"
+            }),
+            expect.objectContaining({
+              id: "claude-opus-5-5",
+              displayName: "Claude Opus 5.5"
+            })
+          ])
         }
       ]
     });

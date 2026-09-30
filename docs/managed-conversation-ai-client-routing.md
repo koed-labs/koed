@@ -57,7 +57,11 @@ Recents reads additional graph pages until it collects the requested number of
 Conversations or reaches the end. Subagent rows consume raw offsets but do not
 consume Conversation slots. An owner change clears and reloads both recent lists.
 Launch selections resolve model defaults through the canonical ID, qualified ID,
-or model alias from the capability snapshot.
+or model alias from the capability snapshot. Model labels preserve the AI Client's
+`displayName`, including available version qualifiers; model values remain unchanged.
+Launch options read the selected instance's latest unexpired snapshot, not a new SDK
+model query. Local AI Runtime refresh defaults to five minutes with a ten-minute
+snapshot lifetime; refresh capabilities when labels lag behind the CLI's catalog.
 
 After API readiness, the supervisor resolves the active local API Token and
 passes the same credential to the Worker and Local AI Runtime. This includes
