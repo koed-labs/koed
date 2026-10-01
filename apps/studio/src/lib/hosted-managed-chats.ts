@@ -4,6 +4,9 @@ import { parseExecution, parseManagedChatMemoryAttribution, parseRuntime, record
 import type { AgentModelCapability } from "./agentIdentityEditor";
 import type { PendingChatRequest } from "./managed-chat-requests";
 import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
+// prettier-ignore
+// @ts-expect-error -- Node's native test runner needs the source extension.
+import { assertRecallFeedbackChange, parseRecallFeedbackResponse, recallFeedbackPath, type RecallFeedback, type RecallFeedbackChange } from "./recall-feedback.ts";
 
 export type HostedManagedExecution = AgentExecution & {
   createdAt: string;
@@ -820,7 +823,12 @@ export async function deleteLocalRetainedManagedWorktree(
 
 const requestJson = async (
   path: string,
-  input: { body?: unknown; signal?: AbortSignal; csrf?: boolean } = {},
+  input: {
+    body?: unknown;
+    signal?: AbortSignal;
+    csrf?: boolean;
+    method?: "GET" | "POST" | "PUT";
+  } = {},
   fetcher: typeof fetch = fetch
 ): Promise<Record<string, unknown>> => {
   let csrfToken: string | null = null;
@@ -851,7 +859,7 @@ const requestJson = async (
     csrfToken = sessionPayload.csrfToken;
   }
   const response = await fetcher(path, {
-    method: input.body === undefined ? "GET" : "POST",
+    method: input.method ?? (input.body === undefined ? "GET" : "POST"),
     credentials: "include",
     cache: "no-store",
     redirect: "error",
@@ -893,6 +901,50 @@ const requestJson = async (
     );
   return payload;
 };
+
+export async function loadHostedRecallFeedback(
+  executionId: string,
+  messageId: string,
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<RecallFeedback | null> {
+  const payload = await requestJson(
+    recallFeedbackPath(executionId, messageId),
+    { signal },
+    fetcher
+  );
+  if (!("feedback" in payload)) {
+    throw new HostedManagedChatError("The feedback response is invalid.");
+  }
+  const feedback = parseRecallFeedbackResponse(payload);
+  if (payload.feedback !== null && !feedback) {
+    throw new HostedManagedChatError("The feedback response is invalid.");
+  }
+  return feedback;
+}
+
+export async function updateHostedRecallFeedback(
+  executionId: string,
+  messageId: string,
+  change: RecallFeedbackChange,
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<RecallFeedback | null> {
+  assertRecallFeedbackChange(change);
+  const payload = await requestJson(
+    recallFeedbackPath(executionId, messageId),
+    { body: change, signal, method: "PUT" },
+    fetcher
+  );
+  if (!("feedback" in payload)) {
+    throw new HostedManagedChatError("The feedback response is invalid.");
+  }
+  const feedback = parseRecallFeedbackResponse(payload);
+  if (payload.feedback !== null && !feedback) {
+    throw new HostedManagedChatError("The feedback response is invalid.");
+  }
+  return feedback;
+}
 
 export function parseHostedManagedExecutions(
   payload: Record<string, unknown>

@@ -64,6 +64,7 @@ import {
   managedRequest,
   managedConversationControls,
   managedMessagesWithTransientOutput,
+  loadManagedRecallFeedback,
   parseManagedChatMemoryAttribution,
   managedAgentRecoveryHref,
   parseExecution,
@@ -72,6 +73,7 @@ import {
   record,
   resolveLaunchSelection,
   shouldNavigateToExecutionAfterSendFailure,
+  updateManagedRecallFeedback,
   validExecutionId,
   type LaunchInstance,
   type RuntimeSnapshot
@@ -246,6 +248,10 @@ export function LiveAgentChat({
   const [recoveryBlocked, setRecoveryBlocked] = useState(false);
   const [recoveredDraft, setRecoveredDraft] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [feedbackOwner, setFeedbackOwner] = useState<{
+    ownerId: string;
+    backendId: string;
+  } | null>(null);
   const [restoreSelection, setRestoreSelection] = useState<{
     key: string;
     provider: string;
@@ -323,6 +329,7 @@ export function LiveAgentChat({
         const user = record(access.user) ? access.user : null;
         recoveryIdentity.current = null;
         recoveryStore.current = null;
+        setFeedbackOwner(null);
         if (user && typeof user.id === "string" && user.id.trim()) {
           // This component uses the Desktop's owner-authenticated loopback
           // managed gateway. The Team collaboration connection is unrelated
@@ -332,6 +339,7 @@ export function LiveAgentChat({
             backendId: `${window.location.origin}:local-managed-gateway`
           };
           recoveryIdentity.current = identity;
+          setFeedbackOwner(identity);
           recoveryStore.current = createLocalManagedChatRecoveryStore({
             ...identity,
             executionId: initialExecutionId ?? null
@@ -2133,6 +2141,26 @@ export function LiveAgentChat({
             isSending: sending,
             error,
             memoryRecallFailure,
+            feedbackAccess:
+              executionId && feedbackOwner
+                ? {
+                    ...feedbackOwner,
+                    executionId,
+                    load: (messageId: string, signal: AbortSignal) =>
+                      loadManagedRecallFeedback(executionId, messageId, signal),
+                    update: (
+                      messageId: string,
+                      change: Parameters<typeof updateManagedRecallFeedback>[2],
+                      signal: AbortSignal
+                    ) =>
+                      updateManagedRecallFeedback(
+                        executionId,
+                        messageId,
+                        change,
+                        signal
+                      )
+                  }
+                : undefined,
             status: [status, historyNotice].filter(Boolean).join(" · "),
             onSend: async (text, selection, continueWithoutMemory) => {
               await send(text, selection, continueWithoutMemory);

@@ -12,6 +12,17 @@ export type {
 } from "./personal-memory-attribution.js";
 export { personalMemoryTurnContextSchema } from "./personal-memory-context.js";
 export type { PersonalMemoryTurnContext } from "./personal-memory-context.js";
+export {
+  putRecallFeedbackInputSchema,
+  recallFeedbackMessageIdSchema,
+  recallFeedbackRatingSchema,
+  recallFeedbackResponseSchema,
+  recallFeedbackSchema,
+  type PutRecallFeedbackInput,
+  type RecallFeedback,
+  type RecallFeedbackRating,
+  type RecallFeedbackResponse
+} from "./recall-feedback-contract.js";
 
 export {
   nodeCliInvocation,

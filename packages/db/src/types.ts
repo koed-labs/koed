@@ -34,6 +34,7 @@ import type { PersonalDeviceSyncRelayRepository } from "./personal-device-sync-r
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { MemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
+import type { RecallFeedbackRepository } from "./recall-feedback-repository.js";
 import type { PersonalAgentRepository } from "./personal-agent-repository.js";
 import type { PublicSquareRepository } from "./public-square-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
@@ -1969,6 +1970,7 @@ export interface MemorySourceRepository
     MemoryNodeRepository,
     MemoryQuestionRepository,
     MemoryAnswerTaskRepository,
+    RecallFeedbackRepository,
     PersonalAgentRepository,
     PublicSquareRepository,
     SharedMemoryRepository,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // prettier-ignore
 // @ts-expect-error -- Node's native test runner needs the source extension.
-import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, hostedNewStartPromptForVerifiedScope, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
+import { cancelHostedProjectMove, cancelLocalProjectMove, cancelHostedQueuedPrompt, cancelHostedConversationStart, deleteLocalRetainedManagedWorktree, HostedManagedChatError, hasMeaningfulHostedApprovalDetails, hostedActiveAgentAttribution, hostedLaunchInstancesForDevice, hostedLaunchSelectionForOptions, hostedMessagesForSelection, hostedMessagesWithTransientOutput, hostedPromptOutcomeIsUncertain, hostedRecoveryBackendId, hostedRecoveryDisposition, hostedRecoveryGuardForSelection, hostedRecoverySelectionIsCurrent, hostedNewStartPromptForVerifiedScope, listHostedManagedConversations, loadHostedLaunchOptions, loadHostedManagedConversation, loadHostedManagedConversationAccess, loadHostedRecallFeedback, updateHostedRecallFeedback, loadLatestHostedProjectMove, loadLatestLocalProjectMove, loadLocalRetainedWorkspaces, lookupHostedConversationRecovery, openLocalRetainedWorkspace, parseHostedConversationState, queueHostedConversationPrompt, requestHostedConversationControl, requestHostedProjectMove, requestLocalProjectMove, respondToHostedRuntimeItem, startHostedManagedConversation } from "./hosted-managed-chats.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const commandId = "22222222-2222-4222-8222-222222222222";
@@ -29,6 +29,43 @@ const json = (value: unknown, status = 200) =>
     status,
     headers: { "content-type": "application/json" }
   });
+
+test("hosted recall feedback uses the exact answer route and desired-state PUT", async () => {
+  const requests: Array<{ path: string; method: string; body?: string }> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    requests.push({
+      path: String(input),
+      method: init?.method ?? "GET",
+      ...(typeof init?.body === "string" ? { body: init.body } : {})
+    });
+    return json({
+      feedback: {
+        rating: "up",
+        comment: null,
+        updatedAt: "2026-10-01T10:00:00.000Z"
+      }
+    });
+  };
+  await loadHostedRecallFeedback(id, `agent:${commandId}`, undefined, fetcher);
+  await updateHostedRecallFeedback(
+    id,
+    `agent:${commandId}`,
+    { comment: null },
+    undefined,
+    fetcher
+  );
+  assert.deepEqual(requests, [
+    {
+      path: `/v1/managed-conversations/${id}/recall-feedback/agent%3A${commandId}`,
+      method: "GET"
+    },
+    {
+      path: `/v1/managed-conversations/${id}/recall-feedback/agent%3A${commandId}`,
+      method: "PUT",
+      body: '{"comment":null}'
+    }
+  ]);
+});
 
 test("does not render a pending message from another selected Conversation", () => {
   const oldMessage = {

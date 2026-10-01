@@ -2,12 +2,20 @@
 
 import { History } from "lucide-react";
 import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
+import {
+  RecallFeedbackControls,
+  type RecallFeedbackAccess
+} from "./RecallFeedbackControls";
 
-/** Compact, non-interactive attribution for a historical Assistant reply. */
+/** Compact attribution and quality feedback for a historical Assistant reply. */
 export function MemoryAttributionNote({
-  memory
+  memory,
+  messageId,
+  feedbackAccess
 }: {
   memory: ManagedChatMemoryAttribution;
+  messageId?: string;
+  feedbackAccess?: RecallFeedbackAccess;
 }) {
   if (!memory.used && memory.status === "available") return null;
 
@@ -44,6 +52,9 @@ export function MemoryAttributionNote({
           ) : null}
         </div>
       </div>
+      {memory.used && messageId && feedbackAccess ? (
+        <RecallFeedbackControls messageId={messageId} access={feedbackAccess} />
+      ) : null}
     </div>
   );
 }

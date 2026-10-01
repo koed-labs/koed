@@ -248,6 +248,15 @@ export {
 } from "./realtime-transport-ticket-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
+  createRecallFeedbackRepository,
+  recallFeedbackSourceAssociationHash,
+  RecallFeedbackSourceConflictError,
+  type RecallFeedbackAnswerKind,
+  type RecallFeedbackRecord,
+  type RecallFeedbackRepository,
+  type RecallFeedbackSourceReference
+} from "./recall-feedback-repository.js";
+export {
   createMemoryAnswerTaskRepository,
   type ClaimedMemoryAnswerTask,
   type MemoryAnswerTaskOrigin,

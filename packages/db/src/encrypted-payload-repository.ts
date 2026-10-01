@@ -28,6 +28,7 @@ export type EncryptedFieldSourceTable =
   | "personal_agent_identity_versions"
   | "personal_agent_execution_jobs"
   | "personal_agent_team_job_publications"
+  | "managed_conversation_recall_feedback"
   | "team_agent_offers"
   | "team_agent_requests"
   | "privacy_classification_results"
@@ -308,6 +309,11 @@ const backfillSources: Partial<
     valueSql: jsonbValue,
     activePredicate: "true"
   },
+  managed_conversation_recall_feedback: {
+    columns: new Set(["comment_marker"]),
+    valueSql: textValue,
+    activePredicate: "true"
+  },
   messages: {
     columns: new Set(["content", "content_json"]),
     valueSql: jsonbValue,
@@ -427,6 +433,9 @@ const redactionForBackfillSource = (
       cast: "jsonb",
       value: encryptedJsonMarker(sourceTable, sourceColumn)
     };
+  }
+  if (sourceTable === "managed_conversation_recall_feedback") {
+    return { cast: "text", value: "[koed encrypted recall feedback comment]" };
   }
   throw new Error(
     `Unsupported encrypted field backfill source: ${sourceTable}`

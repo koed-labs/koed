@@ -820,6 +820,31 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("proxies only exact recalled-answer feedback reads and writes", () => {
+    const executionId = "11111111-1111-4111-8111-111111111111";
+    const messageId = "provider:22222222-2222-4222-8222-222222222222";
+    const path = `/v1/managed-conversations/${executionId}/recall-feedback/${encodeURIComponent(messageId)}`;
+    for (const method of ["GET", "PUT"] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed("managed_execution", method, path)
+      ).not.toThrow();
+    }
+    for (const [method, invalidPath] of [
+      ["POST", path],
+      ["GET", `${path}/extra`],
+      ["PUT", `${path}?other=1`],
+      ["PUT", path.replace("provider%3A", "provider%253A")]
+    ] as const) {
+      expect(() =>
+        assertUpstreamOperationPathAllowed(
+          "managed_execution",
+          method,
+          invalidPath
+        )
+      ).toThrow("not allowed for operation family");
+    }
+  });
+
   it("allows bounded Personal Agent library routes through managed execution credentials", () => {
     const agentId = "7bd960fe-6ff0-4bff-8101-4232aa61cb69";
     const allowed: Array<["GET" | "POST" | "PATCH", string]> = [

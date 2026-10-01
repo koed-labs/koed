@@ -683,6 +683,14 @@ export const assertUpstreamOperationPathAllowed = (
     )
       return;
     if (
+      (method === "GET" || method === "PUT") &&
+      parsed.search === "" &&
+      /^\/v1\/managed-conversations\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/recall-feedback\/(?:provider|agent)(?::|%3[Aa])[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        pathname
+      )
+    )
+      return;
+    if (
       (method === "POST" &&
         /^\/v1\/managed-conversations\/[^/]+\/project-moves$/.test(pathname)) ||
       (method === "GET" &&

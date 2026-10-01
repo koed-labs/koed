@@ -234,6 +234,10 @@ function desktopRecoveryBridge(): DesktopRecoveryBridge | null {
   );
 }
 
+export function hasDesktopManagedChatRecoveryBridge(): boolean {
+  return desktopRecoveryBridge() !== null;
+}
+
 const prefix = "koed.studio.managed-chat-recovery.v1";
 const maxRecordLength = 300_000;
 const identityPart = (value: string) => encodeURIComponent(value.trim());

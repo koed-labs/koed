@@ -1638,6 +1638,7 @@ export const createKoedServerManager = ({
   // owner/backend pair. Keep this authorization in memory; never infer it from
   // renderer supplied identity or from a persisted draft reference.
   const verifiedStudioRecoveryScopes = new Set<string>();
+  const verifiedFeedbackDraftScopes = new Set<string>();
   let personalApiTokenProvisioning: Promise<
     { ok: true; apiToken: string } | { ok: false; error: string }
   > | null = null;
@@ -3162,6 +3163,14 @@ export const createKoedServerManager = ({
       }
       userId = user.id;
       verifiedStudioRecoveryScopes.add(scopeKey);
+      for (const verifiedScope of verifiedFeedbackDraftScopes) {
+        if (verifiedScope !== scopeKey) {
+          verifiedFeedbackDraftScopes.delete(verifiedScope);
+        }
+      }
+      if (request.executionId.startsWith("feedback-draft:")) {
+        verifiedFeedbackDraftScopes.add(scopeKey);
+      }
     } catch (error) {
       // Offline draft writes are narrowly authorized by a successful earlier
       // access check in this Desktop manager. Chat recovery and all reads or
@@ -3169,12 +3178,21 @@ export const createKoedServerManager = ({
       const currentAccess = await personalMemoryAccess().catch(() => null);
       if (
         request.operation !== "write" ||
-        !request.executionId.startsWith("agent-draft:") ||
+        (!request.executionId.startsWith("agent-draft:") &&
+          !/^feedback-draft:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:(?:agent|provider):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            request.executionId
+          )) ||
         !(error instanceof PersonalMemoryBoundaryError) ||
         error.code !== "request_failed" ||
         !error.retryable ||
         currentAccess?.apiOrigin !== access.apiOrigin ||
         !verifiedStudioRecoveryScopes.has(scopeKey)
+      ) {
+        throw error;
+      }
+      if (
+        request.executionId.startsWith("feedback-draft:") &&
+        !verifiedFeedbackDraftScopes.has(scopeKey)
       ) {
         throw error;
       }

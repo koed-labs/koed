@@ -22,6 +22,7 @@ import {
   loadHostedLaunchOptions,
   loadHostedManagedConversation,
   loadHostedManagedConversationAccess,
+  loadHostedRecallFeedback,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedPromptOutcomeIsUncertain,
@@ -36,6 +37,7 @@ import {
   queueHostedConversationPrompt,
   requestHostedProjectMove,
   requestHostedConversationControl,
+  updateHostedRecallFeedback,
   respondToHostedRuntimeItem,
   startHostedManagedConversation,
   type HostedLaunchOptions,
@@ -2890,7 +2892,32 @@ export function HostedManagedChats({
                         </button>
                       )}
                     {message.role === "assistant" && message.memory ? (
-                      <MemoryAttributionNote memory={message.memory} />
+                      <MemoryAttributionNote
+                        key={`memory:${recoveryScope?.backendId ?? "no-backend"}:${recoveryScope?.ownerId ?? "no-owner"}:${selectedId ?? "no-execution"}:${message.id}`}
+                        memory={message.memory}
+                        messageId={message.id}
+                        feedbackAccess={
+                          selectedId && recoveryScope
+                            ? {
+                                ...recoveryScope,
+                                executionId: selectedId,
+                                load: (messageId, signal) =>
+                                  loadHostedRecallFeedback(
+                                    selectedId,
+                                    messageId,
+                                    signal
+                                  ),
+                                update: (messageId, change, signal) =>
+                                  updateHostedRecallFeedback(
+                                    selectedId,
+                                    messageId,
+                                    change,
+                                    signal
+                                  )
+                              }
+                            : undefined
+                        }
+                      />
                     ) : null}
                     {message.id.startsWith("transient:") && (
                       <p className="mt-1 text-[10px] text-muted">

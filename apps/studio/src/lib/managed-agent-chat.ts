@@ -1,5 +1,8 @@
 import type { AgentModelCapability } from "./agentIdentityEditor";
 import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
+// prettier-ignore
+// @ts-expect-error -- Node's native test runner needs the source extension.
+import { assertRecallFeedbackChange, parseRecallFeedbackResponse, recallFeedbackPath, type RecallFeedback, type RecallFeedbackChange } from "./recall-feedback.ts";
 
 export type ExecutionSettings = {
   model: string;
@@ -246,7 +249,8 @@ export function managedAgentRecoveryHref(
 export async function managedRequest(
   path: string,
   body?: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  method?: "GET" | "POST" | "PUT"
 ): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = { accept: "application/json" };
   if (body !== undefined) {
@@ -268,7 +272,7 @@ export async function managedRequest(
     headers["content-type"] = "application/json";
   }
   const response = await fetch(`/studio-api/managed-conversations${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal,
@@ -293,6 +297,48 @@ export async function managedRequest(
       "The conversation service returned an invalid response."
     );
   return payload;
+}
+
+export async function loadManagedRecallFeedback(
+  executionId: string,
+  messageId: string,
+  signal?: AbortSignal
+): Promise<RecallFeedback | null> {
+  const path = recallFeedbackPath(executionId, messageId).replace(
+    /^\/v1\/managed-conversations/,
+    ""
+  );
+  const payload = await managedRequest(path, undefined, signal);
+  if (!("feedback" in payload)) {
+    throw new ManagedChatError("The feedback response is invalid.");
+  }
+  const feedback = parseRecallFeedbackResponse(payload);
+  if (payload.feedback !== null && !feedback) {
+    throw new ManagedChatError("The feedback response is invalid.");
+  }
+  return feedback;
+}
+
+export async function updateManagedRecallFeedback(
+  executionId: string,
+  messageId: string,
+  change: RecallFeedbackChange,
+  signal?: AbortSignal
+): Promise<RecallFeedback | null> {
+  assertRecallFeedbackChange(change);
+  const path = recallFeedbackPath(executionId, messageId).replace(
+    /^\/v1\/managed-conversations/,
+    ""
+  );
+  const payload = await managedRequest(path, change, signal, "PUT");
+  if (!("feedback" in payload)) {
+    throw new ManagedChatError("The feedback response is invalid.");
+  }
+  const feedback = parseRecallFeedbackResponse(payload);
+  if (payload.feedback !== null && !feedback) {
+    throw new ManagedChatError("The feedback response is invalid.");
+  }
+  return feedback;
 }
 
 export function parseExecution(value: unknown): AgentExecution {

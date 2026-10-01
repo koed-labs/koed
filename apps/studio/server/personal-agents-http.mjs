@@ -325,6 +325,13 @@ function managedMethods(suffix) {
   if (suffix === "") return ["GET", "POST"];
   if (suffix === "/recovery/lookup") return ["GET"];
   if (suffix === "/access" || suffix === "/launch-options") return ["GET"];
+  if (
+    new RegExp(
+      `^/${uuid}/recall-feedback/(?:provider|agent)(?::|%3a)${uuid}$`,
+      "i"
+    ).test(suffix)
+  )
+    return ["GET", "PUT"];
   if (new RegExp(`^/${uuid}/project-moves$`).test(suffix)) return ["POST"];
   if (new RegExp(`^/${uuid}/project-moves/latest$`).test(suffix))
     return ["GET"];

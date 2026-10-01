@@ -17,6 +17,7 @@ import {
 } from "../ChatComposer";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
+import type { RecallFeedbackAccess } from "./RecallFeedbackControls";
 import { MemoryAttributionNote } from "./MemoryAttributionNote";
 import type { ManagedAgentJobMarker } from "@/lib/managed-agent-job-markers";
 
@@ -73,6 +74,7 @@ export type NewChatRuntime = Readonly<{
   isSending: boolean;
   error?: string | null;
   memoryRecallFailure?: string | null;
+  feedbackAccess?: RecallFeedbackAccess;
   onSend: (
     text: string,
     selection: ChatComposerSelection,
@@ -362,7 +364,12 @@ export function NewChatView({
                               </button>
                             )}
                           {"memory" in message && message.memory ? (
-                            <MemoryAttributionNote memory={message.memory} />
+                            <MemoryAttributionNote
+                              memory={message.memory}
+                              messageId={message.id}
+                              feedbackAccess={runtime?.feedbackAccess}
+                              key={`memory:${runtime?.feedbackAccess?.backendId ?? "no-backend"}:${runtime?.feedbackAccess?.ownerId ?? "no-owner"}:${runtime?.feedbackAccess?.executionId ?? "no-execution"}:${message.id}`}
+                            />
                           ) : null}
                         </div>
                       </div>

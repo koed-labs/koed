@@ -515,6 +515,72 @@ test("managed transport allows only scoped conversation actions", async () => {
   );
 });
 
+test("managed transport exposes only exact recalled-answer feedback GET and PUT", async () => {
+  const executionId = "11111111-1111-4111-8111-111111111111";
+  const commandId = "22222222-2222-4222-8222-222222222222";
+  const messageId = `provider:${commandId}`;
+  const base = `http://localhost/studio-api/managed-conversations/${executionId}/recall-feedback/${encodeURIComponent(messageId)}`;
+  const saved = {
+    rating: "up",
+    comment: "Looks right",
+    updatedAt: "2026-10-01T10:00:00.000Z"
+  };
+  const loaded = await call({
+    request: Object.assign(Readable.from([]), { method: "GET", headers: {} }),
+    routeFamily: "managed-conversations",
+    url: new URL(base),
+    fetchImpl: async (url, init) => {
+      assert.equal(
+        url.pathname,
+        `/v1/managed-conversations/${executionId}/recall-feedback/${encodeURIComponent(messageId)}`
+      );
+      assert.equal(init.method, "GET");
+      assert.equal(init.headers.authorization, "Bearer secret");
+      return Response.json({ feedback: saved });
+    }
+  });
+  assert.equal(loaded.status, 200);
+
+  const request = Readable.from([Buffer.from('{"rating":"down"}')]);
+  request.method = "PUT";
+  request.headers = { "content-type": "application/json" };
+  const updated = await call({
+    request,
+    routeFamily: "managed-conversations",
+    url: new URL(base),
+    validCsrf: () => true,
+    fetchImpl: async (url, init) => {
+      assert.equal(init.method, "PUT");
+      assert.equal(init.body, '{"rating":"down"}');
+      assert.equal(
+        url.pathname,
+        `/v1/managed-conversations/${executionId}/recall-feedback/${encodeURIComponent(messageId)}`
+      );
+      return Response.json({ feedback: { ...saved, rating: "down" } });
+    }
+  });
+  assert.equal(updated.status, 200);
+
+  const invalid = await call({
+    request: Object.assign(Readable.from([]), { method: "GET", headers: {} }),
+    routeFamily: "managed-conversations",
+    url: new URL(
+      `${base.replace(encodeURIComponent(messageId), `provider%3A${commandId}`)}-extra`
+    ),
+    fetchImpl: () => assert.fail("invalid answer identity must not reach API")
+  });
+  assert.equal(invalid.status, 404);
+
+  const forbidden = await call({
+    request,
+    routeFamily: "managed-conversations",
+    url: new URL(base),
+    validCsrf: () => false,
+    fetchImpl: () => assert.fail("feedback writes must require CSRF")
+  });
+  assert.equal(forbidden.status, 403);
+});
+
 test("managed recovery lookup forwards only exact read-only identities", async () => {
   const base =
     "http://localhost/studio-api/managed-conversations/recovery/lookup";

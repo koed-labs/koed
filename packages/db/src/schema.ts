@@ -3003,6 +3003,9 @@ export const encryptedFieldPayloads = pgTable(
         'personal_agent_identity_versions',
         'personal_agent_execution_jobs',
         'personal_agent_team_job_publications',
+        'team_agent_offers',
+        'team_agent_requests',
+        'managed_conversation_recall_feedback',
         'memory_replica_revisions',
         'messages',
         'privacy_classification_results',
@@ -5092,6 +5095,58 @@ export const managedConversationCommands = pgTable(
             )
           )
         )`
+    )
+  ]
+);
+
+export const managedConversationRecallFeedback = pgTable(
+  "managed_conversation_recall_feedback",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    answerKind: text("answer_kind").notNull(),
+    answerId: uuid("answer_id").notNull(),
+    sourceAssociationHash: text("source_association_hash").notNull(),
+    rating: text("rating"),
+    commentMarker: text("comment_marker"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.executionId, table.ownerUserId],
+      foreignColumns: [
+        managedConversationExecutions.id,
+        managedConversationExecutions.ownerUserId
+      ],
+      name: "managed_conversation_recall_feedback_owner_execution_fk"
+    }).onDelete("cascade"),
+    unique("managed_conversation_recall_feedback_answer_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.answerKind,
+      table.answerId
+    ),
+    index("managed_conversation_recall_feedback_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "managed_conversation_recall_feedback_answer_kind_check",
+      sql`${table.answerKind} in ('provider', 'agent')`
+    ),
+    check(
+      "managed_conversation_recall_feedback_source_hash_check",
+      sql`${table.sourceAssociationHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "managed_conversation_recall_feedback_rating_check",
+      sql`${table.rating} is null or ${table.rating} in ('up', 'down')`
+    ),
+    check(
+      "managed_conversation_recall_feedback_comment_marker_check",
+      sql`${table.commentMarker} is null or ${table.commentMarker} = '[koed encrypted recall feedback comment]'`
     )
   ]
 );

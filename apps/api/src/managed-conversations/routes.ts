@@ -23,7 +23,9 @@ import {
   managedTerminalRecordSchema,
   managedTerminalServerFrameSchema,
   MANAGED_TERMINAL_MAX_FRAME_BYTES,
-  parsePersonalMemoryAttributionFooter,
+  putRecallFeedbackInputSchema,
+  recallFeedbackMessageIdSchema,
+  recallFeedbackResponseSchema,
   personalAgentExecutionContextSchema,
   personalMemoryTurnContextSchema,
   stripPersonalMemoryAttributionFooter,
@@ -47,6 +49,10 @@ import {
   buildPersonalMemoryTurnContext
 } from "./personal-agent-context.js";
 import { buildTeamSummaryDraftPrompt } from "./team-summary-draft.js";
+import {
+  resolveManagedRecallFeedbackTarget,
+  verifiedRecallFeedbackAttribution
+} from "./recall-feedback.js";
 
 const localExecutionProfiles = new Set(["developer", "local_personal"]);
 const opaqueLocalProjectId = /^lp_[0-9a-f]{32}$/;
@@ -1321,7 +1327,7 @@ export const registerManagedConversationRoutes = (
   };
 
   const proxyManaged = async (
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT",
     path: string,
     body?: unknown,
     options: {
@@ -1369,9 +1375,9 @@ export const registerManagedConversationRoutes = (
           ...(options.actionGrant
             ? { "x-koed-action-grant": options.actionGrant }
             : {}),
-          ...(method === "POST" ? { "content-type": "application/json" } : {})
+          ...(method !== "GET" ? { "content-type": "application/json" } : {})
         },
-        ...(method === "POST" ? { body: JSON.stringify(body ?? {}) } : {})
+        ...(method !== "GET" ? { body: JSON.stringify(body ?? {}) } : {})
       },
       {
         timeoutMs: 60_000,
@@ -3894,6 +3900,106 @@ export const registerManagedConversationRoutes = (
     );
   }
 
+  const recallFeedbackParamsSchema = z.object({
+    executionId: z.string().uuid(),
+    messageId: recallFeedbackMessageIdSchema
+  });
+
+  app.get(
+    "/v1/managed-conversations/:executionId/recall-feedback/:messageId",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId, messageId } = recallFeedbackParamsSchema.parse(
+        request.params
+      );
+      const [answerKind, answerId] = messageId.split(":") as [
+        "provider" | "agent",
+        string
+      ];
+      const path = `/v1/managed-conversations/${encodeURIComponent(
+        executionId
+      )}/recall-feedback/${encodeURIComponent(messageId)}`;
+      const proxied = await proxyManaged("GET", path);
+      if (proxied) {
+        return recallFeedbackResponseSchema.parse(proxied.payload);
+      }
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const target = await resolveManagedRecallFeedbackTarget(
+        repository,
+        actor,
+        executionId,
+        answerKind,
+        answerId
+      );
+      if (!target) {
+        throw Object.assign(new Error("Recalled answer not found"), {
+          statusCode: 404
+        });
+      }
+      return recallFeedbackResponseSchema.parse({
+        feedback: await repository.getRecallFeedback(actor, {
+          executionId,
+          answerKind,
+          answerId
+        })
+      });
+    }
+  );
+
+  app.put(
+    "/v1/managed-conversations/:executionId/recall-feedback/:messageId",
+    {
+      bodyLimit: 32 * 1024,
+      preHandler: managedConversationWriteRateLimit
+    },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId, messageId } = recallFeedbackParamsSchema.parse(
+        request.params
+      );
+      const input = putRecallFeedbackInputSchema.parse(request.body);
+      const [answerKind, answerId] = messageId.split(":") as [
+        "provider" | "agent",
+        string
+      ];
+      const path = `/v1/managed-conversations/${encodeURIComponent(
+        executionId
+      )}/recall-feedback/${encodeURIComponent(messageId)}`;
+      const proxied = await proxyManaged("PUT", path, input);
+      if (proxied) {
+        return recallFeedbackResponseSchema.parse(proxied.payload);
+      }
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const target = await resolveManagedRecallFeedbackTarget(
+        repository,
+        actor,
+        executionId,
+        answerKind,
+        answerId
+      );
+      if (!target) {
+        throw Object.assign(new Error("Recalled answer not found"), {
+          statusCode: 404
+        });
+      }
+      return recallFeedbackResponseSchema.parse({
+        feedback: await repository.putRecallFeedback(actor, {
+          executionId,
+          answerKind,
+          answerId,
+          sourceAssociationHash: target.sourceAssociationHash,
+          sourceReferences: target.sourceReferences,
+          ...input
+        })
+      });
+    }
+  );
+
   app.get(
     "/v1/managed-conversations/:executionId/agent-state",
     { preHandler: managedConversationReadRateLimit },
@@ -4184,25 +4290,14 @@ export const registerManagedConversationRoutes = (
             citations: []
           };
         }
-        const parsed = parsePersonalMemoryAttributionFooter(output, {
+        const attribution = verifiedRecallFeedbackAttribution(
+          output,
           commandId,
-          nonce: memoryContext.attributionNonce
-        });
-        if (
-          !parsed.attribution?.used ||
-          memoryContext.status !== "available" ||
-          memoryContext.evidence.length === 0
-        ) {
-          return undefined;
-        }
-        const authorized = new Map(
-          memoryContext.evidence.map((item) => [item.nodeId, item])
+          memoryContext
         );
-        const selected = parsed.attribution.citationNodeIds
-          .map((nodeId) => authorized.get(nodeId))
-          .filter((item): item is NonNullable<typeof item> => Boolean(item));
+        if (!attribution) return undefined;
         const labelEntries = await Promise.all(
-          selected.map(async (item) => ({
+          attribution.selectedEvidence.map(async (item) => ({
             visibility: item.visibility,
             labels: await displayMemorySource(item)
           }))

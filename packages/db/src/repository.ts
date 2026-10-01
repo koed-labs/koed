@@ -60,6 +60,7 @@ import { createManagedConversationTransferRepository } from "./managed-conversat
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
+import { createRecallFeedbackRepository } from "./recall-feedback-repository.js";
 import { createPersonalAgentRepository } from "./personal-agent-repository.js";
 import { createPublicSquareRepository } from "./public-square-repository.js";
 import { createTeamAgentRequestsRepository } from "./team-agent-requests-repository.js";
@@ -4171,6 +4172,9 @@ export const createMemorySourceRepository = (
         options.encryptedMemoryQuestionSearchBatchSize
     }),
     ...createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createRecallFeedbackRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...personalAgentRepository,

@@ -5,6 +5,8 @@ import {
   ManagedChatError,
   managedRequest,
   managedMessagesWithTransientOutput,
+  loadManagedRecallFeedback,
+  updateManagedRecallFeedback,
   managedAgentRecoveryHref,
   parseManagedChatMemoryAttribution,
   parseLaunchInstances,
@@ -51,6 +53,48 @@ const execution = {
 };
 
 describe("managed agent chat boundary", () => {
+  it("loads and updates feedback through the exact local answer route", async () => {
+    const requests: Array<{ path: string; method: string; body?: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/studio-api/github/session") {
+          return Response.json({ csrfToken: "csrf" });
+        }
+        requests.push({
+          path,
+          method: init?.method ?? "GET",
+          ...(typeof init?.body === "string" ? { body: init.body } : {})
+        });
+        return Response.json({
+          feedback: {
+            rating: "down",
+            comment: "Please check this",
+            updatedAt: "2026-10-01T10:00:00.000Z"
+          }
+        });
+      })
+    );
+    const executionId = "11111111-1111-4111-8111-111111111111";
+    const answerId = "provider:22222222-2222-4222-8222-222222222222";
+    await loadManagedRecallFeedback(executionId, answerId);
+    await updateManagedRecallFeedback(executionId, answerId, {
+      rating: "down"
+    });
+    expect(requests).toEqual([
+      {
+        path: `/studio-api/managed-conversations/${executionId}/recall-feedback/provider%3A22222222-2222-4222-8222-222222222222`,
+        method: "GET"
+      },
+      {
+        path: `/studio-api/managed-conversations/${executionId}/recall-feedback/provider%3A22222222-2222-4222-8222-222222222222`,
+        method: "PUT",
+        body: '{"rating":"down"}'
+      }
+    ]);
+  });
+
   it("navigates to a reload-safe execution and Agent recovery URL", () => {
     expect(shouldNavigateToExecutionAfterSendFailure(true, "execution-1")).toBe(
       true

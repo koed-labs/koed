@@ -4642,13 +4642,14 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         drafts.delete(reference);
       })
     };
+    let activeOwnerId = "00000000-0000-4000-8000-000000000001";
     const personalMemoryFetch = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
       if (url.pathname === "/v1/managed-conversations/access") {
         return new Response(
           JSON.stringify({
             user: {
-              id: "00000000-0000-4000-8000-000000000001"
+              id: activeOwnerId
             }
           }),
           {
@@ -4783,9 +4784,23 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         })
       ).rejects.toThrow();
 
-      // The authenticated scope above permits offline Agent draft writes from
-      // this manager instance. Generic Studio recovery and reads remain online
-      // gated, and an owner not verified by this manager cannot reuse it.
+      const feedbackDraftExecutionId =
+        "feedback-draft:11111111-1111-4111-8111-111111111111:provider:22222222-2222-4222-8222-222222222222";
+
+      // Verify this feedback-only scope while online before exercising the
+      // narrowly allowed offline write path.
+      await expect(
+        manager.studioChatRecovery({
+          operation: "write",
+          ownerId: recoveryOwnerId,
+          executionId: feedbackDraftExecutionId,
+          value: JSON.stringify({ schemaVersion: 1, draft: "saved comment" })
+        })
+      ).resolves.toEqual({ operation: "write", ok: true });
+
+      // A live verification of this feedback scope permits only offline
+      // feedback-draft writes from this manager instance. Generic Studio
+      // recovery and reads remain online gated.
       personalMemoryFetch.mockImplementation(async () => {
         throw new Error("backend offline");
       });
@@ -4795,6 +4810,14 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           ownerId: recoveryOwnerId,
           executionId: "agent-draft:create",
           value: JSON.stringify({ name: "Unsaved Agent" })
+        })
+      ).resolves.toEqual({ operation: "write", ok: true });
+      await expect(
+        manager.studioChatRecovery({
+          operation: "write",
+          ownerId: recoveryOwnerId,
+          executionId: feedbackDraftExecutionId,
+          value: JSON.stringify({ schemaVersion: 1, draft: "unsaved comment" })
         })
       ).resolves.toEqual({ operation: "write", ok: true });
       await expect(
@@ -4814,6 +4837,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       ).rejects.toThrow();
       await expect(
         manager.studioChatRecovery({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          executionId: feedbackDraftExecutionId
+        })
+      ).rejects.toThrow();
+      await expect(
+        manager.studioChatRecovery({
           operation: "write",
           ownerId: "00000000-0000-4000-8000-000000000002",
           executionId: "agent-draft:create",
@@ -4825,7 +4855,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         if (url.pathname === "/v1/managed-conversations/access") {
           return new Response(
             JSON.stringify({
-              user: { id: recoveryOwnerId }
+              user: { id: activeOwnerId }
             }),
             {
               status: 200,
@@ -4839,12 +4869,32 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         });
       });
 
+      // Verifying a different account invalidates the offline feedback-write scope.
+      activeOwnerId = "00000000-0000-4000-8000-000000000002";
+      await expect(
+        manager.studioChatRecovery({
+          operation: "read",
+          ownerId: activeOwnerId,
+          executionId: feedbackDraftExecutionId
+        })
+      ).resolves.toEqual({ operation: "read", value: null });
+      personalMemoryFetch.mockImplementation(async () => {
+        throw new Error("backend offline");
+      });
+      await expect(
+        manager.studioChatRecovery({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          executionId: feedbackDraftExecutionId
+        })
+      ).rejects.toThrow();
+
       const references = [
         ...draftStore.put.mock.calls.map(([reference]) => reference),
         ...draftStore.get.mock.calls.map(([reference]) => reference),
         ...draftStore.delete.mock.calls.map(([reference]) => reference)
       ];
-      expect(new Set(references).size).toBe(5);
+      expect(new Set(references).size).toBe(7);
       expect(references).toEqual(
         expect.arrayContaining([
           expect.stringMatching(/^managed-draft-[0-9a-f]{64}$/),
@@ -4855,7 +4905,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       expect(
         references.every((reference) => !reference.includes(identity.projectId))
       ).toBe(true);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(20);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(28);
       const reads = draftStore.get.mock.calls.length;
       personalMemoryFetch.mockResolvedValueOnce(
         new Response(
@@ -4867,7 +4917,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         manager.managedConversation({ operation: "draft_read", ...identity })
       ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
       expect(draftStore.get).toHaveBeenCalledTimes(reads);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(21);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(29);
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

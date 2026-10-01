@@ -946,4 +946,49 @@ describe("managed provider encrypted history", () => {
     expect(query.mock.calls[1]?.[1]).toEqual([owner, executionId, null, 21]);
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it("directly loads one saved provider answer by owner, execution, and command id", async () => {
+    const context = {
+      schemaVersion: 1,
+      status: "available",
+      attributionNonce: "nonce",
+      searchDomain: "global",
+      projectId: null,
+      evidence: [{ nodeId: "node-1" }]
+    };
+    const encrypted = await envelope({
+      prompt: "Original prompt",
+      assistantOutput: { text: "Saved answer", truncated: false },
+      personalMemoryContext: context
+    });
+    const row = {
+      id: commandId,
+      encrypted_payload: encrypted
+    };
+    const query = vi.fn(async () => ({ rows: [row] }));
+    const repository = createManagedConversationRepository(
+      { query } as unknown as pg.Pool,
+      { envelopeEncryptionProvider: provider }
+    );
+
+    await expect(
+      repository.getManagedConversationPromptHistoryAnswer(
+        { userId: owner },
+        { executionId, commandId }
+      )
+    ).resolves.toEqual({
+      commandId,
+      assistantOutput: { text: "Saved answer", truncated: false },
+      personalMemoryContext: context
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "where owner_user_id = $1 and execution_id = $2 and id = $3"
+      ),
+      [owner, executionId, commandId]
+    );
+    expect(query.mock.calls[0]?.[0]).toContain("command_kind = 'prompt'");
+    expect(query.mock.calls[0]?.[0]).toContain("state = 'completed'");
+    expect(query.mock.calls[0]?.[0]).not.toContain("sequence <");
+  });
 });

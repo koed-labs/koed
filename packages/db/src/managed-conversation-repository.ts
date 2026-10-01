@@ -633,6 +633,14 @@ export interface ManagedConversationRepository {
     hasMore: boolean;
     nextCursor: string | null;
   }>;
+  getManagedConversationPromptHistoryAnswer(
+    actor: ActorContext,
+    input: { executionId: string; commandId: string }
+  ): Promise<{
+    commandId: string;
+    assistantOutput: { text: string; truncated: boolean } | null;
+    personalMemoryContext: unknown;
+  } | null>;
   getManagedConversationCommand(
     actor: ActorContext,
     commandId: string
@@ -4896,6 +4904,37 @@ export const createManagedConversationRepository = (
           hasMore && rows.length
             ? `prompt:${rows[rows.length - 1]!.sequence}`
             : null
+      };
+    },
+
+    async getManagedConversationPromptHistoryAnswer(actor, input) {
+      const result = await pool.query<CommandRow>(
+        `select ${COMMAND_COLUMNS}
+           from managed_conversation_commands
+          where owner_user_id = $1 and execution_id = $2 and id = $3
+            and command_kind = 'prompt' and state = 'completed'
+          limit 1`,
+        [actor.userId, input.executionId, input.commandId]
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      const payload = await decryptPayload(row);
+      if (typeof payload?.prompt !== "string") return null;
+      const output = payload.assistantOutput;
+      const validOutput =
+        output && typeof output === "object" && !Array.isArray(output)
+          ? (output as Record<string, unknown>)
+          : null;
+      return {
+        commandId: row.id,
+        assistantOutput:
+          validOutput && typeof validOutput.text === "string"
+            ? {
+                text: validOutput.text,
+                truncated: validOutput.truncated === true
+              }
+            : null,
+        personalMemoryContext: payload.personalMemoryContext ?? null
       };
     },
 
