@@ -33,6 +33,7 @@ import {
 } from "./ai-client-runner.js";
 import {
   type ManagedConversationCommand,
+  type ManagedConversationCommandActionRequest,
   type ManagedConversationControlActionResult
 } from "./managed-conversation-command-types.js";
 
@@ -1335,7 +1336,10 @@ export class ClaudeManagedConversationSession {
     return claudeFileCommands(this.cwd, this.managedHome);
   }
 
-  executeControlAction(): Promise<ManagedConversationControlActionResult> {
+  executeControlAction(
+    input: ManagedConversationCommandActionRequest
+  ): Promise<ManagedConversationControlActionResult> {
+    void input;
     // Claude Code has no Koed-supported control actions.
     return Promise.resolve({
       status: "rejected",

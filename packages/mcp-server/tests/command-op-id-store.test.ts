@@ -150,7 +150,7 @@ describe("CommandOpIdStore", () => {
       await store.save(artifactId);
 
       expect(savedSegments.length).toBe(1);
-      const content = savedSegments[0].content as Record<string, unknown>;
+      const content = savedSegments[0]!.content as Record<string, unknown>;
       expect(typeof content.bytesBase64).toBe("string");
       expect(typeof content.plaintextDigest).toBe("string");
       expect(typeof content.plaintextSize).toBe("number");
@@ -162,10 +162,11 @@ describe("CommandOpIdStore", () => {
         string,
         Record<string, unknown>
       >;
+      const restoredState = storedStates["op-1"];
       expect(stored._koed_op_id_state).toBe(true);
-      expect(storedStates["op-1"].status).toBe("rejected");
-      expect(storedStates["op-1"].reason).toBe("cached");
-      expect(typeof storedStates["op-1"].createdAt).toBe("string");
+      expect(restoredState?.status).toBe("rejected");
+      expect(restoredState?.reason).toBe("cached");
+      expect(typeof restoredState?.createdAt).toBe("string");
     });
 
     it("restores state from saved segment on next ensureArtifact", async () => {

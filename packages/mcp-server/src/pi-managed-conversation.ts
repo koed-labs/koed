@@ -7,6 +7,7 @@ import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
 import type {
   ManagedConversationCommand,
+  ManagedConversationCommandActionRequest,
   ManagedConversationControlActionResult
 } from "./managed-conversation-command-types.js";
 import { piSessionIdentity } from "./pi-transcript-watcher.js";
@@ -395,7 +396,10 @@ export class PiManagedConversationSession {
     }
   }
 
-  executeControlAction(): Promise<ManagedConversationControlActionResult> {
+  executeControlAction(
+    input: ManagedConversationCommandActionRequest
+  ): Promise<ManagedConversationControlActionResult> {
+    void input;
     return Promise.resolve({
       status: "rejected",
       reason: "unsupported_action"

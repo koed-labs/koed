@@ -36,7 +36,6 @@ fi
   try {
     const discovery = await aiClientDriverFor("claude").discover({
       instanceId: "claude.fixture",
-      configIdentityHash: "a".repeat(64),
       environment: { HOME: home, KOED_CLAUDE_CODE_EXECUTABLE: executable }
     });
     expect(discovery.authenticationState).toBe("authenticated");

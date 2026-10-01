@@ -2760,7 +2760,7 @@ describe("Command operation ID persistence", () => {
       // Execute a control action to trigger op ID persistence
       const result = await session.executeControlAction({
         operationId: "test-op-1",
-        actionId: "compact",
+        actionId: "codex.compact",
         executionGeneration: 1,
         arguments: []
       });

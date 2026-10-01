@@ -479,7 +479,7 @@ describe("ClaudeManagedConversationSession", () => {
       sdk.query.mockImplementation(({ options }: { options?: Options }) => {
         // SessionStore resume relocates config; credential identity must not
         // follow that temporary directory or config-home canonicalization.
-        const relocatedEnvironment = {
+        const relocatedEnvironment: NodeJS.ProcessEnv = {
           ...options?.env,
           CLAUDE_CONFIG_DIR: path.join(cwd, "sdk-resume-config")
         };
