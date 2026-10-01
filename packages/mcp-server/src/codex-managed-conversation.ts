@@ -190,7 +190,10 @@ const codexSkillEntries = (payload: unknown): ManagedConversationCommand[] => {
   return allSkills.flatMap((s) => {
     const skill = asRecord(s);
     // Strip leading slash; catalog names are slash-free, slash is added at insert time.
-    const rawName = typeof skill.name === "string" ? skill.name.trim().replace(/^\//, "") : "";
+    const rawName =
+      typeof skill.name === "string"
+        ? skill.name.trim().replace(/^\//, "")
+        : "";
     if (
       !rawName ||
       rawName.length > 64 ||
@@ -242,7 +245,7 @@ const codexPromptCommands = (
             /^---\r?\n[\s\S]*?description\s*:\s*(.*?)\r?\n[\s\S]*?---/i
           )?.[1]
           ?.trim()
-          .replace(/^['\"]|['\"]$/g, "")
+          .replace(/^['"]|['"]$/g, "")
           .slice(0, 512) ?? "";
       return [
         {
@@ -763,10 +766,11 @@ export class CodexManagedConversationSession {
   private async resolveCommandOpIdArtifactId(): Promise<void> {
     const thread = this.thread;
     if (!thread) return;
-    const lookup = await this.config.memoryClient.lookupConversationSourceArtifact({
-      sourceKind: "codex",
-      externalSessionId: thread.id
-    });
+    const lookup =
+      await this.config.memoryClient.lookupConversationSourceArtifact({
+        sourceKind: "codex",
+        externalSessionId: thread.id
+      });
     const artifact = lookup.artifact as Record<string, unknown>;
     const artifactId = artifact.id as string;
     if (!artifactId) return;
@@ -782,7 +786,8 @@ export class CodexManagedConversationSession {
       !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.operationId) ||
       !Array.isArray(input.arguments) ||
       input.arguments.some((argument) => typeof argument !== "string")
-    ) return { status: "rejected", reason: "invalid_request" };
+    )
+      return { status: "rejected", reason: "invalid_request" };
     await this.start();
     // Ensure artifact is available for persistence (triggers restore).
     await this.ensureCommandOpIdArtifactId();
@@ -810,22 +815,20 @@ export class CodexManagedConversationSession {
     // Dispatch directly; control actions must not queue behind turns.
     this.commandOpIdStore.set(input.operationId, { status: "unknown" });
     try {
-      await this.appServerClient().compactThread(
-        this.startResult().thread.id
-      );
+      await this.appServerClient().compactThread(this.startResult().thread.id);
       const accepted = { status: "accepted" as const };
       this.commandOpIdStore.set(input.operationId, accepted);
       // Persist fire-and-forget; next restore will recover.
-      void this.commandOpIdStore.save(
-        this.commandOpIdArtifactId ?? ""
-      ).catch(() => {});
+      void this.commandOpIdStore
+        .save(this.commandOpIdArtifactId ?? "")
+        .catch(() => {});
       return accepted;
     } catch {
       const unknown = { status: "unknown" as const };
       this.commandOpIdStore.set(input.operationId, unknown);
-      void this.commandOpIdStore.save(
-        this.commandOpIdArtifactId ?? ""
-      ).catch(() => {});
+      void this.commandOpIdStore
+        .save(this.commandOpIdArtifactId ?? "")
+        .catch(() => {});
       return unknown;
     }
   }

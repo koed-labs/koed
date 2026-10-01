@@ -18,6 +18,7 @@
 **Decision (from Phase 0 design):** Store in Memory API as a conversation-side artifact. Automatic with session history, no new DB schema, survives restarts.
 
 **Requirements:**
+
 - Record schema: `{ operationId, actionId, executionGeneration, status, createdAt }`
 - Same `operationId` returns existing state on retry (never redispatches)
 - Timeout means "still reconciling," not "safe to retry"
@@ -26,12 +27,14 @@
 **Approach:** Store as a lightweight segment on the conversation source artifact.
 
 The `MemoryApiClient` already has segment operations:
+
 - `ensureConversationSourceArtifact({ sourceKind, externalSessionId, ... })` — create/get artifact
 - `listConversationSourceArtifactSegments(artifactId, params)` — list segments
 - `getConversationSourceArtifactSegmentContent(artifactId, segmentId, params)` — read segment
 - `storeConversationSourceArtifactSegment(artifactId, params)` — write segment
 
 **Design:**
+
 1. Use the existing conversation source artifact (created when the managed conversation starts) as the persistence target.
 2. Store op ID state as a JSON segment under a well-known key (e.g., `command_action_state` or per-operationId segment).
 3. On `executeControlAction()`:
@@ -42,12 +45,14 @@ The `MemoryApiClient` already has segment operations:
 4. On state update (accepted/rejected/unknown): upsert the segment
 
 **Files to modify:**
+
 - `packages/mcp-server/src/codex-managed-conversation.ts` — op ID persistence layer
 - `packages/mcp-server/src/claude-managed-conversation.ts` — op ID persistence layer
 - `packages/mcp-server/src/pi-managed-conversation.ts` — op ID persistence layer (if exists)
 - Potentially a new shared module: `packages/mcp-server/src/command-op-id-store.ts`
 
 **Key considerations:**
+
 - The segment approach should use the same `MemoryApiClient` that the session already uses
 - The artifact is keyed by conversation identity (sourceKind + externalSessionId)
 - Segment writes must be idempotent (use conditional upsert or accept 409 conflict)
@@ -55,6 +60,7 @@ The `MemoryApiClient` already has segment operations:
 - On session restart, repopulate the in-memory map from artifact on first access
 
 **Reference types:**
+
 - `ManagedConversationControlActionState` in `packages/mcp-server/src/managed-conversation-command-types.ts`
 - `ControlActionState` is stored in `controlActionStates: Map<string, ManagedConversationControlActionResult>`
 
@@ -70,6 +76,7 @@ The `MemoryApiClient` already has segment operations:
 **What to do:** Make readiness conditional per driver.
 
 Per-provider readiness:
+
 - **Codex:** Ready if App Server is running AND we have models (current discovery already checks this). Readiness follows the driver's health state.
 - **Claude:** Ready if Claude code is available (`checkClaudeCodeAvailability()` returns available). During discovery, this is known from the probe.
 - **Pi:** Ready if file scanning works. File scanning always succeeds on a functioning system with valid `PI_CODING_AGENT_DIR`.
@@ -85,10 +92,12 @@ Per-provider readiness:
 4. Also update the `aiClientDiscoveryError()` path to set slash command discovery to `"unavailable"` (current behavior already sets all capabilities to unavailable on error, which is correct).
 
 **Files to modify:**
+
 - `packages/mcp-server/src/ai-client-runner.ts` — add readiness param, per-driver logic
 - `packages/mcp-server/src/ai-client-runner.test.ts` — update tests for new parameter
 
 **Simplified readiness logic:**
+
 ```typescript
 // In capability():
 const slashCommandDiscoveryReadiness = slashCommandDiscoveryReady
@@ -102,11 +111,15 @@ const readiness =
     ? "not_ready"
     : id === aiClientCapabilityIds.localSynthesis ||
         id === aiClientCapabilityIds.durableMemoryAnswer
-      ? synthesisReady ? "ready" : "not_ready"
+      ? synthesisReady
+        ? "ready"
+        : "not_ready"
       : id === aiClientCapabilityIds.slashCommandDiscovery
         ? slashCommandDiscoveryReadiness
         : managedCapabilityIds.has(id)
-          ? implementedManagedCapabilityIds.has(id) ? "ready" : "not_ready"
+          ? implementedManagedCapabilityIds.has(id)
+            ? "ready"
+            : "not_ready"
           : "unknown";
 ```
 

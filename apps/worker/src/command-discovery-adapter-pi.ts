@@ -4,10 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import {
-  nodeCliInvocation,
-  nodeCliProcessEnvironment
-} from "@koed/shared";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import type {
   CommandDiscoveryAdapter,
   ManagedConversationSlashCommand
@@ -61,9 +58,7 @@ type PiCommandsResponse = {
 
 const piRpcEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
   Object.fromEntries(
-    allowedPiEnv.flatMap(
-      (name) => (env[name] ? [[name, env[name]]] : [])
-    )
+    allowedPiEnv.flatMap((name) => (env[name] ? [[name, env[name]]] : []))
   );
 
 const WINDOWS_PI_SHIM_EXTENSIONS = new Set([".cmd", ".bat", ".ps1"]);
@@ -74,9 +69,7 @@ const resolvePiNodeExecutablePath = (
 ): string => {
   if (
     platform !== "win32" ||
-    !WINDOWS_PI_SHIM_EXTENSIONS.has(
-      path.extname(candidate).toLowerCase()
-    )
+    !WINDOWS_PI_SHIM_EXTENSIONS.has(path.extname(candidate).toLowerCase())
   )
     return candidate;
   const entry = path.join(
@@ -102,21 +95,15 @@ const resolvePiExecutable = (env: NodeJS.ProcessEnv = process.env): string => {
   if (configured && !path.isAbsolute(configured)) {
     throw new Error("KOED_PI_EXECUTABLE must be an absolute path.");
   }
-  const candidate =
-    configured ?? executableOnPath(env);
+  const candidate = configured ?? executableOnPath(env);
   if (!candidate)
     throw new Error(
       "Pi was not found. Install and authenticate Pi, or set KOED_PI_EXECUTABLE to its absolute path."
     );
-  const canonical = fs.realpathSync(
-    resolvePiNodeExecutablePath(candidate)
-  );
+  const canonical = fs.realpathSync(resolvePiNodeExecutablePath(candidate));
   if (!fs.statSync(canonical).isFile())
-    throw new Error(
-      `Pi executable is not a file: ${canonical}`
-    );
-  if (process.platform !== "win32")
-    fs.accessSync(canonical, fs.constants.X_OK);
+    throw new Error(`Pi executable is not a file: ${canonical}`);
+  if (process.platform !== "win32") fs.accessSync(canonical, fs.constants.X_OK);
   return canonical;
 };
 
@@ -124,17 +111,14 @@ const executableOnPath = (
   env: NodeJS.ProcessEnv,
   platform = process.platform
 ): string | undefined => {
-  const names =
-    platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
-  const delimiter =
-    platform === "win32" ? ";" : path.delimiter;
+  const names = platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
+  const delimiter = platform === "win32" ? ";" : path.delimiter;
   for (const directory of (env.PATH ?? "").split(delimiter)) {
     if (!path.isAbsolute(directory)) continue;
     for (const name of names) {
       const candidate = path.join(directory, name);
       try {
-        if (fs.statSync(candidate).isFile())
-          return fs.realpathSync(candidate);
+        if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
       } catch {
         /* continue */
       }
@@ -143,9 +127,7 @@ const executableOnPath = (
   return undefined;
 };
 
-const terminateProcessTree = (
-  child: ChildProcessWithoutNullStreams
-): void => {
+const terminateProcessTree = (child: ChildProcessWithoutNullStreams): void => {
   if (!child.pid) return;
   try {
     if (process.platform === "win32")
@@ -164,11 +146,7 @@ const validName = (value: string): string | null => {
     !name ||
     name.length > MAX_NAME_LENGTH ||
     name.startsWith("/") ||
-    name
-      .split("/")
-      .some(
-        (part) => !part || part === "." || part === ".."
-      ) ||
+    name.split("/").some((part) => !part || part === "." || part === "..") ||
     !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(name)
   ) {
     return null;
@@ -177,8 +155,7 @@ const validName = (value: string): string | null => {
 };
 
 const commandFromRaw = (
-  raw: Record<string, unknown>,
-  scope: "global" | "project"
+  raw: Record<string, unknown>
 ): ManagedConversationSlashCommand | null => {
   if (!raw || typeof raw !== "object") return null;
   const name = validName(typeof raw.name === "string" ? raw.name : "");
@@ -187,41 +164,38 @@ const commandFromRaw = (
     typeof raw.description === "string"
       ? raw.description.trim().slice(0, MAX_DESCRIPTION_LENGTH)
       : "";
-  const sourceType =
-    typeof raw.source === "string" ? raw.source : "prompt";
+  const sourceType = typeof raw.source === "string" ? raw.source : "prompt";
   const sourceInfo =
     raw.sourceInfo && typeof raw.sourceInfo === "object"
       ? (raw.sourceInfo as Record<string, unknown>)
       : {};
   const rawScope =
-    (typeof sourceInfo.scope === "string"
-      ? sourceInfo.scope
-      : "project") === "user"
+    (typeof sourceInfo.scope === "string" ? sourceInfo.scope : "project") ===
+    "user"
       ? "global"
       : "project";
   const sourceKind =
     sourceType === "extension"
       ? "provider"
       : sourceType === "skill"
-        ? scope === "global"
+        ? rawScope === "global"
           ? "global-file"
           : "project-file"
-        : scope === "global"
+        : rawScope === "global"
           ? "global-file"
           : "project-file";
   return {
     name,
     description,
     kind: sourceType === "skill" ? "skill" : "command",
-    scope,
+    scope: rawScope,
     source: sourceKind,
     verification: "unverified"
   };
 };
 
 const discoverFromRpc = (
-  environment: NodeJS.ProcessEnv,
-  projectRoot?: string
+  environment: NodeJS.ProcessEnv
 ): Promise<ManagedConversationSlashCommand[]> => {
   let child: ChildProcessWithoutNullStreams;
   let fatalError: Error | null = null;
@@ -245,9 +219,7 @@ const discoverFromRpc = (
     }
   };
 
-  return (async (): Promise<
-    ManagedConversationSlashCommand[]
-  > => {
+  return (async (): Promise<ManagedConversationSlashCommand[]> => {
     let executable: string;
     try {
       executable = resolvePiExecutable(environment);
@@ -287,9 +259,7 @@ const discoverFromRpc = (
     const pending = new Map<
       string,
       {
-        resolve: (
-          r: Record<string, unknown>[]
-        ) => void;
+        resolve: (r: Record<string, unknown>[]) => void;
         reject: (e: Error) => void;
         timer: NodeJS.Timeout;
       }
@@ -307,127 +277,76 @@ const discoverFromRpc = (
     };
 
     try {
-      const result: Record<string, unknown>[] =
-        await new Promise((resolve, reject) => {
+      const result: Record<string, unknown>[] = await new Promise(
+        (resolve, reject) => {
           const timeout = setTimeout(
-            () =>
-              fail(
-                new Error(
-                  "Pi command discovery timed out"
-                )
-              ),
+            () => fail(new Error("Pi command discovery timed out")),
             5_000
           );
 
           child.once("error", (error) => fail(error));
           child.once("exit", (code) => {
             if (!fatalError && pending.size > 0)
-              fail(
-                new Error(
-                  `Pi command discovery exited with code ${code}`
-                )
-              );
+              fail(new Error(`Pi command discovery exited with code ${code}`));
           });
 
-          child.stdout.on(
-            "data",
-            (chunk: Buffer) => {
-              aggregateBytes += chunk.length;
-              if (
-                aggregateBytes > PI_RPC_MAX_RECORD_BYTES
-              ) {
-                fail(
-                  new Error(
-                    "Pi command discovery output exceeded 4 MiB"
-                  )
-                );
+          child.stdout.on("data", (chunk: Buffer) => {
+            aggregateBytes += chunk.length;
+            if (aggregateBytes > PI_RPC_MAX_RECORD_BYTES) {
+              fail(new Error("Pi command discovery output exceeded 4 MiB"));
+              return;
+            }
+            stdout = Buffer.concat([stdout, chunk]);
+            while (true) {
+              const newline = stdout.indexOf(0x0a);
+              if (newline < 0) {
+                if (stdout.length > PI_RPC_MAX_RECORD_BYTES)
+                  fail(new Error("Pi command discovery record exceeded 4 MiB"));
+                break;
+              }
+              if (newline > PI_RPC_MAX_RECORD_BYTES) {
+                fail(new Error("Pi command discovery record exceeded 4 MiB"));
                 return;
               }
-              stdout = Buffer.concat([
-                stdout,
-                chunk
-              ]);
-              while (true) {
-                const newline =
-                  stdout.indexOf(0x0a);
-                if (newline < 0) {
-                  if (
-                    stdout.length >
-                    PI_RPC_MAX_RECORD_BYTES
+              const record = stdout.subarray(0, newline);
+              stdout = stdout.subarray(newline + 1);
+              if (record.length === 0) continue;
+              let response: PiCommandsResponse;
+              try {
+                response = JSON.parse(
+                  record.toString("utf8")
+                ) as PiCommandsResponse;
+              } catch {
+                fail(new Error("Pi command discovery emitted malformed JSONL"));
+                return;
+              }
+              if (
+                response.type !== "response" ||
+                typeof response.id !== "string"
+              )
+                continue;
+              const request = pending.get(response.id);
+              if (!request) continue;
+              pending.delete(response.id);
+              clearTimeout(request.timer);
+              if (
+                response.success === true &&
+                Array.isArray(response.data?.commands)
+              ) {
+                resolve(response.data.commands);
+              } else {
+                reject(
+                  new Error(
+                    `Pi command discovery failed: ${response.error ?? "unknown"}`
                   )
-                    fail(
-                      new Error(
-                        "Pi command discovery record exceeded 4 MiB"
-                      )
-                    );
-                  break;
-                }
-                if (
-                  newline > PI_RPC_MAX_RECORD_BYTES
-                ) {
-                  fail(
-                    new Error(
-                      "Pi command discovery record exceeded 4 MiB"
-                    )
-                  );
-                  return;
-                }
-                const record = stdout.subarray(
-                  0,
-                  newline
                 );
-                stdout = stdout.subarray(
-                  newline + 1
-                );
-                if (record.length === 0) continue;
-                let response: PiCommandsResponse;
-                try {
-                  response = JSON.parse(
-                    record.toString("utf8")
-                  ) as PiCommandsResponse;
-                } catch {
-                  fail(
-                    new Error(
-                      "Pi command discovery emitted malformed JSONL"
-                    )
-                  );
-                  return;
-                }
-                if (
-                  response.type !== "response" ||
-                  typeof response.id !== "string"
-                )
-                  continue;
-                const request =
-                  pending.get(response.id);
-                if (!request) continue;
-                pending.delete(response.id);
-                clearTimeout(request.timer);
-                if (
-                  response.success === true &&
-                  Array.isArray(
-                    response.data?.commands
-                  )
-                ) {
-                  resolve(
-                    response.data.commands
-                  );
-                } else {
-                  reject(
-                    new Error(
-                      `Pi command discovery failed: ${response.error ?? "unknown"}`
-                    )
-                  );
-                }
               }
             }
-          );
+          });
 
           const id = randomUUID();
           pending.set(id, {
-            resolve: resolve as (
-              r: Record<string, unknown>[]
-            ) => void,
+            resolve: resolve as (r: Record<string, unknown>[]) => void,
             reject,
             timer: timeout
           });
@@ -437,31 +356,18 @@ const discoverFromRpc = (
               type: "get_commands"
             })}\n`
           );
-        });
+        }
+      );
 
       return result
         .slice(0, MAX_COMMANDS)
-        .map((raw) =>
-          commandFromRaw(raw, "global")
-        )
+        .map((raw) => commandFromRaw(raw))
+        .filter((c): c is ManagedConversationSlashCommand => c !== null)
         .filter(
-          (
-            c
-          ): c is ManagedConversationSlashCommand =>
-            c !== null
-        )
-        .filter(
-          (command) =>
-            command.name.length > 0 &&
-            !command.name.includes("/")
+          (command) => command.name.length > 0 && !command.name.includes("/")
         );
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes(
-          "timed out"
-        )
-      ) {
+      if (error instanceof Error && error.message.includes("timed out")) {
         return [];
       }
       return [];
@@ -475,24 +381,17 @@ export const createPiCommandDiscoveryAdapter = (
   baseEnvironment: NodeJS.ProcessEnv = process.env
 ): CommandDiscoveryAdapter => ({
   async discoverCommands(args) {
-    const environment =
-      environmentForCommandDiscoveryInstance(
-        "pi",
-        args.aiClientInstanceId,
-        baseEnvironment
-      );
+    const environment = environmentForCommandDiscoveryInstance(
+      "pi",
+      args.aiClientInstanceId,
+      baseEnvironment
+    );
     if (!environment) return [];
 
-    const [globalCommands] = await Promise.all([
-      discoverFromRpc(environment, args.projectRoot)
-    ]);
+    const [globalCommands] = await Promise.all([discoverFromRpc(environment)]);
 
     if (args.projectRoot) {
-      const projectAdapter =
-        createCommandDiscoveryAdapter(
-          "pi",
-          environment
-        );
+      const projectAdapter = createCommandDiscoveryAdapter("pi", environment);
       const projectCommands = await projectAdapter
         .discoverCommands({
           aiClientInstanceId: args.aiClientInstanceId,
@@ -501,32 +400,18 @@ export const createPiCommandDiscoveryAdapter = (
         .then((commands) =>
           commands.filter(
             (command) =>
-              command.scope === "project" &&
-              command.source ===
-                "project-file"
+              command.scope === "project" && command.source === "project-file"
           )
         );
       // Project overrides global by kind:name.
-      const merged = new Map<
-        string,
-        ManagedConversationSlashCommand
-      >();
+      const merged = new Map<string, ManagedConversationSlashCommand>();
       for (const cmd of globalCommands) {
-        merged.set(
-          `${cmd.kind}:${cmd.name.toLowerCase()}`,
-          cmd
-        );
+        merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
       }
       for (const cmd of projectCommands) {
-        merged.set(
-          `${cmd.kind}:${cmd.name.toLowerCase()}`,
-          cmd
-        );
+        merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
       }
-      return [...merged.values()].slice(
-        0,
-        MAX_COMMANDS
-      );
+      return [...merged.values()].slice(0, MAX_COMMANDS);
     }
 
     return globalCommands;

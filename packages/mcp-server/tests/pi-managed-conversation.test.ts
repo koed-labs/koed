@@ -90,7 +90,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
       setTimeout(() => emit(response), startupDelayMs);
     } else emit(response);
   });
-  let mockCommands: Record<string, unknown>[] = [];
+  const mockCommands: Record<string, unknown>[] = [];
   const onTextDelta = vi.fn();
   const onUiRequest = vi.fn().mockResolvedValue({ value: "Approve" });
   const config: PiManagedConversationConfig = {
@@ -294,18 +294,28 @@ describe("Pi managed RPC conversation", () => {
   it("lists commands via get_commands RPC and rejects actions", async () => {
     const f = fixture();
     f.mockCommands.length = 0;
-    f.mockCommands.push({
+    f.mockCommands.push(
+      {
         name: "review",
         description: "Review changes",
         source: "prompt",
-        sourceInfo: { path: "/tmp/review.md", scope: "user", origin: "top-level" }
+        sourceInfo: {
+          path: "/tmp/review.md",
+          scope: "user",
+          origin: "top-level"
+        }
       },
       {
         name: "skill:test",
         description: "Test skill",
         source: "skill",
-        sourceInfo: { path: "/tmp/skill-test", scope: "project", origin: "package" }
-      });
+        sourceInfo: {
+          path: "/tmp/skill-test",
+          scope: "project",
+          origin: "package"
+        }
+      }
+    );
     const session = new PiManagedConversationSession(f.config);
     await session.start();
 

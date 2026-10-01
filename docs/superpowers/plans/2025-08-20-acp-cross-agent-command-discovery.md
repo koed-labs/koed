@@ -9,11 +9,11 @@
 Koed manages three AI clients (Codex, Claude Code, Pi), each with a different
 command discovery mechanism:
 
-| Client | Current method | Limitation |
-|--------|---------------|------------|
-| Codex | `skills/list` App Server request + file scan of `$CODEX_HOME/prompts` | Skips built-in `/compact`; requires App Server round-trip |
-| Claude | File scan of `$CLAUDE_CONFIG_DIR/commands` and `skills` | No SDK-level command listing |
-| Pi | Native `get_commands` RPC (just implemented) | Tied to `--mode rpc`; not portable across transports |
+| Client | Current method                                                        | Limitation                                                |
+| ------ | --------------------------------------------------------------------- | --------------------------------------------------------- |
+| Codex  | `skills/list` App Server request + file scan of `$CODEX_HOME/prompts` | Skips built-in `/compact`; requires App Server round-trip |
+| Claude | File scan of `$CLAUDE_CONFIG_DIR/commands` and `skills`               | No SDK-level command listing                              |
+| Pi     | Native `get_commands` RPC (just implemented)                          | Tied to `--mode rpc`; not portable across transports      |
 
 Each adapter is bespoke. Adding a new client requires writing a new adapter from
 scratch. There is no shared interface for command discovery across transports
@@ -26,15 +26,15 @@ command discovery into a single interface:
 
 ```typescript
 interface AgentCommandCatalog {
-  provider: string;              // "codex" | "claude" | "pi" | ...
+  provider: string; // "codex" | "claude" | "pi" | ...
   instanceId: string;
   scope: "global" | "project";
   commands: AgentCommand[];
-  capabilities: string[];        // ["slash_suggestions", "control_actions"]
+  capabilities: string[]; // ["slash_suggestions", "control_actions"]
 }
 
 interface AgentCommand {
-  name: string;                  // invocation name, no leading "/"
+  name: string; // invocation name, no leading "/"
   description: string;
   kind: "command" | "skill";
   argumentHint?: string;
@@ -42,7 +42,7 @@ interface AgentCommand {
   source: "provider" | "builtin" | "global-file" | "project-file";
   verification: "verified" | "unverified";
   invocationType: "prompt" | "control_action";
-  actionId?: string;             // when invocationType is "control_action"
+  actionId?: string; // when invocationType is "control_action"
 }
 ```
 
@@ -74,7 +74,7 @@ interface AgentContext {
   cwd?: string;
   model?: string;
   reasoningEffort?: string;
-  sessionId?: string;           // for live-session discovery
+  sessionId?: string; // for live-session discovery
 }
 
 interface ControlAction {
@@ -152,27 +152,32 @@ differences from Koed's core.
 ## Implementation Phases
 
 ### Phase 1: Interface and Pi adapter (current)
+
 - [x] Define `AgentCommandCatalog` and `AgentCommandDiscovery` interfaces
 - [x] Implement Pi ACP adapter (native `get_commands` RPC)
 - [x] Wire Pi into API routes for draft discovery
 - [ ] Export ACP types from `@koed/shared`
 
 ### Phase 2: Codex ACP adapter
+
 - [ ] Implement Codex ACP adapter with temporary session discovery
 - [ ] Add `/compact` control action dispatch via App Server
 - [ ] Wire Codex into ACP interface
 
 ### Phase 3: Claude ACP adapter
+
 - [ ] Implement Claude ACP adapter with SDK fallback
 - [ ] Wire Claude into ACP interface
 
 ### Phase 4: Unification
+
 - [ ] Remove bespoke adapter code from API routes
 - [ ] Route all command discovery through ACP interface
 - [ ] Add control-action dispatch through ACP
 - [ ] Update IPC protocol to use ACP types
 
 ### Phase 5: Hardening
+
 - [ ] Add comprehensive provider tests
 - [ ] Add integration tests for each provider
 - [ ] Add cache invalidation logic
@@ -181,14 +186,15 @@ differences from Koed's core.
 ## Trade-offs
 
 ### vs current approach
-| Aspect | Current | ACP |
-|--------|---------|-----|
-| New client cost | Write bespoke adapter | Implement 2 interfaces |
-| Discovery source | Per-provider logic | Unified `list()` call |
-| Control actions | Ad-hoc in routes | Centralized dispatch table |
-| Transport | Mixed (file/RPC/HTTP) | Abstracted by ACP |
-| Complexity | Scattered | Focused in adapter layer |
-| Risk | Low (existing works) | Medium (new abstraction) |
+
+| Aspect           | Current               | ACP                        |
+| ---------------- | --------------------- | -------------------------- |
+| New client cost  | Write bespoke adapter | Implement 2 interfaces     |
+| Discovery source | Per-provider logic    | Unified `list()` call      |
+| Control actions  | Ad-hoc in routes      | Centralized dispatch table |
+| Transport        | Mixed (file/RPC/HTTP) | Abstracted by ACP          |
+| Complexity       | Scattered             | Focused in adapter layer   |
+| Risk             | Low (existing works)  | Medium (new abstraction)   |
 
 ### Why ACP over other approaches
 
@@ -228,13 +234,13 @@ retired by phase, not all at once.
 
 ## Files to modify
 
-| File | Phase | Change |
-|------|-------|--------|
-| `packages/shared/src/ai-client-contract.ts` | 1 | Add ACP types |
-| `packages/mcp-server/src/agent-command-discovery.ts` | 1,2,3 | ACP interface + adapters |
-| `apps/worker/src/command-discovery-adapter-pi.ts` | 1 | Already implemented, wrap in ACP |
-| `apps/worker/src/command-discovery-adapter-codex.ts` | 2 | New Codex ACP adapter |
-| `apps/worker/src/command-discovery-adapter-claude.ts` | 3 | New Claude ACP adapter |
-| `apps/api/src/managed-conversations/routes.ts` | 4 | Route through ACP |
-| `apps/desktop/src/renderer/views/personal/use-slash-command-discovery.ts` | 4 | Use ACP types |
-| `apps/desktop/src/ipc/managed-conversation-protocol.ts` | 4 | Use ACP result types |
+| File                                                                      | Phase | Change                           |
+| ------------------------------------------------------------------------- | ----- | -------------------------------- |
+| `packages/shared/src/ai-client-contract.ts`                               | 1     | Add ACP types                    |
+| `packages/mcp-server/src/agent-command-discovery.ts`                      | 1,2,3 | ACP interface + adapters         |
+| `apps/worker/src/command-discovery-adapter-pi.ts`                         | 1     | Already implemented, wrap in ACP |
+| `apps/worker/src/command-discovery-adapter-codex.ts`                      | 2     | New Codex ACP adapter            |
+| `apps/worker/src/command-discovery-adapter-claude.ts`                     | 3     | New Claude ACP adapter           |
+| `apps/api/src/managed-conversations/routes.ts`                            | 4     | Route through ACP                |
+| `apps/desktop/src/renderer/views/personal/use-slash-command-discovery.ts` | 4     | Use ACP types                    |
+| `apps/desktop/src/ipc/managed-conversation-protocol.ts`                   | 4     | Use ACP result types             |

@@ -3,7 +3,12 @@ import { createPiCommandDiscoveryAdapter } from "./command-discovery-adapter-pi.
 
 describe("Pi command discovery adapter", () => {
   it("returns empty results when Pi executable is unavailable", async () => {
-    const env = { ...process.env, KOED_PI_EXECUTABLE: "/nonexistent/pi" };
+    const env = {
+      ...process.env,
+      KOED_AI_CLIENT_INSTANCE_REGISTRY:
+        "/nonexistent/koed-ai-client-instances.json",
+      KOED_PI_EXECUTABLE: "/nonexistent/pi"
+    };
     const adapter = createPiCommandDiscoveryAdapter(env);
     await expect(
       adapter.discoverCommands({ aiClientInstanceId: "pi.default" })
@@ -15,7 +20,12 @@ describe("Pi command discovery adapter", () => {
     // For simplicity, verify the command format mapping by checking that
     // names with slashes are excluded (the actual RPC path is integration-tested).
     // This test verifies the name filtering logic is in place.
-    const env = { ...process.env, KOED_PI_EXECUTABLE: "/nonexistent/pi" };
+    const env = {
+      ...process.env,
+      KOED_AI_CLIENT_INSTANCE_REGISTRY:
+        "/nonexistent/koed-ai-client-instances.json",
+      KOED_PI_EXECUTABLE: "/nonexistent/pi"
+    };
     const adapter = createPiCommandDiscoveryAdapter(env);
     const result = await adapter.discoverCommands({
       aiClientInstanceId: "pi.default"

@@ -2895,8 +2895,9 @@ describe("managed Conversation command discovery route", () => {
             name: "review",
             description: "Review the current changes",
             kind: "command",
-            source: "provider",
-            scope: "global"
+            source: "global-file",
+            scope: "global",
+            verification: "unverified"
           }
         ]
       });
@@ -2963,14 +2964,14 @@ describe("managed Conversation command discovery route", () => {
             name: "review",
             description: "Project review",
             kind: "command",
-            source: "provider",
+            source: "project-file",
             scope: "project"
           },
           {
             name: "test",
             description: "Project test",
             kind: "command",
-            source: "provider",
+            source: "project-file",
             scope: "project"
           }
         ]

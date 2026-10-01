@@ -2075,7 +2075,9 @@ describe("PersonalMemoryWorkspace", () => {
       )
     );
     await click(
-      container.querySelector('button[aria-label^="Model and reasoning:"]')
+      container.querySelector(
+        'button[aria-label^="AI Client, model and reasoning:"]'
+      )
     );
     await click(document.querySelector(".conversation-model-overview"));
     await click(
@@ -2084,7 +2086,9 @@ describe("PersonalMemoryWorkspace", () => {
       )
     );
     await click(
-      container.querySelector('button[aria-label^="Model and reasoning:"]')
+      container.querySelector(
+        'button[aria-label^="AI Client, model and reasoning:"]'
+      )
     );
     await act(async () => {
       const slider = document.querySelector<HTMLInputElement>(
@@ -2306,7 +2310,9 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain("Context:42k258k")
     );
     expect(
-      container.querySelector('button[aria-label="AI Client: Codex"]')
+      container.querySelector(
+        'button[aria-label^="AI Client, model and reasoning: Codex,"]'
+      )
     ).not.toBeNull();
 
     expect(
@@ -2400,8 +2406,9 @@ describe("PersonalMemoryWorkspace", () => {
       );
       await vi.waitFor(() =>
         expect(
-          container.querySelector('button[aria-label^="Model and reasoning:"]')
-            ?.textContent
+          container.querySelector(
+            'button[aria-label^="AI Client, model and reasoning:"]'
+          )?.textContent
         ).toContain("Low")
       );
       const triggers = [
@@ -2409,8 +2416,7 @@ describe("PersonalMemoryWorkspace", () => {
       ];
       expect(triggers.map((item) => item.getAttribute("aria-label"))).toEqual([
         "Permissions: Supervised",
-        "AI Client: Codex",
-        "Model and reasoning: GPT Test, Low"
+        "AI Client, model and reasoning: Codex, GPT Test, Low"
       ]);
       expect(
         triggers[1]?.querySelector(
@@ -2418,11 +2424,13 @@ describe("PersonalMemoryWorkspace", () => {
         )
       ).not.toBeNull();
       expect(triggers[1]?.querySelector(".lucide-cpu")).toBeNull();
-      expect(triggers[2]?.querySelector(".lucide-zap")).toBeNull();
-      await act(async () => (triggers[2] as HTMLElement).click());
+      expect(triggers).toHaveLength(2);
+      await act(async () => (triggers[1] as HTMLElement).click());
       const popup = document.querySelector(".conversation-settings-popup")!;
       expect(popup.textContent).not.toContain("How much effort");
-      expect(popup.textContent).not.toContain("AI Client");
+      expect(popup.textContent).toContain("AI Client");
+      expect(popup.textContent).toContain("Model");
+      expect(popup.textContent).toContain("Reasoning");
       const slider = popup.querySelector<HTMLInputElement>(
         'input[aria-label="Reasoning effort"]'
       )!;
@@ -2451,9 +2459,9 @@ describe("PersonalMemoryWorkspace", () => {
         );
         expect(
           container
-            .querySelector('[aria-label^="Model and reasoning:"]')
+            .querySelector('[aria-label^="AI Client, model and reasoning:"]')
             ?.getAttribute("aria-label")
-        ).toBe("Model and reasoning: Model without effort");
+        ).toBe("AI Client, model and reasoning: Codex, Model without effort");
       }
       expect(managed.send).not.toHaveBeenCalled();
       expect(container.textContent).not.toContain("Changed for next message");
@@ -2612,7 +2620,9 @@ describe("PersonalMemoryWorkspace", () => {
     await vi.waitFor(() => expect(managed.usage).toHaveBeenCalled());
     expect(container.textContent).toContain("gpt-5.6 · Low");
     expect(
-      container.querySelector('button[aria-label="AI Client: Codex"]')
+      container.querySelector(
+        'button[aria-label^="AI Client, model and reasoning: Codex,"]'
+      )
     ).not.toBeNull();
     expect(container.textContent).not.toContain("Context usage unavailable");
     expect(container.textContent).not.toContain("Context:");

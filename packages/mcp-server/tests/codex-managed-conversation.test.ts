@@ -2756,7 +2756,6 @@ describe("Command operation ID persistence", () => {
 
       // Verify artifact was created
       expect(memoryClient.sourceArtifacts.size).toBeGreaterThan(0);
-      const artifactId = [...memoryClient.sourceArtifacts.values()][0].id;
 
       // Execute a control action to trigger op ID persistence
       const result = await session.executeControlAction({
@@ -2769,13 +2768,6 @@ describe("Command operation ID persistence", () => {
       // Should be rejected because generation_changed or other reason
       // but the key thing is that the store was initialized
       expect(result.status).toBe("rejected");
-
-      // Check that appendConversationSourceSegment was called (op ID save)
-      const saveOps = memoryClient.operations.filter(
-        (op) => op.kind === "source_segment"
-      );
-      // The save may or may not have happened depending on the rejection reason
-      // What matters is that the store was properly initialized
     } finally {
       await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });

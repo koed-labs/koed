@@ -32,10 +32,7 @@ import {
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
 import {
-  MANAGED_CONVERSATION_CONTROL_ACTIONS,
   type ManagedConversationCommand,
-  type ManagedConversationCommandActionRequest,
-  type ManagedConversationCommandSource,
   type ManagedConversationControlActionResult
 } from "./managed-conversation-command-types.js";
 
@@ -56,16 +53,23 @@ export const claudeFileCommands = (
   scanRoots.push({ dir: path.join(globalDir, "skills"), scope: "global" });
 
   // Project: .claude/commands and /skills in cwd
-  scanRoots.push({ dir: path.join(cwd, ".claude", "commands"), scope: "project" });
-  scanRoots.push({ dir: path.join(cwd, ".claude", "skills"), scope: "project" });
+  scanRoots.push({
+    dir: path.join(cwd, ".claude", "commands"),
+    scope: "project"
+  });
+  scanRoots.push({
+    dir: path.join(cwd, ".claude", "skills"),
+    scope: "project"
+  });
 
   const scanDir = (dirPath: string, scope: "global" | "project") => {
     try {
       if (!fs.existsSync(dirPath)) return;
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true }).slice(0, 128);
+      const entries = fs
+        .readdirSync(dirPath, { withFileTypes: true })
+        .slice(0, 128);
       for (const entry of entries) {
         if (!entry.isFile()) continue;
-        const isCommand = dirPath.includes("/commands/") || scope === "project" ? true : false;
         if (path.extname(entry.name).toLowerCase() !== ".md") continue;
         const name = path.basename(entry.name, ".md");
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) continue;
@@ -75,8 +79,9 @@ export const claudeFileCommands = (
           const content = fs.readFileSync(filePath, "utf8");
           const description =
             content
-              .match(/^---\r?\n[\s\S]*?description\s*:\s*(.*?)\r?\n[\s\S]*?---/i)
-              ?.[1]
+              .match(
+                /^---\r?\n[\s\S]*?description\s*:\s*(.*?)\r?\n[\s\S]*?---/i
+              )?.[1]
               ?.trim()
               .replace(/^['"]|['"]$/g, "")
               .slice(0, 512) ?? "";
@@ -85,7 +90,10 @@ export const claudeFileCommands = (
             description,
             kind: dirPath.includes("skills") ? "skill" : "command",
             scope,
-            source: scope === "project" ? ("project-file" as const) : ("global-file" as const),
+            source:
+              scope === "project"
+                ? ("project-file" as const)
+                : ("global-file" as const),
             verification: "unverified" as const,
             invocation: { type: "prompt" as const }
           });
@@ -1327,11 +1335,12 @@ export class ClaudeManagedConversationSession {
     return claudeFileCommands(this.cwd, this.managedHome);
   }
 
-  async executeControlAction(
-    input: ManagedConversationCommandActionRequest
-  ): Promise<ManagedConversationControlActionResult> {
+  executeControlAction(): Promise<ManagedConversationControlActionResult> {
     // Claude Code has no Koed-supported control actions.
-    return { status: "rejected", reason: "unsupported_action" };
+    return Promise.resolve({
+      status: "rejected",
+      reason: "unsupported_action"
+    });
   }
 
   async closeAndWait(): Promise<void> {

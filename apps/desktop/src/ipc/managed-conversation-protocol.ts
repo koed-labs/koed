@@ -981,9 +981,7 @@ export const parseManagedConversationRequest = (
       !Array.isArray(input.arguments) ||
       input.arguments.length > 32 ||
       input.arguments.some(
-        (argument) =>
-          typeof argument !== "string" ||
-          argument.length > 4096
+        (argument) => typeof argument !== "string" || argument.length > 4096
       )
     ) {
       throw new TypeError(

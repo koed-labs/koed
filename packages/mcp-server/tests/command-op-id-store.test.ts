@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { MemoryApiClient } from "../src/index.js";
 import { CommandOpIdStore } from "../src/command-op-id-store.js";
@@ -12,17 +11,10 @@ describe("CommandOpIdStore", () => {
     artifactId: string;
   }>;
   let restoredSegments: Record<string, Array<{ id: string }>>;
-  let segmentContents: Record<string, Array<{ id: string; bytesBase64: string }>>;
-
-  const makeStoredState = (
-    states: Record<string, { status: string; reason?: string; createdAt?: string }>
-  ): { payload: string; bytesBase64: string } => {
-    const payload = JSON.stringify({
-      _koed_op_id_state: true,
-      states
-    });
-    return { payload, bytesBase64: Buffer.from(payload).toString("base64") };
-  };
+  let segmentContents: Record<
+    string,
+    Array<{ id: string; bytesBase64: string }>
+  >;
 
   beforeEach(() => {
     savedSegments = [];
@@ -30,54 +22,84 @@ describe("CommandOpIdStore", () => {
     segmentContents = {};
 
     memoryClient = {
-      ensureConversationSourceArtifact: vi.fn().mockResolvedValue({ id: "art-1" }),
-      lookupConversationSourceArtifact: vi.fn().mockResolvedValue({ id: "art-1" }),
+      ensureConversationSourceArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: "art-1" }),
+      lookupConversationSourceArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: "art-1" }),
       listConversationSourceSegments: vi.fn((artifactId: string) => ({
         segments: (restoredSegments[artifactId] ?? []) as Array<{ id: string }>
       })),
-      getConversationSourceSegmentContent: vi.fn((artifactId: string, segmentId: string) => {
-        const segs = segmentContents[artifactId] ?? [];
-        const seg = segs.find((s) => s.id === segmentId);
-        if (!seg) throw new Error("missing fake source segment");
-        return { segment: { id: seg.id }, bytesBase64: seg.bytesBase64 };
-      }),
-      appendConversationSourceSegment: vi.fn((artifactId: string, content: Record<string, unknown>) => {
-        const id = `seg-${savedSegments.length + 1}`;
-        savedSegments.push({ artifactId, content });
-        restoredSegments[artifactId] = restoredSegments[artifactId] ?? [];
-        restoredSegments[artifactId].push({ id });
-        segmentContents[artifactId] = segmentContents[artifactId] ?? [];
-        segmentContents[artifactId].push({
-          id,
-          bytesBase64: content.bytesBase64 as string
-        });
-        return Promise.resolve({ segment: { id } });
-      }),
+      getConversationSourceSegmentContent: vi.fn(
+        (artifactId: string, segmentId: string) => {
+          const segs = segmentContents[artifactId] ?? [];
+          const seg = segs.find((s) => s.id === segmentId);
+          if (!seg) throw new Error("missing fake source segment");
+          return { segment: { id: seg.id }, bytesBase64: seg.bytesBase64 };
+        }
+      ),
+      appendConversationSourceSegment: vi.fn(
+        (artifactId: string, content: Record<string, unknown>) => {
+          const id = `seg-${savedSegments.length + 1}`;
+          savedSegments.push({ artifactId, content });
+          restoredSegments[artifactId] = restoredSegments[artifactId] ?? [];
+          restoredSegments[artifactId].push({ id });
+          segmentContents[artifactId] = segmentContents[artifactId] ?? [];
+          segmentContents[artifactId].push({
+            id,
+            bytesBase64: content.bytesBase64 as string
+          });
+          return Promise.resolve({ segment: { id } });
+        }
+      ),
       getEffectiveCapturePolicy: vi.fn().mockResolvedValue({ policies: [] }),
       createSession: vi.fn().mockResolvedValue({ session: {} }),
-      finalizeConversationSourceSet: vi.fn().mockResolvedValue({ segments: [] }),
-      getConversationSourceArtifactByGeneration: vi.fn().mockResolvedValue({ artifact: {} }),
-      listConversationSourceGenerationComponents: vi.fn().mockResolvedValue({ components: [] }),
-      finalizeConversationSourceArtifact: vi.fn().mockResolvedValue({ artifact: {} }),
-      createConversationSourceSuccessorGeneration: vi.fn().mockResolvedValue({ sourceGeneration: {} }),
+      finalizeConversationSourceSet: vi
+        .fn()
+        .mockResolvedValue({ segments: [] }),
+      getConversationSourceArtifactByGeneration: vi
+        .fn()
+        .mockResolvedValue({ artifact: {} }),
+      listConversationSourceGenerationComponents: vi
+        .fn()
+        .mockResolvedValue({ components: [] }),
+      finalizeConversationSourceArtifact: vi
+        .fn()
+        .mockResolvedValue({ artifact: {} }),
+      createConversationSourceSuccessorGeneration: vi
+        .fn()
+        .mockResolvedValue({ sourceGeneration: {} }),
       getConversationSourceCursor: vi.fn().mockResolvedValue({ cursor: null }),
-      advanceConversationSourceCursor: vi.fn().mockResolvedValue({ cursor: {} }),
+      advanceConversationSourceCursor: vi
+        .fn()
+        .mockResolvedValue({ cursor: {} }),
       lookupHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
       createHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
       transitionHistoricalImportRun: vi.fn().mockResolvedValue({ run: {} }),
-      transitionHistoricalImportSource: vi.fn().mockResolvedValue({ source: {} }),
+      transitionHistoricalImportSource: vi
+        .fn()
+        .mockResolvedValue({ source: {} }),
       ingestHistoricalImportBatch: vi.fn().mockResolvedValue({ batch: {} }),
       effectiveCapturePolicy: vi.fn().mockResolvedValue({ policies: [] }),
       capturePersonalEvent: vi.fn().mockResolvedValue({ event: {} }),
       createConversationItems: vi.fn().mockResolvedValue({ items: [] }),
-      findConversationItemByStableIdentity: vi.fn().mockResolvedValue({ item: null }),
+      findConversationItemByStableIdentity: vi
+        .fn()
+        .mockResolvedValue({ item: null }),
       recordTokenUsage: vi.fn().mockResolvedValue({ usage: {} }),
       projectConversationItems: vi.fn().mockResolvedValue({ projected: [] }),
-      releaseManagedJournalProjection: vi.fn().mockResolvedValue({ release: {} }),
-      releaseConversationProjectionHold: vi.fn().mockResolvedValue({ release: {} }),
+      releaseManagedJournalProjection: vi
+        .fn()
+        .mockResolvedValue({ release: {} }),
+      releaseConversationProjectionHold: vi
+        .fn()
+        .mockResolvedValue({ release: {} }),
       answer: vi.fn().mockResolvedValue({ answer: {} }),
       proposeCuratedMemory: vi.fn().mockResolvedValue({ memory: {} }),
-      claimPendingCuratedMemoryReviews: vi.fn().mockResolvedValue({ reviews: [] }),
+      claimPendingCuratedMemoryReviews: vi
+        .fn()
+        .mockResolvedValue({ reviews: [] }),
       submitCuratedMemoryReview: vi.fn().mockResolvedValue({ review: {} }),
       createFinalQuestion: vi.fn().mockResolvedValue({ question: {} }),
       acceptMemoryAnswerTask: vi.fn().mockResolvedValue({ task: {} }),
@@ -96,7 +118,10 @@ describe("CommandOpIdStore", () => {
 
   describe("get/set", () => {
     it("stores and retrieves operation results", () => {
-      const result: ManagedConversationControlActionResult = { status: "rejected", reason: "test" };
+      const result: ManagedConversationControlActionResult = {
+        status: "rejected",
+        reason: "test"
+      };
       store.set("op-1", result);
       expect(store.get("op-1")).toEqual(result);
     });
@@ -115,7 +140,10 @@ describe("CommandOpIdStore", () => {
   describe("ensureArtifact/restore", () => {
     it("persists state to segment on save and restores it", async () => {
       const artifactId = "art-1";
-      const result: ManagedConversationControlActionResult = { status: "rejected", reason: "cached" };
+      const result: ManagedConversationControlActionResult = {
+        status: "rejected",
+        reason: "cached"
+      };
       store.set("op-1", result);
 
       await store.ensureArtifact(artifactId);
@@ -130,10 +158,14 @@ describe("CommandOpIdStore", () => {
       const stored = JSON.parse(
         Buffer.from(content.bytesBase64 as string, "base64").toString("utf8")
       ) as Record<string, unknown>;
+      const storedStates = stored.states as Record<
+        string,
+        Record<string, unknown>
+      >;
       expect(stored._koed_op_id_state).toBe(true);
-      expect(stored.states["op-1"].status).toBe("rejected");
-      expect(stored.states["op-1"].reason).toBe("cached");
-      expect(typeof stored.states["op-1"].createdAt).toBe("string");
+      expect(storedStates["op-1"].status).toBe("rejected");
+      expect(storedStates["op-1"].reason).toBe("cached");
+      expect(typeof storedStates["op-1"].createdAt).toBe("string");
     });
 
     it("restores state from saved segment on next ensureArtifact", async () => {
@@ -166,7 +198,9 @@ describe("CommandOpIdStore", () => {
   describe("concurrent restore guard", () => {
     it("does not double-restore for same artifact", async () => {
       const artifactId = "art-4";
-      const result: ManagedConversationControlActionResult = { status: "accepted" };
+      const result: ManagedConversationControlActionResult = {
+        status: "accepted"
+      };
       store.set("op-1", result);
       await store.ensureArtifact(artifactId);
       await store.save(artifactId);

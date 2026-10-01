@@ -1,6 +1,7 @@
 # SDD ledger — plan: docs/superpowers/plans/2025-07-25-ai-client-aware-slash-suggestions.md
 
 ## Tasks
+
 - [x] Task 1: Add slashCommandDiscovery capability ID
   - Ledger: Task 1: complete (commits cb60ada, review clean)
 - [x] Task 2: Add discovery request and result types to IPC protocol
@@ -31,6 +32,7 @@
   - Ledger: Task 14: complete (desktop: 847/847 pass, api: 1171/1180 pass with 6 pre-existing terminal-runtime failures, typecheck: 3 pre-existing errors)
 
 ## Scan Results
+
 - Phase 3 spec plan evaluated against codebase architecture
 - Key adjustment: Task 6 required two re-implementations due to repository model mismatch — the plan assumed `getAiClientInstance`/`getAiClientCapabilitySnapshot` methods that don't exist; real API uses `listAiClientInstances`/`listCurrentAiClientCapabilitySnapshots` with find-by-instanceId pattern
 - Cached field references in plan (`instance.projectId`, `instance.workingDirectory`) were fabricated — real `AiClientInstanceRecord` has `ownerUserId`, `driverId`, `enabled`, `configIdentityHash` only
@@ -38,6 +40,7 @@
 - No new test or type failures introduced
 
 ## Rulings
+
 - `aiClientInstanceRecord` does not have `projectId` or `workingDirectory` fields — project validation in Task 6 limited to format check, instance ownership validated via `ownerUserId`
 - AbortSignal cannot be passed through IPC to `discoverCommands` — Electron IPC doesn't support it and protocol rejects unknown keys; cancellation handled via signal guard on `.then()/.catch()` only
 - `useSlashCommandDiscovery` uses `executionOwner?.driverId` for provider (not `usage?.provider`) to maintain lifecycle consistency with instanceId source

@@ -30,17 +30,20 @@ The session-side implementation is complete:
 **Current:** `apps/api/src/managed-conversations/routes.ts` still calls the file-only `createCommandDiscoveryAdapter()` for command discovery. The live catalog, draft listing, and control-action dispatch have no end-to-end route.
 
 **What to do:**
+
 - Extend the existing `POST /v1/managed-conversations/commands` route (lines ~1465-1590) to support:
   - **Draft discovery:** call `listCodexDraftCommands()` / `listClaudeDraftCommands()` from the worker adapter layer
   - **Live discovery:** route through the process that owns the session (worker). The API process does NOT own the session handle. Consider adding a worker RPC or message-passing path, or having the desktop communicate with the worker directly for live commands.
   - **Control action dispatch:** accept the `command_action` IPC operation at the API, validate against `MANAGED_CONVERSATION_CONTROL_ACTIONS`, and relay to the session owner with operation ID persistence.
 
 **Constraints:**
+
 - Operation ID must persist with conversation history (not just session memory). Consider storing in the memory API or conversation source artifact.
 - The API must not pretend to own a live session it doesn't have access to.
 - Keep request validation strict: owner, instance, generation, project, capability checks on the server/runtime side.
 
 **Reference files:**
+
 - `apps/api/src/managed-conversations/routes.ts` (lines 1465-1590)
 - `apps/worker/src/command-discovery-adapter-codex.ts` (draft listing)
 - `apps/worker/src/command-discovery-adapter-claude.ts`
@@ -51,12 +54,14 @@ The session-side implementation is complete:
 **Current:** `controlActionStates` map in each session class stores operation state in memory only. A restart loses the record; retry can dispatch duplicate actions.
 
 **What to do:**
+
 - Persist operation ID + state alongside conversation history. Options:
   a. Store in Memory API as a conversation-side artifact (like captured sessions)
   b. Store in the conversation source segment
   c. Store as a lightweight row in a local persistence table
 
 **Requirements:**
+
 - Record includes: operationId, actionId, executionGeneration, status, createdAt
 - Same ID returns existing state on retry (never redispatches)
 - Timeout means "still reconciling," not "safe to retry"
@@ -69,6 +74,7 @@ The session-side implementation is complete:
 **Current:** Unverified file-sourced entries are presented in the catalog but may be dispatched without revalidation.
 
 **What to do:**
+
 - At dispatch time, check if the command is `verified` or `unverified`.
 - For `unverified` entries: revalidate against the provider catalog (if session is live) or fail closed (if no session available).
 - Do not present unverified entries as confirmed executable; label them for revalidation.
@@ -80,6 +86,7 @@ The session-side implementation is complete:
 **Current:** The capability publisher (`ai-client-runner.ts` lines ~907-950) reports `slash_command_discovery` ready for supported clients. This should also reflect the new session-backed discovery capability.
 
 **What to do:**
+
 - Update the capability publisher to indicate readiness based on session type:
   - Codex: ready if App Server protocol supports `skills/list` and/or `thread/compact/start`
   - Claude: ready if SDK version supports `supportedCommands()`

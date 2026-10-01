@@ -9,13 +9,25 @@ const KOED_OP_ID_MARKER = "_koed_op_id_state";
 const PAGE_LIMIT = 20;
 const MAX_PAGES = 5;
 
-type StoredState = Omit<ManagedConversationControlActionState, "operationId" | "actionId" | "executionGeneration">;
+type StoredState = Omit<
+  ManagedConversationControlActionState,
+  "operationId" | "actionId" | "executionGeneration"
+>;
 
-const isStoredStateStatus = (status: string): status is StoredState["status"] => {
-  return status === "accepted" || status === "rejected" || status === "unknown" || status === "pending";
+const isStoredStateStatus = (
+  status: string
+): status is StoredState["status"] => {
+  return (
+    status === "accepted" ||
+    status === "rejected" ||
+    status === "unknown" ||
+    status === "pending"
+  );
 };
 
-const resultToStoredState = (result: ManagedConversationControlActionResult): StoredState => {
+const resultToStoredState = (
+  result: ManagedConversationControlActionResult
+): StoredState => {
   if (result.status === "accepted" || result.status === "already_accepted") {
     return { status: "accepted", createdAt: new Date().toISOString() };
   }
@@ -23,12 +35,18 @@ const resultToStoredState = (result: ManagedConversationControlActionResult): St
     return { status: "unknown", createdAt: new Date().toISOString() };
   }
   if (result.status === "rejected" && result.reason) {
-    return { status: "rejected", reason: result.reason, createdAt: new Date().toISOString() };
+    return {
+      status: "rejected",
+      reason: result.reason,
+      createdAt: new Date().toISOString()
+    };
   }
   return { status: "unknown", createdAt: new Date().toISOString() };
 };
 
-const storedStateToResult = (state: StoredState): ManagedConversationControlActionResult => {
+const storedStateToResult = (
+  state: StoredState
+): ManagedConversationControlActionResult => {
   if (state.status === "accepted") {
     return { status: "accepted" };
   }
@@ -45,13 +63,17 @@ const makeOpIdPayload = (states: Record<string, StoredState>): string => {
   });
 };
 
-const parseOpIdPayload = (content: string): Record<string, StoredState> | null => {
+const parseOpIdPayload = (
+  content: string
+): Record<string, StoredState> | null => {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
     if (!parsed[KOED_OP_ID_MARKER]) return null;
     const rawStates = parsed.states;
-    if (!rawStates || typeof rawStates !== "object" || Array.isArray(rawStates)) return null;
+    if (!rawStates || typeof rawStates !== "object" || Array.isArray(rawStates))
+      return null;
     const states: Record<string, StoredState> = {};
     for (const [opId, s] of Object.entries(rawStates)) {
       if (!s || typeof s !== "object" || Array.isArray(s)) continue;
@@ -60,8 +82,12 @@ const parseOpIdPayload = (content: string): Record<string, StoredState> | null =
       if (!status || !isStoredStateStatus(status)) continue;
       states[opId] = {
         status,
-        ...(state.reason !== undefined ? { reason: state.reason as string } : {}),
-        ...(state.createdAt !== undefined ? { createdAt: state.createdAt as string } : {})
+        ...(state.reason !== undefined
+          ? { reason: state.reason as string }
+          : {}),
+        ...(state.createdAt !== undefined
+          ? { createdAt: state.createdAt as string }
+          : {})
       } as StoredState;
     }
     return states;
@@ -70,14 +96,9 @@ const parseOpIdPayload = (content: string): Record<string, StoredState> | null =
   }
 };
 
-interface ArtifactCursor {
-  providerCursorOffset: number;
-  providerCursorLine: number;
-  currentSourceLength: number;
-}
-
 export class CommandOpIdStore {
-  private readonly memory: Map<string, ManagedConversationControlActionResult> = new Map();
+  private readonly memory: Map<string, ManagedConversationControlActionResult> =
+    new Map();
   private artifactId: string | null = null;
   private restoring: Promise<void> | null = null;
 
@@ -110,16 +131,18 @@ export class CommandOpIdStore {
 
       for (const seg of segments) {
         try {
-          const contentResult = await this.memoryClient.getConversationSourceSegmentContent(
-            artifactId,
-            seg.id
-          );
+          const contentResult =
+            await this.memoryClient.getConversationSourceSegmentContent(
+              artifactId,
+              seg.id
+            );
           const contentObj = contentResult as Record<string, unknown>;
-          const bytesBase64 = typeof contentObj.bytesBase64 === "string"
-            ? contentObj.bytesBase64
-            : typeof contentObj.content === "string"
-              ? contentObj.content
-              : undefined;
+          const bytesBase64 =
+            typeof contentObj.bytesBase64 === "string"
+              ? contentObj.bytesBase64
+              : typeof contentObj.content === "string"
+                ? contentObj.content
+                : undefined;
           if (!bytesBase64) continue;
           const plaintext = Buffer.from(bytesBase64, "base64").toString("utf8");
           const states = parseOpIdPayload(plaintext);
@@ -154,7 +177,8 @@ export class CommandOpIdStore {
         artifactId,
         { afterOffset: 0, limit: PAGE_LIMIT }
       );
-      const segmentCount = (segments.segments as Array<{ id: string }>)?.length ?? 0;
+      const segmentCount =
+        (segments.segments as Array<{ id: string }>)?.length ?? 0;
       // Use segment count as rough cursor position. The API may reject if cursor
       // doesn't match artifact state, but failure is silently ignored.
       await this.memoryClient.appendConversationSourceSegment(artifactId, {
