@@ -4,11 +4,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
-import type { PersonalAgentIntentSignal } from "@koed/shared";
+import type {
+  PersonalAgentIntentSignal,
+  PersonalAgentPhase
+} from "@koed/shared";
 import {
   parsePersonalAgentIntentToolInput,
   parsePersonalAgentTurnStatusToolInput
 } from "./personal-agent-intent-tool.js";
+import { parsePersonalAgentPhaseToolInput } from "./personal-agent-phase-tool.js";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
 import { piSessionIdentity } from "./pi-transcript-watcher.js";
 import { piRpcEnvironment, resolvePiExecutable } from "./pi-rpc-runner.js";
@@ -39,6 +43,7 @@ export interface PiManagedConversationConfig {
   personalAgentTurnStatusHandler?: (
     status: "complete" | "awaiting_owner"
   ) => Promise<void>;
+  personalAgentPhaseHandler?: (phase: PersonalAgentPhase) => Promise<void>;
   onUiRequest: (
     request: Record<string, unknown>,
     signal: AbortSignal
@@ -246,7 +251,8 @@ export class PiManagedConversationSession {
           agentIntentTool: Boolean(this.config.personalAgentIntentHandler),
           agentTurnStatusTool: Boolean(
             this.config.personalAgentTurnStatusHandler
-          )
+          ),
+          agentPhaseTool: Boolean(this.config.personalAgentPhaseHandler)
         })
       ]
     );
@@ -526,7 +532,8 @@ export class PiManagedConversationSession {
     }
     if (
       carrier.kind !== "koed_agent_intent" &&
-      carrier.kind !== "koed_agent_turn_status"
+      carrier.kind !== "koed_agent_turn_status" &&
+      carrier.kind !== "koed_job_phase"
     )
       return false;
     const active = this.active;
@@ -552,7 +559,7 @@ export class PiManagedConversationSession {
           recorded: true,
           ...(await this.config.personalAgentIntentHandler(signal))
         };
-      } else {
+      } else if (carrier.kind === "koed_agent_turn_status") {
         if (
           Object.keys(carrier).some(
             (key) => !["kind", "status"].includes(key)
@@ -565,6 +572,19 @@ export class PiManagedConversationSession {
         });
         await this.config.personalAgentTurnStatusHandler(status);
         result = { recorded: true, status };
+      } else {
+        if (
+          Object.keys(carrier).some(
+            (key) => !["kind", "phase"].includes(key)
+          ) ||
+          !this.config.personalAgentPhaseHandler
+        )
+          throw new Error("Invalid Pi Agent phase carrier");
+        const phase = parsePersonalAgentPhaseToolInput({
+          phase: carrier.phase
+        });
+        await this.config.personalAgentPhaseHandler(phase);
+        result = { recorded: true, phase };
       }
       if (
         this.active !== active ||

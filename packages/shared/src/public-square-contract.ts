@@ -34,12 +34,24 @@ export const publicSquarePublicationSchema = z
     ownerName: z.string().trim().min(1).max(160),
     projectId: uuid,
     projectName: z.string().trim().min(1).max(128),
+    ownerExecutionId: uuid.nullable().default(null),
     status: publicSquareJobStatusSchema,
     lastKnownStatus: publicSquareJobStatusSchema.nullable(),
+    phase: z.enum(["working", "checking"]).nullable().default(null),
+    phaseObservedAt: timestamp.nullable().default(null),
     publishedAt: timestamp,
+    startedAt: timestamp.nullable().default(null),
     updatedAt: timestamp,
     completedAt: timestamp.nullable(),
     lastSeenAt: timestamp.nullable(),
+    waitingOn: z
+      .object({
+        userId: uuid,
+        name: z.string().trim().min(1).max(160)
+      })
+      .strict()
+      .nullable()
+      .default(null),
     ownerLeftTeam: z.boolean(),
     sharedBrief: z.string().max(1000).nullable(),
     version: z.number().int().positive(),
@@ -51,10 +63,21 @@ export type PublicSquarePublication = z.infer<
   typeof publicSquarePublicationSchema
 >;
 
+export const publicSquareIdleAgentSchema = z
+  .object({
+    agentId: uuid,
+    agentName: z.string().trim().min(1).max(128),
+    ownerId: uuid,
+    ownerName: z.string().trim().min(1).max(160)
+  })
+  .strict();
+export type PublicSquareIdleAgent = z.infer<typeof publicSquareIdleAgentSchema>;
+
 export const publicSquarePageSchema = z
   .object({
     teamId: uuid,
     items: z.array(publicSquarePublicationSchema).max(100),
+    idleAgents: z.array(publicSquareIdleAgentSchema).default([]),
     nextCursor: z.string().max(512).nullable(),
     serverTime: timestamp
   })

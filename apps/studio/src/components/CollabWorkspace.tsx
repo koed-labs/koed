@@ -30,6 +30,7 @@ import { AddAgentModal } from "./AddAgentModal";
 import { AgentAvatarView } from "./AgentAvatarView";
 import { useCollabSession } from "./CollabSessionContext";
 import { TeamShell } from "./TeamShell";
+import { PublicSquarePreview } from "./PublicSquarePreview";
 import { ActionGroups, ClearedItems, useOpenTarget } from "./ActionCard";
 import { useActionItems } from "./useActionItems";
 import { useWorkspace } from "./WorkspaceProvider";
@@ -40,17 +41,21 @@ export function CollabWorkspace() {
 
   if (!activeTeam) return null;
 
-  if (view.type === "square") return <SquareView />;
+  if (view.type === "square") return <PublicSquarePreview />;
   if (view.type === "inbox") return <ForYouView />;
   if (view.type === "channel") {
     const exists = workspace.channels.some(
       (channel) => channel.id === view.id && channel.teamId === activeTeam.id
     );
-    return exists ? <ChannelView channelId={view.id} /> : <SquareView />;
+    return exists ? (
+      <ChannelView channelId={view.id} />
+    ) : (
+      <PublicSquarePreview />
+    );
   }
   if (view.type === "dm") return <DirectView dmId={view.id} />;
   if (view.type === "agent") return <AgentWorkshop agentId={view.id} />;
-  return <SquareView />;
+  return <PublicSquarePreview />;
 }
 
 // The Public Square: one per team, aggregating every agent - yours and your
@@ -58,6 +63,8 @@ export function CollabWorkspace() {
 // single live view. Grouped by project (not flattened) so "what's everyone
 // doing" reads project-by-project rather than as one undifferentiated
 // list, with a team-wide pulse up top for the at-a-glance read.
+// Kept for comparison with the previous prototype.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function SquareView() {
   const { activeTeam, workspace } = useWorkspace();
   const { openAgent } = useCollabSession();

@@ -34,7 +34,10 @@ import {
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
 
-import type { PersonalAgentIntentSignal } from "@koed/shared";
+import type {
+  PersonalAgentIntentSignal,
+  PersonalAgentPhase
+} from "@koed/shared";
 import {
   PERSONAL_AGENT_INTENT_TOOL_NAME,
   PERSONAL_AGENT_INTENT_TOOL_DESCRIPTION,
@@ -45,6 +48,12 @@ import {
   personalAgentTurnStatusToolInputSchema,
   parsePersonalAgentTurnStatusToolInput
 } from "./personal-agent-intent-tool.js";
+import {
+  PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
+  PERSONAL_AGENT_PHASE_TOOL_NAME,
+  parsePersonalAgentPhaseToolInput,
+  personalAgentPhaseToolInputSchema
+} from "./personal-agent-phase-tool.js";
 
 export const CLAUDE_MANAGED_CONVERSATION_PROVIDER = "claude" as const;
 
@@ -73,6 +82,7 @@ export interface ClaudeManagedConversationConfig {
   personalAgentTurnStatusHandler?: (
     status: "complete" | "awaiting_owner"
   ) => Promise<void>;
+  personalAgentPhaseHandler?: (phase: PersonalAgentPhase) => Promise<void>;
   personalAgentIntentHandler?: (signal: PersonalAgentIntentSignal) => Promise<{
     jobId: string;
     attemptId: string;
@@ -1092,8 +1102,11 @@ export class ClaudeManagedConversationSession {
       const statusHandler = agentToolsEnabled
         ? this.config.personalAgentTurnStatusHandler
         : undefined;
+      const phaseHandler = agentToolsEnabled
+        ? this.config.personalAgentPhaseHandler
+        : undefined;
       const intentServer =
-        intentHandler || statusHandler
+        intentHandler || statusHandler || phaseHandler
           ? createSdkMcpServer({
               name: "koed_agent_assignment",
               version: "1.0.0",
@@ -1159,6 +1172,36 @@ export class ClaudeManagedConversationSession {
                         }
                       )
                     ]
+                  : []),
+                ...(phaseHandler
+                  ? [
+                      tool(
+                        PERSONAL_AGENT_PHASE_TOOL_NAME,
+                        PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
+                        personalAgentPhaseToolInputSchema.shape,
+                        async (input) => {
+                          if (
+                            !intentTurnActive ||
+                            abortController.signal.aborted ||
+                            this.closed
+                          ) {
+                            throw new Error(
+                              "Agent phase belongs to an inactive Claude turn"
+                            );
+                          }
+                          const phase = parsePersonalAgentPhaseToolInput(input);
+                          await phaseHandler(phase);
+                          return {
+                            content: [
+                              {
+                                type: "text",
+                                text: JSON.stringify({ recorded: true, phase })
+                              }
+                            ]
+                          };
+                        }
+                      )
+                    ]
                   : [])
               ]
             })
@@ -1198,6 +1241,9 @@ export class ClaudeManagedConversationSession {
               : []),
             ...(statusHandler
               ? ["mcp__koed_agent_assignment__koed_agent_turn_status"]
+              : []),
+            ...(phaseHandler
+              ? ["mcp__koed_agent_assignment__koed_job_phase"]
               : [])
           ],
           mcpServers: {

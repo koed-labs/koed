@@ -27,6 +27,12 @@ export {
   parsePersonalAgentTurnStatusToolInput,
   personalAgentTurnStatusToolInputSchema
 } from "./personal-agent-intent-tool.js";
+export {
+  PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
+  PERSONAL_AGENT_PHASE_TOOL_NAME,
+  parsePersonalAgentPhaseToolInput,
+  personalAgentPhaseToolInputSchema
+} from "./personal-agent-phase-tool.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
   aiClientInstanceRegistryPath,

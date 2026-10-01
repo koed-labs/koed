@@ -63,6 +63,9 @@ import {
   PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
   PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
   parsePersonalAgentTurnStatusToolInput,
+  PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
+  PERSONAL_AGENT_PHASE_TOOL_NAME,
+  parsePersonalAgentPhaseToolInput,
   MemoryApiClient,
   MemoryApiError,
   prepareManagedClaudeHome,
@@ -97,6 +100,7 @@ import {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   personalAgentExecutionContextSchema,
   personalAgentIntentSignalJsonSchema,
+  personalAgentPhaseJsonSchema,
   personalAgentTurnStatusJsonSchema,
   verifyManagedConversationForkManifest,
   verifyManagedConversationHandoffCertificate,
@@ -107,6 +111,7 @@ import {
   type ManagedConversationFileOperationResult,
   type ManagedConversationTargetReadinessEvidence,
   type PersonalAgentIntentSignal,
+  type PersonalAgentPhase,
   type PersonalAgentTurnStatus
 } from "@koed/shared";
 import type { Logger } from "pino";
@@ -2067,6 +2072,42 @@ export const createManagedConversationService = (options: {
     personalAgentTurnStatusByCommand.set(command.id, status);
   };
 
+  const recordPersonalAgentPhase = async (
+    command: ClaimedManagedConversationCommand,
+    providerTurnId: string,
+    phase: PersonalAgentPhase
+  ): Promise<void> => {
+    if (isSummaryDraftCommand(command)) {
+      throw managedConversationError(
+        "PersonalAgentSummaryDraftCannotSetPhaseError"
+      );
+    }
+    if (!personalAgentJobFor(command)) {
+      throw managedConversationError("PersonalAgentJobRequiredError");
+    }
+    const attempt = await runningPersonalAgentAttempt(command);
+    if (!attempt) {
+      throw managedConversationError(
+        "PersonalAgentAttemptRecoveryPendingError"
+      );
+    }
+    await options.repository.recordPersonalAgentPhaseForManagedCommand(
+      { userId: command.ownerUserId },
+      {
+        commandId: command.id,
+        executionId: command.executionId,
+        executionGeneration: command.executionGeneration,
+        leaseToken: command.leaseToken!,
+        runnerId,
+        deviceId: options.deviceId,
+        deploymentId: options.deploymentId,
+        providerTurnId,
+        attemptId: attempt.attemptId,
+        phase
+      }
+    );
+  };
+
   const personalAgentTranscriptOutputForTurn = async (
     command: PersonalAgentCommandContext,
     turnId: string
@@ -2530,6 +2571,11 @@ export const createManagedConversationService = (options: {
             name: PERSONAL_AGENT_TURN_STATUS_TOOL_NAME,
             description: PERSONAL_AGENT_TURN_STATUS_TOOL_DESCRIPTION,
             inputSchema: personalAgentTurnStatusJsonSchema
+          },
+          {
+            name: PERSONAL_AGENT_PHASE_TOOL_NAME,
+            description: PERSONAL_AGENT_PHASE_TOOL_DESCRIPTION,
+            inputSchema: personalAgentPhaseJsonSchema
           }
         ],
         dynamicToolHandler: async (call) => {
@@ -2561,6 +2607,18 @@ export const createManagedConversationService = (options: {
               return {
                 success: true,
                 text: JSON.stringify({ recorded: true, status })
+              };
+            }
+            if (call.tool === PERSONAL_AGENT_PHASE_TOOL_NAME) {
+              const phase = parsePersonalAgentPhaseToolInput(call.arguments);
+              await recordPersonalAgentPhase(
+                active.command,
+                active.providerTurnId,
+                phase
+              );
+              return {
+                success: true,
+                text: JSON.stringify({ recorded: true, phase })
               };
             }
             throw new Error("Unknown managed Personal Agent tool");
@@ -2836,6 +2894,14 @@ export const createManagedConversationService = (options: {
           status
         );
       },
+      personalAgentPhaseHandler: async (phase) => {
+        const active = personalAgentSignalCommand(execution.id, "claude");
+        await recordPersonalAgentPhase(
+          active.command,
+          active.providerTurnId,
+          phase
+        );
+      },
       canUseTool: async (toolName, input, callback) => {
         const activeCommand = activePersonalAgentCommandByExecution.get(
           execution.id
@@ -3082,6 +3148,14 @@ export const createManagedConversationService = (options: {
           active.command,
           active.providerTurnId,
           status
+        );
+      },
+      personalAgentPhaseHandler: async (phase) => {
+        const active = personalAgentSignalCommand(execution.id, "pi");
+        await recordPersonalAgentPhase(
+          active.command,
+          active.providerTurnId,
+          phase
         );
       },
       onUiRequest: async (request, signal) => {

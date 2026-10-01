@@ -82,6 +82,7 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "getPersonalAgentExecutionJob"
   | "recordPersonalAgentIntentForManagedCommand"
   | "recordPersonalAgentTurnStatusForManagedCommand"
+  | "recordPersonalAgentPhaseForManagedCommand"
   | "listPersonalAgentExecutionJobs"
   | "listPersonalAgentExecutionAttempts"
   | "createPersonalAgentExecutionAttempt"
@@ -266,6 +267,23 @@ export const createManagedConversationAuthorityClient = (options: {
           runnerId: input.runnerId,
           providerTurnId: input.providerTurnId,
           status: input.status
+        }
+      );
+    },
+
+    async recordPersonalAgentPhaseForManagedCommand(_actor, input) {
+      const { commandId } = input;
+      await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(commandId)}/personal-agent-phase`,
+        {
+          executionId: input.executionId,
+          executionGeneration: input.executionGeneration,
+          leaseToken: input.leaseToken,
+          runnerId: input.runnerId,
+          providerTurnId: input.providerTurnId,
+          attemptId: input.attemptId,
+          phase: input.phase
         }
       );
     },

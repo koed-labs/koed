@@ -15,6 +15,7 @@ import {
   type ManagedConversationFileOperationResult,
   type PersonalAgentExecutionContext,
   type PersonalAgentIntentSignal,
+  type PersonalAgentPhase,
   type PersonalAgentTurnStatus,
   type PersonalMemoryTurnContext
 } from "@koed/shared";
@@ -346,6 +347,21 @@ export interface ManagedConversationRepository {
       deploymentId: string;
       providerTurnId: string;
       status: PersonalAgentTurnStatus;
+    }
+  ): Promise<void>;
+  recordPersonalAgentPhaseForManagedCommand(
+    actor: ActorContext,
+    input: {
+      commandId: string;
+      executionId: string;
+      executionGeneration: number;
+      leaseToken: string;
+      runnerId: string;
+      deviceId: string;
+      deploymentId: string;
+      providerTurnId: string;
+      attemptId: string;
+      phase: PersonalAgentPhase;
     }
   ): Promise<void>;
   /** Persist a Team acceptance inside the caller's transaction only. */
@@ -2629,6 +2645,268 @@ export const createManagedConversationRepository = (
           executionId: execution.id,
           mutationId: `managed-agent-turn-status:${command.id}:${input.providerTurnId}`
         });
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async recordPersonalAgentPhaseForManagedCommand(actor, input) {
+      if (
+        !UUID_PATTERN.test(input.commandId) ||
+        !UUID_PATTERN.test(input.executionId) ||
+        !UUID_PATTERN.test(input.attemptId) ||
+        !Number.isSafeInteger(input.executionGeneration) ||
+        input.executionGeneration < 1 ||
+        !input.leaseToken.trim() ||
+        !input.runnerId.trim() ||
+        !UUID_PATTERN.test(input.deviceId) ||
+        !UUID_PATTERN.test(input.deploymentId) ||
+        !input.providerTurnId.trim() ||
+        input.providerTurnId.length > 512 ||
+        !["working", "checking"].includes(input.phase)
+      ) {
+        throw statusError("Personal Agent phase is invalid", 400);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const commandResult = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS}
+             from managed_conversation_commands
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.commandId]
+        );
+        const command = commandResult.rows[0];
+        const executionResult = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS}
+             from managed_conversation_executions
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, input.executionId]
+        );
+        const execution = executionResult.rows[0];
+        if (
+          !command ||
+          !execution ||
+          command.execution_id !== input.executionId ||
+          command.command_kind !== "prompt" ||
+          command.state !== "dispatching" ||
+          command.execution_generation !== input.executionGeneration ||
+          command.lease_token !== input.leaseToken ||
+          !command.lease_expires_at ||
+          command.lease_expires_at.getTime() <= Date.now() ||
+          execution.execution_generation !== input.executionGeneration ||
+          execution.state !== "running" ||
+          execution.runner_id !== input.runnerId ||
+          execution.runner_device_id !== input.deviceId ||
+          execution.runner_deployment_id !== input.deploymentId ||
+          !execution.runner_lease_expires_at ||
+          new Date(execution.runner_lease_expires_at).getTime() <= Date.now()
+        ) {
+          throw statusError("Personal Agent phase is not current", 409);
+        }
+        const authorityClock = await client.query<{ now: Date }>(
+          "select clock_timestamp() as now"
+        );
+        const authorityNow = authorityClock.rows[0]!.now.getTime();
+        if (
+          command.lease_expires_at!.getTime() <= authorityNow ||
+          new Date(execution.runner_lease_expires_at!).getTime() <= authorityNow
+        ) {
+          throw statusError("Personal Agent phase lease has expired", 409);
+        }
+        const payload = await decryptPayload(command);
+        const agent = payload?.personalAgent;
+        if (
+          payload?.serverPurpose === "team_summary_draft" ||
+          !agent ||
+          typeof agent !== "object" ||
+          !("jobId" in agent) ||
+          typeof agent.jobId !== "string" ||
+          !UUID_PATTERN.test(agent.jobId)
+        ) {
+          throw statusError("Personal Agent phase has no assigned Job", 409);
+        }
+        const priorProviderTurn = payload?.personalAgentPhaseProviderTurnId;
+        if (
+          priorProviderTurn !== undefined &&
+          priorProviderTurn !== input.providerTurnId
+        ) {
+          throw statusError(
+            "Personal Agent phase is from another provider turn",
+            409
+          );
+        }
+
+        const jobResult = await client.query<{
+          state: string;
+          last_attempt_id: string | null;
+          conversation_id: string;
+          command_id: string | null;
+        }>(
+          `select state, last_attempt_id, conversation_id, command_id
+             from personal_agent_execution_jobs
+            where owner_user_id = $1 and id = $2
+            for update`,
+          [actor.userId, agent.jobId]
+        );
+        const job = jobResult.rows[0];
+        const attemptResult = await client.query<{
+          id: string;
+          attempt_number: number;
+          command_id: string | null;
+          managed_execution_id: string | null;
+          managed_execution_generation: number | null;
+          status: string;
+          phase: string;
+          provider_turn_id: string | null;
+        }>(
+          `select id, attempt_number, command_id, managed_execution_id,
+                  managed_execution_generation, status, phase, provider_turn_id
+             from personal_agent_execution_attempts
+            where owner_user_id = $1 and job_id = $2 and id = $3
+            for update`,
+          [actor.userId, agent.jobId, input.attemptId]
+        );
+        const attempt = attemptResult.rows[0];
+        if (
+          !job ||
+          !attempt ||
+          job.state !== "running" ||
+          job.last_attempt_id !== input.attemptId ||
+          job.command_id !== input.commandId ||
+          job.conversation_id !== input.executionId ||
+          attempt.command_id !== input.commandId ||
+          attempt.managed_execution_id !== input.executionId ||
+          attempt.managed_execution_generation !== input.executionGeneration ||
+          attempt.status !== "running" ||
+          (attempt.provider_turn_id !== null &&
+            attempt.provider_turn_id !== input.providerTurnId)
+        ) {
+          throw statusError(
+            "Personal Agent phase is not bound to the active attempt",
+            409
+          );
+        }
+
+        if (
+          attempt.phase !== input.phase ||
+          attempt.provider_turn_id === null
+        ) {
+          const observed = await client.query<{ observed_at: Date }>(
+            `update personal_agent_execution_attempts
+                set phase = $4, phase_observed_at = clock_timestamp(),
+                    provider_turn_id = coalesce(provider_turn_id, $5),
+                    updated_at = clock_timestamp()
+              where owner_user_id = $1 and job_id = $2 and id = $3
+                and status = 'running'
+                and exists(
+                  select 1 from managed_conversation_commands c
+                   where c.owner_user_id = $1 and c.id = $6
+                     and c.state = 'dispatching' and c.lease_token = $7
+                     and c.lease_expires_at > clock_timestamp()
+                )
+                and exists(
+                  select 1 from managed_conversation_executions e
+                   where e.owner_user_id = $1 and e.id = $8
+                     and e.state = 'running'
+                     and e.execution_generation = $9
+                     and e.runner_id = $10 and e.runner_device_id = $11
+                     and e.runner_deployment_id = $12
+                     and e.runner_lease_expires_at > clock_timestamp()
+                )
+              returning phase_observed_at as observed_at`,
+            [
+              actor.userId,
+              agent.jobId,
+              input.attemptId,
+              input.phase,
+              input.providerTurnId,
+              input.commandId,
+              input.leaseToken,
+              input.executionId,
+              input.executionGeneration,
+              input.runnerId,
+              input.deviceId,
+              input.deploymentId
+            ]
+          );
+          if (!observed.rows[0]) {
+            throw statusError(
+              "Personal Agent phase attempt is no longer running",
+              409
+            );
+          }
+          const sequence = await client.query<{ sequence: number }>(
+            `select coalesce(max(sequence), 0) + 1 as sequence
+               from personal_agent_execution_job_events
+              where owner_user_id = $1 and job_id = $2`,
+            [actor.userId, agent.jobId]
+          );
+          await client.query(
+            `insert into personal_agent_execution_job_events
+               (owner_user_id, job_id, sequence, event_id,
+                execution_generation, event_type, payload, observed_at)
+             values ($1, $2, $3, $4, $5, 'attempt_phase_changed', $6::jsonb, $7)`,
+            [
+              actor.userId,
+              agent.jobId,
+              sequence.rows[0]!.sequence,
+              `attempt:${input.attemptId}:phase:${input.phase}:${observed.rows[0].observed_at.toISOString()}`,
+              input.executionGeneration,
+              JSON.stringify({
+                attemptId: input.attemptId,
+                attemptNumber: attempt.attempt_number,
+                phase: input.phase
+              }),
+              observed.rows[0].observed_at
+            ]
+          );
+          await client.query(
+            `update personal_agent_execution_jobs
+                set version = version + 1, last_observed_at = $3, updated_at = now()
+              where owner_user_id = $1 and id = $2 and state = 'running'
+                and last_attempt_id = $4`,
+            [
+              actor.userId,
+              agent.jobId,
+              observed.rows[0].observed_at,
+              input.attemptId
+            ]
+          );
+          await client.query(
+            `update personal_agent_team_job_publications
+                set version = version + 1, updated_at = clock_timestamp()
+              where owner_user_id = $1 and job_id = $2 and state = 'active'`,
+            [actor.userId, agent.jobId]
+          );
+        }
+        if (priorProviderTurn === undefined) {
+          const encryptedPayload = await encryptCommandPayload({
+            ownerUserId: actor.userId,
+            executionId: execution.id,
+            commandId: command.id,
+            objectClass: "managed_conversation_prompt",
+            value: {
+              ...(payload ?? {}),
+              personalAgentPhaseProviderTurnId: input.providerTurnId
+            }
+          });
+          const pinned = await client.query(
+            `update managed_conversation_commands
+                set encrypted_payload = $3::jsonb, updated_at = now()
+              where owner_user_id = $1 and id = $2 and state = 'dispatching'
+                and lease_token = $4 and lease_expires_at > clock_timestamp()`,
+            [actor.userId, command.id, encryptedPayload, input.leaseToken]
+          );
+          if (pinned.rowCount !== 1) {
+            throw statusError("Personal Agent phase lease has expired", 409);
+          }
+        }
         await client.query("commit");
       } catch (error) {
         await client.query("rollback");

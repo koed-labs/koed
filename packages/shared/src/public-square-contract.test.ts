@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  publicSquareIdleAgentSchema,
   publicSquarePageSchema,
   publicSquarePublicationSchema,
   teamProjectMemberConnectionInputSchema
@@ -41,6 +42,13 @@ describe("Public Square contracts", () => {
     expect(publicSquarePublicationSchema.safeParse(safeCard).success).toBe(
       true
     );
+    expect(publicSquarePublicationSchema.parse(safeCard)).toMatchObject({
+      startedAt: null,
+      waitingOn: null,
+      phase: null,
+      phaseObservedAt: null,
+      ownerExecutionId: null
+    });
     for (const field of [
       "goal",
       "prompt",
@@ -89,6 +97,41 @@ describe("Public Square contracts", () => {
       teamProjectMemberConnectionInputSchema.safeParse({
         expectedVersion: 0,
         localProjectId: `project:${ids.project}`
+      }).success
+    ).toBe(true);
+  });
+
+  it("allows only explicitly shared Agent identity and owner fields for idle offers", () => {
+    const safeIdleAgent = {
+      agentId: ids.agent,
+      agentName: "Research Agent",
+      ownerId: ids.owner,
+      ownerName: "Alex"
+    };
+    expect(publicSquareIdleAgentSchema.safeParse(safeIdleAgent).success).toBe(
+      true
+    );
+    expect(
+      publicSquareIdleAgentSchema.safeParse({
+        ...safeIdleAgent,
+        soul: "private instructions"
+      }).success
+    ).toBe(false);
+  });
+
+  it("does not silently truncate complete Team-scoped idle Agent lists", () => {
+    expect(
+      publicSquarePageSchema.safeParse({
+        teamId: ids.team,
+        items: [],
+        idleAgents: Array.from({ length: 101 }, () => ({
+          agentId: ids.agent,
+          agentName: "Research Agent",
+          ownerId: ids.owner,
+          ownerName: "Alex"
+        })),
+        nextCursor: null,
+        serverTime: "2026-09-30T12:03:00.000Z"
       }).success
     ).toBe(true);
   });

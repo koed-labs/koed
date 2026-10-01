@@ -9,7 +9,9 @@ export default function managedAgentTools(pi, environment = process.env) {
       label:
         name === "koed_agent_intent"
           ? "Record Job intent"
-          : "Record Job outcome",
+          : name === "koed_agent_turn_status"
+            ? "Record Job outcome"
+            : "Record Job phase",
       description,
       parameters,
       async execute(_id, input, signal, _update, context) {
@@ -67,5 +69,18 @@ export default function managedAgentTools(pi, environment = process.env) {
       },
       "koed_agent_turn_status",
       (input) => ({ status: input.status })
+    );
+  if (environment.KOED_MANAGED_AGENT_PHASE_TOOL === "1")
+    register(
+      "koed_job_phase",
+      "Report working while implementing or taking action, checking while verifying or reviewing results, and working again if returning to implementation. This reports progress only; it does not complete the Job or request an owner's answer.",
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["phase"],
+        properties: { phase: { type: "string", enum: ["working", "checking"] } }
+      },
+      "koed_job_phase",
+      (input) => ({ phase: input.phase })
     );
 }

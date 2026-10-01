@@ -5,6 +5,7 @@ import pg from "pg";
 import { createCollaborationRepository } from "../src/collaboration-repository.js";
 import { createDbPool } from "../src/connection.js";
 import { runDbMigrations } from "../src/migrate.js";
+import { createManagedConversationRepository } from "../src/managed-conversation-repository.js";
 import { createPublicSquareRepository } from "../src/public-square-repository.js";
 
 const databaseUrl =
@@ -78,6 +79,7 @@ describeDb("Public Square repository", () => {
     localProjectId: string;
     state?: "queued" | "running" | "succeeded";
     executionId?: string;
+    agentId?: string;
   }) => {
     const executionId = input.executionId ?? randomUUID();
     const jobId = randomUUID();
@@ -98,15 +100,17 @@ describeDb("Public Square repository", () => {
           `thread-${randomUUID()}`
         ]
       );
-    const agentId = randomUUID();
-    await pool.query(
-      `insert into personal_agent_identities(id,owner_user_id,name,role,default_provider,default_model,current_version,creation_request_id,creation_request_fingerprint) values($1,$2,'Private Agent','Private role','codex','test-model',1,$3,$4)`,
-      [agentId, input.ownerId, randomUUID(), "b".repeat(64)]
-    );
-    await pool.query(
-      `insert into personal_agent_identity_versions(agent_id,owner_user_id,version,name,role,default_provider,default_model,soul_instructions,instruction_source,created_by_user_id,request_id,request_fingerprint) values($1,$2,1,'Private Agent','Private role','codex','test-model','[koed encrypted personal agent soul]','custom',$2,$3,$4)`,
-      [agentId, input.ownerId, randomUUID(), "c".repeat(64)]
-    );
+    const agentId = input.agentId ?? randomUUID();
+    if (!input.agentId) {
+      await pool.query(
+        `insert into personal_agent_identities(id,owner_user_id,name,role,default_provider,default_model,current_version,creation_request_id,creation_request_fingerprint) values($1,$2,'Private Agent','Private role','codex','test-model',1,$3,$4)`,
+        [agentId, input.ownerId, randomUUID(), "b".repeat(64)]
+      );
+      await pool.query(
+        `insert into personal_agent_identity_versions(agent_id,owner_user_id,version,name,role,default_provider,default_model,soul_instructions,instruction_source,created_by_user_id,request_id,request_fingerprint) values($1,$2,1,'Private Agent','Private role','codex','test-model','[koed encrypted personal agent soul]','custom',$2,$3,$4)`,
+        [agentId, input.ownerId, randomUUID(), "c".repeat(64)]
+      );
+    }
     await pool.query(
       `insert into personal_agent_execution_jobs(id,owner_user_id,conversation_id,attribution_kind,agent_id,agent_version,state,project_id,title) values($1,$2,$3,'agent',$4,1,$5,$6,'Private Job Title')`,
       [
@@ -118,8 +122,37 @@ describeDb("Public Square repository", () => {
         input.localProjectId
       ]
     );
-    return { executionId, jobId };
+    return { executionId, jobId, agentId };
   };
+
+  const createOffer = (teamId: string, ownerId: string, agentId: string) =>
+    pool.query(
+      `insert into team_agent_offers(team_id,owner_user_id,agent_id,enabled) values($1,$2,$3,true)`,
+      [teamId, ownerId, agentId]
+    );
+
+  const insertAttempt = async (input: {
+    ownerId: string;
+    jobId: string;
+    attemptNumber: number;
+    startedAt: Date;
+    phase?: "working" | "checking";
+    phaseObservedAt?: Date;
+  }) =>
+    pool.query(
+      `insert into personal_agent_execution_attempts(
+        owner_user_id,job_id,attempt_number,attribution_kind,status,outcome,
+        started_at,completed_at,phase,phase_observed_at
+      ) values($1,$2,$3,'legacy','succeeded','succeeded',$4::timestamptz,$4::timestamptz,$5::text,coalesce($6::timestamptz,$4::timestamptz))`,
+      [
+        input.ownerId,
+        input.jobId,
+        input.attemptNumber,
+        input.startedAt,
+        input.phase ?? "working",
+        input.phaseObservedAt ?? null
+      ]
+    );
 
   it("publishes only connected future Jobs, snapshots departure, and ignores the insert/departure race", async () => {
     const fixture = await createFixture();
@@ -148,6 +181,12 @@ describeDb("Public Square repository", () => {
       ownerLeftTeam: false,
       sharedBrief: null
     });
+    expect(listed?.items[0]?.ownerExecutionId).toBeNull();
+    const ownerView = await publicSquare.listPublicSquare(
+      actor(fixture.ownerId),
+      { teamId: fixture.teamId, limit: 50 }
+    );
+    expect(ownerView?.items[0]?.ownerExecutionId).toBe(first.executionId);
     expect(JSON.stringify(listed?.items[0])).not.toContain("Private Job Title");
 
     await pool.query(
@@ -201,6 +240,7 @@ describeDb("Public Square repository", () => {
       status: "succeeded",
       canRemoveRetainedBrief: true
     });
+    expect(frozen?.items[0]?.ownerExecutionId).toBeNull();
     await pool.query(
       `update personal_agent_execution_jobs set state='failed',updated_at=now() where id=$1`,
       [first.jobId]
@@ -250,6 +290,498 @@ describeDb("Public Square repository", () => {
     expect(retainedChannelHistory.rows[0]?.message_count).toBe(1);
   });
 
+  it("reports the first real attempt start and freezes it at owner departure", async () => {
+    const fixture = await createFixture();
+    const attempted = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    const firstStart = new Date("2026-09-30T10:00:00.000Z");
+    const retryStart = new Date("2026-09-30T10:05:00.000Z");
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: attempted.jobId,
+      attemptNumber: 1,
+      startedAt: firstStart
+    });
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: attempted.jobId,
+      attemptNumber: 2,
+      startedAt: retryStart
+    });
+    await pool.query(
+      `update personal_agent_execution_jobs set state='succeeded',updated_at=now() where id=$1`,
+      [attempted.jobId]
+    );
+    const neverAttempted = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "queued"
+    });
+
+    let page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(
+      page?.items.find((item) => item.jobId === attempted.jobId)
+    ).toMatchObject({
+      startedAt: firstStart.toISOString(),
+      status: "succeeded"
+    });
+    expect(
+      page?.items.find((item) => item.jobId === neverAttempted.jobId)
+    ).toMatchObject({ startedAt: null });
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerId]
+    );
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: attempted.jobId,
+      attemptNumber: 3,
+      startedAt: new Date("2026-09-30T10:10:00.000Z")
+    });
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: neverAttempted.jobId,
+      attemptNumber: 1,
+      startedAt: new Date("2026-09-30T10:12:00.000Z")
+    });
+    page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(
+      page?.items.find((item) => item.jobId === attempted.jobId)
+    ).toMatchObject({
+      startedAt: firstStart.toISOString(),
+      ownerLeftTeam: true,
+      status: "succeeded"
+    });
+    expect(
+      page?.items.find((item) => item.jobId === neverAttempted.jobId)
+    ).toMatchObject({ startedAt: null, ownerLeftTeam: true });
+  });
+
+  it("projects the latest explicit Job phase and freezes it on owner departure", async () => {
+    const fixture = await createFixture();
+    const job = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    const startedAt = new Date("2026-09-30T10:00:00.000Z");
+    const checkingAt = new Date("2026-09-30T10:03:00.000Z");
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: job.jobId,
+      attemptNumber: 1,
+      startedAt,
+      phase: "working"
+    });
+    await insertAttempt({
+      ownerId: fixture.ownerId,
+      jobId: job.jobId,
+      attemptNumber: 2,
+      startedAt: new Date("2026-09-30T10:02:00.000Z"),
+      phase: "checking",
+      phaseObservedAt: checkingAt
+    });
+    let page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      phase: "checking",
+      phaseObservedAt: checkingAt.toISOString()
+    });
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerId]
+    );
+    await pool.query(
+      `update personal_agent_execution_attempts set phase='working',phase_observed_at=now() where job_id=$1 and attempt_number=2`,
+      [job.jobId]
+    );
+    page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      phase: "checking",
+      phaseObservedAt: checkingAt.toISOString(),
+      ownerLeftTeam: true
+    });
+  });
+
+  it("fences live phase writes to the current attempt and preserves the frozen projection", async () => {
+    const fixture = await createFixture();
+    const managedRepository = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = `phase-runner-${randomUUID()}`;
+    const actorForOwner = actor(fixture.ownerId);
+    const managed = await managedRepository.createManagedConversation(
+      actorForOwner,
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "test-model",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: fixture.localProjectId,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await managedRepository.claimManagedConversationCommands({
+      ownerUserId: fixture.ownerId,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await managedRepository.bindManagedConversationRuntime(
+      actorForOwner,
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await managedRepository.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const prompt = await managedRepository.enqueueManagedConversationPrompt(
+      actorForOwner,
+      {
+        executionId: running.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "Run an assigned task"
+      }
+    );
+    const [claimedPrompt] =
+      await managedRepository.claimManagedConversationCommands({
+        ownerUserId: fixture.ownerId,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimedPrompt?.id).toBe(prompt.id);
+
+    const job = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running",
+      executionId: running.id
+    });
+    const attemptId = randomUUID();
+    const startedAt = new Date();
+    await pool.query(
+      `update personal_agent_execution_jobs
+          set command_id=$2,last_attempt_id=$3,attempts_started=1
+        where id=$1`,
+      [job.jobId, prompt.id, attemptId]
+    );
+    await pool.query(
+      `insert into personal_agent_execution_attempts(
+        id,owner_user_id,job_id,command_id,attempt_number,attribution_kind,
+        agent_id,agent_version,provider,model,ai_client_instance_id,
+        permission_mode,managed_execution_id,managed_execution_generation,
+        status,started_at,phase,phase_observed_at
+      ) values($1,$2,$3,$4,1,'agent',$5,1,'codex','test-model','codex.default',
+        'supervised',$6,1,'running',$7,'working',$7)`,
+      [
+        attemptId,
+        fixture.ownerId,
+        job.jobId,
+        prompt.id,
+        job.agentId,
+        running.id,
+        startedAt
+      ]
+    );
+    await pool.query(
+      `insert into personal_agent_execution_job_events(
+        owner_user_id,job_id,sequence,event_id,execution_generation,event_type,payload,observed_at
+      ) values($1,$2,1,$3,1,'attempt_started',$4::jsonb,$5)`,
+      [
+        fixture.ownerId,
+        job.jobId,
+        `attempt:${attemptId}:started`,
+        JSON.stringify({ attemptId, attemptNumber: 1 }),
+        startedAt
+      ]
+    );
+    const encryptedPayload = await provider.encrypt({
+      plaintext: JSON.stringify({ personalAgent: { jobId: job.jobId } }),
+      scope: {
+        tenantId: fixture.ownerId,
+        objectClass: "managed_conversation_prompt"
+      },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: prompt.id
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: {
+        ownerUserId: fixture.ownerId,
+        executionId: running.id,
+        commandId: prompt.id
+      }
+    });
+    await pool.query(
+      `update managed_conversation_commands set encrypted_payload=$2::jsonb where id=$1`,
+      [prompt.id, encryptedPayload]
+    );
+    const signal = {
+      commandId: prompt.id,
+      executionId: running.id,
+      executionGeneration: 1,
+      leaseToken: claimedPrompt!.leaseToken!,
+      runnerId,
+      deviceId,
+      deploymentId,
+      providerTurnId: "codex-provider-turn-1",
+      attemptId,
+      phase: "checking" as const
+    };
+    await managedRepository.recordPersonalAgentPhaseForManagedCommand(
+      actorForOwner,
+      signal
+    );
+    const phase = await pool.query<{
+      phase: string;
+      phase_observed_at: Date;
+      provider_turn_id: string | null;
+    }>(
+      `select phase,phase_observed_at,provider_turn_id
+         from personal_agent_execution_attempts where id=$1`,
+      [attemptId]
+    );
+    expect(phase.rows[0]).toMatchObject({
+      phase: "checking",
+      provider_turn_id: signal.providerTurnId
+    });
+    const adminPage = await publicSquare.listPublicSquare(
+      actor(fixture.adminId),
+      { teamId: fixture.teamId, limit: 50 }
+    );
+    expect(
+      adminPage?.items.find((item) => item.jobId === job.jobId)
+    ).toMatchObject({
+      phase: "checking",
+      phaseObservedAt: phase.rows[0]!.phase_observed_at.toISOString()
+    });
+
+    await expect(
+      managedRepository.recordPersonalAgentPhaseForManagedCommand(
+        actor(fixture.adminId),
+        signal
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      managedRepository.recordPersonalAgentPhaseForManagedCommand(
+        actorForOwner,
+        { ...signal, executionGeneration: 2 }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      managedRepository.recordPersonalAgentPhaseForManagedCommand(
+        actorForOwner,
+        { ...signal, providerTurnId: "codex-provider-turn-2", phase: "working" }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerId]
+    );
+    await managedRepository.recordPersonalAgentPhaseForManagedCommand(
+      actorForOwner,
+      { ...signal, phase: "working" }
+    );
+    const frozenPage = await publicSquare.listPublicSquare(
+      actor(fixture.adminId),
+      { teamId: fixture.teamId, limit: 50 }
+    );
+    expect(
+      frozenPage?.items.find((item) => item.jobId === job.jobId)
+    ).toMatchObject({
+      ownerLeftTeam: true,
+      phase: "checking",
+      phaseObservedAt: phase.rows[0]!.phase_observed_at.toISOString()
+    });
+
+    await pool.query(
+      `update managed_conversation_commands set lease_expires_at=now()-interval '1 second' where id=$1`,
+      [prompt.id]
+    );
+    await expect(
+      managedRepository.recordPersonalAgentPhaseForManagedCommand(
+        actorForOwner,
+        { ...signal, phase: "checking" }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("identifies the owner only for actionable live waits", async () => {
+    const fixture = await createFixture();
+    const job = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    const item = async (
+      kind: "user_input" | "transient_output",
+      providerRequestId: string
+    ) =>
+      pool.query(
+        `insert into managed_conversation_runtime_items(owner_user_id,execution_id,execution_generation,provider_request_id,item_kind,state,request_digest,encrypted_payload)
+         values($1,$2,1,$3,$4,'pending',$5,'{}'::jsonb)`,
+        [
+          fixture.ownerId,
+          job.executionId,
+          providerRequestId,
+          kind,
+          "d".repeat(64)
+        ]
+      );
+    await item("transient_output", `output:${randomUUID()}`);
+    let page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      status: "running",
+      waitingOn: null
+    });
+
+    await item("user_input", `input:${randomUUID()}`);
+    page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      status: "waiting",
+      waitingOn: { userId: fixture.ownerId, name: "Square Owner" }
+    });
+
+    await pool.query(
+      `update managed_conversation_executions set runner_lease_expires_at=now()-interval '1 second' where id=$1`,
+      [job.executionId]
+    );
+    page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      status: "offline",
+      waitingOn: null
+    });
+    await pool.query(
+      `update managed_conversation_executions set runner_lease_expires_at=now()+interval '1 minute' where id=$1`,
+      [job.executionId]
+    );
+
+    await pool.query(
+      `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerId]
+    );
+    page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 50
+    });
+    expect(page?.items[0]).toMatchObject({
+      status: "waiting",
+      ownerLeftTeam: true,
+      waitingOn: null
+    });
+  });
+
+  it("lists only Team-scoped idle offers and excludes current Jobs beyond the visible page", async () => {
+    const fixture = await createFixture();
+    const personalActivity = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: `personal:${randomUUID()}`,
+      state: "running"
+    });
+    await createOffer(
+      fixture.teamId,
+      fixture.ownerId,
+      personalActivity.agentId
+    );
+
+    const olderCurrent = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    await createOffer(fixture.teamId, fixture.ownerId, olderCurrent.agentId);
+    await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+
+    const otherTeamId = (
+      await pool.query<{ id: string }>(
+        `insert into teams(name,entitlement_status) values($1,'active') returning id`,
+        [`Square Other ${randomUUID()}`]
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `insert into team_memberships(team_id,user_id,role,status,accepted_at) values($1,$2,'member','enabled',now()),($1,$3,'admin','enabled',now())`,
+      [otherTeamId, fixture.ownerId, fixture.adminId]
+    );
+    await createOffer(otherTeamId, fixture.ownerId, olderCurrent.agentId);
+
+    const firstTeamPage = await publicSquare.listPublicSquare(
+      actor(fixture.adminId),
+      { teamId: fixture.teamId, limit: 1 }
+    );
+    expect(firstTeamPage?.items).toHaveLength(1);
+    expect(firstTeamPage?.nextCursor).toBeTruthy();
+    expect(firstTeamPage?.idleAgents).toContainEqual({
+      agentId: personalActivity.agentId,
+      agentName: "Private Agent",
+      ownerId: fixture.ownerId,
+      ownerName: "Square Owner"
+    });
+    expect(
+      firstTeamPage?.idleAgents.some(
+        (agent) => agent.agentId === olderCurrent.agentId
+      )
+    ).toBe(false);
+
+    const secondTeamPage = await publicSquare.listPublicSquare(
+      actor(fixture.adminId),
+      { teamId: otherTeamId, limit: 1 }
+    );
+    expect(secondTeamPage?.items).toEqual([]);
+    expect(
+      secondTeamPage?.idleAgents.some(
+        (agent) => agent.agentId === olderCurrent.agentId
+      )
+    ).toBe(true);
+  });
+
   it("keeps current activity ahead of paginated terminal history", async () => {
     const fixture = await createFixture();
     const olderTerminal = await insertJob({
@@ -276,6 +808,42 @@ describeDb("Public Square repository", () => {
     });
     expect(page?.items[0]?.jobId).toBe(current.jobId);
     expect(page?.nextCursor).toBeTruthy();
+  });
+
+  it("keeps an explicit owner wait ahead of terminal Job history", async () => {
+    const fixture = await createFixture();
+    const terminal = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    await pool.query(
+      `update personal_agent_execution_jobs set state='succeeded',created_at=now()-interval '2 days',updated_at=now()-interval '2 days' where id=$1`,
+      [terminal.jobId]
+    );
+    await pool.query(
+      `update personal_agent_team_job_publications set published_at=now()-interval '2 days' where job_id=$1`,
+      [terminal.jobId]
+    );
+    const waiting = await insertJob({
+      ownerId: fixture.ownerId,
+      localProjectId: fixture.localProjectId,
+      state: "running"
+    });
+    await pool.query(
+      `update personal_agent_execution_jobs set state='waiting' where id=$1`,
+      [waiting.jobId]
+    );
+
+    const page = await publicSquare.listPublicSquare(actor(fixture.adminId), {
+      teamId: fixture.teamId,
+      limit: 1
+    });
+    expect(page?.items[0]).toMatchObject({
+      jobId: waiting.jobId,
+      status: "waiting",
+      waitingOn: { userId: fixture.ownerId, name: "Square Owner" }
+    });
   });
 
   it("rejects the no-Project sentinel as a member connection", async () => {

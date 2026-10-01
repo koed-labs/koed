@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Clock3,
   LoaderCircle,
+  Lock,
   RotateCw,
   Share2,
   Trash2
@@ -15,9 +16,7 @@ import { initialsFor, teamTone } from "@/lib/identity";
 import {
   publicSquareBriefEditorValue,
   publicSquareConnectableLocalProjects,
-  publicSquareIsCurrent,
   publicSquareNeedsOwnerDraft,
-  publicSquareSortGroups,
   publicSquareStatusLabel,
   publicSquareVisibleBrief,
   publicSquareVisibleItems,
@@ -27,6 +26,8 @@ import {
 } from "@/lib/public-square";
 import { PublicSquareRequestError } from "@/lib/public-square-client";
 import { TeamAgentOffers } from "@/components/TeamAgentOffers";
+import { PublicSquareView } from "@/components/PublicSquareView";
+import { buildPublicSquareModel } from "@/lib/public-square-view";
 import type { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
 
 type FeedState = "loading" | "ready" | "unavailable" | "access-lost";
@@ -34,11 +35,13 @@ type FeedState = "loading" | "ready" | "unavailable" | "access-lost";
 export function PublicSquare({
   teamName,
   teamId,
+  viewerId,
   focusJobId = null,
   authorityKey,
   agentOfferRevision,
   agentRequestsClient,
   items,
+  idleAgents = [],
   projects = [],
   localProjects = [],
   loadingLocalProjects = false,
@@ -47,6 +50,7 @@ export function PublicSquare({
   state,
   error,
   serverTime,
+  refreshing = false,
   hasMore = false,
   loadingMore = false,
   onRetry,
@@ -57,15 +61,24 @@ export function PublicSquare({
   onConnectProject,
   canUnshareProjects = false,
   onUnshareProject,
-  onRequestBriefDraft
+  onRequestBriefDraft,
+  onOpenInbox,
+  onOpenOwnerConversation
 }: {
   teamName: string;
   teamId: string;
+  viewerId: string;
   focusJobId?: string | null;
   authorityKey: string;
   agentOfferRevision: number;
   agentRequestsClient: TeamAgentRequestsClient;
   items: PublicSquarePublication[];
+  idleAgents?: {
+    agentId: string;
+    agentName: string;
+    ownerId: string;
+    ownerName: string;
+  }[];
   projects?: PublicSquareProject[];
   localProjects?: PublicSquareProject[];
   loadingLocalProjects?: boolean;
@@ -75,6 +88,7 @@ export function PublicSquare({
   state: FeedState;
   error?: string | null;
   serverTime?: string;
+  refreshing?: boolean;
   hasMore?: boolean;
   loadingMore?: boolean;
   onRetry?: () => void;
@@ -100,6 +114,8 @@ export function PublicSquare({
   canUnshareProjects?: boolean;
   onUnshareProject?: (teamProjectId: string) => Promise<void> | void;
   onRequestBriefDraft?: (publicationId: string) => Promise<void> | void;
+  onOpenInbox?: () => void;
+  onOpenOwnerConversation?: (item: PublicSquarePublication) => void;
 }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -120,6 +136,7 @@ export function PublicSquare({
   const [rejectedVerificationIds, setRejectedVerificationIds] = useState<
     Set<string>
   >(() => new Set());
+  const [offersExpanded, setOffersExpanded] = useState(false);
   const focusLoad = useRef<{ jobId: string | null; pages: number }>({
     jobId: null,
     pages: 0
@@ -128,36 +145,11 @@ export function PublicSquare({
   const visibleItems = publicSquareVisibleItems(items, unsharedProjectIds);
   const connectableLocalProjects =
     publicSquareConnectableLocalProjects(localProjects);
-  const currentItems = visibleItems.filter(publicSquareIsCurrent);
-  const historicalItems = visibleItems.filter(
-    (item) => !publicSquareIsCurrent(item)
-  );
-  const itemGroups = publicSquareSortGroups(currentItems);
-  const groupsById = new Map(
-    itemGroups.map((group) => [group.projectId, group])
-  );
-  for (const project of projects) {
-    if (unsharedProjectIds.has(project.id)) continue;
-    if (!groupsById.has(project.id))
-      groupsById.set(project.id, {
-        projectId: project.id,
-        projectName: project.name,
-        items: []
-      });
-  }
-  const groups = [...groupsById.values()].sort((left, right) =>
-    left.projectName.localeCompare(right.projectName)
-  );
-  const activeCount = currentItems.length;
-  const workingCount = currentItems.filter((item) =>
-    /^(running|working|in_progress)$/i.test(item.status)
-  ).length;
-  const waitingCount = currentItems.filter((item) =>
-    /^(waiting|blocked|needs_input)$/i.test(item.status)
-  ).length;
-  const offlineCount = currentItems.filter(
-    (item) => item.status === "offline"
-  ).length;
+  const square = buildPublicSquareModel({
+    items: visibleItems,
+    projects: projects.filter((project) => !unsharedProjectIds.has(project.id)),
+    viewerId
+  });
 
   const reconcileRejectedRead = useCallback(
     (
@@ -212,6 +204,8 @@ export function PublicSquare({
       }
       return;
     }
+    // This follows an explicit focusJobId request after the paginated feed resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setExpandedIds((current) =>
       current.has(publication.id)
         ? current
@@ -280,8 +274,185 @@ export function PublicSquare({
     }
   };
 
+  const renderPublication = (item: PublicSquarePublication) => {
+    const ownerExecutionId =
+      (item as PublicSquarePublication & { ownerExecutionId?: string | null })
+        .ownerExecutionId ?? null;
+    return (
+      <div className="space-y-2">
+        <PublicationCard
+          key={item.id}
+          item={item}
+          anchorId={publicSquareJobAnchor(item.jobId)}
+          brief={publicSquareVisibleBrief(item, withdrawnIds)}
+          expanded={expandedIds.has(item.id)}
+          draft={publicSquareBriefEditorValue(
+            item,
+            drafts[item.id],
+            ownerBriefDrafts[item.id]
+          )}
+          pending={pendingIds.has(item.id)}
+          onToggle={() => toggleBrief(item)}
+          onDraftChange={(value) =>
+            setDrafts((current) => ({ ...current, [item.id]: value }))
+          }
+          onShare={() =>
+            perform(item.id, async () => {
+              const brief = publicSquareBriefEditorValue(
+                item,
+                drafts[item.id],
+                ownerBriefDrafts[item.id]
+              ).trim();
+              if (!brief) throw new Error("Add a short brief before sharing.");
+              await onShareBrief?.(item.id, brief, item.version);
+              setWithdrawnIds((current) => {
+                const next = new Set(current);
+                next.delete(item.id);
+                return next;
+              });
+            })
+          }
+          onWithdraw={() => {
+            setRejectedVerificationIds((current) => {
+              const next = new Set(current);
+              next.delete(`brief:${item.id}`);
+              return next;
+            });
+            setWithdrawnIds((current) => new Set(current).add(item.id));
+            void perform(item.id, async () => {
+              try {
+                await onWithdrawBrief?.(item.id, item.version);
+              } catch (failure) {
+                const key = `brief:${item.id}`;
+                setVerificationPendingIds((current) =>
+                  new Set(current).add(key)
+                );
+                if (isExplicitWriteRejection(failure))
+                  setRejectedVerificationIds((current) =>
+                    new Set(current).add(key)
+                  );
+                if (
+                  !(
+                    failure instanceof PublicSquareRequestError &&
+                    [401, 403].includes(failure.status)
+                  )
+                )
+                  void onRetry?.();
+                throw failure;
+              }
+              setDrafts((current) => ({ ...current, [item.id]: "" }));
+            });
+          }}
+          onRemoveRetained={() =>
+            perform(item.id, async () => {
+              try {
+                await onRemoveRetainedBrief?.(item.id, item.version);
+              } catch (failure) {
+                const key = `brief:${item.id}`;
+                setVerificationPendingIds((current) =>
+                  new Set(current).add(key)
+                );
+                if (isExplicitWriteRejection(failure))
+                  setRejectedVerificationIds((current) =>
+                    new Set(current).add(key)
+                  );
+                if (
+                  !(
+                    failure instanceof PublicSquareRequestError &&
+                    [401, 403].includes(failure.status)
+                  )
+                )
+                  void onRetry?.();
+                throw failure;
+              }
+              setWithdrawnIds((current) => new Set(current).add(item.id));
+            })
+          }
+        />
+        {viewerId === item.ownerId &&
+          ownerExecutionId &&
+          onOpenOwnerConversation && (
+            <button
+              type="button"
+              onClick={() => onOpenOwnerConversation(item)}
+              className="rounded-md bg-chip px-3 py-1.5 text-xs font-medium text-chip-foreground hover:bg-chip-hover"
+            >
+              Open workshop
+            </button>
+          )}
+      </div>
+    );
+  };
+
+  const renderProjectActions = (project: PublicSquareProject) => (
+    <ProjectHeading
+      projectId={project.id}
+      projectName={project.name}
+      count={
+        square.jobs.filter((job) => job.publication.projectId === project.id)
+          .length
+      }
+      connection={connections[project.id] ?? null}
+      localProjects={connectableLocalProjects}
+      loadingLocalProjects={loadingLocalProjects}
+      selectedProjectId={
+        selectedProjectIds[project.id] ??
+        connections[project.id]?.localProjectId ??
+        ""
+      }
+      pending={
+        pendingIds.has(`connection:${project.id}`) ||
+        pendingIds.has(`unshare:${project.id}`)
+      }
+      onSelectProject={(localProjectId) =>
+        setSelectedProjectIds((current) => ({
+          ...current,
+          [project.id]: localProjectId
+        }))
+      }
+      onConnect={(localProjectId) =>
+        perform(`connection:${project.id}`, async () => {
+          await onConnectProject?.(
+            project.id,
+            localProjectId,
+            connections[project.id]?.version ?? 0
+          );
+        })
+      }
+      canUnshare={canUnshareProjects}
+      onUnshare={() => {
+        setRejectedVerificationIds((current) => {
+          const next = new Set(current);
+          next.delete(`project:${project.id}`);
+          return next;
+        });
+        setUnsharedProjectIds((current) => new Set(current).add(project.id));
+        void perform(`unshare:${project.id}`, async () => {
+          try {
+            await onUnshareProject?.(project.id);
+          } catch (failure) {
+            const key = `project:${project.id}`;
+            setVerificationPendingIds((current) => new Set(current).add(key));
+            if (isExplicitWriteRejection(failure))
+              setRejectedVerificationIds((current) =>
+                new Set(current).add(key)
+              );
+            if (
+              !(
+                failure instanceof PublicSquareRequestError &&
+                [401, 403].includes(failure.status)
+              )
+            )
+              void onRetry?.();
+            throw failure;
+          }
+        });
+      }}
+    />
+  );
+
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-8 px-4 pb-8 pt-6 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl space-y-5 px-4 pb-8 pt-4 sm:px-6">
       {state === "loading" && (
         <StatusPanel label="Loading Team work…" loading />
       )}
@@ -289,6 +460,7 @@ export function PublicSquare({
         <StatusPanel
           label="Team access changed. Refresh to check your access."
           error
+          onRetry={onRetry}
         />
       )}
       {state === "unavailable" && (
@@ -298,369 +470,55 @@ export function PublicSquare({
           onRetry={onRetry}
         />
       )}
-
       {state === "ready" && (
         <>
-          <TeamAgentOffers
-            teamId={teamId}
-            authorityKey={authorityKey}
-            refreshRevision={agentOfferRevision}
-            client={agentRequestsClient}
-          />
-          <section
-            className="rounded-2xl border border-border/80 bg-surface/40 px-6 py-5"
-            aria-label="Team work summary"
-          >
-            <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
-              <SummaryMetric value={String(workingCount)} label="working" />
-              <SummaryMetric value={String(waitingCount)} label="waiting" />
-              <SummaryMetric value={String(offlineCount)} label="offline" />
-              <p className="ml-auto self-center text-[11px] text-faint">
-                {activeCount} {activeCount === 1 ? "job" : "jobs"} across{" "}
-                {groups.length} {groups.length === 1 ? "project" : "projects"}
-              </p>
-            </div>
-          </section>
-
-          {currentItems.length === 0 &&
-          historicalItems.length === 0 &&
-          groups.length === 0 ? (
-            <section className="rounded-2xl border border-border/70 bg-surface/25 px-6 py-10 text-center">
-              <p className="text-sm text-subtle">
-                No shared work in {teamName} yet
-              </p>
-              <p className="mt-1 text-xs text-faint">
-                Team-authorized work will appear here when an owner shares it.
-              </p>
-            </section>
-          ) : (
-            <>
-              <div className="space-y-8">
-                {groups.map((group) => (
-                  <section key={group.projectId}>
-                    <ProjectHeading
-                      projectId={group.projectId}
-                      projectName={group.projectName}
-                      count={group.items.length}
-                      connection={connections[group.projectId] ?? null}
-                      localProjects={connectableLocalProjects}
-                      loadingLocalProjects={loadingLocalProjects}
-                      selectedProjectId={
-                        selectedProjectIds[group.projectId] ??
-                        connections[group.projectId]?.localProjectId ??
-                        ""
-                      }
-                      pending={
-                        pendingIds.has(`connection:${group.projectId}`) ||
-                        pendingIds.has(`unshare:${group.projectId}`)
-                      }
-                      onSelectProject={(localProjectId) =>
-                        setSelectedProjectIds((current) => ({
-                          ...current,
-                          [group.projectId]: localProjectId
-                        }))
-                      }
-                      onConnect={(localProjectId) =>
-                        perform(`connection:${group.projectId}`, async () => {
-                          await onConnectProject?.(
-                            group.projectId,
-                            localProjectId,
-                            connections[group.projectId]?.version ?? 0
-                          );
-                        })
-                      }
-                      canUnshare={canUnshareProjects}
-                      onUnshare={() => {
-                        setRejectedVerificationIds((current) => {
-                          const next = new Set(current);
-                          next.delete(`project:${group.projectId}`);
-                          return next;
-                        });
-                        setUnsharedProjectIds((current) =>
-                          new Set(current).add(group.projectId)
-                        );
-                        void perform(`unshare:${group.projectId}`, async () => {
-                          try {
-                            await onUnshareProject?.(group.projectId);
-                          } catch (failure) {
-                            const key = `project:${group.projectId}`;
-                            setVerificationPendingIds((current) =>
-                              new Set(current).add(key)
-                            );
-                            if (isExplicitWriteRejection(failure))
-                              setRejectedVerificationIds((current) =>
-                                new Set(current).add(key)
-                              );
-                            if (
-                              !(
-                                failure instanceof PublicSquareRequestError &&
-                                [401, 403].includes(failure.status)
-                              )
-                            )
-                              void onRetry?.();
-                            throw failure;
-                          }
-                        });
-                      }}
-                    />
-                    {group.items.length > 0 && (
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {group.items.map((item) => (
-                          <PublicationCard
-                            key={item.id}
-                            item={item}
-                            anchorId={publicSquareJobAnchor(item.jobId)}
-                            brief={publicSquareVisibleBrief(item, withdrawnIds)}
-                            expanded={expandedIds.has(item.id)}
-                            draft={publicSquareBriefEditorValue(
-                              item,
-                              drafts[item.id],
-                              ownerBriefDrafts[item.id]
-                            )}
-                            pending={pendingIds.has(item.id)}
-                            onToggle={() => toggleBrief(item)}
-                            onDraftChange={(value) =>
-                              setDrafts((current) => ({
-                                ...current,
-                                [item.id]: value
-                              }))
-                            }
-                            onShare={() =>
-                              perform(item.id, async () => {
-                                const brief = publicSquareBriefEditorValue(
-                                  item,
-                                  drafts[item.id],
-                                  ownerBriefDrafts[item.id]
-                                ).trim();
-                                if (!brief)
-                                  throw new Error(
-                                    "Add a short brief before sharing."
-                                  );
-                                await onShareBrief?.(
-                                  item.id,
-                                  brief,
-                                  item.version
-                                );
-                                setWithdrawnIds((current) => {
-                                  const next = new Set(current);
-                                  next.delete(item.id);
-                                  return next;
-                                });
-                              })
-                            }
-                            onWithdraw={() => {
-                              setRejectedVerificationIds((current) => {
-                                const next = new Set(current);
-                                next.delete(`brief:${item.id}`);
-                                return next;
-                              });
-                              setWithdrawnIds((current) =>
-                                new Set(current).add(item.id)
-                              );
-                              void perform(item.id, async () => {
-                                try {
-                                  await onWithdrawBrief?.(
-                                    item.id,
-                                    item.version
-                                  );
-                                } catch (failure) {
-                                  const key = `brief:${item.id}`;
-                                  setVerificationPendingIds((current) =>
-                                    new Set(current).add(key)
-                                  );
-                                  if (isExplicitWriteRejection(failure))
-                                    setRejectedVerificationIds((current) =>
-                                      new Set(current).add(key)
-                                    );
-                                  if (
-                                    !(
-                                      failure instanceof
-                                        PublicSquareRequestError &&
-                                      [401, 403].includes(failure.status)
-                                    )
-                                  )
-                                    void onRetry?.();
-                                  throw failure;
-                                }
-                                setDrafts((current) => ({
-                                  ...current,
-                                  [item.id]: ""
-                                }));
-                              });
-                            }}
-                            onRemoveRetained={() =>
-                              perform(item.id, async () => {
-                                try {
-                                  await onRemoveRetainedBrief?.(
-                                    item.id,
-                                    item.version
-                                  );
-                                } catch (failure) {
-                                  const key = `brief:${item.id}`;
-                                  setVerificationPendingIds((current) =>
-                                    new Set(current).add(key)
-                                  );
-                                  if (isExplicitWriteRejection(failure))
-                                    setRejectedVerificationIds((current) =>
-                                      new Set(current).add(key)
-                                    );
-                                  if (
-                                    !(
-                                      failure instanceof
-                                        PublicSquareRequestError &&
-                                      [401, 403].includes(failure.status)
-                                    )
-                                  )
-                                    void onRetry?.();
-                                  throw failure;
-                                }
-                                setWithdrawnIds((current) =>
-                                  new Set(current).add(item.id)
-                                );
-                              })
-                            }
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                ))}
-              </div>
-
-              {historicalItems.length > 0 && (
-                <section aria-labelledby="public-square-history-title">
-                  <div className="mb-3 flex items-center justify-between px-1">
-                    <div>
-                      <h2
-                        id="public-square-history-title"
-                        className="text-sm font-medium text-foreground"
-                      >
-                        Completed and past work
-                      </h2>
-                      <p className="mt-0.5 text-[11px] text-faint">
-                        Completed Jobs and frozen history from former Team
-                        members
-                      </p>
-                    </div>
-                    <span className="text-[11px] text-faint">
-                      {historicalItems.length}{" "}
-                      {historicalItems.length === 1 ? "job" : "jobs"}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {historicalItems.map((item) => (
-                      <PublicationCard
-                        key={item.id}
-                        item={item}
-                        anchorId={publicSquareJobAnchor(item.jobId)}
-                        brief={publicSquareVisibleBrief(item, withdrawnIds)}
-                        expanded={expandedIds.has(item.id)}
-                        draft={publicSquareBriefEditorValue(
-                          item,
-                          drafts[item.id],
-                          ownerBriefDrafts[item.id]
-                        )}
-                        pending={pendingIds.has(item.id)}
-                        onToggle={() => toggleBrief(item)}
-                        onDraftChange={(value) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [item.id]: value
-                          }))
-                        }
-                        onShare={() =>
-                          perform(item.id, async () => {
-                            const brief = publicSquareBriefEditorValue(
-                              item,
-                              drafts[item.id],
-                              ownerBriefDrafts[item.id]
-                            ).trim();
-                            if (!brief)
-                              throw new Error(
-                                "Add a short brief before sharing."
-                              );
-                            await onShareBrief?.(item.id, brief, item.version);
-                            setWithdrawnIds((current) => {
-                              const next = new Set(current);
-                              next.delete(item.id);
-                              return next;
-                            });
-                          })
-                        }
-                        onWithdraw={() => {
-                          setRejectedVerificationIds((current) => {
-                            const next = new Set(current);
-                            next.delete(`brief:${item.id}`);
-                            return next;
-                          });
-                          setWithdrawnIds((current) =>
-                            new Set(current).add(item.id)
-                          );
-                          void perform(item.id, async () => {
-                            try {
-                              await onWithdrawBrief?.(item.id, item.version);
-                            } catch (failure) {
-                              const key = `brief:${item.id}`;
-                              setVerificationPendingIds((current) =>
-                                new Set(current).add(key)
-                              );
-                              if (isExplicitWriteRejection(failure))
-                                setRejectedVerificationIds((current) =>
-                                  new Set(current).add(key)
-                                );
-                              if (
-                                !(
-                                  failure instanceof PublicSquareRequestError &&
-                                  [401, 403].includes(failure.status)
-                                )
-                              )
-                                void onRetry?.();
-                              throw failure;
-                            }
-                            setDrafts((current) => ({
-                              ...current,
-                              [item.id]: ""
-                            }));
-                          });
-                        }}
-                        onRemoveRetained={() =>
-                          perform(item.id, async () => {
-                            try {
-                              await onRemoveRetainedBrief?.(
-                                item.id,
-                                item.version
-                              );
-                            } catch (failure) {
-                              const key = `brief:${item.id}`;
-                              setVerificationPendingIds((current) =>
-                                new Set(current).add(key)
-                              );
-                              if (isExplicitWriteRejection(failure))
-                                setRejectedVerificationIds((current) =>
-                                  new Set(current).add(key)
-                                );
-                              if (
-                                !(
-                                  failure instanceof PublicSquareRequestError &&
-                                  [401, 403].includes(failure.status)
-                                )
-                              )
-                                void onRetry?.();
-                              throw failure;
-                            }
-                            setWithdrawnIds((current) =>
-                              new Set(current).add(item.id)
-                            );
-                          })
-                        }
-                      />
-                    ))}
-                  </div>
-                </section>
+          <section className="space-y-3">
+            <button
+              type="button"
+              aria-expanded={offersExpanded}
+              onClick={() => setOffersExpanded((expanded) => !expanded)}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted transition hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              {offersExpanded ? (
+                <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
               )}
-            </>
+              Make an Agent available
+            </button>
+            {offersExpanded && (
+              <TeamAgentOffers
+                teamId={teamId}
+                authorityKey={authorityKey}
+                refreshRevision={agentOfferRevision}
+                client={agentRequestsClient}
+              />
+            )}
+          </section>
+          <PublicSquareView
+            teamName={teamName}
+            viewerId={viewerId}
+            jobs={square.jobs}
+            rooms={square.rooms}
+            idleAgents={idleAgents}
+            historicalItems={square.historicalItems}
+            serverTime={serverTime}
+            focusJobId={focusJobId}
+            getVisibleBrief={(item) =>
+              publicSquareVisibleBrief(item, withdrawnIds)
+            }
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={onLoadMore}
+            onOpenInbox={onOpenInbox}
+            renderPublication={renderPublication}
+            renderProjectActions={renderProjectActions}
+          />
+          {refreshing && (
+            <p role="status" className="text-[11px] text-faint">
+              Updating Team work…
+            </p>
           )}
-
           {actionError && (
             <p
               role="alert"
@@ -686,25 +544,12 @@ export function PublicSquare({
                 {loadingMore && (
                   <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                 )}
-                {loadingMore ? "Loading history…" : "Load more completed work"}
+                {loadingMore ? "Loading history…" : "Load more history"}
               </button>
             </div>
           )}
         </>
       )}
-    </div>
-  );
-}
-
-function SummaryMetric({ value, label }: { value: string; label: string }) {
-  return (
-    <div>
-      <p className="text-3xl font-medium tracking-tight text-foreground">
-        {value}
-      </p>
-      <p className="mt-1 text-[11px] uppercase tracking-wide text-subtle">
-        {label}
-      </p>
     </div>
   );
 }
@@ -871,7 +716,9 @@ function PublicationCard({
     ? `Completed ${formatTime(item.completedAt)}`
     : item.lastSeenAt
       ? `Last seen ${formatTime(item.lastSeenAt)}`
-      : `Updated ${formatTime(item.updatedAt)}`;
+      : item.startedAt
+        ? `Started ${formatTime(item.startedAt)}`
+        : `Shared ${formatTime(item.publishedAt)}`;
 
   return (
     <article
@@ -912,6 +759,12 @@ function PublicationCard({
         <Clock3 className="h-3 w-3 shrink-0" />
         {time}
       </p>
+      {!brief && !item.canEditBrief && (
+        <p className="mt-3 flex items-center gap-1.5 border-t border-border/60 pt-2 text-[11px] text-faint">
+          <Lock className="h-3 w-3 shrink-0" />
+          Details not shared
+        </p>
+      )}
       {hasDetails && (
         <div className="mt-3 border-t border-border/60 pt-2">
           <button

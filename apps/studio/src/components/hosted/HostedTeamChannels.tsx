@@ -1486,9 +1486,10 @@ export function HostedTeamChannels({
           update.teamId === team.id &&
           "kind" in update
         ) {
-          if (update.kind === "offers")
+          if (update.kind === "offers") {
             setAgentOfferRevision((revision) => revision + 1);
-          else setAgentRequestRevision((revision) => revision + 1);
+            await refreshSquare();
+          } else setAgentRequestRevision((revision) => revision + 1);
         }
         if (
           resource &&
@@ -2259,6 +2260,24 @@ export function HostedTeamChannels({
               />
             ) : squareOpen ? (
               <PublicSquare
+                viewerId={user.id}
+                onOpenInbox={() => {
+                  setSquareOpen(false);
+                  setForYouOpen(true);
+                }}
+                onOpenOwnerConversation={(item) => {
+                  if (
+                    item.ownerId !== user.id ||
+                    !item.ownerExecutionId ||
+                    item.ownerLeftTeam
+                  )
+                    return;
+                  const query = new URLSearchParams({
+                    chat: "1",
+                    execution: item.ownerExecutionId
+                  });
+                  router.push(`/?${query.toString()}`);
+                }}
                 key={`${user.id}:${team.id}`}
                 teamName={team.name}
                 teamId={team.id}
@@ -2267,6 +2286,8 @@ export function HostedTeamChannels({
                 agentOfferRevision={agentOfferRevision}
                 agentRequestsClient={teamAgentRequestsClient}
                 items={square.items}
+                idleAgents={square.idleAgents}
+                refreshing={square.refreshing}
                 projects={square.projects}
                 localProjects={square.localProjects}
                 loadingLocalProjects={loadingLocalProjects}

@@ -7,6 +7,7 @@ import {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   managedConversationFileOperationResultSchema,
   personalAgentIntentSignalSchema,
+  personalAgentPhaseSchema,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
 
@@ -48,6 +49,17 @@ const personalAgentTurnStatusBodySchema = z
     runnerId: boundedRunnerId,
     providerTurnId: z.string().trim().min(1).max(256),
     status: z.enum(["complete", "awaiting_owner"])
+  })
+  .strict();
+const personalAgentPhaseBodySchema = z
+  .object({
+    leaseToken: uuid,
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    runnerId: boundedRunnerId,
+    providerTurnId: z.string().trim().min(1).max(256),
+    attemptId: uuid,
+    phase: personalAgentPhaseSchema
   })
   .strict();
 const personalAgentAttemptParamsSchema = z
@@ -1399,6 +1411,57 @@ export const registerManagedConversationRunnerRoutes = (
           }
         );
       return { status: input.status };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/personal-agent-phase",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = personalAgentPhaseBodySchema.parse(request.body);
+      const { command, execution } = await requireCommandForRunner(
+        context,
+        auth,
+        commandId
+      );
+      if (
+        command.commandKind !== "prompt" ||
+        command.state !== "dispatching" ||
+        command.executionId !== input.executionId ||
+        command.executionGeneration !== input.executionGeneration ||
+        command.leaseToken === null ||
+        command.leaseToken !== input.leaseToken ||
+        execution.runnerId !== input.runnerId ||
+        execution.runnerDeviceId !== auth.deviceId ||
+        execution.runnerDeploymentId !== auth.deploymentId ||
+        execution.state !== "running" ||
+        execution.executionGeneration !== input.executionGeneration
+      ) {
+        throw Object.assign(
+          new Error("Personal Agent phase is not bound to the current command"),
+          { statusCode: 409 }
+        );
+      }
+      await context
+        .requireRepository()
+        .recordPersonalAgentPhaseForManagedCommand(
+          { userId: auth.userId },
+          {
+            commandId,
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            leaseToken: input.leaseToken,
+            runnerId: input.runnerId,
+            deviceId: auth.deviceId,
+            deploymentId: auth.deploymentId,
+            providerTurnId: input.providerTurnId,
+            attemptId: input.attemptId,
+            phase: input.phase
+          }
+        );
+      return { phase: input.phase };
     }
   );
 

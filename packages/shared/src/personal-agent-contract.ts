@@ -295,6 +295,13 @@ export const personalAgentTurnStatusJsonSchema = z.toJSONSchema(
   z.object({ status: personalAgentTurnStatusSchema }).strict()
 );
 
+/** Explicit in-turn work phase; this is separate from Job outcome/status. */
+export const personalAgentPhaseSchema = z.enum(["working", "checking"]);
+export type PersonalAgentPhase = z.infer<typeof personalAgentPhaseSchema>;
+export const personalAgentPhaseJsonSchema = z.toJSONSchema(
+  z.object({ phase: personalAgentPhaseSchema }).strict()
+);
+
 export const personalAgentParticipantSchema = z
   .object({
     conversationId: z.uuid(),
@@ -505,6 +512,8 @@ export const personalAgentExecutionAttemptSchema = z
     ]),
     outcome: personalAgentAttemptOutcomeSchema.nullable(),
     startedAt: timestamp,
+    phase: personalAgentPhaseSchema.default("working"),
+    phaseObservedAt: timestamp.nullable().default(null),
     completedAt: timestamp.nullable()
   })
   .strict()

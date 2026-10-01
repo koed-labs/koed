@@ -401,6 +401,8 @@ type AttemptRow = {
   status: PersonalAgentExecutionAttempt["status"];
   outcome: PersonalAgentAttemptOutcome | null;
   started_at: Date;
+  phase?: PersonalAgentExecutionAttempt["phase"];
+  phase_observed_at?: Date | null;
   completed_at: Date | null;
 };
 
@@ -511,6 +513,8 @@ const mapAttempt = (row: AttemptRow): PersonalAgentExecutionAttempt =>
     status: row.status,
     outcome: row.outcome,
     startedAt: iso(row.started_at),
+    phase: row.phase ?? "working",
+    phaseObservedAt: row.phase_observed_at ? iso(row.phase_observed_at) : null,
     completedAt: row.completed_at ? iso(row.completed_at) : null
   });
 
@@ -1913,7 +1917,7 @@ export const createPersonalAgentRepository = (
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
-            completed_at
+            phase, phase_observed_at, completed_at
          from personal_agent_execution_attempts
          where id = $1 and job_id = $2 and owner_user_id = $3`,
         [input.attemptId, input.jobId, input.actor.userId]
@@ -2270,7 +2274,7 @@ export const createPersonalAgentRepository = (
               attribution_kind, agent_id, agent_version, provider, model,
               ai_client_instance_id, reasoning_effort, permission_mode,
               managed_execution_id, managed_execution_generation, status,
-              outcome, started_at, completed_at
+              outcome, started_at, phase, phase_observed_at, completed_at
            from personal_agent_execution_attempts
            where owner_user_id = $1 and command_id = $2
            limit 1`,
@@ -2307,7 +2311,7 @@ export const createPersonalAgentRepository = (
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
-            completed_at
+            phase, phase_observed_at, completed_at
          from personal_agent_execution_attempts
          where owner_user_id = $1 and job_id = $2 and attempt_number = $3`,
         [actor.userId, attempt.jobId, attempt.attemptNumber]
@@ -2382,14 +2386,14 @@ export const createPersonalAgentRepository = (
            agent_id, agent_version, provider, model, ai_client_instance_id,
            reasoning_effort, permission_mode, managed_execution_id,
            managed_execution_generation, status, outcome, started_at,
-           completed_at)
+           phase, phase_observed_at, completed_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14, $15, $16, $17, $18, $19)
+                 $13, $14, $15, $16, $17, $18, 'working', $18, $19)
          returning id, owner_user_id, job_id, command_id, attempt_number,
            attribution_kind, agent_id, agent_version, provider, model,
            ai_client_instance_id, reasoning_effort, permission_mode,
            managed_execution_id, managed_execution_generation, status,
-           outcome, started_at, completed_at`,
+           outcome, started_at, phase, phase_observed_at, completed_at`,
         [
           attempt.id,
           actor.userId,
@@ -2486,7 +2490,7 @@ export const createPersonalAgentRepository = (
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
             managed_execution_generation, status, outcome, started_at,
-            completed_at
+            phase, phase_observed_at, completed_at
          from personal_agent_execution_attempts
          where id = $1 and job_id = $2 and owner_user_id = $3 for update`,
         [input.attemptId, input.jobId, input.actor.userId]
@@ -2531,7 +2535,8 @@ export const createPersonalAgentRepository = (
           returning id, owner_user_id, job_id, command_id, attempt_number, attribution_kind,
             agent_id, agent_version, provider, model, ai_client_instance_id,
             reasoning_effort, permission_mode, managed_execution_id,
-            managed_execution_generation, status, outcome, started_at, completed_at`,
+            managed_execution_generation, status, outcome, started_at, phase,
+            phase_observed_at, completed_at`,
         [input.attemptId, input.jobId, status, completedAt, input.actor.userId]
       );
       const updatedAttempt = updatedAttemptResult.rows[0];
@@ -2618,7 +2623,7 @@ export const createPersonalAgentRepository = (
           agent_id, agent_version, provider, model, ai_client_instance_id,
           reasoning_effort, permission_mode, managed_execution_id,
           managed_execution_generation, status, outcome, started_at,
-          completed_at
+          phase, phase_observed_at, completed_at
        from personal_agent_execution_attempts
        where owner_user_id = $1 and job_id = $2
          and ($3::timestamptz is null or (started_at, id) < ($3, $4))

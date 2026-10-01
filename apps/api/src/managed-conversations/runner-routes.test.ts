@@ -149,6 +149,85 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
+  it("accepts only a phase signal bound to the current assigned prompt command", async () => {
+    const leaseToken = randomUUID();
+    const attemptId = randomUUID();
+    const recordPhase = vi.fn(async () => undefined);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationCommand: vi.fn(async () => ({
+          id: ids.command,
+          executionId: ids.execution,
+          commandKind: "prompt",
+          state: "dispatching",
+          executionGeneration: 4,
+          leaseToken
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 4,
+          state: "running",
+          runnerId: "phase-runner",
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        recordPersonalAgentPhaseForManagedCommand: recordPhase
+      }
+    });
+    try {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-phase`,
+        headers: runnerHeaders,
+        payload: {
+          leaseToken,
+          executionId: ids.execution,
+          executionGeneration: 4,
+          runnerId: "phase-runner",
+          providerTurnId: "codex-provider-turn-12",
+          attemptId,
+          phase: "checking"
+        }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ phase: "checking" });
+      expect(recordPhase).toHaveBeenCalledWith(
+        { userId: ids.user },
+        {
+          commandId: ids.command,
+          executionId: ids.execution,
+          executionGeneration: 4,
+          leaseToken,
+          runnerId: "phase-runner",
+          deviceId: ids.device,
+          deploymentId: ids.deployment,
+          providerTurnId: "codex-provider-turn-12",
+          attemptId,
+          phase: "checking"
+        }
+      );
+
+      const staleCommand = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/commands/${ids.command}/personal-agent-phase`,
+        headers: runnerHeaders,
+        payload: {
+          leaseToken: randomUUID(),
+          executionId: ids.execution,
+          executionGeneration: 4,
+          runnerId: "phase-runner",
+          providerTurnId: "codex-provider-turn-12",
+          attemptId,
+          phase: "working"
+        }
+      });
+      expect(staleCommand.statusCode).toBe(409);
+      expect(recordPhase).toHaveBeenCalledTimes(1);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("keeps Personal Agent job attempts owner and assigned-execution scoped", async () => {
     const jobId = randomUUID();
     const agentId = randomUUID();

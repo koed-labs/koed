@@ -30,17 +30,29 @@ export interface PublicSquarePublicationRecord {
   ownerName: string;
   projectId: string;
   projectName: string;
+  ownerExecutionId: string | null;
   status: PublicSquareStatus;
   lastKnownStatus: PublicSquareStatus | null;
+  phase: "working" | "checking" | null;
+  phaseObservedAt: string | null;
   publishedAt: string;
+  startedAt: string | null;
   updatedAt: string;
   completedAt: string | null;
   lastSeenAt: string | null;
+  waitingOn: { userId: string; name: string } | null;
   ownerLeftTeam: boolean;
   sharedBrief: string | null;
   version: number;
   canEditBrief: boolean;
   canRemoveRetainedBrief: boolean;
+}
+
+export interface PublicSquareIdleAgentRecord {
+  agentId: string;
+  agentName: string;
+  ownerId: string;
+  ownerName: string;
 }
 
 export interface PublicSquareRepository {
@@ -50,6 +62,7 @@ export interface PublicSquareRepository {
   ): Promise<{
     teamId: string;
     items: PublicSquarePublicationRecord[];
+    idleAgents: PublicSquareIdleAgentRecord[];
     nextCursor: string | null;
     serverTime: string;
   } | null>;
@@ -110,10 +123,14 @@ type PublicationRow = {
   owner_name: string;
   project_id: string;
   project_thread_id: string;
+  conversation_id: string;
   job_state: string;
   publication_state: string;
   owner_left_team: boolean;
   job_updated_at: Date;
+  job_started_at: Date | null;
+  job_phase: "working" | "checking" | null;
+  job_phase_observed_at: Date | null;
   published_at: Date;
   runner_last_seen_at: Date | null;
   runner_lease_expires_at: Date | null;
@@ -239,12 +256,23 @@ export const createPublicSquareRepository = (
       ownerName: row.owner_name,
       projectId: row.project_id,
       projectName,
+      ownerExecutionId:
+        viewerId === row.owner_id && !row.owner_left_team
+          ? row.conversation_id
+          : null,
       status,
       lastKnownStatus: offline ? actual : null,
+      phase: row.job_phase,
+      phaseObservedAt: row.job_phase_observed_at?.toISOString() ?? null,
       publishedAt: row.published_at.toISOString(),
+      startedAt: row.job_started_at?.toISOString() ?? null,
       updatedAt: row.job_updated_at.toISOString(),
       completedAt: row.completed_at?.toISOString() ?? null,
       lastSeenAt: row.runner_last_seen_at?.toISOString() ?? null,
+      waitingOn:
+        status === "waiting" && !row.owner_left_team
+          ? { userId: row.owner_id, name: row.owner_name }
+          : null,
       ownerLeftTeam: row.owner_left_team,
       sharedBrief,
       version: row.version,
@@ -263,7 +291,7 @@ export const createPublicSquareRepository = (
         ).rowCount === 1
     };
   };
-  const publicationSelect = `select p.id,p.job_id,j.agent_id,coalesce(v.name,'Agent') as agent_name,p.owner_user_id as owner_id,coalesce(u.display_name,'Team member') as owner_name,p.team_project_id as project_id,t.id as project_thread_id,case when p.state='frozen' then coalesce(p.frozen_status,j.state) when j.state in ('queued','running') and e.state='failed' then 'failed' when j.state in ('queued','running') and exists(select 1 from managed_conversation_runtime_items r where r.execution_id=j.conversation_id and r.owner_user_id=j.owner_user_id and r.state='pending') then 'waiting' else j.state end as job_state,p.state as publication_state,p.owner_left_team,case when p.state='frozen' then coalesce(p.frozen_updated_at,p.updated_at) else j.updated_at end as job_updated_at,p.published_at,case when p.state='frozen' then p.frozen_last_seen_at else e.runner_last_seen_at end as runner_last_seen_at,e.runner_lease_expires_at,case when p.state='frozen' then p.frozen_completed_at when j.state in ('succeeded','failed','canceled') or (j.state in ('queued','running') and e.state='failed') then j.updated_at else p.completed_at end as completed_at,case when p.state='active' and j.state in ('queued','running') and e.state<>'failed' then 0 else 1 end as sort_rank,p.version from personal_agent_team_job_publications p join personal_agent_execution_jobs j on j.id=p.job_id and j.owner_user_id=p.owner_user_id join personal_agent_identity_versions v on v.agent_id=j.agent_id and v.owner_user_id=j.owner_user_id and v.version=j.agent_version join users u on u.id=p.owner_user_id join collaboration_team_shared_projects sp on sp.id=p.team_project_id and sp.team_id=p.team_id and sp.unshared_at is null join collaboration_threads t on t.team_project_id=sp.id and t.team_id=sp.team_id and t.lifecycle='active' join managed_conversation_executions e on e.id=j.conversation_id and e.owner_user_id=j.owner_user_id`;
+  const publicationSelect = `select p.id,p.job_id,j.conversation_id,j.agent_id,coalesce(v.name,'Agent') as agent_name,p.owner_user_id as owner_id,coalesce(u.display_name,'Team member') as owner_name,p.team_project_id as project_id,t.id as project_thread_id,case when p.state='frozen' then coalesce(p.frozen_status,j.state) when j.state in ('queued','running') and e.state='failed' then 'failed' when j.state in ('queued','running') and exists(select 1 from managed_conversation_runtime_items r where r.execution_id=j.conversation_id and r.owner_user_id=j.owner_user_id and r.state='pending' and r.item_kind in ('command_approval','file_approval','permissions_approval','user_input')) then 'waiting' else j.state end as job_state,p.state as publication_state,p.owner_left_team,case when p.state='frozen' then coalesce(p.frozen_updated_at,p.updated_at) else greatest(j.updated_at,p.updated_at) end as job_updated_at,case when p.state='frozen' then p.frozen_started_at else attempt.started_at end as job_started_at,case when p.state='frozen' then p.frozen_phase when j.state='queued' then null else attempt.phase end as job_phase,case when p.state='frozen' then p.frozen_phase_observed_at when j.state='queued' then null else attempt.phase_observed_at end as job_phase_observed_at,p.published_at,case when p.state='frozen' then p.frozen_last_seen_at else e.runner_last_seen_at end as runner_last_seen_at,e.runner_lease_expires_at,case when p.state='frozen' then p.frozen_completed_at when j.state in ('succeeded','failed','canceled') or (j.state in ('queued','running') and e.state='failed') then j.updated_at else p.completed_at end as completed_at,case when p.state='active' and (j.state='waiting' or (j.state in ('queued','running') and e.state<>'failed')) then 0 else 1 end as sort_rank,p.version from personal_agent_team_job_publications p join personal_agent_execution_jobs j on j.id=p.job_id and j.owner_user_id=p.owner_user_id join lateral (select min(a.started_at) as started_at,(array_agg(a.phase order by a.attempt_number desc))[1] as phase,(array_agg(a.phase_observed_at order by a.attempt_number desc))[1] as phase_observed_at from personal_agent_execution_attempts a where a.job_id=j.id and a.owner_user_id=j.owner_user_id) attempt on true join personal_agent_identity_versions v on v.agent_id=j.agent_id and v.owner_user_id=j.owner_user_id and v.version=j.agent_version join users u on u.id=p.owner_user_id join collaboration_team_shared_projects sp on sp.id=p.team_project_id and sp.team_id=p.team_id and sp.unshared_at is null join collaboration_threads t on t.team_project_id=sp.id and t.team_id=sp.team_id and t.lifecycle='active' join managed_conversation_executions e on e.id=j.conversation_id and e.owner_user_id=j.owner_user_id`;
   return {
     async listPublicSquare(actor, input) {
       const client = await pool.connect();
@@ -291,7 +319,7 @@ export const createPublicSquareRepository = (
             statusCode: 400
           });
         const page = await client.query<PublicationRow>(
-          `${publicationSelect} where p.team_id=$1 and p.state in ('active','frozen') and ($2::integer is null or (case when p.state='active' and j.state in ('queued','running') and e.state<>'failed' then 0 else 1 end > $2 or (case when p.state='active' and j.state in ('queued','running') and e.state<>'failed' then 0 else 1 end = $2 and (p.published_at,p.id)<($3::timestamptz,$4::uuid)))) order by sort_rank asc,p.published_at desc,p.id desc limit $5`,
+          `${publicationSelect} where p.team_id=$1 and p.state in ('active','frozen') and ($2::integer is null or (case when p.state='active' and (j.state='waiting' or (j.state in ('queued','running') and e.state<>'failed')) then 0 else 1 end > $2 or (case when p.state='active' and (j.state='waiting' or (j.state in ('queued','running') and e.state<>'failed')) then 0 else 1 end = $2 and (p.published_at,p.id)<($3::timestamptz,$4::uuid)))) order by sort_rank asc,p.published_at desc,p.id desc limit $5`,
           [
             input.teamId,
             cursorParts.length ? Number(cursorParts[0]) : null,
@@ -307,10 +335,44 @@ export const createPublicSquareRepository = (
             mapPublication(client, row, actor.userId, input.teamId)
           )
         );
+        const idle = await client.query<{
+          agent_id: string;
+          agent_name: string;
+          owner_id: string;
+          owner_name: string;
+        }>(
+          `select o.agent_id, i.name as agent_name, o.owner_user_id as owner_id,
+                  coalesce(u.display_name,'Team member') as owner_name
+             from team_agent_offers o
+             join personal_agent_identities i on i.id=o.agent_id and i.owner_user_id=o.owner_user_id
+             join users u on u.id=o.owner_user_id
+            where o.team_id=$1 and o.enabled=true and i.lifecycle='active'
+              and exists(select 1 from team_memberships m where m.team_id=o.team_id and m.user_id=o.owner_user_id and m.status='enabled')
+              and not exists(
+                select 1
+                  from personal_agent_team_job_publications pub
+                  join personal_agent_execution_jobs active_job on active_job.id=pub.job_id and active_job.owner_user_id=pub.owner_user_id
+                  join managed_conversation_executions active_execution on active_execution.id=active_job.conversation_id and active_execution.owner_user_id=active_job.owner_user_id
+                  join collaboration_team_shared_projects active_project on active_project.id=pub.team_project_id and active_project.team_id=pub.team_id and active_project.unshared_at is null
+                  join collaboration_threads active_thread on active_thread.team_project_id=active_project.id and active_thread.team_id=active_project.team_id and active_thread.lifecycle='active'
+                 where pub.team_id=o.team_id and pub.owner_user_id=o.owner_user_id and pub.state='active'
+                   and active_job.agent_id=o.agent_id
+                   and (active_job.state='waiting' or (active_job.state in ('queued','running') and active_execution.state<>'failed'))
+              )
+            order by i.name, u.display_name, o.agent_id`,
+          [input.teamId]
+        );
+        const idleAgents = idle.rows.map((row) => ({
+          agentId: row.agent_id,
+          agentName: row.agent_name,
+          ownerId: row.owner_id,
+          ownerName: row.owner_name
+        }));
         const last = rows.at(-1);
         const result = {
           teamId: input.teamId,
           items,
+          idleAgents,
           nextCursor:
             hasMore && last
               ? Buffer.from(

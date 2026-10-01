@@ -286,6 +286,80 @@ describe("managed Agent signal command fencing", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
     expect(query).toHaveBeenCalledWith("rollback");
   });
+
+  it("rejects a phase signal when its unchanged command token has expired", async () => {
+    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
+    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
+    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
+    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
+    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
+    const leaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
+    const runnerId = "runner-one";
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from managed_conversation_commands")) {
+        return {
+          rows: [
+            {
+              id: commandId,
+              execution_id: executionId,
+              command_kind: "prompt",
+              state: "dispatching",
+              execution_generation: 3,
+              lease_token: leaseToken,
+              lease_expires_at: new Date(Date.now() - 1)
+            }
+          ]
+        };
+      }
+      if (sql.includes("from managed_conversation_executions")) {
+        return {
+          rows: [
+            {
+              id: executionId,
+              owner_user_id: ownerUserId,
+              execution_generation: 3,
+              state: "running",
+              runner_id: runnerId,
+              runner_device_id: deviceId,
+              runner_deployment_id: deploymentId,
+              runner_lease_expires_at: new Date(Date.now() + 60_000)
+            }
+          ]
+        };
+      }
+      return { rows: [] };
+    });
+    const repository = createManagedConversationRepository(
+      {
+        connect: vi.fn(async () => ({ query, release: vi.fn() }))
+      } as unknown as pg.Pool,
+      {}
+    );
+
+    await expect(
+      repository.recordPersonalAgentPhaseForManagedCommand(
+        { userId: ownerUserId },
+        {
+          commandId,
+          executionId,
+          executionGeneration: 3,
+          leaseToken,
+          runnerId,
+          deviceId,
+          deploymentId,
+          providerTurnId: "codex-current-provider-turn",
+          attemptId: "67479cab-82d3-42ed-b026-2f0364874dc1",
+          phase: "checking"
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(query).toHaveBeenCalledWith("rollback");
+    expect(
+      query.mock.calls.some(([sql]) =>
+        (sql as string).includes("personal_agent_execution_attempts")
+      )
+    ).toBe(false);
+  });
 });
 
 describe("managed Conversation initial Agent start", () => {

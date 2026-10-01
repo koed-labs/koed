@@ -1951,9 +1951,10 @@ export function TeamChannelWorkspace({
               event.update.type === "team_agent_request_invalidated" &&
               event.update.teamId === teamId
             ) {
-              if (event.update.kind === "offers")
+              if (event.update.kind === "offers") {
                 setAgentOfferRevision((revision) => revision + 1);
-              else setAgentRequestRevision((revision) => revision + 1);
+                await refreshSquare();
+              } else setAgentRequestRevision((revision) => revision + 1);
             }
             const selected = selectedRef.current;
             if (selected.teamId !== teamId) return false;
@@ -3554,6 +3555,24 @@ export function TeamChannelWorkspace({
               />
             ) : squareOpen ? (
               <PublicSquare
+                viewerId={snapshot.navigation.teamPrincipal?.id ?? ""}
+                onOpenInbox={() => {
+                  setSquareOpen(false);
+                  setForYouOpen(true);
+                }}
+                onOpenOwnerConversation={(item) => {
+                  if (
+                    item.ownerId !== snapshot.navigation.teamPrincipal?.id ||
+                    !item.ownerExecutionId ||
+                    item.ownerLeftTeam
+                  )
+                    return;
+                  const query = new URLSearchParams({
+                    chat: "1",
+                    execution: item.ownerExecutionId
+                  });
+                  router.push(`/?${query.toString()}`);
+                }}
                 key={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${teamId}`}
                 teamName={activeTeam.name}
                 teamId={teamId}
@@ -3562,6 +3581,8 @@ export function TeamChannelWorkspace({
                 agentOfferRevision={agentOfferRevision}
                 agentRequestsClient={teamAgentRequestsClient}
                 items={square.items}
+                idleAgents={square.idleAgents}
+                refreshing={square.refreshing}
                 projects={square.projects}
                 localProjects={square.localProjects}
                 loadingLocalProjects={loadingLocalProjects}

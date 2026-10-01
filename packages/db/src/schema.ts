@@ -4633,6 +4633,11 @@ export const personalAgentExecutionAttempts = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    phase: text("phase").notNull().default("working"),
+    phaseObservedAt: timestamp("phase_observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    providerTurnId: text("provider_turn_id"),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: now(),
     updatedAt: updatedNow()
@@ -4708,6 +4713,10 @@ export const personalAgentExecutionAttempts = pgTable(
     check(
       "personal_agent_execution_attempts_number_check",
       sql`${table.attemptNumber} > 0`
+    ),
+    check(
+      "personal_agent_execution_attempts_phase_check",
+      sql`${table.phase} in ('working', 'checking') and (${table.providerTurnId} is null or length(trim(${table.providerTurnId})) between 1 and 512)`
     )
   ]
 );
@@ -9409,6 +9418,11 @@ export const personalAgentTeamJobPublications = pgTable(
     ownerLeftTeam: boolean("owner_left_team").notNull().default(false),
     frozenStatus: text("frozen_status"),
     frozenUpdatedAt: timestamp("frozen_updated_at", { withTimezone: true }),
+    frozenStartedAt: timestamp("frozen_started_at", { withTimezone: true }),
+    frozenPhase: text("frozen_phase"),
+    frozenPhaseObservedAt: timestamp("frozen_phase_observed_at", {
+      withTimezone: true
+    }),
     frozenLastSeenAt: timestamp("frozen_last_seen_at", { withTimezone: true }),
     frozenCompletedAt: timestamp("frozen_completed_at", { withTimezone: true }),
     lastKnownStatus: text("last_known_status"),

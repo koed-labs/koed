@@ -54,3 +54,17 @@ The UI review source digest was `b6ece607632309de723e0f9dfc819f21844cf9faa1a3c82
 One product decision remains open: implement Personal feedback and defer Team-visible recalled-answer integration, or add a Team answer publication flow now. Team channels currently have no verified recalled-answer association. Private answers that use Team evidence remain private. Do not infer public provenance from a shared Project or a channel summary.
 
 Ticket15 remains open for that decision. Tickets16–23 remain outside this delivery. Memory correction, a QA dashboard, notifications and the combined epic changeset remain deferred.
+
+## Public Square C design integration — October 1, 2026
+
+The replacement Public Square design is wired to the existing Team authority. See [Public Square behavior](studio-public-square.md). Project rooms, Highlights, Job panels, Idle and terminal history use real backend data. `koed_job_phase` reports Working/Checking explicitly through the existing Agent adapters. It does not infer phases from conversation text or complete a Job.
+
+Migrations0064/0065 add the first actual Job start snapshot, current attempt phase and frozen departure phase. Idle uses enabled Team offers with no current published Job in that Team. Private activity elsewhere is not exposed. The existing owner Conversation opens through an owner-only locator; teammates receive no locator.
+
+Scoped checks passed: Studio304 tests; Public Square PostgreSQL13; DB repository13; API runner32; worker79; MCP101 passed/1 skipped; shared Square4; relevant typechecks, migration metadata, changed-file formatting and diff checks. Groups overlap and are not summed. Independent authority review found no remaining issue. UI review findings about optimistic brief withdrawal and an Idle-only empty state were corrected.
+
+One real Codex Job reported Checking, then Working and successful completion. Hosted owner/member views displayed Checking; both DTOs retained the same real start time, and Idle disappeared during work then returned. Final Desktop/web checks passed terminal history, Idle and owner workshop navigation, with no observed page errors. Shared brief updates, realtime withdrawal and reload passed in two hosted sessions. Former-owner snapshots, lease/generation/turn fences and pagination are covered by focused tests; unchanged provider/device and membership/unshare evidence is reused from the prior tickets.
+
+Claude/Pi phase adapters use a worker-created command-scoped turn ID because their current adapters do not expose a native turn ID. Their structured tool wiring has focused test coverage; a new live provider matrix was not run. The live disposable phase test continued without Memory after a recall timeout; the rejected prompt created no work command and was not replayed. Runtime startup/source mismatch failures were corrected before the final acceptance, and are not counted as passes.
+
+The User's prototype files remain unchanged. This slice is local and has not been pushed. The Team-visible Ticket15 feedback decision remains separately open; Tickets16–23 have not started.
