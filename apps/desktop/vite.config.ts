@@ -45,6 +45,12 @@ export default defineConfig({
     }
   },
   test: {
+    alias: {
+      "@koed/mcp-server/managed-conversation-command-types": resolve(
+        import.meta.dirname,
+        "../../packages/mcp-server/src/managed-conversation-command-types.ts"
+      )
+    },
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     testTimeout: 15_000
   }
