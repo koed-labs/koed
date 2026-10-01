@@ -60,6 +60,18 @@ describe("personal agent role template client", () => {
     expect(rankRoleTemplates(role, templates)[0]?.id).toBe(expectedId);
   });
 
+  it("suggests the reviewed Product Manager template for Project Manager text", () => {
+    const productManager = template("product-manager", 1, "Product Manager");
+
+    expect(rankRoleTemplates("Project Manager", [productManager])).toEqual([
+      productManager
+    ]);
+  });
+
+  it("accepts an empty catalogue as a successful empty result", () => {
+    expect(parsePersonalAgentRoleTemplates({ templates: [] })).toEqual([]);
+  });
+
   it("matches selected canonical roles without claiming free text", () => {
     const backend = template("backend-engineer", 1, "Backend Engineer");
     expect(matchRoleTemplate("  BACKEND ENGINEER ", [backend])).toBe(backend);

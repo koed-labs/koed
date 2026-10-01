@@ -18,6 +18,7 @@ import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
 import type { RecallFeedbackAccess } from "./RecallFeedbackControls";
 import { MemoryAttributionNote } from "./MemoryAttributionNote";
+import { PrepareTeamQuestionAction } from "../PrepareTeamQuestionAction";
 import type { ManagedAgentJobMarker } from "@/lib/managed-agent-job-markers";
 import {
   AgentChatMessage,
@@ -384,15 +385,10 @@ export function NewChatView({
               {runtime?.onSelectTeamQuestion &&
               message.role === "assistant" &&
               message.content.trim() ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    runtime.onSelectTeamQuestion?.(message.content)
-                  }
-                  className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
-                >
-                  Prepare Team question
-                </button>
+                <PrepareTeamQuestionAction
+                  text={message.content}
+                  onPrepare={(text) => runtime.onSelectTeamQuestion?.(text)}
+                />
               ) : null}
               {message.memory ? (
                 <MemoryAttributionNote

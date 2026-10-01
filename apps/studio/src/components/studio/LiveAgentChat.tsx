@@ -23,6 +23,7 @@ import {
   type LocalRetainedWorkspace
 } from "@/lib/hosted-managed-chats";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
+import { ProjectMovePicker } from "@/components/ProjectMovePicker";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
 import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
 import {
@@ -31,6 +32,7 @@ import {
 } from "@/lib/team-agent-channel-sharing";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
+import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
 
 const RECEIPT_WAIT_EXPIRED = Symbol("receipt-wait-expired");
@@ -1795,18 +1797,15 @@ export function LiveAgentChat({
     ) => {
       setTeamRequestReviewVersion(review.version);
       setTeamRequestReviewSaved(Boolean(review.privateGoal.trim()));
-      if (
-        teamRequestId &&
-        teamRequestTeamId &&
-        typeof window !== "undefined" &&
-        window.location.search.includes("teamReviewVersion=")
-      ) {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get("teamReviewVersion") !== String(review.version)) {
-          params.set("teamReviewVersion", String(review.version));
-          router.replace(`${window.location.pathname}?${params.toString()}`);
-        }
-      }
+      if (typeof window === "undefined") return;
+      const href = teamReviewSavedHref({
+        pathname: window.location.pathname,
+        search: window.location.search,
+        requestId: teamRequestId,
+        teamId: teamRequestTeamId,
+        reviewVersion: review.version
+      });
+      if (href) router.replace(href);
     },
     [router, teamRequestId, teamRequestTeamId]
   );
@@ -2067,49 +2066,22 @@ export function LiveAgentChat({
             </div>
           ) : null}
           {projectMovePickerOpen ? (
-            <div className="mt-2 flex flex-wrap items-end gap-2">
-              <label className="text-[10px] text-muted">
-                Destination Project
-                <select
-                  value={projectMoveDestinationId}
-                  onChange={(event) =>
-                    setProjectMoveDestinationId(event.target.value)
-                  }
-                  className="mt-1 block min-w-44 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-                >
-                  {registeredProjects
-                    .filter(
-                      (project) =>
-                        isRegisteredProjectId(project.id) &&
-                        project.id !== currentProjectId
-                    )
-                    .map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => setProjectMoveDialogOpen(true)}
-                disabled={
-                  !registeredProjects.some(
-                    (project) => project.id === projectMoveDestinationId
-                  ) || projectMoveBusy
-                }
-                className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-              >
-                Review Move
-              </button>
-              <button
-                type="button"
-                onClick={() => setProjectMovePickerOpen(false)}
-                className="rounded-md px-2 py-1.5 text-[11px] text-muted hover:bg-surface-hover"
-              >
-                Cancel
-              </button>
-            </div>
+            <ProjectMovePicker
+              projects={registeredProjects.filter(
+                (project) =>
+                  isRegisteredProjectId(project.id) &&
+                  project.id !== currentProjectId
+              )}
+              destinationProjectId={projectMoveDestinationId}
+              reviewDisabled={
+                !registeredProjects.some(
+                  (project) => project.id === projectMoveDestinationId
+                ) || projectMoveBusy
+              }
+              onDestinationProjectChange={setProjectMoveDestinationId}
+              onReviewMove={() => setProjectMoveDialogOpen(true)}
+              onCancel={() => setProjectMovePickerOpen(false)}
+            />
           ) : null}
         </section>
       ) : null}

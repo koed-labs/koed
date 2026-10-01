@@ -43,3 +43,17 @@ Further message-row, chat-panel and Team Memory settings extraction is recorded 
 The configured Studio suite passed312 tests, including3 new Team message adapter checks. Studio typechecking, formatting, diff checks and native/hosted builds passed. Changed-file lint added no findings against the existing67 findings in the two Team workspace controllers.
 
 Final Desktop/web UI checks passed channel selection, human formatting, Agent invocation, thread opening, edit cancellation, reaction pickers and PR chat. Desktop also checked the local Project picker and disabled Collaborative option; web checked disabled Project-channel creation. These checks submitted no messages, reactions, Projects or execution commands. The final review source digest was `46c8ac10997681e788815e3d42e39df8988384e2f75d13c0d578b6e338b0ba5c`, based on `a59d5fcb`. Private review artifacts remain outside Git.
+
+## Shared chat panels and review navigation
+
+`ProjectMovePicker` provides the common destination selector and review/cancel controls. Each caller supplies its authorized Project options and original disabled condition; the hosted Move feature gate remains unchanged. `PrepareTeamQuestionAction` provides the common message action. Callers retain their eligibility rules and text limits.
+
+`teamReviewSavedHref` centralizes conditional review-version URL updates while preserving the current route and query parameters. Controllers retain saved-review state, account/Team scope, transport and recovery. These extractions introduce no backend contract or service-boundary changes.
+
+### Chat-panel extraction validation
+
+The configured Studio suite passed315 tests, including3 review-navigation tests. The role-template client suite passed14 tests. Studio typechecking, native/hosted builds, formatting and diff checks passed. Changed-file lint retained one existing LiveAgentChat warning and added no findings. Desktop/web checks passed existing Team chat controls, thread actions and PR chat; no messages or execution commands were submitted.
+
+The reported Agent suggestion issue was traced to an empty published catalogue in the running review backend. The existing Local Operator Script published the six unchanged reviewed templates using a loopback database connection. No migration, new template, permission change or existing-Agent update was needed. Desktop/web checks verified Project Manager suggestions, explicit instruction application and provenance, replacement confirmation, empty/failed catalogue retry and zero Agent/execution writes. Original device drafts were restored after the checks.
+
+UI review digest: `f4539700233c00629aa9f89fbf8ba603ba8daf5fe1f3340e9c6a72fd11f368d5`, based on `332584fa`. Final source formatting only followed the builds. Private artifacts remain outside Git.

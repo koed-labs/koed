@@ -43,8 +43,9 @@ not grant access to another User's agents, instructions or work history.
 
 The existing creation form suggests relevant templates from the entered role.
 Suggestions do not run an LLM and do not change instructions automatically.
-The User previews a template, explicitly applies it, and can edit the result
-before saving. Replacing edited instructions requires confirmation.
+Selecting a suggested role explicitly loads its template and opens the preview.
+Typing alone does not apply a template. Replacing edited instructions requires
+confirmation. The saved instructions remain an independently editable copy.
 
 The saved identity version records the source template ID and version alongside
 its independently stored instructions. The server validates that the referenced
@@ -102,3 +103,7 @@ restarted. Readiness checks passed, including migration readiness. Browser
 validation confirmed catalogue loading, Role suggestions, canonical role
 selection, preview and explicit application to the editable instructions.
 Custom roles remain allowed; selecting a suggestion does not overwrite a soul.
+
+## Catalogue availability
+
+Studio shows a clear status and Retry when the published catalogue is empty or its request fails. The deployment must publish the reviewed catalogue using the existing Local Operator Script; Studio does not create placeholder templates or publish from the browser. A role search can suggest a related available title: for example, Project Manager currently matches the reviewed Product Manager template. The User explicitly chooses the title to apply.

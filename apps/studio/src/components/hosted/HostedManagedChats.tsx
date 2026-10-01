@@ -54,11 +54,14 @@ import {
   type DeviceManagedChatRecoveryStore
 } from "@/lib/device-managed-chat-recovery";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
+import { ProjectMovePicker } from "@/components/ProjectMovePicker";
+import { PrepareTeamQuestionAction } from "@/components/PrepareTeamQuestionAction";
 import { ChatComposer } from "@/components/ChatComposer";
 import { AgentChatMessage, SharedChatUI } from "@/components/SharedChatUI";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
+import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import {
   managedAgentJobMarkers,
   type ManagedAgentJobMarker
@@ -1246,18 +1249,15 @@ export function HostedManagedChats({
     ) => {
       setTeamRequestReviewVersion(review.version);
       setTeamRequestReviewSaved(Boolean(review.privateGoal.trim()));
-      if (
-        teamRequestId &&
-        teamRequestTeamId &&
-        typeof window !== "undefined" &&
-        window.location.search.includes("teamReviewVersion=")
-      ) {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get("teamReviewVersion") !== String(review.version)) {
-          params.set("teamReviewVersion", String(review.version));
-          router.replace(`${window.location.pathname}?${params.toString()}`);
-        }
-      }
+      if (typeof window === "undefined") return;
+      const href = teamReviewSavedHref({
+        pathname: window.location.pathname,
+        search: window.location.search,
+        requestId: teamRequestId,
+        teamId: teamRequestTeamId,
+        reviewVersion: review.version
+      });
+      if (href) router.replace(href);
     },
     [router, teamRequestId, teamRequestTeamId]
   );
@@ -2807,45 +2807,20 @@ export function HostedManagedChats({
                     </p>
                   ) : null}
                   {projectMovePickerOpen && launchOptions ? (
-                    <div className="mt-2 flex flex-wrap items-end gap-2">
-                      <label className="text-[10px] text-muted">
-                        Destination Project
-                        <select
-                          value={projectMoveDestinationId}
-                          onChange={(event) =>
-                            setProjectMoveDestinationId(event.target.value)
-                          }
-                          className="mt-1 block min-w-44 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-                        >
-                          {launchOptions.projects
-                            .filter(
-                              (project) =>
-                                isRegisteredProjectId(project.id) &&
-                                project.id !== selectedProjectId
-                            )
-                            .map((project) => (
-                              <option key={project.id} value={project.id}>
-                                {project.name}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => setProjectMoveDialogOpen(true)}
-                        disabled={!projectMoveDestination || projectMoveBusy}
-                        className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                      >
-                        Review Move
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProjectMovePickerOpen(false)}
-                        className="rounded-md px-2 py-1.5 text-[11px] text-muted hover:bg-surface-hover"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+                    <ProjectMovePicker
+                      projects={launchOptions.projects.filter(
+                        (project) =>
+                          isRegisteredProjectId(project.id) &&
+                          project.id !== selectedProjectId
+                      )}
+                      destinationProjectId={projectMoveDestinationId}
+                      reviewDisabled={
+                        !projectMoveDestination || projectMoveBusy
+                      }
+                      onDestinationProjectChange={setProjectMoveDestinationId}
+                      onReviewMove={() => setProjectMoveDialogOpen(true)}
+                      onCancel={() => setProjectMovePickerOpen(false)}
+                    />
                   ) : null}
                 </div>
               )}
@@ -2926,15 +2901,10 @@ export function HostedManagedChats({
                     message.role === "assistant" &&
                     message.content.trim() &&
                     !message.id.startsWith("transient:") ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setTeamQuestionDraft(message.content.slice(0, 2_000))
-                        }
-                        className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
-                      >
-                        Prepare Team question
-                      </button>
+                      <PrepareTeamQuestionAction
+                        text={message.content.slice(0, 2_000)}
+                        onPrepare={setTeamQuestionDraft}
+                      />
                     ) : null}
                     {message.role === "assistant" && message.memory ? (
                       <MemoryAttributionNote

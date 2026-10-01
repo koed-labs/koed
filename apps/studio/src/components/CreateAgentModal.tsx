@@ -136,6 +136,7 @@ function AgentIdentityEditor({
   >([]);
   const [templateLoading, setTemplateLoading] = useState(!legacyMode);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateLoadAttempt, setTemplateLoadAttempt] = useState(0);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
   const [replaceTemplateConfirmOpen, setReplaceTemplateConfirmOpen] =
@@ -261,7 +262,13 @@ function AgentIdentityEditor({
         setTemplateLoading(false);
       });
     return () => controller.abort();
-  }, [legacyMode]);
+  }, [legacyMode, templateLoadAttempt]);
+
+  const retryRoleTemplates = () => {
+    setTemplateError(null);
+    setTemplateLoading(true);
+    setTemplateLoadAttempt((attempt) => attempt + 1);
+  };
 
   const close = useCallback(() => {
     if (!saving) onClose();
@@ -330,22 +337,32 @@ function AgentIdentityEditor({
     }
   };
 
-  const applyTemplate = () => {
-    if (!selectedTemplate) return;
+  const applyTemplate = (
+    template: PersonalAgentRoleTemplate | undefined = selectedTemplate
+  ) => {
+    if (!template) return;
     if (soulEdited) {
       setReplaceTemplateConfirmOpen(true);
       return;
     }
-    confirmApplyTemplate();
+    confirmApplyTemplate(template);
   };
 
-  const confirmApplyTemplate = () => {
-    if (!selectedTemplate) return;
-    setRole(selectedTemplate.role);
-    setSoul(selectedTemplateSoul);
+  const confirmApplyTemplate = (
+    template: PersonalAgentRoleTemplate | undefined = selectedTemplate
+  ) => {
+    if (!template) return;
+    const soulInstructions = name.trim()
+      ? template.soulInstructions.replace(
+          /^You are /m,
+          `You are ${name.trim()}, `
+        )
+      : template.soulInstructions;
+    setRole(template.role);
+    setSoul(soulInstructions);
     setSoulEdited(true);
-    setSourceTemplateId(selectedTemplate.id);
-    setSourceTemplateVersion(selectedTemplate.version);
+    setSourceTemplateId(template.id);
+    setSourceTemplateVersion(template.version);
     setTemplatePreviewOpen(true);
     setReplaceTemplateConfirmOpen(false);
   };
@@ -357,9 +374,9 @@ function AgentIdentityEditor({
   };
 
   const selectRoleSuggestion = (template: PersonalAgentRoleTemplate) => {
-    setRole(template.role);
     setSelectedTemplateId(template.id);
     setTemplatePreviewOpen(true);
+    applyTemplate(template);
   };
 
   return (
@@ -426,30 +443,26 @@ function AgentIdentityEditor({
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus:border-border-strong"
               />
             </label>
-            {!legacyMode && (
-              <>
-                {roleSuggestions.length > 0 && (
-                  <div
-                    className="flex flex-wrap items-center gap-2 text-[11px]"
-                    aria-label="Suggested roles"
+            {!legacyMode && roleSuggestions.length > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-2 text-[11px]"
+                aria-label="Suggested roles"
+              >
+                <span className="text-subtle">Suggestions</span>
+                {roleSuggestions.map((template) => (
+                  <button
+                    key={template.id}
+                    type="button"
+                    onClick={() => {
+                      markDraftDirty();
+                      selectRoleSuggestion(template);
+                    }}
+                    className="text-foreground-secondary underline underline-offset-2"
                   >
-                    <span className="text-subtle">Suggestions</span>
-                    {roleSuggestions.map((template) => (
-                      <button
-                        key={template.id}
-                        type="button"
-                        onClick={() => {
-                          markDraftDirty();
-                          selectRoleSuggestion(template);
-                        }}
-                        className="text-foreground-secondary underline underline-offset-2"
-                      >
-                        {template.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
+                    {template.title}
+                  </button>
+                ))}
+              </div>
             )}
             {!legacyMode && (
               <div className="space-y-2">
@@ -459,10 +472,50 @@ function AgentIdentityEditor({
                   </p>
                 )}
                 {templateError && (
-                  <p role="status" className="text-[11px] text-subtle">
-                    {templateError}
-                  </p>
+                  <div
+                    role="status"
+                    className="flex items-center gap-2 text-[11px] text-subtle"
+                  >
+                    <span>{templateError}</span>
+                    <button
+                      type="button"
+                      onClick={retryRoleTemplates}
+                      className="text-foreground-secondary underline underline-offset-2"
+                    >
+                      Retry
+                    </button>
+                  </div>
                 )}
+                {!templateLoading &&
+                  !templateError &&
+                  roleTemplates.length === 0 && (
+                    <div
+                      role="status"
+                      className="flex items-center gap-2 text-[11px] text-subtle"
+                    >
+                      <span>
+                        No role templates are currently published. You can
+                        continue with a custom role.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={retryRoleTemplates}
+                        className="shrink-0 text-foreground-secondary underline underline-offset-2"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                {!templateLoading &&
+                  !templateError &&
+                  roleTemplates.length > 0 &&
+                  role.trim() &&
+                  roleSuggestions.length === 0 && (
+                    <p role="status" className="text-[11px] text-subtle">
+                      No matching role templates. You can continue with a custom
+                      role.
+                    </p>
+                  )}
                 {selectedTemplate && (
                   <div className="flex items-center gap-3">
                     <button
@@ -658,7 +711,7 @@ function AgentIdentityEditor({
               <button
                 type="button"
                 className="rounded-lg bg-chip px-3.5 py-2 text-sm font-medium text-chip-foreground hover:bg-white"
-                onClick={confirmApplyTemplate}
+                onClick={() => confirmApplyTemplate()}
               >
                 Replace template
               </button>
