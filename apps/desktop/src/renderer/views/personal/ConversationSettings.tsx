@@ -216,17 +216,10 @@ export function ConversationSettings({
         </DropdownMenu>
       </div>
       <div className="conversation-model-controls">
-        <DropdownMenu
-          open={modelOpen}
-          onOpenChange={(value) => {
-            setModelOpen(value);
-            setModelView(false);
-            open(value);
-          }}
-        >
+        <DropdownMenu onOpenChange={open}>
           <DropdownMenuTrigger
             className="conversation-setting-trigger"
-            aria-label={`AI Client, model and reasoning: ${instance?.displayName ?? clientLabel ?? "Unavailable"}, ${modelLabel}${selection.reasoningEffort ? `, ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
+            aria-label={`AI Client: ${instance?.displayName ?? clientLabel ?? "Unavailable"}`}
           >
             {provider ? (
               <span
@@ -237,17 +230,13 @@ export function ConversationSettings({
                 <AiClientLogo id={provider} />
               </span>
             ) : null}
-            <span>
-              {modelOpen
-                ? `${instance?.displayName ?? clientLabel ?? "AI Client"} · ${modelLabel}`
-                : `${instance?.displayName ?? clientLabel ?? "AI Client"} · ${modelLabel}${selection.reasoningEffort ? ` · ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
-            </span>
+            <span>{instance?.displayName ?? clientLabel ?? "AI Client"}</span>
             <ChevronDown aria-hidden="true" />
           </DropdownMenuTrigger>
           <DropdownMenuPopup
             side="top"
             align="end"
-            className="conversation-settings-popup conversation-model-popup"
+            className="conversation-settings-popup"
           >
             <DropdownMenuGroup>
               <DropdownMenuLabel>AI Client</DropdownMenuLabel>
@@ -261,7 +250,6 @@ export function ConversationSettings({
                 {options?.instances.map((candidate) => (
                   <DropdownMenuRadioItem
                     className="conversation-setting-option"
-                    closeOnClick={false}
                     key={candidate.instanceId}
                     value={candidate.instanceId}
                     disabled={
@@ -286,9 +274,42 @@ export function ConversationSettings({
                 ))}
               </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
+            {(clientLocked || !options || reason) && (
+              <p className="conversation-settings-explanation">
+                {clientLocked
+                  ? "Start a new Conversation to change AI Client."
+                  : (reason ?? "AI Clients are unavailable.")}
+              </p>
+            )}
+          </DropdownMenuPopup>
+        </DropdownMenu>
+        <DropdownMenu
+          open={modelOpen}
+          onOpenChange={(value) => {
+            setModelOpen(value);
+            setModelView(false);
+            open(value);
+          }}
+        >
+          <DropdownMenuTrigger
+            className="conversation-setting-trigger"
+            aria-label={`Model and reasoning: ${modelLabel}${selection.reasoningEffort ? `, ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
+          >
+            <span>
+              {modelOpen
+                ? "Model & reasoning"
+                : `${modelLabel}${selection.reasoningEffort ? ` · ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
+            </span>
+            <ChevronDown aria-hidden="true" />
+          </DropdownMenuTrigger>
+          <DropdownMenuPopup
+            side="top"
+            align="end"
+            className="conversation-settings-popup conversation-model-popup"
+          >
             <DropdownMenuGroup>
               <DropdownMenuLabel>
-                {modelView ? "Select model" : "Model"}
+                {modelView ? "Select model" : "Model & reasoning"}
               </DropdownMenuLabel>
               {modelView ? (
                 <>
@@ -321,30 +342,19 @@ export function ConversationSettings({
                       setModelOpen(false);
                     }}
                   >
-                    {instance?.models.map((candidate) => {
-                      const modelIdentity = candidate.fullId ?? candidate.id;
-                      const providerSeparator = modelIdentity.indexOf("/");
-                      const providerModel =
-                        provider === "pi" && providerSeparator > 0
-                          ? modelIdentity.slice(0, providerSeparator)
-                          : "";
-                      return (
-                        <DropdownMenuRadioItem
-                          className="conversation-setting-option"
-                          key={candidate.id}
-                          value={candidate.id}
-                          disabled={blocked}
-                        >
-                          <span>
-                            {candidate.displayName ?? candidate.id}
-                            {providerModel && <small>{providerModel}</small>}
-                          </span>
-                          {selection.model === candidate.id && (
-                            <Check aria-hidden="true" />
-                          )}
-                        </DropdownMenuRadioItem>
-                      );
-                    })}
+                    {instance?.models.map((candidate) => (
+                      <DropdownMenuRadioItem
+                        className="conversation-setting-option"
+                        key={candidate.id}
+                        value={candidate.id}
+                        disabled={blocked}
+                      >
+                        <span>{candidate.displayName ?? candidate.id}</span>
+                        {selection.model === candidate.id && (
+                          <Check aria-hidden="true" />
+                        )}
+                      </DropdownMenuRadioItem>
+                    ))}
                   </DropdownMenuRadioGroup>
                 </>
               ) : (
@@ -364,77 +374,67 @@ export function ConversationSettings({
                     </span>
                     <ChevronRight aria-hidden="true" />
                   </DropdownMenuItem>
+                  {Boolean(model?.supportedReasoningEfforts.length) && (
+                    <div className="conversation-reasoning-slider">
+                      <div
+                        className="conversation-reasoning-notches"
+                        aria-hidden="true"
+                      >
+                        {model?.supportedReasoningEfforts.map((effort) => (
+                          <span key={effort} />
+                        ))}
+                      </div>
+                      <input
+                        type="range"
+                        aria-label="Reasoning effort"
+                        aria-valuetext={reasoningLabel(
+                          selection.reasoningEffort
+                        )}
+                        min={0}
+                        max={Math.max(
+                          1,
+                          (model?.supportedReasoningEfforts.length ?? 1) - 1
+                        )}
+                        step={1}
+                        value={Math.max(
+                          0,
+                          model?.supportedReasoningEfforts.indexOf(
+                            selection.reasoningEffort
+                          ) ?? 0
+                        )}
+                        disabled={
+                          blocked ||
+                          (model?.supportedReasoningEfforts.length ?? 0) < 2
+                        }
+                        onKeyDown={(event) => {
+                          if (
+                            [
+                              "ArrowLeft",
+                              "ArrowRight",
+                              "ArrowUp",
+                              "ArrowDown",
+                              "Home",
+                              "End"
+                            ].includes(event.key)
+                          )
+                            event.stopPropagation();
+                        }}
+                        onChange={(event) => {
+                          const effort =
+                            model?.supportedReasoningEfforts[
+                              Number(event.currentTarget.value)
+                            ];
+                          if (effort)
+                            onChange({ ...selection, reasoningEffort: effort });
+                        }}
+                      />
+                    </div>
+                  )}
                 </>
-              )}
-            </DropdownMenuGroup>
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Reasoning</DropdownMenuLabel>
-              {model?.supportedReasoningEfforts.length ? (
-                <div className="conversation-reasoning-slider">
-                  <div
-                    className="conversation-reasoning-notches"
-                    aria-hidden="true"
-                  >
-                    {model?.supportedReasoningEfforts.map((effort) => (
-                      <span key={effort} />
-                    ))}
-                  </div>
-                  <input
-                    type="range"
-                    aria-label="Reasoning effort"
-                    aria-valuetext={reasoningLabel(selection.reasoningEffort)}
-                    min={0}
-                    max={Math.max(
-                      1,
-                      (model?.supportedReasoningEfforts.length ?? 1) - 1
-                    )}
-                    step={1}
-                    value={Math.max(
-                      0,
-                      model?.supportedReasoningEfforts.indexOf(
-                        selection.reasoningEffort
-                      ) ?? 0
-                    )}
-                    disabled={
-                      blocked ||
-                      (model?.supportedReasoningEfforts.length ?? 0) < 2
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        [
-                          "ArrowLeft",
-                          "ArrowRight",
-                          "ArrowUp",
-                          "ArrowDown",
-                          "Home",
-                          "End"
-                        ].includes(event.key)
-                      )
-                        event.stopPropagation();
-                    }}
-                    onChange={(event) => {
-                      const effort =
-                        model?.supportedReasoningEfforts[
-                          Number(event.currentTarget.value)
-                        ];
-                      if (effort)
-                        onChange({ ...selection, reasoningEffort: effort });
-                    }}
-                  />
-                </div>
-              ) : (
-                <p className="conversation-settings-explanation">
-                  Reasoning effort is unavailable for this model.
-                </p>
               )}
             </DropdownMenuGroup>
             {reason && (
               <p className="conversation-settings-explanation">{reason}</p>
-            )}
-            {clientLocked && (
-              <p className="conversation-settings-explanation">
-                Start a new Conversation to change AI Client.
-              </p>
             )}
           </DropdownMenuPopup>
         </DropdownMenu>

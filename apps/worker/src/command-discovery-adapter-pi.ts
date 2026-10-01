@@ -155,7 +155,8 @@ const validName = (value: string): string | null => {
 };
 
 const commandFromRaw = (
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  scope: "global" | "project"
 ): ManagedConversationSlashCommand | null => {
   if (!raw || typeof raw !== "object") return null;
   const name = validName(typeof raw.name === "string" ? raw.name : "");
@@ -165,38 +166,31 @@ const commandFromRaw = (
       ? raw.description.trim().slice(0, MAX_DESCRIPTION_LENGTH)
       : "";
   const sourceType = typeof raw.source === "string" ? raw.source : "prompt";
-  const sourceInfo =
-    raw.sourceInfo && typeof raw.sourceInfo === "object"
-      ? (raw.sourceInfo as Record<string, unknown>)
-      : {};
-  const rawScope =
-    (typeof sourceInfo.scope === "string" ? sourceInfo.scope : "project") ===
-    "user"
-      ? "global"
-      : "project";
   const sourceKind =
     sourceType === "extension"
       ? "provider"
       : sourceType === "skill"
-        ? rawScope === "global"
+        ? scope === "global"
           ? "global-file"
           : "project-file"
-        : rawScope === "global"
+        : scope === "global"
           ? "global-file"
           : "project-file";
   return {
     name,
     description,
     kind: sourceType === "skill" ? "skill" : "command",
-    scope: rawScope,
+    scope,
     source: sourceKind,
     verification: "unverified"
   };
 };
 
 const discoverFromRpc = (
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  projectRoot?: string
 ): Promise<ManagedConversationSlashCommand[]> => {
+  void projectRoot;
   let child: ChildProcessWithoutNullStreams;
   let fatalError: Error | null = null;
   const workerRoot = fs.mkdtempSync(
@@ -361,7 +355,7 @@ const discoverFromRpc = (
 
       return result
         .slice(0, MAX_COMMANDS)
-        .map((raw) => commandFromRaw(raw))
+        .map((raw) => commandFromRaw(raw, "global"))
         .filter((c): c is ManagedConversationSlashCommand => c !== null)
         .filter(
           (command) => command.name.length > 0 && !command.name.includes("/")
@@ -388,7 +382,9 @@ export const createPiCommandDiscoveryAdapter = (
     );
     if (!environment) return [];
 
-    const [globalCommands] = await Promise.all([discoverFromRpc(environment)]);
+    const [globalCommands] = await Promise.all([
+      discoverFromRpc(environment, args.projectRoot)
+    ]);
 
     if (args.projectRoot) {
       const projectAdapter = createCommandDiscoveryAdapter("pi", environment);

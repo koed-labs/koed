@@ -73,13 +73,10 @@ it.each(claudeModels)(
       await act(async () =>
         container
           .querySelector<HTMLButtonElement>(
-            '[aria-label^="AI Client, model and reasoning:"]'
+            '[aria-label^="Model and reasoning:"]'
           )!
           .click()
       );
-      expect(document.body.textContent).toContain("AI Client");
-      expect(document.body.textContent).toContain("Model");
-      expect(document.body.textContent).toContain("Reasoning");
       await clickMenuItem("menuitem", otherModel.displayName);
       expect(document.body.textContent).toContain(displayName);
       await clickMenuItem("menuitemradio", displayName);
@@ -112,9 +109,7 @@ it("distinguishes loading AI Clients from a completed unavailable result", async
     );
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label^="AI Client, model and reasoning:"]'
-        )!
+        .querySelector<HTMLButtonElement>('[aria-label^="AI Client:"]')!
         .click()
     );
     expect(document.body.textContent).toContain("Loading AI Clients…");
@@ -133,75 +128,6 @@ it("distinguishes loading AI Clients from a completed unavailable result", async
     expect(document.body.textContent).toContain(
       "This AI Client is unavailable."
     );
-  } finally {
-    await act(async () => root.unmount());
-    container.remove();
-  }
-});
-
-it("shows provider/model subtext for Pi model options", async () => {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  try {
-    await act(async () =>
-      root.render(
-        <ConversationSettings
-          selection={{
-            instanceId: "pi.default",
-            model: "gpt-5.5",
-            reasoningEffort: "",
-            permissionMode: "supervised"
-          }}
-          options={{
-            runners: [],
-            instances: [
-              {
-                instanceId: "pi.default",
-                driverId: "pi",
-                displayName: "Pi",
-                ready: true,
-                readiness: "ready",
-                models: [
-                  {
-                    id: "gpt-5.5",
-                    displayName: "GPT-5.5",
-                    model: "gpt-5.5",
-                    fullId: "openai-codex/gpt-5.5",
-                    supportedReasoningEfforts: []
-                  }
-                ],
-                capabilities: {
-                  defaultPermissionMode: "supervised",
-                  permissionModes: [
-                    { mode: "supervised", support: "supported" }
-                  ]
-                }
-              }
-            ]
-          }}
-          onChange={vi.fn()}
-        />
-      )
-    );
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label^="AI Client, model and reasoning:"]'
-        )!
-        .click()
-    );
-    await act(async () =>
-      [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
-        .find((item) => item.textContent?.includes("GPT-5.5"))
-        ?.click()
-    );
-    expect(
-      [...document.body.querySelectorAll("small")].map((item) =>
-        item.textContent?.trim()
-      )
-    ).toContain("openai-codex");
-    expect(document.body.textContent).not.toContain("openai-codex/gpt-5.5");
   } finally {
     await act(async () => root.unmount());
     container.remove();
