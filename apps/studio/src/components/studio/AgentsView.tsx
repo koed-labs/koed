@@ -1,7 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Award, Copy, Pencil, Plus, Sparkles, X } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
+import {
+  Archive,
+  Award,
+  Copy,
+  LayoutGrid,
+  List,
+  Pencil,
+  Plus,
+  Sparkles,
+  X
+} from "lucide-react";
 import type { AgentDefinition, AgentStatus } from "@/lib/collab";
 import { relativeTime } from "@/lib/collab";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
@@ -26,6 +42,13 @@ import {
   uniqueAgentCloneName
 } from "@/lib/personal-agents-client";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
+import {
+  filterAgentsByLifecycle,
+  unknownActivityLabel,
+  verifiedAgentWork,
+  withoutVerifiedActivity,
+  type AgentLifecycleFilter
+} from "@/lib/agents-overview";
 
 type ModalState =
   | {
@@ -35,6 +58,8 @@ type ModalState =
     }
   | { type: "edit"; agent: PersonalAgent }
   | null;
+
+type AgentCollectionView = "cards" | "list";
 
 type AgentsViewProps = Readonly<{
   api?: PersonalAgentsApi;
@@ -109,6 +134,7 @@ function preserveActivity(
     ...next,
     projects: previous.projects,
     runningNow: previous.runningNow,
+    runningJobsVerified: previous.runningJobsVerified,
     jobs: previous.jobs,
     highlights: previous.highlights,
     stats: previous.stats,
@@ -151,8 +177,20 @@ export function AgentsView({
   const [retireError, setRetireError] = useState<string | null>(null);
   const [retiring, setRetiring] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [collectionView, setCollectionView] =
+    useState<AgentCollectionView>("cards");
+  const [lifecycleFilter, setLifecycleFilter] =
+    useState<AgentLifecycleFilter>("active");
+  const [collectionRevision, setCollectionRevision] = useState(0);
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
+  const [activityErrors, setActivityErrors] = useState<Set<string>>(
+    () => new Set()
+  );
   const [clockNow, setClockNow] = useState(() => Date.now());
   const detailSequenceRef = useRef(0);
+  const activityReadSequenceRef = useRef(new Map<string, number>());
+  const collectionRevisionRef = useRef(0);
+  const mutationInFlightRef = useRef(false);
   const agentCardRefs = useRef(new Map<string, HTMLButtonElement>());
   const mutationRequestRef = useRef<{ key: string; id: string } | null>(null);
   const retireRequestRef = useRef<{ id: string; requestId: string } | null>(
@@ -165,6 +203,12 @@ export function AgentsView({
     selectedDetailForSelection ??
     agents.find((agent) => agent.id === selectedId) ??
     null;
+  const agentsRef = useRef(agents);
+  const selectedIdRef = useRef(selectedId);
+  useLayoutEffect(() => {
+    agentsRef.current = agents;
+    selectedIdRef.current = selectedId;
+  }, [agents, selectedId]);
 
   useEffect(() => {
     if (!selected?.jobs.some((job) => job.state === "running" && job.startedAt))
@@ -183,6 +227,11 @@ export function AgentsView({
     }
   }, [selectedId]);
 
+  const markCollectionChanged = useCallback(() => {
+    collectionRevisionRef.current += 1;
+    setCollectionRevision(collectionRevisionRef.current);
+  }, []);
+
   const load = useCallback(
     async (signal: AbortSignal) => {
       setLoadState("loading");
@@ -197,6 +246,7 @@ export function AgentsView({
           ]);
         if (signal.aborted) return;
         if (agentsResult.status === "rejected") throw agentsResult.reason;
+        markCollectionChanged();
         setAgents(agentsResult.value);
         if (scopeResult.status === "fulfilled") {
           const nextScope = scopeResult.value;
@@ -209,6 +259,7 @@ export function AgentsView({
             setModal(null);
             setRetireTarget(null);
             setSelectedId(null);
+            setSelectedDetail(null);
           }
           draftScopeRef.current = nextScope;
           setDraftScope(nextScope);
@@ -238,7 +289,7 @@ export function AgentsView({
         setLoadState("error");
       }
     },
-    [api]
+    [api, markCollectionChanged]
   );
 
   useEffect(() => {
@@ -249,45 +300,165 @@ export function AgentsView({
   }, [load, refreshKey]);
 
   useEffect(() => {
+    if (loadState !== "ready") return;
+    const controller = new AbortController();
+    const revision = collectionRevisionRef.current;
+    const ids = agentsRef.current
+      .filter((agent) => agent.lifecycle === "active")
+      .map((agent) => agent.id);
+    let nextRefresh: number | undefined;
+
+    const scan = async () => {
+      for (let index = 0; index < ids.length; index += 1) {
+        if (index > 0)
+          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        if (
+          controller.signal.aborted ||
+          revision !== collectionRevisionRef.current ||
+          mutationInFlightRef.current
+        )
+          return;
+        const id = ids[index];
+        if (!id) continue;
+        if (selectedIdRef.current === id) continue;
+        const readSequence = (activityReadSequenceRef.current.get(id) ?? 0) + 1;
+        activityReadSequenceRef.current.set(id, readSequence);
+        try {
+          const activity = await api.get(id, controller.signal);
+          if (
+            controller.signal.aborted ||
+            revision !== collectionRevisionRef.current ||
+            mutationInFlightRef.current
+          )
+            return;
+          if (activityReadSequenceRef.current.get(id) !== readSequence)
+            continue;
+          setAgents((current) =>
+            current.map((agent) => (agent.id === id ? activity : agent))
+          );
+          setSelectedDetail((current) =>
+            current?.id === id ? activity : current
+          );
+          setActivityErrors((current) => {
+            const next = new Set(current);
+            next.delete(id);
+            return next;
+          });
+          if (selectedIdRef.current === id) setDetailError(null);
+        } catch (reason) {
+          if (controller.signal.aborted) return;
+          if (revision !== collectionRevisionRef.current) return;
+          if (activityReadSequenceRef.current.get(id) !== readSequence)
+            continue;
+          setAgents((current) =>
+            current.map((agent) =>
+              agent.id === id ? withoutVerifiedActivity(agent) : agent
+            )
+          );
+          setSelectedDetail((current) =>
+            current?.id === id ? withoutVerifiedActivity(current) : current
+          );
+          setActivityErrors((current) => new Set(current).add(id));
+          if (selectedIdRef.current === id) {
+            setDetailError(
+              reason instanceof Error
+                ? reason.message
+                : "Agent activity is unavailable."
+            );
+          }
+        }
+      }
+      if (!controller.signal.aborted) {
+        nextRefresh = window.setTimeout(
+          () => setActivityRefreshKey((value) => value + 1),
+          Math.max(60_000, ids.length * 1_200)
+        );
+      }
+    };
+    void scan();
+    return () => {
+      if (nextRefresh !== undefined) window.clearTimeout(nextRefresh);
+      controller.abort();
+    };
+  }, [api, activityRefreshKey, collectionRevision, loadState]);
+
+  useEffect(() => {
     if (!selectedId) return;
+    const agent = agentsRef.current.find(
+      (candidate) => candidate.id === selectedId
+    );
+    if (!agent) return;
     const sequence = ++detailSequenceRef.current;
-    let requestController: AbortController | null = null;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setDetailError(null);
+    const controller = new AbortController();
+    const revision = collectionRevisionRef.current;
+    let requestInFlight = false;
     const refresh = async () => {
-      requestController?.abort();
-      const controller = new AbortController();
-      requestController = controller;
+      if (requestInFlight) return;
+      requestInFlight = true;
+      const readSequence =
+        (activityReadSequenceRef.current.get(selectedId) ?? 0) + 1;
+      activityReadSequenceRef.current.set(selectedId, readSequence);
       try {
         const detail = await api.get(selectedId, controller.signal);
         if (
           !controller.signal.aborted &&
-          sequence === detailSequenceRef.current
+          sequence === detailSequenceRef.current &&
+          activityReadSequenceRef.current.get(selectedId) === readSequence &&
+          revision === collectionRevisionRef.current &&
+          !mutationInFlightRef.current
         ) {
           setSelectedDetail(detail);
-          setAgents((current) => upsertAgent(current, detail));
+          setAgents((current) =>
+            current.map((candidate) =>
+              candidate.id === selectedId ? detail : candidate
+            )
+          );
+          setActivityErrors((current) => {
+            const next = new Set(current);
+            next.delete(selectedId);
+            return next;
+          });
           setDetailError(null);
         }
       } catch (reason) {
         if (
           !controller.signal.aborted &&
-          sequence === detailSequenceRef.current
+          sequence === detailSequenceRef.current &&
+          activityReadSequenceRef.current.get(selectedId) === readSequence &&
+          revision === collectionRevisionRef.current &&
+          !mutationInFlightRef.current
         ) {
+          setSelectedDetail((current) =>
+            current?.id === selectedId
+              ? withoutVerifiedActivity(current)
+              : current
+          );
+          setAgents((current) =>
+            current.map((candidate) =>
+              candidate.id === selectedId
+                ? withoutVerifiedActivity(candidate)
+                : candidate
+            )
+          );
+          setActivityErrors((current) => new Set(current).add(selectedId));
           setDetailError(
             reason instanceof Error
               ? reason.message
               : "Agent activity is unavailable."
           );
         }
+      } finally {
+        requestInFlight = false;
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 30_000);
+    const interval = window.setInterval(() => void refresh(), 60_000);
     return () => {
+      detailSequenceRef.current += 1;
       window.clearInterval(interval);
-      requestController?.abort();
+      controller.abort();
     };
-  }, [api, selectedId]);
+  }, [api, selectedId, collectionRevision, activityRefreshKey]);
 
   useEffect(() => {
     if (!selectedId || modal || retireTarget) return;
@@ -309,17 +480,26 @@ export function AgentsView({
       mutationRequestRef.current = { key, id: personalAgentRequestId() };
     }
     const requestId = mutationRequestRef.current.id;
-    const next =
-      modal.type === "edit"
-        ? await api.update(modal.agent.id, modal.agent.currentVersion, values, {
-            requestId
-          })
-        : await api.create(values, { requestId });
-    setAgents((current) => upsertAgent(current, next));
-    setSelectedId(next.id);
-    setSelectedDetail((current) => preserveActivity(current, next));
-    mutationRequestRef.current = null;
-    return { definitionId: next.id };
+    mutationInFlightRef.current = true;
+    try {
+      const next =
+        modal.type === "edit"
+          ? await api.update(
+              modal.agent.id,
+              modal.agent.currentVersion,
+              values,
+              { requestId }
+            )
+          : await api.create(values, { requestId });
+      setAgents((current) => upsertAgent(current, next));
+      setSelectedId(next.id);
+      setSelectedDetail((current) => preserveActivity(current, next));
+      mutationRequestRef.current = null;
+      return { definitionId: next.id };
+    } finally {
+      mutationInFlightRef.current = false;
+      markCollectionChanged();
+    }
   };
 
   const retireAgent = async () => {
@@ -336,6 +516,7 @@ export function AgentsView({
       };
     }
     try {
+      mutationInFlightRef.current = true;
       const next = await api.retire(
         retireTarget.id,
         retireTarget.currentVersion,
@@ -352,6 +533,8 @@ export function AgentsView({
           : "The agent could not be retired."
       );
     } finally {
+      mutationInFlightRef.current = false;
+      markCollectionChanged();
       setRetiring(false);
     }
   };
@@ -360,6 +543,7 @@ export function AgentsView({
     setRestoringId(agent.id);
     setLifecycleError(null);
     try {
+      mutationInFlightRef.current = true;
       const restored = await api.restore(agent.id, agent.currentVersion, {
         requestId: personalAgentRequestId()
       });
@@ -372,6 +556,8 @@ export function AgentsView({
           : "The agent could not be restored."
       );
     } finally {
+      mutationInFlightRef.current = false;
+      markCollectionChanged();
       setRestoringId(null);
     }
   };
@@ -403,6 +589,24 @@ export function AgentsView({
       setCloneLoadingId(null);
     }
   };
+
+  const visibleAgents = filterAgentsByLifecycle(agents, lifecycleFilter);
+  const activityOverviewAgents = agents.filter(
+    (agent) => agent.lifecycle === "active"
+  );
+  const workingAgents = activityOverviewAgents
+    .map((agent) => ({ agent, work: verifiedAgentWork(agent) }))
+    .filter(({ work }) => work.status === "working");
+  const unknownActivityAgents = activityOverviewAgents.filter(
+    (agent) => verifiedAgentWork(agent).status === "unknown"
+  );
+  const unavailableActivityCount = unknownActivityAgents.filter(
+    (agent) =>
+      unknownActivityLabel(agent, activityErrors.has(agent.id)) ===
+      "unavailable"
+  ).length;
+  const checkingActivityCount =
+    unknownActivityAgents.length - unavailableActivityCount;
 
   if (loadState === "loading") {
     return (
@@ -484,93 +688,324 @@ export function AgentsView({
               </p>
             )}
 
-            {agents.length === 0 ? (
-              <div className="mt-10 rounded-xl border border-border bg-surface/50 px-6 py-16 text-center">
-                <p className="text-sm text-subtle">
-                  No agents yet. Create one and it&rsquo;s yours to reuse across
-                  your personal work.
-                </p>
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+              <div
+                className="flex items-center gap-1 rounded-lg border border-border bg-surface p-1"
+                role="group"
+                aria-label="Filter agents by lifecycle"
+              >
+                {(["active", "retired", "all"] as const).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    aria-pressed={lifecycleFilter === filter}
+                    onClick={() => setLifecycleFilter(filter)}
+                    className={`rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${lifecycleFilter === filter ? "bg-surface-active text-foreground" : "text-subtle hover:bg-surface-hover hover:text-foreground-secondary"}`}
+                  >
+                    {filter === "all"
+                      ? "All"
+                      : filter === "active"
+                        ? "Active"
+                        : "Retired"}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="mt-8 grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3">
-                {agents.map((agent) => {
-                  const isSelected = agent.id === selectedId;
-                  return (
-                    <button
+              <div
+                className="flex items-center gap-1 rounded-lg border border-border bg-surface p-1"
+                role="group"
+                aria-label="Agent collection view"
+              >
+                <button
+                  type="button"
+                  aria-label="Cards"
+                  aria-pressed={collectionView === "cards"}
+                  onClick={() => setCollectionView("cards")}
+                  className={`rounded-md p-1.5 ${collectionView === "cards" ? "bg-surface-active text-foreground" : "text-subtle hover:bg-surface-hover"}`}
+                >
+                  <LayoutGrid className="h-4 w-4" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="List"
+                  aria-pressed={collectionView === "list"}
+                  onClick={() => setCollectionView("list")}
+                  className={`rounded-md p-1.5 ${collectionView === "list" ? "bg-surface-active text-foreground" : "text-subtle hover:bg-surface-hover"}`}
+                >
+                  <List className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+
+            <section className="mt-8" aria-labelledby="agents-working-now">
+              <div className="flex items-center justify-between gap-3">
+                <h2
+                  id="agents-working-now"
+                  className="text-sm font-semibold text-foreground"
+                >
+                  Working now
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setActivityRefreshKey((value) => value + 1)}
+                  className="text-xs text-subtle underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Refresh activity
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-subtle">Active agents</p>
+              {(workingAgents.length > 0 ||
+                unknownActivityAgents.length > 0) && (
+                <div className="mt-2 space-y-2">
+                  {workingAgents.map(({ agent, work }) => (
+                    <div
                       key={agent.id}
-                      ref={(node) => {
-                        if (node) agentCardRefs.current.set(agent.id, node);
-                        else agentCardRefs.current.delete(agent.id);
-                      }}
-                      type="button"
-                      onClick={() => setSelectedId(agent.id)}
-                      aria-pressed={isSelected}
-                      className={`rounded-xl border p-4 text-left transition-colors ${isSelected ? "border-border-strong bg-surface-hover" : "border-border bg-surface hover:border-border-strong hover:bg-surface-hover/60"}`}
+                      className="rounded-lg border border-border bg-surface px-3 py-2.5"
                     >
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {agent.name}
+                        </p>
+                        <span className="flex-shrink-0 text-xs text-subtle">
+                          Working · {work.count}{" "}
+                          {work.count === 1 ? "job" : "jobs"}
+                        </span>
+                      </div>
+                      {work.jobs.length === 0 ? (
+                        <p className="mt-1 text-xs text-subtle">
+                          Job details are unavailable.
+                        </p>
+                      ) : (
+                        <div className="mt-1.5 space-y-1.5">
+                          {work.jobs.map((job) => {
+                            const projectName =
+                              job.projectName ??
+                              agent.projects.find(
+                                (project) => project.id === job.projectId
+                              )?.name;
+                            return (
+                              <div
+                                key={job.id}
+                                className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-1.5"
+                              >
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-medium text-foreground-secondary">
+                                    {job.title}
+                                  </p>
+                                  {projectName && (
+                                    <p className="truncate text-[11px] text-subtle">
+                                      {projectName}
+                                    </p>
+                                  )}
+                                </div>
+                                {job.conversationId && onOpenConversation && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onOpenConversation(job.conversationId!)
+                                    }
+                                    className="flex-shrink-0 text-xs text-subtle underline-offset-2 hover:text-foreground hover:underline"
+                                  >
+                                    Open conversation
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {unavailableActivityCount > 0 && (
+                <p className="mt-2 rounded-lg border border-border bg-surface/50 px-3 py-2 text-sm text-subtle">
+                  Activity unavailable for {unavailableActivityCount} active{" "}
+                  {unavailableActivityCount === 1 ? "agent" : "agents"}.
+                </p>
+              )}
+              {checkingActivityCount > 0 && (
+                <p className="mt-2 rounded-lg border border-border bg-surface/50 px-3 py-2 text-sm text-subtle">
+                  Checking activity for {checkingActivityCount} active{" "}
+                  {checkingActivityCount === 1 ? "agent" : "agents"}.
+                </p>
+              )}
+              {workingAgents.length === 0 &&
+                unknownActivityAgents.length === 0 && (
+                  <p className="mt-2 rounded-lg border border-border bg-surface/50 px-3 py-2 text-sm text-subtle">
+                    No verified jobs are running now.
+                  </p>
+                )}
+            </section>
+
+            <section className="mt-8" aria-label="Agent collection">
+              {visibleAgents.length === 0 ? (
+                <div className="rounded-xl border border-border bg-surface/50 px-6 py-12 text-center">
+                  <p className="text-sm text-subtle">
+                    {agents.length === 0
+                      ? "No agents yet. Create one and it’s yours to reuse across your personal work."
+                      : `No ${lifecycleFilter === "all" ? "" : `${lifecycleFilter} `}agents in this collection.`}
+                  </p>
+                </div>
+              ) : collectionView === "cards" ? (
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3">
+                  {visibleAgents.map((agent) => {
+                    const isSelected = agent.id === selectedId;
+                    const work = verifiedAgentWork(agent);
+                    return (
+                      <button
+                        key={agent.id}
+                        ref={(node) => {
+                          if (node) agentCardRefs.current.set(agent.id, node);
+                          else agentCardRefs.current.delete(agent.id);
+                        }}
+                        type="button"
+                        onClick={() => setSelectedId(agent.id)}
+                        aria-pressed={isSelected}
+                        className={`rounded-xl border p-4 text-left transition-colors ${isSelected ? "border-border-strong bg-surface-hover" : "border-border bg-surface hover:border-border-strong hover:bg-surface-hover/60"}`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <AgentAvatarView
+                            image={agent.avatar?.image}
+                            spec={avatarSpecForAgent(agent)}
+                            name={agent.name}
+                            size="xl"
+                            className="ring-1 ring-border-strong"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-lg font-semibold text-foreground">
+                                {agent.name}
+                              </p>
+                              {agent.lifecycle === "retired" && (
+                                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-subtle">
+                                  Retired
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-0.5 truncate text-sm text-subtle">
+                              {agent.role}
+                            </p>
+                            <p className="mt-1 text-xs text-subtle">
+                              {work.status === "working"
+                                ? `Working · ${work.count} ${work.count === 1 ? "job" : "jobs"}`
+                                : work.status === "idle"
+                                  ? "No verified job running"
+                                  : unknownActivityLabel(
+                                        agent,
+                                        activityErrors.has(agent.id)
+                                      ) === "unavailable"
+                                    ? "Activity unavailable"
+                                    : agent.lifecycle === "retired" &&
+                                        selectedId !== agent.id
+                                      ? "Select to load activity"
+                                      : "Checking activity…"}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-3 border-t border-border pt-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
+                            Active in
+                          </p>
+                          {!agent.activityLoaded ? (
+                            <p className="mt-1.5 text-xs text-subtle">
+                              {activityErrors.has(agent.id)
+                                ? "Project activity is unavailable."
+                                : agent.lifecycle === "retired" &&
+                                    selectedId !== agent.id
+                                  ? "Select to load project activity."
+                                  : "Project activity is being checked."}
+                            </p>
+                          ) : agent.stats?.projects === null ? (
+                            <p className="mt-1.5 text-xs text-subtle">
+                              Project engagements are unavailable.
+                            </p>
+                          ) : agent.projects.length === 0 ? (
+                            <p className="mt-1.5 text-xs text-subtle">
+                              No active project engagements.
+                            </p>
+                          ) : (
+                            <div className="mt-1.5 space-y-1.5">
+                              {agent.projects.map((project) => (
+                                <div
+                                  key={project.id}
+                                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-hover/50 px-2.5 py-1.5"
+                                >
+                                  <span className="truncate text-xs font-medium text-foreground-secondary">
+                                    {project.name}
+                                  </span>
+                                  <span className="flex-shrink-0 truncate text-[11px] text-subtle">
+                                    {settingLabel(project.model)} ·{" "}
+                                    {settingLabel(project.effort)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-border bg-surface">
+                  {visibleAgents.map((agent) => {
+                    const isSelected = agent.id === selectedId;
+                    const work = verifiedAgentWork(agent);
+                    return (
+                      <button
+                        key={agent.id}
+                        ref={(node) => {
+                          if (node) agentCardRefs.current.set(agent.id, node);
+                          else agentCardRefs.current.delete(agent.id);
+                        }}
+                        type="button"
+                        onClick={() => setSelectedId(agent.id)}
+                        aria-pressed={isSelected}
+                        className={`flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left last:border-b-0 ${isSelected ? "bg-surface-hover" : "hover:bg-surface-hover/60"}`}
+                      >
                         <AgentAvatarView
                           image={agent.avatar?.image}
                           spec={avatarSpecForAgent(agent)}
                           name={agent.name}
-                          size="xl"
+                          size="md"
                           className="ring-1 ring-border-strong"
                         />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <p className="truncate text-lg font-semibold text-foreground">
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium text-foreground">
                               {agent.name}
-                            </p>
+                            </span>
                             {agent.lifecycle === "retired" && (
-                              <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-subtle">
+                              <span className="text-[10px] uppercase tracking-wide text-subtle">
                                 Retired
                               </span>
                             )}
-                          </div>
-                          <p className="mt-0.5 truncate text-sm text-subtle">
+                          </span>
+                          <span className="block truncate text-xs text-subtle">
                             {agent.role}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-3 border-t border-border pt-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
-                          Active in
-                        </p>
-                        {!agent.activityLoaded ? (
-                          <p className="mt-1.5 text-xs text-subtle">
-                            Select this agent to load current activity.
-                          </p>
-                        ) : agent.stats?.projects === null ? (
-                          <p className="mt-1.5 text-xs text-subtle">
-                            Project engagements are unavailable.
-                          </p>
-                        ) : agent.projects.length === 0 ? (
-                          <p className="mt-1.5 text-xs text-subtle">
-                            No active project engagements.
-                          </p>
-                        ) : (
-                          <div className="mt-1.5 space-y-1.5">
-                            {agent.projects.map((project) => (
-                              <div
-                                key={project.id}
-                                className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-hover/50 px-2.5 py-1.5"
-                              >
-                                <span className="truncate text-xs font-medium text-foreground-secondary">
-                                  {project.name}
-                                </span>
-                                <span className="flex-shrink-0 truncate text-[11px] text-subtle">
-                                  {settingLabel(project.model)} ·{" "}
-                                  {settingLabel(project.effort)}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                          </span>
+                        </span>
+                        <span className="hidden flex-shrink-0 text-xs text-subtle sm:block">
+                          {work.status === "working"
+                            ? `Working · ${work.count} ${work.count === 1 ? "job" : "jobs"}`
+                            : work.status === "idle"
+                              ? "No verified job running"
+                              : unknownActivityLabel(
+                                    agent,
+                                    activityErrors.has(agent.id)
+                                  ) === "unavailable"
+                                ? "Activity unavailable"
+                                : agent.lifecycle === "retired" &&
+                                    selectedId !== agent.id
+                                  ? "Select to load activity"
+                                  : "Checking activity…"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           </div>
         </div>
 

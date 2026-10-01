@@ -86,6 +86,8 @@ export type PersonalAgent = Readonly<{
   retiredAt: number | null;
   projects: readonly PersonalAgentProject[];
   runningNow: readonly PersonalAgentJob[];
+  /** False when the service omitted verified live job details and the parser fell back to history. */
+  runningJobsVerified?: boolean;
   jobs: readonly PersonalAgentJob[];
   highlights: readonly PersonalAgentHighlight[];
   stats: Readonly<{
@@ -392,6 +394,8 @@ function parseAgent(
     retiredAt: nullableTimestamp(value.retiredAt),
     projects: projectsValue ? projectsValue.map(parseProject) : [],
     runningNow: runningValue ? runningValue.map(parseJob) : [],
+    runningJobsVerified:
+      Array.isArray(activity.runningNow) || Array.isArray(value.runningNow),
     jobs: jobsValue ? jobsValue.map(parseJob) : [],
     highlights: highlightsValue ? highlightsValue.map(parseHighlight) : [],
     stats: statsValue

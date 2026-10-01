@@ -405,6 +405,7 @@ export const registerPersonalAgentRoutes = (
         sourceTemplateVersion: identityVersion.sourceTemplateVersion,
         stats: detail.history.stats,
         jobs: detail.history.jobs,
+        runningNow: detail.history.runningNow ?? [],
         jobsHasMore: detail.history.jobsHasMore,
         jobsNextCursor: detail.history.jobsNextCursor,
         projects: detail.history.projects ?? []

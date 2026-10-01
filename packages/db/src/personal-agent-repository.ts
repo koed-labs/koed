@@ -160,6 +160,7 @@ export interface PersonalAgentExecutionAttemptPage {
 export interface PersonalAgentHistory {
   stats: Record<string, number | boolean | null>;
   jobs: PersonalAgentHistoryJob[];
+  runningNow?: PersonalAgentHistoryJob[];
   jobsHasMore: boolean;
   jobsNextCursor: string | null;
   projects: unknown[] | null;
@@ -884,33 +885,38 @@ export const createPersonalAgentRepository = (
       limit: 50
     });
     const goals = await authorizedJobGoals(actor, jobs.jobs);
-    const historyJobs: PersonalAgentHistoryJob[] = await Promise.all(
-      jobs.jobs.map(async (job) => {
-        const attempts = await listPersonalAgentExecutionAttempts(actor, {
-          jobId: job.id,
-          limit: 100
-        });
-        const historicalIdentity =
-          job.attribution.kind === "agent"
-            ? await pool.query<{ name: string }>(
-                `select name from personal_agent_identity_versions
+    const hydrateHistoryJobs = async (
+      sourceJobs: PersonalAgentExecutionJob[],
+      jobGoals: Map<string, string>
+    ): Promise<PersonalAgentHistoryJob[]> =>
+      Promise.all(
+        sourceJobs.map(async (job) => {
+          const attempts = await listPersonalAgentExecutionAttempts(actor, {
+            jobId: job.id,
+            limit: 100
+          });
+          const historicalIdentity =
+            job.attribution.kind === "agent"
+              ? await pool.query<{ name: string }>(
+                  `select name from personal_agent_identity_versions
                  where owner_user_id = $1 and agent_id = $2 and version = $3`,
-                [
-                  actor.userId,
-                  job.attribution.agentId,
-                  job.attribution.agentVersion
-                ]
-              )
-            : null;
-        return {
-          ...job,
-          goal: goals.get(job.id) ?? null,
-          agentName: historicalIdentity?.rows[0]?.name ?? null,
-          attempts: attempts.attempts,
-          latestAttempt: attempts.attempts[0] ?? null
-        };
-      })
-    );
+                  [
+                    actor.userId,
+                    job.attribution.agentId,
+                    job.attribution.agentVersion
+                  ]
+                )
+              : null;
+          return {
+            ...job,
+            goal: jobGoals.get(job.id) ?? null,
+            agentName: historicalIdentity?.rows[0]?.name ?? null,
+            attempts: attempts.attempts,
+            latestAttempt: attempts.attempts[0] ?? null
+          };
+        })
+      );
+    const historyJobs = await hydrateHistoryJobs(jobs.jobs, goals);
     const [jobStats, attemptStats, verifiedRunning, projectCount, projects] =
       await Promise.all([
         pool.query<{
@@ -937,6 +943,7 @@ export const createPersonalAgentRepository = (
           persisted_count: string;
           verified_count: string;
           observed_at: Date;
+          verified_job_ids: string[] | null;
         }>(
           `select count(distinct a.id) filter (
                   where a.status = 'running'
@@ -950,7 +957,16 @@ export const createPersonalAgentRepository = (
                     and e.state = 'running'
                     and e.runner_lease_expires_at > clock_timestamp()
                 )::text as verified_count,
-                clock_timestamp() as observed_at
+                clock_timestamp() as observed_at,
+                coalesce(array_agg(distinct j.id) filter (
+                  where a.status = 'running'
+                    and a.managed_execution_id = e.id
+                    and a.managed_execution_generation = e.execution_generation
+                    and c.execution_generation = e.execution_generation
+                    and c.command_kind = 'prompt' and c.state = 'dispatching'
+                    and e.state = 'running'
+                    and e.runner_lease_expires_at > clock_timestamp()
+                ), '{}') as verified_job_ids
          from personal_agent_execution_attempts a
          left join personal_agent_execution_jobs j
            on j.id = a.job_id and j.owner_user_id = a.owner_user_id
@@ -1004,6 +1020,42 @@ export const createPersonalAgentRepository = (
       verifiedRunning.rows[0]?.verified_count ?? 0
     );
     const runningObservedAt = verifiedRunning.rows[0]?.observed_at ?? null;
+    const verifiedJobIds = verifiedRunning.rows[0]?.verified_job_ids ?? [];
+    const historyJobIds = new Set(historyJobs.map((job) => job.id));
+    const missingRunningJobIds = verifiedJobIds.filter(
+      (jobId) => !historyJobIds.has(jobId)
+    );
+    const extraRunningJobs = missingRunningJobIds.length
+      ? await pool.query<JobRow>(
+          `select id, owner_user_id, conversation_id, command_id, title, project_id,
+              output_reference, version, last_observed_at, attribution_kind, agent_id,
+              agent_version, state, attempts_started, attempts_succeeded,
+              attempts_failed, attempts_canceled, attempts_interrupted,
+              last_attempt_id, created_at, updated_at
+           from personal_agent_execution_jobs
+           where owner_user_id = $1 and agent_id = $2 and id = any($3::uuid[])`,
+          [actor.userId, agentId, missingRunningJobIds]
+        )
+      : { rows: [] as JobRow[] };
+    const extraRunningJobRows = extraRunningJobs.rows.map(mapJob);
+    const extraGoals = await authorizedJobGoals(actor, extraRunningJobRows);
+    const titledExtraRunningJobs = extraRunningJobRows.map((job) => ({
+      ...job,
+      title: extraGoals.has(job.id)
+        ? titleFromJobGoal(extraGoals.get(job.id)!)
+        : "Agent task"
+    }));
+    const hydratedExtraRunningJobs = await hydrateHistoryJobs(
+      titledExtraRunningJobs,
+      extraGoals
+    );
+    const runningJobsById = new Map(
+      [...historyJobs, ...hydratedExtraRunningJobs].map((job) => [job.id, job])
+    );
+    const runningNow = verifiedJobIds.flatMap((jobId) => {
+      const job = runningJobsById.get(jobId);
+      return job ? [job] : [];
+    });
     const stats: Record<string, number | boolean | null> = {
       totalJobs: jobStats.rows.reduce(
         (total, row) => total + Number(row.count),
@@ -1034,6 +1086,7 @@ export const createPersonalAgentRepository = (
       history: {
         stats,
         jobs: historyJobs,
+        runningNow,
         jobsHasMore: jobs.hasMore,
         jobsNextCursor: jobs.nextCursor,
         projects: projects.rows.map((project) => ({

@@ -93,3 +93,13 @@ Agreed sequence after the frontend QA review: begin with unused UI removal and s
 - Completed: extract repeated Project Move pickers and Team review/message actions; runtime and recovery controllers remain separate.
 - Next: share Team Memory settings presentation through existing Desktop/web data adapters.
 - Defer larger controller or composer restructuring until upcoming ticket ownership is known.
+
+## Agents library overview
+
+Implemented: shared Desktop/web Cards/List views, lifecycle filtering and
+automatic verified current-work summary. See `docs/studio-personal-agents-plan.md`.
+
+For very large Agent collections, consider a compact owner-scoped bulk activity
+read so the overview does not hydrate full history for each Agent. Keep the
+existing lease/generation verification and explicit unknown states. Current
+reads are paced; this is a performance follow-up, not a new authority contract.

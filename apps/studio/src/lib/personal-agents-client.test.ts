@@ -22,6 +22,7 @@ const agent: PersonalAgent = {
   retiredAt: null,
   projects: [],
   runningNow: [],
+  runningJobsVerified: true,
   jobs: [],
   highlights: [],
   stats: { projects: 0, runningNow: 0, jobsLogged: 0 },
@@ -55,6 +56,31 @@ afterEach(() => {
 });
 
 describe("personal agents HTTP adapter", () => {
+  it("distinguishes explicit live jobs from persisted running history", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        agent: { ...agent, runningNow: undefined },
+        stats: { runningNow: 1 },
+        jobs: [
+          {
+            id: "stale-job",
+            title: "Previously running",
+            state: "running",
+            createdAt: 1,
+            attempts: []
+          }
+        ]
+      })
+    );
+
+    const result = await personalAgentsHttpAdapter.get(agent.id);
+    expect(result.stats?.runningNow).toBe(1);
+    expect(result.runningNow.map((job) => job.title)).toEqual([
+      "Previously running"
+    ]);
+    expect(result.runningJobsVerified).toBe(false);
+  });
+
   it("writes explicit defaults, bounded avatar JSON, request ID, and version", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

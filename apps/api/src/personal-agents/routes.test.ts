@@ -42,6 +42,7 @@ const detail = (): PersonalAgentDetail => ({
       jobsLogged: 0
     },
     jobs: [],
+    runningNow: [],
     jobsHasMore: false,
     jobsNextCursor: null,
     projects: []
@@ -660,10 +661,57 @@ describe("Personal Agent API", () => {
       soulInstructions: "Plan carefully.",
       stats: { projects: 0, runningNow: 0, jobsLogged: 0 },
       jobs: [],
+      runningNow: [],
       jobsHasMore: false,
       jobsNextCursor: null,
       projects: []
     });
+  });
+
+  it("returns verified currently running Jobs at the detail payload top level", async () => {
+    const fixture = await buildFixture();
+    const runningJob = {
+      contractVersion: 1 as const,
+      id: randomUUID(),
+      ownerUserId: ownerId,
+      conversationId: randomUUID(),
+      commandId: null,
+      title: "Update the project plan",
+      projectId: randomUUID(),
+      attribution: { kind: "agent" as const, agentId, agentVersion: 1 },
+      state: "running" as const,
+      counters: {
+        attemptsStarted: 1,
+        attemptsSucceeded: 0,
+        attemptsFailed: 0,
+        attemptsCanceled: 0,
+        attemptsInterrupted: 0
+      },
+      lastAttemptId: null,
+      outputReference: null,
+      version: 1,
+      lastObservedAt: null,
+      createdAt: "2026-09-22T10:00:00.000Z",
+      updatedAt: "2026-09-22T10:00:00.000Z",
+      goal: null,
+      agentName: "Planner",
+      attempts: [],
+      latestAttempt: null
+    };
+    const agentDetail = detail();
+    vi.mocked(fixture.repository.getPersonalAgent).mockResolvedValueOnce({
+      ...agentDetail,
+      history: { ...agentDetail.history, runningNow: [runningJob] }
+    });
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}`
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().runningNow).toEqual([runningJob]);
   });
 
   it("forwards version-checked retirement to the owner-scoped repository", async () => {

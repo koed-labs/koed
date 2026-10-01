@@ -82,6 +82,48 @@ Active in, Highlights and Job history sections. They require durable operational
 records alongside near-real-time execution updates. Do not derive historical
 work exclusively from current project assignments or browser state.
 
+### Library views and current work
+
+Desktop and web use the same `AgentsView`. The library defaults to Active
+(non-retired) Agents, with Retired and All filters. Cards and List offer the same
+profile selection and actions. Retirement keeps the identity and history; the
+Retired filter preserves access to Restore.
+
+Working now covers Active Agents independently of the library filter. It loads
+activity automatically through the existing owner-scoped Agent detail API. Current work uses verified runner leases and execution
+generations. Persisted running history alone is not proof of current work.
+The detail response includes a separate `runningNow` list of verified Jobs;
+ordinary history and pagination remain unchanged. Older backends can supply a
+verified count without Job details; persisted history is never used as current
+Job evidence. Unknown or failed reads are
+shown explicitly rather than counted as idle.
+
+Activity reads are paced and refreshed without overlapping scans, preserving
+headroom for Agent controls under the existing API rate limit. Project labels
+are optional for standalone Jobs. Conversation links reuse the existing
+navigation callback and do not start another Job.
+
+### Agents overview validation — October 1, 2026
+
+The configured Studio suite passed315 tests. The focused Agent overview,
+client, repository and route suites passed61 tests. Studio typechecking,
+DB/API server builds, native/hosted Studio builds, Studio scoped lint, formatting and diff checks
+passed. Backend lint retained27 existing findings and added none.
+
+Desktop/web checks verified the default Active filter, Cards/List layout,
+Retired/All access, retirement/restoration, current Job and Project labels,
+Conversation navigation, failed-read recovery and manual refresh while a
+profile is selected. A delayed background response could not overwrite newer
+selected activity. Verified work outside the first50 history items is covered
+by a repository regression; ordinary history and owner isolation are preserved.
+
+The live checks used authenticated GET fixtures and intercepted lifecycle
+actions, with zero real Agent/execution writes and zero page errors. The actual
+review backend also returned the additive verified `runningNow` array. Existing
+provider/device authority evidence was reused; no new provider Job was run.
+Review runtime digest: `23e4ea26d325466079c9b802e3c0ed422191c11a165080067dabdbf444f3f73b`,
+based on `db5a7bf0`. Private artifacts remain outside Git.
+
 ### Durable records
 
 - Agent engagements: link the stable agent identity to a project or standalone

@@ -48,7 +48,15 @@ class PersonalAgentPool {
   currentVersion = 1;
   historicalName = "Atlas";
   historyJobRows: Record<string, unknown>[] = [];
+  paginateHistoryJobPage = false;
+  historyHydrationQueries: Array<{ sql: string; values: unknown[] }> = [];
   historyCommandRows: Record<string, unknown>[] = [];
+  verifiedRunningStats = {
+    persisted_count: "0",
+    verified_count: "0",
+    observed_at: now,
+    verified_job_ids: [] as string[]
+  };
   encryptedValues: unknown[] | null = null;
   versionRow: Record<string, unknown> = {
     id: this.versionId,
@@ -226,9 +234,28 @@ class PersonalAgentPool {
       sql.startsWith("select id, owner_user_id, conversation_id, command_id") &&
       sql.includes("from personal_agent_execution_jobs")
     ) {
+      if (sql.includes("id = any($3::uuid[])")) {
+        this.historyHydrationQueries.push({ sql, values });
+        const ids = values[2] as string[];
+        const rows = this.historyJobRows.filter(
+          (row) =>
+            row.owner_user_id === values[0] &&
+            row.agent_id === values[1] &&
+            ids.includes(String(row.id))
+        );
+        return { rows, rowCount: rows.length } as unknown as pg.QueryResult<T>;
+      }
+      let rows = this.historyJobRows.filter(
+        (row) =>
+          row.owner_user_id === values[0] &&
+          (values[2] == null || row.agent_id === values[2])
+      );
+      if (this.paginateHistoryJobPage && sql.includes("limit $6")) {
+        rows = rows.slice(0, Number(values[5]));
+      }
       return {
-        rows: this.historyJobRows,
-        rowCount: this.historyJobRows.length
+        rows,
+        rowCount: rows.length
       } as unknown as pg.QueryResult<T>;
     }
     if (
@@ -244,7 +271,10 @@ class PersonalAgentPool {
       );
       return { rows, rowCount: rows.length } as unknown as pg.QueryResult<T>;
     }
-    if (sql.includes("from personal_agent_execution_attempts")) {
+    if (
+      sql.includes("from personal_agent_execution_attempts") &&
+      !sql.startsWith("select count(distinct a.id) filter")
+    ) {
       return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
     }
     if (
@@ -306,7 +336,7 @@ class PersonalAgentPool {
     }
     if (sql.startsWith("select count(distinct a.id) filter")) {
       return {
-        rows: [{ persisted_count: "0", verified_count: "0", observed_at: now }],
+        rows: [this.verifiedRunningStats],
         rowCount: 1
       } as unknown as pg.QueryResult<T>;
     }
@@ -675,6 +705,164 @@ const createRepository = (pool: PersonalAgentPool, plaintext = "") => {
 };
 
 describe("Personal Agent repository", () => {
+  it("excludes persisted running Jobs without verified managed activity", async () => {
+    const pool = new PersonalAgentPool();
+    pool.verifiedRunningStats = {
+      persisted_count: "1",
+      verified_count: "0",
+      observed_at: now,
+      verified_job_ids: []
+    };
+    const staleJobId = randomUUID();
+    pool.historyJobRows = [
+      {
+        id: staleJobId,
+        owner_user_id: ownerId,
+        conversation_id: randomUUID(),
+        command_id: null,
+        title: "Agent task",
+        project_id: randomUUID(),
+        output_reference: null,
+        version: 1,
+        last_observed_at: null,
+        attribution_kind: "agent",
+        agent_id: pool.identityId,
+        agent_version: 1,
+        state: "running",
+        attempts_started: 1,
+        attempts_succeeded: 0,
+        attempts_failed: 0,
+        attempts_canceled: 0,
+        attempts_interrupted: 0,
+        last_attempt_id: null,
+        created_at: now,
+        updated_at: now
+      }
+    ];
+    const repository = createRepository(pool);
+    await repository.createPersonalAgent(
+      { userId: ownerId },
+      {
+        requestId: randomUUID(),
+        name: `Activity ${randomUUID()}`,
+        role: "Project assistant",
+        soulInstructions: "Help with the goal.",
+        instructionSource: "custom",
+        defaultProvider: "codex",
+        defaultModel: "gpt-5.6"
+      }
+    );
+    pool.historyHydrationQueries = [];
+
+    const detail = await repository.getPersonalAgent(
+      { userId: ownerId },
+      pool.identityId
+    );
+
+    expect(detail?.history.jobs[0]).toMatchObject({
+      id: staleJobId,
+      state: "running"
+    });
+    expect(detail?.history.stats).toMatchObject({
+      runningAttemptsPersisted: 1,
+      runningNow: 0,
+      runningAttemptsMayBeStale: true
+    });
+    expect(detail?.history.runningNow).toEqual([]);
+  });
+
+  it("hydrates verified running Jobs beyond the history page within owner scope", async () => {
+    const pool = new PersonalAgentPool();
+    pool.paginateHistoryJobPage = true;
+    const outsidePageJobId = randomUUID();
+    const otherOwnerJobId = randomUUID();
+    const makeJobRow = (input: {
+      id: string;
+      ownerUserId: string;
+      state: "queued" | "running";
+    }) => ({
+      id: input.id,
+      owner_user_id: input.ownerUserId,
+      conversation_id: randomUUID(),
+      command_id: null,
+      title: "Agent task",
+      project_id: randomUUID(),
+      output_reference: null,
+      version: 1,
+      last_observed_at: null,
+      attribution_kind: "agent",
+      agent_id: pool.identityId,
+      agent_version: 1,
+      state: input.state,
+      attempts_started: input.state === "running" ? 1 : 0,
+      attempts_succeeded: 0,
+      attempts_failed: 0,
+      attempts_canceled: 0,
+      attempts_interrupted: 0,
+      last_attempt_id: null,
+      created_at: now,
+      updated_at: now
+    });
+    const historyPageRows = Array.from({ length: 50 }, () =>
+      makeJobRow({ id: randomUUID(), ownerUserId: ownerId, state: "queued" })
+    );
+    const outsidePageJob = makeJobRow({
+      id: outsidePageJobId,
+      ownerUserId: ownerId,
+      state: "running"
+    });
+    const otherOwnerJob = makeJobRow({
+      id: otherOwnerJobId,
+      ownerUserId: otherOwnerId,
+      state: "running"
+    });
+    pool.historyJobRows = [...historyPageRows, outsidePageJob, otherOwnerJob];
+    pool.verifiedRunningStats = {
+      persisted_count: "2",
+      verified_count: "2",
+      observed_at: now,
+      verified_job_ids: [outsidePageJobId, otherOwnerJobId]
+    };
+    const repository = createRepository(pool);
+    await repository.createPersonalAgent(
+      { userId: ownerId },
+      {
+        requestId: randomUUID(),
+        name: `Activity ${randomUUID()}`,
+        role: "Project assistant",
+        soulInstructions: "Help with the goal.",
+        instructionSource: "custom",
+        defaultProvider: "codex",
+        defaultModel: "gpt-5.6"
+      }
+    );
+    pool.historyHydrationQueries = [];
+
+    const detail = await repository.getPersonalAgent(
+      { userId: ownerId },
+      pool.identityId
+    );
+
+    expect(detail?.history.jobs).toHaveLength(50);
+    expect(detail?.history.jobsHasMore).toBe(true);
+    expect(detail?.history.jobsNextCursor).toEqual(expect.any(String));
+    expect(detail?.history.jobs.map((job) => job.id)).not.toContain(
+      outsidePageJobId
+    );
+    expect(detail?.history.runningNow?.map((job) => job.id)).toEqual([
+      outsidePageJobId
+    ]);
+    expect(pool.historyHydrationQueries).toHaveLength(1);
+    expect(pool.historyHydrationQueries[0]?.sql).toContain(
+      "where owner_user_id = $1 and agent_id = $2 and id = any($3::uuid[])"
+    );
+    expect(pool.historyHydrationQueries[0]?.values).toEqual([
+      ownerId,
+      pool.identityId,
+      [outsidePageJobId, otherOwnerJobId]
+    ]);
+  });
+
   it("derives owner-visible Job titles from encrypted goals without storing plaintext", async () => {
     const pool = new PersonalAgentPool();
     const commandId = randomUUID();
