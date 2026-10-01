@@ -250,7 +250,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
           {viewerMessages.length > 0 && !isCompact && (
             <nav
               aria-label="Your messages in this conversation"
-              className="absolute left-1 top-3 z-10 flex max-h-[calc(100%-1.5rem)] w-7 flex-col items-center gap-1 overflow-y-auto"
+              className="absolute left-1 top-1/2 z-10 flex -translate-y-1/2 max-h-[calc(100%-1.5rem)] w-7 flex-col items-center gap-1 overflow-y-auto"
             >
               {viewerMessages.map((message, index) => {
                 const preview = chatNavigationPreview(message.content);
@@ -287,7 +287,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
                     className={`group relative flex h-3 w-6 shrink-0 items-center justify-center rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${isActive ? "" : ""}`}
                   >
                     <span
-                      className={`h-px w-4 transition-all ${isActive ? "w-6 bg-accent" : "bg-border-strong group-hover:bg-accent"}`}
+                      className={`h-px w-1.5 transition-all ${isActive ? "w-2 bg-accent" : "bg-border-strong group-hover:bg-accent"}`}
                     />
                   </button>
                 );
@@ -306,7 +306,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
               return text ? (
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-9 top-3 z-20 w-56 rounded-md border border-border bg-surface px-2.5 py-2 text-left text-[11px] leading-relaxed text-foreground shadow-lg"
+                  className="pointer-events-none absolute left-9 top-1/2 z-20 w-56 -translate-y-1/2 rounded-md border border-border bg-surface px-2.5 py-2 text-left text-[11px] leading-relaxed text-foreground shadow-lg"
                 >
                   {text}
                 </div>
