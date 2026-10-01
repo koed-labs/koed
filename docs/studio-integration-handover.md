@@ -36,7 +36,7 @@ Test changed authority and persistence boundaries with scoped checks. Reuse unch
 
 ## Ticket15 verification and open decision
 
-Personal recall feedback is implemented and verified on `epic/ui-revamp`, based on `6838a10e`. No Ticket15 push is authorized.
+Personal recall feedback is implemented and verified on `epic/ui-revamp`, based on `6838a10e`. The User authorized publication on October 1, 2026. Implementation commit: `5a7526a2`.
 
 Scoped checks passed:
 
