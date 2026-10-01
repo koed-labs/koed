@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Settings, User } from "lucide-react";
@@ -185,6 +192,9 @@ export function TeamChannelWorkspace({
       ""
     );
   });
+  const [previousAuthorityKey, setPreviousAuthorityKey] = useState<
+    string | null
+  >(null);
   const [squareOpen, setSquareOpen] = useState(false);
   const [focusSquareJobId, setFocusSquareJobId] = useState<string | null>(null);
   const [forYouOpen, setForYouOpen] = useState(false);
@@ -247,13 +257,15 @@ export function TeamChannelWorkspace({
   const [hydratedAuthorityKey, setHydratedAuthorityKey] = useState<
     string | null
   >(null);
-  const [visibleRead, setVisibleRead] = useState<{
+  const [visibleReadState, setVisibleRead] = useState<{
     id: string;
     sequence: number;
     senderId: string;
     teamId: string;
     threadId: string;
   } | null>(null);
+  const selectedRef = useRef({ teamId: "", threadId: "" });
+  const openRootRef = useRef<CollaborationMessage | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const readReported = useRef(new Map<string, number>());
   const readPending = useRef(new Map<string, number>());
@@ -286,6 +298,7 @@ export function TeamChannelWorkspace({
   );
   const activeTeam =
     snapshot?.navigation.teams.find((team) => team.id === teamId) ?? null;
+  const activeTeamId = activeTeam?.id ?? null;
   const localProjectsOwner =
     snapshot?.connection.backendId && snapshot.navigation.teamPrincipal?.id
       ? `${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal.id}`
@@ -441,7 +454,32 @@ export function TeamChannelWorkspace({
     ],
     [snapshot, teamId]
   );
+  const fallbackThreadId =
+    activeTeam?.channels.find((thread) => thread.name === "general")?.id ??
+    activeTeam?.channels[0]?.id ??
+    activeTeam?.sharedProjects[0]?.thread.id ??
+    "";
+  if (
+    teamId &&
+    !threads.some((thread) => thread.id === threadId) &&
+    threadId !== fallbackThreadId
+  )
+    setVisibleRead(null);
+  if (
+    teamId &&
+    !threads.some((thread) => thread.id === threadId) &&
+    threadId !== fallbackThreadId
+  )
+    setThreadId(fallbackThreadId);
   const activeThread = threads.find((thread) => thread.id === threadId) ?? null;
+  const activeThreadId = activeThread?.id ?? null;
+  const connectionState = snapshot?.connection.state;
+  const visibleRead =
+    visibleReadState &&
+    visibleReadState.teamId === teamId &&
+    visibleReadState.threadId === activeThread?.id
+      ? visibleReadState
+      : null;
   const activeDirectMessage =
     activeThread?.kind === "dm" || activeThread?.kind === "group_dm"
       ? activeThread
@@ -453,20 +491,44 @@ export function TeamChannelWorkspace({
           snapshot.navigation.teamPrincipal.id
         )
       : "";
-  const authority: DraftAuthority | null =
-    snapshot &&
-    snapshot.navigation.teamPrincipal &&
-    snapshot.connection.backendId &&
-    teamId &&
-    threadId
-      ? {
-          backendId: snapshot.connection.backendId,
-          principalUserId: snapshot.navigation.teamPrincipal.id,
-          teamId,
-          threadId
-        }
-      : null;
+  const authorityBackendId = snapshot?.connection.backendId;
+  const authorityPrincipalUserId = snapshot?.navigation.teamPrincipal?.id;
+  const authority = useMemo<DraftAuthority | null>(
+    () =>
+      authorityBackendId && authorityPrincipalUserId && teamId && threadId
+        ? {
+            backendId: authorityBackendId,
+            principalUserId: authorityPrincipalUserId,
+            teamId,
+            threadId
+          }
+        : null,
+    [authorityBackendId, authorityPrincipalUserId, teamId, threadId]
+  );
   const authorityKey = authority ? JSON.stringify(authority) : null;
+  if (previousAuthorityKey !== authorityKey) {
+    setPreviousAuthorityKey(authorityKey);
+    setHydratedAuthorityKey(null);
+    setMessages([]);
+    setMessageSelection(null);
+    setPage(null);
+    setDraftText("");
+    setPendingSend(null);
+    setOpenRootMessage(null);
+    setOpenRootAuthorityKey(null);
+    setThreadReplies([]);
+    setThreadDraftText("");
+    setThreadPendingSend(null);
+    setThreadSendStatus(null);
+    setThreadEditDrafts(new Map());
+    setThreadRequests([]);
+    setVisibleRead(null);
+    setStatus((current) =>
+      current === "Team access changed. Refresh to check your access."
+        ? current
+        : null
+    );
+  }
   const visibleOpenRoot =
     openRootMessage &&
     openRootAuthorityKey === authorityKey &&
@@ -503,9 +565,10 @@ export function TeamChannelWorkspace({
   const visiblePendingSend =
     authorityKey && hydratedAuthorityKey === authorityKey ? pendingSend : null;
   const authorityKeyRef = useRef<string | null>(authorityKey);
-  authorityKeyRef.current = authorityKey;
-  const selectedRef = useRef({ teamId, threadId });
-  selectedRef.current = { teamId, threadId };
+  useLayoutEffect(() => {
+    authorityKeyRef.current = authorityKey;
+    selectedRef.current = { teamId, threadId };
+  }, [authorityKey, teamId, threadId]);
 
   const run = useCallback(
     async (
@@ -863,6 +926,7 @@ export function TeamChannelWorkspace({
       revokedRef.current = true;
       snapshotEpoch.current += 1;
       selectedRef.current = { teamId: "", threadId: "" };
+      setVisibleRead(null);
       setSnapshot(null);
       setTeamId("");
       setThreadId("");
@@ -1034,7 +1098,9 @@ export function TeamChannelWorkspace({
     }
   }, [clearRevokedView, run]);
   const refreshSnapshotRef = useRef(refreshSnapshot);
-  refreshSnapshotRef.current = refreshSnapshot;
+  useLayoutEffect(() => {
+    refreshSnapshotRef.current = refreshSnapshot;
+  }, [refreshSnapshot]);
 
   const loadPage = useCallback(
     async (
@@ -1096,7 +1162,9 @@ export function TeamChannelWorkspace({
     [clearRevokedView, run]
   );
   const loadPageRef = useRef(loadPage);
-  loadPageRef.current = loadPage;
+  useLayoutEffect(() => {
+    loadPageRef.current = loadPage;
+  }, [loadPage]);
 
   const loadRootReplies = useCallback(
     async (root: CollaborationMessage, cursor: string | null = null) => {
@@ -1149,21 +1217,10 @@ export function TeamChannelWorkspace({
     },
     [activeTeam, activeThread, authorityKey, messages, run]
   );
-  const openRootRef = useRef<CollaborationMessage | null>(openRootMessage);
-  openRootRef.current = openRootMessage;
+  useLayoutEffect(() => {
+    openRootRef.current = openRootMessage;
+  }, [openRootMessage]);
   const threadDraftEditGeneration = useRef(0);
-  useEffect(() => {
-    openRootRef.current = null;
-    setOpenRootMessage(null);
-    setOpenRootAuthorityKey(null);
-    setThreadReplies([]);
-    setThreadDraftText("");
-    setThreadPendingSend(null);
-    setThreadSendStatus(null);
-    setThreadEditDrafts(new Map());
-    setThreadRequests([]);
-  }, [authorityKey]);
-
   const openMessageThread = useCallback(
     (root: CollaborationMessage) => {
       const capturedDraftGeneration = ++threadDraftEditGeneration.current;
@@ -1292,7 +1349,7 @@ export function TeamChannelWorkspace({
   const sendThreadReply = useCallback(
     async (text: string, clientMessageId?: string) => {
       const root = openRootMessage;
-      if (!root || !authority || !activeTeam || !text.trim()) return false;
+      if (!root || !authority || !activeTeamId || !text.trim()) return false;
       const identity =
         threadPendingSend?.body === text
           ? threadPendingSend
@@ -1346,7 +1403,7 @@ export function TeamChannelWorkspace({
           }
           return false;
         }
-        if (snapshot?.connection.state !== "live") {
+        if (connectionState !== "live") {
           setStatus(
             "Pending · the reply is saved on this device until you reconnect."
           );
@@ -1401,7 +1458,7 @@ export function TeamChannelWorkspace({
           const confirmed = await completeAcceptedReceipt(replyAuthority, {
             thread: {
               scope: "team",
-              teamId: root.teamId ?? activeTeam.id,
+              teamId: root.teamId ?? authority.teamId,
               threadId: root.threadId
             },
             clientMessageId: identity.clientMessageId,
@@ -1500,7 +1557,6 @@ export function TeamChannelWorkspace({
       }
     },
     [
-      activeTeam,
       authority,
       clearRevokedView,
       completeAcceptedReceipt,
@@ -1508,7 +1564,8 @@ export function TeamChannelWorkspace({
       openRootMessage,
       recoverPendingReceipt,
       run,
-      snapshot?.connection.state,
+      connectionState,
+      activeTeamId,
       threadDraftText,
       threadPendingSend
     ]
@@ -1812,7 +1869,7 @@ export function TeamChannelWorkspace({
 
   const replyRetryAttempted = useRef<string | null>(null);
   useEffect(() => {
-    if (snapshot?.connection.state !== "live") {
+    if (connectionState !== "live") {
       replyRetryAttempted.current = null;
       return;
     }
@@ -1827,20 +1884,11 @@ export function TeamChannelWorkspace({
       threadPendingSend.body,
       threadPendingSend.clientMessageId
     );
-  }, [
-    openRootMessage,
-    sendThreadReply,
-    snapshot?.connection.state,
-    threadPendingSend
-  ]);
-
-  useEffect(() => {
-    setVisibleRead(null);
-  }, [teamId, threadId]);
+  }, [openRootMessage, sendThreadReply, connectionState, threadPendingSend]);
 
   useEffect(() => {
     let active = true;
-    if (!snapshot || !activeTeam || revokedRef.current) {
+    if (!activeTeamId || revokedRef.current) {
       return () => {
         active = false;
       };
@@ -1868,7 +1916,7 @@ export function TeamChannelWorkspace({
     return () => {
       active = false;
     };
-  }, [activeTeam, localProjectsOwner]);
+  }, [activeTeamId, localProjectsOwner]);
 
   useEffect(() => {
     let active = true;
@@ -2199,32 +2247,7 @@ export function TeamChannelWorkspace({
   ]);
 
   useEffect(() => {
-    if (teamId && !threads.some((thread) => thread.id === threadId)) {
-      const team = snapshot?.navigation.teams.find(
-        (item) => item.id === teamId
-      );
-      setThreadId(
-        team?.channels.find((thread) => thread.name === "general")?.id ??
-          team?.channels[0]?.id ??
-          team?.sharedProjects[0]?.thread.id ??
-          ""
-      );
-    }
-  }, [snapshot, teamId, threadId, threads]);
-
-  useEffect(() => {
-    setHydratedAuthorityKey(null);
-    setVisibleRead(null);
-    setMessages([]);
-    setMessageSelection(null);
-    setPage(null);
-    setDraftText("");
-    setPendingSend(null);
-    if (!activeThread || !authority) {
-      if (!revokedRef.current) setStatus(null);
-      return;
-    }
-    setStatus(null);
+    if (!activeThreadId || !authority) return;
     let active = true;
     const key = JSON.stringify(authority);
     const hydrationGeneration = draftAuthorityGenerations.current.get(key) ?? 0;
@@ -2287,15 +2310,13 @@ export function TeamChannelWorkspace({
           setHydratedAuthorityKey(JSON.stringify(authority));
         }
       });
-    void loadPageRef.current(activeThread.id, teamId);
+    void loadPageRef.current(activeThreadId, teamId);
     return () => {
       active = false;
     };
   }, [
-    activeThread?.id,
-    authority?.backendId,
-    authority?.principalUserId,
-    authority?.teamId,
+    activeThreadId,
+    authority,
     clearSavedReceiptMarker,
     drafts,
     recoverPendingReceipt,
@@ -2490,6 +2511,7 @@ export function TeamChannelWorkspace({
         return false;
       }
       selectedRef.current = { teamId: selectedTeamId, threadId: thread.id };
+      setVisibleRead(null);
       setThreadId(thread.id);
       return true;
     } catch (failure) {
@@ -3138,7 +3160,7 @@ export function TeamChannelWorkspace({
           : current
       );
     },
-    [authority?.principalUserId]
+    [authority]
   );
   const changeDraftText = (text: string) => {
     const callbackAuthorityKey = authorityKey;
@@ -3361,6 +3383,7 @@ export function TeamChannelWorkspace({
                   teamId: team.id,
                   threadId: initialThreadId
                 };
+                setVisibleRead(null);
                 setThreadId(initialThreadId);
               }}
               className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl border text-sm font-semibold ${team.id === teamId ? "border-accent/50 bg-surface-hover text-foreground ring-2 ring-accent" : "border-border bg-surface text-muted hover:bg-surface-hover"}`}

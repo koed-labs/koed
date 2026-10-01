@@ -92,6 +92,8 @@ Agreed sequence after the frontend QA review: begin with unused UI removal and s
 - Completed: share human Team message-row presentation; Desktop/web visibility and read-receipt contracts remain separate.
 - Completed: extract repeated Project Move pickers and Team review/message actions; runtime and recovery controllers remain separate.
 - Completed: share Team Memory settings presentation through existing Desktop/web data adapters; transport, permissions and stale-result guards remain in each controller.
+- Completed: resolve the 67 existing React hook findings in the Desktop/web Team screens, including draft, receipt, reconnect and authority checks.
+- Completed: separate Agents detail, Working now and retirement presentation from the library controller.
 - Defer larger controller or composer restructuring until upcoming ticket ownership is known.
 
 ## Agents library overview

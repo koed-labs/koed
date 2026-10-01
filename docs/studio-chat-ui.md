@@ -69,3 +69,23 @@ The configured Studio suite passed all315 tests, including the7 Team Memory guar
 Desktop and web checks passed channel formatting, Agent invocation, main-feed and thread reaction pickers, edit cancellation, replies and PR chat. Team Memory checks passed member switches, all tabs, existing owned-share rows and retained-memory removal confirmation/cancellation. The retained-memory fixture replaced read responses only. No messages, execution commands or memory mutations were submitted, and no page errors were observed.
 
 The original Team Memory request and recovery logic was compared with the previous revision; only formatting parentheses changed. The outer message-row visibility observers, attributes and read receipt callbacks remain unchanged. The review used working-tree source on `6a02c829`, digest `d3ee044c56d8ec9e1b6f2c9ddbd24f51687693de5dbefac10acf9125952ed4b0`. No new provider/device matrix was needed for these presentation changes. Private review artifacts remain outside Git.
+
+## Agents presentation boundaries
+
+`AgentsView` retains account verification, activity refresh pacing, late-response guards, drafts, profile edits, cloning and lifecycle actions. `AgentDetailPanel` groups Agent details with their Job cards and statistics. `WorkingAgentCard` renders current work, and `RetireAgentDialog` renders retirement confirmation. Small display-format helpers live in `agents-presentation-utils`. These are presentation extractions with unchanged markup and behavior; they introduce no service or backend contract changes.
+
+## Team workspace hook boundaries
+
+Desktop and web draft authorities are memoized by backend, account, Team and thread. Selection changes clear stale presentation before commit; committed refs and the existing request guards keep asynchronous reads and receipts attached to their original scope. Read markers reset when the selected channel or authority changes.
+
+Hosted reconnect retry calls the existing reply-send pipeline through a React Effect Event. The shared draft helper preserves text typed after a pending reply. Same-channel message refreshes merge authorized messages with already loaded pages and live updates. No lint rule is suppressed, and no backend contract changes are introduced.
+
+### Agents and hook cleanup validation
+
+The configured Studio suite passed315 tests, and the focused Agents suites passed26 tests. All affected runtime files have zero lint errors or warnings, including the two Team controllers that previously had67 findings. Studio typechecking, formatting, diff checks and native/hosted builds passed. No lint suppression or artificial scheduling was added.
+
+Desktop/web checks passed Agents Cards/List views, lifecycle filters, retire/restore, verified current work, failed-read recovery and late-response guards. Existing Agent functions were compared with the previous revision and retained their original bodies. Chat checks passed human/Agent controls, thread and PR chat, edit cancellation, reactions, live teammate reply/edit updates, author-only edit controls and preservation of typed drafts during updates.
+
+Draft checks covered channel switching, reload, offline edits and returning to a thread. The web offline reply check verified one accepted message after reconnect, preservation of later unsent text after receipt settlement and reload, and encrypted edit-draft recovery. Recovery tests wait for asynchronous hydration rather than assuming a fixed delay. Independent review checked revoked-Team cache cleanup and account/backend-scoped read state; delayed cleanup is guarded against a newer authority or authorization snapshot. Synthetic message writes used the isolated review Team only. No Agent execution, production data or backend contract was changed.
+
+The final runtime review source digest was `bc76b2444585c8115b27a7efcfad5265c120c0b5cc729aa48d6b08cb5932a305`, based on `a9ed7a5a`. The additional web account-switch check passed draft isolation and channel-pane reset. Release bookkeeping remains deferred to the combined epic review, as previously agreed. Private credentials and review artifacts remain outside Git.
