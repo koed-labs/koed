@@ -689,12 +689,17 @@ export const startLocalAiRuntime = async ({
         }
       } catch (error) {
         if (requestAbort.signal.aborted) return;
+        const errorStatus =
+          error && typeof error === "object"
+            ? (error as { statusCode?: unknown; status?: unknown })
+            : {};
+        const suppliedStatus = errorStatus.statusCode ?? errorStatus.status;
         const statusCode =
-          error &&
-          typeof error === "object" &&
-          "statusCode" in error &&
-          typeof (error as { statusCode?: unknown }).statusCode === "number"
-            ? (error as { statusCode: number }).statusCode
+          typeof suppliedStatus === "number" &&
+          Number.isInteger(suppliedStatus) &&
+          suppliedStatus >= 400 &&
+          suppliedStatus <= 599
+            ? suppliedStatus
             : error instanceof z.ZodError || error instanceof SyntaxError
               ? 400
               : 500;
@@ -702,9 +707,25 @@ export const startLocalAiRuntime = async ({
           { err: error, statusCode },
           "local AI runtime request failed"
         );
+        if (response.headersSent) {
+          response.end();
+          return;
+        }
         json(response, statusCode, {
           error:
-            error instanceof Error ? error.message : "Local AI runtime error"
+            statusCode === 401
+              ? "Local AI runtime access denied"
+              : statusCode === 403
+                ? "Local AI runtime operation forbidden"
+                : statusCode === 404
+                  ? "Memory Answer task not found"
+                  : statusCode === 410
+                    ? "Memory Answer task expired"
+                    : statusCode === 429
+                      ? "Koed Memory Answer queue is full"
+                      : statusCode === 400
+                        ? "Invalid local AI runtime request"
+                        : "Local AI runtime request failed"
         });
       } finally {
         activeRequests.delete(requestAbort);

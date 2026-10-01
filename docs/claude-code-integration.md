@@ -56,11 +56,14 @@ Operator Script is:
 pnpm claude:configure
 ```
 
-The Local Operator Script checks Claude Code sign-in without using it as a
-profile-setup gate, installs the Koed MCP Server at Claude Code's user scope,
+The Local Operator Script checks Claude Code sign-in before changing the profile,
+installs the Koed MCP Server at Claude Code's user scope,
 merges the Koed Capture Hook into the local Claude settings file, and registers
 `claude.default`. It preserves unrelated hooks and MCP entries. Restart Claude
 Code after the command completes.
+
+The headless `koed-server setup claude --json` command, like Desktop setup, can
+configure the profile while signed out and report that sign-in is required.
 
 Validate or remove only the Koed-owned integration with:
 
@@ -188,10 +191,111 @@ when it does not match the captured Project. Session search requires a backend
 `session_id`, and global search spans all Personal Memory visible to the API
 Token.
 
+For a personal fact that may have been saved outside the current Project, ask
+explicitly for `search_domain: "global"`. Use `response_detail: "with_evidence"`
+when the answer must include its sources. A Project-scoped `not_found` result
+does not establish that the fact is absent from all Personal Memory.
+
 These checks confirm MCP and API connectivity; they are not a substitute for a
 live capture acceptance test. After restarting Claude Code, create a fresh
 session, then inspect Koed for the resulting Captured Session before treating
 capture as verified.
+
+### Background recall in independently started Claude Code
+
+The headless setup command and Local Operator Script provide an explicit opt-in
+for Claude Code's native backgrounding of ordinary MCP calls:
+
+```bash
+pnpm koed-server setup claude --background-recall --json
+pnpm claude:configure --background-recall
+```
+
+Choose either command, then restart Claude Code. This option sets
+`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` to `500` in the Claude host's settings
+environment when no existing threshold or disable setting takes precedence.
+It affects all ordinary MCP calls in Claude Code, including calls to other MCP
+Servers. Ordinary setup and Desktop setup retain the existing host behavior.
+
+For a temporary manual test, launch a fresh interactive host with:
+
+```bash
+CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=500 claude
+```
+
+This applies the threshold to that host process without editing settings files.
+It still affects all ordinary MCP calls. Check for the native background-task
+receipt before assessing continuation: a final tool result followed by independent
+work is synchronous recall, even if the agent describes it as background work.
+An existing background-task disable setting can still prevent backgrounding.
+
+Claude Code can release its main Conversation after that threshold while Koed's
+ordinary `memory_answer` call remains pending. The agent can continue independent
+work, and Claude supplies the completed result through its native background
+notification. A decision that depends on memory must wait for that result.
+Koed keeps the same Local AI Runtime and Memory Answer execution path; this
+option does not introduce another executor or expose native MCP Tasks.
+
+To verify the interactive flow after setup, use a question whose answer is
+already saved in Personal Memory, and request independent work in the same
+prompt. For example:
+
+```text
+First call memory_answer with query "What is my favourite colour?",
+search_domain "global", and response_detail "with_evidence".
+While it runs, summarise package.json's development commands.
+Automatically report the completed answer and evidence. Do not poll or retry.
+```
+
+Check that the independent work appears before the native completion and that
+Claude then cites the saved source without another User prompt. A manual run
+with Claude Code 2.1.267 on 2026-10-01 demonstrated this flow with real Personal
+Memory and its original note as evidence. This verifies that run; it does not
+verify delivery after host exit or the setup command's isolated acceptance tests.
+
+Completion can be queued while an independent foreground tool is running. A
+manual lint test observed that queueing and automatic answer consumption when
+the foreground call yielded. The notification did not interrupt the tool: a
+long foreground call can delay the agent's use of the completed Memory Answer.
+
+Isolated tests with Claude Code 2.1.267 passed for idle delivery and completion
+during a foreground tool. Recall released the Conversation within 574 ms in
+the foreground-tool test. The completed answer arrived automatically after
+the tool returned. The lint command failed, so this result proves delivery
+timing rather than code quality.
+
+Separate isolated tests covered timeout, selected host stop, pending exit,
+revocation and expiry. Stopping the host request detached its wait while the
+durable Koed task continued. Revocation and expiry suppressed the completed
+answer and produced an automatic failure. Those tests changed generated
+records before the final access read. Repeated calls in one Conversation and
+delivery after reopening remain untested.
+
+Setup preserves an existing threshold, a threshold of `0`, and
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. An inherited host environment threshold
+also takes precedence. The setup result reports whether it configured,
+preserved, or could not enable prompt backgrounding. A Koed-owned journal under
+`KOED_HOME/config/claude-background-recall.json` records values inserted by this
+opt-in. Integration removal removes only that recorded value when it is still
+unchanged; later User edits and preexisting values remain.
+
+Each settings or journal file is written atomically, and reported setup failures
+trigger rollback. These files and Claude's MCP configuration do not form a
+single filesystem transaction; an interrupted setup may need repair. Claude's
+MCP display loses argument boundaries for custom entries, so Koed refuses an
+ambiguous existing entry before replacing or removing it.
+
+This option requires the same minimum Claude Code version as Koed setup.
+Claude's automatic MCP backgrounding applies to interactive main Conversations;
+subagent and IDE tool calls have different host behavior. Noninteractive
+backgrounding requires an additional Claude option that Koed setup does not
+enable. Server timeouts and cancellation still apply. Exiting Claude Code can
+stop pending calls; reopening a Conversation does not establish delivery
+recovery for this host mechanism. See
+[asynchronous Memory Answer delivery](async-memory-answer.md) for the shared
+lifecycle and separately validated client limits, and
+[Claude's backgrounding documentation](https://code.claude.com/docs/en/mcp#automatic-backgrounding-of-long-tool-calls)
+for host behavior.
 
 ## Per-flow Synthesis routing
 

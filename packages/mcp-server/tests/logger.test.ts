@@ -99,4 +99,95 @@ describe("MCP logger", () => {
     expect(output).not.toContain(sentinel);
     expect(output).toContain("[Redacted]");
   });
+  it("never serializes exception content and bounds hostile error metadata", () => {
+    let output = "";
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        output += String(chunk);
+        callback();
+      }
+    });
+    const log = createMcpLogger("error-safety-test", {
+      destination,
+      environment: { MEMORY_LOG_LEVEL: "info", NODE_ENV: "test" }
+    });
+    const secret = "MEMORY_AND_CREDENTIAL_SENTINEL";
+    const error = Object.assign(
+      new Error(secret, { cause: new Error(secret) }),
+      {
+        status: 401,
+        payload: { token: secret },
+        details: secret.repeat(10000),
+        code: secret
+      }
+    );
+    log.warn({ err: error }, "operation failed");
+    log.warn(error);
+    log.warn(
+      {
+        error: JSON.parse(
+          JSON.stringify({
+            message: secret,
+            stack: secret,
+            cause: { token: secret },
+            statusCode: 404
+          })
+        )
+      },
+      "request failed"
+    );
+    log.warn(
+      {
+        err: error,
+        nested: { cause: error, message: secret },
+        many: Array(1000).fill({ text: "x".repeat(10000) })
+      },
+      "bounded metadata"
+    );
+    expect(output).not.toContain(secret);
+    const lines = output.trim().split("\n");
+    expect(lines).toHaveLength(4);
+    for (const line of lines)
+      expect(Buffer.byteLength(line)).toBeLessThan(8192);
+    expect((JSON.parse(lines[0]!) as { err: unknown }).err).toEqual({
+      type: "Error",
+      status: 401
+    });
+  });
+  it("does not invoke error getters, toJSON or cyclic causes", () => {
+    let output = "";
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        output += String(chunk);
+        callback();
+      }
+    });
+    const log = createMcpLogger("hostile-error-test", {
+      destination,
+      environment: { MEMORY_LOG_LEVEL: "info" }
+    });
+    const getter = () => {
+      throw new Error("SECRET_GETTER");
+    };
+    const error = Object.defineProperty(new Error("SECRET_ERROR"), "status", {
+      get: getter
+    });
+    (error as Error & { cause: unknown }).cause = error;
+    Object.assign(error, { toJSON: getter });
+    expect(() => log.warn({ err: error }, "failed")).not.toThrow();
+    expect(() =>
+      log.warn(
+        {
+          err: {
+            get statusCode() {
+              return getter();
+            },
+            toJSON: getter
+          }
+        },
+        "failed"
+      )
+    ).not.toThrow();
+    expect(output).not.toContain("SECRET");
+  });
 });

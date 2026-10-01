@@ -5,10 +5,21 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+
+import {
+  captureClaudeBackgroundJournal,
+  configureClaudeBackgroundRecall,
+  removeClaudeBackgroundRecall,
+  writeClaudeBackgroundJournal,
+  writeClaudeSettingsFileAtomic
+} from "../packages/koed-server/src/claude-background-settings.mjs";
+
+import { parseClaudeOwnedMcpEntry } from "../packages/koed-server/src/claude-mcp-entry.mjs";
 
 const mode = process.argv.includes("--remove")
   ? "remove"
@@ -21,7 +32,8 @@ const claudeCommand = process.env.KOED_CLAUDE_CODE_EXECUTABLE ?? "claude";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const koedHome = resolve(process.env.KOED_HOME ?? `${homedir()}/.koed`);
 const settingsPath = resolve(
-  process.env.CLAUDE_SETTINGS_PATH ?? `${homedir()}/.claude/settings.json`
+  process.env.CLAUDE_SETTINGS_PATH ??
+    `${process.env.CLAUDE_CONFIG_DIR ?? `${process.env.HOME ?? homedir()}/.claude`}/settings.json`
 );
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(
@@ -78,24 +90,30 @@ const runClaude = (args) =>
     env: childEnvironment,
     timeout: 30_000
   });
-const unquote = (value) => {
-  const trimmed = value.trim();
-  return trimmed.length >= 2 &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'")))
-    ? trimmed.slice(1, -1)
-    : trimmed;
-};
-const mcpEntryIsKoedOwned = (output) => {
-  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
-  const configuredKoedHome = output.match(/^\s*KOED_HOME=(.+)$/m)?.[1];
-  return Boolean(
-    args &&
-    configuredKoedHome &&
-    resolve(unquote(args)) === mcpCliPath &&
-    resolve(unquote(configuredKoedHome)) === koedHome
-  );
-};
+const mcpEntryIsKoedOwned = (output) =>
+  Boolean(parseClaudeOwnedMcpEntry(output, mcpCliPath, koedHome));
+
+if (mode === "configure" && process.argv.includes("--background-recall")) {
+  const version = runClaude(["--version"]);
+  const numbers = version.stdout
+    ?.match(/(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  if (
+    version.status !== 0 ||
+    !numbers ||
+    !(
+      numbers[0] > 2 ||
+      (numbers[0] === 2 &&
+        (numbers[1] > 1 || (numbers[1] === 1 && numbers[2] >= 227)))
+    )
+  ) {
+    console.error(
+      "Claude Code 2.1.227 or newer is required for Koed background recall setup."
+    );
+    process.exit(1);
+  }
+}
 
 const auth = runClaude(["auth", "status", "--json"]);
 if (mode !== "remove" && auth.status !== 0) {
@@ -103,9 +121,23 @@ if (mode !== "remove" && auth.status !== 0) {
   process.exit(1);
 }
 
-const settings = existsSync(settingsPath)
-  ? JSON.parse(readFileSync(settingsPath, "utf8"))
-  : {};
+const originalSettings = existsSync(settingsPath)
+  ? readFileSync(settingsPath, "utf8")
+  : null;
+const settings = originalSettings === null ? {} : JSON.parse(originalSettings);
+const backgroundSnapshot =
+  mode === "remove" || process.argv.includes("--background-recall")
+    ? captureClaudeBackgroundJournal(koedHome)
+    : undefined;
+const background =
+  mode === "configure" && process.argv.includes("--background-recall")
+    ? configureClaudeBackgroundRecall(
+        settings,
+        process.env,
+        settingsPath,
+        backgroundSnapshot
+      )
+    : undefined;
 settings.hooks = settings.hooks ?? {};
 const hookCommand = [
   nodeCommand,
@@ -139,6 +171,85 @@ const hasKoedHook = (entries) =>
     JSON.stringify(entry).includes(captureHookPath)
   );
 
+const writeSettings = (content) => {
+  if (
+    background ||
+    (backgroundSnapshot?.content !== null &&
+      backgroundSnapshot?.content !== undefined)
+  )
+    writeClaudeSettingsFileAtomic(settingsPath, content);
+  else {
+    writeFileSync(settingsPath, content, { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+  }
+};
+const restorePriorMcp = (existingMcp) => {
+  if (existingMcp.status !== 0) return;
+  const entry = parseClaudeOwnedMcpEntry(
+    existingMcp.stdout ?? "",
+    mcpCliPath,
+    koedHome
+  );
+  if (!entry)
+    throw new Error(
+      "Claude MCP output cannot be restored without guessing its original arguments"
+    );
+  const restored = runClaude([
+    "mcp",
+    "add",
+    "--scope",
+    "user",
+    mcpName,
+    ...entry.environment.flatMap(([key, value]) => [
+      "--env",
+      `${key}=${value}`
+    ]),
+    "--",
+    entry.command,
+    ...entry.args
+  ]);
+  if (restored.status !== 0) throw new Error("Claude MCP restoration failed.");
+};
+const rollbackSettings = () => {
+  if (originalSettings === null) {
+    if (existsSync(settingsPath)) unlinkSync(settingsPath);
+  } else writeSettings(originalSettings);
+};
+const failWithRollback = (error, existingMcp, removeReplacement) => {
+  const failures = [error instanceof Error ? error.message : String(error)];
+  try {
+    rollbackSettings();
+  } catch (restoreError) {
+    failures.push(
+      `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+    );
+  }
+  if (backgroundSnapshot) {
+    try {
+      writeClaudeBackgroundJournal(
+        backgroundSnapshot,
+        backgroundSnapshot.content
+      );
+    } catch (restoreError) {
+      failures.push(
+        `Claude journal rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+      );
+    }
+  }
+  if (
+    removeReplacement &&
+    runClaude(["mcp", "remove", "--scope", "user", mcpName]).status !== 0
+  )
+    failures.push("Claude MCP rollback failed.");
+  try {
+    restorePriorMcp(existingMcp);
+  } catch (restoreError) {
+    failures.push(restoreError.message);
+  }
+  console.error(failures.join(" "));
+  process.exit(1);
+};
+
 if (mode === "check") {
   const mcp = runClaude(["mcp", "get", mcpName]);
   const missingHooks = hookEvents.filter(
@@ -163,24 +274,45 @@ if (mode === "check") {
 }
 
 if (mode === "remove") {
+  const backgroundRemoval = removeClaudeBackgroundRecall(
+    settings,
+    settingsPath,
+    backgroundSnapshot
+  );
   const existingMcp = runClaude(["mcp", "get", mcpName]);
+  if (
+    backgroundSnapshot?.content !== null &&
+    existingMcp.status === 0 &&
+    !mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
+  ) {
+    console.error(
+      "Claude MCP entry is unrelated or its display has ambiguous arguments; it was not removed."
+    );
+    process.exit(1);
+  }
   if (
     existingMcp.status === 0 &&
     mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
   ) {
-    runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+    const removed = runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+    if (removed.status !== 0) {
+      console.error(removed.stderr?.trim() || "Claude MCP removal failed.");
+      process.exit(1);
+    }
   }
-  for (const eventName of hookEvents) {
-    const remaining = withoutKoedHook(settings.hooks[eventName]);
-    if (remaining.length > 0) settings.hooks[eventName] = remaining;
-    else delete settings.hooks[eventName];
+  try {
+    for (const eventName of hookEvents) {
+      const remaining = withoutKoedHook(settings.hooks[eventName]);
+      if (remaining.length > 0) settings.hooks[eventName] = remaining;
+      else delete settings.hooks[eventName];
+    }
+    if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+    mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
+    writeSettings(`${JSON.stringify(settings, null, 2)}\n`);
+    writeClaudeBackgroundJournal(backgroundSnapshot, backgroundRemoval.journal);
+  } catch (error) {
+    failWithRollback(error, existingMcp, false);
   }
-  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-  mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
-  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, {
-    mode: 0o600
-  });
-  chmodSync(settingsPath, 0o600);
   console.log(
     "Claude Code integration removed; unrelated settings were preserved."
   );
@@ -221,6 +353,7 @@ const add = spawnSync(
   { encoding: "utf8", env: childEnvironment, timeout: 30_000 }
 );
 if (add.status !== 0) {
+  if (existingMcp.status === 0) restorePriorMcp(existingMcp);
   console.error(add.stderr?.trim() || "Claude MCP setup failed.");
   process.exit(1);
 }
@@ -240,13 +373,18 @@ for (const eventName of hookEvents) {
     }
   ];
 }
-mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
-writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, {
-  mode: 0o600
-});
-chmodSync(settingsPath, 0o600);
+try {
+  mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
+  if (backgroundSnapshot && background)
+    writeClaudeBackgroundJournal(backgroundSnapshot, background.journal);
+  writeSettings(`${JSON.stringify(settings, null, 2)}\n`);
+} catch (error) {
+  failWithRollback(error, existingMcp, true);
+}
 
 console.log("Claude Code integration configured.");
 console.log(`KOED_HOME: ${koedHome}`);
 console.log(`Claude settings: ${settingsPath}`);
 console.log("Restart Claude Code before verifying capture and recall.");
+
+if (background) console.log(background.report.message);

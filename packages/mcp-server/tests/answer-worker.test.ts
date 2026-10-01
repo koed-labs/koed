@@ -65,8 +65,6 @@ const answerObject = (
       ? [
           {
             evidence_index: 0,
-            source_id: "event-1",
-            visibility: "personal",
             relevance: "direct answer",
             support: "Koed Docker stack"
           }
@@ -2593,6 +2591,200 @@ describe("memory answer worker", () => {
       candidates[1]
     ]);
   });
+
+  describe("consistent source selection", () => {
+    const original = {
+      sourceType: "memory_event",
+      sourceId: "generated-original-note",
+      sourceChunkIndex: 0,
+      visibility: "personal",
+      summaryText: "My favourite colour is yellow."
+    };
+    const replay = {
+      ...original,
+      sourceId: "generated-replayed-answer",
+      summaryText: "Earlier recall reported yellow, quoting the original note."
+    };
+    const candidates = [replay, original, { ...original, sourceChunkIndex: 1 }];
+    const selection = {
+      source_type: original.sourceType,
+      source_id: original.sourceId,
+      source_chunk_index: original.sourceChunkIndex
+    };
+    const answer = (evidence: StructuredMemoryAnswer["evidence"]) =>
+      ({ ...answerObject("Yellow"), evidence }) as StructuredMemoryAnswer;
+
+    it.each([0, 1, 99])(
+      "resolves the original source instead of trusting index %s",
+      (evidence_index) => {
+        expect(
+          evidenceSelectedByAnswer(
+            candidates,
+            answer([{ ...selection, evidence_index }])
+          )
+        ).toEqual([original]);
+      }
+    );
+
+    it("preserves index-only selection and checks supplied partial identity", () => {
+      expect(
+        evidenceSelectedByAnswer(candidates, answer([{ evidence_index: 0 }]))
+      ).toEqual([replay]);
+      expect(
+        evidenceSelectedByAnswer(
+          candidates,
+          answer([{ evidence_index: 1, source_id: original.sourceId }])
+        )
+      ).toEqual([original]);
+      expect(() =>
+        evidenceSelectedByAnswer(
+          candidates,
+          answer([{ evidence_index: 0, source_id: original.sourceId }])
+        )
+      ).toThrow("without resolvable supporting evidence");
+    });
+
+    it.each([
+      { ...selection, source_id: "missing-source", evidence_index: 0 },
+      { ...selection, source_type: "memory_node", evidence_index: 0 },
+      { ...selection, source_chunk_index: 9, evidence_index: 1 },
+      { ...selection, node_id: "wrong-node", evidence_index: 1 },
+      { ...selection, visibility: "team", evidence_index: 1 },
+      { evidence_index: 99 },
+      { evidence_index: -1 },
+      { evidence_index: 0.5 }
+    ])("rejects unresolved or conflicting references %#", (reference) => {
+      expect(() =>
+        evidenceSelectedByAnswer(candidates, answer([reference]))
+      ).toThrow("without resolvable supporting evidence");
+    });
+
+    it("checks partial chunk/node references and explicit missing visibility", () => {
+      for (const reference of [
+        { evidence_index: 1, source_chunk_index: 1 },
+        { evidence_index: 1, node_id: "different-node" }
+      ]) {
+        expect(() =>
+          evidenceSelectedByAnswer(candidates, answer([reference]))
+        ).toThrow("without resolvable supporting evidence");
+      }
+      const withoutVisibility = { ...original, visibility: undefined };
+      expect(() =>
+        evidenceSelectedByAnswer(
+          [withoutVisibility],
+          answer([{ ...selection, visibility: "personal" }])
+        )
+      ).toThrow("without resolvable supporting evidence");
+    });
+
+    it("rejects a dangling citation even alongside a valid selection", () => {
+      expect(() =>
+        evidenceSelectedByAnswer(
+          candidates,
+          answer([selection, { ...selection, source_id: "missing-source" }])
+        )
+      ).toThrow("without resolvable supporting evidence");
+    });
+
+    it("selects exact chunks and deduplicates repeated references", () => {
+      expect(
+        evidenceSelectedByAnswer(
+          candidates,
+          answer([
+            { ...selection, evidence_index: 0 },
+            selection,
+            { ...selection, source_chunk_index: 1, evidence_index: 1 }
+          ])
+        )
+      ).toEqual([original, candidates[2]]);
+    });
+  });
+
+  it.each([false, true])(
+    "validates worker source identity across stale indexes (missing=%s)",
+    async (missing) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-answer-selection-")
+      );
+      const original = {
+        sourceType: "memory_event",
+        sourceId: "generated-original",
+        citation: { sourceId: "generated-original" },
+        sourceChunkIndex: 0,
+        visibility: "personal",
+        summaryText: "My favourite colour is yellow."
+      };
+      const replay = {
+        ...original,
+        sourceId: "generated-replay",
+        citation: { sourceId: "generated-replay" },
+        summaryText: "Previous recall said yellow."
+      };
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What is my favourite colour?",
+              evidence: [replay, original],
+              retrieval: { mode: "app_server_dynamic_tools" }
+            }
+          },
+          {
+            client: {
+              async search() {
+                return { hits: [], retrieval: { stages: [] } };
+              },
+              async expand() {
+                throw new Error("expand should not run");
+              }
+            },
+            responseDetail: "internal",
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false,
+                  answer: {
+                    ...answerObject("Yellow"),
+                    evidence: [
+                      {
+                        evidence_index: 0,
+                        source_type: "memory_event",
+                        source_id: missing
+                          ? "generated-missing"
+                          : original.sourceId,
+                        source_chunk_index: 0
+                      }
+                    ]
+                  }
+                }),
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+            })
+          }
+        );
+        if (missing) {
+          expect(response.localMemoryWorker.usedFallback).toBe(true);
+          expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
+          expect(response.localMemoryWorker.errorMessage).toContain(
+            "without resolvable supporting evidence"
+          );
+        } else {
+          expect(response.localMemoryWorker.usedFallback).toBe(false);
+          expect(response.evidence).toMatchObject([
+            { sourceId: original.sourceId, sourceChunkIndex: 0 }
+          ]);
+          expect(response.citations).toMatchObject([
+            { sourceId: original.sourceId }
+          ]);
+          expect(response.structuredAnswer?.evidence).toMatchObject([
+            { source_id: original.sourceId }
+          ]);
+        }
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("runs independent first-pass semantic searches concurrently and checks exact anchors", async () => {
     let active = 0;

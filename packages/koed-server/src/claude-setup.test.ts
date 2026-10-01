@@ -1,8 +1,10 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -47,7 +49,7 @@ describe("Claude Code setup", () => {
 
   it("proves MCP ownership with exact runtime and Koed home paths", () => {
     const output =
-      "koed:\n  Args: /expected/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/expected/koed\n";
+      "koed:\n  Command: node\n  Args: /expected/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/expected/koed\n";
 
     expect(
       claudeMcpEntryIsKoedOwned(
@@ -346,7 +348,7 @@ describe("Claude Code setup", () => {
         calls.push(args);
         if (args[0] === "mcp" && args[1] === "get") {
           return spawnResult(
-            `koed:\n  Args: ${mcpCli}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+            `koed:\n  Command: node\n  Args: ${mcpCli}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
           );
         }
         return spawnResult();
@@ -542,5 +544,412 @@ describe("Claude Code setup", () => {
     expect(result.error).toContain("unrelated user-scoped MCP server");
     expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "remove"]));
     expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "add"]));
+  });
+});
+
+describe("explicit Claude background recall opt-in", () => {
+  const key = "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS";
+  const fixture = (
+    settings: Record<string, unknown> = {},
+    fixtureOptions: { commandLine?: string; installed?: boolean } = {}
+  ) => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-background-"));
+    temporaryDirectories.push(root);
+    const koedHome = resolve(root, "koed");
+    const configHome = resolve(root, "isolated-claude");
+    const settingsPath = resolve(configHome, "settings.json");
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    mkdirSync(configHome, { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(resolve(mcpCli, "../capture-hook.js"), "");
+    writeFileSync(settingsPath, JSON.stringify(settings));
+    const environment: NodeJS.ProcessEnv = {
+      HOME: root,
+      KOED_HOME: koedHome,
+      KOED_REPO_ROOT: root,
+      CLAUDE_CONFIG_DIR: configHome,
+      KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh"
+    };
+    const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    let installed = fixtureOptions.installed ?? false;
+    let failRegistration = false;
+    let failJournal = false;
+    const journal = resolve(koedHome, "config/claude-background-recall.json");
+    const registry = resolve(koedHome, "config/ai-client-instances.json");
+    const spawn = ((
+      _command: string,
+      args: string[],
+      options?: { env?: NodeJS.ProcessEnv }
+    ) => {
+      calls.push({ args, env: options?.env });
+      if (args[0] === "--version") return spawnResult("2.1.227 (Claude Code)");
+      if (args[0] === "auth") return spawnResult('{"loggedIn":true}');
+      if (args[1] === "get")
+        return installed
+          ? spawnResult(
+              `koed:\n ${fixtureOptions.commandLine ?? "Command: node"}\n Args: ${mcpCli}\n Environment:\n KOED_HOME=${koedHome}\n`
+            )
+          : spawnResult("", 1, "not found");
+      if (args[1] === "add") {
+        installed = true;
+        if (failRegistration) {
+          mkdirSync(resolve(registry, ".."), { recursive: true });
+          writeFileSync(registry, "{");
+        }
+        if (failJournal) {
+          mkdirSync(resolve(journal, ".."), { recursive: true });
+          mkdirSync(journal);
+        }
+      }
+      if (args[1] === "remove") installed = false;
+      return spawnResult();
+    }) as never;
+    const read = () =>
+      JSON.parse(readFileSync(settingsPath, "utf8")) as {
+        env?: Record<string, unknown>;
+        theme?: string;
+      };
+    return {
+      root,
+      settingsPath,
+      journal,
+      environment,
+      calls,
+      spawn,
+      read,
+      failRegistration: () => {
+        failRegistration = true;
+      },
+      failJournal: () => {
+        failJournal = true;
+      }
+    };
+  };
+  it.each(["", "Command:", "Command:   "])(
+    "rejects missing or blank original command %j before changing MCP or profile",
+    (commandLine) => {
+      const f = fixture({ theme: "dark" }, { commandLine, installed: true });
+      const original = readFileSync(f.settingsPath, "utf8");
+      const result = setupClaude(f.environment, f.spawn, {
+        backgroundRecall: true
+      });
+      expect(result.ok).toBe(false);
+      expect(
+        f.calls.some(({ args }) => args[1] === "remove" || args[1] === "add")
+      ).toBe(false);
+      expect(readFileSync(f.settingsPath, "utf8")).toBe(original);
+      expect(existsSync(f.journal)).toBe(false);
+    }
+  );
+  it.each(["true", "yes", "on", " TrUe "])(
+    "preserves native truthy background disable %j in settings and shell",
+    (value) => {
+      for (const fromSettings of [true, false]) {
+        const f = fixture(
+          fromSettings
+            ? { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: value } }
+            : {}
+        );
+        const environment = fromSettings
+          ? f.environment
+          : { ...f.environment, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: value };
+        const result = setupClaude(environment, f.spawn, {
+          backgroundRecall: true
+        });
+        expect(result.backgroundRecall?.state).toBe("disabled");
+        expect(f.read().env?.[key]).toBeUndefined();
+        expect(existsSync(f.journal)).toBe(false);
+      }
+    }
+  );
+  it("leaves host thresholds untouched without opt-in", () => {
+    const f = fixture({ theme: "dark" });
+    const result = setupClaude(f.environment, f.spawn);
+    expect(result.ok).toBe(true);
+    expect(result.backgroundRecall).toBeUndefined();
+    expect(f.read().env).toBeUndefined();
+    expect(existsSync(f.journal)).toBe(false);
+  });
+  it("writes host settings only with opt-in, is idempotent and removes only its owned value", () => {
+    const f = fixture({ theme: "dark", env: { UNRELATED: "keep" } });
+    const first = setupClaude(f.environment, f.spawn, {
+      backgroundRecall: true
+    });
+    expect(first).toMatchObject({
+      ok: true,
+      settingsPath: f.settingsPath,
+      backgroundRecall: {
+        state: "configured",
+        scope: "all_mcp_calls",
+        thresholdMs: "500"
+      }
+    });
+    expect(first.backgroundRecall?.message).toContain("all ordinary MCP calls");
+    expect(f.read().env).toEqual({ UNRELATED: "keep", [key]: "500" });
+    const originalJournal = readFileSync(f.journal, "utf8");
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true })
+        .backgroundRecall?.state
+    ).toBe("preserved");
+    expect(readFileSync(f.journal, "utf8")).toBe(originalJournal);
+    expect(
+      f.calls
+        .filter((c) => c.args[1] === "add")
+        .every(
+          (c) =>
+            !c.args.some((arg) => arg.includes(key)) &&
+            c.env?.[key] === undefined
+        )
+    ).toBe(true);
+    expect(removeClaude(f.environment, f.spawn).ok).toBe(true);
+    expect(f.read().env).toEqual({ UNRELATED: "keep" });
+    expect(f.read().theme).toBe("dark");
+    expect(existsSync(f.journal)).toBe(false);
+    expect(removeClaude(f.environment, f.spawn).ok).toBe(true);
+  });
+  it.each(["500", "9000", "0"])(
+    "preserves a pre-existing host threshold %s without ownership",
+    (value) => {
+      const f = fixture({ env: { [key]: value, UNRELATED: "keep" } });
+      const result = setupClaude(f.environment, f.spawn, {
+        backgroundRecall: true
+      });
+      expect(result.backgroundRecall?.state).toBe(
+        value === "0" ? "disabled" : "preserved"
+      );
+      expect(existsSync(f.journal)).toBe(false);
+      expect(removeClaude(f.environment, f.spawn).ok).toBe(true);
+      expect(f.read().env?.[key]).toBe(value);
+    }
+  );
+  it.each([
+    {
+      settings: { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } },
+      shell: {}
+    },
+    { settings: {}, shell: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } },
+    { settings: {}, shell: { [key]: "0" } },
+    { settings: {}, shell: { [key]: "750" } }
+  ])(
+    "preserves existing disabling and environment choices: %j",
+    ({ settings, shell }) => {
+      const f = fixture(settings);
+      const result = setupClaude({ ...f.environment, ...shell }, f.spawn, {
+        backgroundRecall: true
+      });
+      expect(result.ok).toBe(true);
+      expect(result.backgroundRecall?.state).not.toBe("configured");
+      expect(f.read().env?.[key]).toBeUndefined();
+      expect(existsSync(f.journal)).toBe(false);
+    }
+  );
+  it("preserves a later user edit on removal and restores created env only when empty", () => {
+    const f = fixture();
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+    ).toBe(true);
+    const settings = f.read();
+    settings.env![key] = "1250";
+    settings.env!.UNRELATED = "keep";
+    writeFileSync(f.settingsPath, JSON.stringify(settings));
+    expect(removeClaude(f.environment, f.spawn).ok).toBe(true);
+    expect(f.read().env).toEqual({ [key]: "1250", UNRELATED: "keep" });
+    expect(existsSync(f.journal)).toBe(false);
+    const empty = fixture();
+    expect(
+      setupClaude(empty.environment, empty.spawn, { backgroundRecall: true }).ok
+    ).toBe(true);
+    expect(removeClaude(empty.environment, empty.spawn).ok).toBe(true);
+    expect(empty.read().env).toBeUndefined();
+  });
+  it("rejects malformed env and ownership journals before changing MCP", () => {
+    const f = fixture({ env: [] });
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+    ).toBe(false);
+    expect(f.calls.some((c) => c.args[1] === "add")).toBe(false);
+    const malformed = fixture();
+    mkdirSync(resolve(malformed.journal, ".."), { recursive: true });
+    writeFileSync(malformed.journal, '{"version":1,"entries":[{}]}');
+    expect(
+      setupClaude(malformed.environment, malformed.spawn, {
+        backgroundRecall: true
+      }).ok
+    ).toBe(false);
+    expect(malformed.calls.some((c) => c.args[1] === "add")).toBe(false);
+  });
+  it("rolls back both host settings and new ownership after registry failure", () => {
+    const f = fixture({ theme: "dark" });
+    const before = readFileSync(f.settingsPath, "utf8");
+    f.failRegistration();
+    const result = setupClaude(f.environment, f.spawn, {
+      backgroundRecall: true
+    });
+    expect(result.ok).toBe(false);
+    expect(readFileSync(f.settingsPath, "utf8")).toBe(before);
+    expect(existsSync(f.journal)).toBe(false);
+  });
+  it("rolls back host settings when ownership journal write fails", () => {
+    const f = fixture({ theme: "dark" });
+    const before = readFileSync(f.settingsPath, "utf8");
+    f.failJournal();
+    const result = setupClaude(f.environment, f.spawn, {
+      backgroundRecall: true
+    });
+    expect(result.ok).toBe(false);
+    expect(readFileSync(f.settingsPath, "utf8")).toBe(before);
+    expect(f.calls.some((c) => c.args[1] === "remove")).toBe(true);
+  });
+  it("rejects symlink and publicly readable ownership journals without changing their targets", () => {
+    if (process.platform === "win32") return;
+    for (const kind of ["symlink", "public"]) {
+      const f = fixture({ theme: "dark" });
+      mkdirSync(resolve(f.journal, ".."), { recursive: true });
+      const target = resolve(f.root, "unrelated-journal.json");
+      const content = JSON.stringify({ version: 1, entries: [] });
+      writeFileSync(target, content, { mode: 0o600 });
+      if (kind === "symlink") symlinkSync(target, f.journal);
+      else {
+        writeFileSync(f.journal, content, { mode: 0o644 });
+        chmodSync(f.journal, 0o644);
+      }
+      const before = readFileSync(f.settingsPath, "utf8");
+      expect(
+        setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+      ).toBe(false);
+      expect(f.calls.some((c) => c.args[1] === "add")).toBe(false);
+      expect(readFileSync(target, "utf8")).toBe(content);
+      expect(readFileSync(f.settingsPath, "utf8")).toBe(before);
+    }
+  });
+  it("rejects duplicate settingsPath ownership records before any MCP replacement", () => {
+    const f = fixture({ theme: "dark" });
+    mkdirSync(resolve(f.journal, ".."), { recursive: true });
+    const entry = {
+      settingsPath: f.settingsPath,
+      writtenValue: "500",
+      createdEnv: true
+    };
+    writeFileSync(
+      f.journal,
+      JSON.stringify({ version: 1, entries: [entry, entry] }),
+      { mode: 0o600 }
+    );
+    const result = setupClaude(f.environment, f.spawn, {
+      backgroundRecall: true
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("duplicate settings paths");
+    expect(f.calls.some((c) => c.args[1] === "add")).toBe(false);
+  });
+  it("preserves the prior ownership journal and settings when replacement registration fails", () => {
+    const f = fixture({ theme: "dark" });
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+    ).toBe(true);
+    const originalSettings = readFileSync(f.settingsPath, "utf8"),
+      originalJournal = readFileSync(f.journal, "utf8");
+    f.failRegistration();
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+    ).toBe(false);
+    expect(readFileSync(f.settingsPath, "utf8")).toBe(originalSettings);
+    expect(readFileSync(f.journal, "utf8")).toBe(originalJournal);
+  });
+  it.each(["entries", "bytes"])(
+    "fails exhausted journal %s capacity before changing profile or MCP",
+    (bound) => {
+      const f = fixture({ theme: "dark" });
+      mkdirSync(resolve(f.journal, ".."), { recursive: true });
+      let entries = Array.from({ length: 128 }, (_, i) => ({
+        settingsPath: `/tmp/isolated-profile-${i}/settings.json`,
+        writtenValue: "500",
+        createdEnv: true
+      }));
+      if (bound === "bytes") {
+        for (let size = 3800; size < 4090; size++) {
+          const candidate = Array.from({ length: 16 }, (_, i) => ({
+            settingsPath: `/tmp/${i}/${"x".repeat(size)}`,
+            writtenValue: "500",
+            createdEnv: true
+          }));
+          const raw = JSON.stringify({ version: 1, entries: candidate });
+          const added = JSON.stringify(
+            {
+              version: 1,
+              entries: [
+                ...candidate,
+                {
+                  settingsPath: f.settingsPath,
+                  writtenValue: "500",
+                  createdEnv: true
+                }
+              ]
+            },
+            null,
+            2
+          );
+          if (
+            Buffer.byteLength(raw) <= 65536 &&
+            Buffer.byteLength(added) > 65536
+          ) {
+            entries = candidate;
+            break;
+          }
+        }
+        expect(entries).toHaveLength(16);
+      }
+      const journal = JSON.stringify({ version: 1, entries });
+      writeFileSync(f.journal, journal, { mode: 0o600 });
+      const before = readFileSync(f.settingsPath, "utf8");
+      const result = setupClaude(f.environment, f.spawn, {
+        backgroundRecall: true
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("capacity is exhausted");
+      expect(
+        f.calls.some((c) => c.args[1] === "add" || c.args[1] === "remove")
+      ).toBe(false);
+      expect(readFileSync(f.settingsPath, "utf8")).toBe(before);
+      expect(readFileSync(f.journal, "utf8")).toBe(journal);
+    }
+  );
+  it.each(["null", "[]"])(
+    "rejects malformed top-level settings %s before MCP changes",
+    (raw) => {
+      const f = fixture();
+      writeFileSync(f.settingsPath, raw);
+      expect(
+        setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+      ).toBe(false);
+      expect(readFileSync(f.settingsPath, "utf8")).toBe(raw);
+      expect(f.calls.some((c) => c.args[1] === "add")).toBe(false);
+    }
+  );
+  it("leaves no private sibling temp files after atomic setup, rollback and remove", () => {
+    const f = fixture({ theme: "dark" });
+    expect(
+      setupClaude(f.environment, f.spawn, { backgroundRecall: true }).ok
+    ).toBe(true);
+    expect(removeClaude(f.environment, f.spawn).ok).toBe(true);
+    expect(readdirSync(resolve(f.journal, ".."))).not.toContainEqual(
+      expect.stringContaining(".tmp")
+    );
+    expect(readdirSync(resolve(f.settingsPath, ".."))).not.toContainEqual(
+      expect.stringContaining(".tmp")
+    );
+    const failed = fixture();
+    failed.failRegistration();
+    expect(
+      setupClaude(failed.environment, failed.spawn, { backgroundRecall: true })
+        .ok
+    ).toBe(false);
+    expect(readdirSync(resolve(failed.journal, ".."))).not.toContainEqual(
+      expect.stringContaining(".tmp")
+    );
+    expect(readdirSync(resolve(failed.settingsPath, ".."))).not.toContainEqual(
+      expect.stringContaining(".tmp")
+    );
   });
 });

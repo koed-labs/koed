@@ -1416,25 +1416,17 @@ const evidenceMatchesSelection = (
     candidateRecord.chunk_index;
   const candidateVisibility = stringField(candidateRecord, ["visibility"]);
   if (
-    !selectedSourceId ||
-    !selectedSourceType ||
-    !Number.isInteger(selectedChunkIndex)
-  ) {
-    return false;
-  }
-  if (
-    candidateSourceId !== selectedSourceId ||
-    candidateSourceType !== selectedSourceType ||
-    candidateChunkIndex !== selectedChunkIndex
+    (selectedSourceId !== undefined &&
+      candidateSourceId !== selectedSourceId) ||
+    (selectedSourceType !== undefined &&
+      candidateSourceType !== selectedSourceType) ||
+    (selectedChunkIndex !== undefined &&
+      candidateChunkIndex !== selectedChunkIndex)
   ) {
     return false;
   }
   if (selectedNodeId && candidateNodeId !== selectedNodeId) return false;
-  if (
-    selectedVisibility &&
-    candidateVisibility &&
-    candidateVisibility !== selectedVisibility
-  ) {
+  if (selectedVisibility && candidateVisibility !== selectedVisibility) {
     return false;
   }
   return true;
@@ -1639,20 +1631,33 @@ export const evidenceSelectedByAnswer = (
   evidence: unknown[],
   structuredAnswer: StructuredMemoryAnswer
 ): unknown[] => {
-  const selectedIndexes = structuredAnswer.evidence
-    .map((item) => item.evidence_index)
-    .filter((index): index is number => typeof index === "number");
-  const selectedByIndex = selectedIndexes
-    .map((index) => evidence[index])
-    .filter((item): item is unknown => item !== undefined);
-  const selectedByIdentity = structuredAnswer.evidence
-    .filter((selection) => selection.evidence_index === undefined)
-    .flatMap((selection) =>
-      evidence.filter((candidate) =>
-        evidenceMatchesSelection(candidate, selection)
-      )
-    );
-  const selected = appendEvidence(selectedByIndex, selectedByIdentity);
+  const resolved = structuredAnswer.evidence.flatMap((selection) => {
+    const hasSourceIdentity =
+      selection.source_type !== undefined &&
+      selection.source_id !== undefined &&
+      selection.source_chunk_index !== undefined;
+    // Tool observations can contain indexes into an earlier candidate list.
+    // A complete source identity remains authoritative as that list grows.
+    const matches = hasSourceIdentity
+      ? evidence.filter((candidate) =>
+          evidenceMatchesSelection(candidate, selection)
+        )
+      : Number.isInteger(selection.evidence_index) &&
+          selection.evidence_index! >= 0 &&
+          evidenceMatchesSelection(
+            evidence[selection.evidence_index!],
+            selection
+          )
+        ? [evidence[selection.evidence_index!]]
+        : [];
+    if (matches.length === 0) {
+      throw new Error(
+        "Memory answer worker returned without resolvable supporting evidence for a selection"
+      );
+    }
+    return matches;
+  });
+  const selected = appendEvidence([], resolved);
   const expandedParentIds = new Set(
     selected
       .map((item) =>

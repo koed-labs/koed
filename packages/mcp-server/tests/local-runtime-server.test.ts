@@ -24,7 +24,7 @@ import {
   type LocalAiRuntimeServiceFactory,
   type LocalAiRuntimeToolExecutor
 } from "../src/local-runtime-server.js";
-import { MemoryApiClient } from "../src/index.js";
+import { MemoryApiClient, MemoryApiError } from "../src/index.js";
 
 const roots: string[] = [];
 const tempHome = (): string => {
@@ -55,6 +55,58 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it.each([401, 403, 404, 410])(
+    "preserves task denial HTTP %s before stream headers and remains alive",
+    async (status) => {
+      const environment = { KOED_HOME: tempHome() };
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: async ({ apiClient }) => {
+          apiClient.getMemoryAnswerTask = vi.fn(async () => {
+            throw new MemoryApiError("MEMORY_CREDENTIAL_SECRET", { status });
+          });
+          apiClient.claimMemoryAnswerTask = vi.fn(async () => ({
+            task: null,
+            reconciled: []
+          }));
+          apiClient.deleteExpiredMemoryAnswerTasks = vi.fn(async () => ({
+            deleted: 0
+          }));
+          return {
+            executor: {
+              ...defaultExecutor(),
+              executeMemoryAnswerTask: vi.fn()
+            },
+            close: vi.fn(async () => undefined)
+          };
+        }
+      });
+      try {
+        const registration = readLocalRuntimeRegistration(environment);
+        const taskId = "7c07a3cc-5679-4df2-bb67-c86571df93c2";
+        const denied = await fetch(`${runtime.url}/v1/tasks/${taskId}/events`, {
+          headers: { authorization: registration.authorization }
+        });
+        expect(denied.status).toBe(status);
+        expect(denied.headers.get("content-type")).toContain(
+          "application/json"
+        );
+        expect(JSON.stringify(await denied.json())).not.toContain(
+          "MEMORY_CREDENTIAL_SECRET"
+        );
+        await expect(
+          new LocalAiRuntimeClient(environment).getMemoryAnswerTask(taskId)
+        ).rejects.toMatchObject({ statusCode: status });
+        const ready = await fetch(`${runtime.url}/ready`, {
+          headers: { authorization: registration.authorization }
+        });
+        expect(ready.status).toBe(200);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+
   it("recovers durable Desktop Ask turns before starting runtime services", async () => {
     const callOrder: string[] = [];
     const recoverPendingDesktopAsks = vi.fn(async () => {

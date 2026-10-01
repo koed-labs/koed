@@ -1,5 +1,31 @@
 # Implementation backlog
 
+## Asynchronous Memory Answer adapters
+
+The shared execution-port and presentation lifecycle supports Pi deferred recall
+and the existing blocking route. See `docs/async-memory-answer.md`.
+
+Follow-ups:
+
+- Prioritise independently started AI Clients before Koed-managed Conversations.
+  Pi deferred recall and Claude Code's explicit background-recall setup passed
+  integration review. Claude's isolated main-Conversation tests cover idle and
+  foreground-tool completion, timeout, selected host stop, pending exit,
+  revocation and expiry. Repeated calls and reopening delivery remain untested.
+  Bind Codex's verified interactive native queue mechanism to the shared
+  lifecycle only after a trustworthy current native receiver contract exists.
+  Codex 0.159.3 still lacks that contract in the reviewed public paths.
+  Loaded-thread metadata and delayed hooks are insufficient. Retain blocking
+  recall until that prerequisite is resolved. Assess CLI, IDE and Desktop
+  separately. A managed app-server result does not establish independent-client
+  support. Cold `codex exec` queue acceptance does not provide continuation.
+- Bind a maintained TypeScript MCP Tasks runtime to the existing execution owner
+  when its SDK and supported AI Clients provide the required extension.
+- Defer managed Codex and Claude Agent SDK presentation adapters until the
+  independent-client work has been addressed.
+- Strengthen Pi delivery recovery if its API gains an atomic durable enqueue
+  acknowledgement; current recovery has documented crash gaps.
+
 ## Joining-device-first Personal Device pairing
 
 Implemented on 2026-09-14:

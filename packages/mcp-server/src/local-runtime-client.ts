@@ -11,6 +11,16 @@ import {
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
 
+export class LocalAiRuntimeError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number
+  ) {
+    super(message);
+    this.name = "LocalAiRuntimeError";
+  }
+}
+
 const responseJson = async (
   response: Response
 ): Promise<Record<string, unknown>> => {
@@ -23,7 +33,7 @@ const responseJson = async (
       typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : `Koed local AI runtime request failed with HTTP ${response.status}`;
-    throw new Error(message);
+    throw new LocalAiRuntimeError(message, response.status);
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Koed local AI runtime returned an invalid response");
@@ -234,7 +244,12 @@ export class LocalAiRuntimeClient {
         );
         if (terminal) return terminal;
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (
+          signal?.aborted ||
+          (error instanceof LocalAiRuntimeError &&
+            [401, 403, 404, 410].includes(error.statusCode))
+        )
+          throw error;
       }
       await retryDelay(retryMs, signal);
       retryMs = Math.min(retryMs * 2, 4_000);
@@ -257,7 +272,10 @@ export class LocalAiRuntimeClient {
       ),
       {
         method: "GET",
-        headers: { authorization: registration.authorization },
+        headers: {
+          authorization: registration.authorization,
+          "last-event-id": String(afterVersion)
+        },
         signal
       }
     );
@@ -268,28 +286,33 @@ export class LocalAiRuntimeClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (!signal?.aborted) {
-      const part = await reader.read();
-      buffer += decoder.decode(part.value, { stream: !part.done });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const data = frame
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        if (!data) continue;
-        const task = memoryAnswerTaskSchema.parse(JSON.parse(data));
-        if (task.version <= afterVersion) continue;
-        afterVersion = task.version;
-        if (memoryAnswerTaskIsTerminal(task)) return task;
+    try {
+      while (!signal?.aborted) {
+        const part = await reader.read();
+        buffer += decoder.decode(part.value, { stream: !part.done });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const data = frame
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!data) continue;
+          const task = memoryAnswerTaskSchema.parse(JSON.parse(data));
+          if (task.version <= afterVersion) continue;
+          afterVersion = task.version;
+          if (memoryAnswerTaskIsTerminal(task)) return task;
+        }
+        if (part.done) return null;
       }
-      if (part.done) return null;
+      throw new Error("Koed memory request was cancelled", {
+        cause: signal?.reason
+      });
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
-    throw new Error("Koed memory request was cancelled", {
-      cause: signal?.reason
-    });
   }
 
   async askDesktop(

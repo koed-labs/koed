@@ -94,6 +94,14 @@ Extension exposes:
 
 Tools call authenticated Local AI Runtime through local runtime registration. Pi configuration receives only `KOED_HOME`; it receives no Koed API Token, backend URL, or provider credential. Missing Koed runtime causes tool-local error and does not terminate Pi session.
 
+Persistent Pi Conversations use deferred Personal Memory Answer delivery when
+Pi provides the required history and message APIs. The tool returns a receipt;
+the extension polls outside the model loop and automatically delivers completion
+into the original Conversation. `KOED_PI_MEMORY_ANSWER_MODE=blocking` selects
+blocking recall. Ephemeral sessions and Team Workspace calls retain blocking
+recall. See [asynchronous delivery](async-memory-answer.md) for shared execution
+ownership, recovery behavior and crash limits.
+
 `--no-extensions`, `--exclude-tools`, package resource controls, and related Pi controls remain authoritative. Persistent sessions still capture while extension disabled, but recall readiness should be treated as unavailable until extension enabled.
 
 ## Capture

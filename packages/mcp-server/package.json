@@ -27,6 +27,10 @@
     "./runtime-contracts": {
       "types": "./dist/runtime-contracts.d.ts",
       "import": "./dist/runtime-contracts.js"
+    },
+    "./memory-answer-delivery": {
+      "types": "./integrations/pi/memory-answer-delivery.d.mts",
+      "import": "./integrations/pi/memory-answer-delivery.mjs"
     }
   },
   "files": [

@@ -150,6 +150,7 @@ Commands:
     --without-memory-guidance  Do not install the recommended global guidance
     --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration
+  setup claude --background-recall --json    Opt in to 500 ms backgrounding for all main-Conversation MCP calls
   setup pi --json        Configure the supported Pi integration
   check <client> --json  Check one AI Client integration without mutation
   repair codex --json    Rewrite Codex integration for the active local API
@@ -879,7 +880,11 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = setupClaudeIntegration();
+      const result = args.includes("--background-recall")
+        ? setupClaudeIntegration(undefined, undefined, {
+            backgroundRecall: true
+          })
+        : setupClaudeIntegration();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -891,6 +896,8 @@ export const runKoedServerCli = async (
             : `${result.error ?? "Claude Code setup failed."}\n`
         );
       }
+      if (!wantsJson && result.backgroundRecall)
+        stdout.write(`${result.backgroundRecall.message}\n`);
       return result.ok ? 0 : 1;
     }
 

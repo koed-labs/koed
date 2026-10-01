@@ -124,6 +124,22 @@ describe("Pi setup", () => {
     mkdirSync(resolve(source, "extensions"), { recursive: true });
     writeFileSync(resolve(source, "package.json"), "{}\n");
     writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
+    const deliveryFiles = [
+      "memory-answer-delivery.mjs",
+      "memory-answer-delivery.d.mts",
+      "pi-memory-delivery.mjs",
+      "pi-memory-delivery.d.mts",
+      "runtime-client.mjs",
+      "runtime-client.d.mts"
+    ];
+    for (const file of deliveryFiles) {
+      writeFileSync(
+        resolve(source, file),
+        readFileSync(
+          new URL(`../../mcp-server/integrations/pi/${file}`, import.meta.url)
+        )
+      );
+    }
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o700);
     symlinkSync(executable, link);
@@ -162,6 +178,11 @@ describe("Pi setup", () => {
       }) as never
     );
 
+    for (const file of deliveryFiles) {
+      expect(
+        readFileSync(resolve(root, "koed/integrations/pi", file), "utf8")
+      ).toBe(readFileSync(resolve(source, file), "utf8"));
+    }
     expect(result).toMatchObject({
       ok: true,
       executablePath: realpathSync(executable),
