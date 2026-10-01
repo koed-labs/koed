@@ -2,26 +2,62 @@ import { MapPin } from "lucide-react";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import type {
   PersonalAgent,
-  PersonalAgentJob
+  PersonalAgentJob,
+  PersonalAgentLiveJob
 } from "@/lib/personal-agents-client";
 import {
   avatarSpecForAgent,
   goalDiffersFromTitle
 } from "./agents-presentation-utils";
 
+type DisplayedJob = Pick<
+  PersonalAgentLiveJob,
+  "id" | "title" | "goal" | "conversationId" | "projectId" | "projectName"
+> & { legacyProjectName: string | null };
+
 export function WorkingAgentCard({
   agent,
   jobs,
   jobCount,
+  liveJobs,
+  liveJobsCount,
+  liveJobsTruncated,
   onOpenProfile,
   onOpenConversation
 }: Readonly<{
   agent: PersonalAgent;
   jobs: readonly PersonalAgentJob[];
   jobCount: number;
+  liveJobs?: readonly PersonalAgentLiveJob[];
+  liveJobsCount?: number | null;
+  liveJobsTruncated?: boolean;
   onOpenProfile: () => void;
   onOpenConversation?: (conversationId: string) => void;
 }>) {
+  const hasLiveJobs = liveJobs !== undefined;
+  const displayedJobs: DisplayedJob[] = hasLiveJobs
+    ? liveJobs.map((job) => ({
+        id: job.id,
+        title: job.title,
+        goal: job.goal,
+        conversationId: job.conversationId,
+        projectId: job.projectId,
+        projectName: job.projectName,
+        legacyProjectName: null
+      }))
+    : jobs.map((job) => ({
+        id: job.id,
+        title: job.title,
+        goal: job.goal ?? null,
+        conversationId: job.conversationId ?? null,
+        projectId: job.projectId ?? null,
+        projectName: job.projectName ?? null,
+        legacyProjectName: job.projectId
+          ? (agent.projects.find((project) => project.id === job.projectId)
+              ?.name ?? null)
+          : null
+      }));
+
   return (
     <article className="rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex items-center gap-3">
@@ -53,26 +89,32 @@ export function WorkingAgentCard({
         </span>
       </div>
 
-      {jobs.length === 0 ? (
-        <p className="ml-[60px] mt-2 text-xs text-subtle">
-          Current Job details are unavailable.
-        </p>
+      {displayedJobs.length === 0 ? (
+        <div className="ml-[60px] mt-2 text-xs text-subtle">
+          <p>Current Job details are unavailable.</p>
+          {hasLiveJobs &&
+          liveJobsCount !== null &&
+          liveJobsCount !== undefined &&
+          liveJobsCount > 0 ? (
+            <p className="mt-1">
+              Details unavailable for {liveJobsCount} live{" "}
+              {liveJobsCount === 1 ? "Job" : "Jobs"}.
+            </p>
+          ) : hasLiveJobs && liveJobsTruncated ? (
+            <p className="mt-1">Some live Job details are unavailable.</p>
+          ) : null}
+        </div>
       ) : (
         <div className="ml-[60px] mt-1.5 space-y-2">
-          {jobs.map((job) => {
+          {displayedJobs.map((job) => {
             const projectName =
-              job.projectName?.trim() ||
-              (job.projectId
-                ? agent.projects.find((project) => project.id === job.projectId)
-                    ?.name
-                : null);
+              job.projectName?.trim() || job.legacyProjectName?.trim();
             const location = projectName
               ? projectName
               : job.projectId
                 ? "Project unavailable"
                 : "Standalone conversation";
             const showGoal = goalDiffersFromTitle(job.goal, job.title);
-
             return (
               <div
                 key={job.id}
@@ -107,12 +149,26 @@ export function WorkingAgentCard({
               </div>
             );
           })}
-          {jobCount > jobs.length && (
+          {hasLiveJobs ? (
+            liveJobsCount !== null &&
+            liveJobsCount !== undefined &&
+            liveJobsCount > displayedJobs.length ? (
+              <p className="border-t border-border pt-2 text-[11px] text-subtle">
+                Details unavailable for {liveJobsCount - displayedJobs.length}{" "}
+                more{" "}
+                {liveJobsCount - displayedJobs.length === 1 ? "Job" : "Jobs"}.
+              </p>
+            ) : liveJobsTruncated ? (
+              <p className="border-t border-border pt-2 text-[11px] text-subtle">
+                Some live Job details are unavailable.
+              </p>
+            ) : null
+          ) : jobCount > displayedJobs.length ? (
             <p className="border-t border-border pt-2 text-[11px] text-subtle">
-              Details unavailable for {jobCount - jobs.length} more{" "}
-              {jobCount - jobs.length === 1 ? "Job" : "Jobs"}.
+              Details unavailable for {jobCount - displayedJobs.length} more{" "}
+              {jobCount - displayedJobs.length === 1 ? "Job" : "Jobs"}.
             </p>
-          )}
+          ) : null}
         </div>
       )}
     </article>

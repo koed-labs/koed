@@ -53,6 +53,7 @@ The Job goal stays in its encrypted managed command payload. Its short title
 is derived from that goal when the owner reads history; the plaintext Job row
 keeps only a generic marker. Agent detail includes the complete goal for that
 owner.
+
 `/v1/personal-agents/capabilities` exposes the current
 user's ready AI Client models and supported reasoning efforts. The local Studio
 gateway forwards only these routes, keeps credentials outside the renderer,
@@ -83,6 +84,64 @@ after that account/backend pair was authenticated in the current app process.
 A cold offline restart keeps the draft but does not reveal it until the account
 is verified again. Drafts do not become account profiles until the User saves
 explicitly; a successful save clears the device draft.
+
+### Activity and older Jobs
+
+Studio reads current activity in bounded batches through
+`GET /v1/personal-agents/activity`, with one `agentId` query parameter per Agent.
+The response is scoped to the authenticated owner. It does not load Agent
+instructions or full Job histories. Working status still requires a current
+execution generation, dispatching command and unexpired runner lease.
+Unavailable or unverifiable activity remains unknown.
+
+The compact response retains authorized Job descriptions, Project context and
+Conversation links for the Working now display. A request accepts up to 100 unique Agent IDs. The response includes at most
+five current Jobs per Agent and 100 across the batch, with an explicit count
+and truncation indicator. Goal excerpts are limited to 240 characters. A missing or
+failed read must not imply that an Agent is idle.
+
+An optional Project summary preserves the cards’ historical Project engagements
+without hydrating Job histories. It lists up to five named Projects per Agent
+and 100 per batch, with the full distinct Project count and a truncation
+indicator. Missing names remain unavailable. Select the profile for remaining
+engagements; an older authority without this field shows an explicit prompt
+to load the profile instead of a permanent checking message.
+
+Agent details use `GET /v1/personal-agents/:agentId/jobs` to load older history.
+The `before` cursor and `limit` (1–20 Jobs) preserve the existing creation-time
+and ID ordering, including PostgreSQL timestamp precision. Pages retain the original Agent name, goal and execution attempt
+metadata. Loading older Jobs does not change their identity or start work.
+Studio merges pages by Job ID, preserves loaded history during refresh and
+rejects late page results after the selected Agent or account changes.
+
+Desktop forwards both reads through its existing authorized Studio gateway and
+configured Personal authority. Hosted Studio uses the same-origin API. Neither
+read changes Memory, Agent profiles or execution state.
+
+The maintained synthetic browser suite is documented in
+[Studio UI regression tests](../apps/studio/tests/ui/README.md). Its fixtures
+exercise the real Studio components without accounts, providers or a live
+backend; API and PostgreSQL authorization checks remain separate gates.
+
+### Verification of activity and history improvements
+
+Focused API, local-edge routing and repository tests pass (94 checks). A real
+isolated PostgreSQL test covers valid leases, expired and mismatched attempts,
+owner isolation, encrypted goals and cursor traversal at sub-millisecond
+precision. Agent client/state tests pass (33 checks), alongside 317 existing
+Studio tests. All six maintained synthetic browser tests pass with two workers.
+Shared, DB, API and Studio typechecks pass.
+
+Desktop and hosted production builds pass. Authenticated reads in both review
+runtimes pass through their actual gateways: bounded activity, history,
+unknown IDs and invalid cursors. No provider work or profile changes were
+started by these checks. The selected live profile had no history; populated
+history traversal is covered by PostgreSQL and synthetic browser tests.
+
+The affected Studio files and new API/shared files pass focused lint. The DB
+repository retains 27 pre-existing lint findings in unchanged code; none are
+in the new activity or history paths. These checks do not claim a clean
+whole-repository lint result or a new provider/device execution validation.
 
 ## Execution Boundary
 

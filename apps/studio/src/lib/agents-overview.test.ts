@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   filterAgentsByLifecycle,
+  projectEngagementsForCard,
   unknownActivityLabel,
   verifiedAgentWork,
   withoutVerifiedActivity
@@ -70,13 +71,19 @@ describe("Agents overview helpers", () => {
     expect(verifiedAgentWork(loading)).toEqual({
       status: "unknown",
       count: null,
-      jobs: []
+      jobs: [],
+      liveJobs: null,
+      liveJobsCount: null,
+      liveJobsTruncated: false
     });
     expect(unknownActivityLabel(loading)).toBe("checking");
     expect(verifiedAgentWork(staleLease)).toEqual({
       status: "unknown",
       count: null,
-      jobs: []
+      jobs: [],
+      liveJobs: null,
+      liveJobsCount: null,
+      liveJobsTruncated: false
     });
     expect(unknownActivityLabel(staleLease)).toBe("unavailable");
     expect(unknownActivityLabel(loading, true)).toBe("unavailable");
@@ -121,6 +128,188 @@ describe("Agents overview helpers", () => {
       status: "working",
       count: 1,
       jobs: []
+    });
+  });
+
+  it("uses fresh lease summaries and stops treating them as verified after expiry", () => {
+    const observedAt = 1_000_000;
+    const summary = {
+      agentId: "agent",
+      status: "running" as const,
+      availability: "available" as const,
+      freshness: "fresh" as const,
+      observedAt,
+      runningAttempts: 2,
+      persistedRunningAttempts: 2,
+      activeJobs: [
+        {
+          id: "live-job",
+          title: "Review changes",
+          goal: null,
+          conversationId: "conversation-1",
+          projectId: "project-1",
+          projectName: "Billing",
+          state: "running",
+          updatedAt: observedAt
+        }
+      ],
+      activeJobsCount: 2,
+      activeJobsTruncated: true
+    };
+    const agent = {
+      ...makeAgent("agent", "active", null, false),
+      activitySummary: summary
+    };
+
+    expect(verifiedAgentWork(agent, observedAt + 1)).toMatchObject({
+      status: "working",
+      count: 2,
+      liveJobs: [{ title: "Review changes" }],
+      liveJobsCount: 2,
+      liveJobsTruncated: true
+    });
+    expect(
+      verifiedAgentWork(agent, observedAt + 3 * 60 * 1_000 + 1).status
+    ).toBe("unknown");
+    expect(
+      unknownActivityLabel(agent, false, observedAt + 3 * 60 * 1_000 + 1)
+    ).toBe("unavailable");
+  });
+
+  it("shows named compact project engagements and asks for profile for the rest", () => {
+    const agent = {
+      ...makeAgent("agent", "active", null, false),
+      activitySummary: {
+        agentId: "agent",
+        status: "idle" as const,
+        availability: "available" as const,
+        freshness: "fresh" as const,
+        observedAt: 100,
+        runningAttempts: 0,
+        persistedRunningAttempts: 0,
+        activeJobs: [],
+        activeJobsCount: 0,
+        activeJobsTruncated: false,
+        projectSummary: {
+          projects: [
+            {
+              id: "project-1",
+              name: "Billing",
+              status: "active",
+              startedAt: 90
+            }
+          ],
+          count: 3,
+          truncated: true
+        }
+      }
+    };
+
+    expect(projectEngagementsForCard(agent)).toEqual({
+      state: "available",
+      source: "summary",
+      projects: [
+        {
+          id: "project-1",
+          name: "Billing",
+          status: "active",
+          model: null,
+          effort: null
+        }
+      ],
+      hasMore: true
+    });
+    expect(agent.activityLoaded).toBe(false);
+  });
+
+  it("prefers a newer bulk project summary over cached full-detail card rows", () => {
+    const agent = {
+      ...makeAgent("agent", "active", 0),
+      projects: [
+        {
+          id: "project-1",
+          name: "Old project name",
+          status: "active",
+          model: "gpt-old",
+          effort: "low"
+        }
+      ],
+      activitySummary: {
+        agentId: "agent",
+        status: "idle" as const,
+        availability: "available" as const,
+        freshness: "fresh" as const,
+        observedAt: 200,
+        runningAttempts: 0,
+        persistedRunningAttempts: 0,
+        activeJobs: [],
+        activeJobsCount: 0,
+        activeJobsTruncated: false,
+        projectSummary: {
+          projects: [
+            {
+              id: "project-1",
+              name: "Current project name",
+              status: "running",
+              startedAt: 190
+            }
+          ],
+          count: 1,
+          truncated: false
+        }
+      }
+    };
+
+    expect(projectEngagementsForCard(agent)).toEqual({
+      state: "available",
+      source: "summary",
+      projects: [
+        {
+          id: "project-1",
+          name: "Current project name",
+          status: "running",
+          model: null,
+          effort: null
+        }
+      ],
+      hasMore: false
+    });
+    expect(agent.activityLoaded).toBe(true);
+    expect(agent.projects[0]?.name).toBe("Old project name");
+  });
+
+  it("keeps omitted or nameless project summaries unknown instead of idle", () => {
+    const base = makeAgent("agent", "active", null, false);
+    const omitted = {
+      ...base,
+      activitySummary: {
+        agentId: "agent",
+        status: "unknown" as const,
+        availability: "unavailable" as const,
+        freshness: "unknown" as const,
+        observedAt: null,
+        runningAttempts: null,
+        persistedRunningAttempts: null,
+        activeJobs: [],
+        activeJobsCount: null,
+        activeJobsTruncated: false,
+        projectSummary: null
+      }
+    };
+    const nameless = {
+      ...base,
+      activitySummary: {
+        ...omitted.activitySummary,
+        projectSummary: { projects: [], count: 2, truncated: false }
+      }
+    };
+
+    expect(projectEngagementsForCard(omitted).state).toBe("unknown");
+    expect(projectEngagementsForCard(nameless)).toMatchObject({
+      state: "available",
+      source: "summary",
+      projects: [],
+      hasMore: true
     });
   });
 

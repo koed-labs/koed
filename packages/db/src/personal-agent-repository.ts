@@ -17,6 +17,7 @@ import {
   type PersonalAgentAttribution,
   type PersonalAgentExecutionAttempt,
   type PersonalAgentExecutionJob,
+  type PersonalAgentActivityProjectSummary,
   type PersonalAgentIdentity,
   type PersonalAgentIdentityVersion,
   type PersonalAgentInstructionSource,
@@ -50,6 +51,9 @@ const titleFromJobGoal = (goal: string): string => {
   const lastSpace = prefix.lastIndexOf(" ");
   return `${lastSpace >= 32 ? prefix.slice(0, lastSpace) : prefix}…`;
 };
+
+const excerpt = (value: string, maximum: number): string =>
+  value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
 
 const requestFingerprint = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -151,6 +155,37 @@ export interface PersonalAgentExecutionJobPage {
   nextCursor: string | null;
 }
 
+export interface PersonalAgentHistoryJobPage {
+  jobs: PersonalAgentHistoryJob[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface PersonalAgentActivityJob {
+  id: string;
+  conversationId: string;
+  projectId: string | null;
+  projectName: string | null;
+  title: string;
+  goal: string | null;
+  state: PersonalAgentExecutionJob["state"];
+  updatedAt: string;
+}
+
+export interface PersonalAgentActivityItem {
+  agentId: string;
+  status: "running" | "idle" | "unknown";
+  availability: "available" | "unavailable" | "unsupported";
+  freshness: "fresh" | "stale" | "unknown";
+  observedAt: string | null;
+  runningAttempts: number | null;
+  persistedRunningAttempts: number | null;
+  activeJobs: PersonalAgentActivityJob[];
+  activeJobsCount: number | null;
+  activeJobsTruncated: boolean;
+  projectSummary: PersonalAgentActivityProjectSummary | null;
+}
+
 export interface PersonalAgentExecutionAttemptPage {
   attempts: PersonalAgentExecutionAttempt[];
   hasMore: boolean;
@@ -214,6 +249,14 @@ export interface PersonalAgentRepository {
     actor: ActorContext,
     input?: { includeRetired?: boolean }
   ): Promise<PersonalAgentIdentity[]>;
+  getPersonalAgentActivity(
+    actor: ActorContext,
+    input: { agentIds: string[] }
+  ): Promise<PersonalAgentActivityItem[]>;
+  listPersonalAgentHistoryJobs(
+    actor: ActorContext,
+    input: { agentId: string; limit?: number; before?: string }
+  ): Promise<PersonalAgentHistoryJobPage>;
   getPersonalAgentVersion(
     actor: ActorContext,
     input: { agentId: string; version: number }
@@ -380,6 +423,7 @@ type JobRow = {
   attempts_interrupted: number;
   last_attempt_id: string | null;
   created_at: Date;
+  created_at_cursor?: string;
   updated_at: Date;
 };
 
@@ -519,16 +563,24 @@ const mapAttempt = (row: AttemptRow): PersonalAgentExecutionAttempt =>
     completedAt: row.completed_at ? iso(row.completed_at) : null
   });
 
-const encodeCursor = (createdAt: Date, id: string): string =>
-  Buffer.from(`${createdAt.toISOString()}\u0000${id}`, "utf8").toString(
-    "base64url"
-  );
+const encodeCursor = (createdAt: Date | string, id: string): string =>
+  Buffer.from(
+    `${createdAt instanceof Date ? createdAt.toISOString() : createdAt}\u0000${id}`,
+    "utf8"
+  ).toString("base64url");
 
 const decodeCursor = (cursor: string): { createdAt: string; id: string } => {
   const [createdAt, id] = Buffer.from(cursor, "base64url")
     .toString("utf8")
     .split("\u0000");
-  if (!createdAt || !id || Number.isNaN(Date.parse(createdAt))) {
+  if (
+    !createdAt ||
+    !id ||
+    Number.isNaN(Date.parse(createdAt)) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      id
+    )
+  ) {
     throw new TypeError("Invalid Personal Agent history cursor");
   }
   return { createdAt, id };
@@ -864,6 +916,330 @@ export const createPersonalAgentRepository = (
         ? titleFromJobGoal(goals.get(job.id)!)
         : "Agent task"
     }));
+  };
+
+  const getPersonalAgentActivity = async (
+    actor: ActorContext,
+    input: { agentIds: string[] }
+  ): Promise<PersonalAgentActivityItem[]> => {
+    const agentIds = [...new Set(input.agentIds)];
+    if (agentIds.length !== input.agentIds.length || agentIds.length > 100) {
+      throw new RangeError(
+        "Personal Agent activity requires up to 100 unique Agent IDs"
+      );
+    }
+    if (agentIds.length === 0) return [];
+    const result = await pool.query<{
+      agent_id: string;
+      persisted_count: string;
+      verified_attempt_count: string;
+      active_job_count: string;
+      observed_at: Date;
+      id: string | null;
+      owner_user_id: string | null;
+      conversation_id: string | null;
+      command_id: string | null;
+      title: string | null;
+      project_id: string | null;
+      output_reference: PersonalAgentExecutionJob["outputReference"] | null;
+      version: number | null;
+      last_observed_at: Date | null;
+      attribution_kind: "agent" | "legacy" | null;
+      attributed_agent_id: string | null;
+      agent_version: number | null;
+      state: PersonalAgentExecutionJob["state"] | null;
+      attempts_started: number | null;
+      attempts_succeeded: number | null;
+      attempts_failed: number | null;
+      attempts_canceled: number | null;
+      attempts_interrupted: number | null;
+      last_attempt_id: string | null;
+      created_at: Date | null;
+      updated_at: Date | null;
+      project_name: string | null;
+    }>(
+      `with requested_agents as (
+         select id from personal_agent_identities
+         where owner_user_id = $1 and id = any($2::uuid[])
+       ), persisted as (
+         select a.agent_id, count(distinct a.id)::text as persisted_count
+         from personal_agent_execution_attempts a
+         join requested_agents i on i.id = a.agent_id
+         where a.owner_user_id = $1 and a.status = 'running'
+         group by a.agent_id
+       ), verified_attempts as (
+         select a.id as attempt_id, a.agent_id, j.id as job_id
+         from personal_agent_execution_attempts a
+         join personal_agent_execution_jobs j
+           on j.id = a.job_id and j.owner_user_id = a.owner_user_id
+         join managed_conversation_commands c
+           on c.id = j.command_id and c.owner_user_id = j.owner_user_id
+         join managed_conversation_executions e
+           on e.id = c.execution_id and e.owner_user_id = c.owner_user_id
+         join requested_agents i on i.id = a.agent_id
+         where a.owner_user_id = $1 and a.status = 'running'
+           and a.managed_execution_id = e.id
+           and a.managed_execution_generation = e.execution_generation
+           and c.execution_generation = e.execution_generation
+           and c.command_kind = 'prompt' and c.state = 'dispatching'
+           and e.state = 'running'
+           and e.runner_lease_expires_at > clock_timestamp()
+       ), running_stats as (
+         select agent_id, count(distinct attempt_id)::text as verified_attempt_count,
+                count(distinct job_id)::text as active_job_count
+         from verified_attempts group by agent_id
+       ), verified_jobs as (
+         select distinct on (a.agent_id, j.id)
+                a.agent_id, j.id, j.owner_user_id, j.conversation_id, j.command_id,
+                j.title, j.project_id, j.output_reference, j.version,
+                j.last_observed_at, j.attribution_kind, j.agent_id as attributed_agent_id,
+                j.agent_version, j.state, j.attempts_started, j.attempts_succeeded,
+                j.attempts_failed, j.attempts_canceled, j.attempts_interrupted,
+                j.last_attempt_id, j.created_at, j.updated_at,
+                coalesce(s.project_override_name, s.automatic_project_name) as project_name
+         from verified_attempts v
+         join personal_agent_execution_attempts a
+           on a.id = v.attempt_id and a.owner_user_id = $1
+         join personal_agent_execution_jobs j
+           on j.id = v.job_id and j.owner_user_id = $1
+         join managed_conversation_executions e
+           on e.id = j.conversation_id and e.owner_user_id = $1
+         left join sessions s
+           on s.owner_user_id = e.owner_user_id
+          and s.logical_session_id = e.logical_session_id
+          and coalesce(s.project_override_id, s.automatic_project_id) = j.project_id
+         order by a.agent_id, j.id, a.attempt_number desc, a.id desc
+       ), ranked_jobs as (
+       select *, row_number() over (
+           partition by agent_id order by updated_at desc, id desc
+         ) as job_rank,
+         row_number() over (order by updated_at desc, agent_id, id desc) as batch_rank
+         from verified_jobs
+       )
+       select i.id as agent_id,
+              coalesce(p.persisted_count, '0') as persisted_count,
+              coalesce(r.verified_attempt_count, '0') as verified_attempt_count,
+              coalesce(r.active_job_count, '0') as active_job_count,
+              clock_timestamp() as observed_at,
+              j.id, j.owner_user_id, j.conversation_id, j.command_id, j.title,
+              j.project_id, j.output_reference, j.version, j.last_observed_at,
+              j.attribution_kind, j.attributed_agent_id,
+              j.agent_version, j.state, j.attempts_started, j.attempts_succeeded,
+              j.attempts_failed, j.attempts_canceled, j.attempts_interrupted,
+              j.last_attempt_id, j.created_at, j.updated_at, j.project_name
+       from requested_agents i
+       left join persisted p on p.agent_id = i.id
+       left join running_stats r on r.agent_id = i.id
+       left join ranked_jobs j
+         on j.agent_id = i.id and j.job_rank <= 5 and j.batch_rank <= 100
+       order by i.id, j.job_rank`,
+      [actor.userId, agentIds]
+    );
+    const projectResult = await pool.query<{
+      agent_id: string;
+      project_count: string;
+      named_project_count: string;
+      project_id: string | null;
+      project_name: string | null;
+      status: "active" | "history" | null;
+      started_at: Date | null;
+    }>(
+      `with requested_project_agents as (
+         select id from personal_agent_identities
+         where owner_user_id = $1 and id = any($2::uuid[])
+       ), project_counts as (
+         select i.id as agent_id, count(distinct j.project_id)::text as project_count
+         from requested_project_agents i
+         left join personal_agent_execution_jobs j
+           on j.owner_user_id = $1 and j.agent_id = i.id
+         group by i.id
+       ), named_projects as (
+         select j.agent_id, j.project_id,
+                coalesce(max(s.project_override_name), max(s.automatic_project_name)) as name,
+                case when bool_or(j.state = 'running') then 'active' else 'history' end as status,
+                max(j.created_at) as started_at
+         from requested_project_agents i
+         join personal_agent_execution_jobs j
+           on j.owner_user_id = $1 and j.agent_id = i.id
+          and j.project_id is not null
+         join managed_conversation_executions e
+           on e.id = j.conversation_id and e.owner_user_id = $1
+         left join sessions s
+           on s.owner_user_id = e.owner_user_id
+          and s.logical_session_id = e.logical_session_id
+          and coalesce(s.project_override_id, s.automatic_project_id) = j.project_id
+         group by j.agent_id, j.project_id
+         having coalesce(max(s.project_override_name), max(s.automatic_project_name)) is not null
+       ), named_counts as (
+         select agent_id, count(*)::text as named_project_count
+         from named_projects group by agent_id
+       ), ranked_projects as (
+         select *, row_number() over (
+             partition by agent_id order by started_at desc, project_id
+           ) as agent_rank,
+           row_number() over (order by started_at desc, agent_id, project_id) as batch_rank
+         from named_projects
+       )
+       select i.id as agent_id,
+              coalesce(pc.project_count, '0') as project_count,
+              coalesce(nc.named_project_count, '0') as named_project_count,
+              p.project_id, p.name as project_name, p.status, p.started_at
+       from requested_project_agents i
+       left join project_counts pc on pc.agent_id = i.id
+       left join named_counts nc on nc.agent_id = i.id
+       left join ranked_projects p
+         on p.agent_id = i.id and p.agent_rank <= 5 and p.batch_rank <= 100
+       order by i.id, p.agent_rank`,
+      [actor.userId, agentIds]
+    );
+    const projectsByAgent = new Map<
+      string,
+      {
+        projectCount: number;
+        namedProjectCount: number;
+        projects: PersonalAgentActivityProjectSummary["projects"];
+      }
+    >();
+    for (const row of projectResult.rows) {
+      const value = projectsByAgent.get(row.agent_id) ?? {
+        projectCount: Number(row.project_count),
+        namedProjectCount: Number(row.named_project_count),
+        projects: []
+      };
+      if (
+        row.project_id &&
+        row.project_id.length <= 512 &&
+        row.project_name &&
+        row.status &&
+        row.started_at
+      ) {
+        value.projects.push({
+          id: row.project_id,
+          name: row.project_name.slice(0, 128),
+          status: row.status,
+          startedAt: iso(row.started_at)
+        });
+      }
+      projectsByAgent.set(row.agent_id, value);
+    }
+    const rowsByAgent = new Map<string, (typeof result.rows)[number][]>();
+    for (const row of result.rows) {
+      const rows = rowsByAgent.get(row.agent_id) ?? [];
+      rows.push(row);
+      rowsByAgent.set(row.agent_id, rows);
+    }
+    const jobs = result.rows.flatMap((row) =>
+      row.id &&
+      row.owner_user_id &&
+      row.conversation_id &&
+      row.created_at &&
+      row.updated_at &&
+      row.state &&
+      row.attribution_kind
+        ? [
+            mapJob({
+              id: row.id,
+              owner_user_id: row.owner_user_id,
+              conversation_id: row.conversation_id,
+              command_id: row.command_id,
+              title: row.title ?? "Agent task",
+              project_id: row.project_id,
+              output_reference: row.output_reference,
+              version: row.version ?? 1,
+              last_observed_at: row.last_observed_at,
+              attribution_kind: row.attribution_kind,
+              agent_id: row.attributed_agent_id,
+              agent_version: row.agent_version,
+              state: row.state,
+              attempts_started: row.attempts_started ?? 0,
+              attempts_succeeded: row.attempts_succeeded ?? 0,
+              attempts_failed: row.attempts_failed ?? 0,
+              attempts_canceled: row.attempts_canceled ?? 0,
+              attempts_interrupted: row.attempts_interrupted ?? 0,
+              last_attempt_id: row.last_attempt_id,
+              created_at: row.created_at,
+              updated_at: row.updated_at
+            })
+          ]
+        : []
+    );
+    const goals = await authorizedJobGoals(actor, jobs);
+    const activeJobsByAgent = new Map<string, PersonalAgentActivityJob[]>();
+    for (const row of result.rows) {
+      if (!row.id || !row.conversation_id || !row.updated_at || !row.state) {
+        continue;
+      }
+      const goal = goals.get(row.id) ?? null;
+      const activityJobs = activeJobsByAgent.get(row.agent_id) ?? [];
+      activityJobs.push({
+        id: row.id,
+        conversationId: row.conversation_id,
+        projectId:
+          row.project_id && row.project_id.length <= 512
+            ? row.project_id
+            : null,
+        projectName: row.project_name?.slice(0, 128) ?? null,
+        title: goal ? titleFromJobGoal(goal) : "Agent task",
+        goal: goal ? excerpt(originalJobGoal(goal), 240) : null,
+        state: row.state,
+        updatedAt: iso(row.updated_at)
+      });
+      activeJobsByAgent.set(row.agent_id, activityJobs);
+    }
+    return agentIds.map((agentId) => {
+      const rows = rowsByAgent.get(agentId) ?? [];
+      const row = rows[0];
+      if (!row) {
+        return {
+          agentId,
+          status: "unknown" as const,
+          availability: "unavailable" as const,
+          freshness: "unknown" as const,
+          observedAt: null,
+          runningAttempts: null,
+          persistedRunningAttempts: null,
+          activeJobs: [],
+          activeJobsCount: null,
+          activeJobsTruncated: false,
+          projectSummary: null
+        };
+      }
+      const persistedRunningAttempts = Number(row.persisted_count);
+      const runningAttempts = Number(row.verified_attempt_count);
+      const activeJobsCount = Number(row.active_job_count);
+      return {
+        agentId,
+        status:
+          runningAttempts > 0
+            ? ("running" as const)
+            : persistedRunningAttempts > runningAttempts
+              ? ("unknown" as const)
+              : ("idle" as const),
+        availability: "available" as const,
+        freshness:
+          runningAttempts > 0
+            ? ("fresh" as const)
+            : persistedRunningAttempts > 0
+              ? ("stale" as const)
+              : ("fresh" as const),
+        observedAt: iso(row.observed_at),
+        runningAttempts,
+        persistedRunningAttempts,
+        activeJobs: activeJobsByAgent.get(agentId) ?? [],
+        activeJobsCount,
+        activeJobsTruncated:
+          activeJobsCount > (activeJobsByAgent.get(agentId)?.length ?? 0),
+        projectSummary: projectsByAgent.has(agentId)
+          ? {
+              projects: projectsByAgent.get(agentId)!.projects,
+              count: projectsByAgent.get(agentId)!.projectCount,
+              truncated:
+                projectsByAgent.get(agentId)!.namedProjectCount >
+                projectsByAgent.get(agentId)!.projects.length
+            }
+          : null
+      };
+    });
   };
 
   const loadPersonalAgentDetail = async (
@@ -2170,7 +2546,7 @@ export const createPersonalAgentRepository = (
           output_reference, version, last_observed_at, attribution_kind, agent_id,
           agent_version, state, attempts_started, attempts_succeeded,
           attempts_failed, attempts_canceled, attempts_interrupted,
-          last_attempt_id, created_at, updated_at
+          last_attempt_id, created_at, created_at::text as created_at_cursor, updated_at
        from personal_agent_execution_jobs
        where id = $1 and owner_user_id = $2`,
       [jobId, actor.userId]
@@ -2223,7 +2599,8 @@ export const createPersonalAgentRepository = (
           output_reference, version, last_observed_at, attribution_kind, agent_id,
           agent_version, state, attempts_started, attempts_succeeded,
           attempts_failed, attempts_canceled, attempts_interrupted,
-          last_attempt_id, created_at, updated_at
+          last_attempt_id, created_at, created_at::text as created_at_cursor,
+          updated_at
        from personal_agent_execution_jobs
        where owner_user_id = $1
          and ($2::uuid is null or conversation_id = $2)
@@ -2246,7 +2623,10 @@ export const createPersonalAgentRepository = (
       hasMore: result.rows.length > limit,
       nextCursor:
         result.rows.length > limit
-          ? encodeCursor(rows.at(-1)!.created_at, rows.at(-1)!.id)
+          ? encodeCursor(
+              rows.at(-1)!.created_at_cursor ?? rows.at(-1)!.created_at,
+              rows.at(-1)!.id
+            )
           : null
     };
   };
@@ -2701,6 +3081,85 @@ export const createPersonalAgentRepository = (
     };
   };
 
+  const listPersonalAgentHistoryJobs = async (
+    actor: ActorContext,
+    input: { agentId: string; limit?: number; before?: string }
+  ): Promise<PersonalAgentHistoryJobPage> => {
+    const page = await listPersonalAgentExecutionJobs(actor, {
+      agentId: input.agentId,
+      limit: input.limit,
+      before: input.before
+    });
+    if (page.jobs.length === 0) {
+      return { jobs: [], hasMore: page.hasMore, nextCursor: page.nextCursor };
+    }
+    const jobIds = page.jobs.map((job) => job.id);
+    const goals = await authorizedJobGoals(actor, page.jobs);
+    const versions = page.jobs.flatMap((job) =>
+      job.attribution.kind === "agent" ? [job.attribution.agentVersion] : []
+    );
+    const [attemptRows, identityRows] = await Promise.all([
+      pool.query<AttemptRow & { history_rank: number }>(
+        `with ranked_attempts as (
+           select id, owner_user_id, job_id, command_id, attempt_number,
+                  attribution_kind, agent_id, agent_version, provider, model,
+                  ai_client_instance_id, reasoning_effort, permission_mode,
+                  managed_execution_id, managed_execution_generation, status,
+                  outcome, started_at, phase, phase_observed_at, completed_at,
+                  row_number() over (
+                    partition by job_id order by started_at desc, id desc
+                  ) as history_rank
+           from personal_agent_execution_attempts
+           where owner_user_id = $1 and job_id = any($2::uuid[])
+         )
+         select id, owner_user_id, job_id, command_id, attempt_number,
+                attribution_kind, agent_id, agent_version, provider, model,
+                ai_client_instance_id, reasoning_effort, permission_mode,
+                managed_execution_id, managed_execution_generation, status,
+                outcome, started_at, phase, phase_observed_at, completed_at,
+                history_rank
+         from ranked_attempts where history_rank <= 100
+         order by job_id, started_at desc, id desc`,
+        [actor.userId, jobIds]
+      ),
+      versions.length
+        ? pool.query<{ version: number; name: string }>(
+            `select version, name from personal_agent_identity_versions
+             where owner_user_id = $1 and agent_id = $2
+               and version = any($3::integer[])`,
+            [actor.userId, input.agentId, versions]
+          )
+        : Promise.resolve({ rows: [] as { version: number; name: string }[] })
+    ]);
+    const attemptsByJob = new Map<string, PersonalAgentExecutionAttempt[]>();
+    for (const row of attemptRows.rows) {
+      const attempts = attemptsByJob.get(row.job_id) ?? [];
+      attempts.push(mapAttempt(row));
+      attemptsByJob.set(row.job_id, attempts);
+    }
+    const namesByVersion = new Map(
+      identityRows.rows.map((row) => [row.version, row.name])
+    );
+    return {
+      jobs: page.jobs.map((job) => {
+        const goal = goals.get(job.id) ?? null;
+        const attempts = attemptsByJob.get(job.id) ?? [];
+        return {
+          ...job,
+          goal,
+          agentName:
+            job.attribution.kind === "agent"
+              ? (namesByVersion.get(job.attribution.agentVersion) ?? null)
+              : null,
+          attempts,
+          latestAttempt: attempts[0] ?? null
+        };
+      }),
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor
+    };
+  };
+
   const countPersonalAgentExecutionAttempts = async (
     actor: ActorContext,
     input: {
@@ -2787,6 +3246,8 @@ export const createPersonalAgentRepository = (
     createPersonalAgentExecutionAttempt,
     completePersonalAgentExecutionAttempt,
     listPersonalAgentExecutionAttempts,
+    getPersonalAgentActivity,
+    listPersonalAgentHistoryJobs,
     countPersonalAgentExecutionAttempts
   };
 };

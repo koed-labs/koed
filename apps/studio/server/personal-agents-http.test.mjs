@@ -73,6 +73,80 @@ test("rejects unknown paths and query overrides", async () => {
     400
   );
 });
+
+test("Personal Agent activity and history proxy only bounded queries", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const get = (path, expectedPath) => {
+    let result;
+    const request = Object.assign(Readable.from([]), {
+      method: "GET",
+      headers: {}
+    });
+    return handlePersonalAgents({
+      request,
+      url: new URL(`http://localhost${path}`),
+      validCsrf: () => false,
+      resolveToken: async () => "secret",
+      apiBase: "http://127.0.0.1:43300",
+      fetchImpl: async (url, init) => {
+        assert.equal(url.pathname + url.search, expectedPath);
+        assert.equal(init.method, "GET");
+        return Response.json({ activity: [] });
+      },
+      send: (status, body) => {
+        result = { status, body };
+      }
+    }).then((handled) => ({ handled, result }));
+  };
+
+  const activity = await get(
+    `/studio-api/personal-agents/activity?agentId=${id}`,
+    `/v1/personal-agents/activity?agentId=${id}`
+  );
+  assert.equal(activity.handled, true);
+  assert.equal(activity.result.status, 200);
+
+  const history = await get(
+    `/studio-api/personal-agents/${id}/jobs?limit=20&before=abc_123`,
+    `/v1/personal-agents/${id}/jobs?limit=20&before=abc_123`
+  );
+  assert.equal(history.handled, true);
+  assert.equal(history.result.status, 200);
+
+  const invalid = await get(
+    `/studio-api/personal-agents/activity?agentId=${id}&owner=other`,
+    "must-not-fetch"
+  );
+  assert.equal(invalid.result.status, 400);
+});
+
+test("Personal Agent activity has a route-specific bounded response budget", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const invoke = async (padding) => {
+    let result;
+    const request = Object.assign(Readable.from([]), {
+      method: "GET",
+      headers: {}
+    });
+    await handlePersonalAgents({
+      request,
+      url: new URL(
+        `http://localhost/studio-api/personal-agents/activity?agentId=${id}`
+      ),
+      validCsrf: () => false,
+      resolveToken: async () => "secret",
+      apiBase: "http://127.0.0.1:43300",
+      fetchImpl: async () => Response.json({ activity: [], padding }),
+      send: (status, body) => {
+        result = { status, body };
+      }
+    });
+    return result;
+  };
+
+  assert.equal((await invoke("x".repeat(300 * 1024))).status, 200);
+  assert.equal((await invoke("x".repeat(1024 * 1024 + 1))).status, 503);
+});
 test("does not expose backend error details", async () => {
   const result = await call({
     fetchImpl: async () => new Response("secret stack trace", { status: 500 })

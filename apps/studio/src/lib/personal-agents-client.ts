@@ -69,6 +69,50 @@ export type PersonalAgentHighlight = Readonly<{
   summary?: string | null;
 }>;
 
+export type PersonalAgentLiveJob = Readonly<{
+  id: string;
+  title: string;
+  goal: string | null;
+  conversationId: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  state: string;
+  updatedAt: number;
+}>;
+
+export type PersonalAgentActivityProject = Readonly<{
+  id: string;
+  name: string;
+  status: string | null;
+  startedAt: number | null;
+}>;
+
+export type PersonalAgentProjectSummary = Readonly<{
+  projects: readonly PersonalAgentActivityProject[];
+  count: number | null;
+  truncated: boolean;
+}>;
+
+export type PersonalAgentActivity = Readonly<{
+  agentId: string;
+  status: "running" | "idle" | "unknown";
+  availability: "available" | "unavailable" | "unsupported";
+  freshness: "fresh" | "stale" | "unknown";
+  observedAt: number | null;
+  runningAttempts: number | null;
+  persistedRunningAttempts: number | null;
+  activeJobs: readonly PersonalAgentLiveJob[];
+  activeJobsCount: number | null;
+  activeJobsTruncated: boolean;
+  projectSummary?: PersonalAgentProjectSummary | null;
+}>;
+
+export type PersonalAgentJobPage = Readonly<{
+  jobs: readonly PersonalAgentJob[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}>;
+
 export type PersonalAgent = Readonly<{
   id: string;
   ownerId: string;
@@ -97,7 +141,10 @@ export type PersonalAgent = Readonly<{
   }> | null;
   jobsHasMore: boolean;
   jobsNextCursor: string | null;
+  /** Cached older pages may sit beyond an unqueried gap after a fresh head. */
+  jobsHistoryGapAfterId?: string | null;
   activityLoaded: boolean;
+  activitySummary?: PersonalAgentActivity;
   sourceTemplateId: string | null;
   sourceTemplateVersion: number | null;
 }>;
@@ -105,6 +152,15 @@ export type PersonalAgent = Readonly<{
 export type PersonalAgentsApi = Readonly<{
   list: (signal?: AbortSignal) => Promise<PersonalAgent[]>;
   get: (id: string, signal?: AbortSignal) => Promise<PersonalAgent>;
+  activity: (
+    ids: readonly string[],
+    signal?: AbortSignal
+  ) => Promise<PersonalAgentActivity[]>;
+  getJobs: (
+    id: string,
+    before: string,
+    signal?: AbortSignal
+  ) => Promise<PersonalAgentJobPage>;
   capabilities: (signal?: AbortSignal) => Promise<AgentModelCapability[]>;
   create: (
     values: AgentIdentityEditorValues,
@@ -316,6 +372,135 @@ function parseHighlight(value: unknown): PersonalAgentHighlight {
     projectName: text(value.projectName),
     at: timestamp(value.at ?? value.completedAt, "highlight timestamp"),
     summary: text(value.summary ?? value.outcome)
+  };
+}
+
+function nullableCount(value: unknown, label: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`The agent service returned an invalid ${label}.`);
+  }
+  return value;
+}
+
+function parseLiveJob(value: unknown): PersonalAgentLiveJob {
+  if (!isRecord(value))
+    throw new Error("The agent service returned an invalid live job.");
+  return {
+    id: requiredText(value.id, "live job id"),
+    title: requiredText(value.title, "live job title"),
+    goal: text(value.goal),
+    conversationId: text(value.conversationId),
+    projectId: text(value.projectId),
+    projectName: text(value.projectName),
+    state: requiredText(value.state, "live job state"),
+    updatedAt: timestamp(value.updatedAt, "live job updatedAt")
+  };
+}
+
+function parseActivityProject(value: unknown): PersonalAgentActivityProject {
+  if (!isRecord(value)) {
+    throw new Error("The agent service returned an invalid project summary.");
+  }
+  return {
+    id: requiredText(value.id, "activity project id"),
+    name: requiredText(value.name, "activity project name"),
+    status: text(value.status),
+    startedAt: nullableTimestamp(value.startedAt)
+  };
+}
+
+function parseProjectSummary(value: unknown): PersonalAgentProjectSummary {
+  if (!isRecord(value) || !Array.isArray(value.projects)) {
+    throw new Error("The agent service returned an invalid project summary.");
+  }
+  if (value.projects.length > 5 || typeof value.truncated !== "boolean") {
+    throw new Error("The agent service returned invalid project coverage.");
+  }
+  return {
+    projects: value.projects.map(parseActivityProject),
+    count: nullableCount(value.count, "project count"),
+    truncated: value.truncated
+  };
+}
+
+function parseActivity(value: unknown): PersonalAgentActivity {
+  if (!isRecord(value))
+    throw new Error("The agent service returned invalid activity.");
+  const status = value.status;
+  const availability = value.availability;
+  const freshness = value.freshness;
+  if (status !== "running" && status !== "idle" && status !== "unknown") {
+    throw new Error("The agent service returned invalid activity status.");
+  }
+  if (
+    availability !== "available" &&
+    availability !== "unavailable" &&
+    availability !== "unsupported"
+  ) {
+    throw new Error(
+      "The agent service returned invalid activity availability."
+    );
+  }
+  if (
+    freshness !== "fresh" &&
+    freshness !== "stale" &&
+    freshness !== "unknown"
+  ) {
+    throw new Error("The agent service returned invalid activity freshness.");
+  }
+  const activeJobsValue = arrayValue(value.activeJobs);
+  if (!activeJobsValue) {
+    throw new Error("The agent service returned invalid live jobs.");
+  }
+  if (typeof value.activeJobsTruncated !== "boolean") {
+    throw new Error("The agent service returned invalid live job coverage.");
+  }
+  const projectSummary =
+    value.projectSummary === undefined
+      ? undefined
+      : value.projectSummary === null
+        ? null
+        : parseProjectSummary(value.projectSummary);
+  return {
+    agentId: requiredText(value.agentId, "activity agent id"),
+    status,
+    availability,
+    freshness,
+    observedAt: nullableTimestamp(value.observedAt),
+    runningAttempts: nullableCount(
+      value.runningAttempts,
+      "running attempt count"
+    ),
+    persistedRunningAttempts: nullableCount(
+      value.persistedRunningAttempts,
+      "persisted running attempt count"
+    ),
+    activeJobs: activeJobsValue.map(parseLiveJob),
+    activeJobsCount: nullableCount(value.activeJobsCount, "live job count"),
+    activeJobsTruncated: value.activeJobsTruncated,
+    ...(projectSummary === undefined ? {} : { projectSummary })
+  };
+}
+
+function parseJobPage(value: unknown): PersonalAgentJobPage {
+  if (
+    !isRecord(value) ||
+    value.contractVersion !== 1 ||
+    !Array.isArray(value.jobs)
+  ) {
+    throw new Error("The agent service returned invalid job history.");
+  }
+  if (typeof value.hasMore !== "boolean") {
+    throw new Error("The agent service returned invalid job history paging.");
+  }
+  if (value.hasMore && !text(value.nextCursor)) {
+    throw new Error("The agent service returned invalid job history paging.");
+  }
+  return {
+    jobs: value.jobs.map(parseJob),
+    hasMore: value.hasMore,
+    nextCursor: text(value.nextCursor)
   };
 }
 
@@ -597,6 +782,48 @@ export const personalAgentsHttpAdapter: PersonalAgentsApi = Object.freeze({
       await call(`/${encodeURIComponent(id)}`, {}, signal)
     );
     return parseAgent(parsed.agent, parsed.activity);
+  },
+  async activity(ids, signal) {
+    if (ids.length < 1 || ids.length > 100) {
+      throw new Error("Request activity for between 1 and 100 agents.");
+    }
+    if (new Set(ids).size !== ids.length) {
+      throw new Error("Agent activity requests cannot contain duplicate IDs.");
+    }
+    const query = new URLSearchParams();
+    for (const id of ids) query.append("agentId", id);
+    const path = isHostedStudio()
+      ? `/v1/personal-agents/activity?${query.toString()}`
+      : `/studio-api/personal-agents/activity?${query.toString()}`;
+    const payload = await call(path, {}, signal);
+    if (
+      !isRecord(payload) ||
+      payload.contractVersion !== 1 ||
+      !Array.isArray(payload.activity)
+    ) {
+      throw new Error("The agent service returned invalid activity.");
+    }
+    const activity = payload.activity.map(parseActivity);
+    const requested = new Set(ids);
+    if (activity.some((item) => !requested.has(item.agentId))) {
+      throw new Error("The agent service returned out-of-scope activity.");
+    }
+    if (
+      new Set(activity.map((item) => item.agentId)).size !== activity.length
+    ) {
+      throw new Error("The agent service returned duplicate activity.");
+    }
+    return activity;
+  },
+  async getJobs(id, before, signal) {
+    const query = new URLSearchParams({ limit: "20", before });
+    return parseJobPage(
+      await call(
+        `/${encodeURIComponent(id)}/jobs?${query.toString()}`,
+        {},
+        signal
+      )
+    );
   },
   async capabilities(signal) {
     return parseCapabilities(await call("/capabilities", {}, signal));

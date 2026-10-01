@@ -370,6 +370,209 @@ describe("personal agents HTTP adapter", () => {
       agentVersion: 2
     });
   });
+
+  it("reads a versioned owner-scoped bulk activity summary without hydrating history", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/studio/agents" } });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        contractVersion: 1,
+        activity: [
+          {
+            agentId: agent.id,
+            status: "running",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: "2026-09-20T12:00:00.000Z",
+            runningAttempts: 2,
+            persistedRunningAttempts: 2,
+            activeJobs: [
+              {
+                id: "job-1",
+                conversationId: "33333333-3333-4333-8333-333333333333",
+                projectId: "project-1",
+                projectName: "Billing",
+                title: "Review the billing implementation",
+                goal: "Review billing changes and report risks.",
+                state: "running",
+                updatedAt: "2026-09-20T12:00:00.000Z"
+              }
+            ],
+            activeJobsCount: 2,
+            activeJobsTruncated: true,
+            projectSummary: {
+              projects: [
+                {
+                  id: "project-1",
+                  name: "Billing",
+                  status: "active",
+                  startedAt: "2026-09-19T11:00:00.000Z"
+                }
+              ],
+              count: 3,
+              truncated: true
+            }
+          }
+        ]
+      })
+    );
+
+    const result = await personalAgentsHttpAdapter.activity([
+      agent.id,
+      "33333333-3333-4333-8333-333333333333"
+    ]);
+    const requestUrl = new URL(
+      String(fetchMock.mock.calls[0]?.[0]),
+      "https://studio.example"
+    );
+    expect(requestUrl.pathname).toBe("/v1/personal-agents/activity");
+    expect(requestUrl.searchParams.getAll("agentId")).toEqual([
+      agent.id,
+      "33333333-3333-4333-8333-333333333333"
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      credentials: "include",
+      cache: "no-store",
+      redirect: "error"
+    });
+    expect(result[0]).toMatchObject({
+      agentId: agent.id,
+      status: "running",
+      freshness: "fresh",
+      runningAttempts: 2,
+      activeJobsCount: 2,
+      activeJobsTruncated: true,
+      activeJobs: [
+        {
+          title: "Review the billing implementation",
+          goal: "Review billing changes and report risks.",
+          projectName: "Billing"
+        }
+      ],
+      projectSummary: {
+        projects: [
+          {
+            id: "project-1",
+            name: "Billing",
+            status: "active",
+            startedAt: Date.parse("2026-09-19T11:00:00.000Z")
+          }
+        ],
+        count: 3,
+        truncated: true
+      }
+    });
+    expect(result[0]?.observedAt).toBe(Date.parse("2026-09-20T12:00:00.000Z"));
+  });
+
+  it("rejects duplicate and oversized bulk activity scopes before fetch", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    await expect(
+      personalAgentsHttpAdapter.activity([agent.id, agent.id])
+    ).rejects.toThrow("duplicate IDs");
+    await expect(
+      personalAgentsHttpAdapter.activity(
+        Array.from({ length: 101 }, (_, index) => `agent-${index}`)
+      )
+    ).rejects.toThrow("between 1 and 100");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("loads versioned history pages with the existing opaque before cursor", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/studio/agents" } });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        contractVersion: 1,
+        jobs: [
+          {
+            id: "job-older",
+            title: "Older review",
+            state: "succeeded",
+            createdAt: "2026-09-19T11:00:00.000Z",
+            agentName: "Historical Bob",
+            agentVersion: 2,
+            provider: "codex",
+            model: "gpt-5.6",
+            effort: "high",
+            attempts: [
+              {
+                id: "attempt-older",
+                attemptNumber: 1,
+                provider: "codex",
+                model: "gpt-5.6",
+                effort: "high",
+                status: "succeeded",
+                startedAt: "2026-09-19T11:00:00.000Z",
+                completedAt: "2026-09-19T11:05:00.000Z"
+              }
+            ]
+          }
+        ],
+        hasMore: true,
+        nextCursor: "next-page"
+      })
+    );
+
+    const page = await personalAgentsHttpAdapter.getJobs(
+      agent.id,
+      "opaque/cursor +"
+    );
+    const requestUrl = new URL(
+      String(fetchMock.mock.calls[0]?.[0]),
+      "https://studio.example"
+    );
+    expect(requestUrl.pathname).toBe(`/v1/personal-agents/${agent.id}/jobs`);
+    expect(requestUrl.searchParams.get("limit")).toBe("20");
+    expect(requestUrl.searchParams.get("before")).toBe("opaque/cursor +");
+    expect(page).toMatchObject({ hasMore: true, nextCursor: "next-page" });
+    expect(page.jobs[0]).toMatchObject({
+      id: "job-older",
+      agentName: "Historical Bob",
+      agentVersion: 2,
+      provider: "codex",
+      attempts: [expect.objectContaining({ id: "attempt-older" })]
+    });
+  });
+
+  it("surfaces paged history failures for a retry", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ error: "History service unavailable" }, { status: 503 })
+    );
+
+    await expect(
+      personalAgentsHttpAdapter.getJobs(agent.id, "next-page")
+    ).rejects.toMatchObject({
+      name: "PersonalAgentsHttpError",
+      status: 503,
+      message: "History service unavailable"
+    });
+  });
+
+  it("routes bulk activity and paged history through local Studio gateway paths", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/activity?")) {
+        return Response.json({ contractVersion: 1, activity: [] });
+      }
+      return Response.json({
+        contractVersion: 1,
+        jobs: [],
+        hasMore: false,
+        nextCursor: null
+      });
+    });
+
+    await personalAgentsHttpAdapter.activity([agent.id]);
+    await personalAgentsHttpAdapter.getJobs(agent.id, "cursor");
+
+    expect(calls[0]).toBe(
+      `/studio-api/personal-agents/activity?agentId=${agent.id}`
+    );
+    expect(calls[1]).toBe(
+      `/studio-api/personal-agents/${agent.id}/jobs?limit=20&before=cursor`
+    );
+  });
 });
 
 describe("Agent clone naming", () => {

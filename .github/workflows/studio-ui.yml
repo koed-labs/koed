@@ -1,0 +1,60 @@
+name: Studio UI regression
+
+on:
+  pull_request:
+    paths:
+      - "apps/studio/**"
+      - "packages/shared/**"
+      - "apps/api/src/personal-agents/**"
+      - "packages/db/src/personal-agent*"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/studio-ui.yml"
+  push:
+    branches: [main, epic/ui-revamp]
+    paths:
+      - "apps/studio/**"
+      - "packages/shared/**"
+      - "apps/api/src/personal-agents/**"
+      - "packages/db/src/personal-agent*"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/studio-ui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-ui-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm --filter @koed/studio exec playwright install --with-deps chromium
+      - name: Run synthetic UI regression tests
+        run: pnpm --filter @koed/studio test:ui
+      - name: Save failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-ui-failure
+          path: apps/studio/output/playwright/
+          if-no-files-found: ignore
+          retention-days: 7

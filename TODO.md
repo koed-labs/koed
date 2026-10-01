@@ -101,7 +101,6 @@ Agreed sequence after the frontend QA review: begin with unused UI removal and s
 Implemented: shared Desktop/web Cards/List views, lifecycle filtering and
 automatic verified current-work summary. See `docs/studio-personal-agents-plan.md`.
 
-For very large Agent collections, consider a compact owner-scoped bulk activity
-read so the overview does not hydrate full history for each Agent. Keep the
-existing lease/generation verification and explicit unknown states. Current
-reads are paced; this is a performance follow-up, not a new authority contract.
+- Implemented: bounded owner-scoped bulk activity reads preserve lease/generation verification, explicit unknown states and compact Working now context.
+- Implemented: cursor-based older Job history preserves original attribution and already loaded pages, with guarded retry and refresh.
+- Implemented: reusable synthetic Studio browser regression tests and a focused GitHub Actions workflow. See `apps/studio/tests/ui/README.md` for commands, coverage and limits.

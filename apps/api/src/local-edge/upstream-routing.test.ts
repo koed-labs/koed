@@ -851,6 +851,8 @@ describe("local edge upstream routing", () => {
       ["GET", "/v1/personal-agent-role-templates"],
       ["GET", "/v1/personal-agents"],
       ["GET", "/v1/personal-agents/capabilities"],
+      ["GET", `/v1/personal-agents/activity?agentId=${agentId}`],
+      ["GET", `/v1/personal-agents/${agentId}/jobs?limit=20&before=abc_123`],
       ["GET", `/v1/personal-agents/${agentId}`],
       ["POST", "/v1/personal-agents"],
       ["PATCH", `/v1/personal-agents/${agentId}`],
@@ -866,7 +868,14 @@ describe("local edge upstream routing", () => {
       ["DELETE", `/v1/personal-agents/${agentId}`],
       ["POST", `/v1/personal-agents/${agentId}/clone`],
       ["GET", `/v1/personal-agents/${agentId}/versions`],
-      ["POST", "/v1/personal-agents/not-a-uuid/retire"]
+      ["POST", "/v1/personal-agents/not-a-uuid/retire"],
+      ["GET", `/v1/personal-agents/activity?agentId=${agentId}&owner=x`],
+      [
+        "GET",
+        `/v1/personal-agents/activity?agentId=${agentId}&agentId=${agentId}`
+      ],
+      ["GET", `/v1/personal-agents/${agentId}/jobs?limit=100`],
+      ["GET", `/v1/personal-agents/${agentId}/jobs?limit=20&before=a.b`]
     ] as const) {
       expect(() =>
         assertUpstreamOperationPathAllowed("managed_execution", method, path)

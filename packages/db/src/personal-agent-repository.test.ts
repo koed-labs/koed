@@ -51,6 +51,9 @@ class PersonalAgentPool {
   paginateHistoryJobPage = false;
   historyHydrationQueries: Array<{ sql: string; values: unknown[] }> = [];
   historyCommandRows: Record<string, unknown>[] = [];
+  activityQueries: Array<{ sql: string; values: unknown[] }> = [];
+  activityProjectQueries: Array<{ sql: string; values: unknown[] }> = [];
+  activityProjectRows: Record<string, unknown>[] = [];
   verifiedRunningStats = {
     persisted_count: "0",
     verified_count: "0",
@@ -91,6 +94,17 @@ class PersonalAgentPool {
     const sql = text.replace(/\s+/g, " ").trim().toLowerCase();
     if (["begin", "commit", "rollback"].includes(sql)) {
       return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
+    }
+    if (sql.startsWith("with requested_agents as")) {
+      this.activityQueries.push({ sql, values });
+      return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
+    }
+    if (sql.startsWith("with requested_project_agents as")) {
+      this.activityProjectQueries.push({ sql, values });
+      return {
+        rows: this.activityProjectRows,
+        rowCount: this.activityProjectRows.length
+      } as unknown as pg.QueryResult<T>;
     }
     if (sql.startsWith("select pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 1 } as unknown as pg.QueryResult<T>;
@@ -705,6 +719,68 @@ const createRepository = (pool: PersonalAgentPool, plaintext = "") => {
 };
 
 describe("Personal Agent repository", () => {
+  it("loads a bounded activity batch in owner-scoped queries and keeps missing Agents unknown", async () => {
+    const pool = new PersonalAgentPool();
+    const repository = createRepository(pool);
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+
+    const activity = await repository.getPersonalAgentActivity(
+      { userId: ownerId },
+      { agentIds: [firstId, secondId] }
+    );
+
+    expect(activity).toEqual([
+      expect.objectContaining({
+        agentId: firstId,
+        status: "unknown",
+        availability: "unavailable",
+        freshness: "unknown",
+        projectSummary: null
+      }),
+      expect.objectContaining({
+        agentId: secondId,
+        status: "unknown",
+        availability: "unavailable",
+        projectSummary: null
+      })
+    ]);
+    expect(pool.activityQueries).toHaveLength(1);
+    expect(pool.activityProjectQueries).toHaveLength(1);
+    expect(pool.activityQueries[0]?.values).toEqual([
+      ownerId,
+      [firstId, secondId]
+    ]);
+    expect(pool.activityQueries[0]?.sql).not.toContain("soul_instructions");
+    expect(pool.activityProjectQueries[0]?.values).toEqual([
+      ownerId,
+      [firstId, secondId]
+    ]);
+    expect(pool.activityProjectQueries[0]?.sql).not.toContain(
+      "soul_instructions"
+    );
+  });
+
+  it("rejects duplicate and oversized activity ID batches before querying", async () => {
+    const pool = new PersonalAgentPool();
+    const repository = createRepository(pool);
+    const duplicateId = randomUUID();
+    await expect(
+      repository.getPersonalAgentActivity(
+        { userId: ownerId },
+        { agentIds: [duplicateId, duplicateId] }
+      )
+    ).rejects.toThrow("up to 100 unique Agent IDs");
+    await expect(
+      repository.getPersonalAgentActivity(
+        { userId: ownerId },
+        { agentIds: Array.from({ length: 101 }, () => randomUUID()) }
+      )
+    ).rejects.toThrow("up to 100 unique Agent IDs");
+    expect(pool.activityQueries).toHaveLength(0);
+    expect(pool.activityProjectQueries).toHaveLength(0);
+  });
+
   it("excludes persisted running Jobs without verified managed activity", async () => {
     const pool = new PersonalAgentPool();
     pool.verifiedRunningStats = {

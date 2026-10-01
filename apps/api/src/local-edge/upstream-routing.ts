@@ -658,6 +658,42 @@ export const assertUpstreamOperationPathAllowed = (
       deny();
     }
     if (
+      method === "GET" &&
+      pathname === "/v1/personal-agents/activity" &&
+      parsed.searchParams.size >= 1 &&
+      [...parsed.searchParams.keys()].every((key) => key === "agentId") &&
+      parsed.searchParams.getAll("agentId").length <= 100 &&
+      parsed.searchParams.getAll("agentId").length > 0 &&
+      new Set(parsed.searchParams.getAll("agentId")).size ===
+        parsed.searchParams.getAll("agentId").length &&
+      parsed.searchParams
+        .getAll("agentId")
+        .every((id) =>
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            id
+          )
+        )
+    ) {
+      return;
+    }
+    if (
+      method === "GET" &&
+      /^\/v1\/personal-agents\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/jobs$/i.test(
+        pathname
+      ) &&
+      [...parsed.searchParams.keys()].every(
+        (key) => key === "limit" || key === "before"
+      ) &&
+      parsed.searchParams.getAll("limit").length <= 1 &&
+      parsed.searchParams.getAll("before").length <= 1 &&
+      (parsed.searchParams.get("limit") === null ||
+        /^(?:[1-9]|1[0-9]|20)$/.test(parsed.searchParams.get("limit")!)) &&
+      (parsed.searchParams.get("before") === null ||
+        /^[A-Za-z0-9_-]{1,256}$/.test(parsed.searchParams.get("before")!))
+    ) {
+      return;
+    }
+    if (
       (method === "GET" &&
         (pathname === "/v1/personal-agent-role-templates" ||
           pathname === "/v1/personal-agents" ||

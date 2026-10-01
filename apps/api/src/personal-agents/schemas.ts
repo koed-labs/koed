@@ -34,6 +34,37 @@ export const personalAgentIdParamsSchema = z
 
 export const personalAgentListQuerySchema = z.object({}).strict();
 
+export const personalAgentActivityQuerySchema = z
+  .object({
+    agentId: z.union([z.uuid(), z.array(z.uuid()).min(1).max(100)])
+  })
+  .strict()
+  .transform(({ agentId }) => {
+    const agentIds = Array.isArray(agentId) ? agentId : [agentId];
+    return { agentIds };
+  })
+  .refine(({ agentIds }) => new Set(agentIds).size === agentIds.length, {
+    message: "Agent IDs must be unique"
+  });
+
+const historyLimit = z
+  .string()
+  .regex(/^\d{1,2}$/)
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(20));
+
+export const personalAgentHistoryQuerySchema = z
+  .object({
+    limit: historyLimit.optional().default(20),
+    before: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional()
+  })
+  .strict();
+
 export const personalAgentCreateSchema = z
   .object({
     requestId: z.uuid(),

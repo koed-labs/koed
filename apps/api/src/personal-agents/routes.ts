@@ -4,6 +4,9 @@ import {
   aiClientPermissionContractFor,
   isSupportedAiClientDriverId,
   personalAgentIdentitySchema,
+  personalAgentActivityResponseSchema,
+  personalAgentHistoryJobsResponseSchema,
+  PERSONAL_AGENT_CONTRACT_VERSION,
   fetchBoundedJsonObject,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
@@ -16,6 +19,8 @@ import type { ApiRouteContext } from "../server/context.js";
 import { assertUpstreamOperationPathAllowed } from "../local-edge/upstream-routing.js";
 import {
   personalAgentCreateSchema,
+  personalAgentActivityQuerySchema,
+  personalAgentHistoryQuerySchema,
   personalAgentIdParamsSchema,
   personalAgentListQuerySchema,
   personalAgentRetireSchema,
@@ -274,9 +279,20 @@ export const registerPersonalAgentRoutes = (
     const authority = remoteAuthority();
     if (!authority) return null;
     assertUpstreamOperationPathAllowed("managed_execution", method, path);
+    const maxBytes = path.startsWith("/v1/personal-agents/activity?")
+      ? 1024 * 1024
+      : /^\/v1\/personal-agents\/[0-9a-f-]+\/jobs\?/.test(path)
+        ? 8 * 1024 * 1024
+        : 256 * 1024;
+    const requestPath = new URL(path, "http://localhost");
+    const upstreamUrl = upstreamApiUrl(
+      authority.backend.baseUrl,
+      requestPath.pathname
+    );
+    upstreamUrl.search = requestPath.search;
     const { response, payload } = await fetchBoundedJsonObject(
       context.localEdge.fetch,
-      upstreamApiUrl(authority.backend.baseUrl, path),
+      upstreamUrl,
       {
         method,
         redirect: "error",
@@ -289,7 +305,7 @@ export const registerPersonalAgentRoutes = (
       },
       {
         timeoutMs: 15_000,
-        maxBytes: 256 * 1_024,
+        maxBytes,
         readErrorBody: true
       }
     );
@@ -370,6 +386,117 @@ export const registerPersonalAgentRoutes = (
         requireRepository()
       ).listPersonalAgents({ userId: user.id }, { includeRetired: true });
       return { agents: agents.map(publicAgent) };
+    }
+  );
+
+  app.get(
+    "/v1/personal-agents/activity",
+    { preHandler: agentRateLimit },
+    async (request) => {
+      const user = await authenticatePersonalAgent(request);
+      const { agentIds } = personalAgentActivityQuerySchema.parse(
+        request.query
+      );
+      const unknownActivity = (availability: "unavailable" | "unsupported") =>
+        agentIds.map((agentId) => ({
+          agentId,
+          status: "unknown" as const,
+          availability,
+          freshness: "unknown" as const,
+          observedAt: null,
+          runningAttempts: null,
+          persistedRunningAttempts: null,
+          activeJobs: [],
+          activeJobsCount: null,
+          activeJobsTruncated: false,
+          projectSummary: null
+        }));
+      try {
+        const search = new URLSearchParams();
+        for (const agentId of agentIds) search.append("agentId", agentId);
+        const proxied = await proxyPersonalAgent(
+          "GET",
+          `/v1/personal-agents/activity?${search.toString()}`
+        );
+        if (proxied) {
+          const parsed = personalAgentActivityResponseSchema.safeParse(
+            proxied.payload
+          );
+          const returnedIds = parsed.success
+            ? parsed.data.activity.map((item) => item.agentId)
+            : [];
+          const requestedIds = new Set(agentIds);
+          if (
+            parsed.success &&
+            returnedIds.length === agentIds.length &&
+            new Set(returnedIds).size === returnedIds.length &&
+            returnedIds.every((agentId) => requestedIds.has(agentId))
+          ) {
+            return parsed.data;
+          }
+          return {
+            contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+            activity: unknownActivity("unsupported")
+          };
+        }
+        const activity = await routeRepository(
+          requireRepository()
+        ).getPersonalAgentActivity({ userId: user.id }, { agentIds });
+        return personalAgentActivityResponseSchema.parse({
+          contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+          activity
+        });
+      } catch (error) {
+        const unsupported =
+          error &&
+          typeof error === "object" &&
+          "statusCode" in error &&
+          error.statusCode === 404;
+        return {
+          contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+          activity: unknownActivity(unsupported ? "unsupported" : "unavailable")
+        };
+      }
+    }
+  );
+
+  app.get(
+    "/v1/personal-agents/:agentId/jobs",
+    { preHandler: agentRateLimit },
+    async (request) => {
+      const user = await authenticatePersonalAgent(request);
+      const { agentId } = personalAgentIdParamsSchema.parse(request.params);
+      const query = personalAgentHistoryQuerySchema.parse(request.query);
+      const search = new URLSearchParams({ limit: String(query.limit) });
+      if (query.before) search.set("before", query.before);
+      const proxied = await proxyPersonalAgent(
+        "GET",
+        `/v1/personal-agents/${encodeURIComponent(agentId)}/jobs?${search.toString()}`
+      );
+      if (proxied) {
+        return personalAgentHistoryJobsResponseSchema.parse(proxied.payload);
+      }
+      let page;
+      try {
+        page = await routeRepository(
+          requireRepository()
+        ).listPersonalAgentHistoryJobs(
+          { userId: user.id },
+          { agentId, ...query }
+        );
+      } catch (error) {
+        if (
+          error instanceof TypeError &&
+          error.message === "Invalid Personal Agent history cursor"
+        ) {
+          throw badRequest("Invalid Personal Agent history cursor");
+        }
+        throw error;
+      }
+      return personalAgentHistoryJobsResponseSchema.parse({
+        contractVersion: PERSONAL_AGENT_CONTRACT_VERSION,
+        ...page
+      });
     }
   );
 

@@ -2,7 +2,33 @@ const prefix = "/studio-api/personal-agents";
 const uuid =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const detail = new RegExp(`^/(${uuid})(/(?:retire|restore))?$`);
+const history = new RegExp(`^/(${uuid})/jobs$`);
 const maximum = 256 * 1024;
+
+function validPersonalAgentActivityQuery(searchParams) {
+  const ids = searchParams.getAll("agentId");
+  return (
+    [...searchParams.keys()].every((key) => key === "agentId") &&
+    ids.length >= 1 &&
+    ids.length <= 100 &&
+    new Set(ids).size === ids.length &&
+    ids.every((id) => new RegExp(`^${uuid}$`, "i").test(id))
+  );
+}
+
+function validPersonalAgentHistoryQuery(searchParams) {
+  const limits = searchParams.getAll("limit");
+  const cursors = searchParams.getAll("before");
+  return (
+    [...searchParams.keys()].every(
+      (key) => key === "limit" || key === "before"
+    ) &&
+    limits.length <= 1 &&
+    cursors.length <= 1 &&
+    (!limits.length || /^(?:[1-9]|1[0-9]|20)$/.test(limits[0])) &&
+    (!cursors.length || /^[A-Za-z0-9_-]{1,256}$/.test(cursors[0]))
+  );
+}
 
 async function boundedConflictCode(response) {
   if (!response.body) return null;
@@ -57,6 +83,9 @@ export async function handlePersonalAgents({
     return false;
   const suffix = url.pathname.slice(routePrefix.length);
   const match = detail.exec(suffix);
+  const historyMatch = history.exec(suffix);
+  const activityRoute =
+    routeFamily === "personal-agents" && suffix === "/activity";
   const squareRoute =
     routeFamily === "public-square" ? publicSquareRoute(suffix) : null;
   const teamAgentRequestRoute =
@@ -76,13 +105,15 @@ export async function handlePersonalAgents({
             ? managedMethods(suffix)
             : suffix === ""
               ? ["GET", "POST"]
-              : suffix === "/capabilities"
+              : activityRoute || historyMatch
                 ? ["GET"]
-                : match
-                  ? match[2]
-                    ? ["POST"]
-                    : ["GET", "PATCH"]
-                  : [];
+                : suffix === "/capabilities"
+                  ? ["GET"]
+                  : match
+                    ? match[2]
+                      ? ["POST"]
+                      : ["GET", "PATCH"]
+                    : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -99,7 +130,14 @@ export async function handlePersonalAgents({
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   const squareList =
     routeFamily === "public-square" && squareRoute?.list === true;
-  if (url.search && !recoveryLookup && !squareList && !teamAgentRequestList) {
+  if (
+    url.search &&
+    !recoveryLookup &&
+    !squareList &&
+    !teamAgentRequestList &&
+    !activityRoute &&
+    !historyMatch
+  ) {
     send(400, { error: "query_not_allowed" });
     return true;
   }
@@ -119,6 +157,14 @@ export async function handlePersonalAgents({
     )
   ) {
     send(400, { error: "invalid_team_agent_request_query" });
+    return true;
+  }
+  if (activityRoute && !validPersonalAgentActivityQuery(url.searchParams)) {
+    send(400, { error: "invalid_activity_query" });
+    return true;
+  }
+  if (historyMatch && !validPersonalAgentHistoryQuery(url.searchParams)) {
+    send(400, { error: "invalid_history_query" });
     return true;
   }
   try {
@@ -189,7 +235,7 @@ export async function handlePersonalAgents({
           ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
           : squareRoute
             ? `${squareRoute.path}${squareList ? url.search : ""}`
-            : `/v1/${routeFamily}${suffix}${recoveryLookup ? url.search : ""}`,
+            : `/v1/${routeFamily}${suffix}${recoveryLookup || activityRoute || historyMatch ? url.search : ""}`,
         base
       ),
       {
@@ -280,7 +326,12 @@ export async function handlePersonalAgents({
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 4 * 1024 * 1024) {
+        const maximumResponseBytes = historyMatch
+          ? 8 * 1024 * 1024
+          : activityRoute
+            ? 1024 * 1024
+            : 4 * 1024 * 1024;
+        if (size > maximumResponseBytes) {
           await reader.cancel();
           throw new Error("response_too_large");
         }

@@ -146,6 +146,25 @@ const buildFixture = async (
   const authenticatedOwnerId = options.ownerId ?? ownerId;
   const repository = {
     listPersonalAgents: vi.fn(async () => [identity()]),
+    getPersonalAgentActivity: vi.fn(async (_actor, { agentIds }) =>
+      agentIds.map((id) => ({
+        agentId: id,
+        status: "unknown" as const,
+        availability: "unavailable" as const,
+        freshness: "unknown" as const,
+        observedAt: null,
+        runningAttempts: null,
+        persistedRunningAttempts: null,
+        activeJobs: [],
+        activeJobsCount: null,
+        activeJobsTruncated: false
+      }))
+    ),
+    listPersonalAgentHistoryJobs: vi.fn(async () => ({
+      jobs: [],
+      hasMore: false,
+      nextCursor: null
+    })),
     listPersonalAgentRoleTemplates: vi.fn(async () => []),
     getPersonalAgentRoleTemplate: vi.fn(async () => null),
     getPersonalAgent: vi.fn(async () => detail()),
@@ -668,6 +687,116 @@ describe("Personal Agent API", () => {
     });
   });
 
+  it("returns one owner-scoped unknown activity record for each requested Agent", async () => {
+    const otherAgentId = randomUUID();
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/activity?agentId=${agentId}&agentId=${otherAgentId}`
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().contractVersion).toBe(1);
+    expect(response.json().activity).toEqual([
+      expect.objectContaining({
+        agentId,
+        status: "unknown",
+        availability: "unavailable",
+        freshness: "unknown"
+      }),
+      expect.objectContaining({
+        agentId: otherAgentId,
+        status: "unknown",
+        availability: "unavailable"
+      })
+    ]);
+    expect(fixture.repository.getPersonalAgentActivity).toHaveBeenCalledWith(
+      { userId: ownerId },
+      { agentIds: [agentId, otherAgentId] }
+    );
+  });
+
+  it("rejects unbounded, duplicate, or unexpected activity query parameters", async () => {
+    const fixture = await buildFixture();
+    const duplicate = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/activity?agentId=${agentId}&agentId=${agentId}`
+    });
+    const unexpected = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/activity?agentId=${agentId}&owner=${ownerId}`
+    });
+    await fixture.app.close();
+
+    expect(duplicate.statusCode).toBe(400);
+    expect(unexpected.statusCode).toBe(400);
+    expect(fixture.repository.getPersonalAgentActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns a bounded paginated authorized Job history page", async () => {
+    const fixture = await buildFixture();
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}/jobs?limit=17&before=MjAyNi0wOS0yMlQxMDowMDowMC4wMDBaAA${agentId}`
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      contractVersion: 1,
+      jobs: [],
+      hasMore: false,
+      nextCursor: null
+    });
+    expect(
+      fixture.repository.listPersonalAgentHistoryJobs
+    ).toHaveBeenCalledWith(
+      { userId: ownerId },
+      {
+        agentId,
+        limit: 17,
+        before: `MjAyNi0wOS0yMlQxMDowMDowMC4wMDBaAA${agentId}`
+      }
+    );
+  });
+
+  it("rejects oversized Job history pages and cursor query ambiguity", async () => {
+    const fixture = await buildFixture();
+    const oversized = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}/jobs?limit=51`
+    });
+    const duplicateCursor = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}/jobs?before=one&before=two`
+    });
+    await fixture.app.close();
+
+    expect(oversized.statusCode).toBe(400);
+    expect(duplicateCursor.statusCode).toBe(400);
+    expect(
+      fixture.repository.listPersonalAgentHistoryJobs
+    ).not.toHaveBeenCalled();
+  });
+
+  it("maps malformed opaque history cursors to a client error", async () => {
+    const fixture = await buildFixture();
+    vi.mocked(
+      fixture.repository.listPersonalAgentHistoryJobs
+    ).mockRejectedValueOnce(
+      new TypeError("Invalid Personal Agent history cursor")
+    );
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/${agentId}/jobs?before=bm90LWFuLWlzbw`
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe("Invalid Personal Agent history cursor");
+  });
+
   it("returns verified currently running Jobs at the detail payload top level", async () => {
     const fixture = await buildFixture();
     const runningJob = {
@@ -933,6 +1062,220 @@ describe("Personal Agent API", () => {
       expect(
         fixture.repository.getPersonalAgentRoleTemplate
       ).not.toHaveBeenCalled();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("bounds activity upstream bytes while accepting valid compact batches above the default cap", async () => {
+    const ids = Array.from({ length: 100 }, () => randomUUID());
+    const activity = ids.map((id) => ({
+      agentId: id,
+      status: "running",
+      availability: "available",
+      freshness: "fresh",
+      observedAt: "2026-09-30T10:00:00.000Z",
+      runningAttempts: 1,
+      persistedRunningAttempts: 1,
+      activeJobs: [
+        {
+          id: randomUUID(),
+          conversationId: randomUUID(),
+          projectId: "界".repeat(512),
+          projectName: "こ".repeat(128),
+          title: "x".repeat(1_000),
+          goal: "目".repeat(240),
+          state: "running",
+          updatedAt: "2026-09-30T10:00:00.000Z"
+        }
+      ],
+      activeJobsCount: 1,
+      activeJobsTruncated: false
+    }));
+    const validPayload = JSON.stringify({ contractVersion: 1, activity });
+    expect(Buffer.byteLength(validPayload)).toBeGreaterThan(256 * 1024);
+    const upstreamPath = writePersonalAgentUpstreamRegistry();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(validPayload, {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: "x".repeat(1024 * 1024 + 1) }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: upstreamPath,
+      fetch
+    });
+    const query = new URLSearchParams();
+    ids.forEach((id) => query.append("agentId", id));
+
+    try {
+      const valid = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/personal-agents/activity?${query}`,
+        headers: { authorization: "Bearer local-personal-token" }
+      });
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json().activity).toHaveLength(100);
+      const overLimit = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/personal-agents/activity?agentId=${ids[0]}`,
+        headers: { authorization: "Bearer local-personal-token" }
+      });
+      expect(overLimit.statusCode).toBe(200);
+      expect(overLimit.json().activity[0]).toMatchObject({
+        agentId: ids[0],
+        status: "unknown",
+        availability: "unavailable",
+        freshness: "unknown"
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("reports explicit unknown activity when a managed upstream lacks the route", async () => {
+    const missingAgentId = randomUUID();
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      fetch: async () => Response.json({ error: "not_found" }, { status: 404 })
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/personal-agents/activity?agentId=${missingAgentId}`,
+      headers: { authorization: "Bearer local-personal-token" }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      contractVersion: 1,
+      activity: [
+        expect.objectContaining({
+          agentId: missingAgentId,
+          status: "unknown",
+          availability: "unsupported",
+          freshness: "unknown",
+          projectSummary: null
+        })
+      ]
+    });
+  });
+
+  it("accepts an upstream activity batch in a different order with the exact requested ID set", async () => {
+    const ids = [randomUUID(), randomUUID()];
+    const activity = [...ids].reverse().map((agentId) => ({
+      agentId,
+      status: "idle",
+      availability: "available",
+      freshness: "fresh",
+      observedAt: "2026-09-30T10:00:00.000Z",
+      runningAttempts: 0,
+      persistedRunningAttempts: 0,
+      activeJobs: [],
+      activeJobsCount: 0,
+      activeJobsTruncated: false
+    }));
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      fetch: async () =>
+        Response.json({ contractVersion: 1, activity }, { status: 200 })
+    });
+    const query = new URLSearchParams();
+    for (const id of ids) query.append("agentId", id);
+    try {
+      const response = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/personal-agents/activity?${query}`,
+        headers: { authorization: "Bearer local-personal-token" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        response
+          .json()
+          .activity.map((item: { agentId: string }) => item.agentId)
+      ).toEqual([...ids].reverse());
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("preserves query strings in native activity and Job history proxy URLs", async () => {
+    const activityIds = [randomUUID(), randomUUID()];
+    const historyAgentId = randomUUID();
+    const cursor = "Y3Vyc29y";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/activity")) {
+        return Response.json({
+          contractVersion: 1,
+          activity: activityIds.map((agentId) => ({
+            agentId,
+            status: "idle",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: "2026-09-30T10:00:00.000Z",
+            runningAttempts: 0,
+            persistedRunningAttempts: 0,
+            activeJobs: [],
+            activeJobsCount: 0,
+            activeJobsTruncated: false,
+            projectSummary: { projects: [], count: 0, truncated: false }
+          }))
+        });
+      }
+      return Response.json({
+        contractVersion: 1,
+        jobs: [],
+        hasMore: false,
+        nextCursor: null
+      });
+    });
+    const fixture = await buildFixture("developer", {
+      upstreamBackendsPath: writePersonalAgentUpstreamRegistry(),
+      fetch
+    });
+    const activityQuery = new URLSearchParams();
+    for (const id of activityIds) activityQuery.append("agentId", id);
+
+    try {
+      const activity = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/personal-agents/activity?${activityQuery}`,
+        headers: { authorization: "Bearer local-personal-token" }
+      });
+      const history = await fixture.app.inject({
+        method: "GET",
+        url: `/v1/personal-agents/${historyAgentId}/jobs?limit=7&before=${cursor}`,
+        headers: { authorization: "Bearer local-personal-token" }
+      });
+
+      expect(activity.statusCode).toBe(200);
+      expect(history.statusCode).toBe(200);
+      expect(
+        fetch.mock.calls.map(([input]) => {
+          const url = new URL(String(input));
+          return { pathname: url.pathname, search: url.search };
+        })
+      ).toEqual([
+        {
+          pathname: "/koed/v1/personal-agents/activity",
+          search: `?agentId=${activityIds[0]}&agentId=${activityIds[1]}`
+        },
+        {
+          pathname: `/koed/v1/personal-agents/${historyAgentId}/jobs`,
+          search: `?limit=7&before=${cursor}`
+        }
+      ]);
     } finally {
       await fixture.app.close();
     }

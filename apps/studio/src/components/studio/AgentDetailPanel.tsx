@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Archive, Award, Copy, Pencil, Sparkles, X } from "lucide-react";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import { Tooltip } from "@/components/Tooltip";
@@ -24,6 +24,9 @@ export function AgentDetailPanel({
   agent,
   loading,
   error,
+  jobsLoading,
+  jobsError,
+  onLoadMoreJobs,
   onClose,
   onGiveAJob,
   onOpenConversation,
@@ -39,6 +42,9 @@ export function AgentDetailPanel({
   agent: PersonalAgent;
   loading: boolean;
   error: string | null;
+  jobsLoading: boolean;
+  jobsError: string | null;
+  onLoadMoreJobs: () => void;
   onClose: () => void;
   onGiveAJob?: () => void;
   onOpenConversation?: (conversationId: string) => void;
@@ -397,27 +403,71 @@ export function AgentDetailPanel({
             </p>
             {agent.jobsHasMore && (
               <p className="mt-2 text-xs text-warning">
-                Showing the latest recorded jobs. More history is available from
-                the service.
+                Showing recorded Jobs. Older history is available.
               </p>
             )}
-            {jobsLogged === null ? (
+            {agent.jobs.length === 0 && !agent.jobsHasMore ? (
               <p className="mt-2 text-sm text-subtle">
-                Job history is unavailable from the service.
+                {jobsLogged === null
+                  ? "Job history is unavailable from the service."
+                  : jobsLogged === 0
+                    ? "No jobs recorded yet."
+                    : "Job details are unavailable from the service."}
               </p>
-            ) : agent.jobs.length === 0 ? (
-              <p className="mt-2 text-sm text-subtle">No jobs recorded yet.</p>
             ) : (
               <div className="mt-2 max-h-80 space-y-2 overflow-y-auto pr-1">
+                {agent.jobs.length === 0 && (
+                  <p className="text-sm text-subtle">
+                    No Jobs are available on this page.
+                  </p>
+                )}
                 {agent.jobs.map((job) => (
-                  <JobCard
-                    key={job.id}
-                    job={job}
-                    detailed
-                    now={clockNow}
-                    onOpenConversation={onOpenConversation}
-                  />
+                  <Fragment key={job.id}>
+                    <JobCard
+                      job={job}
+                      detailed
+                      now={clockNow}
+                      onOpenConversation={onOpenConversation}
+                    />
+                    {job.id === agent.jobsHistoryGapAfterId && (
+                      <p className="border-y border-dashed border-border py-2 text-center text-[11px] text-warning">
+                        Some older Jobs are still loading in this history.
+                      </p>
+                    )}
+                  </Fragment>
                 ))}
+                {agent.jobsHasMore && agent.jobsNextCursor && (
+                  <div className="border-t border-border pt-3">
+                    {jobsError && (
+                      <p role="alert" className="mb-2 text-xs text-danger">
+                        {jobsError}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onLoadMoreJobs}
+                      disabled={jobsLoading}
+                      className="w-full rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground-secondary hover:bg-surface-hover disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {jobsLoading
+                        ? agent.jobsHistoryGapAfterId
+                          ? "Loading missing Jobs…"
+                          : "Loading older Jobs…"
+                        : jobsError
+                          ? agent.jobsHistoryGapAfterId
+                            ? "Retry loading missing Jobs"
+                            : "Retry loading older Jobs"
+                          : agent.jobsHistoryGapAfterId
+                            ? "Load missing Jobs"
+                            : "Load more older Jobs"}
+                    </button>
+                  </div>
+                )}
+                {agent.jobsHasMore && !agent.jobsNextCursor && (
+                  <p className="border-t border-border pt-3 text-xs text-warning">
+                    Older Job history is currently unavailable.
+                  </p>
+                )}
               </div>
             )}
           </section>

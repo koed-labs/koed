@@ -21,14 +21,27 @@ import {
   personalAgentsHttpAdapter,
   personalAgentRequestId,
   type PersonalAgent,
+  type PersonalAgentActivity,
   type PersonalAgentsApi,
   type PersonalAgentDraftScope,
   uniqueAgentCloneName
 } from "@/lib/personal-agents-client";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import {
+  activityForRequestedAgents,
+  mergePersonalAgentJobPage,
+  mergePersonalAgentRefresh,
+  personalAgentReadIsCurrent,
+  samePersonalAgentScope,
+  unavailablePersonalAgentActivity,
+  withPersonalAgentActivitySummary,
+  type PersonalAgentReadIdentity
+} from "@/lib/personal-agent-activity";
+import {
   filterAgentsByLifecycle,
+  PERSONAL_AGENT_ACTIVITY_LEASE_MS,
   unknownActivityLabel,
+  projectEngagementsForCard,
   verifiedAgentWork,
   withoutVerifiedActivity,
   type AgentLifecycleFilter
@@ -73,26 +86,26 @@ function upsertAgent(
 ): PersonalAgent[] {
   const index = agents.findIndex((agent) => agent.id === next.id);
   if (index < 0) return [next, ...agents];
-  return agents.map((agent) => (agent.id === next.id ? next : agent));
+  const previous = agents[index];
+  if (!previous) return [next, ...agents];
+  const merged = mergePersonalAgentRefresh(previous, next);
+  return agents.map((agent) => (agent.id === next.id ? merged : agent));
 }
 
-function preserveActivity(
-  previous: PersonalAgent | null,
-  next: PersonalAgent
-): PersonalAgent {
-  if (!previous || previous.id !== next.id || next.activityLoaded) return next;
-  return {
-    ...next,
-    projects: previous.projects,
-    runningNow: previous.runningNow,
-    runningJobsVerified: previous.runningJobsVerified,
-    jobs: previous.jobs,
-    highlights: previous.highlights,
-    stats: previous.stats,
-    jobsHasMore: previous.jobsHasMore,
-    jobsNextCursor: previous.jobsNextCursor,
-    activityLoaded: previous.activityLoaded
-  };
+function isVerifiedActivity(activity: PersonalAgentActivity): boolean {
+  const now = Date.now();
+  return (
+    activity.status !== "unknown" &&
+    activity.availability === "available" &&
+    activity.freshness === "fresh" &&
+    activity.runningAttempts !== null &&
+    activity.observedAt !== null &&
+    activity.observedAt <= now &&
+    now - activity.observedAt <= PERSONAL_AGENT_ACTIVITY_LEASE_MS &&
+    (activity.status === "running"
+      ? activity.runningAttempts > 0
+      : activity.runningAttempts === 0)
+  );
 }
 
 export function AgentsView({
@@ -137,9 +150,14 @@ export function AgentsView({
   const [activityErrors, setActivityErrors] = useState<Set<string>>(
     () => new Set()
   );
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const detailSequenceRef = useRef(0);
   const activityReadSequenceRef = useRef(new Map<string, number>());
+  const jobsReadSequenceRef = useRef(0);
+  const jobsAbortControllerRef = useRef<AbortController | null>(null);
+  const jobsLoadingRef = useRef(false);
   const collectionRevisionRef = useRef(0);
   const mutationInFlightRef = useRef(false);
   const agentCardRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -156,17 +174,31 @@ export function AgentsView({
     null;
   const agentsRef = useRef(agents);
   const selectedIdRef = useRef(selectedId);
+  const selectedAgentRef = useRef(selected);
   useLayoutEffect(() => {
     agentsRef.current = agents;
     selectedIdRef.current = selectedId;
-  }, [agents, selectedId]);
+    selectedAgentRef.current = selected;
+  }, [agents, selected, selectedId]);
 
   useEffect(() => {
-    if (!selected?.jobs.some((job) => job.state === "running" && job.startedAt))
-      return;
+    const selectedJobNeedsClock = selected?.jobs.some(
+      (job) => job.state === "running" && job.startedAt
+    );
+    const now = Date.now();
+    const overviewNeedsClock = agents.some((agent) => {
+      const summary = agent.activitySummary;
+      return Boolean(
+        summary?.freshness === "fresh" &&
+        summary.observedAt !== null &&
+        summary.observedAt <= now &&
+        now - summary.observedAt <= PERSONAL_AGENT_ACTIVITY_LEASE_MS
+      );
+    });
+    if (!selectedJobNeedsClock && !overviewNeedsClock) return;
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [selected?.id, selected?.jobs]);
+  }, [agents, selected?.id, selected?.jobs]);
 
   const closeDetail = useCallback(() => {
     const previousId = selectedId;
@@ -197,24 +229,33 @@ export function AgentsView({
           ]);
         if (signal.aborted) return;
         if (agentsResult.status === "rejected") throw agentsResult.reason;
+        const previousScope = draftScopeRef.current;
+        const nextScope =
+          scopeResult.status === "fulfilled" ? scopeResult.value : null;
+        const scopeUnchanged =
+          scopeResult.status === "fulfilled" &&
+          samePersonalAgentScope(previousScope, nextScope);
         markCollectionChanged();
-        setAgents(agentsResult.value);
-        if (scopeResult.status === "fulfilled") {
-          const nextScope = scopeResult.value;
-          const previousScope = draftScopeRef.current;
-          if (
-            previousScope &&
-            (previousScope.ownerId !== nextScope.ownerId ||
-              previousScope.backendId !== nextScope.backendId)
-          ) {
-            setModal(null);
-            setRetireTarget(null);
-            setSelectedId(null);
-            setSelectedDetail(null);
-          }
-          draftScopeRef.current = nextScope;
-          setDraftScope(nextScope);
+        setAgents((current) =>
+          signal.aborted
+            ? current
+            : agentsResult.value.map((nextAgent) => {
+                const previous = current.find(
+                  (agent) => agent.id === nextAgent.id
+                );
+                return scopeUnchanged && previous
+                  ? mergePersonalAgentRefresh(previous, nextAgent)
+                  : nextAgent;
+              })
+        );
+        if (!scopeUnchanged) {
+          setModal(null);
+          setRetireTarget(null);
+          setSelectedId(null);
+          setSelectedDetail(null);
         }
+        draftScopeRef.current = nextScope;
+        setDraftScope(nextScope);
         if (capabilitiesResult.status === "fulfilled") {
           setCapabilities(capabilitiesResult.value);
           setCapabilityError(null);
@@ -254,75 +295,179 @@ export function AgentsView({
     if (loadState !== "ready") return;
     const controller = new AbortController();
     const revision = collectionRevisionRef.current;
+    const scope = draftScopeRef.current;
     const ids = agentsRef.current
       .filter((agent) => agent.lifecycle === "active")
+      .filter((agent) => agent.id !== selectedIdRef.current)
       .map((agent) => agent.id);
     let nextRefresh: number | undefined;
 
     const scan = async () => {
-      for (let index = 0; index < ids.length; index += 1) {
-        if (index > 0)
-          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+      for (let index = 0; index < ids.length; index += 100) {
+        const batch = ids.slice(index, index + 100);
         if (
           controller.signal.aborted ||
           revision !== collectionRevisionRef.current ||
+          !samePersonalAgentScope(scope, draftScopeRef.current) ||
           mutationInFlightRef.current
         )
           return;
-        const id = ids[index];
-        if (!id) continue;
-        if (selectedIdRef.current === id) continue;
-        const readSequence = (activityReadSequenceRef.current.get(id) ?? 0) + 1;
-        activityReadSequenceRef.current.set(id, readSequence);
+        const reads = new Map<string, PersonalAgentReadIdentity>();
+        for (const id of batch) {
+          const sequence = (activityReadSequenceRef.current.get(id) ?? 0) + 1;
+          activityReadSequenceRef.current.set(id, sequence);
+          reads.set(id, {
+            agentId: id,
+            sequence,
+            collectionRevision: revision,
+            scope
+          });
+        }
         try {
-          const activity = await api.get(id, controller.signal);
+          const activity = await api.activity(batch, controller.signal);
           if (
             controller.signal.aborted ||
             revision !== collectionRevisionRef.current ||
+            !samePersonalAgentScope(scope, draftScopeRef.current) ||
             mutationInFlightRef.current
           )
             return;
-          if (activityReadSequenceRef.current.get(id) !== readSequence)
-            continue;
-          setAgents((current) =>
-            current.map((agent) => (agent.id === id ? activity : agent))
+          const byAgentId = new Map(
+            activityForRequestedAgents(batch, activity).map((summary) => [
+              summary.agentId,
+              summary
+            ])
           );
-          setSelectedDetail((current) =>
-            current?.id === id ? activity : current
-          );
+          const updates = batch.flatMap((id) => {
+            const read = reads.get(id);
+            const current: PersonalAgentReadIdentity = {
+              agentId: id,
+              sequence: activityReadSequenceRef.current.get(id) ?? 0,
+              collectionRevision: collectionRevisionRef.current,
+              scope: draftScopeRef.current
+            };
+            if (
+              !read ||
+              !personalAgentReadIsCurrent(read, current) ||
+              selectedIdRef.current === id
+            ) {
+              return [];
+            }
+            const summary =
+              byAgentId.get(id) ?? unavailablePersonalAgentActivity(id);
+            return [{ id, summary, verified: isVerifiedActivity(summary) }];
+          });
+          if (updates.length === 0) continue;
+          setAgents((current) => {
+            if (
+              controller.signal.aborted ||
+              revision !== collectionRevisionRef.current ||
+              !samePersonalAgentScope(scope, draftScopeRef.current) ||
+              mutationInFlightRef.current
+            ) {
+              return current;
+            }
+            return current.map((agent) => {
+              const update = updates.find((item) => item.id === agent.id);
+              const read = reads.get(agent.id);
+              const currentRead: PersonalAgentReadIdentity = {
+                agentId: agent.id,
+                sequence: activityReadSequenceRef.current.get(agent.id) ?? 0,
+                collectionRevision: collectionRevisionRef.current,
+                scope: draftScopeRef.current
+              };
+              return update &&
+                read &&
+                personalAgentReadIsCurrent(read, currentRead) &&
+                selectedIdRef.current !== agent.id
+                ? withPersonalAgentActivitySummary(agent, update.summary)
+                : agent;
+            });
+          });
           setActivityErrors((current) => {
+            if (
+              controller.signal.aborted ||
+              revision !== collectionRevisionRef.current ||
+              !samePersonalAgentScope(scope, draftScopeRef.current) ||
+              mutationInFlightRef.current
+            ) {
+              return current;
+            }
             const next = new Set(current);
-            next.delete(id);
+            for (const update of updates) {
+              if (update.verified) next.delete(update.id);
+              else next.add(update.id);
+            }
             return next;
           });
-          if (selectedIdRef.current === id) setDetailError(null);
-        } catch (reason) {
+        } catch {
           if (controller.signal.aborted) return;
-          if (revision !== collectionRevisionRef.current) return;
-          if (activityReadSequenceRef.current.get(id) !== readSequence)
-            continue;
-          setAgents((current) =>
-            current.map((agent) =>
-              agent.id === id ? withoutVerifiedActivity(agent) : agent
-            )
-          );
-          setSelectedDetail((current) =>
-            current?.id === id ? withoutVerifiedActivity(current) : current
-          );
-          setActivityErrors((current) => new Set(current).add(id));
-          if (selectedIdRef.current === id) {
-            setDetailError(
-              reason instanceof Error
-                ? reason.message
-                : "Agent activity is unavailable."
+          if (
+            revision !== collectionRevisionRef.current ||
+            !samePersonalAgentScope(scope, draftScopeRef.current)
+          )
+            return;
+          const updates = batch.filter((id) => {
+            const read = reads.get(id);
+            if (!read) return false;
+            const current: PersonalAgentReadIdentity = {
+              agentId: id,
+              sequence: activityReadSequenceRef.current.get(id) ?? 0,
+              collectionRevision: collectionRevisionRef.current,
+              scope: draftScopeRef.current
+            };
+            return (
+              personalAgentReadIsCurrent(read, current) &&
+              selectedIdRef.current !== id
             );
-          }
+          });
+          setAgents((current) => {
+            if (
+              controller.signal.aborted ||
+              revision !== collectionRevisionRef.current ||
+              !samePersonalAgentScope(scope, draftScopeRef.current) ||
+              mutationInFlightRef.current
+            ) {
+              return current;
+            }
+            return current.map((agent) => {
+              const read = reads.get(agent.id);
+              const currentRead: PersonalAgentReadIdentity = {
+                agentId: agent.id,
+                sequence: activityReadSequenceRef.current.get(agent.id) ?? 0,
+                collectionRevision: collectionRevisionRef.current,
+                scope: draftScopeRef.current
+              };
+              return updates.includes(agent.id) &&
+                read &&
+                personalAgentReadIsCurrent(read, currentRead) &&
+                selectedIdRef.current !== agent.id
+                ? withPersonalAgentActivitySummary(
+                    agent,
+                    unavailablePersonalAgentActivity(agent.id)
+                  )
+                : agent;
+            });
+          });
+          setActivityErrors((current) => {
+            if (
+              controller.signal.aborted ||
+              revision !== collectionRevisionRef.current ||
+              !samePersonalAgentScope(scope, draftScopeRef.current) ||
+              mutationInFlightRef.current
+            ) {
+              return current;
+            }
+            const next = new Set(current);
+            for (const id of updates) next.add(id);
+            return next;
+          });
         }
       }
       if (!controller.signal.aborted) {
         nextRefresh = window.setTimeout(
           () => setActivityRefreshKey((value) => value + 1),
-          Math.max(60_000, ids.length * 1_200)
+          60_000
         );
       }
     };
@@ -331,7 +476,7 @@ export function AgentsView({
       if (nextRefresh !== undefined) window.clearTimeout(nextRefresh);
       controller.abort();
     };
-  }, [api, activityRefreshKey, collectionRevision, loadState]);
+  }, [api, activityRefreshKey, collectionRevision, loadState, selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -342,6 +487,7 @@ export function AgentsView({
     const sequence = ++detailSequenceRef.current;
     const controller = new AbortController();
     const revision = collectionRevisionRef.current;
+    const scope = draftScopeRef.current;
     let requestInFlight = false;
     const refresh = async () => {
       if (requestInFlight) return;
@@ -349,21 +495,59 @@ export function AgentsView({
       const readSequence =
         (activityReadSequenceRef.current.get(selectedId) ?? 0) + 1;
       activityReadSequenceRef.current.set(selectedId, readSequence);
+      const read: PersonalAgentReadIdentity = {
+        agentId: selectedId,
+        sequence: readSequence,
+        collectionRevision: revision,
+        scope
+      };
       try {
         const detail = await api.get(selectedId, controller.signal);
         if (
           !controller.signal.aborted &&
           sequence === detailSequenceRef.current &&
-          activityReadSequenceRef.current.get(selectedId) === readSequence &&
-          revision === collectionRevisionRef.current &&
+          personalAgentReadIsCurrent(read, {
+            agentId: selectedId,
+            sequence: activityReadSequenceRef.current.get(selectedId) ?? 0,
+            collectionRevision: collectionRevisionRef.current,
+            scope: draftScopeRef.current
+          }) &&
           !mutationInFlightRef.current
         ) {
-          setSelectedDetail(detail);
-          setAgents((current) =>
-            current.map((candidate) =>
-              candidate.id === selectedId ? detail : candidate
-            )
+          setSelectedDetail((current) =>
+            sequence === detailSequenceRef.current &&
+            selectedIdRef.current === selectedId &&
+            personalAgentReadIsCurrent(read, {
+              agentId: selectedId,
+              sequence: activityReadSequenceRef.current.get(selectedId) ?? 0,
+              collectionRevision: collectionRevisionRef.current,
+              scope: draftScopeRef.current
+            })
+              ? mergePersonalAgentRefresh(
+                  current?.id === selectedId ? current : agent,
+                  detail
+                )
+              : current
           );
+          setAgents((current) => {
+            if (
+              sequence !== detailSequenceRef.current ||
+              selectedIdRef.current !== selectedId ||
+              !personalAgentReadIsCurrent(read, {
+                agentId: selectedId,
+                sequence: activityReadSequenceRef.current.get(selectedId) ?? 0,
+                collectionRevision: collectionRevisionRef.current,
+                scope: draftScopeRef.current
+              })
+            ) {
+              return current;
+            }
+            return current.map((candidate) =>
+              candidate.id === selectedId
+                ? mergePersonalAgentRefresh(candidate, detail)
+                : candidate
+            );
+          });
           setActivityErrors((current) => {
             const next = new Set(current);
             next.delete(selectedId);
@@ -375,8 +559,12 @@ export function AgentsView({
         if (
           !controller.signal.aborted &&
           sequence === detailSequenceRef.current &&
-          activityReadSequenceRef.current.get(selectedId) === readSequence &&
-          revision === collectionRevisionRef.current &&
+          personalAgentReadIsCurrent(read, {
+            agentId: selectedId,
+            sequence: activityReadSequenceRef.current.get(selectedId) ?? 0,
+            collectionRevision: collectionRevisionRef.current,
+            scope: draftScopeRef.current
+          }) &&
           !mutationInFlightRef.current
         ) {
           setSelectedDetail((current) =>
@@ -412,6 +600,96 @@ export function AgentsView({
   }, [api, selectedId, collectionRevision, activityRefreshKey]);
 
   useEffect(() => {
+    jobsReadSequenceRef.current += 1;
+    jobsAbortControllerRef.current?.abort();
+    jobsAbortControllerRef.current = null;
+    jobsLoadingRef.current = false;
+    // Reset status owned by the previous selected Agent and auth scope.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setJobsLoading(false);
+    setJobsError(null);
+    return () => {
+      jobsReadSequenceRef.current += 1;
+      jobsAbortControllerRef.current?.abort();
+      jobsAbortControllerRef.current = null;
+      jobsLoadingRef.current = false;
+    };
+  }, [selectedId, collectionRevision]);
+
+  const loadMoreJobs = useCallback(async () => {
+    const agent = selected;
+    const id = selectedId;
+    const before = agent?.jobsNextCursor;
+    if (!agent || !id || agent.id !== id || !before || jobsLoadingRef.current)
+      return;
+
+    const controller = new AbortController();
+    jobsAbortControllerRef.current?.abort();
+    jobsAbortControllerRef.current = controller;
+    jobsLoadingRef.current = true;
+    const sequence = ++jobsReadSequenceRef.current;
+    const revision = collectionRevisionRef.current;
+    const scope = draftScopeRef.current;
+    const read: PersonalAgentReadIdentity = {
+      agentId: id,
+      sequence,
+      collectionRevision: revision,
+      scope
+    };
+    setJobsLoading(true);
+    setJobsError(null);
+
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      selectedIdRef.current === id &&
+      selectedAgentRef.current?.jobsNextCursor === before &&
+      !mutationInFlightRef.current &&
+      personalAgentReadIsCurrent(read, {
+        agentId: id,
+        sequence: jobsReadSequenceRef.current,
+        collectionRevision: collectionRevisionRef.current,
+        scope: draftScopeRef.current
+      });
+
+    try {
+      const page = await api.getJobs(id, before, controller.signal);
+      if (page.hasMore && (!page.nextCursor || page.nextCursor === before)) {
+        throw new Error(
+          "The agent service returned invalid job history paging."
+        );
+      }
+      if (!isCurrent()) return;
+      setSelectedDetail((current) =>
+        isCurrent() && current?.id === id && current.jobsNextCursor === before
+          ? mergePersonalAgentJobPage(current, page)
+          : current
+      );
+      setAgents((current) => {
+        if (!isCurrent()) return current;
+        return current.map((candidate) =>
+          candidate.id === id && candidate.jobsNextCursor === before
+            ? mergePersonalAgentJobPage(candidate, page)
+            : candidate
+        );
+      });
+    } catch (reason) {
+      if (isCurrent()) {
+        setJobsError(
+          reason instanceof Error
+            ? reason.message
+            : "Older Job history is unavailable."
+        );
+      }
+    } finally {
+      if (jobsAbortControllerRef.current === controller) {
+        jobsAbortControllerRef.current = null;
+        jobsLoadingRef.current = false;
+        if (isCurrent()) setJobsLoading(false);
+      }
+    }
+  }, [api, selected, selectedId]);
+
+  useEffect(() => {
     if (!selectedId || modal || retireTarget) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeDetail();
@@ -444,7 +722,7 @@ export function AgentsView({
           : await api.create(values, { requestId });
       setAgents((current) => upsertAgent(current, next));
       setSelectedId(next.id);
-      setSelectedDetail((current) => preserveActivity(current, next));
+      setSelectedDetail((current) => mergePersonalAgentRefresh(current, next));
       mutationRequestRef.current = null;
       return { definitionId: next.id };
     } finally {
@@ -474,7 +752,7 @@ export function AgentsView({
         { requestId: retireRequestRef.current.requestId }
       );
       setAgents((current) => upsertAgent(current, next));
-      setSelectedDetail((current) => preserveActivity(current, next));
+      setSelectedDetail((current) => mergePersonalAgentRefresh(current, next));
       retireRequestRef.current = null;
       setRetireTarget(null);
     } catch (reason) {
@@ -499,7 +777,9 @@ export function AgentsView({
         requestId: personalAgentRequestId()
       });
       setAgents((current) => upsertAgent(current, restored));
-      setSelectedDetail((current) => preserveActivity(current, restored));
+      setSelectedDetail((current) =>
+        mergePersonalAgentRefresh(current, restored)
+      );
     } catch (reason) {
       setLifecycleError(
         reason instanceof Error
@@ -546,14 +826,14 @@ export function AgentsView({
     (agent) => agent.lifecycle === "active"
   );
   const workingAgents = activityOverviewAgents
-    .map((agent) => ({ agent, work: verifiedAgentWork(agent) }))
+    .map((agent) => ({ agent, work: verifiedAgentWork(agent, clockNow) }))
     .filter(({ work }) => work.status === "working");
   const unknownActivityAgents = activityOverviewAgents.filter(
-    (agent) => verifiedAgentWork(agent).status === "unknown"
+    (agent) => verifiedAgentWork(agent, clockNow).status === "unknown"
   );
   const unavailableActivityCount = unknownActivityAgents.filter(
     (agent) =>
-      unknownActivityLabel(agent, activityErrors.has(agent.id)) ===
+      unknownActivityLabel(agent, activityErrors.has(agent.id), clockNow) ===
       "unavailable"
   ).length;
   const checkingActivityCount =
@@ -717,6 +997,9 @@ export function AgentsView({
                       agent={agent}
                       jobs={work.jobs}
                       jobCount={work.count ?? 0}
+                      liveJobs={work.liveJobs ?? undefined}
+                      liveJobsCount={work.liveJobsCount}
+                      liveJobsTruncated={work.liveJobsTruncated}
                       onOpenProfile={() => setSelectedId(agent.id)}
                       onOpenConversation={onOpenConversation}
                     />
@@ -757,6 +1040,10 @@ export function AgentsView({
                   {visibleAgents.map((agent) => {
                     const isSelected = agent.id === selectedId;
                     const work = verifiedAgentWork(agent);
+                    const projectEngagements = projectEngagementsForCard(
+                      agent,
+                      activityErrors.has(agent.id)
+                    );
                     return (
                       <button
                         key={agent.id}
@@ -812,26 +1099,30 @@ export function AgentsView({
                           <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
                             Active in
                           </p>
-                          {!agent.activityLoaded ? (
+                          {projectEngagements.state === "checking" ? (
                             <p className="mt-1.5 text-xs text-subtle">
-                              {activityErrors.has(agent.id)
-                                ? "Project activity is unavailable."
-                                : agent.lifecycle === "retired" &&
-                                    selectedId !== agent.id
-                                  ? "Select to load project activity."
-                                  : "Project activity is being checked."}
+                              {agent.lifecycle === "retired" &&
+                              selectedId !== agent.id
+                                ? "Select to load Project engagements."
+                                : "Project activity is being checked."}
                             </p>
-                          ) : agent.stats?.projects === null ? (
+                          ) : projectEngagements.state === "unknown" ? (
                             <p className="mt-1.5 text-xs text-subtle">
-                              Project engagements are unavailable.
+                              Select to load Project engagements.
                             </p>
-                          ) : agent.projects.length === 0 ? (
+                          ) : projectEngagements.state === "unavailable" ? (
+                            <p className="mt-1.5 text-xs text-subtle">
+                              {projectEngagements.source === "detail"
+                                ? "Project engagements are unavailable."
+                                : "Project activity is unavailable."}
+                            </p>
+                          ) : projectEngagements.state === "empty" ? (
                             <p className="mt-1.5 text-xs text-subtle">
                               No active project engagements.
                             </p>
                           ) : (
                             <div className="mt-1.5 space-y-1.5">
-                              {agent.projects.map((project) => (
+                              {projectEngagements.projects.map((project) => (
                                 <div
                                   key={project.id}
                                   className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-hover/50 px-2.5 py-1.5"
@@ -840,11 +1131,17 @@ export function AgentsView({
                                     {project.name}
                                   </span>
                                   <span className="flex-shrink-0 truncate text-[11px] text-subtle">
-                                    {settingLabel(project.model)} ·{" "}
-                                    {settingLabel(project.effort)}
+                                    {projectEngagements.source === "detail"
+                                      ? `${settingLabel(project.model)} · ${settingLabel(project.effort)}`
+                                      : settingLabel(project.status)}
                                   </span>
                                 </div>
                               ))}
+                              {projectEngagements.hasMore && (
+                                <p className="px-1 text-[11px] text-subtle">
+                                  Open profile to view Project engagements.
+                                </p>
+                              )}
                             </div>
                           )}
                         </div>
@@ -920,6 +1217,9 @@ export function AgentsView({
             agent={selected}
             loading={!selectedDetailForSelection}
             error={detailError}
+            jobsLoading={jobsLoading}
+            jobsError={jobsError}
+            onLoadMoreJobs={loadMoreJobs}
             onClose={closeDetail}
             onEdit={() => setModal({ type: "edit", agent: selected })}
             onGiveAJob={() => onGiveAJob?.(selected)}

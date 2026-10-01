@@ -90,6 +90,105 @@ export const personalAgentIdentitySchema = z
 
 export type PersonalAgentIdentity = z.infer<typeof personalAgentIdentitySchema>;
 
+export const personalAgentActivityJobSchema = z
+  .object({
+    id: z.uuid(),
+    conversationId: z.uuid(),
+    projectId: z.string().trim().min(1).max(512).nullable(),
+    projectName: optionalText(128).nullable(),
+    title: requiredText(1_000),
+    goal: optionalText(240).nullable(),
+    state: z.enum([
+      "queued",
+      "running",
+      "waiting",
+      "succeeded",
+      "failed",
+      "canceled"
+    ]),
+    updatedAt: timestamp
+  })
+  .strict();
+
+export const personalAgentActivityProjectSchema = z
+  .object({
+    id: requiredText(512),
+    name: requiredText(128),
+    status: z.enum(["active", "history"]),
+    startedAt: timestamp
+  })
+  .strict();
+
+export const personalAgentActivityProjectSummarySchema = z
+  .object({
+    projects: z.array(personalAgentActivityProjectSchema).max(5),
+    count: z.number().int().nonnegative().nullable(),
+    truncated: z.boolean()
+  })
+  .strict();
+
+export const personalAgentActivityItemSchema = z
+  .object({
+    agentId: z.uuid(),
+    status: z.enum(["running", "idle", "unknown"]),
+    availability: z.enum(["available", "unavailable", "unsupported"]),
+    freshness: z.enum(["fresh", "stale", "unknown"]),
+    observedAt: timestamp.nullable(),
+    runningAttempts: z.number().int().nonnegative().nullable(),
+    persistedRunningAttempts: z.number().int().nonnegative().nullable(),
+    activeJobs: z.array(personalAgentActivityJobSchema).max(5),
+    activeJobsCount: z.number().int().nonnegative().nullable(),
+    activeJobsTruncated: z.boolean(),
+    projectSummary: personalAgentActivityProjectSummarySchema
+      .nullable()
+      .optional()
+  })
+  .strict();
+
+export const personalAgentActivityResponseSchema = z
+  .object({
+    contractVersion: z.literal(PERSONAL_AGENT_CONTRACT_VERSION),
+    activity: z.array(personalAgentActivityItemSchema).max(100)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const activeJobCount = value.activity.reduce(
+      (count, item) => count + item.activeJobs.length,
+      0
+    );
+    const activeProjectCount = value.activity.reduce(
+      (count, item) => count + (item.projectSummary?.projects.length ?? 0),
+      0
+    );
+    if (activeJobCount > 100) {
+      context.addIssue({
+        code: "custom",
+        path: ["activity"],
+        message: "Activity response exceeds its total live Job limit"
+      });
+    }
+    if (activeProjectCount > 100) {
+      context.addIssue({
+        code: "custom",
+        path: ["activity"],
+        message: "Activity response exceeds its total Project limit"
+      });
+    }
+  });
+
+export type PersonalAgentActivityJob = z.infer<
+  typeof personalAgentActivityJobSchema
+>;
+export type PersonalAgentActivityItem = z.infer<
+  typeof personalAgentActivityItemSchema
+>;
+export type PersonalAgentActivityProject = z.infer<
+  typeof personalAgentActivityProjectSchema
+>;
+export type PersonalAgentActivityProjectSummary = z.infer<
+  typeof personalAgentActivityProjectSummarySchema
+>;
+
 export const personalAgentInstructionSourceSchema = z.enum([
   "generated",
   "custom"
@@ -555,6 +654,28 @@ export const personalAgentExecutionAttemptSchema = z
 
 export type PersonalAgentExecutionAttempt = z.infer<
   typeof personalAgentExecutionAttemptSchema
+>;
+
+export const personalAgentHistoryJobSchema = personalAgentExecutionJobSchema
+  .extend({
+    goal: optionalText(256_000).nullable(),
+    agentName: optionalText(PERSONAL_AGENT_NAME_MAX_LENGTH).nullable(),
+    attempts: z.array(personalAgentExecutionAttemptSchema).max(100),
+    latestAttempt: personalAgentExecutionAttemptSchema.nullable()
+  })
+  .strict();
+
+export const personalAgentHistoryJobsResponseSchema = z
+  .object({
+    contractVersion: z.literal(PERSONAL_AGENT_CONTRACT_VERSION),
+    jobs: z.array(personalAgentHistoryJobSchema).max(20),
+    hasMore: z.boolean(),
+    nextCursor: z.string().max(256).nullable()
+  })
+  .strict();
+
+export type PersonalAgentHistoryJob = z.infer<
+  typeof personalAgentHistoryJobSchema
 >;
 
 export const parsePersonalAgentIdentity = (
