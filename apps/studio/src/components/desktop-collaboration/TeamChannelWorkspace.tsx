@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MessageSquare, Pencil, Settings, SmilePlus, User } from "lucide-react";
+import { Settings, User } from "lucide-react";
 import {
   collaborationMessagePageSchema,
   type CollaborationMessage,
@@ -31,6 +31,7 @@ import {
   directMessageTitle
 } from "@/components/TeamDirectMessage";
 import { TeamShell } from "@/components/TeamShell";
+import { TeamChannelMessageContent } from "@/components/TeamChannelMessageContent";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { PublicSquare } from "@/components/PublicSquare";
 import {
@@ -101,7 +102,6 @@ import {
 } from "@/lib/team-agent-mentions";
 import {
   canForwardTeamAnswer,
-  teamAgentRequestForwardLabel,
   teamAnswerForwardDraft,
   forwardableTeamRequestsForChannelMessage,
   forwardableTeamRequestsForReply
@@ -3973,7 +3973,6 @@ function MessageRow({
   ) => void | Promise<void>;
   principalUserId?: string;
 }) {
-  const name = message.sender.displayName ?? "Team member";
   const rowRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const row = rowRef.current;
@@ -4015,7 +4014,6 @@ function MessageRow({
   const isDirectMessage = directMessagePrincipalUserId !== undefined;
   const isYou =
     isDirectMessage && message.sender.id === directMessagePrincipalUserId;
-  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   return (
     <article
       ref={rowRef}
@@ -4039,122 +4037,17 @@ function MessageRow({
           principalUserId={directMessagePrincipalUserId}
         />
       ) : (
-        <>
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-hover text-xs font-semibold">
-            {name.slice(0, 1).toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
-              <span className="text-sm font-medium">{name}</span>
-              <time className="text-[10px] text-subtle">
-                {new Date(message.createdAt).toLocaleString()}
-              </time>
-              {message.editedAt && (
-                <span className="text-[10px] text-subtle">Edited</span>
-              )}
-            </div>
-            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground-secondary">
-              {message.body}
-            </p>
-            {message.delivery === "failed" && (
-              <p className="text-xs text-warning">Not sent</p>
-            )}
-            {forwardRequests.map((request) => {
-              const label = teamAgentRequestForwardLabel(
-                request,
-                forwardRequestTextById[request.id]
-              );
-              return (
-                <button
-                  key={request.id}
-                  type="button"
-                  data-team-request-id={request.id}
-                  aria-label={label.accessibleName}
-                  title={label.accessibleName}
-                  onClick={() => onForwardAnswer?.(request)}
-                  className="mt-2 mr-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
-                >
-                  {label.text}
-                </button>
-              );
-            })}
-            {message.reactions.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {message.reactions.map((reaction) => (
-                  <button
-                    key={reaction.emoji}
-                    type="button"
-                    disabled={!onToggleReaction}
-                    aria-pressed={reaction.reacted}
-                    onClick={() =>
-                      void onToggleReaction?.(message, reaction.emoji)
-                    }
-                    className={`rounded-full border px-2 py-0.5 text-xs disabled:opacity-50 ${reaction.reacted ? "border-accent/50 bg-accent/10 text-accent" : "border-border bg-surface-hover text-foreground-secondary hover:bg-surface-active"}`}
-                  >
-                    {reaction.emoji} {reaction.count}
-                  </button>
-                ))}
-              </div>
-            )}
-            {!isDirectMessage && (
-              <div className="relative mt-1 flex items-center gap-3">
-                {onOpenThread && (
-                  <button
-                    type="button"
-                    aria-label={`Reply in thread to ${name}`}
-                    onClick={() => onOpenThread(message)}
-                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" />
-                    {message.replyCount > 0
-                      ? `${message.replyCount} ${message.replyCount === 1 ? "reply" : "replies"}`
-                      : "Reply in thread"}
-                  </button>
-                )}
-                {onEditMessage && message.sender.id === principalUserId && (
-                  <button
-                    type="button"
-                    aria-label="Edit message"
-                    onClick={() => onEditMessage(message)}
-                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
-                  >
-                    <Pencil className="h-3 w-3" />
-                    Edit
-                  </button>
-                )}
-                {onToggleReaction && (
-                  <button
-                    type="button"
-                    aria-label="Add reaction"
-                    onClick={() => setReactionPickerOpen((value) => !value)}
-                    className="inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground"
-                  >
-                    <SmilePlus className="h-3.5 w-3.5" />
-                    React
-                  </button>
-                )}
-                {reactionPickerOpen && (
-                  <div className="absolute left-0 top-6 z-10 flex gap-1 rounded-md border border-border bg-surface p-1 shadow-lg">
-                    {["👍", "❤️", "😂", "🎉", "👀"].map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        aria-label={`React ${emoji}`}
-                        onClick={() => {
-                          setReactionPickerOpen(false);
-                          void onToggleReaction?.(message, emoji);
-                        }}
-                        className="rounded px-1.5 py-1 hover:bg-surface-hover"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </>
+        <TeamChannelMessageContent
+          message={message}
+          principalUserId={principalUserId}
+          variant="desktop"
+          onReply={onOpenThread ? () => onOpenThread(message) : undefined}
+          onEditMessage={onEditMessage}
+          onToggleReaction={onToggleReaction}
+          forwardRequests={forwardRequests}
+          forwardRequestTextById={forwardRequestTextById}
+          onForwardAnswer={onForwardAnswer}
+        />
       )}
     </article>
   );

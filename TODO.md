@@ -89,9 +89,9 @@ installation-local nickname; device icons no longer guess hardware by row order.
 
 Agreed sequence after the frontend QA review: begin with unused UI removal and small shared adapters/cards. Preserve the current design and Desktop/web behavior. Further extraction should land before colleagues begin work in the affected components.
 
-- Next: share human Team message-row presentation while preserving separate visibility/read-receipt contracts.
+- Completed: share human Team message-row presentation; Desktop/web visibility and read-receipt contracts remain separate.
 - Completed: extract repeated Project Move pickers and Team review/message actions; runtime and recovery controllers remain separate.
-- Next: share Team Memory settings presentation through existing Desktop/web data adapters.
+- Completed: share Team Memory settings presentation through existing Desktop/web data adapters; transport, permissions and stale-result guards remain in each controller.
 - Defer larger controller or composer restructuring until upcoming ticket ownership is known.
 
 ## Agents library overview

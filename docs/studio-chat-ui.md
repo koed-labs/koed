@@ -36,7 +36,11 @@ Review history fixtures changed only authorized GET responses. Navigation made n
 
 Project and channel creation use a shared selection-card presentation. Their enabled and disabled behavior remains controlled by each modal. The old unused Public Square view and unused Personal Preview project modal have been removed; active preview routes remain supported.
 
-Further message-row, chat-panel and Team Memory settings extraction is recorded in `TODO.md`. Coordinate those changes before starting new tickets in the affected components. Large controller and composer restructuring is deferred. This cleanup changes no backend contract or service boundary.
+Human Team channel rows now use `TeamChannelMessageContent`. It renders author, body, reply, edit, reaction and forwarding controls. Desktop and web retain their outer message rows, visibility observers and read receipts. Direct messages continue to use `TeamDirectMessageBubble`.
+
+Team Memory settings use the shared panels in `TeamMemorySettingsPresentation`. Each controller supplies authorized records and actions. Retention, cancellation, removal and review eligibility remain in the original Desktop or web controller, together with account, Team and version guards. Existing labels and layout differences are preserved.
+
+Large controller and composer restructuring remains deferred in `TODO.md`. These extractions change no backend contract or service boundary.
 
 ### Cleanup validation
 
@@ -57,3 +61,11 @@ The configured Studio suite passed315 tests, including3 review-navigation tests.
 The reported Agent suggestion issue was traced to an empty published catalogue in the running review backend. The existing Local Operator Script published the six unchanged reviewed templates using a loopback database connection. No migration, new template, permission change or existing-Agent update was needed. Desktop/web checks verified Project Manager suggestions, explicit instruction application and provenance, replacement confirmation, empty/failed catalogue retry and zero Agent/execution writes. Original device drafts were restored after the checks.
 
 UI review digest: `f4539700233c00629aa9f89fbf8ba603ba8daf5fe1f3340e9c6a72fd11f368d5`, based on `332584fa`. Final source formatting only followed the builds. Private artifacts remain outside Git.
+
+## Shared Team rows and Memory settings validation
+
+The configured Studio suite passed all315 tests, including the7 Team Memory guard tests. Studio typechecking, changed-file formatting, native and hosted builds passed. The new presenters and both settings controllers have no lint findings; the existing67 Team workspace findings are unchanged.
+
+Desktop and web checks passed channel formatting, Agent invocation, main-feed and thread reaction pickers, edit cancellation, replies and PR chat. Team Memory checks passed member switches, all tabs, existing owned-share rows and retained-memory removal confirmation/cancellation. The retained-memory fixture replaced read responses only. No messages, execution commands or memory mutations were submitted, and no page errors were observed.
+
+The original Team Memory request and recovery logic was compared with the previous revision; only formatting parentheses changed. The outer message-row visibility observers, attributes and read receipt callbacks remain unchanged. The review used working-tree source on `6a02c829`, digest `d3ee044c56d8ec9e1b6f2c9ddbd24f51687693de5dbefac10acf9125952ed4b0`. No new provider/device matrix was needed for these presentation changes. Private review artifacts remain outside Git.
