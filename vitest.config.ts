@@ -67,6 +67,10 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/index.ts`
       },
       {
+        find: /^@koed\/worker\/(command-discovery-adapter(?:-codex|-claude|-pi)?)$/,
+        replacement: `${root}apps/worker/src/$1.ts`
+      },
+      {
         find: "@koed/worker/embedding-workflow",
         replacement: `${root}apps/worker/src/embedding-workflow.ts`
       },
