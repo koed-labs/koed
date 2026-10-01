@@ -7,8 +7,6 @@ import {
   LoaderCircle,
   MoreHorizontal,
   RefreshCw,
-  Send,
-  Square,
   X
 } from "lucide-react";
 import {
@@ -56,6 +54,8 @@ import {
   type DeviceManagedChatRecoveryStore
 } from "@/lib/device-managed-chat-recovery";
 import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
+import { ChatComposer } from "@/components/ChatComposer";
+import { AgentChatMessage, SharedChatUI } from "@/components/SharedChatUI";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
@@ -2456,15 +2456,33 @@ export function HostedManagedChats({
                       </select>
                     </label>
                   </div>
-                  <label className="mt-3 block text-[11px] text-muted">
-                    {initialAgentId
-                      ? "Private conversation prompt"
-                      : "First message (optional)"}
-                    <textarea
+                  <div className="mt-3 text-[11px] text-muted">
+                    <span>
+                      {initialAgentId
+                        ? "Private conversation prompt"
+                        : "First message (optional)"}
+                    </span>
+                    <ChatComposer
+                      placeholder={
+                        initialAgentId
+                          ? "Write a private prompt for this Agent…"
+                          : "Add a first message or start with an empty Conversation…"
+                      }
+                      projectName={selectedProjectName ?? "Managed runtime"}
+                      branch="managed runtime"
                       value={initialPrompt}
                       required={Boolean(initialAgentId)}
-                      onChange={(event) => {
-                        const value = event.target.value;
+                      ariaLabel={
+                        initialAgentId
+                          ? "Private conversation prompt"
+                          : "First message (optional)"
+                      }
+                      allowEnterNewline
+                      showExecutionControls={false}
+                      showMetaBar={false}
+                      showSendButton={false}
+                      sendEnabled={false}
+                      onChange={(value) => {
                         initialPromptWasEdited.current = true;
                         setInitialPrompt(value);
                         const store =
@@ -2482,10 +2500,8 @@ export function HostedManagedChats({
                           newStartOperationRef.current
                         );
                       }}
-                      rows={2}
-                      className="mt-1 block w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
                     />
-                  </label>
+                  </div>
                   <p className="mt-2 text-[10px] leading-4 text-muted">
                     Device eligibility does not show whether it is online. Model
                     choices are last known and are checked by the device when it
@@ -2833,64 +2849,93 @@ export function HostedManagedChats({
                   ) : null}
                 </div>
               )}
-              <div
-                aria-live="polite"
-                className="flex-1 space-y-3 overflow-y-auto p-3"
-              >
-                {!selectedRuntime && (
-                  <p className="text-xs text-muted">
-                    Loading live Conversation…
-                  </p>
-                )}
-                {jobMarkersExecutionId === selectedId &&
-                  jobMarkers.map((job) => (
-                    <article
-                      key={`job:${job.id}`}
-                      className="mx-auto w-full max-w-3xl rounded-lg border border-border bg-surface/70 px-3 py-2 text-xs text-foreground-secondary"
-                    >
-                      <p className="font-medium text-foreground">
-                        Job · {job.state.replaceAll("_", " ")}
-                      </p>
-                      <p className="mt-1">
-                        {job.agentName} · {job.projectName}
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-muted">
-                        {job.goal}
-                      </p>
-                    </article>
-                  ))}
-                {displayMessages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`max-w-[92%] rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "ml-auto bg-accent/10 text-foreground" : "bg-surface text-foreground-secondary"}`}
-                    aria-live={
-                      message.id.startsWith("transient:") ? "polite" : undefined
-                    }
-                  >
-                    <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted">
-                      {message.role === "user"
-                        ? "You"
-                        : (message.author?.name ?? selected?.model ?? "Agent")}
-                    </p>
-                    <p className="whitespace-pre-wrap break-words text-xs leading-5">
-                      {message.content}
-                    </p>
-                    {teamRequestId &&
-                      message.role === "assistant" &&
-                      message.content.trim() &&
-                      !message.id.startsWith("transient:") && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setTeamQuestionDraft(
-                              message.content.slice(0, 2_000)
-                            )
-                          }
-                          className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
-                        >
-                          Prepare Team question
-                        </button>
+              <SharedChatUI
+                mode={{ kind: "agent", controls: "limited" }}
+                scopeKey={`${recoveryScope?.backendId ?? "unknown-backend"}:${recoveryScope?.ownerId ?? "unknown-owner"}:${selectedId ?? "new"}`}
+                messages={displayMessages}
+                className="min-h-0 flex-1"
+                viewportClassName="p-3"
+                listClassName="space-y-3"
+                composer={
+                  <div className="border-t border-border p-3">
+                    <ChatComposer
+                      placeholder={
+                        canSend
+                          ? "Continue this Conversation…"
+                          : "Conversation is not ready for a message"
+                      }
+                      projectName={
+                        selectedProjectName ?? "Managed Conversation"
+                      }
+                      branch="managed runtime"
+                      executionPreset={
+                        selectedRuntime
+                          ? {
+                              environment: "local",
+                              model:
+                                selectedRuntime.execution.model ||
+                                "Unavailable",
+                              effort:
+                                selectedRuntime.execution.reasoningEffort ??
+                                "Not set",
+                              access:
+                                selectedRuntime.execution.permissionMode ??
+                                "Unspecified"
+                            }
+                          : undefined
+                      }
+                      value={draft}
+                      onChange={updateDraft}
+                      onSend={async (
+                        _text,
+                        _selection,
+                        continueWithoutMemory
+                      ) => {
+                        await send(continueWithoutMemory === true);
+                      }}
+                      sendEnabled={canSend && !sending && !activePrompt}
+                      sendDisabledReason={
+                        error ??
+                        status ??
+                        "Conversation is not ready for a message"
+                      }
+                      interruptActive={Boolean(activePrompt)}
+                      interruptDisabled={
+                        selectedRuntime?.execution.state !== "running" ||
+                        controlBusy ||
+                        pendingControl
+                      }
+                      onInterrupt={() => void control("interrupt")}
+                      showExecutionControls={Boolean(selectedRuntime)}
+                      showMetaBar={false}
+                      memoryRecallFailure={
+                        activeMemoryRecall?.kind === "prompt"
+                          ? "Memory could not be checked. Your draft is still here."
+                          : null
+                      }
+                      showContinueWithoutMemory={Boolean(
+                        activeMemoryRecall?.agentId
                       )}
+                      footer="Pending means Koed accepted the message. It does not show whether the device is online."
+                    />
+                  </div>
+                }
+                renderMessage={(message) => (
+                  <AgentChatMessage message={message} compact>
+                    {teamRequestId &&
+                    message.role === "assistant" &&
+                    message.content.trim() &&
+                    !message.id.startsWith("transient:") ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTeamQuestionDraft(message.content.slice(0, 2_000))
+                        }
+                        className="mt-2 rounded-md border border-border px-2 py-1 text-[10px] text-subtle hover:bg-surface-hover"
+                      >
+                        Prepare Team question
+                      </button>
+                    ) : null}
                     {message.role === "assistant" && message.memory ? (
                       <MemoryAttributionNote
                         key={`memory:${recoveryScope?.backendId ?? "no-backend"}:${recoveryScope?.ownerId ?? "no-owner"}:${selectedId ?? "no-execution"}:${message.id}`}
@@ -2920,7 +2965,7 @@ export function HostedManagedChats({
                       />
                     ) : null}
                     {message.id.startsWith("transient:") && (
-                      <p className="mt-1 text-[10px] text-muted">
+                      <p className="mt-1 text-[10px] text-muted" role="status">
                         {hostedPromptOutcomeIsUncertain(selectedRuntime)
                           ? "Partial response · outcome uncertain"
                           : "Streaming response"}
@@ -2937,311 +2982,258 @@ export function HostedManagedChats({
                             : "Outcome uncertain · check send status"}
                       </p>
                     )}
-                  </article>
-                ))}
-                {runtimeRequests.map((request) => {
-                  const item = selectedRuntime?.items.find(
-                    (candidate) => candidate.id === request.id
-                  );
-                  if (!item) return null;
-                  const sessionApproval =
-                    item.payload.supportsSessionApproval === true;
-                  const approvalCanBeReviewed =
-                    hasMeaningfulHostedApprovalDetails(request);
-                  const visibleDetails = request.details.filter(
-                    (detail) =>
-                      detail.label !== "Working directory" &&
-                      detail.label !== "Grant root"
-                  );
-                  return (
-                    <article
-                      key={request.id}
-                      className="rounded-lg border border-border bg-surface p-3"
-                      aria-label={
-                        request.kind === "user_input"
-                          ? "Pending agent question"
-                          : "Pending agent permission"
-                      }
-                    >
-                      <p className="text-xs font-semibold text-foreground">
-                        {request.kind === "user_input"
-                          ? "The AI Client needs your input"
-                          : request.kind === "permissions_approval"
-                            ? "Approve permissions?"
-                            : request.kind === "file_approval"
-                              ? "Approve file changes?"
-                              : "Approve command?"}
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground-secondary">
-                        {request.description}
-                      </p>
-                      {visibleDetails.map((detail, index) => (
-                        <div className="mt-2" key={`${detail.label}:${index}`}>
-                          <p className="text-[10px] font-medium text-muted">
-                            {detail.label}
-                          </p>
-                          <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px] leading-4 text-foreground-secondary">
-                            {detail.text}
-                          </pre>
-                        </div>
-                      ))}
-                      {request.kind === "user_input" ? (
-                        request.questions?.length ? (
-                          <form
-                            className="mt-3 space-y-2"
-                            onSubmit={(event) => {
-                              event.preventDefault();
-                              const values = new FormData(event.currentTarget);
-                              const answers = Object.fromEntries(
-                                (request.questions ?? []).map((question) => {
-                                  const answer = String(
-                                    values.get(question.id) ?? ""
-                                  );
-                                  const options =
-                                    question.options?.map(
-                                      (option) => option.label
-                                    ) ?? [];
-                                  return [
-                                    question.id,
-                                    [
-                                      question.isOther &&
-                                      answer &&
-                                      !options.includes(answer)
-                                        ? `user_note: ${answer}`
-                                        : answer
-                                    ]
-                                  ];
-                                })
-                              );
-                              void respondToRuntimeRequest(request.id, {
-                                answers
-                              });
-                            }}
-                          >
-                            {(request.questions ?? []).map((question) => (
-                              <label
-                                className="block text-[11px] text-foreground-secondary"
-                                key={question.id}
-                              >
-                                <span>
-                                  {question.header || question.question}
-                                </span>
-                                {question.header && question.question ? (
-                                  <span className="mt-0.5 block text-muted">
-                                    {question.question}
-                                  </span>
-                                ) : null}
-                                {question.options?.length &&
-                                !question.isOther ? (
-                                  <select
-                                    className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                    name={question.id}
-                                    required={question.required !== false}
-                                    defaultValue=""
-                                  >
-                                    <option disabled value="">
-                                      Select an answer
-                                    </option>
-                                    {question.options.map((option) => (
-                                      <option
-                                        key={option.label}
-                                        value={option.label}
-                                      >
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <input
-                                    className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-                                    name={question.id}
-                                    required={question.required !== false}
-                                    type={
-                                      question.isSecret ? "password" : "text"
-                                    }
-                                  />
-                                )}
-                              </label>
-                            ))}
-                            <button
-                              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                              disabled={controlBusy}
-                              type="submit"
-                            >
-                              <Check className="h-3 w-3" /> Submit answer
-                            </button>
-                          </form>
-                        ) : (
-                          <p
-                            className="mt-3 text-[11px] text-muted"
-                            role="status"
-                          >
-                            The latest question details are unavailable. Refresh
-                            before responding.
-                          </p>
-                        )
-                      ) : approvalCanBeReviewed ? (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
-                            disabled={controlBusy}
-                            onClick={() =>
-                              void respondToRuntimeRequest(request.id, {
-                                decision: "decline"
-                              })
-                            }
-                            type="button"
-                          >
-                            Deny
-                          </button>
-                          <button
-                            className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
-                            disabled={controlBusy}
-                            onClick={() =>
-                              void respondToRuntimeRequest(request.id, {
-                                decision: "cancel"
-                              })
-                            }
-                            type="button"
-                          >
-                            Cancel request
-                          </button>
-                          <button
-                            className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
-                            disabled={controlBusy}
-                            onClick={() =>
-                              void respondToRuntimeRequest(request.id, {
-                                decision: "accept"
-                              })
-                            }
-                            type="button"
-                          >
-                            Approve
-                          </button>
-                          {sessionApproval ? (
-                            <button
-                              className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
-                              disabled={controlBusy}
-                              onClick={() =>
-                                void respondToRuntimeRequest(request.id, {
-                                  decision: "acceptForSession"
-                                })
-                              }
-                              type="button"
-                            >
-                              Always allow this session
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <p
-                          className="mt-3 text-[11px] text-muted"
-                          role="status"
+                  </AgentChatMessage>
+                )}
+                childrenAfter={
+                  <>
+                    {runtimeRequests.map((request) => {
+                      const item = selectedRuntime?.items.find(
+                        (candidate) => candidate.id === request.id
+                      );
+                      if (!item) return null;
+                      const sessionApproval =
+                        item.payload.supportsSessionApproval === true;
+                      const approvalCanBeReviewed =
+                        hasMeaningfulHostedApprovalDetails(request);
+                      const visibleDetails = request.details.filter(
+                        (detail) =>
+                          detail.label !== "Working directory" &&
+                          detail.label !== "Grant root"
+                      );
+                      return (
+                        <article
+                          key={request.id}
+                          className="rounded-lg border border-border bg-surface p-3"
+                          aria-label={
+                            request.kind === "user_input"
+                              ? "Pending agent question"
+                              : "Pending agent permission"
+                          }
                         >
-                          Koed did not provide enough safe request detail to
-                          review this approval. Refresh before deciding.
+                          <p className="text-xs font-semibold text-foreground">
+                            {request.kind === "user_input"
+                              ? "The AI Client needs your input"
+                              : request.kind === "permissions_approval"
+                                ? "Approve permissions?"
+                                : request.kind === "file_approval"
+                                  ? "Approve file changes?"
+                                  : "Approve command?"}
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground-secondary">
+                            {request.description}
+                          </p>
+                          {visibleDetails.map((detail, index) => (
+                            <div
+                              className="mt-2"
+                              key={`${detail.label}:${index}`}
+                            >
+                              <p className="text-[10px] font-medium text-muted">
+                                {detail.label}
+                              </p>
+                              <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px] leading-4 text-foreground-secondary">
+                                {detail.text}
+                              </pre>
+                            </div>
+                          ))}
+                          {request.kind === "user_input" ? (
+                            request.questions?.length ? (
+                              <form
+                                className="mt-3 space-y-2"
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  const values = new FormData(
+                                    event.currentTarget
+                                  );
+                                  const answers = Object.fromEntries(
+                                    (request.questions ?? []).map(
+                                      (question) => {
+                                        const answer = String(
+                                          values.get(question.id) ?? ""
+                                        );
+                                        const options =
+                                          question.options?.map(
+                                            (option) => option.label
+                                          ) ?? [];
+                                        return [
+                                          question.id,
+                                          [
+                                            question.isOther &&
+                                            answer &&
+                                            !options.includes(answer)
+                                              ? `user_note: ${answer}`
+                                              : answer
+                                          ]
+                                        ];
+                                      }
+                                    )
+                                  );
+                                  void respondToRuntimeRequest(request.id, {
+                                    answers
+                                  });
+                                }}
+                              >
+                                {(request.questions ?? []).map((question) => (
+                                  <label
+                                    className="block text-[11px] text-foreground-secondary"
+                                    key={question.id}
+                                  >
+                                    <span>
+                                      {question.header || question.question}
+                                    </span>
+                                    {question.header && question.question ? (
+                                      <span className="mt-0.5 block text-muted">
+                                        {question.question}
+                                      </span>
+                                    ) : null}
+                                    {question.options?.length &&
+                                    !question.isOther ? (
+                                      <select
+                                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                        name={question.id}
+                                        required={question.required !== false}
+                                        defaultValue=""
+                                      >
+                                        <option disabled value="">
+                                          Select an answer
+                                        </option>
+                                        {question.options.map((option) => (
+                                          <option
+                                            key={option.label}
+                                            value={option.label}
+                                          >
+                                            {option.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                                        name={question.id}
+                                        required={question.required !== false}
+                                        type={
+                                          question.isSecret
+                                            ? "password"
+                                            : "text"
+                                        }
+                                      />
+                                    )}
+                                  </label>
+                                ))}
+                                <button
+                                  className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                                  disabled={controlBusy}
+                                  type="submit"
+                                >
+                                  <Check className="h-3 w-3" /> Submit answer
+                                </button>
+                              </form>
+                            ) : (
+                              <p
+                                className="mt-3 text-[11px] text-muted"
+                                role="status"
+                              >
+                                The latest question details are unavailable.
+                                Refresh before responding.
+                              </p>
+                            )
+                          ) : approvalCanBeReviewed ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                                disabled={controlBusy}
+                                onClick={() =>
+                                  void respondToRuntimeRequest(request.id, {
+                                    decision: "decline"
+                                  })
+                                }
+                                type="button"
+                              >
+                                Deny
+                              </button>
+                              <button
+                                className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                                disabled={controlBusy}
+                                onClick={() =>
+                                  void respondToRuntimeRequest(request.id, {
+                                    decision: "cancel"
+                                  })
+                                }
+                                type="button"
+                              >
+                                Cancel request
+                              </button>
+                              <button
+                                className="rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground disabled:opacity-50"
+                                disabled={controlBusy}
+                                onClick={() =>
+                                  void respondToRuntimeRequest(request.id, {
+                                    decision: "accept"
+                                  })
+                                }
+                                type="button"
+                              >
+                                Approve
+                              </button>
+                              {sessionApproval ? (
+                                <button
+                                  className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-foreground-secondary disabled:opacity-50"
+                                  disabled={controlBusy}
+                                  onClick={() =>
+                                    void respondToRuntimeRequest(request.id, {
+                                      decision: "acceptForSession"
+                                    })
+                                  }
+                                  type="button"
+                                >
+                                  Always allow this session
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <p
+                              className="mt-3 text-[11px] text-muted"
+                              role="status"
+                            >
+                              Koed did not provide enough safe request detail to
+                              review this approval. Refresh before deciding.
+                            </p>
+                          )}
+                        </article>
+                      );
+                    })}
+                    {selectedRuntime &&
+                      displayMessages.length === 0 &&
+                      runtimeRequests.length === 0 && (
+                        <p className="text-xs text-muted">
+                          No messages in this Conversation yet.
                         </p>
                       )}
-                    </article>
-                  );
-                })}
-                {selectedRuntime &&
-                  displayMessages.length === 0 &&
-                  runtimeRequests.length === 0 && (
-                    <p className="text-xs text-muted">
-                      No messages in this Conversation yet.
-                    </p>
-                  )}
-              </div>
-              <form
-                className="border-t border-border p-3"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (activePrompt) void control("interrupt");
-                  else void send();
-                }}
+                  </>
+                }
               >
-                <div className="flex items-end gap-2">
-                  <textarea
-                    aria-label="Continue Conversation"
-                    value={draft}
-                    onChange={(event) => updateDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        if (activePrompt) void control("interrupt");
-                        else void send();
-                      }
-                    }}
-                    rows={2}
-                    placeholder={
-                      canSend
-                        ? "Continue this Conversation…"
-                        : "Conversation is not ready for a message"
-                    }
-                    disabled={!canSend || sending}
-                    className="min-h-10 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
-                  />
-                  <button
-                    type="submit"
-                    disabled={
-                      activePrompt
-                        ? selectedRuntime?.execution.state !== "running" ||
-                          controlBusy ||
-                          pendingControl
-                        : !canSend || !draft.trim() || sending
-                    }
-                    aria-label={
-                      activePrompt ? "Stop active turn" : "Send message"
-                    }
-                    className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {sending ? (
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                    ) : activePrompt ? (
-                      <Square className="h-3.5 w-3.5" />
-                    ) : (
-                      <Send className="h-3.5 w-3.5" />
-                    )}{" "}
-                    {activePrompt ? "Stop" : "Send"}
-                  </button>
-                </div>
-                {activeMemoryRecall?.kind === "prompt" ? (
-                  <div
-                    className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2"
-                    role="group"
-                    aria-label="Memory recall actions"
-                  >
-                    <p className="text-[11px] text-foreground-secondary">
-                      Memory could not be checked. Your draft is still here.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={!draft.trim() || sending}
-                        onClick={() => void send()}
-                        className="rounded border border-border px-2.5 py-1 text-[11px] text-foreground disabled:opacity-40"
-                      >
-                        Retry
-                      </button>
-                      {activeMemoryRecall.agentId ? (
-                        <button
-                          type="button"
-                          disabled={!draft.trim() || sending}
-                          onClick={() => void send(true)}
-                          className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
-                        >
-                          Continue without Memory
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : null}
-                <p className="mt-2 text-[10px] text-muted">
-                  Pending means Koed accepted the message. It does not show
-                  whether the device is online.
-                </p>
-              </form>
+                {!selectedRuntime && (
+                  <p className="text-xs text-muted">
+                    Loading live Conversation…
+                  </p>
+                )}
+                {jobMarkersExecutionId === selectedId &&
+                  jobMarkers.map((job) => (
+                    <article
+                      key={`job:${job.id}`}
+                      className="mx-auto w-full max-w-3xl rounded-lg border border-border bg-surface/70 px-3 py-2 text-xs text-foreground-secondary"
+                    >
+                      <p className="font-medium text-foreground">
+                        Job · {job.state.replaceAll("_", " ")}
+                      </p>
+                      <p className="mt-1">
+                        {job.agentName} · {job.projectName}
+                      </p>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-muted">
+                        {job.goal}
+                      </p>
+                    </article>
+                  ))}
+              </SharedChatUI>
             </div>
           </div>
         )}

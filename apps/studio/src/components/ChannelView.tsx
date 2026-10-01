@@ -31,6 +31,7 @@ import {
 import { contextForChannel, joinNames } from "@/lib/channelCollab";
 import { renderMarkdown } from "@/lib/markdown";
 import { ChatComposer } from "./ChatComposer";
+import { SharedChatUI } from "./SharedChatUI";
 import { useCollabSession } from "./CollabSessionContext";
 import { AgentAvatarView } from "./AgentAvatarView";
 import { TeamShell } from "./TeamShell";
@@ -110,15 +111,25 @@ export function ChannelHeader({
   );
   return (
     <div className="relative flex h-11 flex-shrink-0 items-center justify-between gap-3 border-b border-border px-4">
-      <div aria-hidden="true" className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+      />
       <div className="relative flex min-w-0 items-center gap-1.5">
         <Hash className="h-4 w-4 flex-shrink-0 text-subtle" />
-        <span className="truncate text-sm font-semibold text-foreground">{channelName}</span>
+        <span className="truncate text-sm font-semibold text-foreground">
+          {channelName}
+        </span>
         {project && (
-          <Tooltip content={`${project.path} · ${project.branch}${project.githubRepo ? " · GitHub connected" : " · local preview"}`} side="bottom">
+          <Tooltip
+            content={`${project.path} · ${project.branch}${project.githubRepo ? " · GitHub connected" : " · local preview"}`}
+            side="bottom"
+          >
             <span className="ml-1 flex min-w-0 flex-shrink items-center gap-1 rounded-md px-1.5 py-1 text-subtle hover:bg-surface-hover hover:text-foreground-secondary">
               <SiGithub className="h-3.5 w-3.5 flex-shrink-0" />
-              <span className="truncate text-xs">{project.githubRepo ?? project.path}</span>
+              <span className="truncate text-xs">
+                {project.githubRepo ?? project.path}
+              </span>
             </span>
           </Tooltip>
         )}
@@ -268,7 +279,8 @@ function ChatGroup({
   onMemoryCheck,
   nameForId,
   onOpenMessageThread,
-  onToggleReaction
+  onToggleReaction,
+  groupedWithPrevious = false
 }: {
   messages: ChannelMessage[];
   allMessages: ChannelMessage[];
@@ -284,6 +296,7 @@ function ChatGroup({
   nameForId: (id: string) => string;
   onOpenMessageThread: (id: string) => void;
   onToggleReaction: (id: string, emoji: string) => void;
+  groupedWithPrevious?: boolean;
 }) {
   const first = messages[0];
   const kind = channelAuthorKind(first);
@@ -295,33 +308,39 @@ function ChatGroup({
   const isPrivate = first.visibility === "private";
   return (
     <div
-      className={`-mx-3 flex gap-3 rounded-md px-3 py-2 ${isPrivate ? "border border-dashed border-warning/40 bg-warning/5" : ""}`}
+      className={`${groupedWithPrevious ? "-mt-3" : ""} -mx-3 flex gap-3 rounded-md px-3 py-2 ${isPrivate ? "border border-dashed border-warning/40 bg-warning/5" : ""}`}
     >
-      <Avatar
-        name={author}
-        kind={kind === "agent" ? "agent" : "human"}
-        image={agent?.avatar?.image}
-      />
+      {groupedWithPrevious ? (
+        <span className="h-8 w-8 shrink-0" aria-hidden="true" />
+      ) : (
+        <Avatar
+          name={author}
+          kind={kind === "agent" ? "agent" : "human"}
+          image={agent?.avatar?.image}
+        />
+      )}
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <p className="text-sm font-medium text-foreground">
-            {isYou ? "You" : author}
-          </p>
-          {agent && (
-            <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-muted">
-              {agent.role}
+        {!groupedWithPrevious && (
+          <div className="flex flex-wrap items-baseline gap-2">
+            <p className="text-sm font-medium text-foreground">
+              {isYou ? "You" : author}
+            </p>
+            {agent && (
+              <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-muted">
+                {agent.role}
+              </span>
+            )}
+            {isPrivate && (
+              <span className="text-[10px] font-medium text-warning">
+                Only visible to you in this browser · asked{" "}
+                {nameForId(first.recipientAgentId ?? "")}
+              </span>
+            )}
+            <span className="text-[11px] text-faint">
+              {relativeTime(first.createdAt)}
             </span>
-          )}
-          {isPrivate && (
-            <span className="text-[10px] font-medium text-warning">
-              Only visible to you in this browser · asked{" "}
-              {nameForId(first.recipientAgentId ?? "")}
-            </span>
-          )}
-          <span className="text-[11px] text-faint">
-            {relativeTime(first.createdAt)}
-          </span>
-        </div>
+          </div>
+        )}
         <div className="mt-0.5 space-y-1">
           {messages.map((message) => (
             <ChatMessageRow
@@ -558,6 +577,33 @@ export function ChannelView({
     .filter((message) => message.channelId === channelId)
     .sort((left, right) => left.createdAt - right.createdAt);
   const messages = channelMessages.filter((message) => !message.threadRootId);
+  const groupedMessageIds = new Set(
+    buildFeed(messages).flatMap((entry) =>
+      entry.type === "chat"
+        ? entry.messages.slice(1).map((message) => message.id)
+        : []
+    )
+  );
+  const sharedMessages = messages.map((message) => {
+    const authoredByViewer =
+      message.authorId === CURRENT_USER_ID &&
+      channelAuthorKind(message) === "human";
+    return {
+      id: message.id,
+      role: authoredByViewer ? ("user" as const) : ("assistant" as const),
+      content: message.content,
+      authoredByViewer,
+      author: {
+        name: channelAuthorName(
+          message,
+          activeTeam.members,
+          context?.agents ?? []
+        )
+      },
+      groupedWithPrevious: groupedMessageIds.has(message.id),
+      source: message
+    };
+  });
   const agents = context?.agents ?? [];
   const orchestrator = pickOrchestrator(agents);
   const hasOwnAgent = Boolean(orchestrator);
@@ -603,7 +649,9 @@ export function ChannelView({
       selectedAgent &&
       !nextDraft
         .toLocaleLowerCase()
-        .includes(`@${selectedAgent.name.replace(/\s+/g, "_")}`.toLocaleLowerCase())
+        .includes(
+          `@${selectedAgent.name.replace(/\s+/g, "_")}`.toLocaleLowerCase()
+        )
     ) {
       setActiveAgentId(null);
     }
@@ -611,6 +659,7 @@ export function ChannelView({
 
   return (
     <TeamShell
+      chatLayout
       wallpaper
       subheader={
         <ChannelHeader
@@ -643,90 +692,126 @@ export function ChannelView({
           />
         ) : null
       }
-      footer={
-        <div className="border-t border-border bg-background p-4">
-          <div className="mx-auto max-w-2xl no-drag">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div
-                className="inline-flex rounded-md border border-border bg-surface p-0.5"
-                role="group"
-                aria-label="Message visibility"
-              >
-                <button
-                  type="button"
-                  aria-pressed={privacy === "public"}
-                  onClick={() => setPrivacy("public")}
-                  className={`rounded px-2.5 py-1 text-xs ${privacy === "public" ? "bg-surface-hover text-foreground" : "text-subtle hover:text-foreground-secondary"}`}
-                >
-                  Channel
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={privacy === "private"}
-                  onClick={() => setPrivacy("private")}
-                  className={`rounded px-2.5 py-1 text-xs ${privacy === "private" ? "bg-surface-hover text-foreground" : "text-subtle hover:text-foreground-secondary"}`}
-                >
-                  Private ask
-                </button>
-              </div>
-              <span className="text-[11px] text-subtle">
-                Local browser preview · not synced to a Team backend
-              </span>
-            </div>
-            <ChatComposer
-              placeholder={
-                privacy === "private"
-                  ? "@ an agent to ask privately..."
-                  : `Message #${channel.name}`
-              }
-              projectName={contextName}
-              branch="shared"
-              footer={
-                privacy === "private"
-                  ? "Saved privately in this browser only. No agent runtime or Team API is connected."
-                  : "Local preview only. @mentions exercise the simulated specialist workflow; messages are not synced to a Team backend."
-              }
-              showExecutionControls={false}
-              switchToExecutionControlsOnMention
-              showMetaBar={false}
-              showFormattingToolbar={activeAgentId === null}
-              value={draft}
-              onChange={updateComposerDraft}
-              agents={composerAgents}
-              activeAgentId={activeAgentId}
-              sendEnabled={privacy === "public" || activeAgentId !== null}
-              sendDisabledReason="Mention an agent to save a private ask in this local preview."
-              onAgentMention={setActiveAgentId}
-              onActiveAgentChange={setActiveAgentId}
-              onSend={(text, selection) => {
-                if (privacy === "private") {
-                  if (!selection.agentId) return;
-                  postPrivateAgentAsk(channelId, selection.agentId, text);
-                } else {
-                  postChannelMessage(channelId, text);
-                }
-                setDraft("");
-                setActiveAgentId(null);
-              }}
-            />
-          </div>
-        </div>
-      }
     >
-      <div className="mx-auto max-w-2xl space-y-3 pt-4">
-        {messages.length === 0 && (
+      <SharedChatUI
+        mode={{ kind: "human", controls: "formatting" }}
+        scopeKey={`preview-channel:${activeTeam.id}:${CURRENT_USER_ID}:${channelId}`}
+        messages={sharedMessages}
+        className="h-full"
+        viewportClassName="mx-auto w-full max-w-2xl space-y-3 pt-4"
+        emptyState={
           <p className="text-sm text-subtle">
             No messages yet. This is the channel for {contextName}.
             {hasOwnAgent
               ? ` ${orchestrator?.name} can join, then invite specialists if you want.`
               : " Create an agent you own to have an orchestrator join."}
           </p>
-        )}
-        {buildFeed(messages).map((entry) =>
-          entry.type === "solo" ? (
+        }
+        composer={
+          <div className="border-t border-border bg-background p-4">
+            <div className="mx-auto max-w-2xl no-drag">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div
+                  className="inline-flex rounded-md border border-border bg-surface p-0.5"
+                  role="group"
+                  aria-label="Message visibility"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={privacy === "public"}
+                    onClick={() => setPrivacy("public")}
+                    className={`rounded px-2.5 py-1 text-xs ${privacy === "public" ? "bg-surface-hover text-foreground" : "text-subtle hover:text-foreground-secondary"}`}
+                  >
+                    Channel
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={privacy === "private"}
+                    onClick={() => setPrivacy("private")}
+                    className={`rounded px-2.5 py-1 text-xs ${privacy === "private" ? "bg-surface-hover text-foreground" : "text-subtle hover:text-foreground-secondary"}`}
+                  >
+                    Private ask
+                  </button>
+                </div>
+                <span className="text-[11px] text-subtle">
+                  Local browser preview · not synced to a Team backend
+                </span>
+              </div>
+              <ChatComposer
+                placeholder={
+                  privacy === "private"
+                    ? "@ an agent to ask privately..."
+                    : `Message #${channel.name}`
+                }
+                projectName={contextName}
+                branch="shared"
+                footer={
+                  privacy === "private"
+                    ? "Saved privately in this browser only. No agent runtime or Team API is connected."
+                    : "Local preview only. @mentions exercise the simulated specialist workflow; messages are not synced to a Team backend."
+                }
+                showExecutionControls={false}
+                switchToExecutionControlsOnMention
+                showMetaBar={false}
+                showFormattingToolbar={activeAgentId === null}
+                value={draft}
+                onChange={updateComposerDraft}
+                agents={composerAgents}
+                activeAgentId={activeAgentId}
+                sendEnabled={privacy === "public" || activeAgentId !== null}
+                sendDisabledReason="Mention an agent to save a private ask in this local preview."
+                onAgentMention={setActiveAgentId}
+                onActiveAgentChange={setActiveAgentId}
+                onSend={(text, selection) => {
+                  if (privacy === "private") {
+                    if (!selection.agentId) return;
+                    postPrivateAgentAsk(channelId, selection.agentId, text);
+                  } else {
+                    postChannelMessage(channelId, text);
+                  }
+                  setDraft("");
+                  setActiveAgentId(null);
+                }}
+              />
+            </div>
+          </div>
+        }
+        renderMessage={(sharedMessage) => {
+          const message = sharedMessage.source;
+          if (channelMessageKind(message) === "chat") {
+            return (
+              <ChatGroup
+                messages={[message]}
+                allMessages={channelMessages}
+                members={activeTeam.members}
+                agents={agents}
+                hasOwnAgent={hasOwnAgent}
+                editingId={editingId}
+                editValue={editValue}
+                onEditValue={setEditValue}
+                onStartEdit={(item) => {
+                  setEditingId(item.id);
+                  setEditValue(item.content);
+                }}
+                onSaveEdit={() => {
+                  if (!editingId) return;
+                  editChannelMessage(editingId, editValue);
+                  setEditingId(null);
+                }}
+                onMemoryCheck={(id) => {
+                  requestMemoryCheck(id);
+                  openInbox();
+                }}
+                nameForId={nameForId}
+                onOpenMessageThread={(id) => setPanel({ kind: "message", id })}
+                onToggleReaction={toggleChannelReaction}
+                groupedWithPrevious={sharedMessage.groupedWithPrevious}
+              />
+            );
+          }
+          return (
             <ChannelLine
-              key={entry.message.id}
-              message={entry.message}
+              message={message}
               members={activeTeam.members}
               agents={agents}
               jobThreads={jobThreads}
@@ -747,44 +832,16 @@ export function ChannelView({
                 requestMemoryCheck(id);
                 openInbox();
               }}
-              onAcceptInvite={() => acceptChannelInvite(entry.message.id)}
-              onDeclineInvite={() => declineChannelInvite(entry.message.id)}
+              onAcceptInvite={() => acceptChannelInvite(message.id)}
+              onDeclineInvite={() => declineChannelInvite(message.id)}
               onOpenThread={(id) => setPanel({ kind: "job", id })}
               allMessages={channelMessages}
               onOpenMessageThread={(id) => setPanel({ kind: "message", id })}
               onToggleReaction={toggleChannelReaction}
             />
-          ) : (
-            <ChatGroup
-              key={entry.messages[0].id}
-              messages={entry.messages}
-              allMessages={channelMessages}
-              members={activeTeam.members}
-              agents={agents}
-              hasOwnAgent={hasOwnAgent}
-              editingId={editingId}
-              editValue={editValue}
-              onEditValue={setEditValue}
-              onStartEdit={(item) => {
-                setEditingId(item.id);
-                setEditValue(item.content);
-              }}
-              onSaveEdit={() => {
-                if (!editingId) return;
-                editChannelMessage(editingId, editValue);
-                setEditingId(null);
-              }}
-              onMemoryCheck={(messageId) => {
-                requestMemoryCheck(messageId);
-                openInbox();
-              }}
-              nameForId={nameForId}
-              onOpenMessageThread={(id) => setPanel({ kind: "message", id })}
-              onToggleReaction={toggleChannelReaction}
-            />
-          )
-        )}
-      </div>
+          );
+        }}
+      />
     </TeamShell>
   );
 }
@@ -870,6 +927,7 @@ function ChannelLine({
   const thread = message.jobThreadId
     ? jobThreads.find((item) => item.id === message.jobThreadId)
     : undefined;
+  const isPrivate = message.visibility === "private";
 
   return (
     <div className="flex gap-3">
@@ -890,6 +948,13 @@ function ChannelLine({
           )}
           {message.editedAt && (
             <span className="text-[11px] text-faint">edited</span>
+          )}
+          {isPrivate && (
+            <span className="text-[10px] font-medium text-warning">
+              Only visible to you in this browser · asked{" "}
+              {agents.find((item) => item.id === message.recipientAgentId)
+                ?.name ?? "an agent"}
+            </span>
           )}
         </div>
         {editingId === message.id ? (
@@ -1021,6 +1086,19 @@ function MessageThreadPanel({
     members.find((member) => member.id === id)?.name ??
     "Unknown";
   const participants = threadParticipantIds(root, replies);
+  const sharedMessages = [root, ...replies].map((message) => {
+    const authoredByViewer =
+      message.authorId === CURRENT_USER_ID &&
+      channelAuthorKind(message) === "human";
+    return {
+      id: message.id,
+      role: authoredByViewer ? ("user" as const) : ("assistant" as const),
+      content: message.content,
+      authoredByViewer,
+      author: { name: nameForId(message.authorId) },
+      source: message
+    };
+  });
   return (
     <aside className="fixed right-0 top-14 bottom-44 z-20 flex w-[min(360px,92vw)] flex-shrink-0 flex-col border-l border-border bg-background md:relative md:inset-auto md:w-[360px]">
       <div className="flex items-start justify-between border-b border-border px-3 py-3">
@@ -1042,9 +1120,35 @@ function MessageThreadPanel({
           <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="flex-1 space-y-4 overflow-y-auto p-3">
-        {[root, ...replies].map((message) => (
-          <div key={message.id} className="flex gap-2.5">
+      <SharedChatUI
+        mode={{ kind: "human", controls: "formatting" }}
+        scopeKey={`preview-channel-thread:${root.channelId}:${root.id}:${CURRENT_USER_ID}`}
+        messages={sharedMessages}
+        className="min-h-0 flex-1"
+        viewportClassName="p-3"
+        listClassName="space-y-4"
+        composer={
+          <div className="border-t border-border p-3">
+            <ChatComposer
+              placeholder="Reply in thread..."
+              projectName="Team channel"
+              branch="shared"
+              footer="Local preview only. Replies are not synced to a Team backend."
+              value={draft}
+              onChange={setDraft}
+              showExecutionControls={false}
+              showMetaBar={false}
+              showFormattingToolbar
+              sendEnabled={Boolean(draft.trim())}
+              onSend={(text) => {
+                onSend(text);
+                setDraft("");
+              }}
+            />
+          </div>
+        }
+        renderMessage={({ source: message }) => (
+          <div className="flex gap-2.5">
             <Avatar
               name={nameForId(message.authorId)}
               kind={channelAuthorKind(message) === "agent" ? "agent" : "human"}
@@ -1068,28 +1172,8 @@ function MessageThreadPanel({
               </div>
             </div>
           </div>
-        ))}
-      </div>
-      <div className="border-t border-border p-3">
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Reply in thread"
-          rows={2}
-          className="w-full resize-none rounded-md border border-border bg-surface px-2 py-2 text-[15px] text-foreground outline-none"
-        />
-        <button
-          type="button"
-          disabled={!draft.trim()}
-          onClick={() => {
-            onSend(draft);
-            setDraft("");
-          }}
-          className="mt-2 rounded-md bg-chip px-3 py-1.5 text-xs font-medium text-chip-foreground disabled:opacity-40"
-        >
-          Reply
-        </button>
-      </div>
+        )}
+      />
     </aside>
   );
 }

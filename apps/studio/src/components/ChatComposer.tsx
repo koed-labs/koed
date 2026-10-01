@@ -26,6 +26,7 @@ import {
   Plus,
   RotateCcw,
   Shield,
+  Square,
   SmilePlus,
   Strikethrough,
   Quote,
@@ -151,6 +152,15 @@ type ChatComposerProps = {
   initialModel?: string;
   initialEffort?: string;
   showFormattingToolbar?: boolean;
+  showContinueWithoutMemory?: boolean;
+  showSendButton?: boolean;
+  allowEnterNewline?: boolean;
+  required?: boolean;
+  ariaLabel?: string;
+  textareaClassName?: string;
+  interruptActive?: boolean;
+  interruptDisabled?: boolean;
+  onInterrupt?: () => void;
 };
 
 export function ChatComposer({
@@ -178,7 +188,16 @@ export function ChatComposer({
   initialPermissionMode = "full",
   initialModel,
   initialEffort,
-  showFormattingToolbar = false
+  showFormattingToolbar = false,
+  showContinueWithoutMemory = true,
+  showSendButton = true,
+  allowEnterNewline = false,
+  required = false,
+  ariaLabel,
+  textareaClassName,
+  interruptActive = false,
+  interruptDisabled = false,
+  onInterrupt
 }: ChatComposerProps) {
   const initialAgent = agents.find((agent) => agent.id === activeAgentId);
   const initialAgentCapability = initialAgent
@@ -302,6 +321,9 @@ export function ChatComposer({
   const effectiveAccess = executionPreset
     ? (presetAccess ?? ACCESS_MODES.find((mode) => mode.id === "read")!)
     : selectedAccess;
+  const effectiveAccessLabel = executionPreset
+    ? (presetAccess?.label ?? executionPreset.access)
+    : effectiveAccess.label;
   const presetEffortIndex = executionPreset
     ? executionPreset.effort
       ? effortIndexFor(executionPreset.effort) >= 0
@@ -624,8 +646,13 @@ export function ChatComposer({
         <textarea
           ref={textareaRef}
           placeholder={placeholder}
-          className="min-h-[44px] max-h-48 w-full resize-none bg-transparent p-2 text-[15px] text-foreground outline-none placeholder-subtle"
-          rows={1}
+          aria-label={ariaLabel}
+          required={required}
+          className={
+            textareaClassName ??
+            "min-h-[44px] max-h-48 w-full resize-none bg-transparent p-2 text-[15px] text-foreground outline-none placeholder-subtle"
+          }
+          rows={allowEnterNewline ? 2 : 1}
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
@@ -676,8 +703,11 @@ export function ChatComposer({
               return;
             }
             if (event.key === "Enter" && !event.shiftKey) {
+              if (allowEnterNewline) return;
               event.preventDefault();
-              submitDraft();
+              if (interruptActive) {
+                if (!interruptDisabled) onInterrupt?.();
+              } else submitDraft();
             }
           }}
         />
@@ -864,7 +894,7 @@ export function ChatComposer({
           </p>
         )}
 
-        <div className="mt-1 flex items-center justify-between gap-2 pt-1">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2 pt-1">
           <div className="flex min-w-0 items-center gap-1">
             {executionControlsVisible && (
               <>
@@ -900,7 +930,7 @@ export function ChatComposer({
                     aria-label="Select execution access"
                     title={
                       executionPreset
-                        ? "Read-only is enforced for this chat"
+                        ? "Execution access is fixed for this chat runtime"
                         : "Select execution access"
                     }
                   >
@@ -909,22 +939,21 @@ export function ChatComposer({
                     ) : (
                       <OctagonAlert className="h-3.5 w-3.5" />
                     )}
-                    <span className="truncate">{effectiveAccess.label}</span>
+                    <span className="truncate">{effectiveAccessLabel}</span>
                   </button>
 
                   {openMenu === "access" && (
                     <div className="absolute bottom-full left-0 z-30 mb-2 w-56 rounded-xl border border-border-strong bg-surface p-1 shadow-xl shadow-black/50">
                       {ACCESS_MODES.map((mode) => {
-                        const disabled = Boolean(
-                          executionPreset && mode.id !== effectiveAccess.id
-                        );
+                        const selected = mode.id === effectiveAccess.id;
+                        const disabled = Boolean(executionPreset);
                         return (
                           <button
                             key={mode.id}
                             type="button"
                             disabled={disabled}
                             className={`flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors ${
-                              mode.id === effectiveAccess.id
+                              selected
                                 ? "bg-surface-hover"
                                 : disabled
                                   ? "cursor-not-allowed opacity-45"
@@ -937,7 +966,7 @@ export function ChatComposer({
                             }}
                             title={
                               disabled
-                                ? "This chat runtime is fixed to read-only"
+                                ? "Execution access is fixed for this chat runtime"
                                 : undefined
                             }
                           >
@@ -947,7 +976,7 @@ export function ChatComposer({
                               {mode.label}
                             </span>
                             <span className="mt-0.5 text-[11px] leading-snug text-subtle">
-                              {disabled
+                              {disabled && !selected
                                 ? "Unavailable for this chat runtime"
                                 : mode.description}
                             </span>
@@ -961,7 +990,7 @@ export function ChatComposer({
             )}
           </div>
 
-          <div className="flex flex-shrink-0 items-center gap-1">
+          <div className="ml-auto flex flex-shrink-0 items-center gap-1">
             {executionControlsVisible && (
               <div className="relative">
                 <button
@@ -1079,16 +1108,32 @@ export function ChatComposer({
               </div>
             )}
 
-            <button
-              type="button"
-              className="rounded-full bg-chip p-1.5 text-chip-foreground transition-colors hover:bg-white disabled:opacity-40 disabled:hover:bg-chip"
-              disabled={!canSend}
-              title={sendEnabled ? "Send message" : sendDisabledReason}
-              onClick={() => void submitDraft()}
-              aria-label="Send message"
-            >
-              <ArrowUp className="h-4 w-4" />
-            </button>
+            {showSendButton && (
+              <button
+                type="button"
+                className="rounded-full bg-chip p-1.5 text-chip-foreground transition-colors hover:bg-white disabled:opacity-40 disabled:hover:bg-chip"
+                disabled={interruptActive ? interruptDisabled : !canSend}
+                title={
+                  interruptActive
+                    ? "Stop active turn"
+                    : sendEnabled
+                      ? "Send message"
+                      : sendDisabledReason
+                }
+                onClick={() =>
+                  interruptActive ? onInterrupt?.() : void submitDraft()
+                }
+                aria-label={
+                  interruptActive ? "Stop active turn" : "Send message"
+                }
+              >
+                {interruptActive ? (
+                  <Square className="h-4 w-4" />
+                ) : (
+                  <ArrowUp className="h-4 w-4" />
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1110,14 +1155,16 @@ export function ChatComposer({
             >
               Retry
             </button>
-            <button
-              type="button"
-              disabled={!draft.trim() || !canSend}
-              onClick={() => void submitDraft(true)}
-              className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
-            >
-              Continue without Memory
-            </button>
+            {showContinueWithoutMemory ? (
+              <button
+                type="button"
+                disabled={!draft.trim() || !canSend}
+                onClick={() => void submitDraft(true)}
+                className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-foreground disabled:opacity-40"
+              >
+                Continue without Memory
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -67,4 +67,14 @@ One real Codex Job reported Checking, then Working and successful completion. Ho
 
 Claude/Pi phase adapters use a worker-created command-scoped turn ID because their current adapters do not expose a native turn ID. Their structured tool wiring has focused test coverage; a new live provider matrix was not run. The live disposable phase test continued without Memory after a recall timeout; the rejected prompt created no work command and was not replayed. Runtime startup/source mismatch failures were corrected before the final acceptance, and are not counted as passes.
 
-The User's prototype files remain unchanged. This slice is local and has not been pushed. The Team-visible Ticket15 feedback decision remains separately open; Tickets16–23 have not started.
+The User's prototype files remain unchanged. The Public Square C integration was pushed as `a3188c03`. The channel wallpaper follow-up was pushed as `84b07925`. The Team-visible Ticket15 feedback decision remains separately open; Tickets16–23 have not started.
+
+## Shared Chat UI and navigation
+
+The User approved a common presentation component for Agent Conversations and human Team chats. See [Shared Chat UI](studio-chat-ui.md). Each screen retains its transport, authority and draft controller. Agent and human modes select the appropriate controls. PR chat retains its isolated execution adapter.
+
+The navigation rail uses only loaded messages authored by the viewer. Its previews contain bounded plain text. Navigation does not send prompts, call an AI Client or load earlier history. Account and Conversation scope changes clear navigation state. Narrow panels hide the rail.
+
+Implementation is complete. The configured Studio suite passed309 tests, and Studio typechecking passed. Changed-file lint introduced no new findings against HEAD; existing Team workspace findings remain. Native and hosted review builds passed. Final acceptance used long loaded histories, keyboard previews/jumps, viewport-only scrolling, narrow layouts, human formatting, Agent invocation, thread actions, edit cancellation, reaction pickers, PR chat and Memory feedback. Navigation created no execution or feedback writes and no automatic history reads. No new live provider turn was run; unchanged transport and authority evidence is reused. Private review artifacts remain outside Git. The combined epic changeset remains deferred; this slice is not pushed.
+
+Final UI review source: working tree on `84b079259b9abac2aed791f5da82b995a4d55c12`,16 production files, digest `ced9ccc03fb1ab79b4f4c58110b0b24d1efa08dc8a70dab8aaae1cabd9e3db2f`. Final Desktop and web checks used the same source. Existing periodic history refresh remained active; navigation requested no additional history page. The disposable Docker review image was rebuilt from its previous Public Square base after reaching Docker’s layer limit. The final deployment and checks passed.

@@ -2124,6 +2124,7 @@ export function LiveAgentChat({
           activity={activity}
           agents={agents}
           activeAgentId={activeAgentId}
+          conversationScopeKey={`${feedbackOwner?.backendId ?? "unknown-backend"}:${feedbackOwner?.ownerId ?? "unknown-owner"}:${teamRequestId ?? "personal"}:${executionId ?? "new"}`}
           onActiveAgentChange={chooseAgent}
           onAgentMention={chooseAgent}
           modelOptions={instances.flatMap((instance) => instance.models)}

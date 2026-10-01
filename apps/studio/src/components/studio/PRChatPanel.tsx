@@ -1,10 +1,10 @@
 "use client";
 
-import { Bot, CircleAlert, LoaderCircle, X } from "lucide-react";
+import { CircleAlert, LoaderCircle, X } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
-import { AgentAvatarView } from "../AgentAvatarView";
+import { AgentChatMessage, SharedChatUI } from "../SharedChatUI";
 import {
   ChatComposer,
   type ChatComposerSelection,
@@ -151,15 +151,8 @@ export function PRChatPanel({
     Boolean(adapter?.load && !demo)
   );
   const controllerRef = useRef<AbortController | null>(null);
-  const messagesRef = useRef<HTMLDivElement>(null);
   const selectedAgentId =
     activeAgentId === undefined ? localActiveAgentId : activeAgentId;
-
-  useEffect(() => {
-    const container = messagesRef.current;
-    if (!container) return;
-    container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
-  }, [isLoadingHistory, messages]);
 
   useEffect(() => {
     const load = adapter?.load;
@@ -375,248 +368,207 @@ export function PRChatPanel({
     };
   }, [activeRequestId, adapter, isSending, scope]);
 
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={messagesRef}
-        className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
-      >
-        <div className="mb-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs uppercase tracking-wide text-subtle">
-              PR chat
-            </p>
-            {demo && (
-              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
-                Synthetic demo · no API
-              </span>
-            )}
-          </div>
-          <h2 className="mt-1 text-lg font-medium leading-snug text-foreground">
-            {pullRequest.title}
-          </h2>
-          <p className="mt-1 text-xs text-subtle">
-            {pullRequest.repositoryFullName} · {pullRequest.baseBranch} ›{" "}
-            {pullRequest.headBranch} · #{pullRequest.number}
-          </p>
-          <p className="mt-2 text-[11px] text-faint">
-            Scoped to {scope.accountLogin || scope.accountId} and head{" "}
-            {scope.headSha || "unknown"}.
-          </p>
+  const composer = (
+    <div className="shrink-0 bg-gradient-to-t from-background via-background to-transparent p-4 pt-3">
+      {pendingSuggestion && (
+        <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-foreground-secondary">
+          <span>Replace the current draft with “{pendingSuggestion}”?</span>
+          <span className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
+              onClick={() => setPendingSuggestion(null)}
+            >
+              Keep draft
+            </button>
+            <button
+              type="button"
+              className="rounded bg-surface-hover px-2 py-1 font-medium text-foreground hover:bg-surface-active"
+              onClick={() => {
+                onDraftChange(pendingSuggestion);
+                setPendingSuggestion(null);
+              }}
+            >
+              Replace
+            </button>
+          </span>
         </div>
+      )}
 
-        {unavailable && (
-          <div className="mb-5 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{unavailable}</span>
-          </div>
-        )}
+      {error && (
+        <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+          <span>{error}</span>
+          {failedRequest && !isSending && adapter && !isLoadingHistory && (
+            <button
+              type="button"
+              className="shrink-0 rounded px-2 py-1 font-medium hover:bg-danger/10"
+              onClick={() =>
+                void sendText(
+                  failedRequest.text,
+                  failedRequest.selection,
+                  failedRequest.requestId
+                )
+              }
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
-        {isLoadingHistory ? (
-          <div className="flex items-center gap-2 py-8 text-sm text-muted">
-            <LoaderCircle className="h-4 w-4 animate-spin" /> Loading this PR
-            conversation…
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="space-y-4">
-            <p className="text-sm leading-relaxed text-muted">
-              Ask about this pull request. Suggestions fill the composer and
-              never send on their own.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {SUGGESTED_PROMPTS.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-foreground-secondary transition-colors hover:border-border-strong hover:text-foreground"
-                  onClick={() => selectSuggestion(prompt)}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-5">
-            {messages.map((message) =>
-              message.role === "user" ? (
-                <div key={message.id} className="flex justify-end">
-                  <div className="max-w-[85%] break-words rounded-2xl rounded-tr-sm bg-surface-hover px-4 py-3 text-[15px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                    {message.content}
-                  </div>
+      {isSending && (
+        <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-muted">
+          {pendingApproval ? (
+            <div className="space-y-2">
+              <div className="font-medium text-foreground-secondary">
+                Permission requested: {pendingApproval.title}
+              </div>
+              {pendingApproval.detail && (
+                <div className="break-all text-subtle">
+                  {pendingApproval.detail}
                 </div>
-              ) : (
-                (() => {
-                  const author = message.author ?? null;
-                  return (
-                    <div
-                      key={message.id}
-                      className="flex min-w-0 max-w-[85%] items-start gap-3"
-                    >
-                      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface">
-                        {author ? (
-                          <AgentAvatarView
-                            image={author.avatar?.image}
-                            spec={author.avatar?.spec}
-                            name={author.name}
-                            size="sm"
-                          />
-                        ) : (
-                          <Bot className="h-4 w-4 text-muted" />
-                        )}
-                      </div>
-                      <div className="min-w-0 pt-1">
-                        {author && (
-                          <p className="mb-1 text-[11px] font-medium text-subtle">
-                            {author.name}
-                          </p>
-                        )}
-                        <p className="break-words text-[15px] leading-relaxed text-foreground-secondary [overflow-wrap:anywhere]">
-                          {message.content}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })()
-              )
-            )}
-          </div>
-        )}
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={resolvingApproval}
+                  className="rounded-md px-3 py-1.5 hover:bg-surface-hover disabled:opacity-50"
+                  onClick={() => void decideApproval("decline")}
+                >
+                  Decline
+                </button>
+                <button
+                  type="button"
+                  disabled={resolvingApproval}
+                  className="rounded-md bg-surface-hover px-3 py-1.5 text-foreground hover:bg-surface-active disabled:opacity-50"
+                  onClick={() => void decideApproval("accept")}
+                >
+                  Allow once
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Waiting
+                for the chat runtime…
+              </span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
+                onClick={cancel}
+              >
+                <X className="h-3.5 w-3.5" /> Stop waiting
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-        {demo && messages.length > 0 && (
+      <ChatComposer
+        placeholder="Ask about this pull request..."
+        projectName={pullRequest.repositoryFullName}
+        branch={pullRequest.headBranch}
+        footer={
+          demo
+            ? "Synthetic demo · no API calls"
+            : "Access modes apply only to a temporary local PR checkout. GitHub comments, approvals, pushes, and merges stay separate."
+        }
+        value={draft}
+        onChange={onDraftChange}
+        onSend={(text, selection) => void sendText(text, selection)}
+        environmentSwitchDisabled
+        agents={agents}
+        activeAgentId={selectedAgentId}
+        onAgentMention={onAgentMention}
+        onActiveAgentChange={handleActiveAgentChange}
+        modelOptions={modelOptions}
+        initialPermissionMode="read"
+        initialModel={initialModel}
+        initialEffort={initialEffort}
+        sendEnabled={
+          !isSending &&
+          !isLoadingHistory &&
+          !historyLoadError &&
+          (demo || Boolean(adapter))
+        }
+        sendDisabledReason={unavailable ?? "Waiting for the chat runtime."}
+      />
+    </div>
+  );
+
+  return (
+    <SharedChatUI
+      mode={{ kind: "agent", controls: "execution" }}
+      scopeKey={`${scope.accountId}:${scope.repositoryId}:${scope.pullRequestNumber}:${scope.baseSha}:${scope.headSha}`}
+      messages={messages}
+      composer={composer}
+      viewportClassName="px-6 py-5"
+      listClassName="space-y-5"
+      renderMessage={(message) => <AgentChatMessage message={message} />}
+      childrenAfter={
+        demo && messages.length > 0 ? (
           <p className="mt-5 text-xs text-faint">
             Synthetic demo messages stay in this browser view. No live assistant
             response is generated.
           </p>
-        )}
-      </div>
-
-      <div className="shrink-0 bg-gradient-to-t from-background via-background to-transparent p-4 pt-3">
-        {pendingSuggestion && (
-          <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-foreground-secondary">
-            <span>Replace the current draft with “{pendingSuggestion}”?</span>
-            <span className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                className="rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
-                onClick={() => setPendingSuggestion(null)}
-              >
-                Keep draft
-              </button>
-              <button
-                type="button"
-                className="rounded bg-surface-hover px-2 py-1 font-medium text-foreground hover:bg-surface-active"
-                onClick={() => {
-                  onDraftChange(pendingSuggestion);
-                  setPendingSuggestion(null);
-                }}
-              >
-                Replace
-              </button>
+        ) : null
+      }
+    >
+      <div className="mb-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs uppercase tracking-wide text-subtle">PR chat</p>
+          {demo && (
+            <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+              Synthetic demo · no API
             </span>
-          </div>
-        )}
-
-        {error && (
-          <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-            <span>{error}</span>
-            {failedRequest && !isSending && adapter && !isLoadingHistory && (
-              <button
-                type="button"
-                className="shrink-0 rounded px-2 py-1 font-medium hover:bg-danger/10"
-                onClick={() =>
-                  void sendText(
-                    failedRequest.text,
-                    failedRequest.selection,
-                    failedRequest.requestId
-                  )
-                }
-              >
-                Retry
-              </button>
-            )}
-          </div>
-        )}
-
-        {isSending && (
-          <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-muted">
-            {pendingApproval ? (
-              <div className="space-y-2">
-                <div className="font-medium text-foreground-secondary">
-                  Permission requested: {pendingApproval.title}
-                </div>
-                {pendingApproval.detail && (
-                  <div className="break-all text-subtle">
-                    {pendingApproval.detail}
-                  </div>
-                )}
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    disabled={resolvingApproval}
-                    className="rounded-md px-3 py-1.5 hover:bg-surface-hover disabled:opacity-50"
-                    onClick={() => void decideApproval("decline")}
-                  >
-                    Decline
-                  </button>
-                  <button
-                    type="button"
-                    disabled={resolvingApproval}
-                    className="rounded-md bg-surface-hover px-3 py-1.5 text-foreground hover:bg-surface-active disabled:opacity-50"
-                    onClick={() => void decideApproval("accept")}
-                  >
-                    Allow once
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-2">
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Waiting
-                  for the chat runtime…
-                </span>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted hover:bg-surface-hover hover:text-foreground"
-                  onClick={cancel}
-                >
-                  <X className="h-3.5 w-3.5" /> Stop waiting
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <ChatComposer
-          placeholder="Ask about this pull request..."
-          projectName={pullRequest.repositoryFullName}
-          branch={pullRequest.headBranch}
-          footer={
-            demo
-              ? "Synthetic demo · no API calls"
-              : "Access modes apply only to a temporary local PR checkout. GitHub comments, approvals, pushes, and merges stay separate."
-          }
-          value={draft}
-          onChange={onDraftChange}
-          onSend={(text, selection) => void sendText(text, selection)}
-          environmentSwitchDisabled
-          agents={agents}
-          activeAgentId={selectedAgentId}
-          onAgentMention={onAgentMention}
-          onActiveAgentChange={handleActiveAgentChange}
-          modelOptions={modelOptions}
-          initialPermissionMode="read"
-          initialModel={initialModel}
-          initialEffort={initialEffort}
-          sendEnabled={
-            !isSending &&
-            !isLoadingHistory &&
-            !historyLoadError &&
-            (demo || Boolean(adapter))
-          }
-          sendDisabledReason={unavailable ?? "Waiting for the chat runtime."}
-        />
+          )}
+        </div>
+        <h2 className="mt-1 text-lg font-medium leading-snug text-foreground">
+          {pullRequest.title}
+        </h2>
+        <p className="mt-1 text-xs text-subtle">
+          {pullRequest.repositoryFullName} · {pullRequest.baseBranch} ›{" "}
+          {pullRequest.headBranch} · #{pullRequest.number}
+        </p>
+        <p className="mt-2 text-[11px] text-faint">
+          Scoped to {scope.accountLogin || scope.accountId} and head{" "}
+          {scope.headSha || "unknown"}.
+        </p>
       </div>
-    </div>
+
+      {unavailable && (
+        <div className="mb-5 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
+          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{unavailable}</span>
+        </div>
+      )}
+
+      {isLoadingHistory ? (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted">
+          <LoaderCircle className="h-4 w-4 animate-spin" /> Loading this PR
+          conversation…
+        </div>
+      ) : messages.length === 0 ? (
+        <div className="space-y-4">
+          <p className="text-sm leading-relaxed text-muted">
+            Ask about this pull request. Suggestions fill the composer and never
+            send on their own.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {SUGGESTED_PROMPTS.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-foreground-secondary transition-colors hover:border-border-strong hover:text-foreground"
+                onClick={() => selectSuggestion(prompt)}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </SharedChatUI>
   );
 }

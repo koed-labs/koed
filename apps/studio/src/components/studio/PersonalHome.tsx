@@ -39,6 +39,7 @@ import {
 import { StudioSidebar } from "./StudioSidebar";
 import { OwnedConversationShareDialog } from "./OwnedConversationShareDialog";
 import { ChatComposer, type ChatComposerSelection } from "../ChatComposer";
+import { SharedChatUI } from "../SharedChatUI";
 import {
   indexShareablePersonalConversations,
   indexShareableConversationRows,
@@ -207,7 +208,7 @@ export function PersonalHome({
   const usable = Boolean(
     snapshot && (snapshot.state === "ready" || snapshot.state === "partial")
   );
-  const homeScopeKey = usable ? snapshot?.scopeKey ?? null : null;
+  const homeScopeKey = usable ? (snapshot?.scopeKey ?? null) : null;
   const sharingSessionKey =
     homeScopeKey === null ? null : `${homeScopeKey}:${sharingReloadKey}`;
   const ownerSharingSession =
@@ -249,10 +250,12 @@ export function PersonalHome({
     homeScopeKey: string;
   } | null>(null);
   const currentShareMemory = shareConversation
-    ? ownerMemoryBySessionId.get(shareConversation.sessionId)?.logicalMemoryId ?? null
+    ? (ownerMemoryBySessionId.get(shareConversation.sessionId)
+        ?.logicalMemoryId ?? null)
     : null;
   const activeShareConversation =
-    shareConversation && shareDialogSourceMayRemainOpen({
+    shareConversation &&
+    shareDialogSourceMayRemainOpen({
       sourceHomeScopeKey: shareConversation.homeScopeKey,
       currentHomeScopeKey: homeScopeKey,
       sourceAuthorityKey: shareConversation.authorityKey,
@@ -307,7 +310,8 @@ export function PersonalHome({
   }, []);
 
   useEffect(() => {
-    const refreshSharingSession = () => setSharingReloadKey((value) => value + 1);
+    const refreshSharingSession = () =>
+      setSharingReloadKey((value) => value + 1);
     window.addEventListener("focus", refreshSharingSession);
     return () => window.removeEventListener("focus", refreshSharingSession);
   }, []);
@@ -359,7 +363,9 @@ export function PersonalHome({
           snapshot: ownerSnapshotMaySurviveRefresh({
             sameHomeScope: previous?.homeScopeKey === homeScopeKey,
             authorizationDenied: status === 401 || status === 403
-          }) ? previous?.snapshot ?? null : null,
+          })
+            ? (previous?.snapshot ?? null)
+            : null,
           message:
             status === 404
               ? "Connect a Team backend to preview and share Personal Memory."
@@ -459,9 +465,13 @@ export function PersonalHome({
     return execution ? [{ recent, executionId: execution.id }] : [];
   });
   const displayedConversationRecents = recents.flatMap((recent) => {
-    const execution = executions.find((candidate) => candidate.sessionId === recent.sessionId);
+    const execution = executions.find(
+      (candidate) => candidate.sessionId === recent.sessionId
+    );
     const memory = ownerMemoryBySessionId.get(recent.sessionId);
-    return execution || memory ? [{ recent, executionId: execution?.id ?? null, memory: memory ?? null }] : [];
+    return execution || memory
+      ? [{ recent, executionId: execution?.id ?? null, memory: memory ?? null }]
+      : [];
   });
   const projects = homeProjects(allRecents, coveredExecutions);
   const firstModelOption = modelOptions[0];
@@ -545,7 +555,9 @@ export function PersonalHome({
         projects={projects}
         showLocalCatalog
         managedConversations={executions}
-        managedSourceIds={[...managedConversationSourceIds({ recents: allRecents, executions })]}
+        managedSourceIds={[
+          ...managedConversationSourceIds({ recents: allRecents, executions })
+        ]}
         canShareLocalSource={(sourceId, provider) =>
           ownerMemoryForLocalSource.has(
             `${provider}:${encodeURIComponent(sourceId)}`
@@ -556,7 +568,13 @@ export function PersonalHome({
             `${provider}:${encodeURIComponent(sourceId)}`
           );
           if (!memory) return;
-          if (ownerSharingAuthorityKey && homeScopeKey) setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey });
+          if (ownerSharingAuthorityKey && homeScopeKey)
+            setShareConversation({
+              sessionId: memory.id,
+              memory,
+              authorityKey: ownerSharingAuthorityKey,
+              homeScopeKey
+            });
         }}
         canShareManagedExecution={(executionId) =>
           ownerMemoryForExecution.has(executionId)
@@ -564,7 +582,13 @@ export function PersonalHome({
         onShareManagedExecution={(executionId) => {
           const memory = ownerMemoryForExecution.get(executionId);
           if (!memory) return;
-          if (ownerSharingAuthorityKey && homeScopeKey) setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey });
+          if (ownerSharingAuthorityKey && homeScopeKey)
+            setShareConversation({
+              sessionId: memory.id,
+              memory,
+              authorityKey: ownerSharingAuthorityKey,
+              homeScopeKey
+            });
         }}
         onSelectManagedExecution={onResumeChat}
         collapsed={collapsed}
@@ -764,41 +788,49 @@ export function PersonalHome({
               </p>
             </section>
             <section className="no-drag" aria-label="Start a chat">
-              <ChatComposer
-                placeholder="Ask Koed anything…"
-                projectName={
-                  projects.find((project) => project.id === filter)?.name ??
-                  "Personal"
+              <SharedChatUI
+                mode={{ kind: "agent", controls: "execution" }}
+                scopeKey={`home:${homeScopeKey ?? "unavailable"}`}
+                messages={[]}
+                composerOnly
+                composer={
+                  <ChatComposer
+                    placeholder="Ask Koed anything…"
+                    projectName={
+                      projects.find((project) => project.id === filter)?.name ??
+                      "Personal"
+                    }
+                    branch="local"
+                    value={draft}
+                    onChange={setDraft}
+                    onSend={(text, selection) => {
+                      const hasVerifiedModel = modelOptions.some(
+                        (option) =>
+                          option.provider === selection.provider &&
+                          option.id === selection.model
+                      );
+                      startChat(text, hasVerifiedModel ? selection : undefined);
+                    }}
+                    modelOptions={modelOptions}
+                    initialModel={
+                      firstModelOption
+                        ? `${firstModelOption.provider}:${firstModelOption.id}`
+                        : undefined
+                    }
+                    initialEffort={firstModelEffort}
+                    key={
+                      modelOptionsLoaded
+                        ? "home-model-options-loaded"
+                        : "home-model-options-loading"
+                    }
+                    footer={
+                      modelOptionsLoaded && modelOptions.length > 0
+                        ? "Opens a draft chat only. Nothing is sent yet. Available model settings carry over."
+                        : "Opens a draft chat only. Nothing is sent yet. Live model settings load in the chat."
+                    }
+                    showExecutionControls
+                  />
                 }
-                branch="local"
-                value={draft}
-                onChange={setDraft}
-                onSend={(text, selection) => {
-                  const hasVerifiedModel = modelOptions.some(
-                    (option) =>
-                      option.provider === selection.provider &&
-                      option.id === selection.model
-                  );
-                  startChat(text, hasVerifiedModel ? selection : undefined);
-                }}
-                modelOptions={modelOptions}
-                initialModel={
-                  firstModelOption
-                    ? `${firstModelOption.provider}:${firstModelOption.id}`
-                    : undefined
-                }
-                initialEffort={firstModelEffort}
-                key={
-                  modelOptionsLoaded
-                    ? "home-model-options-loaded"
-                    : "home-model-options-loading"
-                }
-                footer={
-                  modelOptionsLoaded && modelOptions.length > 0
-                    ? "Opens a draft chat only. Nothing is sent yet. Available model settings carry over."
-                    : "Opens a draft chat only. Nothing is sent yet. Live model settings load in the chat."
-                }
-                showExecutionControls
               />
               <div className="mt-2.5 flex flex-wrap gap-1.5">
                 {prompts.map((prompt) => (
@@ -1018,38 +1050,63 @@ export function PersonalHome({
                         </p>
                       ) : (
                         <ul className="divide-y divide-border overflow-hidden rounded-md border border-border bg-surface/30">
-                          {displayedConversationRecents.map(({ recent, executionId, memory }) => (
-                            <li key={recent.id} className="flex items-center gap-1 pr-2">
-                              <button
-                                type="button"
-                                disabled={!executionId}
-                                onClick={() => executionId && onResumeChat(executionId)}
-                                className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-hover/50 disabled:cursor-not-allowed"
+                          {displayedConversationRecents.map(
+                            ({ recent, executionId, memory }) => (
+                              <li
+                                key={recent.id}
+                                className="flex items-center gap-1 pr-2"
                               >
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate text-sm text-foreground">
-                                    {recent.title}
+                                <button
+                                  type="button"
+                                  disabled={!executionId}
+                                  onClick={() =>
+                                    executionId && onResumeChat(executionId)
+                                  }
+                                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-hover/50 disabled:cursor-not-allowed"
+                                >
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm text-foreground">
+                                      {recent.title}
+                                    </span>
+                                    <span className="block truncate text-xs text-muted">
+                                      {recent.projectName} ·{" "}
+                                      {recent.provider ?? "AI client"}
+                                      {executionId
+                                        ? ""
+                                        : " · captured, cannot continue here"}
+                                    </span>
                                   </span>
-                                  <span className="block truncate text-xs text-muted">
-                                    {recent.projectName} · {recent.provider ?? "AI client"}{executionId ? "" : " · captured, cannot continue here"}
+                                  <span className="flex-shrink-0 text-xs text-faint">
+                                    {formatHomeTime(recent.updatedAt)}
                                   </span>
-                                </span>
-                                <span className="flex-shrink-0 text-xs text-faint">
-                                  {formatHomeTime(recent.updatedAt)}
-                                </span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={!memory}
-                                onClick={() => memory && ownerSharingAuthorityKey && homeScopeKey && setShareConversation({ sessionId: memory.id, memory, authorityKey: ownerSharingAuthorityKey, homeScopeKey })}
-                                aria-label={`Share ${recent.title} with a Team`}
-                                title={memory ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
-                                className="shrink-0 rounded-md p-1.5 text-faint hover:bg-surface-hover hover:text-foreground-secondary disabled:cursor-not-allowed disabled:opacity-30"
-                              >
-                                <Share2 className="h-3.5 w-3.5" />
-                              </button>
-                            </li>
-                          ))}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!memory}
+                                  onClick={() =>
+                                    memory &&
+                                    ownerSharingAuthorityKey &&
+                                    homeScopeKey &&
+                                    setShareConversation({
+                                      sessionId: memory.id,
+                                      memory,
+                                      authorityKey: ownerSharingAuthorityKey,
+                                      homeScopeKey
+                                    })
+                                  }
+                                  aria-label={`Share ${recent.title} with a Team`}
+                                  title={
+                                    memory
+                                      ? "Share processed Personal Memory"
+                                      : "This conversation has no verified Personal Memory source yet"
+                                  }
+                                  className="shrink-0 rounded-md p-1.5 text-faint hover:bg-surface-hover hover:text-foreground-secondary disabled:cursor-not-allowed disabled:opacity-30"
+                                >
+                                  <Share2 className="h-3.5 w-3.5" />
+                                </button>
+                              </li>
+                            )
+                          )}
                         </ul>
                       )}
                     </div>

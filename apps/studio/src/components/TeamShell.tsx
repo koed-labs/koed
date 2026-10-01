@@ -12,7 +12,8 @@ export function TeamShell({
   footer,
   aside,
   wallpaper = false,
-  subheader
+  subheader,
+  chatLayout = false
 }: {
   crumbs?: string[];
   heading?: string;
@@ -21,6 +22,7 @@ export function TeamShell({
   aside?: React.ReactNode;
   wallpaper?: boolean;
   subheader?: React.ReactNode;
+  chatLayout?: boolean;
 }) {
   const { isOpen, toggleSidebar } = useSidebar();
   const hasHeaderText = Boolean(heading) || Boolean(crumbs?.length);
@@ -72,7 +74,9 @@ export function TeamShell({
       <div className="flex min-h-0 flex-1">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {wallpaper && <ChannelWallpaper />}
-          <main className="relative min-h-0 flex-1 overflow-y-auto p-4">
+          <main
+            className={`relative min-h-0 flex-1 p-4 ${chatLayout ? "flex flex-col overflow-hidden" : "overflow-y-auto"}`}
+          >
             {children}
           </main>
           {footer}
@@ -91,9 +95,10 @@ export function ChannelWallpaper({ className = "" }: { className?: string }) {
       className={`pointer-events-none absolute inset-0 ${className}`}
       style={{
         opacity: "var(--wallpaper-opacity)",
-        backgroundImage: process.env.NEXT_PUBLIC_KOED_STUDIO_HOSTED === "1"
-          ? `url("/studio/chat-wallpaper-${resolvedTheme}.png")`
-          : "var(--wallpaper-image)",
+        backgroundImage:
+          process.env.NEXT_PUBLIC_KOED_STUDIO_HOSTED === "1"
+            ? `url("/studio/chat-wallpaper-${resolvedTheme}.png")`
+            : "var(--wallpaper-image)",
         backgroundRepeat: "repeat",
         backgroundSize: "320px auto"
       }}

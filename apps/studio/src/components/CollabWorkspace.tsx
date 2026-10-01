@@ -25,6 +25,7 @@ import { initialsFor, teamTone } from "@/lib/identity";
 import { badgeCount, catchUpFor } from "@/lib/attention";
 import { projectsForTeam, type Team } from "@/lib/workspace";
 import { ChatComposer } from "./ChatComposer";
+import { SharedChatUI } from "./SharedChatUI";
 import { ChannelView } from "./ChannelView";
 import { AddAgentModal } from "./AddAgentModal";
 import { AgentAvatarView } from "./AgentAvatarView";
@@ -337,48 +338,63 @@ function DirectView({ dmId }: { dmId: string }) {
   const messages = workspace.dmMessages
     .filter((message) => message.dmId === dmId)
     .sort((left, right) => left.createdAt - right.createdAt);
+  const sharedMessages = messages.map((message) => ({
+    id: message.id,
+    role:
+      message.authorId === CURRENT_USER_ID
+        ? ("user" as const)
+        : ("assistant" as const),
+    content: message.content,
+    authoredByViewer: message.authorId === CURRENT_USER_ID,
+    author: {
+      name:
+        activeTeam.members.find((member) => member.id === message.authorId)
+          ?.name ?? "Unknown"
+    },
+    source: message
+  }));
 
   return (
-    <TeamShell
-      crumbs={[activeTeam.name, title]}
-      footer={
-        <div className="border-t border-border bg-background p-4">
-          <div className="mx-auto max-w-3xl no-drag">
-            <ChatComposer
-              placeholder={`Message ${title}`}
-              projectName={activeTeam.name}
-              branch="shared"
-              footer="Local preview only. Messages are stored in this browser; Team access is not enforced here."
-              value={draft}
-              onChange={setDraft}
-              showExecutionControls={false}
-              showFormattingToolbar
-              onSend={(text) => {
-                postDmMessage(dmId, text);
-                setDraft("");
-              }}
-            />
-          </div>
-        </div>
-      }
-    >
-      <div className="mx-auto max-w-3xl space-y-4 pt-4">
-        {messages.length === 0 && (
-          <p className="text-sm text-subtle">
+    <TeamShell crumbs={[activeTeam.name, title]} chatLayout>
+      <SharedChatUI
+        mode={{ kind: "human", controls: "formatting" }}
+        scopeKey={`preview-dm:${activeTeam.id}:${CURRENT_USER_ID}:${dmId}`}
+        messages={sharedMessages}
+        className="h-full"
+        viewportClassName="mx-auto w-full max-w-3xl space-y-4 pt-4"
+        emptyState={
+          <p className="mx-auto w-full max-w-3xl pt-4 text-sm text-subtle">
             Direct message preview with {title}. Agents are not part of this
             local thread.
           </p>
-        )}
-        {messages.map((message) => {
+        }
+        composer={
+          <div className="border-t border-border bg-background p-4">
+            <div className="mx-auto max-w-3xl no-drag">
+              <ChatComposer
+                placeholder={`Message ${title}`}
+                projectName={activeTeam.name}
+                branch="shared"
+                footer="Local preview only. Messages are stored in this browser; Team access is not enforced here."
+                value={draft}
+                onChange={setDraft}
+                showExecutionControls={false}
+                showFormattingToolbar
+                onSend={(text) => {
+                  postDmMessage(dmId, text);
+                  setDraft("");
+                }}
+              />
+            </div>
+          </div>
+        }
+        renderMessage={({ source: message }) => {
           const author =
             activeTeam.members.find((member) => member.id === message.authorId)
               ?.name ?? "Unknown";
           const isYou = message.authorId === CURRENT_USER_ID;
           return (
-            <div
-              key={message.id}
-              className={isYou ? "flex justify-end" : "flex justify-start"}
-            >
+            <div className={isYou ? "flex justify-end" : "flex justify-start"}>
               <div
                 className={`max-w-[80%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
                   isYou
@@ -391,8 +407,8 @@ function DirectView({ dmId }: { dmId: string }) {
               </div>
             </div>
           );
-        })}
-      </div>
+        }}
+      />
     </TeamShell>
   );
 }

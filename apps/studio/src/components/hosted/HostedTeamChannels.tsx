@@ -22,6 +22,10 @@ import {
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { SidebarProvider } from "@/components/SidebarContext";
 import { TeamShell } from "@/components/TeamShell";
+import {
+  SharedChatUI,
+  type SharedChatMessage
+} from "@/components/SharedChatUI";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { PublicSquare } from "@/components/PublicSquare";
 import {
@@ -85,6 +89,27 @@ const makeAuthority = (
   teamId,
   threadId
 });
+
+type SharedTeamMessage = SharedChatMessage & {
+  source: CollaborationMessage;
+};
+
+function adaptTeamMessages(
+  messages: readonly CollaborationMessage[],
+  viewerId: string
+): SharedTeamMessage[] {
+  return messages.map((message) => {
+    const authoredByViewer = message.sender.id === viewerId;
+    return {
+      id: message.id,
+      role: authoredByViewer ? "user" : "assistant",
+      content: message.body,
+      authoredByViewer,
+      author: { name: message.sender.displayName || "Team member" },
+      source: message
+    };
+  });
+}
 
 export function HostedTeamChannels({
   team,
@@ -191,7 +216,6 @@ export function HostedTeamChannels({
     threadId: string;
   } | null>(null);
   const [readCursor, setReadCursor] = useState(0);
-  const messagesRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const openRootRef = useRef<CollaborationMessage | null>(null);
   openRootRef.current = openRootMessage;
@@ -391,6 +415,7 @@ export function HostedTeamChannels({
   const channelMessages = activeDirectMessage
     ? visibleMessages
     : visibleMessages.filter((message) => message.rootMessageId === null);
+  const sharedChannelMessages = adaptTeamMessages(channelMessages, user.id);
   const activeDirectMessageTitle = activeDirectMessage
     ? directMessageTitle(activeDirectMessage, user.id)
     : "";
@@ -2116,6 +2141,7 @@ export function HostedTeamChannels({
         />
         <div className="relative min-h-0 min-w-0 flex-1">
           <TeamShell
+            chatLayout={!forYouOpen && !squareOpen}
             heading={
               forYouOpen ? "For you" : squareOpen ? "Public Square" : undefined
             }
@@ -2139,111 +2165,6 @@ export function HostedTeamChannels({
                     }))}
                 />
               ) : undefined
-            }
-            footer={
-              !forYouOpen &&
-              !squareOpen && (
-                <footer className="border-t border-border bg-background p-4">
-                  <div className="mx-auto max-w-3xl">
-                    <div className="no-drag">
-                      {visiblePendingSend && (
-                        <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted">
-                          <span>
-                            Previous send may have been accepted. Reconcile
-                            before retrying.
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => void reconcile()}
-                            className="font-medium text-foreground hover:underline"
-                          >
-                            Reconcile send
-                          </button>
-                        </div>
-                      )}
-                      {pendingAgentMention &&
-                        !pendingAgentMention.rootMessageId && (
-                          <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
-                            <p className="mb-2 text-xs text-subtle">
-                              Choose a Team Project for{" "}
-                              {pendingAgentMention.agent.name}.
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {visibleProjects.map((project) => (
-                                <button
-                                  key={project.id}
-                                  type="button"
-                                  disabled={agentMentionBusy}
-                                  onClick={() =>
-                                    void completeAgentMention(
-                                      pendingAgentMention,
-                                      project.id
-                                    )
-                                  }
-                                  className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
-                                >
-                                  {project.name}
-                                </button>
-                              ))}
-                              <button
-                                type="button"
-                                disabled={agentMentionBusy}
-                                onClick={() => setPendingAgentMention(null)}
-                                className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      <ChatComposer
-                        placeholder={
-                          activeDirectMessage
-                            ? `Message ${activeDirectMessageTitle}`
-                            : `Message #${activeThread?.name ?? "channel"}`
-                        }
-                        projectName={
-                          activeDirectMessage
-                            ? team.name
-                            : (activeThread?.name ?? team.name)
-                        }
-                        branch="shared"
-                        value={visibleDraftText}
-                        onChange={updateDraft}
-                        onSend={(text, selection) =>
-                          sendTeamComposer(text, selection)
-                        }
-                        agents={
-                          activeDirectMessage ? [] : teamAgentMentions.options
-                        }
-                        activeAgentId={activeMentionAgentId}
-                        onActiveAgentChange={(agentId) =>
-                          setTeamMentionSelection({
-                            scopeKey: teamMentionScopeKey,
-                            agentId
-                          })
-                        }
-                        showExecutionControls={false}
-                        showMetaBar={false}
-                        showFormattingToolbar
-                        sendEnabled={Boolean(
-                          activeThread &&
-                          drafts &&
-                          hydrated &&
-                          hydratedKey === authorityKey
-                        )}
-                        footer={
-                          visiblePendingSend
-                            ? "Resolve the previous send before sending this edit."
-                            : activeDirectMessage
-                              ? "Direct messages stay among these people."
-                              : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
-                        }
-                      />
-                    </div>
-                  </div>
-                </footer>
-              )
             }
           >
             {forYouOpen ? (
@@ -2324,117 +2245,239 @@ export function HostedTeamChannels({
             ) : (
               <>
                 <div className="flex min-h-0 min-w-0 flex-1">
-                  <div
-                    ref={messagesRef}
-                    className={`mx-auto min-w-0 max-w-3xl flex-1 pt-4 ${activeDirectMessage ? "space-y-4" : "space-y-3"}`}
-                  >
-                    {!activeDirectMessage && activeThread && (
-                      <TeamChannelAgentRequests
-                        teamId={team.id}
-                        channelId={activeThread.id}
-                        viewerId={user.id}
-                        authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}`}
-                        refreshRevision={agentRequestRevision}
-                        client={teamAgentRequestsClient}
-                        onAuthorizationLost={handleAuthorizationLost}
-                        onReview={(request) => void openRequestReview(request)}
-                        onViewWork={openRequestWork}
-                        onRequestsChanged={setChannelRequests}
-                        originRootMessageId={null}
-                      />
-                    )}
-                    {visiblePage && hasOlder && beforeSequence && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          activeThread &&
-                          void loadPage(activeThread.id, beforeSequence)
-                        }
-                        className="mx-auto block text-xs text-muted hover:text-foreground"
-                      >
-                        Load older messages
-                      </button>
-                    )}
-                    {channelMessages.length === 0 && (
-                      <p className="text-sm text-subtle">
-                        {activeDirectMessage
-                          ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
-                          : "No messages yet. Start the conversation."}
-                      </p>
-                    )}
-                    {channelMessages.map((message) => (
-                      <HostedMessage
-                        key={message.id}
-                        message={message}
-                        forwardRequests={
-                          !activeDirectMessage && message.sender.id !== user.id
-                            ? forwardableTeamRequestsForChannelMessage({
-                                requests: channelRequests,
-                                message,
-                                viewerId: user.id,
-                                teamId: team.id
-                              })
-                            : []
-                        }
-                        forwardRequestTextById={Object.fromEntries(
-                          channelRequests.map((request) => [
-                            request.id,
-                            visibleMessages.find(
-                              (candidate) =>
-                                candidate.id === request.requestMessageId
-                            )?.body ?? ""
-                          ])
-                        )}
-                        onForwardAnswer={(request) =>
-                          void forwardChannelAnswer(request, message)
-                        }
-                        onReplyInThread={
-                          activeDirectMessage
-                            ? undefined
-                            : () => openMessageThread(message)
-                        }
-                        onEditMessage={
-                          !activeDirectMessage &&
-                          connected &&
-                          message.sender.id === user.id
-                            ? () => {
-                                openMessageThread(message);
-                                void startThreadEdit(message);
-                              }
-                            : undefined
-                        }
-                        onToggleReaction={
-                          !activeDirectMessage && connected
-                            ? toggleThreadReaction
-                            : undefined
-                        }
-                        principalUserId={user.id}
-                        directMessagePrincipalUserId={
-                          activeDirectMessage ? user.id : undefined
-                        }
-                        onVisible={() => {
-                          if (
-                            message.sender.id !== user.id &&
-                            activeThread?.id === message.threadId &&
-                            selectedThreadRef.current === message.threadId &&
-                            message.teamId === team.id &&
-                            document.visibilityState === "visible" &&
-                            document.hasFocus()
-                          ) {
-                            setVisibleRead((current) =>
-                              !current || message.sequence > current.sequence
-                                ? {
-                                    id: message.id,
-                                    sequence: message.sequence,
-                                    teamId: team.id,
-                                    threadId: message.threadId
+                  <div className="min-h-0 min-w-0 flex-1">
+                    <SharedChatUI
+                      mode={{ kind: "human", controls: "formatting" }}
+                      scopeKey={`team:${authorityKey ?? "unselected"}`}
+                      messages={sharedChannelMessages}
+                      className="h-full"
+                      viewportClassName="pt-4"
+                      listClassName={`mx-auto min-w-0 max-w-3xl space-y-4 ${activeDirectMessage ? "" : "space-y-3"}`}
+                      emptyState={
+                        <p className="mx-auto max-w-3xl text-sm text-subtle">
+                          {activeDirectMessage
+                            ? `Private to ${activeDirectMessageTitle}. Agents are not in this thread.`
+                            : "No messages yet. Start the conversation."}
+                        </p>
+                      }
+                      composer={
+                        !forYouOpen && !squareOpen ? (
+                          <footer className="border-t border-border bg-background p-4">
+                            <div className="mx-auto max-w-3xl no-drag">
+                              {visiblePendingSend && (
+                                <div className="mb-2 flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted">
+                                  <span>
+                                    Previous send may have been accepted.
+                                    Reconcile before retrying.
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void reconcile()}
+                                    className="font-medium text-foreground hover:underline"
+                                  >
+                                    Reconcile send
+                                  </button>
+                                </div>
+                              )}
+                              {pendingAgentMention &&
+                                !pendingAgentMention.rootMessageId && (
+                                  <div className="mb-2 rounded-lg border border-border bg-surface px-3 py-2">
+                                    <p className="mb-2 text-xs text-subtle">
+                                      Choose a Team Project for{" "}
+                                      {pendingAgentMention.agent.name}.
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {visibleProjects.map((project) => (
+                                        <button
+                                          key={project.id}
+                                          type="button"
+                                          disabled={agentMentionBusy}
+                                          onClick={() =>
+                                            void completeAgentMention(
+                                              pendingAgentMention,
+                                              project.id
+                                            )
+                                          }
+                                          className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-surface-hover disabled:opacity-50"
+                                        >
+                                          {project.name}
+                                        </button>
+                                      ))}
+                                      <button
+                                        type="button"
+                                        disabled={agentMentionBusy}
+                                        onClick={() =>
+                                          setPendingAgentMention(null)
+                                        }
+                                        className="rounded-md px-2.5 py-1.5 text-xs text-subtle hover:bg-surface-hover"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              <ChatComposer
+                                placeholder={
+                                  activeDirectMessage
+                                    ? `Message ${activeDirectMessageTitle}`
+                                    : `Message #${activeThread?.name ?? "channel"}`
+                                }
+                                projectName={
+                                  activeDirectMessage
+                                    ? team.name
+                                    : (activeThread?.name ?? team.name)
+                                }
+                                branch="shared"
+                                value={visibleDraftText}
+                                onChange={updateDraft}
+                                onSend={(text, selection) =>
+                                  sendTeamComposer(text, selection)
+                                }
+                                agents={
+                                  activeDirectMessage
+                                    ? []
+                                    : teamAgentMentions.options
+                                }
+                                activeAgentId={activeMentionAgentId}
+                                onActiveAgentChange={(agentId) =>
+                                  setTeamMentionSelection({
+                                    scopeKey: teamMentionScopeKey,
+                                    agentId
+                                  })
+                                }
+                                showExecutionControls={false}
+                                switchToExecutionControlsOnMention={
+                                  !activeDirectMessage
+                                }
+                                showMetaBar={false}
+                                showFormattingToolbar
+                                sendEnabled={Boolean(
+                                  activeThread &&
+                                  drafts &&
+                                  hydrated &&
+                                  hydratedKey === authorityKey
+                                )}
+                                footer={
+                                  visiblePendingSend
+                                    ? "Resolve the previous send before sending this edit."
+                                    : activeDirectMessage
+                                      ? "Direct messages stay among these people."
+                                      : "Your @Agent message is sent to this channel; the private chat opens with a bounded quote and a prompt to discuss before work starts."
+                                }
+                              />
+                            </div>
+                          </footer>
+                        ) : null
+                      }
+                      renderMessage={(sharedMessage) => {
+                        const message = sharedMessage.source;
+                        return (
+                          <HostedMessage
+                            message={message}
+                            forwardRequests={
+                              !activeDirectMessage &&
+                              message.sender.id !== user.id
+                                ? forwardableTeamRequestsForChannelMessage({
+                                    requests: channelRequests,
+                                    message,
+                                    viewerId: user.id,
+                                    teamId: team.id
+                                  })
+                                : []
+                            }
+                            forwardRequestTextById={Object.fromEntries(
+                              channelRequests.map((request) => [
+                                request.id,
+                                visibleMessages.find(
+                                  (candidate) =>
+                                    candidate.id === request.requestMessageId
+                                )?.body ?? ""
+                              ])
+                            )}
+                            onForwardAnswer={(request) =>
+                              void forwardChannelAnswer(request, message)
+                            }
+                            onReplyInThread={
+                              activeDirectMessage
+                                ? undefined
+                                : () => openMessageThread(message)
+                            }
+                            onEditMessage={
+                              !activeDirectMessage &&
+                              connected &&
+                              message.sender.id === user.id
+                                ? () => {
+                                    openMessageThread(message);
+                                    void startThreadEdit(message);
                                   }
-                                : current
-                            );
+                                : undefined
+                            }
+                            onToggleReaction={
+                              !activeDirectMessage && connected
+                                ? toggleThreadReaction
+                                : undefined
+                            }
+                            principalUserId={user.id}
+                            directMessagePrincipalUserId={
+                              activeDirectMessage ? user.id : undefined
+                            }
+                            onVisible={() => {
+                              if (
+                                message.sender.id !== user.id &&
+                                activeThread?.id === message.threadId &&
+                                selectedThreadRef.current ===
+                                  message.threadId &&
+                                message.teamId === team.id &&
+                                document.visibilityState === "visible" &&
+                                document.hasFocus()
+                              ) {
+                                setVisibleRead((current) =>
+                                  !current ||
+                                  message.sequence > current.sequence
+                                    ? {
+                                        id: message.id,
+                                        sequence: message.sequence,
+                                        teamId: team.id,
+                                        threadId: message.threadId
+                                      }
+                                    : current
+                                );
+                              }
+                            }}
+                          />
+                        );
+                      }}
+                    >
+                      {!activeDirectMessage && activeThread && (
+                        <TeamChannelAgentRequests
+                          teamId={team.id}
+                          channelId={activeThread.id}
+                          viewerId={user.id}
+                          authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}`}
+                          refreshRevision={agentRequestRevision}
+                          client={teamAgentRequestsClient}
+                          onAuthorizationLost={handleAuthorizationLost}
+                          onReview={(request) =>
+                            void openRequestReview(request)
                           }
-                        }}
-                      />
-                    ))}
+                          onViewWork={openRequestWork}
+                          onRequestsChanged={setChannelRequests}
+                          originRootMessageId={null}
+                        />
+                      )}
+                      {visiblePage && hasOlder && beforeSequence && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            activeThread &&
+                            void loadPage(activeThread.id, beforeSequence)
+                          }
+                          className="mx-auto block text-xs text-muted hover:text-foreground"
+                        >
+                          Load older messages
+                        </button>
+                      )}
+                    </SharedChatUI>
                   </div>
                   {!activeDirectMessage && visibleOpenRoot && (
                     <TeamMessageThreadPane
