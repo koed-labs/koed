@@ -3412,7 +3412,7 @@ export function TeamChannelWorkspace({
             heading={
               forYouOpen ? "For you" : squareOpen ? "Public Square" : undefined
             }
-            wallpaper={!forYouOpen && !squareOpen && !activeDirectMessage}
+            wallpaper={!forYouOpen && (squareOpen || !activeDirectMessage)}
             crumbs={
               !forYouOpen && !squareOpen && activeDirectMessage
                 ? [activeTeam.name, activeDirectMessageTitle]

@@ -59,7 +59,7 @@ export function PublicSquarePreview() {
     viewerId: CURRENT_USER_ID
   });
   return (
-    <TeamShell heading="Public Square">
+    <TeamShell heading="Public Square" wallpaper>
       <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
         <p className="mb-4 text-xs text-subtle">
           Local preview examples · not connected to a Team backend

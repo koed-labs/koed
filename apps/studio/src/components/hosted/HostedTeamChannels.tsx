@@ -2119,7 +2119,7 @@ export function HostedTeamChannels({
             heading={
               forYouOpen ? "For you" : squareOpen ? "Public Square" : undefined
             }
-            wallpaper={!forYouOpen && !squareOpen && !activeDirectMessage}
+            wallpaper={!forYouOpen && (squareOpen || !activeDirectMessage)}
             crumbs={
               !forYouOpen && !squareOpen && activeDirectMessage
                 ? [team.name, activeDirectMessageTitle]
