@@ -18,10 +18,7 @@ import {
   ChatComposer,
   type ChatComposerSelection
 } from "@/components/ChatComposer";
-import {
-  SharedChatUI,
-  type SharedChatMessage
-} from "@/components/SharedChatUI";
+import { SharedChatUI } from "@/components/SharedChatUI";
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { CreateProjectModal } from "@/components/CreateProjectModal";
 import { ChannelHeader } from "@/components/ChannelView";
@@ -110,28 +107,9 @@ import {
   forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import { toTeamChatMessages } from "@/lib/team-chat-messages";
 
 type DraftAuthority = StudioTeamDraftAuthority;
-type SharedTeamMessage = SharedChatMessage & {
-  source: CollaborationMessage;
-};
-
-function adaptTeamMessages(
-  messages: readonly CollaborationMessage[],
-  viewerId: string
-): SharedTeamMessage[] {
-  return messages.map((message) => {
-    const authoredByViewer = message.sender.id === viewerId;
-    return {
-      id: message.id,
-      role: authoredByViewer ? "user" : "assistant",
-      content: message.body,
-      authoredByViewer,
-      author: { name: message.sender.displayName || "Team member" },
-      source: message
-    };
-  });
-}
 
 type DraftStore = {
   loadDraft(authority: DraftAuthority): Promise<StudioTeamDraft | null>;
@@ -515,7 +493,7 @@ export function TeamChannelWorkspace({
   const visibleChannelMessages = activeDirectMessage
     ? visibleMessages
     : visibleMessages.filter((message) => message.rootMessageId == null);
-  const sharedChannelMessages = adaptTeamMessages(
+  const sharedChannelMessages = toTeamChatMessages(
     visibleChannelMessages,
     snapshot?.navigation.teamPrincipal?.id ?? ""
   );

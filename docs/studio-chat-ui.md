@@ -29,3 +29,17 @@ Make sure that keyboard jumps, previews and manual scrolling work with variable-
 The configured Studio suite passed309 tests. Studio typechecking and native/hosted builds passed. Changed-file lint added no findings against the existing baseline. Desktop and web acceptance passed long loaded histories, bounded previews, keyboard jumps, stable viewport scrolling, compact panels, human/Agent controls, thread actions and Memory feedback. Narrow composer controls wrap to avoid overlap.
 
 Review history fixtures changed only authorized GET responses. Navigation made no execution or feedback writes and did not request earlier history. Existing provider/device evidence was reused; no new live provider streaming turn was run. Local preview adapters were reviewed and typechecked. Private fixtures and credentials remain outside Git.
+
+## Small shared frontend pieces
+
+`toTeamChatMessages` in `src/lib/team-chat-messages.ts` adapts authorized Team messages for Desktop, web and thread views. It preserves message IDs, content and source records, and computes viewer authorship explicitly. Callers retain their existing visibility tracking, read receipts, edits, reactions and transport.
+
+Project and channel creation use a shared selection-card presentation. Their enabled and disabled behavior remains controlled by each modal. The old unused Public Square view and unused Personal Preview project modal have been removed; active preview routes remain supported.
+
+Further message-row, chat-panel and Team Memory settings extraction is recorded in `TODO.md`. Coordinate those changes before starting new tickets in the affected components. Large controller and composer restructuring is deferred. This cleanup changes no backend contract or service boundary.
+
+### Cleanup validation
+
+The configured Studio suite passed312 tests, including3 new Team message adapter checks. Studio typechecking, formatting, diff checks and native/hosted builds passed. Changed-file lint added no findings against the existing67 findings in the two Team workspace controllers.
+
+Final Desktop/web UI checks passed channel selection, human formatting, Agent invocation, thread opening, edit cancellation, reaction pickers and PR chat. Desktop also checked the local Project picker and disabled Collaborative option; web checked disabled Project-channel creation. These checks submitted no messages, reactions, Projects or execution commands. The final review source digest was `46c8ac10997681e788815e3d42e39df8988384e2f75d13c0d578b6e338b0ba5c`, based on `a59d5fcb`. Private review artifacts remain outside Git.

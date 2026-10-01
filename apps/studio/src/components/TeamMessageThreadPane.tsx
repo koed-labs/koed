@@ -15,6 +15,7 @@ import {
   threadReplyVisibleRatio,
   visibleReplyPrefix
 } from "@/lib/team-channel-state";
+import { toTeamChatMessages } from "@/lib/team-chat-messages";
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "👀"];
 
@@ -101,18 +102,7 @@ export function TeamMessageThreadPane({
     [root, replies]
   );
   const sharedMessages = useMemo(
-    () =>
-      messages.map((message) => ({
-        id: message.id,
-        role:
-          message.sender.id === principalUserId
-            ? ("user" as const)
-            : ("assistant" as const),
-        content: message.body,
-        authoredByViewer: message.sender.id === principalUserId,
-        author: { name: message.sender.displayName || "Team member" },
-        source: message
-      })),
+    () => toTeamChatMessages(messages, principalUserId),
     [messages, principalUserId]
   );
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(

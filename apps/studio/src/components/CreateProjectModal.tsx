@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Check, ChevronLeft, Folder, Laptop, Users, X } from "lucide-react";
+import { SelectionTypeCard } from "./SelectionTypeCard";
 
 export type ProjectType = "local" | "collaborative";
 
@@ -26,7 +27,7 @@ const MOCK_FOLDERS = [
   "~/dev/memory-layer",
   "~/dev/frontend-app",
   "~/dev/shared-workspace",
-  "~/dev/agent-memory",
+  "~/dev/agent-memory"
 ];
 
 function slugify(value: string) {
@@ -46,21 +47,27 @@ export function CreateProjectModal({
   onBack,
   previewMode = false,
   liveMode = false,
-  onChooseFolder,
+  onChooseFolder
 }: {
   teams: TeamOption[];
   onClose: () => void;
-  onCreate: (project: CreatedProject & { selectionId?: string }) => void | Promise<void>;
+  onCreate: (
+    project: CreatedProject & { selectionId?: string }
+  ) => void | Promise<void>;
   forceTeamId?: string;
   onBack?: () => void;
   previewMode?: boolean;
   liveMode?: boolean;
   onChooseFolder?: () => Promise<{ path: string; selectionId: string } | null>;
 }) {
-  const [projectType, setProjectType] = useState<ProjectType>(forceTeamId ? "collaborative" : "local");
+  const [projectType, setProjectType] = useState<ProjectType>(
+    forceTeamId ? "collaborative" : "local"
+  );
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
-  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(forceTeamId ? [forceTeamId] : []);
+  const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(
+    forceTeamId ? [forceTeamId] : []
+  );
   const [folderIndex, setFolderIndex] = useState(0);
   const [githubRepo, setGithubRepo] = useState("");
   const [selectionId, setSelectionId] = useState<string | null>(null);
@@ -84,10 +91,17 @@ export function CreateProjectModal({
         if (selected) {
           setPath(selected.path);
           setSelectionId(selected.selectionId);
-          if (!name.trim()) setName(selected.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Project");
+          if (!name.trim())
+            setName(
+              selected.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Project"
+            );
         }
       } catch (failure) {
-        setError(failure instanceof Error ? failure.message : "The folder picker is unavailable.");
+        setError(
+          failure instanceof Error
+            ? failure.message
+            : "The folder picker is unavailable."
+        );
       } finally {
         setFolderBusy(false);
       }
@@ -118,11 +132,18 @@ export function CreateProjectModal({
         threads: [],
         defaultExpanded: true,
         sharedWith: projectType === "collaborative" ? selectedTeamIds : [],
-        githubRepo: projectType === "collaborative" ? githubRepo.trim() || undefined : undefined,
-        ...(selectionId ? { selectionId } : {}),
+        githubRepo:
+          projectType === "collaborative"
+            ? githubRepo.trim() || undefined
+            : undefined,
+        ...(selectionId ? { selectionId } : {})
       });
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Project registration failed.");
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Project registration failed."
+      );
     } finally {
       setSaving(false);
     }
@@ -139,7 +160,9 @@ export function CreateProjectModal({
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
-      onClick={() => { if (!saving) onClose(); }}
+      onClick={() => {
+        if (!saving) onClose();
+      }}
     >
       <div
         className="w-[520px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden"
@@ -150,8 +173,22 @@ export function CreateProjectModal({
       >
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-1.5">
-            {onBack && <button type="button" className="rounded-md p-1 text-subtle hover:bg-surface-hover hover:text-foreground-secondary" onClick={onBack} aria-label="Back"><ChevronLeft className="h-4 w-4" /></button>}
-            <h2 id="create-project-title" className="text-base font-semibold text-foreground">Create project</h2>
+            {onBack && (
+              <button
+                type="button"
+                className="rounded-md p-1 text-subtle hover:bg-surface-hover hover:text-foreground-secondary"
+                onClick={onBack}
+                aria-label="Back"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+            )}
+            <h2
+              id="create-project-title"
+              className="text-base font-semibold text-foreground"
+            >
+              Create project
+            </h2>
           </div>
           <button
             type="button"
@@ -165,28 +202,39 @@ export function CreateProjectModal({
         </div>
 
         <div className="px-5 pb-5">
-          {liveMode && <p className="mb-4 text-xs text-subtle">Choose a local folder to register it as a Koed project. The folder is registered when you press Create.</p>}
+          {liveMode && (
+            <p className="mb-4 text-xs text-subtle">
+              Choose a local folder to register it as a Koed project. The folder
+              is registered when you press Create.
+            </p>
+          )}
           {!forceTeamId && (
-          <>
-          <p className="mb-3 text-sm text-muted">Project type</p>
-          <div className="grid grid-cols-2 gap-3">
-            <TypeCard
-              selected={projectType === "local"}
-              icon={<Laptop className="h-4 w-4" />}
-              title="Local"
-              description="Edit, run, and test files on your computer"
-              onClick={() => setProjectType("local")}
-            />
-            <TypeCard
-              selected={projectType === "collaborative"}
-              icon={<Users className="h-4 w-4" />}
-              title="Collaborative"
-              description={liveMode ? "Team sharing will be connected later" : "Share this project and its memory layer with a team"}
-              onClick={() => setProjectType("collaborative")}
-              disabled={liveMode}
-            />
-          </div>
-          </>
+            <>
+              <p className="mb-3 text-sm text-muted">Project type</p>
+              <div className="grid grid-cols-2 gap-3">
+                <SelectionTypeCard
+                  selected={projectType === "local"}
+                  icon={<Laptop className="h-4 w-4" />}
+                  title="Local"
+                  description="Edit, run, and test files on your computer"
+                  onClick={() => setProjectType("local")}
+                  variant="project"
+                />
+                <SelectionTypeCard
+                  selected={projectType === "collaborative"}
+                  icon={<Users className="h-4 w-4" />}
+                  title="Collaborative"
+                  description={
+                    liveMode
+                      ? "Team sharing will be connected later"
+                      : "Share this project and its memory layer with a team"
+                  }
+                  onClick={() => setProjectType("collaborative")}
+                  disabled={liveMode}
+                  variant="project"
+                />
+              </div>
+            </>
           )}
 
           {projectType === "collaborative" && !forceTeamId && (
@@ -208,7 +256,9 @@ export function CreateProjectModal({
                         );
                       }}
                     >
-                      <span className="text-sm text-foreground-secondary">{team.name}</span>
+                      <span className="text-sm text-foreground-secondary">
+                        {team.name}
+                      </span>
                       <span
                         className={`flex h-4 w-4 items-center justify-center rounded-sm border ${
                           isSelected
@@ -239,12 +289,31 @@ export function CreateProjectModal({
 
           {projectType === "collaborative" && (
             <label className="mt-4 block">
-              <span className="mb-2 block text-sm text-muted">GitHub repository <span className="text-subtle">(optional)</span></span>
+              <span className="mb-2 block text-sm text-muted">
+                GitHub repository{" "}
+                <span className="text-subtle">(optional)</span>
+              </span>
               <div className="flex items-center gap-2 rounded-md border border-border bg-background/50 px-3">
                 <Folder className="h-4 w-4 flex-shrink-0 text-subtle" />
-                <input className="min-w-0 flex-1 bg-transparent py-2.5 text-sm text-foreground outline-none placeholder:text-faint" value={githubRepo} onChange={(event) => setGithubRepo(event.target.value)} placeholder="owner/repository" aria-describedby={previewMode ? "repo-preview-note" : undefined} />
+                <input
+                  className="min-w-0 flex-1 bg-transparent py-2.5 text-sm text-foreground outline-none placeholder:text-faint"
+                  value={githubRepo}
+                  onChange={(event) => setGithubRepo(event.target.value)}
+                  placeholder="owner/repository"
+                  aria-describedby={
+                    previewMode ? "repo-preview-note" : undefined
+                  }
+                />
               </div>
-              {previewMode && <span id="repo-preview-note" className="mt-1 block text-xs text-warning">Saved in this browser only. This repository is not connected to GitHub.</span>}
+              {previewMode && (
+                <span
+                  id="repo-preview-note"
+                  className="mt-1 block text-xs text-warning"
+                >
+                  Saved in this browser only. This repository is not connected
+                  to GitHub.
+                </span>
+              )}
             </label>
           )}
 
@@ -265,7 +334,11 @@ export function CreateProjectModal({
               </button>
             </div>
           </div>
-          {error && <p role="alert" className="mt-3 text-xs text-danger">{error}</p>}
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-danger">
+              {error}
+            </p>
+          )}
         </div>
 
         <div className="flex justify-end border-t border-border bg-background/40 px-5 py-3">
@@ -280,47 +353,5 @@ export function CreateProjectModal({
         </div>
       </div>
     </div>
-  );
-}
-
-function TypeCard({
-  selected,
-  icon,
-  title,
-  description,
-  onClick,
-  disabled = false,
-}: {
-  selected: boolean;
-  icon: ReactNode;
-  title: string;
-  description: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`rounded-xl border p-4 text-left transition-colors ${
-        selected
-          ? "border-accent bg-accent/10"
-          : "border-border bg-background/30 hover:border-border-strong"
-      } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
-    >
-      <div className="mb-6 flex items-start justify-between">
-        <span className={selected ? "text-accent" : "text-subtle"}>{icon}</span>
-        <span
-          className={`flex h-4 w-4 items-center justify-center rounded-full border ${
-            selected ? "border-accent bg-accent" : "border-border-strong"
-          }`}
-        >
-          {selected && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
-        </span>
-      </div>
-      <p className="text-sm font-medium text-foreground">{title}</p>
-      <p className="mt-1 text-xs leading-relaxed text-subtle">{description}</p>
-    </button>
   );
 }

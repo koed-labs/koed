@@ -84,3 +84,12 @@ and offline catch-up on the updated runtime.
 
 Implemented: received-session badges use verified replica provenance and the
 installation-local nickname; device icons no longer guess hardware by row order.
+
+## Studio frontend simplification
+
+Agreed sequence after the frontend QA review: begin with unused UI removal and small shared adapters/cards. Preserve the current design and Desktop/web behavior. Further extraction should land before colleagues begin work in the affected components.
+
+- Next: share human Team message-row presentation while preserving separate visibility/read-receipt contracts.
+- Next: extract repeated Project Move pickers and Team review/message actions; keep runtime and recovery controllers separate.
+- Next: share Team Memory settings presentation through existing Desktop/web data adapters.
+- Defer larger controller or composer restructuring until upcoming ticket ownership is known.

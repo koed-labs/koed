@@ -22,10 +22,7 @@ import {
 import { CreateChannelModal } from "@/components/CreateChannelModal";
 import { SidebarProvider } from "@/components/SidebarContext";
 import { TeamShell } from "@/components/TeamShell";
-import {
-  SharedChatUI,
-  type SharedChatMessage
-} from "@/components/SharedChatUI";
+import { SharedChatUI } from "@/components/SharedChatUI";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { PublicSquare } from "@/components/PublicSquare";
 import {
@@ -58,6 +55,7 @@ import {
   forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import { toTeamChatMessages } from "@/lib/team-chat-messages";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
 import {
   directMessageAttemptKey,
@@ -89,27 +87,6 @@ const makeAuthority = (
   teamId,
   threadId
 });
-
-type SharedTeamMessage = SharedChatMessage & {
-  source: CollaborationMessage;
-};
-
-function adaptTeamMessages(
-  messages: readonly CollaborationMessage[],
-  viewerId: string
-): SharedTeamMessage[] {
-  return messages.map((message) => {
-    const authoredByViewer = message.sender.id === viewerId;
-    return {
-      id: message.id,
-      role: authoredByViewer ? "user" : "assistant",
-      content: message.body,
-      authoredByViewer,
-      author: { name: message.sender.displayName || "Team member" },
-      source: message
-    };
-  });
-}
 
 export function HostedTeamChannels({
   team,
@@ -415,7 +392,7 @@ export function HostedTeamChannels({
   const channelMessages = activeDirectMessage
     ? visibleMessages
     : visibleMessages.filter((message) => message.rootMessageId === null);
-  const sharedChannelMessages = adaptTeamMessages(channelMessages, user.id);
+  const sharedChannelMessages = toTeamChatMessages(channelMessages, user.id);
   const activeDirectMessageTitle = activeDirectMessage
     ? directMessageTitle(activeDirectMessage, user.id)
     : "";

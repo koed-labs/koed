@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { FolderGit2, Hash, X } from "lucide-react";
 import { slugifyChannelName } from "@/lib/collab";
+import { SelectionTypeCard } from "./SelectionTypeCard";
 
 // The front door for both halves of "create more channels": a plain chat
 // channel (just a name, no project) or a project channel (which is really
@@ -17,7 +18,7 @@ export function CreateChannelModal({
   onClose,
   onCreateChat,
   onChooseProject,
-  projectDisabledReason,
+  projectDisabledReason
 }: {
   teamName: string;
   // Already-taken channel names in this team, lowercased - checked against
@@ -28,7 +29,9 @@ export function CreateChannelModal({
   onChooseProject?: () => void;
   projectDisabledReason?: string;
 }) {
-  const [channelType, setChannelType] = useState<"chat" | "project" | null>(null);
+  const [channelType, setChannelType] = useState<"chat" | "project" | null>(
+    null
+  );
   const [name, setName] = useState("");
 
   const slug = slugifyChannelName(name);
@@ -58,7 +61,9 @@ export function CreateChannelModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4">
-          <h2 className="text-base font-semibold text-foreground">New channel</h2>
+          <h2 className="text-base font-semibold text-foreground">
+            New channel
+          </h2>
           <button
             type="button"
             className="rounded-md p-1 text-subtle hover:bg-surface-hover hover:text-foreground-secondary transition-colors"
@@ -72,26 +77,33 @@ export function CreateChannelModal({
         <div className="px-5 pb-5">
           <p className="mb-3 text-sm text-muted">What kind of channel?</p>
           <div className="grid grid-cols-2 gap-3">
-            <ChannelTypeCard
+            <SelectionTypeCard
               selected={channelType === "chat"}
               icon={<Hash className="h-4 w-4" />}
               title="Chat channel"
               description="Open discussion for the team - not tied to any project."
               onClick={() => setChannelType("chat")}
+              variant="channel"
             />
-            <ChannelTypeCard
+            <SelectionTypeCard
               selected={channelType === "project"}
               icon={<FolderGit2 className="h-4 w-4" />}
               title="Project channel"
-              description={projectDisabledReason ?? "Creates a new project, shared with this team, with its own channel."}
+              description={
+                projectDisabledReason ??
+                "Creates a new project, shared with this team, with its own channel."
+              }
               onClick={onChooseProject ?? (() => undefined)}
               disabled={Boolean(projectDisabledReason)}
+              variant="channel"
             />
           </div>
 
           {channelType === "chat" && (
             <label className="mt-5 block">
-              <span className="mb-2 block text-sm text-muted">Channel name</span>
+              <span className="mb-2 block text-sm text-muted">
+                Channel name
+              </span>
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 focus-within:border-border-strong">
                 <Hash className="h-4 w-4 flex-shrink-0 text-subtle" />
                 <input
@@ -130,51 +142,5 @@ export function CreateChannelModal({
         )}
       </div>
     </div>
-  );
-}
-
-// Same card language as CreateProjectModal's own TypeCard, so the two
-// modals - "New channel" and, if you pick the project half, "Create
-// project" right after it - read as one continuous flow rather than two
-// differently-designed screens bolted together.
-function ChannelTypeCard({
-  selected,
-  icon,
-  title,
-  description,
-  onClick,
-  disabled = false,
-}: {
-  selected: boolean;
-  icon: ReactNode;
-  title: string;
-  description: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`rounded-xl border p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-        selected
-          ? "border-accent bg-accent/10"
-          : "border-border bg-background/30 hover:border-border-strong disabled:hover:border-border"
-      }`}
-    >
-      <div className="mb-6 flex items-start justify-between">
-        <span className={selected ? "text-accent" : "text-subtle"}>{icon}</span>
-        <span
-          className={`flex h-4 w-4 items-center justify-center rounded-full border ${
-            selected ? "border-accent bg-accent" : "border-border-strong"
-          }`}
-        >
-          {selected && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
-        </span>
-      </div>
-      <p className="text-sm font-medium text-foreground">{title}</p>
-      <p className="mt-1 text-xs leading-relaxed text-subtle">{description}</p>
-    </button>
   );
 }
