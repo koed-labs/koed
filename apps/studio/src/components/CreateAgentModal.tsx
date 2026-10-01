@@ -106,14 +106,16 @@ function AgentIdentityEditor({
         : null,
     [draftBackendId, draftOwnerId, draftTarget]
   );
-  const initial = useMemo(
-    () =>
-      initialAgentIdentityEditorValues({
-        definition: editDefinition,
-        initialValues
-      }),
-    [editDefinition, initialValues]
-  );
+  const initial = useMemo(() => {
+    const editorInitialValues =
+      !editDefinition && draftIdentity?.target.startsWith("clone:")
+        ? { ...initialValues, avatar: undefined }
+        : initialValues;
+    return initialAgentIdentityEditorValues({
+      definition: editDefinition,
+      initialValues: editorInitialValues
+    });
+  }, [draftIdentity?.target, editDefinition, initialValues]);
   const [name, setName] = useState(initial.name);
   const [role, setRole] = useState(initial.role);
   const [soul, setSoul] = useState(initial.soul);

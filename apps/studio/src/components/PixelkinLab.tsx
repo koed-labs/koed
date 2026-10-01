@@ -1,20 +1,26 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import type { AgentAvatar } from "@/lib/collab";
 import {
   PIXELKIN_EXPRESSIONS,
   PIXELKIN_PALETTES,
   PIXELKIN_SHAPES,
   createPixelkinSession,
-  type PixelkinSession,
+  type PixelkinSession
 } from "@/lib/pixelkin/engine";
 
 const SHAPE_LABEL: Record<string, string> = {
   sphere: "Sphere",
   roundedBox: "Round",
   cuboid: "Cube",
-  capsule: "Capsule",
+  capsule: "Capsule"
 };
 
 export type PixelkinLabHandle = {
@@ -26,7 +32,7 @@ function readLabState(session: PixelkinSession) {
   return {
     expression: spec.face.expression,
     palette: spec.palette.base.toLowerCase(),
-    shape: spec.body.shape,
+    shape: spec.body.shape
   };
 }
 
@@ -45,10 +51,12 @@ export const PixelkinLab = forwardRef<
     if (!canvas) return undefined;
     const session = createPixelkinSession(canvas);
     sessionRef.current = session;
-    // Editing an existing agent: load its saved look instead of a fresh
-    // random one, so "Save changes" without touching the avatar keeps it.
+    // Saved looks (edits and recovered drafts) stay intact; a fresh identity
+    // starts with a random character.
     if (initialSpec) {
       session.applySpec(initialSpec);
+    } else {
+      session.randomize();
     }
     const next = readLabState(session);
     setExpression(next.expression);
@@ -69,7 +77,7 @@ export const PixelkinLab = forwardRef<
       const image = session.capturePng(128);
       if (!image.startsWith("data:image/png")) return null;
       return { seed: spec.seed, spec, image };
-    },
+    }
   }));
 
   const applySession = (mutate: (session: PixelkinSession) => void) => {
@@ -118,7 +126,9 @@ export const PixelkinLab = forwardRef<
               key={item}
               type="button"
               className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
-                shape === item ? "bg-chip text-chip-foreground" : "bg-surface-hover text-muted hover:text-foreground-secondary"
+                shape === item
+                  ? "bg-chip text-chip-foreground"
+                  : "bg-surface-hover text-muted hover:text-foreground-secondary"
               }`}
               onClick={() =>
                 applySession((session) => {
@@ -140,7 +150,9 @@ export const PixelkinLab = forwardRef<
               type="button"
               aria-label={`Palette ${hex}`}
               className={`h-5 w-5 rounded-full border ${
-                palette === hex.toLowerCase() ? "border-chip" : "border-border-strong"
+                palette === hex.toLowerCase()
+                  ? "border-chip"
+                  : "border-border-strong"
               }`}
               style={{ backgroundColor: hex }}
               onClick={() =>
@@ -160,7 +172,9 @@ export const PixelkinLab = forwardRef<
               key={item}
               type="button"
               className={`rounded-md px-2 py-1 text-[11px] capitalize transition-colors ${
-                expression === item ? "bg-chip text-chip-foreground" : "bg-surface-hover text-muted hover:text-foreground-secondary"
+                expression === item
+                  ? "bg-chip text-chip-foreground"
+                  : "bg-surface-hover text-muted hover:text-foreground-secondary"
               }`}
               onClick={() =>
                 applySession((session) => {

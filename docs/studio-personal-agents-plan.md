@@ -103,6 +103,32 @@ headroom for Agent controls under the existing API rate limit. Project labels
 are optional for standalone Jobs. Conversation links reuse the existing
 navigation callback and do not start another Job.
 
+### Working cards and new avatar defaults
+
+Working now uses compact visual cards with live Agent avatars and profile
+links, verified Job titles, optional Project locations and a two-line recorded
+goal. It does not synthesize a reason or infer work from Conversation text. A
+goal identical to its Job title is not repeated. Missing locations and goals
+remain explicit. The scroll area is capped at320 pixels to leave room for the
+library.
+
+A fresh Create Agent form starts with the existing Pixelkin engine’s randomized
+character. Cloning copies the profile but generates a fresh default character
+for its new identity. Editing and recovering the same saved draft keep its
+avatar. Typing in the form does not randomize the character again. The existing
+manual appearance controls and avatar capture/save flow are reused.
+
+The visual/avatar follow-up passed315 Studio tests and26 focused Agent client,
+overview and identity-editor tests. Studio typechecking, scoped lint,
+formatting, diff checks and native/hosted builds passed. Desktop/web checks
+verified the compact visual cards, goal/Project fields, bounded viewport,
+existing filters and actions, three different fresh avatar seeds, typing
+stability, saved custom draft recovery, edit preservation and distinct clone
+defaults. No real Agent/execution writes or page errors were observed; original
+drafts were restored. Private preview images use test data. Runtime source
+digest: `f7000312fbc14c9db483709f59cfaac64c7b72310e0d99161cef8fa1111d5444`,
+based on `8a34bea1`.
+
 ### Agents overview validation — October 1, 2026
 
 The configured Studio suite passed315 tests. The focused Agent overview,
