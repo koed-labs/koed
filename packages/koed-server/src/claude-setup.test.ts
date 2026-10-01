@@ -636,6 +636,85 @@ describe("Claude Code setup", () => {
     ).toEqual(["get", "remove", "add", "remove", "add-json"]);
   });
 
+  it.each([false, true])(
+    "preserves the prior MCP entry when remove fails (entry removed: %s)",
+    (entryRemoved) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "koed-claude-partial-remove-")
+      );
+      temporaryDirectories.push(root);
+      mkdirSync(resolve(root, "packages/mcp-server/dist"), {
+        recursive: true
+      });
+      writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+      writeFileSync(
+        resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+        ""
+      );
+      const configHome = resolve(root, "claude-profile");
+      mkdirSync(configHome);
+      const configPath = resolve(configHome, ".claude.json");
+      const prior = {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { "X-Test": "fixture" }
+      };
+      const other = { type: "http", url: "https://other.invalid/mcp" };
+      let currentEntry: unknown = prior;
+      const writeConfig = () =>
+        writeFileSync(
+          configPath,
+          JSON.stringify({ mcpServers: { koed: currentEntry, other } })
+        );
+      writeConfig();
+      const calls: string[][] = [];
+      const result = setupClaude(
+        {
+          HOME: root,
+          CLAUDE_CONFIG_DIR: configHome,
+          KOED_HOME: resolve(root, "koed"),
+          KOED_REPO_ROOT: root,
+          KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh"
+        },
+        ((_command: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "--version")
+            return spawnResult("2.1.227 (Claude Code)");
+          if (args[0] === "auth") return spawnResult('{"loggedIn":true}');
+          if (args[1] === "get")
+            return spawnResult(
+              "koed:\n  Type: http\n  URL: https://example.invalid/mcp\n"
+            );
+          if (args[1] === "remove") {
+            if (entryRemoved) {
+              currentEntry = undefined;
+              writeConfig();
+            }
+            return spawnResult("", 1, "remove failed after command");
+          }
+          if (args[1] === "add-json") {
+            if (currentEntry) return spawnResult("", 1, "name already exists");
+            currentEntry = JSON.parse(args[5]!) as unknown;
+            writeConfig();
+          }
+          return spawnResult();
+        }) as never
+      );
+
+      expect(result).toMatchObject({ ok: false });
+      expect(result.error).toContain("remove failed after command");
+      expect(result.error).not.toContain("rollback failed");
+      expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+        mcpServers: { koed: prior, other }
+      });
+      expect(
+        calls.filter((args) => args[0] === "mcp").map((args) => args[1])
+      ).toEqual(
+        entryRemoved ? ["get", "remove", "add-json"] : ["get", "remove"]
+      );
+    }
+  );
+
   it("replaces an unrelated user-scoped MCP name collision", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-collision-"));
     temporaryDirectories.push(root);

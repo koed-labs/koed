@@ -455,7 +455,8 @@ export const setupClaude = (
   let registrySnapshot;
   let previousMcp: ClaudeMcpEntry | null = null;
   let previousMcpJson: string | undefined;
-  let removedExistingMcp = false;
+  let previousMcpConfigPath: string | undefined;
+  let attemptedMcpRemoval = false;
   let attemptedMcpAdd = false;
   const failure = (
     error: string,
@@ -550,6 +551,7 @@ export const setupClaude = (
       const configPath = environment.CLAUDE_CONFIG_DIR?.trim()
         ? resolve(environment.CLAUDE_CONFIG_DIR, ".claude.json")
         : resolve(environment.HOME?.trim() || homedir(), ".claude.json");
+      previousMcpConfigPath = configPath;
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, "utf8")) as {
           mcpServers?: Record<string, unknown>;
@@ -564,6 +566,8 @@ export const setupClaude = (
           "Inspect the existing Claude MCP entry, then retry setup."
         );
       }
+      // Removal may take effect before the CLI reports an error or timeout.
+      attemptedMcpRemoval = true;
       const remove = spawnClaude(
         spawnSync,
         executable,
@@ -575,15 +579,12 @@ export const setupClaude = (
         }
       );
       if (remove.error || remove.status !== 0) {
-        return failure(
+        throw new Error(
           remove.error?.message ??
             remove.stderr?.trim() ??
-            "Claude MCP removal failed.",
-          "Fix the existing Claude MCP entry, then retry setup.",
-          remove
+            "Claude MCP removal failed."
         );
       }
-      removedExistingMcp = true;
     }
     attemptedMcpAdd = true;
     const add = spawnClaude(
@@ -656,6 +657,20 @@ export const setupClaude = (
     };
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
+    let previousMcpUnchanged = false;
+    if (!attemptedMcpAdd && previousMcpJson && previousMcpConfigPath) {
+      try {
+        const config = JSON.parse(
+          readFileSync(previousMcpConfigPath, "utf8")
+        ) as {
+          mcpServers?: Record<string, unknown>;
+        };
+        previousMcpUnchanged =
+          JSON.stringify(config.mcpServers?.[mcpName]) === previousMcpJson;
+      } catch {
+        // A missing or unreadable entry still needs a restoration attempt.
+      }
+    }
     // A failed or timed-out add may still have written the replacement.
     if (attemptedMcpAdd) {
       try {
@@ -681,7 +696,11 @@ export const setupClaude = (
         );
       }
     }
-    if (removedExistingMcp && (previousMcpJson || previousMcp)) {
+    if (
+      attemptedMcpRemoval &&
+      !previousMcpUnchanged &&
+      (previousMcpJson || previousMcp)
+    ) {
       try {
         const restored = spawnClaude(
           spawnSync,

@@ -271,3 +271,85 @@ for (const failRestore of [false, true]) {
     }
   });
 }
+
+for (const entryRemoved of [false, true]) {
+  test(`claude configure preserves the prior MCP entry when remove fails (entry removed: ${entryRemoved})`, async () => {
+    const directory = path.join(
+      realpathSync(tmpdir()),
+      `koed-claude-partial-remove-${process.pid}-${Date.now()}-${entryRemoved}`
+    );
+    const configPath = path.join(directory, ".claude.json");
+    const argsPath = path.join(directory, "claude-args.jsonl");
+    const executable = path.join(directory, "claude-fixture.mjs");
+    const prior = {
+      type: "http",
+      url: "https://example.invalid/mcp",
+      headers: { "X-Test": "fixture" }
+    };
+    const other = { type: "http", url: "https://other.invalid/mcp" };
+    mkdirSync(path.join(directory, "packages/mcp-server/dist"), {
+      recursive: true
+    });
+    writeFileSync(path.join(directory, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      path.join(directory, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    writeFileSync(
+      configPath,
+      JSON.stringify({ mcpServers: { koed: prior, other } })
+    );
+    writeFileSync(
+      executable,
+      [
+        "#!/usr/bin/env node",
+        'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+        `const configPath = ${JSON.stringify(configPath)};`,
+        `const argsPath = ${JSON.stringify(argsPath)};`,
+        "const args = process.argv.slice(2);",
+        'appendFileSync(argsPath, JSON.stringify(args) + "\\n");',
+        'if (args[0] === "auth") process.exit(0);',
+        'if (args[1] === "get") { console.log("koed: HTTP fixture"); process.exit(0); }',
+        'const config = JSON.parse(readFileSync(configPath, "utf8"));',
+        `if (args[1] === "remove") { if (${entryRemoved}) { delete config.mcpServers.koed; writeFileSync(configPath, JSON.stringify(config)); } console.error("remove failed after command"); process.exit(1); }`,
+        'if (args[1] === "add-json") { if (config.mcpServers.koed) { console.error("name already exists"); process.exit(1); } config.mcpServers.koed = JSON.parse(args.at(-1)); writeFileSync(configPath, JSON.stringify(config)); }'
+      ].join("\n")
+    );
+    chmodSync(executable, 0o700);
+    try {
+      await assert.rejects(
+        execFileAsync(process.execPath, [scriptPath], {
+          cwd: directory,
+          env: {
+            ...process.env,
+            HOME: directory,
+            CLAUDE_CONFIG_DIR: directory,
+            CLAUDE_SETTINGS_PATH: path.join(directory, "settings.json"),
+            KOED_CLAUDE_CODE_EXECUTABLE: executable,
+            KOED_HOME: path.join(directory, "koed")
+          }
+        }),
+        (error) => {
+          assert.match(error.stderr, /remove failed after command/);
+          assert.doesNotMatch(error.stderr, /rollback failed/);
+          return true;
+        }
+      );
+      assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+        mcpServers: { koed: prior, other }
+      });
+      const calls = readFileSync(argsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((args) => args[0] === "mcp")
+        .map((args) => args[1]);
+      assert.deepEqual(
+        calls,
+        entryRemoved ? ["get", "remove", "add-json"] : ["get", "remove"]
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}

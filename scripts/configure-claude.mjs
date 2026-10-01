@@ -206,6 +206,25 @@ if (existingMcp.status === 0) {
         remove.stderr?.trim() ||
         "Claude MCP removal failed."
     );
+    // The CLI may have removed the entry before reporting failure.
+    const currentMcp = existsSync(configPath)
+      ? JSON.parse(readFileSync(configPath, "utf8")).mcpServers?.[mcpName]
+      : undefined;
+    if (!currentMcp) {
+      const restore = runClaude([
+        "mcp",
+        "add-json",
+        "--scope",
+        "user",
+        mcpName,
+        JSON.stringify(previousMcp)
+      ]);
+      if (restore.error || restore.status !== 0) {
+        console.error(
+          `Claude MCP rollback failed: ${restore.error?.message || restore.stderr?.trim() || "restore failed"}`
+        );
+      }
+    }
     process.exit(1);
   }
 }
