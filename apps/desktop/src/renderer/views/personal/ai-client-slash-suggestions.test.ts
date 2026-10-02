@@ -267,94 +267,34 @@ describe("findUnverifiedSlashCommand", () => {
 });
 
 describe("slashCommandKeypressIsHandled", () => {
-  it("returns true for ArrowDown when menu open", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "ArrowDown",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(true);
-  });
+  const openMenu = {
+    open: true,
+    isComposing: false,
+    hasSelection: true,
+    hasCommands: true
+  };
 
-  it("returns true for ArrowUp when menu open", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "ArrowUp",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(true);
-  });
+  it.each(["ArrowDown", "ArrowUp", "Tab", "Escape", "Enter"])(
+    "handles %s with selectable suggestions",
+    (key) => {
+      expect(slashCommandKeypressIsHandled({ ...openMenu, key })).toBe(true);
+    }
+  );
 
-  it("returns true for Tab when menu open", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Tab",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(true);
-  });
-
-  it("returns true for Escape when menu open", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Escape",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(true);
-  });
-
-  it("returns true for Enter when menu open and no IME", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Enter",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(true);
-  });
-
-  it("returns false for Enter when menu open with IME composing", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Enter",
-        open: true,
-        isComposing: true
-      })
-    ).toBe(false);
-  });
-
-  it("returns false for Enter when menu closed", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Enter",
-        open: false,
-        isComposing: false
-      })
-    ).toBe(false);
-  });
-
-  it("returns false for keys not handled by autocomplete", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "a",
-        open: true,
-        isComposing: false
-      })
-    ).toBe(false);
-  });
-
-  it("returns false when disabled", () => {
-    expect(
-      slashCommandKeypressIsHandled({
-        key: "Enter",
-        open: true,
-        isComposing: false,
-        disabled: true
-      })
-    ).toBe(false);
+  it.each([
+    { key: "Enter", isComposing: true },
+    { key: "Enter", open: false },
+    { key: "a" },
+    { key: "Enter", disabled: true },
+    { key: "Enter", shiftKey: true },
+    { key: "Tab", shiftKey: true },
+    { key: "Enter", hasSelection: false },
+    { key: "Tab", hasSelection: false },
+    { key: "ArrowDown", hasCommands: false },
+    { key: "ArrowUp", hasCommands: false }
+  ])("preserves native behavior for %j", (context) => {
+    expect(slashCommandKeypressIsHandled({ ...openMenu, ...context })).toBe(
+      false
+    );
   });
 });

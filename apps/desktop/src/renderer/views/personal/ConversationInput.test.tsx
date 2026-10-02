@@ -152,6 +152,197 @@ describe("ConversationInput", () => {
       }
     }
   );
+  const typeInput = async (textarea: HTMLTextAreaElement, value: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!.call(textarea, value);
+      textarea.setSelectionRange(value.length, value.length);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  const pressKey = async (
+    textarea: HTMLTextAreaElement,
+    key: string,
+    options: KeyboardEventInit = {}
+  ) => {
+    const event = new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...options
+    });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+    });
+    return event;
+  };
+
+  it.each(["Enter", "Tab"])(
+    "%s accepts the keyboard-selected suggestion without submitting",
+    async (key) => {
+      const onSubmit = vi.fn();
+      const onSelect = vi.fn();
+      function Harness() {
+        const [value, setValue] = useState("");
+        return (
+          <ConversationInput
+            action={{ kind: "send", label: "Send", disabled: false }}
+            label="Prompt"
+            onChange={setValue}
+            onSubmit={onSubmit}
+            placeholder="Prompt"
+            settings={DUMMY_SETTINGS}
+            value={value}
+            autocompleteOptions={DUMMY_COMMANDS}
+            onAutocompleteSelect={onSelect}
+          />
+        );
+      }
+      await act(async () => root.render(<Harness />));
+      const textarea = container.querySelector("textarea")!;
+      await typeInput(textarea, "/");
+      expect(container.textContent).toContain("Search across memory");
+      await pressKey(textarea, "ArrowDown");
+      const event = await pressKey(textarea, key);
+      expect(event.defaultPrevented).toBe(true);
+      expect(textarea.value).toBe("/edit ");
+      expect(onSelect).toHaveBeenCalledWith(DUMMY_COMMANDS[1]);
+      expect(onSubmit).not.toHaveBeenCalled();
+    }
+  );
+
+  const mountAutocomplete = async (
+    options: ManagedConversationSlashCommand[] = DUMMY_COMMANDS,
+    diagnostics: { loading?: boolean; error?: string | null } = {}
+  ) => {
+    const onSubmit = vi.fn();
+    const onSelect = vi.fn();
+    function Harness({
+      commands
+    }: {
+      commands: ManagedConversationSlashCommand[];
+    }) {
+      const [value, setValue] = useState("");
+      return (
+        <ConversationInput
+          action={{ kind: "send", label: "Send", disabled: false }}
+          label="Prompt"
+          onChange={setValue}
+          onSubmit={onSubmit}
+          placeholder="Prompt"
+          settings={DUMMY_SETTINGS}
+          value={value}
+          autocompleteOptions={commands}
+          autocompleteLoading={diagnostics.loading}
+          autocompleteError={diagnostics.error}
+          onAutocompleteSelect={onSelect}
+        />
+      );
+    }
+    await act(async () => root.render(<Harness commands={options} />));
+    const textarea = container.querySelector("textarea")!;
+    return {
+      textarea,
+      onSubmit,
+      onSelect,
+      updateOptions: async (commands: ManagedConversationSlashCommand[]) => {
+        await act(async () => root.render(<Harness commands={commands} />));
+      }
+    };
+  };
+
+  it.each([
+    ["Enter", { shiftKey: true }],
+    ["Tab", { shiftKey: true }],
+    ["Enter", { isComposing: true }]
+  ] as const)(
+    "preserves %s modifier/composition behavior with suggestions open (%j)",
+    async (key, options) => {
+      const { textarea, onSubmit, onSelect } = await mountAutocomplete();
+      await typeInput(textarea, "/");
+      const event = await pressKey(textarea, key, options);
+      expect(event.defaultPrevented).toBe(false);
+      expect(textarea.value).toBe("/");
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    [false, null, "No matching commands."],
+    [true, null, "Loading commands…"],
+    [false, "Discovery failed", "Discovery failed"]
+  ] as const)(
+    "diagnostic menu does not trap submission or focus navigation (%s, %s)",
+    async (loading, error, message) => {
+      const { textarea, onSubmit, onSelect } = await mountAutocomplete([], {
+        loading,
+        error
+      });
+      await typeInput(textarea, "/unknown");
+      expect(container.textContent).toContain(message);
+      expect((await pressKey(textarea, "Tab")).defaultPrevented).toBe(false);
+      expect((await pressKey(textarea, "ArrowDown")).defaultPrevented).toBe(
+        false
+      );
+      await pressKey(textarea, "Enter");
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(onSelect).not.toHaveBeenCalled();
+    }
+  );
+
+  it("selects the first asynchronously discovered suggestion", async () => {
+    const { textarea, onSubmit, updateOptions } = await mountAutocomplete([]);
+    await typeInput(textarea, "/");
+    await updateOptions(DUMMY_COMMANDS);
+    await pressKey(textarea, "Enter");
+    expect(textarea.value).toBe("/query ");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("keeps selection valid when filtering reduces the results", async () => {
+    const { textarea, onSubmit } = await mountAutocomplete();
+    await typeInput(textarea, "/");
+    await pressKey(textarea, "ArrowDown");
+    await typeInput(textarea, "/qu");
+    await pressKey(textarea, "Tab");
+    expect(textarea.value).toBe("/query ");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("keeps selection valid when discovery replaces the results", async () => {
+    const { textarea, onSubmit, updateOptions } = await mountAutocomplete();
+    await typeInput(textarea, "/");
+    await pressKey(textarea, "ArrowDown");
+    await updateOptions([DUMMY_COMMANDS[0]!]);
+    await pressKey(textarea, "Tab");
+    expect(textarea.value).toBe("/query ");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("composition events prevent autocomplete selection", async () => {
+    const { textarea, onSubmit, onSelect } = await mountAutocomplete();
+    await typeInput(textarea, "/");
+    await act(async () => {
+      textarea.dispatchEvent(
+        new CompositionEvent("compositionstart", { bubbles: true })
+      );
+    });
+    expect((await pressKey(textarea, "Enter")).defaultPrevented).toBe(false);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(async () => {
+      textarea.dispatchEvent(
+        new CompositionEvent("compositionend", { bubbles: true })
+      );
+    });
+    await pressKey(textarea, "Enter");
+    expect(textarea.value).toBe("/query ");
+  });
+
   it("passes autocomplete options and keyboard events through", async () => {
     const onSubmit = vi.fn();
     function Harness() {
@@ -228,28 +419,11 @@ describe("ConversationInput", () => {
   );
 
   it("renders autocomplete menu popover with commands", async () => {
-    // The popover only renders when autocomplete is open AND there are filtered commands.
-    // Since input events don't trigger React's synthetic onChange in happy-dom, we verify
-    // the menu renders in SlashCommandMenu directly (tested in ai-client-slash-suggestions.test.ts).
-    // This test confirms the component accepts autocomplete props without crashing.
-    function Harness() {
-      const [value, setValue] = useState("");
-      return (
-        <ConversationInput
-          action={{ kind: "send", label: "Send", disabled: false }}
-          label="Prompt"
-          onChange={setValue}
-          onSubmit={vi.fn()}
-          placeholder="Prompt"
-          settings={DUMMY_SETTINGS}
-          value={value}
-          autocompleteOptions={DUMMY_COMMANDS}
-          onAutocompleteSelect={vi.fn()}
-        />
-      );
-    }
-    await act(async () => root.render(<Harness />));
-    const textarea = container.querySelector("textarea")!;
-    expect(textarea).not.toBeNull();
+    const { textarea } = await mountAutocomplete();
+    await typeInput(textarea, "/");
+    const options = container.querySelectorAll('[role="option"]');
+    expect(options).toHaveLength(2);
+    expect(options[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(options[1]!.getAttribute("aria-selected")).toBe("false");
   });
 });

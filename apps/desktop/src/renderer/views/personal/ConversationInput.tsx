@@ -79,8 +79,15 @@ export function ConversationInput({
       setSelectedIndex(-1);
       return;
     }
-    setFilteredCommands(
-      filterSlashCommands(autocompleteOptions ?? [], active.query)
+    const filtered = filterSlashCommands(
+      autocompleteOptions ?? [],
+      active.query
+    );
+    setFilteredCommands(filtered);
+    setSelectedIndex((previous) =>
+      filtered.length === 0
+        ? -1
+        : Math.max(0, Math.min(previous, filtered.length - 1))
     );
   }, [autocompleteOpen, autocompleteOptions, value]);
 
@@ -124,7 +131,10 @@ export function ConversationInput({
           key: event.key,
           open: autocompleteOpen,
           isComposing,
-          disabled
+          disabled,
+          shiftKey: event.shiftKey,
+          hasSelection: filteredCommands[selectedIndex] !== undefined,
+          hasCommands: filteredCommands.length > 0
         })
       ) {
         event.preventDefault();
@@ -138,6 +148,9 @@ export function ConversationInput({
           setSelectedIndex((prev) =>
             prev > 0 ? prev - 1 : filteredCommands.length - 1
           );
+        } else if (event.key === "Enter" || event.key === "Tab") {
+          const command = filteredCommands[selectedIndex];
+          if (command) handleAutocompleteSelect(command);
         } else if (event.key === "Escape") {
           setAutocompleteOpen(false);
           setSelectedIndex(-1);
@@ -157,7 +170,15 @@ export function ConversationInput({
         if (!disabled && !action.disabled && action.kind === "send") onSubmit();
       }
     },
-    [autocompleteOpen, filteredCommands, disabled, action, onSubmit]
+    [
+      autocompleteOpen,
+      filteredCommands,
+      selectedIndex,
+      handleAutocompleteSelect,
+      disabled,
+      action,
+      onSubmit
+    ]
   );
 
   const handleInputChange = useCallback(
@@ -172,12 +193,12 @@ export function ConversationInput({
           active.query
         );
         setFilteredCommands(filtered);
-        if (!autocompleteOpen) {
-          setAutocompleteOpen(true);
-          setSelectedIndex(0);
-        } else if (selectedIndex >= filtered.length) {
-          setSelectedIndex(-1);
-        }
+        setAutocompleteOpen(true);
+        setSelectedIndex((previous) =>
+          filtered.length === 0
+            ? -1
+            : Math.max(0, Math.min(previous, filtered.length - 1))
+        );
       } else {
         if (autocompleteOpen) {
           setAutocompleteOpen(false);
@@ -187,7 +208,7 @@ export function ConversationInput({
 
       onChange(text);
     },
-    [autocompleteOptions, autocompleteOpen, selectedIndex, onChange]
+    [autocompleteOptions, autocompleteOpen, onChange]
   );
 
   const menuOptions = autocompleteOpen ? filteredCommands : [];

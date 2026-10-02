@@ -151,7 +151,7 @@ export function applySlashCommandReplacement({
 
 /**
  * Checks if a keypress should be consumed by the autocomplete menu.
- * Enter is only handled when not composing (IME).
+ * Selection requires a valid suggestion. Shift and IME behavior remain native.
  *
  * @param options - Key event context.
  * @returns True when the key should be consumed by autocomplete.
@@ -160,16 +160,21 @@ export function slashCommandKeypressIsHandled({
   key,
   open,
   isComposing,
-  disabled = false
+  disabled = false,
+  shiftKey = false,
+  hasSelection,
+  hasCommands
 }: {
   key: string;
   open: boolean;
   isComposing: boolean;
   disabled?: boolean;
+  shiftKey?: boolean;
+  hasSelection: boolean;
+  hasCommands: boolean;
 }): boolean {
-  if (!open || disabled) return false;
-  if (isComposing && key === "Enter") return false;
-
-  const handledKeys = ["ArrowDown", "ArrowUp", "Tab", "Escape", "Enter"];
-  return handledKeys.includes(key);
+  if (!open || disabled || isComposing) return false;
+  if (key === "Enter" || key === "Tab") return !shiftKey && hasSelection;
+  if (key === "ArrowDown" || key === "ArrowUp") return hasCommands;
+  return key === "Escape";
 }

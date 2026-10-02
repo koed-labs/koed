@@ -94,6 +94,13 @@ local command files. Codex managed sessions now expose read-only `listCommands()
 and a purpose-specific `skills/list` RPC wrapper, but API/Worker discovery routing
 has not yet been connected to that live session owner.
 
+The standalone API Docker image runs the MCP Server package build before building
+and deploying the API. This includes the bundled prompt assets required by the
+discovery adapters' import graph; TypeScript project compilation alone does not
+copy them. The image build imports the deployed routes from `/deploy/api`, outside
+the source checkout, so missing packaged dependencies or prompt assets fail the
+build rather than API startup.
+
 A Chat without a Project requests client-global definitions only. A Project Chat
 requests both global and Project definitions. The API resolves a supplied Project
 ID against Koed's local Project registry and passes only that verified root to the
@@ -131,7 +138,11 @@ an empty list no longer hides discovery diagnostics. The suggestion popup is
 anchored to the composer with a bounded, scrollable height and an opaque themed
 background, rather than positioned above the page's clipped content. Keyboard
 navigation scrolls the selected suggestion into view without moving textarea
-focus. Before launch options arrive, the AI Client picker shows
+focus. Enter or Tab inserts the selected suggestion without submitting. Shift+Enter
+retains newline insertion, Shift+Tab retains focus navigation, and IME composition
+is not intercepted. When there is no selectable suggestion, Enter uses normal
+submission behavior and Tab uses normal focus navigation; loading, error, and
+no-match diagnostics remain visible. Before launch options arrive, the AI Client picker shows
 “Loading AI Clients…” instead of reporting the selected client unavailable.
 To validate
 visibility in a local Electron test window on the new Chat screen, launch with
