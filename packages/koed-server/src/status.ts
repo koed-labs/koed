@@ -69,7 +69,10 @@ import type {
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
-import { resolveCodexExecutablePath } from "./ai-client-registry.js";
+import {
+  readExplicitAiClients,
+  resolveCodexExecutablePath
+} from "./ai-client-registry.js";
 import {
   inspectManagedCodexGuidance,
   resolveCodexGlobalInstructionsPath,
@@ -487,7 +490,7 @@ export const inspectClaudeCode = (
     return {
       ...needsAttention(
         `Claude Code has an unrelated user-scoped MCP server named ${mcpName}.`,
-        "Rename or remove the conflicting entry before setting up Koed.",
+        `Repair the Claude Code integration to replace the user-scoped MCP entry named ${mcpName} with this Koed instance.`,
         { executable, version: versionText, settingsPath, mcpName }
       ),
       configured: false,
@@ -1686,6 +1689,13 @@ export const inspectAiClientReadiness = (input: {
   mcpServer: KoedServerComponentStatus;
   localAiRuntime: KoedServerComponentStatus;
   capabilityReadModel?: CapabilitySnapshotReadModel | null;
+  /** Local registration consumed by capability discovery; backend records can outlive it. */
+  localAiClientInstances?: readonly {
+    instanceId: string;
+    driverId: string;
+    enabled?: boolean;
+  }[];
+  localAiClientRegistryError?: string;
   /** Select one instance for its driver's readiness view. */
   instanceId?: string;
   now: string;
@@ -1810,6 +1820,42 @@ export const inspectAiClientReadiness = (input: {
         descriptorFor(snapshot, "local_synthesis"),
         profileAuthentication
       );
+      if (
+        profileConfigured &&
+        (input.localAiClientInstances || input.capabilityReadModel) &&
+        !(
+          input.localAiClientInstances ?? input.capabilityReadModel!.instances
+        ).some(
+          (instance) =>
+            instance.driverId === driverId &&
+            instance.instanceId ===
+              (snapshot?.instanceId ??
+                input.instanceId ??
+                `${driverId}.default`) &&
+            instance.enabled !== false
+        )
+      ) {
+        synthesisDescriptor.readiness = "not_ready";
+        synthesisDescriptor.diagnostics = [
+          ...synthesisDescriptor.diagnostics,
+          {
+            code: "instance_not_registered",
+            message: `${displayName} must be registered with Koed. Repair the integration to enable capability discovery.`,
+            severity: "warning"
+          }
+        ];
+      }
+      if (profileConfigured && input.localAiClientRegistryError) {
+        synthesisDescriptor.readiness = "not_ready";
+        synthesisDescriptor.diagnostics = [
+          ...synthesisDescriptor.diagnostics,
+          {
+            code: "local_registry_unreadable",
+            message: input.localAiClientRegistryError,
+            severity: "warning"
+          }
+        ];
+      }
       const managedCapabilityIds = [
         "managed_conversation_start",
         "managed_conversation_resume",
@@ -2799,7 +2845,20 @@ export const collectKoedServerStatus = async (
   );
   const coreState = aggregateState(Object.values(coreComponents));
   const lastVerification = inspectLastVerification(paths, deps);
+  let localAiClientInstances:
+    | ReturnType<typeof readExplicitAiClients>
+    | undefined;
+  let localAiClientRegistryError: string | undefined;
+  try {
+    localAiClientInstances = readExplicitAiClients(runtimeEnvironment);
+  } catch (error) {
+    // Client registry failures must not prevent core setup status from loading.
+    localAiClientRegistryError =
+      error instanceof Error ? error.message : String(error);
+  }
   const readinessInput = {
+    localAiClientInstances,
+    localAiClientRegistryError,
     codex,
     claudeCode,
     pi,

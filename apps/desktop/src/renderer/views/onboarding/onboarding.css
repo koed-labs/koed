@@ -170,9 +170,8 @@
   padding: 16px 24px;
 }
 
-.koed-setup-footer > span {
-  color: var(--muted-foreground);
-  font-size: 12px;
+.koed-setup-footer > button:only-child {
+  margin-inline-start: auto;
 }
 
 .koed-client-fieldset {

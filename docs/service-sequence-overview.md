@@ -278,7 +278,8 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     structured partial readiness, while Pi execution remains unavailable until
     model authentication and capability refresh. Both commands are idempotent
     and use strict subprocess environment allowlists.
-    Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
+    Claude setup replaces an existing user-scoped MCP entry under the configured
+    name and restores the displaced entry if setup fails; Pi's
     installed package derives custom `KOED_HOME` from its stable package path.
 11. Koed Desktop can start/connect to the same headless command surface, run
     mandatory client-neutral core setup and health checks, poll status, offer

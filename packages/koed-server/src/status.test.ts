@@ -582,6 +582,101 @@ describe("status state aggregation", () => {
     expect(clients.claude!.profile.state).toBe("needs_attention");
     expect(clients.codex!.profile.state).toBe("healthy");
   });
+  it.each([true, false])(
+    "identifies missing registration only for configured profiles (configured: %s)",
+    (configured) => {
+      const component = (
+        state: "healthy" | "needs_attention" | "not_configured"
+      ) => ({
+        state,
+        message: `${state} check`
+      });
+      const clients = inspectAiClientReadiness({
+        codex: { ...component("healthy"), configured: true },
+        claudeCode: {
+          ...component(configured ? "healthy" : "not_configured"),
+          configured,
+          detected: true
+        },
+        pi: {
+          ...component("healthy"),
+          configured: true,
+          detected: true,
+          details: { version: "0.84.2", authenticated: true }
+        },
+        codexTranscriptWatcher: component("healthy"),
+        claudeTranscriptWatcher: component("healthy"),
+        mcpServer: component("healthy"),
+        localAiRuntime: component("healthy"),
+        capabilityReadModel: { instances: [], capabilitySnapshots: [] },
+        now: "2026-01-01T00:00:00.000Z"
+      });
+
+      const synthesis = clients.claude!.capabilities.find(
+        (capability) => capability.id === "local_synthesis"
+      );
+      expect(synthesis?.readiness).toBe(configured ? "not_ready" : "unknown");
+      expect(
+        synthesis?.diagnostics.some(
+          (diagnostic) => diagnostic.code === "instance_not_registered"
+        )
+      ).toBe(configured);
+    }
+  );
+  it.each([true, false])(
+    "uses local registration even when the backend retains a published instance (registered: %s)",
+    (registered) => {
+      const component = (
+        state: "healthy" | "needs_attention" | "not_configured"
+      ) => ({
+        state,
+        message: `${state} check`
+      });
+      const clients = inspectAiClientReadiness({
+        codex: { ...component("healthy"), configured: true },
+        claudeCode: {
+          ...component("healthy"),
+          configured: true,
+          detected: true
+        },
+        pi: {
+          ...component("healthy"),
+          configured: true,
+          detected: true,
+          details: { version: "0.84.2", authenticated: true }
+        },
+        codexTranscriptWatcher: component("healthy"),
+        claudeTranscriptWatcher: component("healthy"),
+        mcpServer: component("healthy"),
+        localAiRuntime: component("healthy"),
+        capabilityReadModel: {
+          instances: [
+            {
+              instanceId: "claude.default",
+              driverId: "claude",
+              displayName: "Claude Code"
+            }
+          ],
+          capabilitySnapshots: []
+        },
+        localAiClientInstances: registered
+          ? [{ instanceId: "claude.default", driverId: "claude" }]
+          : [],
+        now: "2026-01-01T00:00:00.000Z"
+      });
+
+      const synthesis = clients.claude!.capabilities.find(
+        (capability) => capability.id === "local_synthesis"
+      );
+      expect(synthesis?.readiness).toBe(registered ? "unknown" : "not_ready");
+      expect(
+        synthesis?.diagnostics.some(
+          (diagnostic) => diagnostic.code === "instance_not_registered"
+        )
+      ).toBe(!registered);
+    }
+  );
+
   it("keeps Claude capture ready when MCP profile configuration needs repair", () => {
     const clients = inspectAiClientReadiness({
       codex: { ...notConfigured("Codex unavailable"), configured: false },
@@ -1630,6 +1725,33 @@ describe("status state aggregation", () => {
     expect(
       aggregateState([{ state: "starting" }, needsAttention("broken")])
     ).toBe("needs_attention");
+  });
+});
+
+describe("Claude collision diagnostic", () => {
+  it("directs repair to replace the conflicting entry", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root, KOED_REPO_ROOT: root, HOME: root };
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: () => true,
+        readFileSync: () => "{}",
+        resolveClaudeExecutable: () => "/bin/sh",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.267 (Claude Code)")
+            : spawnResult(
+                "koed:\n  Args: /other/cli.js\n  Environment:\n    KOED_HOME=/other\n"
+              )
+      } as never
+    );
+    expect(status.action).toContain("Repair the Claude Code integration");
+    expect(status.action).toContain(
+      "replace the user-scoped MCP entry named koed"
+    );
+    expect(status.action).not.toContain("Rename or remove");
   });
 });
 

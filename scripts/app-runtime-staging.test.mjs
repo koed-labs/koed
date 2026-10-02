@@ -43,7 +43,14 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
     "node_modules/@koed/db/dist/user-api-token-repository.js",
     "node_modules/@koed/db/drizzle/meta/_journal.json",
     "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md",
+    "node_modules/@koed/mcp-server/integrations/pi/package.json",
+    "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
   ]) {
     write(resolve(root, entry), "fixture\n");
   }
@@ -77,6 +84,16 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   );
   pruneSharedAppRuntimeMetadata(root);
   assert.equal(readFileSync(guidancePath, "utf8"), "fixture\n");
+  const piPackage = resolve(
+    root,
+    "node_modules/@koed/mcp-server/integrations/pi/package.json"
+  );
+  assert.equal(readFileSync(piPackage, "utf8"), "fixture\n");
+  rmSync(piPackage);
+  assert.throws(
+    () => finalizeStagedAppRuntime(root),
+    /integrations\/pi\/package\.json/
+  );
 });
 
 test("prunes package documentation but preserves runtime MCP prompt Markdown", () => {
