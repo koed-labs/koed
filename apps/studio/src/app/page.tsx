@@ -21,6 +21,8 @@ import {
   useLocalProjectCapabilities
 } from "@/lib/local-projects";
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
+import type { HomeItem } from "@koed/shared/home";
+import { useHomeFeed } from "@/lib/use-home-feed";
 import { homeProjects, type HomeProject } from "@/lib/studio-home";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
 import { personalAgentsHttpAdapter } from "@/lib/personal-agents-client";
@@ -98,6 +100,10 @@ function LiveHome({
   const { canCreateLocalProject, loading: projectCapabilitiesLoading } =
     useLocalProjectCapabilities();
   const router = useRouter();
+  const homeFeed = useHomeFeed({
+    transport: "studio",
+    identityKey: "personal"
+  });
   const allProjects = useMemo(() => {
     const byId = new Map(projects.map((project) => [project.id, project]));
     for (const project of registeredProjects) byId.set(project.id, project);
@@ -323,6 +329,14 @@ function LiveHome({
     setChatOpen(true);
     router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
   };
+  const openHomeItem = (item: HomeItem) => {
+    if (item.destination.kind === "execution")
+      resumeChat(item.destination.executionId);
+    else
+      router.push(
+        `/pull-requests?review=${encodeURIComponent(item.destination.reviewId)}`
+      );
+  };
   const moveManagedExecutionToProject = (
     executionId: string,
     destinationProjectId: string
@@ -381,6 +395,8 @@ function LiveHome({
           onMoveManagedExecution={moveManagedExecutionToProject}
           onPlugins={onPlugins}
           onPullRequests={onPullRequests}
+          homeFeed={homeFeed}
+          onOpenHomeItem={openHomeItem}
         />
         {projectModal}
       </>
@@ -419,6 +435,7 @@ function LiveHome({
           onPullRequests={onPullRequests}
           onPlugins={onPlugins}
           activeSection="new-chat"
+          homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {registeredProjectsError ? (

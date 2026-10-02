@@ -2,14 +2,10 @@
 
 import {
   AlertTriangle,
-  CheckCircle2,
   ChevronRight,
   CircleAlert,
   LoaderCircle,
-  RotateCcw,
-  Clock3,
-  Share2,
-  X
+  Share2
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
@@ -22,21 +18,11 @@ import type {
 } from "@/lib/studio-contract";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { CollaborationSnapshot } from "@koed/shared/collaboration";
-import {
-  buildHomeViewModel,
-  filterHomeCollections,
-  homeProjects,
-  type HomeViewItem
-} from "@/lib/studio-home";
-import {
-  clearStudioAttentionItem,
-  parseStudioClearedAttention,
-  partitionStudioAttention,
-  restoreStudioAttentionItem,
-  studioAttentionStorageKey,
-  type StudioClearedAttention
-} from "@/lib/studio-attention";
+import { filterHomeCollections, homeProjects } from "@/lib/studio-home";
+import type { HomeItem } from "@koed/shared/home";
+import type { HomeFeedController } from "@/lib/use-home-feed";
 import { StudioSidebar } from "./StudioSidebar";
+import { HomeAttentionView } from "./HomeAttentionView";
 import { OwnedConversationShareDialog } from "./OwnedConversationShareDialog";
 import { ChatComposer, type ChatComposerSelection } from "../ChatComposer";
 import { SharedChatUI } from "../SharedChatUI";
@@ -120,14 +106,6 @@ function validSnapshot(value: unknown): value is HomeSnapshot {
     item.recents.every(recent)
   );
 }
-function homeItemIsOpenable(item: HomeViewItem) {
-  return (
-    item.destination.type === "agent-decision" ||
-    item.destination.type === "agent-review" ||
-    item.destination.type === "chat"
-  );
-}
-
 function greeting(now = new Date()) {
   const hour = now.getHours();
   if (hour < 5) return "Working late";
@@ -152,7 +130,9 @@ export function PersonalHome({
   onResumeChat,
   onMoveManagedExecution,
   onPlugins,
-  onPullRequests
+  onPullRequests,
+  homeFeed,
+  onOpenHomeItem
 }: {
   canCreateLocalProject: boolean;
   onNewChat?: () => void;
@@ -169,6 +149,8 @@ export function PersonalHome({
   ) => void;
   onPlugins?: () => void;
   onPullRequests?: () => void;
+  homeFeed: HomeFeedController;
+  onOpenHomeItem: (item: HomeItem) => void;
 }) {
   const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -180,14 +162,7 @@ export function PersonalHome({
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [localRunnerAvailability, setLocalRunnerAvailability] =
     useState<LocalRunnerAvailability>("checking");
-  const [needsOpen, setNeedsOpen] = useState(true);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [clearedOpen, setClearedOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(false);
-  const [clearedState, setClearedState] = useState<{
-    key: string | null;
-    items: StudioClearedAttention;
-  }>({ key: null, items: {} });
   const collaborationClient = useMemo(
     () => new StudioCollaborationClient(),
     []
@@ -456,7 +431,6 @@ export function PersonalHome({
     filter
   );
   const recents = collections.recents;
-  const requests = collections.requests;
   const executions = collections.executions;
   const resumableRecents = recents.flatMap((recent) => {
     const execution = executions.find(
@@ -479,63 +453,6 @@ export function PersonalHome({
     firstModelOption?.supportedReasoningEfforts.find(
       (effort) => effort.trim().toLowerCase() === "medium"
     ) ?? firstModelOption?.supportedReasoningEfforts[0];
-  const feed = buildHomeViewModel({ executions, requests, recents });
-  const storageKey = studioAttentionStorageKey(
-    usable ? (snapshot?.scopeKey ?? null) : null
-  );
-  useEffect(() => {
-    if (!storageKey) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setClearedState({ key: null, items: {} });
-      return;
-    }
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      setClearedState({
-        key: storageKey,
-        items: parseStudioClearedAttention(raw ? JSON.parse(raw) : null)
-      });
-    } catch {
-      setClearedState({ key: storageKey, items: {} });
-    }
-  }, [storageKey]);
-  const cleared = clearedState.key === storageKey ? clearedState.items : {};
-  const { visible, cleared: clearedItems } = partitionStudioAttention(
-    feed,
-    cleared
-  );
-  const featured = visible[0] ?? null;
-  const initialItems = visible.slice(0, 4);
-  const more = visible.slice(4);
-  const openItem = (item: HomeViewItem) => {
-    if (
-      item.destination.type === "agent-review" ||
-      item.destination.type === "agent-decision"
-    ) {
-      onResumeChat(item.destination.executionId);
-    } else if (item.destination.type === "chat") {
-      onResumeChat(item.destination.chatId);
-    }
-  };
-  const updateCleared = (next: StudioClearedAttention) => {
-    setClearedState({ key: storageKey, items: next });
-    if (!storageKey) return;
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(next));
-    } catch {
-      // Keep the change active for this render when storage is unavailable.
-    }
-  };
-  const clearItem = (item: HomeViewItem) =>
-    updateCleared(clearStudioAttentionItem(item, cleared));
-  const restoreItem = (itemId: string) =>
-    updateCleared(restoreStudioAttentionItem(itemId, cleared));
-  const coverageIncomplete = Boolean(
-    snapshot &&
-    (!snapshot.coverage.executions ||
-      !snapshot.coverage.requests ||
-      !snapshot.coverage.recents)
-  );
   const prompts = [
     "What should I work on next?",
     "Help me think through a problem",
@@ -553,6 +470,7 @@ export function PersonalHome({
     <div className="flex h-full min-h-0 w-full">
       <StudioSidebar
         projects={projects}
+        homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         showLocalCatalog
         managedConversations={executions}
         managedSourceIds={[
@@ -764,7 +682,7 @@ export function PersonalHome({
                         ? "Personal Home is not authorized for this session."
                         : snapshot?.state === "unavailable"
                           ? "Personal Home is unavailable right now."
-                          : homeSummary(visible.length)}
+                          : homeSummary(homeFeed.snapshot?.badgeCount ?? 0)}
                 </p>
                 <button
                   type="button"
@@ -887,143 +805,23 @@ export function PersonalHome({
                 </button>
               </div>
             )}
+            <HomeAttentionView
+              state={homeFeed.state}
+              snapshot={homeFeed.snapshot}
+              refreshing={homeFeed.refreshing}
+              mutationError={homeFeed.mutationError}
+              pendingItemIds={homeFeed.pendingItemIds}
+              loadingSources={homeFeed.loadingSources}
+              canMutate={homeFeed.canMutate}
+              onRefresh={() => void homeFeed.refresh()}
+              onOpen={onOpenHomeItem}
+              onSetCleared={(item, cleared) =>
+                void homeFeed.setCleared(item, cleared)
+              }
+              onLoadMore={(source) => void homeFeed.loadMore(source)}
+            />
             {usable && snapshot && (
               <>
-                {(snapshot.message ||
-                  snapshot.state === "partial" ||
-                  snapshot.warnings.length > 0 ||
-                  coverageIncomplete) && (
-                  <div className="mb-5 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5" />
-                    <span>
-                      {snapshot.message ??
-                        (coverageIncomplete
-                          ? "Some Home sources have incomplete coverage."
-                          : "Some Home sources are unavailable.")}
-                      {snapshot.warnings.map((warning, index) => (
-                        <small
-                          key={`${warning}-${index}`}
-                          className="block text-subtle"
-                        >
-                          {warning}
-                        </small>
-                      ))}
-                    </span>
-                  </div>
-                )}
-                <section className="border-t border-border pt-5">
-                  <button
-                    type="button"
-                    aria-expanded={needsOpen}
-                    aria-controls="home-needs-you"
-                    onClick={() => setNeedsOpen((value) => !value)}
-                    className="mb-3 flex items-center gap-1.5 rounded-md py-0.5 pr-1.5 text-left text-sm font-medium text-foreground"
-                  >
-                    <ChevronRight
-                      className={`h-3.5 w-3.5 text-subtle transition-transform ${needsOpen ? "rotate-90" : ""}`}
-                    />
-                    Needs you
-                    {visible.length > 0 && (
-                      <span className="rounded-full px-1.5 text-[11px] text-faint">
-                        {visible.length}
-                      </span>
-                    )}
-                  </button>
-                  {needsOpen && (
-                    <div id="home-needs-you">
-                      {featured ? (
-                        <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface/30">
-                          {initialItems.map((item) => (
-                            <HomeAttentionRow
-                              key={item.id}
-                              item={item}
-                              updatedAt={homeItemUpdatedAt(item, snapshot)}
-                              openable={homeItemIsOpenable(item)}
-                              onOpen={() => openItem(item)}
-                              onClear={() => clearItem(item)}
-                            />
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="flex items-center gap-2 px-1 text-sm text-subtle">
-                          <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-success" />
-                          Nothing on your personal side needs you.
-                        </p>
-                      )}
-                      {more.length > 0 && (
-                        <div className="mt-2">
-                          <button
-                            type="button"
-                            aria-expanded={moreOpen}
-                            aria-controls="home-needs-you-more"
-                            onClick={() => setMoreOpen((value) => !value)}
-                            className="flex items-center gap-1.5 rounded-md px-1 py-1 text-xs text-subtle hover:text-foreground-secondary"
-                          >
-                            <ChevronRight
-                              className={`h-3.5 w-3.5 transition-transform ${moreOpen ? "rotate-90" : ""}`}
-                            />
-                            {moreOpen ? "Show fewer" : "More needs you"}
-                            <span className="text-faint">{more.length}</span>
-                          </button>
-                          {moreOpen && (
-                            <ul
-                              id="home-needs-you-more"
-                              className="mt-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface/30"
-                            >
-                              {more.map((item) => (
-                                <HomeAttentionRow
-                                  key={item.id}
-                                  item={item}
-                                  updatedAt={homeItemUpdatedAt(item, snapshot)}
-                                  openable={homeItemIsOpenable(item)}
-                                  onOpen={() => openItem(item)}
-                                  onClear={() => clearItem(item)}
-                                />
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                      {clearedItems.length > 0 && (
-                        <div className="border-t border-border pt-4">
-                          <button
-                            type="button"
-                            aria-expanded={clearedOpen}
-                            onClick={() => setClearedOpen((value) => !value)}
-                            className="flex items-center gap-1.5 text-xs text-subtle hover:text-foreground-secondary"
-                          >
-                            <ChevronRight
-                              className={`h-3.5 w-3.5 transition-transform ${clearedOpen ? "rotate-90" : ""}`}
-                            />
-                            {clearedItems.length} cleared
-                          </button>
-                          {clearedOpen && (
-                            <div className="mt-2 space-y-1">
-                              {clearedItems.map((item) => (
-                                <div
-                                  key={item.id}
-                                  className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-surface-hover/50"
-                                >
-                                  <span className="min-w-0 flex-1 truncate text-xs text-foreground-secondary">
-                                    {item.title}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => restoreItem(item.id)}
-                                    className="inline-flex flex-shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-subtle hover:bg-surface-hover hover:text-foreground-secondary"
-                                  >
-                                    <RotateCcw className="h-3 w-3" />
-                                    Restore
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </section>
                 <section className="border-t border-border pt-5">
                   <button
                     type="button"
@@ -1142,105 +940,4 @@ function formatHomeTime(value: string) {
         hour: "numeric",
         minute: "2-digit"
       }).format(date);
-}
-
-function homeItemUpdatedAt(item: HomeViewItem, snapshot: HomeSnapshot) {
-  if (item.id.startsWith("request-")) {
-    return snapshot.requests.find(
-      (request) => `request-${request.id}` === item.id
-    )?.updatedAt;
-  }
-  if (
-    item.destination.type === "agent-decision" ||
-    item.destination.type === "agent-review"
-  ) {
-    const executionId = item.destination.executionId;
-    return snapshot.executions.find((execution) => execution.id === executionId)
-      ?.updatedAt;
-  }
-  return undefined;
-}
-
-function homeItemActionLabel(item: HomeViewItem) {
-  if (item.destination.type === "agent-decision") return "Respond";
-  if (item.destination.type === "agent-review")
-    return item.urgency === "soon" ? "Open chat" : "Review";
-  return "Open";
-}
-
-function HomeAttentionRow({
-  item,
-  updatedAt,
-  openable,
-  onOpen,
-  onClear
-}: {
-  item: HomeViewItem;
-  updatedAt?: string;
-  openable: boolean;
-  onOpen: () => void;
-  onClear: () => void;
-}) {
-  const urgency =
-    item.urgency === "now"
-      ? { label: "Needs attention", color: "bg-accent" }
-      : item.urgency === "soon"
-        ? { label: "In progress", color: "bg-warning" }
-        : { label: "Suggested", color: "bg-subtle" };
-
-  return (
-    <li className="relative flex min-w-0 items-center gap-2 px-3 py-2.5 pl-4">
-      <span
-        aria-hidden="true"
-        className={`absolute inset-y-2 left-0 w-0.5 rounded-full ${urgency.color}`}
-      />
-      <button
-        type="button"
-        onClick={onOpen}
-        disabled={!openable}
-        title={openable ? undefined : item.disabledReason}
-        className="group flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium text-foreground">
-            {item.title}
-          </span>
-          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted">
-            <span className="shrink-0 text-subtle">{urgency.label}</span>
-            <span aria-hidden="true" className="text-faint">
-              ·
-            </span>
-            <span className="min-w-0 truncate">
-              {[item.projectName, item.detail].filter(Boolean).join(" · ")}
-            </span>
-            {updatedAt && (
-              <time
-                dateTime={updatedAt}
-                className="inline-flex shrink-0 items-center gap-1 text-faint"
-                title={formatHomeTime(updatedAt)}
-              >
-                <Clock3 className="h-3 w-3" />
-                {formatHomeTime(updatedAt)}
-              </time>
-            )}
-          </span>
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-0.5 pl-1 text-xs text-subtle">
-          <span>{openable ? homeItemActionLabel(item) : "Unavailable"}</span>
-          {openable && (
-            <ChevronRight className="h-3.5 w-3.5 text-faint group-hover:text-foreground-secondary" />
-          )}
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={onClear}
-        title="Clear until this item changes"
-        aria-label={`Clear ${item.title}`}
-        className="shrink-0 rounded-md p-1 text-faint hover:bg-surface-hover hover:text-foreground"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
-    </li>
-  );
 }

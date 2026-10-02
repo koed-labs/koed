@@ -15537,4 +15537,31 @@ export const personalDeviceGroupAuditEvents = pgTable(
   ]
 );
 
+/** Stores only owner-scoped reminder identity and producer revision metadata. */
+export const homeReminderStates = pgTable(
+  "home_reminder_states",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceEventId: text("source_event_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    cleared: boolean("cleared").notNull().default(false),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.sourceEventId] }),
+    check(
+      "home_reminder_source_kind_check",
+      sql`${table.sourceKind} in ('managed_runtime_item', 'managed_execution', 'personal_agent_job', 'pull_request_review')`
+    ),
+    check(
+      "home_reminder_source_event_id_check",
+      sql`${table.sourceEventId} ~ '^[A-Za-z0-9._:-]+$'`
+    )
+  ]
+);
+
 export * from "./personal-device-sync-relay-schema.js";

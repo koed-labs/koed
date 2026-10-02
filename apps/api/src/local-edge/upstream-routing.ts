@@ -643,6 +643,50 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      ((pathname === "/v1/home" || pathname === "/v1/home/access") &&
+        method === "GET") ||
+      (/^\/v1\/home\/reminders\/[^/]+\/(?:clear|restore)$/u.test(pathname) &&
+        method === "POST")
+    ) {
+      if (pathname === "/v1/home" && method === "GET") {
+        if (
+          [...parsed.searchParams.keys()].some(
+            (key) => !["source", "cursor", "limit"].includes(key)
+          ) ||
+          (parsed.searchParams.has("source") &&
+            ![
+              "managed_runtime_item",
+              "managed_execution",
+              "personal_agent_job",
+              "pull_request_review"
+            ].includes(parsed.searchParams.get("source") ?? "")) ||
+          (parsed.searchParams.has("cursor") &&
+            !/^[A-Za-z0-9_-]{1,512}$/u.test(
+              parsed.searchParams.get("cursor") ?? ""
+            )) ||
+          (parsed.searchParams.has("limit") &&
+            !/^(?:[1-9]|[1-9][0-9]|100)$/u.test(
+              parsed.searchParams.get("limit") ?? ""
+            ))
+        )
+          deny();
+      } else if (parsed.searchParams.size !== 0) {
+        deny();
+      }
+      if (pathname.startsWith("/v1/home/reminders/")) {
+        const encodedId =
+          pathname.slice("/v1/home/reminders/".length).split("/")[0] ?? "";
+        let decodedId = "";
+        try {
+          decodedId = decodeURIComponent(encodedId);
+        } catch {
+          deny();
+        }
+        if (!/^[A-Za-z0-9._:-]{1,160}$/u.test(decodedId)) deny();
+      }
+      return;
+    }
+    if (
       pathname === "/v1/pull-requests" ||
       pathname.startsWith("/v1/pull-requests/")
     ) {

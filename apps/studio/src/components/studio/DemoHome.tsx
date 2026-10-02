@@ -589,6 +589,7 @@ export function DemoHome({
       <StudioSidebar
         projects={DEMO_PROJECTS}
         chats={DEMO_CHATS}
+        homeBadgeCount={0}
         collapsed={collapsed}
         selectedProject={state.selectedProject}
         onProjectSelect={(projectId) =>

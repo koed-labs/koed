@@ -357,6 +357,46 @@ export class SyntheticStudioApi {
       (this.requestCounts.get(requestKey) ?? 0) + 1
     );
     const body = request.postDataJSON() as Record<string, unknown> | null;
+    if (
+      (path === "/v1/home/access" || path === "/studio-api/home-feed/access") &&
+      method === "GET"
+    ) {
+      await route.fulfill({
+        json: {
+          accountScope: `synthetic-home:${ids.user}:synthetic-backend`,
+          backendId: "synthetic-backend"
+        }
+      });
+      return;
+    }
+    if (
+      (path === "/v1/home" || path === "/studio-api/home-feed") &&
+      method === "GET"
+    ) {
+      await route.fulfill({
+        json: {
+          schemaVersion: "koed.home-feed/v1",
+          accountScope: `synthetic-home:${ids.user}:synthetic-backend`,
+          generatedAt: "2026-10-02T12:00:00.000Z",
+          coverage: [
+            {
+              source: "managed_runtime_item",
+              complete: true,
+              nextCursor: null
+            },
+            { source: "managed_execution", complete: true, nextCursor: null },
+            { source: "personal_agent_job", complete: true, nextCursor: null },
+            { source: "pull_request_review", complete: true, nextCursor: null }
+          ],
+          needsYou: [],
+          ongoing: [],
+          recent: [],
+          cleared: [],
+          badgeCount: 0
+        }
+      });
+      return;
+    }
     if (path === "/me" && method === "GET") {
       await route.fulfill({
         json: {

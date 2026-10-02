@@ -24,6 +24,7 @@ import type { PdsSecureKeyProvider } from "../personal-device-sync/local-source.
 import type { ManagedTerminalRuntime } from "../managed-conversations/terminal-runtime.js";
 import type { ManagedDevelopmentPreviewRuntime } from "../managed-conversations/preview-runtime.js";
 import type { SourceControlRuntime } from "../source-control/runtime.js";
+import type { HomeRepository } from "@koed/db";
 
 export type CapturePolicy = Awaited<
   ReturnType<MemorySourceRepository["getEffectiveCapturePolicy"]>
@@ -32,6 +33,7 @@ export type CapturePolicy = Awaited<
 export interface ApiRouteContext {
   config: ApiServerConfig;
   requireRepository(): MemorySourceRepository;
+  home?: HomeRepository | null;
   auth: AuthHelpers;
   rateLimit: Record<RateLimitName, RateLimitHandler>;
   collaboration: {

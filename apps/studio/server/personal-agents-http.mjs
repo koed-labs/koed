@@ -67,15 +67,17 @@ export async function handlePersonalAgents({
   routeFamily = "personal-agents"
 }) {
   const routePrefix =
-    routeFamily === "public-square"
-      ? "/studio-api/public-square"
-      : routeFamily === "managed-conversations"
-        ? "/studio-api/managed-conversations"
-        : routeFamily === "team-agent-requests"
-          ? "/studio-api/collaboration"
-          : routeFamily === "personal-agent-role-templates"
-            ? "/studio-api/personal-agent-role-templates"
-            : prefix;
+    routeFamily === "home"
+      ? "/studio-api/home-feed"
+      : routeFamily === "public-square"
+        ? "/studio-api/public-square"
+        : routeFamily === "managed-conversations"
+          ? "/studio-api/managed-conversations"
+          : routeFamily === "team-agent-requests"
+            ? "/studio-api/collaboration"
+            : routeFamily === "personal-agent-role-templates"
+              ? "/studio-api/personal-agent-role-templates"
+              : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -93,27 +95,29 @@ export async function handlePersonalAgents({
       ? teamAgentRequestsRoute(suffix)
       : null;
   const methods =
-    routeFamily === "team-agent-requests"
-      ? (teamAgentRequestRoute?.methods ?? [])
-      : routeFamily === "public-square"
-        ? (squareRoute?.methods ?? [])
-        : routeFamily === "personal-agent-role-templates"
-          ? suffix === ""
-            ? ["GET"]
-            : []
-          : routeFamily === "managed-conversations"
-            ? managedMethods(suffix)
-            : suffix === ""
-              ? ["GET", "POST"]
-              : activityRoute || historyMatch
-                ? ["GET"]
-                : suffix === "/capabilities"
+    routeFamily === "home"
+      ? homeMethods(suffix)
+      : routeFamily === "team-agent-requests"
+        ? (teamAgentRequestRoute?.methods ?? [])
+        : routeFamily === "public-square"
+          ? (squareRoute?.methods ?? [])
+          : routeFamily === "personal-agent-role-templates"
+            ? suffix === ""
+              ? ["GET"]
+              : []
+            : routeFamily === "managed-conversations"
+              ? managedMethods(suffix)
+              : suffix === ""
+                ? ["GET", "POST"]
+                : activityRoute || historyMatch
                   ? ["GET"]
-                  : match
-                    ? match[2]
-                      ? ["POST"]
-                      : ["GET", "PATCH"]
-                    : [];
+                  : suffix === "/capabilities"
+                    ? ["GET"]
+                    : match
+                      ? match[2]
+                        ? ["POST"]
+                        : ["GET", "PATCH"]
+                      : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -130,15 +134,22 @@ export async function handlePersonalAgents({
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   const squareList =
     routeFamily === "public-square" && squareRoute?.list === true;
+  const homeList =
+    routeFamily === "home" && suffix === "" && request.method === "GET";
   if (
     url.search &&
     !recoveryLookup &&
     !squareList &&
     !teamAgentRequestList &&
     !activityRoute &&
-    !historyMatch
+    !historyMatch &&
+    !homeList
   ) {
     send(400, { error: "query_not_allowed" });
+    return true;
+  }
+  if (homeList && !validHomeFeedQuery(url.searchParams)) {
+    send(400, { error: "invalid_home_query" });
     return true;
   }
   if (recoveryLookup && !validRecoveryLookupQuery(url.searchParams)) {
@@ -192,7 +203,7 @@ export async function handlePersonalAgents({
       const chunks = [];
       for await (const chunk of request) {
         size += chunk.length;
-        if (size > maximum) {
+        if (size > (routeFamily === "home" ? 4096 : maximum)) {
           send(413, { error: "body_too_large" });
           return true;
         }
@@ -235,7 +246,7 @@ export async function handlePersonalAgents({
           ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
           : squareRoute
             ? `${squareRoute.path}${squareList ? url.search : ""}`
-            : `/v1/${routeFamily}${suffix}${recoveryLookup || activityRoute || historyMatch ? url.search : ""}`,
+            : `/v1/${routeFamily}${suffix}${recoveryLookup || activityRoute || historyMatch || homeList ? url.search : ""}`,
         base
       ),
       {
@@ -440,6 +451,49 @@ function validIdempotencyKey(value) {
     value.length <= 255 &&
     /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
   );
+}
+
+function validHomeFeedQuery(params) {
+  const keys = [...params.keys()];
+  if (
+    keys.length !== new Set(keys).size ||
+    keys.some((key) => !["source", "cursor", "limit"].includes(key))
+  )
+    return false;
+  const source = params.get("source");
+  if (
+    source !== null &&
+    ![
+      "managed_runtime_item",
+      "managed_execution",
+      "personal_agent_job",
+      "pull_request_review"
+    ].includes(source)
+  )
+    return false;
+  const cursor = params.get("cursor");
+  if (cursor !== null && (!source || !/^[A-Za-z0-9_-]{1,512}$/.test(cursor)))
+    return false;
+  const limit = params.get("limit");
+  return (
+    limit === null || (/^[1-9][0-9]*$/.test(limit) && Number(limit) <= 100)
+  );
+}
+
+function homeMethods(suffix) {
+  if (suffix === "" || suffix === "/access") return ["GET"];
+  const match = /^\/reminders\/([^/]{1,480})\/(?:clear|restore)$/.exec(suffix);
+  if (!match) return [];
+  try {
+    const id = decodeURIComponent(match[1]);
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id) ? ["POST"] : [];
+  } catch {
+    return [];
+  }
+}
+
+export function handleHomeFeed(options) {
+  return handlePersonalAgents({ ...options, routeFamily: "home" });
 }
 
 export function handleManagedConversations(options) {

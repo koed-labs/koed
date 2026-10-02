@@ -1158,13 +1158,15 @@ export function PullRequestsView({
   onHome,
   onNewChat,
   onPlugins,
-  onUseRealGitHub
+  onUseRealGitHub,
+  initialReviewId
 }: {
   mode: PullRequestsMode;
   onHome: () => void;
   onNewChat: () => void;
   onPlugins: () => void;
   onUseRealGitHub?: () => void;
+  initialReviewId?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [chatAgents, setChatAgents] = useState<ChatMentionAgent[]>([]);
@@ -1273,6 +1275,9 @@ export function PullRequestsView({
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [demoPreferenceResolved, setDemoPreferenceResolved] = useState(false);
+  const homeReviewOpenedRef = useRef(false);
+  const [statusLoadedRevision, setStatusLoadedRevision] = useState(0);
+  const statusLoadingRef = useRef(false);
   const sequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const sourceControlRunnersRef = useRef(sourceControlRunners);
@@ -1291,7 +1296,6 @@ export function PullRequestsView({
       .then(([agents, capabilities, availableLaunchOptions]) => {
         if (controller.signal.aborted) return;
         setLaunchOptions(availableLaunchOptions);
-        setReviewRunnerId("");
         setChatAgents(
           agents
             .filter((agent: PersonalAgent) => agent.lifecycle === "active")
@@ -1363,6 +1367,7 @@ export function PullRequestsView({
 
   const loadStatusAndRepositories = useCallback(async () => {
     if (mode === "demo") return;
+    statusLoadingRef.current = true;
     const sequence = ++sequenceRef.current;
     controllerRef.current?.abort();
     const controller = new AbortController();
@@ -1371,24 +1376,48 @@ export function PullRequestsView({
     setLoadingMore(false);
     setError(null);
     try {
+      const requestedReview =
+        initialReviewId && !homeReviewOpenedRef.current
+          ? await pullRequestsClient.getReview(
+              initialReviewId,
+              controller.signal
+            )
+          : null;
       const availableRunners = await pullRequestsClient.listRunners(
         controller.signal
       );
       if (sequence !== sequenceRef.current) return;
+      const requestedRunner = requestedReview
+        ? availableRunners.find(
+            (runner) =>
+              runner.deviceId === requestedReview.targetDeviceId &&
+              runner.deploymentId === requestedReview.targetDeploymentId
+          )
+        : null;
+      if (requestedReview && !requestedRunner)
+        throw new Error(
+          "The computer assigned to this review is unavailable. Reconnect it and try again."
+        );
       setSourceControlRunners(availableRunners);
-      setReviewRunnerId((current) =>
-        availableRunners.some((runner) => runner.deviceId === current)
-          ? current
-          : (availableRunners[0]?.deviceId ?? "")
+      setReviewRunnerId(
+        (current) =>
+          requestedRunner?.deviceId ??
+          (availableRunners.some((runner) => runner.deviceId === current)
+            ? current
+            : (availableRunners[0]?.deviceId ?? ""))
       );
-      const target =
-        targetForRunner(reviewRunnerId) ??
-        (availableRunners[0]
-          ? {
-              deviceId: availableRunners[0].deviceId,
-              deploymentId: availableRunners[0].deploymentId
-            }
-          : undefined);
+      const target = requestedRunner
+        ? {
+            deviceId: requestedRunner.deviceId,
+            deploymentId: requestedRunner.deploymentId
+          }
+        : (targetForRunner(reviewRunnerId) ??
+          (availableRunners[0]
+            ? {
+                deviceId: availableRunners[0].deviceId,
+                deploymentId: availableRunners[0].deploymentId
+              }
+            : undefined));
       const statusOperation = await pullRequestsClient.runOperation(
         { kind: "connection_status" },
         { signal: controller.signal, target }
@@ -1490,6 +1519,29 @@ export function PullRequestsView({
         : null;
       setStale(false);
       setRepositories(nextRepositories);
+      if (requestedReview) {
+        const linkedRepository = nextRepositories.find(
+          (candidate) =>
+            candidate.id === requestedReview.repository.id &&
+            candidate.fullName === requestedReview.repository.fullName
+        );
+        if (
+          !linkedRepository ||
+          requestedReview.account.id !== nextStatus.accountId ||
+          requestedReview.account.login !== nextStatus.login
+        )
+          throw new Error(
+            "This review is not available through the selected GitHub connection. Check its account and repository access."
+          );
+        homeReviewOpenedRef.current = true;
+        repositorySelectionIntentRef.current = true;
+        loadedRepositoryRef.current = linkedRepository.fullName;
+        setRepository(linkedRepository);
+        setSelectedRepositoryFullName(linkedRepository.fullName);
+        setSelectedNumber(requestedReview.pullRequestNumber);
+        setReviewAgentId(requestedReview.agentId);
+        setDetailView("chat");
+      }
       setRepository((current) => {
         if (repositorySelectionIntentRef.current) return current;
         if (preferredRepository) return preferredRepository;
@@ -1514,11 +1566,13 @@ export function PullRequestsView({
       );
     } finally {
       if (sequence === sequenceRef.current) {
+        statusLoadingRef.current = false;
+        setStatusLoadedRevision((revision) => revision + 1);
         setLoading(false);
         controllerRef.current = null;
       }
     }
-  }, [mode, resetChatState, reviewRunnerId, targetForRunner]);
+  }, [mode, resetChatState, reviewRunnerId, targetForRunner, initialReviewId]);
 
   // The effect owns the lifetime of the live gateway request.
   useEffect(() => {
@@ -1672,6 +1726,7 @@ export function PullRequestsView({
 
   // Repository changes are synchronized with the live gateway.
   useEffect(() => {
+    if (statusLoadingRef.current) return;
     if (
       status?.state === "connected" ||
       repository ||
@@ -1679,7 +1734,7 @@ export function PullRequestsView({
     ) {
       void loadPullRequests(repository);
     }
-  }, [loadPullRequests, repository, status?.state]);
+  }, [loadPullRequests, repository, status?.state, statusLoadedRevision]);
 
   const loadMorePullRequests = async () => {
     if (
@@ -1876,6 +1931,7 @@ export function PullRequestsView({
               right.updatedAt.localeCompare(left.updatedAt)
             );
           const chosen =
+            matching.find((review) => review.id === initialReviewId) ??
             matching.find((review) => review.agentId === reviewAgentId) ??
             matching[0];
           if (chosen) {
@@ -1976,6 +2032,7 @@ export function PullRequestsView({
       controller.abort();
     };
   }, [
+    initialReviewId,
     mode,
     pullRequests,
     repositories,

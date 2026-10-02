@@ -1,6 +1,28 @@
 import { createHash } from "node:crypto";
 
 export {
+  homeAccessSchema,
+  homeDestinationSchema,
+  homeFeedSchemaVersion,
+  homeItemKindSchema,
+  homeItemSchema,
+  homeReminderMutationResultSchema,
+  homeReminderMutationSchema,
+  homeSnapshotSchema,
+  homeSourceCoverageSchema,
+  homeSourceSchema,
+  type HomeDestination,
+  type HomeAccess,
+  type HomeItem,
+  type HomeItemKind,
+  type HomeReminderMutation,
+  type HomeReminderMutationResult,
+  type HomeSnapshot,
+  type HomeSource,
+  type HomeSourceCoverage
+} from "./home.js";
+
+export {
   PERSONAL_MEMORY_ATTRIBUTION_FOOTER_PREFIX,
   parsePersonalMemoryAttributionFooter,
   personalMemoryAttributionFooter,

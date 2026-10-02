@@ -2512,6 +2512,34 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/home",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Read the authenticated owner's Home feed and reminder state."
+  ),
+  route(
+    "GET",
+    "/v1/home/access",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Read the authenticated Home authority scope for safe cross-device state binding."
+  ),
+  route(
+    "POST",
+    "/v1/home/reminders/{sourceEventId}/clear",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Clear one current owner-scoped Home reminder revision."
+  ),
+  route(
+    "POST",
+    "/v1/home/reminders/{sourceEventId}/restore",
+    "session_or_api_token_or_device_credential",
+    "personal_memory",
+    "Restore one current owner-scoped Home reminder revision."
+  ),
+  route(
+    "GET",
     "/v1/managed-conversations/{executionId}",
     "session_or_api_token",
     "personal_memory",

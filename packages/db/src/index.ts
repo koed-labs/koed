@@ -8,6 +8,11 @@ export {
 } from "./approval-activity-remediation.js";
 export { createAuthSessionRepository } from "./auth-session-repository.js";
 export {
+  createHomeRepository,
+  type HomeReminderState,
+  type HomeRepository
+} from "./home-repository.js";
+export {
   createDevelopmentWorkspaceSnapshotRepository,
   DEVELOPMENT_WORKSPACE_SNAPSHOT_CHUNK_BYTES,
   DEVELOPMENT_WORKSPACE_SNAPSHOT_MAX_BYTES,

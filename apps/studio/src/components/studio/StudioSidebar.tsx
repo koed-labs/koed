@@ -37,6 +37,7 @@ import {
   STUDIO_SIDEBAR_WIDTH_STEP
 } from "./StudioSidebar.helpers";
 import { isSyntheticIndependentProject } from "./LocalConversationBrowser.match";
+import { useHomeFeed } from "@/lib/use-home-feed";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "koed:studio:sidebar-width";
 const isManagedExecution = (
@@ -89,6 +90,7 @@ type StudioSidebarProps = {
   managedSourceIds?: readonly string[];
   onSelectManagedExecution?: (executionId: string) => void;
   registeredProjectIds?: readonly string[];
+  homeBadgeCount?: number;
 };
 const unavailable = "This destination will be connected in a later integration";
 
@@ -117,8 +119,16 @@ export function StudioSidebar({
   managedConversations = [],
   managedSourceIds = [],
   onSelectManagedExecution,
-  registeredProjectIds = []
+  registeredProjectIds = [],
+  homeBadgeCount: providedHomeBadgeCount
 }: StudioSidebarProps) {
+  const sidebarHomeFeed = useHomeFeed({
+    transport: "studio",
+    identityKey: providedHomeBadgeCount === undefined ? "personal" : null,
+    enabled: providedHomeBadgeCount === undefined
+  });
+  const homeBadgeCount =
+    providedHomeBadgeCount ?? sidebarHomeFeed.snapshot?.badgeCount ?? 0;
   const router = useRouter();
   const capabilityFromGateway = useCanCreateLocalProject();
   const canCreateLocalProject =
@@ -383,9 +393,17 @@ export function StudioSidebar({
             onClick={onHome}
             aria-label="Personal Workspace"
             title="Personal Workspace"
-            className="flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar transition-colors hover:bg-surface-active"
+            className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar transition-colors hover:bg-surface-active"
           >
             <User className="h-5 w-5" />
+            {homeBadgeCount > 0 && (
+              <span
+                className="absolute -right-1 -top-1 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] leading-4 text-white"
+                aria-label={`${homeBadgeCount} items need you`}
+              >
+                {homeBadgeCount > 99 ? "99+" : homeBadgeCount}
+              </span>
+            )}
           </button>
         </Tooltip>
         <div className="my-3 h-px w-8 bg-surface-hover" />
@@ -531,6 +549,11 @@ export function StudioSidebar({
                     >
                       <House className="mr-2 h-4 w-4" />
                       Home
+                      {homeBadgeCount > 0 && (
+                        <span className="ml-auto rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] leading-none text-accent-foreground">
+                          {homeBadgeCount > 99 ? "99+" : homeBadgeCount}
+                        </span>
+                      )}
                     </button>
                     <Tooltip content="Close Sidebar" side="bottom">
                       <button

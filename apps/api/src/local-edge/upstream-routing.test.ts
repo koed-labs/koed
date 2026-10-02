@@ -820,6 +820,28 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("allows Home source paging and encoded event reminder mutations only", () => {
+    const eventId = "job:11111111-1111-4111-8111-111111111111";
+    const path = `/v1/home/reminders/${encodeURIComponent(eventId)}/clear`;
+    expect(() =>
+      assertUpstreamOperationPathAllowed("managed_execution", "POST", path)
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/home?source=personal_agent_job&limit=100&cursor=eyJzb3VyY2UiOiJqb2IifQ"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/home/reminders/runtime%3A..%2Fetc/clear"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
   it("proxies only exact recalled-answer feedback reads and writes", () => {
     const executionId = "11111111-1111-4111-8111-111111111111";
     const messageId = "provider:22222222-2222-4222-8222-222222222222";

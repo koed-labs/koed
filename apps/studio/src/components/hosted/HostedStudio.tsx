@@ -10,7 +10,6 @@ import {
   FolderOpen,
   Globe2,
   LoaderCircle,
-  PanelLeft,
   PanelLeftClose,
   Plus,
   RefreshCw,
@@ -32,6 +31,8 @@ import {
 } from "@/lib/hosted-session";
 import { HostedManagedChats } from "./HostedManagedChats";
 import { HostedTeamChannels } from "./HostedTeamChannels";
+import { useHomeFeed } from "@/lib/use-home-feed";
+import { HomeAttentionView } from "@/components/studio/HomeAttentionView";
 
 type HostedStudioProps = { view: "home" | "collaboration" };
 
@@ -42,6 +43,11 @@ export function HostedStudio({ view }: HostedStudioProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [session, setSession] = useState<HostedSessionResult | null>(null);
+  const homeFeed = useHomeFeed({
+    transport: "hosted",
+    identityKey: session?.status === "authenticated" ? session.user.id : null,
+    enabled: view === "home" && session?.status === "authenticated"
+  });
   const [busy, setBusy] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const previousUser = useRef<HostedUser | null>(null);
@@ -175,6 +181,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
       <HostedGlobalNav
         teams={teams}
         personalActive={view === "home"}
+        homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         onOpenPersonal={() => router.push("/")}
         activeTeamId={view === "collaboration" ? activeTeamId : null}
         onOpenTeam={(id) =>
@@ -286,6 +293,33 @@ export function HostedStudio({ view }: HostedStudioProps) {
                   teamRequestExpectedReviewVersion
                 }
               />
+              <div className="mx-auto mt-6 w-full max-w-3xl px-2 pb-8">
+                <HomeAttentionView
+                  state={homeFeed.state}
+                  snapshot={homeFeed.snapshot}
+                  refreshing={homeFeed.refreshing}
+                  mutationError={homeFeed.mutationError}
+                  pendingItemIds={homeFeed.pendingItemIds}
+                  loadingSources={homeFeed.loadingSources}
+                  canMutate={homeFeed.canMutate}
+                  onRefresh={() => void homeFeed.refresh()}
+                  onOpen={(item) => {
+                    if (item.destination.kind === "execution") {
+                      router.push(
+                        `/?execution=${encodeURIComponent(item.destination.executionId)}`
+                      );
+                    } else {
+                      router.push(
+                        `/pull-requests?review=${encodeURIComponent(item.destination.reviewId)}`
+                      );
+                    }
+                  }}
+                  onSetCleared={(item, cleared) =>
+                    void homeFeed.setCleared(item, cleared)
+                  }
+                  onLoadMore={(source) => void homeFeed.loadMore(source)}
+                />
+              </div>
               <HostedOverview teams={session.teams} />
             </>
           ) : activeTeam ? (
@@ -338,12 +372,14 @@ function TeamMark({ index }: { index: number }) {
 function HostedGlobalNav({
   teams,
   personalActive,
+  homeBadgeCount = 0,
   onOpenPersonal,
   activeTeamId,
   onOpenTeam
 }: {
   teams: HostedTeam[];
   personalActive: boolean;
+  homeBadgeCount?: number;
   onOpenPersonal: () => void;
   activeTeamId: string | null;
   onOpenTeam: (teamId: string) => void;
@@ -367,6 +403,11 @@ function HostedGlobalNav({
         className={`relative mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-muted transition-colors hover:text-foreground ${personalActive ? "text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar" : ""}`}
       >
         <User className="h-5 w-5" />
+        {homeBadgeCount > 0 && (
+          <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] leading-4 text-white">
+            {homeBadgeCount > 99 ? "99+" : homeBadgeCount}
+          </span>
+        )}
       </button>
 
       <div className="my-2 h-px w-8 bg-surface-hover" />

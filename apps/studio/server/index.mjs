@@ -20,6 +20,7 @@ import {
 } from "@koed/shared/collaboration";
 import { handlePullRequests } from "./pull-requests-http.mjs";
 import {
+  handleHomeFeed,
   handlePersonalAgents,
   handleManagedConversations,
   handlePersonalAgentRoleTemplates,
@@ -1866,6 +1867,7 @@ export const createStudioServer = ({
         return;
       if (
         (await handlePullRequests({ ...localApiOptions, environment })) ||
+        (await handleHomeFeed(localApiOptions)) ||
         (await handlePersonalAgents(localApiOptions)) ||
         (await handleTeamAgentRequests(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||

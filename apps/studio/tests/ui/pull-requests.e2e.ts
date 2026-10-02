@@ -284,4 +284,40 @@ test("a selected Agent gets a durable PR review Conversation with its normal run
     path: "output/playwright/pr-managed-chat-restored.png",
     fullPage: true
   });
+  const startsBeforeHomeLink = api.requests.filter(
+    (request) =>
+      request.path === "managed/" &&
+      (request.body as Record<string, unknown>)?.pullRequestReviewId
+  ).length;
+  api.putOtherRunnerFirst();
+  const requestsBeforeHomeLink = api.requests.length;
+  await page.goto(
+    "/studio/pull-requests?review=66666666-6666-4666-8666-666666666666"
+  );
+  await expect(
+    page.getByRole("link", { name: "Open on GitHub" })
+  ).toHaveAttribute("href", "https://github.com/koed/studio/pull/10");
+  await expect(page.getByText(/Review pull request #10/)).toBeVisible();
+  expect(
+    api.requests.filter(
+      (request) =>
+        request.path === "managed/" &&
+        (request.body as Record<string, unknown>)?.pullRequestReviewId
+    )
+  ).toHaveLength(startsBeforeHomeLink);
+  const linkedDetails = api.requests
+    .slice(requestsBeforeHomeLink)
+    .filter(
+      (request) =>
+        (request.body as { payload?: { kind?: string } })?.payload?.kind ===
+        "pull_request_details"
+    );
+  expect(linkedDetails.length).toBeGreaterThan(0);
+  expect(
+    linkedDetails.every(
+      (request) =>
+        (request.body as { target?: { deviceId?: string } })?.target
+          ?.deviceId === "synthetic-runner"
+    )
+  ).toBe(true);
 });

@@ -1,4 +1,5 @@
 import { registerPullRequestRoutes } from "../pull-requests/index.js";
+import { registerHomeRoutes } from "../home/index.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -11,6 +12,7 @@ import { type Visibility } from "@koed/core";
 import {
   createCollaborationRepository,
   createDbPool,
+  createHomeRepository,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createPersonalDeviceSyncRepository,
@@ -21,6 +23,7 @@ import {
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
   type CollaborationRepository,
+  type HomeRepository,
   type EmbeddingCapacityRepository,
   type MemorySourceRepository,
   type PrivacyClassificationRepository,
@@ -375,6 +378,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const envelopeEncryptionProvider: EnvelopeEncryptionProvider | undefined =
     options.envelopeEncryptionProvider ??
     createEnvelopeEncryptionProviderFromEnvironment();
+  const homeRepository: HomeRepository | null = pool
+    ? createHomeRepository(pool, { envelopeEncryptionProvider })
+    : null;
   const ownerPrivateReplicaEnvelopeEncryptionProvider:
     | EnvelopeEncryptionProvider
     | undefined =
@@ -1373,6 +1379,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const routeContext = {
     config,
     requireRepository,
+    home: homeRepository,
     auth: authHelpers,
     rateLimit: rateLimitHandlers,
     collaboration: {
@@ -1904,6 +1911,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerManagedConversationRoutes(app, routeContext);
   registerSourceControlRoutes(app, routeContext);
   registerPullRequestRoutes(app, routeContext);
+  registerHomeRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);

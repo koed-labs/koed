@@ -6,11 +6,22 @@ import { PullRequestsView } from "@/components/studio/PullRequestsView";
 
 function PullRequestsRoute() {
   const router = useRouter();
-  const demo = useSearchParams().get("demo") === "1";
+  const searchParams = useSearchParams();
+  const demo = searchParams.get("demo") === "1";
+  const requestedReview = searchParams.get("review");
+  const initialReviewId =
+    !demo &&
+    requestedReview &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      requestedReview
+    )
+      ? requestedReview
+      : undefined;
   const suffix = demo ? "?demo=1" : "";
   return (
     <PullRequestsView
-      key={demo ? "demo" : "live"}
+      key={demo ? "demo" : `live:${initialReviewId ?? "inbox"}`}
+      initialReviewId={initialReviewId}
       mode={demo ? "demo" : "live"}
       onHome={() => router.push(`/${suffix}`)}
       onNewChat={() => router.push(demo ? "/?demo=1&chat=1" : "/?chat=1")}

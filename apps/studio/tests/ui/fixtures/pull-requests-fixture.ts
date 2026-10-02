@@ -45,6 +45,10 @@ export class PullRequestsFixture {
     [];
   private readonly operations = new Map<string, Record<string, unknown>>();
   private nextOperation = 1;
+  private otherRunnerFirst = false;
+  putOtherRunnerFirst() {
+    this.otherRunnerFirst = true;
+  }
   private review: Record<string, unknown> | null = null;
   private detailOperationId: string | null = null;
   private messages: Array<Record<string, unknown>> = [];
@@ -268,6 +272,15 @@ export class PullRequestsFixture {
       await route.fulfill({
         json: {
           runners: [
+            ...(this.otherRunnerFirst
+              ? [
+                  {
+                    deviceId: "other-runner",
+                    deploymentId: "55555555-5555-4555-8555-555555555555",
+                    label: "Other computer"
+                  }
+                ]
+              : []),
             {
               deviceId: "synthetic-runner",
               deploymentId: "44444444-4444-4444-8444-444444444444",
