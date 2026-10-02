@@ -67,6 +67,7 @@ export const teamDraftAfterAcceptedSendResult = (
     if (!current) return { text: "", pendingSend: null };
     return {
       ...current,
+      ...(current.mentionUserIds ? { mentionUserIds: [] } : {}),
       ...(current.pendingSend?.clientMessageId === accepted.clientMessageId
         ? { pendingSend: null }
         : {}),
@@ -92,6 +93,11 @@ export const teamDraftForReplyAttempt = (
   currentComposerText: string
 ): StudioTeamDraft => ({
   text: retryingExistingSend ? (current?.text ?? currentComposerText) : "",
+  ...((current?.mentionUserIds ?? pendingSend.mentionUserIds)
+    ? {
+        mentionUserIds: current?.mentionUserIds ?? pendingSend.mentionUserIds
+      }
+    : {}),
   pendingSend,
   receiptAckPending: retryingExistingSend
     ? (current?.receiptAckPending ?? null)
@@ -288,6 +294,15 @@ export const resolvePendingSend = (
   originalBody: string
 ): StudioTeamDraft => {
   if (draft.pendingSend?.clientMessageId !== pendingSendId) return draft;
+  if (outcome === "accepted") {
+    const draftWithoutMentions = { ...draft };
+    delete draftWithoutMentions.mentionUserIds;
+    return {
+      ...draftWithoutMentions,
+      text: draft.text,
+      pendingSend: null
+    };
+  }
   return {
     ...draft,
     text:

@@ -53,6 +53,18 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const validText = (value: unknown): value is string =>
   typeof value === "string" &&
   encoder.encode(value).byteLength <= maxDraftBytes;
+const validMentionUserIds = (value: unknown): value is string[] =>
+  value === undefined ||
+  (Array.isArray(value) &&
+    value.length <= 40 &&
+    new Set(value).size === value.length &&
+    value.every(
+      (id) =>
+        typeof id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          id
+        )
+    ));
 
 const validPendingSend = (
   value: unknown
@@ -65,7 +77,17 @@ const validPendingSend = (
     typeof pending.body === "string" &&
     encoder.encode(pending.body).byteLength <= maxDraftBytes &&
     typeof pending.createdAt === "string" &&
-    Number.isFinite(Date.parse(pending.createdAt))
+    Number.isFinite(Date.parse(pending.createdAt)) &&
+    (pending.mentionUserIds === undefined ||
+      (Array.isArray(pending.mentionUserIds) &&
+        pending.mentionUserIds.length <= 40 &&
+        pending.mentionUserIds.every(
+          (id) =>
+            typeof id === "string" &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+              id
+            )
+        )))
   );
 };
 
@@ -345,6 +367,7 @@ export const createBrowserTeamDraftStore = (
           !value ||
           typeof value !== "object" ||
           !validText((value as StudioTeamDraft).text) ||
+          !validMentionUserIds((value as StudioTeamDraft).mentionUserIds) ||
           !validPendingSend((value as StudioTeamDraft).pendingSend) ||
           !validReceiptAckPending(
             (value as StudioTeamDraft).receiptAckPending
@@ -360,6 +383,7 @@ export const createBrowserTeamDraftStore = (
     async save(authority, draft) {
       if (
         !validText(draft?.text) ||
+        !validMentionUserIds(draft?.mentionUserIds) ||
         !validPendingSend(draft?.pendingSend) ||
         !validReceiptAckPending(draft?.receiptAckPending) ||
         !validEditDraft(draft?.edit)
@@ -372,6 +396,7 @@ export const createBrowserTeamDraftStore = (
           const database = await databasePromise;
           if (
             draft.text.length === 0 &&
+            (!draft.mentionUserIds || draft.mentionUserIds.length === 0) &&
             draft.pendingSend === null &&
             !draft.receiptAckPending &&
             !draft.edit
@@ -393,6 +418,9 @@ export const createBrowserTeamDraftStore = (
             encoder.encode(
               JSON.stringify({
                 text: draft.text,
+                ...(draft.mentionUserIds?.length
+                  ? { mentionUserIds: draft.mentionUserIds }
+                  : {}),
                 pendingSend: draft.pendingSend,
                 receiptAckPending: draft.receiptAckPending ?? null,
                 ...(draft.edit ? { edit: draft.edit } : {}),

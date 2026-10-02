@@ -1,4 +1,5 @@
 import type { Page, Route } from "@playwright/test";
+import type { TeamOverviewSnapshot, TeamAgentOffer } from "@koed/shared";
 import realtimeCursorFixture from "./realtime-cursor.json";
 
 export const ids = {
@@ -38,6 +39,7 @@ type SyntheticMessage = {
   senderDisplayName: string;
   recipientStatus: "sent";
   bodyText: string;
+  mentionUserIds: string[];
   metadata: Record<string, never>;
   provenance: { kind: "user"; id: string };
   createdAt: string;
@@ -126,6 +128,7 @@ const rawMessage = (input: {
   bodyText: string;
   rootMessageId?: string | null;
   senderUserId?: string;
+  mentionUserIds?: string[];
   reactions?: Array<{ emoji: string; count: number; reacted: boolean }>;
 }): SyntheticMessage => ({
   id: input.id,
@@ -145,6 +148,7 @@ const rawMessage = (input: {
       : "Synthetic user",
   recipientStatus: "sent",
   bodyText: input.bodyText,
+  mentionUserIds: input.mentionUserIds ?? [],
   metadata: {},
   provenance: {
     kind: "user",
@@ -188,6 +192,9 @@ const syntheticLiveJob = (id: string) => ({
 });
 
 export class SyntheticStudioApi {
+  teamOverview: TeamOverviewSnapshot | null = null;
+  teamOverviewStatus = 200;
+  readonly teamOffers = new Map<string, TeamAgentOffer>();
   readonly unexpectedMutations: string[] = [];
   readonly unexpectedReads: string[] = [];
   readonly mutationCounts = new Map<string, number>();
@@ -601,6 +608,85 @@ export class SyntheticStudioApi {
       }
     }
 
+    if (path === "/v1/collaboration/teams/overview" && method === "GET") {
+      if (this.teamOverviewStatus !== 200) {
+        await route.fulfill({
+          status: this.teamOverviewStatus,
+          json: { error: "Synthetic overview unavailable" }
+        });
+        return;
+      }
+      await route.fulfill({
+        json: this.teamOverview ?? {
+          schemaVersion: "koed.team-overview/v1",
+          access: { accountScope: ids.user, backendId: url.origin },
+          generatedAt: now,
+          nextCursor: null,
+          teams: [{ teamId: ids.team, name: "Synthetic Team", badgeCount: 0 }],
+          coverage: [
+            { source: "message_attention", complete: true, nextCursor: null },
+            { source: "agent_request", complete: true, nextCursor: null },
+            { source: "team_job_action", complete: true, nextCursor: null },
+            { source: "pull_request_action", complete: true, nextCursor: null },
+            { source: "team_job_outcome", complete: true, nextCursor: null }
+          ],
+          attention: [],
+          catchUp: [],
+          currentJobOutcomes: [],
+          cleared: [],
+          badgeCount: 0
+        }
+      });
+      return;
+    }
+    const overviewMutation = path.match(
+      /^\/v1\/collaboration\/teams\/([^/]+)\/overview\/([^/]+)\/(clear|restore|seen)$/
+    );
+    if (overviewMutation && method === "POST") {
+      const [, teamId, encodedId, action] = overviewMutation;
+      const eventId = decodeURIComponent(encodedId);
+      const feed = this.teamOverview;
+      const body = request.postDataJSON() as { sourceRevision?: unknown };
+      const item = [
+        ...(feed?.attention ?? []),
+        ...(feed?.cleared ?? []),
+        ...(feed?.catchUp ?? [])
+      ].find(
+        (entry) => entry.sourceEventId === eventId && entry.teamId === teamId
+      );
+      if (!feed || !item || item.sourceRevision !== body.sourceRevision) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "revision_changed" }
+        });
+        return;
+      }
+      await this.recordMutation(route, `overview:${eventId}:${action}`);
+      if (action === "seen") {
+        feed.catchUp = feed.catchUp.filter((entry) => entry !== item);
+      } else {
+        feed.attention = feed.attention.filter((entry) => entry !== item);
+        feed.cleared = feed.cleared.filter((entry) => entry !== item);
+        if (action === "clear") feed.cleared.push(item);
+        else feed.attention.push(item);
+        feed.badgeCount = feed.attention.length;
+        feed.teams = feed.teams.map((team) => ({
+          ...team,
+          badgeCount: feed.attention.filter(
+            (entry) => entry.teamId === team.teamId
+          ).length
+        }));
+      }
+      await route.fulfill({
+        json: {
+          sourceEventId: eventId,
+          sourceRevision: item.sourceRevision,
+          cleared: action === "clear",
+          seen: action === "seen"
+        }
+      });
+      return;
+    }
     const teamPrefix = `/v1/collaboration/teams/${ids.team}`;
     if (path === `${teamPrefix}/channels` && method === "GET") {
       await route.fulfill({
@@ -637,8 +723,40 @@ export class SyntheticStudioApi {
     }
     if (path === `${teamPrefix}/agent-offers` && method === "GET") {
       await route.fulfill({
-        json: { teamId: ids.team, offers: [], serverTime: now }
+        json: {
+          teamId: ids.team,
+          offers: [...this.teamOffers.values()],
+          serverTime: now
+        }
       });
+      return;
+    }
+    if (path.startsWith(`${teamPrefix}/agent-offers/`) && method === "PUT") {
+      const agentId = path.split("/").at(-1)!;
+      const agent = this.agents.find((entry) => entry.id === agentId);
+      const input = request.postDataJSON();
+      const previous = this.teamOffers.get(agentId);
+      if (!agent || input.expectedVersion !== (previous?.version ?? 0)) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "revision_changed" }
+        });
+        return;
+      }
+      const offer: TeamAgentOffer = {
+        teamId: ids.team,
+        agentId,
+        ownerId: ids.user,
+        ownerName: "Synthetic user",
+        agentName: agent.name,
+        description: input.description,
+        enabled: input.enabled,
+        version: (previous?.version ?? 0) + 1,
+        canManage: true
+      };
+      this.teamOffers.set(agentId, offer);
+      await this.recordMutation(route, `offer:${agentId}`);
+      await route.fulfill({ json: { offer } });
       return;
     }
     if (path === `${teamPrefix}/public-square` && method === "GET") {
@@ -734,6 +852,9 @@ export class SyntheticStudioApi {
             threadId,
             sequence: this.messages.length + 1,
             bodyText: String(body?.bodyText ?? ""),
+            mentionUserIds: Array.isArray(body?.mentionUserIds)
+              ? body.mentionUserIds
+              : [],
             rootMessageId:
               typeof body?.rootMessageId === "string"
                 ? body.rootMessageId
@@ -760,6 +881,8 @@ export class SyntheticStudioApi {
           return;
         }
         target.bodyText = String(body?.bodyText ?? target.bodyText);
+        if (Array.isArray(body?.mentionUserIds))
+          target.mentionUserIds = body.mentionUserIds;
         target.version += 1;
         target.editedAt = new Date().toISOString();
         target.updatedAt = target.editedAt;

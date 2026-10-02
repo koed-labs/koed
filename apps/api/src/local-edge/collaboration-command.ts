@@ -349,6 +349,7 @@ const canonicalMessageSchema = z
     editedAt: z.string().nullable().default(null),
     replyCount: z.number().int().safe().min(0).default(0),
     unreadReplyCount: z.number().int().safe().min(0).default(0),
+    mentionUserIds: z.array(z.uuid()).max(40).optional(),
     reactions: z
       .array(
         z
@@ -843,6 +844,7 @@ const personalMessageFromRecord = (
     editedAt: message.editedAt ?? null,
     replyCount: message.replyCount ?? 0,
     unreadReplyCount: message.unreadReplyCount ?? 0,
+    mentionUserIds: message.mentionUserIds ?? [],
     reactions: message.reactions ?? [],
     deletedAt: null,
     delivery: "sent",
@@ -1267,6 +1269,7 @@ const targetMessageFrom = (value: unknown): unknown => {
     editedAt: message.editedAt,
     replyCount: message.replyCount,
     unreadReplyCount: message.unreadReplyCount,
+    mentionUserIds: message.mentionUserIds,
     reactions: message.reactions,
     deletedAt: null,
     delivery: "sent",

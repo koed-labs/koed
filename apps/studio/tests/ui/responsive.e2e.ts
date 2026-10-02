@@ -57,7 +57,7 @@ for (const width of [320, 360, 390, 768, 1024, 1440]) {
     expect(box!.width).toBeGreaterThan(140);
     expect(box!.x + box!.width).toBeLessThanOrEqual(width);
     await composer.fill("@Busy");
-    const mentions = page.getByRole("listbox", { name: "Available agents" });
+    const mentions = page.getByRole("listbox", { name: "Mention someone" });
     await expect(mentions).toBeVisible();
     const mentionsBox = await mentions.boundingBox();
     expect(mentionsBox!.x).toBeGreaterThanOrEqual(0);

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import {
+  canonicalAgentMentionToken,
   matchMentionCandidates,
   mentionQueryAtCursor,
   unresolvedAgentMentions
@@ -84,6 +85,7 @@ export type ChatMentionAgent = Readonly<{
 
 export type ChatComposerSelection = Readonly<{
   agentId: string | null;
+  mentionUserIds?: string[];
   expectedAgentVersion?: number;
   provider: string | null;
   model: string;
@@ -143,6 +145,9 @@ type ChatComposerProps = {
   environmentSwitchDisabled?: boolean;
   executionPreset?: ChatComposerExecutionPreset;
   agents?: readonly ChatMentionAgent[];
+  teamMembers?: readonly { id: string; name: string }[];
+  initialMentionUserIds?: readonly string[];
+  onMentionUserIdsChange?: (userIds: string[]) => void;
   activeAgentId?: string | null;
   onAgentMention?: (agentId: string) => void;
   onActiveAgentChange?: (agentId: string | null) => void;
@@ -180,6 +185,9 @@ export function ChatComposer({
   environmentSwitchDisabled = false,
   executionPreset,
   agents = [],
+  teamMembers = [],
+  initialMentionUserIds = [],
+  onMentionUserIdsChange,
   activeAgentId = null,
   onAgentMention,
   onActiveAgentChange,
@@ -260,9 +268,22 @@ export function ChatComposer({
     end: number;
   } | null>(null);
   const [highlightedMentionIndex, setHighlightedMentionIndex] = useState(0);
-  const [resolvedMentionIds, setResolvedMentionIds] = useState<
+  const [localResolvedMentionIds, setResolvedMentionIds] = useState<
     Record<string, string>
   >({});
+  const byMemberId = new Map(teamMembers.map((member) => [member.id, member]));
+  const restoredMentionIds = Object.fromEntries(
+    initialMentionUserIds.flatMap((id) => {
+      const member = byMemberId.get(id);
+      return member
+        ? [[canonicalAgentMentionToken(member.name, member.id), id]]
+        : [];
+    })
+  );
+  const resolvedMentionIds = {
+    ...restoredMentionIds,
+    ...localResolvedMentionIds
+  };
   const [unsupportedDefaultEffortFor, setUnsupportedDefaultEffortFor] =
     useState<string | null>(() => {
       if (restoreSelection || !initialAgent?.defaultReasoningEffort)
@@ -281,10 +302,28 @@ export function ChatComposer({
   const draftVersionRef = useRef(0);
   const selectedAgent =
     agents.find((agent) => agent.id === activeAgentId) ?? null;
+  const mentionCandidates: Array<ChatMentionAgent & { teamMember?: boolean }> =
+    [
+      ...agents,
+      ...teamMembers.map((member) => ({
+        id: member.id,
+        name: member.name,
+        mentionToken: canonicalAgentMentionToken(member.name, member.id),
+        role: "Team member",
+        lifecycle: "active" as const,
+        defaultProvider: null,
+        defaultModel: null,
+        defaultReasoningEffort: null,
+        teamMember: true
+      }))
+    ];
   const mentionMatches = mentionQuery
-    ? matchMentionCandidates(mentionQuery.query, agents)
+    ? matchMentionCandidates(mentionQuery.query, mentionCandidates)
     : [];
-  const mentionIssues = unresolvedAgentMentions(draft, agents).filter(
+  const mentionIssues = unresolvedAgentMentions(
+    draft,
+    mentionCandidates
+  ).filter(
     (issue) =>
       !resolvedMentionIds[issue.name.toLocaleLowerCase().replace(/\s+/g, "_")]
   );
@@ -382,6 +421,28 @@ export function ChatComposer({
 
   const setDraft = (nextValue: string) => {
     draftVersionRef.current += 1;
+    const tokens = new Set(
+      Array.from(nextValue.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu), (match) =>
+        match[1].toLocaleLowerCase().replace(/\s+/g, "_")
+      )
+    );
+    const retained = Object.fromEntries(
+      Object.entries(resolvedMentionIds).filter(([token]) => tokens.has(token))
+    );
+    if (
+      Object.keys(retained).length !== Object.keys(resolvedMentionIds).length
+    ) {
+      setResolvedMentionIds(retained);
+      onMentionUserIdsChange?.(
+        Array.from(
+          new Set(
+            Object.values(retained).filter((id) =>
+              teamMembers.some((member) => member.id === id)
+            )
+          )
+        )
+      );
+    }
     if (onChange) {
       onChange(nextValue);
       return;
@@ -422,6 +483,18 @@ export function ChatComposer({
     if (!trimmed || !canSend) return;
     const selection: ChatComposerSelection = Object.freeze({
       agentId: activeAgentId,
+      mentionUserIds: Array.from(
+        new Set(
+          Array.from(
+            trimmed.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu),
+            (match) => {
+              const token = match[1].toLocaleLowerCase().replace(/\s+/g, "_");
+              const id = resolvedMentionIds[token];
+              return teamMembers.some((member) => member.id === id) ? id : null;
+            }
+          ).filter((id): id is string => Boolean(id))
+        )
+      ),
       ...(selectedAgent?.currentVersion !== undefined
         ? { expectedAgentVersion: selectedAgent.currentVersion }
         : {}),
@@ -489,19 +562,36 @@ export function ChatComposer({
     setIsModelListOpen(false);
   };
 
-  const selectMention = (agent: ChatMentionAgent) => {
+  const selectMention = (
+    agent: ChatMentionAgent & { teamMember?: boolean }
+  ) => {
     if (!mentionQuery) return;
     const token = agent.mentionToken ?? agent.name.replace(/\s+/g, "_");
     const mention = `@${token} `;
     const nextDraft = `${draft.slice(0, mentionQuery.start)}${mention}${draft.slice(mentionQuery.end)}`;
     setDraft(nextDraft);
     setMentionQuery(null);
-    onAgentMention?.(agent.id);
-    onActiveAgentChange?.(agent.id);
-    setResolvedMentionIds((current) => ({
-      ...current,
+    if (!agent.teamMember) {
+      onAgentMention?.(agent.id);
+      onActiveAgentChange?.(agent.id);
+    }
+    const nextResolved = {
+      ...resolvedMentionIds,
       [token.toLocaleLowerCase().replace(/\s+/g, "_")]: agent.id
-    }));
+    };
+    setResolvedMentionIds(nextResolved);
+    onMentionUserIdsChange?.(
+      Array.from(
+        new Set(
+          Object.values(nextResolved).filter((id) =>
+            teamMembers.some((member) => member.id === id)
+          )
+        )
+      )
+    );
+    if (agent.teamMember) {
+      return;
+    }
     if (agent.defaultProvider && agent.defaultModel) {
       setModel(`${agent.defaultProvider}:${agent.defaultModel}`);
     } else if (agent.defaultModel) {
@@ -824,11 +914,11 @@ export function ChatComposer({
           <div
             className="absolute bottom-full left-2 z-40 mb-2 max-h-56 w-[min(16rem,calc(100cqw-1rem))] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-xl"
             role="listbox"
-            aria-label="Available agents"
+            aria-label="Mention someone"
           >
             {mentionMatches.length ? (
               mentionMatches.map((agent, index) => {
-                const duplicateCount = agents.filter(
+                const duplicateCount = mentionCandidates.filter(
                   (candidate) =>
                     candidate.name.toLocaleLowerCase() ===
                     agent.name.toLocaleLowerCase()
@@ -843,12 +933,18 @@ export function ChatComposer({
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => selectMention(agent)}
                   >
-                    <AgentAvatarView
-                      image={agent.avatar?.image}
-                      spec={agent.avatar?.spec}
-                      name={agent.name}
-                      size="sm"
-                    />
+                    {agent.teamMember ? (
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">
+                        {agent.name.slice(0, 1).toUpperCase()}
+                      </span>
+                    ) : (
+                      <AgentAvatarView
+                        image={agent.avatar?.image}
+                        spec={agent.avatar?.spec}
+                        name={agent.name}
+                        size="sm"
+                      />
+                    )}
                     <span className="min-w-0">
                       <span className="block truncate text-xs text-foreground">
                         {agent.name}
@@ -863,7 +959,7 @@ export function ChatComposer({
               })
             ) : (
               <p className="px-2 py-2 text-xs text-muted">
-                No available agents match this mention.
+                No available people match this mention.
               </p>
             )}
           </div>

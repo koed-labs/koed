@@ -181,3 +181,32 @@ test("request inbox pagination is scoped and stale writes remain visible as conf
       failure instanceof TeamAgentRequestError && failure.status === 409
   );
 });
+
+test("inbox lookup follows cursors until the exact request is found", async () => {
+  const paths: string[] = [];
+  const client = new TeamAgentRequestsClient("hosted", async (input) => {
+    const path = String(input);
+    paths.push(path);
+    if (!path.includes("cursor="))
+      return Response.json({
+        teamId,
+        requests: [],
+        nextCursor: "older",
+        serverTime: time
+      });
+    return Response.json({
+      teamId,
+      requests: [request],
+      nextCursor: null,
+      serverTime: time
+    });
+  });
+
+  assert.equal(
+    (await client.findInboxRequest(teamId, requestId))?.id,
+    requestId
+  );
+  assert.equal(paths.length, 2);
+  assert.match(paths[0] ?? "", /limit=100$/);
+  assert.match(paths[1] ?? "", /cursor=older$/);
+});

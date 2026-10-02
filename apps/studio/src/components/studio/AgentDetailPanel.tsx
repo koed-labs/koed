@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Archive, Award, Copy, Pencil, Sparkles, X } from "lucide-react";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import { Tooltip } from "@/components/Tooltip";
@@ -37,7 +38,8 @@ export function AgentDetailPanel({
   onRestore,
   cloneLoading,
   restoring,
-  lifecycleError
+  lifecycleError,
+  teamAvailability
 }: {
   agent: PersonalAgent;
   loading: boolean;
@@ -56,6 +58,7 @@ export function AgentDetailPanel({
   cloneLoading: boolean;
   restoring: boolean;
   lifecycleError: string | null;
+  teamAvailability?: ReactNode;
 }) {
   const [soulOpen, setSoulOpen] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -473,6 +476,7 @@ export function AgentDetailPanel({
           </section>
         </>
       )}
+      {teamAvailability}
       <div className="mt-6 px-5 pb-5">
         <button
           type="button"

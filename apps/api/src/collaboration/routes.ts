@@ -5,9 +5,11 @@ import type {
   PublicSquareRepository,
   SharedMemoryRepository,
   TeamAgentRequestsRepository,
+  TeamOverviewRepository,
+  TeamOverviewSourcesRepository,
   CreateOwnerJobWithClient
 } from "@koed/db";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -69,6 +71,14 @@ import {
   updateTeamAgentRequestReviewInputSchema,
   withdrawTeamAgentRequestInputSchema
 } from "@koed/shared/team-agent-requests";
+import {
+  teamOverviewMutationResultSchema,
+  teamOverviewQuerySchema,
+  teamOverviewSchemaVersion,
+  teamOverviewSnapshotSchema,
+  teamOverviewSourceMutationSchema,
+  type TeamOverviewItem
+} from "@koed/shared";
 
 const SMALL_BODY_LIMIT_BYTES = 16 * 1024;
 const MESSAGE_BODY_LIMIT_BYTES = 72 * 1024;
@@ -81,7 +91,7 @@ const badRequest = (message: string) =>
 
 export interface CollaborationRouteContext extends Pick<
   ApiRouteContext,
-  "config" | "localEdge"
+  "config" | "localEdge" | "deploymentIdentity"
 > {
   requireCollaborationRepository(): CollaborationRepository &
     PublicSquareRepository &
@@ -91,6 +101,8 @@ export interface CollaborationRouteContext extends Pick<
     "listWorkspaceGrants"
   >;
   requireTeamAgentRequestsRepository(): TeamAgentRequestsRepository;
+  requireTeamOverviewRepository(): TeamOverviewRepository;
+  requireTeamOverviewSourcesRepository(): TeamOverviewSourcesRepository;
   createOwnerJobWithClient: CreateOwnerJobWithClient;
   projectPersonalNote(input: {
     ownerUserId: string;
@@ -310,7 +322,7 @@ export const registerCollaborationRoutes = (
           expected.length === actual.length &&
           timingSafeEqual(expected, actual);
       } catch {
-        paired = false;
+        // Missing or invalid local credential cannot authorize the request.
       }
       if (!paired)
         throw forbidden("Paired local application credential required");
@@ -380,6 +392,327 @@ export const registerCollaborationRoutes = (
     }
     return payload;
   };
+
+  const overviewCursor = (
+    value?: string
+  ): { offset: number; fingerprint: string | null } => {
+    if (!value) return { offset: 0, fingerprint: null };
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(value, "base64url").toString("utf8")
+      ) as { offset?: unknown; fingerprint?: unknown };
+      if (
+        !Number.isSafeInteger(decoded.offset) ||
+        Number(decoded.offset) < 0 ||
+        typeof decoded.fingerprint !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(decoded.fingerprint) ||
+        Object.keys(decoded).length !== 2 ||
+        Buffer.from(value, "base64url").toString("base64url") !== value
+      )
+        throw new Error();
+      return {
+        offset: Number(decoded.offset),
+        fingerprint: decoded.fingerprint
+      };
+    } catch {
+      throw badRequest("Team overview cursor is invalid");
+    }
+  };
+  const makeTeamOverview = async (
+    userId: string,
+    limit: number,
+    cursor?: string
+  ) => {
+    const actor = { userId };
+    const overviewRepository = context.requireTeamOverviewRepository();
+    const sourcesRepository = context.requireTeamOverviewSourcesRepository();
+    const teams = await overviewRepository.listAuthorizedTeams(actor);
+    const sources = await sourcesRepository.listCurrentItems(actor, teams);
+    const rawAttention = sources.attention;
+    const rawCatchUp = sources.catchUp;
+    const currentJobOutcomes = [...rawAttention, ...rawCatchUp]
+      .filter((item) => item.source === "team_job_outcome")
+      .map(({ teamId, sourceEventId, sourceRevision }) => ({
+        teamId,
+        sourceEventId,
+        sourceRevision
+      }));
+    const eventIds = [...rawAttention, ...rawCatchUp].map(
+      (item) => item.sourceEventId
+    );
+    const states = await overviewRepository.listReminderStates(actor, {
+      sourceEventIds: eventIds
+    });
+    const stateByEvent = new Map(
+      states.map((state) => [state.sourceEventId, state])
+    );
+    const sourceFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          actor: `${context.deploymentIdentity.inspect().deploymentId ?? "unknown-authority"}:${userId}`,
+          teams: teams.map((team) => team.teamId).sort(),
+          sources: [...rawAttention, ...rawCatchUp]
+            .map((item) => {
+              const state = stateByEvent.get(item.sourceEventId);
+              const currentState =
+                state?.teamId === item.teamId &&
+                state.source === item.source &&
+                state.sourceId === item.sourceId &&
+                state.sourceRevision === item.sourceRevision
+                  ? state
+                  : null;
+              return {
+                teamId: item.teamId,
+                source: item.source,
+                sourceEventId: item.sourceEventId,
+                sourceId: item.sourceId,
+                sourceRevision: item.sourceRevision,
+                cleared: currentState?.cleared ?? false,
+                seen: currentState?.seen ?? false
+              };
+            })
+            .sort(
+              (a, b) =>
+                a.teamId.localeCompare(b.teamId) ||
+                a.sourceEventId.localeCompare(b.sourceEventId)
+            )
+        })
+      )
+      .digest("hex");
+    const decodedCursor = overviewCursor(cursor);
+    if (
+      decodedCursor.fingerprint !== null &&
+      decodedCursor.fingerprint !== sourceFingerprint
+    ) {
+      throw Object.assign(new Error("Team overview changed between pages"), {
+        statusCode: 409
+      });
+    }
+    const attention: TeamOverviewItem[] = [];
+    const cleared: TeamOverviewItem[] = [];
+    for (const item of rawAttention) {
+      const state = stateByEvent.get(item.sourceEventId);
+      const currentState =
+        state?.teamId === item.teamId &&
+        state.source === item.source &&
+        state.sourceId === item.sourceId &&
+        state.sourceRevision === item.sourceRevision
+          ? state
+          : null;
+      if (currentState?.cleared) cleared.push(item);
+      else attention.push(item);
+    }
+    const catchUp = rawCatchUp.filter((item) => {
+      const state = stateByEvent.get(item.sourceEventId);
+      return !(
+        state &&
+        state.teamId === item.teamId &&
+        state.source === item.source &&
+        state.sourceId === item.sourceId &&
+        state.sourceRevision === item.sourceRevision &&
+        state.seen
+      );
+    });
+    const priorityRank = (item: TeamOverviewItem) =>
+      item.priority === "blocker" ? 0 : 1;
+    attention.sort(
+      (a, b) =>
+        priorityRank(a) - priorityRank(b) ||
+        Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    );
+    catchUp.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    cleared.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const offset = decodedCursor.offset;
+    const combined = [...attention, ...catchUp, ...cleared];
+    const page = combined.slice(offset, offset + limit);
+    const pageAttention = page.filter((item) => attention.includes(item));
+    const pageCatchUp = page.filter((item) => catchUp.includes(item));
+    const pageCleared = page.filter((item) => cleared.includes(item));
+    const teamCounts = teams.map((team) => ({
+      ...team,
+      badgeCount: attention.filter((item) => item.teamId === team.teamId).length
+    }));
+    const complete = combined.length <= offset + limit;
+    return teamOverviewSnapshotSchema.parse({
+      schemaVersion: teamOverviewSchemaVersion,
+      access: {
+        accountScope: createHash("sha256")
+          .update(
+            `koed-team-overview:${context.deploymentIdentity.inspect().deploymentId ?? "unknown-authority"}:${userId}`
+          )
+          .digest("hex"),
+        backendId: null
+      },
+      generatedAt: new Date().toISOString(),
+      teams: teamCounts,
+      coverage: [
+        "message_attention",
+        "agent_request",
+        "team_job_action",
+        "team_job_outcome",
+        "pull_request_action"
+      ].map((source) => ({ source, complete: true, nextCursor: null })),
+      currentJobOutcomes,
+      attention: pageAttention,
+      catchUp: pageCatchUp,
+      cleared: pageCleared,
+      nextCursor: complete
+        ? null
+        : Buffer.from(
+            JSON.stringify({
+              offset: offset + limit,
+              fingerprint: sourceFingerprint
+            })
+          ).toString("base64url"),
+      badgeCount: attention.length
+    });
+  };
+
+  app.get(
+    "/v1/collaboration/teams/overview",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_read"
+      );
+      if (authority) {
+        const proxied = await proxyPublicSquare(
+          request,
+          "team_chat_read",
+          authority
+        );
+        return teamOverviewSnapshotSchema.parse(proxied);
+      }
+      const input = teamOverviewQuerySchema.parse(request.query);
+      return makeTeamOverview(user.id, input.limit, input.cursor);
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/teams/:teamId/overview/:sourceEventId/:action",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { user, authority } = await authenticatePublicSquare(
+        request,
+        "team_chat_write"
+      );
+      const params = z
+        .object({
+          teamId: z.uuid(),
+          sourceEventId: z
+            .string()
+            .min(1)
+            .max(160)
+            .regex(/^[A-Za-z0-9._:-]+$/u),
+          action: z.enum(["clear", "restore", "seen"])
+        })
+        .strict()
+        .parse(request.params);
+      const input = teamOverviewSourceMutationSchema.parse(request.body);
+      if (authority) {
+        const proxied = await proxyPublicSquare(
+          request,
+          "team_chat_write",
+          authority,
+          input
+        );
+        return teamOverviewMutationResultSchema.parse(proxied);
+      }
+      const overviewRepository = context.requireTeamOverviewRepository();
+      const teams = await overviewRepository.listAuthorizedTeams({
+        userId: user.id
+      });
+      if (!teams.some((team) => team.teamId === params.teamId))
+        throw forbidden();
+      const current = await context
+        .requireTeamOverviewSourcesRepository()
+        .listCurrentItems({ userId: user.id }, teams);
+      const allCurrent = [...current.attention, ...current.catchUp];
+      const item = allCurrent.find(
+        (candidate) =>
+          candidate.teamId === params.teamId &&
+          candidate.sourceEventId === params.sourceEventId
+      );
+      if (!item || item.sourceRevision !== input.sourceRevision)
+        throw Object.assign(new Error("Team overview item changed"), {
+          statusCode: 409
+        });
+      const states = await overviewRepository.listReminderStates(
+        { userId: user.id },
+        { teamId: params.teamId, sourceEventIds: [item.sourceEventId] }
+      );
+      const currentState = states.find(
+        (state) =>
+          state.source === item.source &&
+          state.sourceId === item.sourceId &&
+          state.sourceRevision === item.sourceRevision
+      );
+      if (
+        params.action === "clear" &&
+        !current.attention.some(
+          (candidate) => candidate.sourceEventId === item.sourceEventId
+        )
+      ) {
+        throw badRequest("Only attention items can be cleared");
+      }
+      if (
+        params.action === "restore" &&
+        !current.attention.some(
+          (candidate) => candidate.sourceEventId === item.sourceEventId
+        )
+      ) {
+        throw badRequest("Only current attention items can be restored");
+      }
+      if (params.action === "restore" && !currentState?.cleared)
+        throw Object.assign(new Error("Team overview item is not cleared"), {
+          statusCode: 409
+        });
+      if (
+        params.action === "seen" &&
+        !current.catchUp.some(
+          (candidate) => candidate.sourceEventId === item.sourceEventId
+        )
+      ) {
+        throw badRequest("Only catch-up outcomes can be marked seen");
+      }
+      if (params.action === "seen" && item.source !== "team_job_outcome")
+        throw badRequest("Only Team Job outcomes can be marked seen");
+      const state = await context
+        .requireTeamOverviewRepository()
+        .setReminderState(
+          { userId: user.id },
+          {
+            teamId: params.teamId,
+            sourceEventId: item.sourceEventId,
+            source: item.source,
+            sourceId: item.sourceId,
+            sourceRevision: item.sourceRevision,
+            ...(params.action === "clear"
+              ? { cleared: true }
+              : params.action === "restore"
+                ? { cleared: false }
+                : { seen: true })
+          }
+        );
+      if (!state) {
+        const stillAuthorized = (
+          await overviewRepository.listAuthorizedTeams({ userId: user.id })
+        ).some((team) => team.teamId === params.teamId);
+        if (stillAuthorized)
+          throw Object.assign(new Error("Team overview item changed"), {
+            statusCode: 409
+          });
+        throw forbidden();
+      }
+      return teamOverviewMutationResultSchema.parse({
+        sourceEventId: state.sourceEventId,
+        sourceRevision: state.sourceRevision,
+        cleared: state.cleared,
+        seen: state.seen
+      });
+    }
+  );
 
   app.get(
     "/v1/collaboration/teams/:teamId/agent-offers",
@@ -1590,6 +1923,8 @@ export const registerCollaborationRoutes = (
               );
         const params = parseScopedParams(request.params);
         const input = createCollaborationMessageSchema.parse(request.body);
+        if (scope === "personal" && input.mentionUserIds?.length)
+          throw badRequest("Mentions are only available in Team messages");
         const repository = context.requireCollaborationRepository();
         if (scope === "personal") {
           await requirePersonalThread(repository, user.id, params.threadId);
@@ -1703,7 +2038,10 @@ export const registerCollaborationRoutes = (
             threadId: params.threadId,
             messageId: params.messageId,
             bodyText: input.bodyText,
-            expectedVersion: input.expectedVersion
+            expectedVersion: input.expectedVersion,
+            ...(input.mentionUserIds !== undefined
+              ? { mentionUserIds: input.mentionUserIds }
+              : {})
           }
         );
         if (!message) throw forbidden();

@@ -863,6 +863,7 @@ const rendererMessageFromRecord = (
       version: message.version ?? 1,
       replyCount: message.replyCount ?? 0,
       unreadReplyCount: message.unreadReplyCount ?? 0,
+      mentionUserIds: message.mentionUserIds ?? [],
       reactions: message.reactions ?? [],
       editedAt: message.editedAt ?? null,
       deletedAt: null,

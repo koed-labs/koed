@@ -443,14 +443,19 @@ export class HostedTeamCollaborationClient {
     threadId: string,
     bodyText: string,
     clientMessageId: string,
-    rootMessageId: string | null = null
+    rootMessageId: string | null = null,
+    mentionUserIds: string[] = []
   ): Promise<HostedTeamSendReceipt> {
     const response = await this.request(
       `/v1/collaboration/teams/${encodeURIComponent(teamId)}/threads/${encodeURIComponent(threadId)}/messages`,
       {
         method: "POST",
         headers: { "Idempotency-Key": clientMessageId },
-        body: JSON.stringify({ bodyText, rootMessageId })
+        body: JSON.stringify({
+          bodyText,
+          rootMessageId,
+          ...(mentionUserIds.length > 0 ? { mentionUserIds } : {})
+        })
       }
     );
     if (!record(response) || !record(response.message)) {

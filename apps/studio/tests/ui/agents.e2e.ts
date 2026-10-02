@@ -96,3 +96,65 @@ test("Agents filters and collection views stay usable when an older detail read 
     [...api.mutationCounts.keys()].filter((key) => key.includes("/retire"))
   ).toHaveLength(1);
 });
+
+test("Agent details manage the same Team offers and save descriptions without disabling availability", async ({
+  page
+}) => {
+  const api = await installSyntheticApi(page);
+  await page.goto("/studio/agents");
+  await page
+    .getByRole("region", { name: "Agent collection" })
+    .getByRole("button", { name: /Busy Reviewer/ })
+    .click();
+  const details = page.getByLabel("Busy Reviewer details");
+  const availability = details.getByRole("region", {
+    name: "Team availability",
+    exact: true
+  });
+  await expect(availability).toBeVisible();
+  const description = availability.getByLabel(
+    "Short description for Busy Reviewer"
+  );
+  await description.fill("Reviews our Project changes.");
+  await availability
+    .getByRole("button", {
+      name: "Make Busy Reviewer available to Synthetic Team"
+    })
+    .click();
+  await expect
+    .poll(() => api.teamOffers.get(ids.busyAgent)?.enabled)
+    .toBe(true);
+  await expect
+    .poll(() => api.teamOffers.get(ids.busyAgent)?.description)
+    .toBe("Reviews our Project changes.");
+  await description.fill("Reviews changes and verifies tests.");
+  await availability
+    .getByRole("button", { name: "Save description", exact: true })
+    .click();
+  await expect
+    .poll(() => api.teamOffers.get(ids.busyAgent)?.description)
+    .toBe("Reviews changes and verifies tests.");
+  expect(api.teamOffers.get(ids.busyAgent)?.enabled).toBe(true);
+  await page.reload();
+  await page
+    .getByRole("region", { name: "Agent collection" })
+    .getByRole("button", { name: /Busy Reviewer/ })
+    .click();
+  const reopened = page.getByRole("region", {
+    name: "Team availability",
+    exact: true
+  });
+  await expect(
+    reopened.getByLabel("Short description for Busy Reviewer")
+  ).toHaveValue("Reviews changes and verifies tests.");
+  await reopened
+    .getByRole("button", {
+      name: "Disable Busy Reviewer availability for Synthetic Team"
+    })
+    .click();
+  await expect
+    .poll(() => api.teamOffers.get(ids.busyAgent)?.enabled)
+    .toBe(false);
+  expect(api.unexpectedMutations).toEqual([]);
+  expect(api.unexpectedReads).toEqual([]);
+});

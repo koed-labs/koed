@@ -768,6 +768,7 @@ test("a realtime newest page merges without dropping the loaded older history", 
     reactions: [],
     editedAt: null,
     deletedAt: null,
+    mentionUserIds: [],
     delivery: "sent" as const,
     recipientStatus: "read" as const,
     failure: null
@@ -1484,4 +1485,33 @@ test("edit conflict retains the device text and basis until explicit review", ()
   assert.equal(adapterShape.edit?.baseBodyText, "Latest saved");
   assert.equal("conflict" in (adapterShape.edit ?? {}), false);
   assert.equal(editDraftAfterConflictReview(draft), draft);
+});
+
+test("explicit Team mention IDs stay on a pending send through reply restoration and retry", () => {
+  const pending = {
+    clientMessageId: "client-mention-retry",
+    body: "Please review this @teammate_00000001",
+    createdAt: "2026-10-01T10:00:00.000Z",
+    mentionUserIds: ["00000000-0000-4000-8000-000000000001"]
+  };
+  const restored = teamDraftAfterReplyHydration(
+    { text: "", pendingSend: pending },
+    undefined
+  );
+  assert.deepEqual(restored.pendingSend, pending);
+  const retry = teamDraftForReplyAttempt(
+    restored,
+    restored.pendingSend!,
+    true,
+    ""
+  );
+  assert.deepEqual(retry.pendingSend?.mentionUserIds, pending.mentionUserIds);
+  const failed = resolvePendingSend(
+    retry,
+    pending.clientMessageId,
+    "not-sent",
+    pending.body
+  );
+  assert.equal(failed.pendingSend, null);
+  assert.equal(failed.text, pending.body);
 });

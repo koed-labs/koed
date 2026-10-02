@@ -141,7 +141,8 @@ const workspaceChannel = () => ({
 });
 
 const teamThreadBase = () => {
-  const { ownerUserId: _ownerUserId, ...base } = personalChannel();
+  const base = personalChannel();
+  delete base.ownerUserId;
   return base;
 };
 
@@ -178,6 +179,7 @@ const message = () => ({
   version: 1,
   replyCount: 0,
   unreadReplyCount: 0,
+  mentionUserIds: [],
   reactions: [],
   editedAt: null,
   deletedAt: null,

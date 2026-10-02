@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { LoaderCircle, RotateCw } from "lucide-react";
 import {
   personalAgentsHttpAdapter,
@@ -17,11 +24,15 @@ type LoadState = "loading" | "ready" | "unavailable";
 /** Owner-private controls for publishing only the selected Agent identity and short description to this Team. */
 export function TeamAgentOffers({
   teamId,
+  teamName,
+  onlyAgentId,
   authorityKey,
   refreshRevision,
   client
 }: {
   teamId: string;
+  teamName?: string;
+  onlyAgentId?: string;
   authorityKey: string;
   refreshRevision: number;
   client: TeamAgentRequestsClient;
@@ -35,6 +46,20 @@ export function TeamAgentOffers({
   const [state, setState] = useState<LoadState>("loading");
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [loadedAuthority, setLoadedAuthority] = useState<string | null>(null);
+  const authorityRef = useRef(authorityKey);
+  useLayoutEffect(() => {
+    authorityRef.current = authorityKey;
+  }, [authorityKey]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const visibleState = loadedAuthority === authorityKey ? state : "loading";
+  const titleId = `team-agent-offers-${teamId}-${onlyAgentId ?? "all"}`;
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -44,9 +69,20 @@ export function TeamAgentOffers({
           client.listOffers(teamId),
           personalAgentsHttpAdapter.list(signal)
         ]);
-        if (signal?.aborted || capturedAuthority !== authorityKey) return;
+        if (
+          signal?.aborted ||
+          capturedAuthority !== authorityRef.current ||
+          !mounted.current
+        )
+          return;
         setOffers(nextOffers);
-        setAgents(nextAgents.filter((agent) => agent.lifecycle === "active"));
+        setAgents(
+          nextAgents.filter(
+            (agent) =>
+              agent.lifecycle === "active" &&
+              (!onlyAgentId || agent.id === onlyAgentId)
+          )
+        );
         setDraftDescriptions(
           Object.fromEntries(
             nextOffers
@@ -55,17 +91,24 @@ export function TeamAgentOffers({
           )
         );
         setState("ready");
+        setLoadedAuthority(capturedAuthority);
       } catch (failure) {
-        if (signal?.aborted || capturedAuthority !== authorityKey) return;
+        if (
+          signal?.aborted ||
+          capturedAuthority !== authorityRef.current ||
+          !mounted.current
+        )
+          return;
         setError(
           failure instanceof Error
             ? failure.message
             : "Agent offers are unavailable."
         );
         setState("unavailable");
+        setLoadedAuthority(capturedAuthority);
       }
     },
-    [authorityKey, client, teamId]
+    [authorityKey, client, teamId, onlyAgentId]
   );
 
   const retry = () => {
@@ -89,6 +132,9 @@ export function TeamAgentOffers({
   const updateOffer = async (agent: PersonalAgent, enabled: boolean) => {
     if (pendingIds.has(agent.id)) return;
     const previous = offersByAgent.get(agent.id);
+    const capturedAuthority = authorityKey;
+    const submittedDescription =
+      draftDescriptions[agent.id] ?? previous?.description ?? "";
     setPendingIds((current) => new Set(current).add(agent.id));
     setError(null);
     try {
@@ -97,21 +143,23 @@ export function TeamAgentOffers({
         agentId: agent.id,
         expectedVersion: previous?.version ?? 0,
         enabled,
-        description: (
-          draftDescriptions[agent.id] ??
-          previous?.description ??
-          ""
-        ).trim()
+        description: submittedDescription.trim()
       });
+      if (!mounted.current || capturedAuthority !== authorityRef.current)
+        return;
       setOffers((current) => [
         ...current.filter((offer) => offer.agentId !== saved.agentId),
         saved
       ]);
-      setDraftDescriptions((current) => ({
-        ...current,
-        [agent.id]: saved.description
-      }));
+      setDraftDescriptions((current) =>
+        (current[agent.id] ?? previous?.description ?? "") ===
+        submittedDescription
+          ? { ...current, [agent.id]: saved.description }
+          : current
+      );
     } catch (failure) {
+      if (!mounted.current || capturedAuthority !== authorityRef.current)
+        return;
       setError(
         failure instanceof Error
           ? failure.message
@@ -128,40 +176,43 @@ export function TeamAgentOffers({
         setState("unavailable");
       }
     } finally {
-      setPendingIds((current) => {
-        const next = new Set(current);
-        next.delete(agent.id);
-        return next;
-      });
+      if (mounted.current && capturedAuthority === authorityRef.current)
+        setPendingIds((current) => {
+          const next = new Set(current);
+          next.delete(agent.id);
+          return next;
+        });
     }
   };
 
   return (
     <section
       className="rounded-2xl border border-border/70 bg-surface/20 px-5 py-4"
-      aria-labelledby="team-agent-offers-title"
+      aria-labelledby={titleId}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2
-            id="team-agent-offers-title"
-            className="text-sm font-medium text-foreground"
-          >
-            Make an Agent available
+          <h2 id={titleId} className="text-sm font-medium text-foreground">
+            {onlyAgentId
+              ? (teamName ?? "Team availability")
+              : "Make an Agent available"}
           </h2>
-          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-faint">
-            Choose which of your Agents teammates can ask for help. Only the
-            Agent name and this short description are shared with {"this Team"};
-            your private instructions and Conversations stay private.
-          </p>
+          {!onlyAgentId && (
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-faint">
+              Choose which of your Agents teammates can ask for help. Only the
+              Agent name and this short description are shared with{" "}
+              {"this Team"}; your private instructions and Conversations stay
+              private.
+            </p>
+          )}
         </div>
-        {state === "loading" && (
+        {visibleState === "loading" && (
           <LoaderCircle
             className="mt-0.5 h-4 w-4 animate-spin text-faint"
             aria-label="Loading Agent offers"
           />
         )}
-        {state === "unavailable" && (
+        {visibleState === "unavailable" && (
           <button
             type="button"
             onClick={retry}
@@ -172,12 +223,12 @@ export function TeamAgentOffers({
           </button>
         )}
       </div>
-      {state === "unavailable" && (
+      {visibleState === "unavailable" && (
         <p role="alert" className="mt-3 text-xs text-danger">
           {error}
         </p>
       )}
-      {state === "ready" &&
+      {visibleState === "ready" &&
         (agents.length === 0 ? (
           <p className="mt-3 text-xs text-faint">
             Create an Agent before offering help to this Team.
@@ -192,7 +243,7 @@ export function TeamAgentOffers({
               return (
                 <div
                   key={agent.id}
-                  className="grid gap-3 py-3 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+                  className={`grid gap-3 py-3 first:pt-0 last:pb-0 ${onlyAgentId ? "" : "sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}`}
                 >
                   <div className="min-w-0">
                     <p className="truncate text-xs font-medium text-foreground">
@@ -222,7 +273,7 @@ export function TeamAgentOffers({
                       />
                     </label>
                   </div>
-                  <div className="flex items-center gap-2 sm:pt-0.5">
+                  <div className="flex flex-wrap items-center gap-2 sm:pt-0.5">
                     {isOwnerOffer && (
                       <span className="text-[10px] text-faint">
                         {enabled ? "Available to this Team" : "Not shared"}
@@ -231,6 +282,12 @@ export function TeamAgentOffers({
                     <button
                       type="button"
                       disabled={pending}
+                      aria-pressed={enabled}
+                      aria-label={
+                        onlyAgentId
+                          ? `${enabled ? "Disable" : "Make"} ${agent.name} ${enabled ? "availability for" : "available to"} ${teamName ?? "this Team"}`
+                          : undefined
+                      }
                       onClick={() => void updateOffer(agent, !enabled)}
                       className={`rounded-md border px-2.5 py-1.5 text-[10px] font-medium disabled:opacity-50 ${enabled ? "border-border text-subtle hover:bg-surface-hover" : "border-accent/30 bg-accent/10 text-accent hover:bg-accent/15"}`}
                     >
@@ -240,13 +297,24 @@ export function TeamAgentOffers({
                           ? "Disable"
                           : "Share with Team"}
                     </button>
+                    {(draftDescriptions[agent.id] ?? "").trim() !==
+                      (offer?.description ?? "") && (
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() => void updateOffer(agent, enabled)}
+                        className="rounded-md border border-border px-2.5 py-1.5 text-[10px] text-subtle disabled:opacity-50"
+                      >
+                        Save description
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         ))}
-      {error && state === "ready" && (
+      {error && visibleState === "ready" && (
         <p role="alert" className="mt-3 text-xs text-danger">
           {error}
         </p>

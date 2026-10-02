@@ -162,10 +162,12 @@ export async function handlePersonalAgents({
   }
   if (
     teamAgentRequestList &&
-    !validTeamAgentRequestQuery(
-      url.searchParams,
-      teamAgentRequestRoute?.list === "inbox"
-    )
+    !(teamAgentRequestRoute?.list === "overview"
+      ? validTeamOverviewQuery(url.searchParams)
+      : validTeamAgentRequestQuery(
+          url.searchParams,
+          teamAgentRequestRoute?.list === "inbox"
+        ))
   ) {
     send(400, { error: "invalid_team_agent_request_query" });
     return true;
@@ -358,7 +360,7 @@ export async function handlePersonalAgents({
         routeFamily === "public-square"
           ? "Public Square is unavailable. Check the Koed connection and try again."
           : routeFamily === "team-agent-requests"
-            ? "Team Agent requests are unavailable. Check the Koed connection and try again."
+            ? "Team activity is unavailable. Check the Koed connection and try again."
             : "Agents are unavailable. Check the local Koed connection and try again."
     });
   }
@@ -522,6 +524,27 @@ export function handleTeamAgentRequests(options) {
 }
 
 function teamAgentRequestsRoute(suffix) {
+  if (suffix === "/teams/overview")
+    return {
+      path: "/v1/collaboration/teams/overview",
+      methods: ["GET"],
+      list: "overview"
+    };
+  const overview = new RegExp(
+    `^/teams/(${uuid})/overview/([^/]{1,480})/(clear|restore|seen)$`
+  ).exec(suffix);
+  if (overview) {
+    try {
+      const eventId = decodeURIComponent(overview[2]);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(eventId)) return null;
+      return {
+        path: `/v1/collaboration/teams/${overview[1]}/overview/${encodeURIComponent(eventId)}/${overview[3]}`,
+        methods: ["POST"]
+      };
+    } catch {
+      return null;
+    }
+  }
   const team = new RegExp(
     `^/teams/(${uuid})(/agent-offers(?:/${uuid})?|/agent-requests(?:/inbox|/${uuid}(?:/review|/decision|/outcome))?)$`
   ).exec(suffix);
@@ -544,6 +567,24 @@ function teamAgentRequestsRoute(suffix) {
   if (new RegExp(`^/agent-requests/${uuid}$`).test(tail))
     return { path, methods: ["DELETE"] };
   return null;
+}
+
+function validTeamOverviewQuery(params) {
+  const keys = [...params.keys()];
+  if (
+    keys.length !== new Set(keys).size ||
+    keys.some((key) => !["limit", "cursor"].includes(key))
+  )
+    return false;
+  const limit = params.get("limit");
+  const cursor = params.get("cursor");
+  return (
+    (limit === null || (/^[1-9][0-9]*$/.test(limit) && Number(limit) <= 100)) &&
+    (cursor === null ||
+      (cursor.length > 0 &&
+        cursor.length <= 512 &&
+        !/[\u0000-\u001f\u007f]/.test(cursor)))
+  );
 }
 
 function validTeamAgentRequestQuery(params, inbox = false) {

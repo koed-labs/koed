@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -41,10 +42,7 @@ import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelMessageContent } from "@/components/TeamChannelMessageContent";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { PublicSquare } from "@/components/PublicSquare";
-import {
-  TeamAgentRequestInbox,
-  TeamChannelAgentRequests
-} from "@/components/TeamAgentRequestViews";
+import { TeamChannelAgentRequests } from "@/components/TeamAgentRequestViews";
 import { SidebarProvider } from "@/components/SidebarContext";
 import type {
   StudioTeamDraft,
@@ -97,7 +95,10 @@ import {
   registerLocalProject
 } from "@/lib/local-projects";
 import { PublicSquareClient } from "@/lib/public-square-client";
-import { TeamAgentRequestsClient } from "@/lib/team-agent-requests-client";
+import {
+  TeamAgentRequestError,
+  TeamAgentRequestsClient
+} from "@/lib/team-agent-requests-client";
 import { usePublicSquare } from "@/lib/use-public-square";
 import { useTeamAgentMentions } from "@/lib/use-team-agent-mentions";
 import {
@@ -114,6 +115,9 @@ import {
   forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import type { TeamOverviewItem } from "@koed/shared/team-overview";
+import { TeamAttentionView } from "@/components/TeamAttentionView";
+import { useTeamOverview } from "@/lib/use-team-overview";
 import { toTeamChatMessages } from "@/lib/team-chat-messages";
 
 type DraftAuthority = StudioTeamDraftAuthority;
@@ -180,6 +184,18 @@ export function TeamChannelWorkspace({
   const [snapshot, setSnapshot] = useState<CollaborationSnapshot | null>(
     initialSnapshot
   );
+  const teamAccessScopeKey = snapshot
+    ? `${snapshot.connection.backendId ?? ""}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${snapshot.navigation.teams
+        .map((team) => team.id)
+        .sort()
+        .join(",")}`
+    : null;
+  const teamOverview = useTeamOverview({
+    transport: "studio",
+    identityKey: teamAccessScopeKey
+  });
+  const refreshTeamOverview = teamOverview.refresh;
+  const [overviewTeamFilter, setOverviewTeamFilter] = useState("all");
   const [teamId, setTeamId] = useState(
     initialSnapshot.navigation.teams[0]?.id ?? ""
   );
@@ -198,6 +214,10 @@ export function TeamChannelWorkspace({
   const [squareOpen, setSquareOpen] = useState(false);
   const [focusSquareJobId, setFocusSquareJobId] = useState<string | null>(null);
   const [forYouOpen, setForYouOpen] = useState(false);
+  useEffect(() => {
+    if (forYouOpen) refreshTeamOverview();
+  }, [forYouOpen, refreshTeamOverview]);
+  const pendingAttentionItem = useRef<TeamOverviewItem | null>(null);
   const [agentOfferRevision, setAgentOfferRevision] = useState(0);
   const [agentRequestRevision, setAgentRequestRevision] = useState(0);
   const [channelRequests, setChannelRequests] = useState<TeamAgentRequest[]>(
@@ -230,6 +250,9 @@ export function TeamChannelWorkspace({
   );
   const [threadRequests, setThreadRequests] = useState<TeamAgentRequest[]>([]);
   const [threadDraftText, setThreadDraftText] = useState("");
+  const [threadMentionUserIds, setThreadMentionUserIds] = useState<string[]>(
+    []
+  );
   const [threadPendingSend, setThreadPendingSend] =
     useState<StudioTeamDraft["pendingSend"]>(null);
   const [threadSendStatus, setThreadSendStatus] = useState<
@@ -245,6 +268,7 @@ export function TeamChannelWorkspace({
   } | null>(null);
   const [page, setPage] = useState<CollaborationMessagePage | null>(null);
   const [draftText, setDraftText] = useState("");
+  const [draftMentionUserIds, setDraftMentionUserIds] = useState<string[]>([]);
   const [teamMentionSelection, setTeamMentionSelection] =
     useState<ScopedTeamMentionSelection | null>(null);
   const [pendingSend, setPendingSend] =
@@ -265,6 +289,10 @@ export function TeamChannelWorkspace({
     threadId: string;
   } | null>(null);
   const selectedRef = useRef({ teamId: "", threadId: "" });
+  const selectedTeamIdRef = useRef(teamId);
+  useLayoutEffect(() => {
+    selectedTeamIdRef.current = teamId;
+  }, [teamId]);
   const openRootRef = useRef<CollaborationMessage | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const readReported = useRef(new Map<string, number>());
@@ -346,11 +374,21 @@ export function TeamChannelWorkspace({
     text: string;
     idempotencyKey: string;
     sendClientMessageId: string;
+    mentionUserIds: string[];
     rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
   const openRequestReview = useCallback(
     async (request: TeamAgentRequest, draft?: string) => {
+      const capturedEpoch = snapshotEpoch.current;
+      const capturedSelectionGeneration = threadSelectionGeneration.current;
+      const capturedSelectedTeamId = selectedTeamIdRef.current;
+      const stillAuthorized = () =>
+        !revokedRef.current &&
+        snapshotEpoch.current === capturedEpoch &&
+        threadSelectionGeneration.current === capturedSelectionGeneration &&
+        selectedTeamIdRef.current === capturedSelectedTeamId &&
+        selectedRef.current.teamId === capturedSelectedTeamId;
       try {
         const review = await teamAgentRequestsClient.getReview(
           teamId,
@@ -360,7 +398,7 @@ export function TeamChannelWorkspace({
           teamId,
           request.teamProjectId
         );
-        if (revokedRef.current || selectedRef.current.teamId !== teamId) return;
+        if (!stillAuthorized() || capturedSelectedTeamId !== teamId) return;
         if (!connection.localProjectId) {
           setStatus(
             "Connect this Team Project to a local Project in Public Square before reviewing its Agent request."
@@ -380,7 +418,7 @@ export function TeamChannelWorkspace({
         if (draft) query.set("draft", draft.slice(0, 2_400));
         router.push(`/?${query.toString()}`);
       } catch (failure) {
-        if (revokedRef.current || selectedRef.current.teamId !== teamId) return;
+        if (!stillAuthorized() || capturedSelectedTeamId !== teamId) return;
         setStatus(
           failure instanceof Error
             ? failure.message
@@ -1289,6 +1327,7 @@ export function TeamChannelWorkspace({
             draftByAuthority.current.set(replyAuthorityKey, hydratedDraft);
             if (threadDraftEditGeneration.current === capturedDraftGeneration)
               setThreadDraftText(hydratedDraft.text);
+            setThreadMentionUserIds(hydratedDraft.mentionUserIds ?? []);
             setThreadPendingSend(hydratedDraft.pendingSend);
             setThreadSendStatus(hydratedDraft.pendingSend ? "pending" : null);
             if (current)
@@ -1316,7 +1355,7 @@ export function TeamChannelWorkspace({
   );
 
   const saveReplyDraft = useCallback(
-    (rootMessageId: string, text: string) => {
+    (rootMessageId: string, text: string, mentionUserIds?: string[]) => {
       if (
         !authority ||
         authorityKeyRef.current !== authorityKey ||
@@ -1327,11 +1366,15 @@ export function TeamChannelWorkspace({
         return;
       const replyAuthority = { ...authority, rootMessageId };
       const key = JSON.stringify(replyAuthority);
-      const draft = teamDraftAfterReplyTextChange(
+      const nextDraft = teamDraftAfterReplyTextChange(
         draftByAuthority.current.get(key),
         text,
         null
       );
+      const draft =
+        mentionUserIds === undefined
+          ? nextDraft
+          : { ...nextDraft, mentionUserIds };
       draftByAuthority.current.set(key, draft);
       void persistDraft(replyAuthority, draft).catch(() => {
         if (
@@ -1347,7 +1390,11 @@ export function TeamChannelWorkspace({
   );
 
   const sendThreadReply = useCallback(
-    async (text: string, clientMessageId?: string) => {
+    async (
+      text: string,
+      clientMessageId?: string,
+      mentionUserIds: string[] = []
+    ) => {
       const root = openRootMessage;
       if (!root || !authority || !activeTeamId || !text.trim()) return false;
       const identity =
@@ -1356,7 +1403,8 @@ export function TeamChannelWorkspace({
           : {
               clientMessageId: clientMessageId ?? crypto.randomUUID(),
               body: text,
-              createdAt: new Date().toISOString()
+              createdAt: new Date().toISOString(),
+              mentionUserIds
             };
       const replyAuthority = { ...authority, rootMessageId: root.id };
       const replyAuthorityKey = JSON.stringify(replyAuthority);
@@ -1377,6 +1425,7 @@ export function TeamChannelWorkspace({
       setThreadPendingSend(identity);
       setThreadSendStatus("pending");
       setThreadDraftText(pendingDraft.text);
+      setThreadMentionUserIds([]);
       draftByAuthority.current.set(
         JSON.stringify(replyAuthority),
         pendingDraft
@@ -1387,6 +1436,7 @@ export function TeamChannelWorkspace({
         } catch {
           draftByAuthority.current.set(replyAuthorityKey, {
             text: identity.body,
+            mentionUserIds: identity.mentionUserIds ?? [],
             pendingSend: null,
             receiptAckPending: null
           });
@@ -1397,6 +1447,7 @@ export function TeamChannelWorkspace({
             setThreadPendingSend(null);
             setThreadSendStatus(null);
             setThreadDraftText(identity.body);
+            setThreadMentionUserIds(identity.mentionUserIds ?? []);
             setStatus(
               "The reply could not be saved on this device, so it was not sent."
             );
@@ -1428,7 +1479,8 @@ export function TeamChannelWorkspace({
           },
           rootMessageId: root.id,
           clientMessageId: identity.clientMessageId,
-          body: identity.body
+          body: identity.body,
+          mentionUserIds: identity.mentionUserIds ?? []
         });
         if (
           result.ok &&
@@ -1482,6 +1534,7 @@ export function TeamChannelWorkspace({
               pendingSendAfterReceiptResolution(settled, identity, confirmed)
             );
             setThreadDraftText(settled?.text ?? "");
+            setThreadMentionUserIds(settled?.mentionUserIds ?? []);
             setOpenRootMessage((current) =>
               current?.id === root.id
                 ? { ...current, replyCount: current.replyCount + 1 }
@@ -2271,6 +2324,7 @@ export function TeamChannelWorkspace({
         const hydratedDraft = stored ?? { text: "", pendingSend: null };
         draftByAuthority.current.set(key, hydratedDraft);
         setDraftText(hydratedDraft.text);
+        setDraftMentionUserIds(hydratedDraft.mentionUserIds ?? []);
         setPendingSend(hydratedDraft.pendingSend);
         setHydratedAuthorityKey(key);
         void (async () => {
@@ -2334,6 +2388,7 @@ export function TeamChannelWorkspace({
       if (revokedRef.current) return;
       const latest = draftByAuthority.current.get(key) ?? {
         text: draftText,
+        mentionUserIds: draftMentionUserIds,
         pendingSend
       };
       void persistDraft(authority, {
@@ -2361,6 +2416,7 @@ export function TeamChannelWorkspace({
     authorityKey,
     hydratedAuthorityKey,
     draftText,
+    draftMentionUserIds,
     pendingSend,
     persistDraft
   ]);
@@ -2528,6 +2584,134 @@ export function TeamChannelWorkspace({
     }
   };
 
+  const openAttentionHere = async (item: TeamOverviewItem) => {
+    const capturedEpoch = snapshotEpoch.current;
+    const capturedSelectionGeneration = threadSelectionGeneration.current;
+    const capturedSelectedTeamId = selectedTeamIdRef.current;
+    const stillCurrent = () =>
+      !revokedRef.current &&
+      snapshotEpoch.current === capturedEpoch &&
+      selectedTeamIdRef.current === item.teamId;
+    const destination = item.destination;
+    if (destination.kind === "pull_request_review") {
+      router.push(
+        `/pull-requests?review=${encodeURIComponent(destination.reviewId)}`
+      );
+      return;
+    }
+    if (destination.kind === "team_job") {
+      setForYouOpen(false);
+      setFocusSquareJobId(destination.jobId);
+      setSquareOpen(true);
+      return;
+    }
+    if (destination.kind === "agent_request") {
+      const request = await teamAgentRequestsClient.findInboxRequest(
+        item.teamId,
+        destination.requestId
+      );
+      if (
+        !stillCurrent() ||
+        capturedSelectedTeamId !== item.teamId ||
+        threadSelectionGeneration.current !== capturedSelectionGeneration
+      )
+        return;
+      if (request) {
+        await openRequestReview(request);
+        return;
+      }
+    }
+    const thread = threads.find(
+      (candidate) => candidate.id === destination.threadId
+    );
+    if (!thread || !(await selectThread(thread))) return;
+    if (!stillCurrent() || activeTeam?.id !== item.teamId) return;
+    const selectedGeneration = threadSelectionGeneration.current;
+    setForYouOpen(false);
+    setSquareOpen(false);
+    if (!destination.rootMessageId) return;
+    const root = messages.find(
+      (message) => message.id === destination.rootMessageId
+    );
+    if (root) {
+      openMessageThread(root);
+      return;
+    }
+    const result = await run("collaboration.load_message_page", {
+      thread: {
+        scope: "team",
+        teamId: item.teamId,
+        threadId: destination.threadId
+      },
+      rootMessageId: destination.rootMessageId,
+      direction: "newer",
+      cursor: null,
+      limit: 50
+    });
+    if (
+      !stillCurrent() ||
+      selectedRef.current.teamId !== item.teamId ||
+      selectedRef.current.threadId !== destination.threadId ||
+      threadSelectionGeneration.current !== selectedGeneration
+    )
+      return;
+    if (!result.ok || !("page" in result.data)) return;
+    const parsed = collaborationMessagePageSchema.safeParse(result.data.page);
+    const loadedRoot = parsed.success
+      ? parsed.data.items.find(
+          (message) => message.id === destination.rootMessageId
+        )
+      : undefined;
+    if (loadedRoot) openMessageThread(loadedRoot);
+  };
+
+  const openPendingAttention = useEffectEvent(openAttentionHere);
+
+  const openAttentionItem = async (item: TeamOverviewItem) => {
+    if (item.teamId !== activeTeam?.id) {
+      pendingAttentionItem.current = item;
+      setForYouOpen(false);
+      setSquareOpen(false);
+      setTeamId(item.teamId);
+      return;
+    }
+    try {
+      await openAttentionHere(item);
+    } catch (failure) {
+      if (
+        failure instanceof TeamAgentRequestError &&
+        [401, 403].includes(failure.status)
+      ) {
+        clearRevokedView();
+        return;
+      }
+      setStatus(
+        failure instanceof Error
+          ? failure.message
+          : "Team activity could not be opened."
+      );
+    }
+  };
+
+  useEffect(() => {
+    const pending = pendingAttentionItem.current;
+    if (!pending || pending.teamId !== activeTeam?.id) return;
+    pendingAttentionItem.current = null;
+    void openPendingAttention(pending).catch((failure) => {
+      if (
+        failure instanceof TeamAgentRequestError &&
+        [401, 403].includes(failure.status)
+      )
+        clearRevokedView();
+      else
+        setStatus(
+          failure instanceof Error
+            ? failure.message
+            : "Team activity could not be opened."
+        );
+    });
+  }, [activeTeam?.id, clearRevokedView, messages, threads]);
+
   const startDirectMessage = async (participantUserIds: string[]) => {
     if (!activeTeam || !snapshot?.navigation.teamPrincipal)
       throw new Error("Team access changed. Refresh to check your access.");
@@ -2663,7 +2847,11 @@ export function TeamChannelWorkspace({
 
   const send = async (
     body: string,
-    options: { awaitReceipt?: boolean; clientMessageId?: string } = {}
+    options: {
+      awaitReceipt?: boolean;
+      clientMessageId?: string;
+      mentionUserIds?: string[];
+    } = {}
   ) => {
     const key = authorityKey;
     if (!key) return false;
@@ -2684,7 +2872,11 @@ export function TeamChannelWorkspace({
   const sendMessage = async (
     body: string,
     lockedAuthorityKey: string,
-    options: { awaitReceipt?: boolean; clientMessageId?: string } = {}
+    options: {
+      awaitReceipt?: boolean;
+      clientMessageId?: string;
+      mentionUserIds?: string[];
+    } = {}
   ): Promise<boolean> => {
     if (!activeThread || !authority) return false;
     const capturedAuthority = authority;
@@ -2736,15 +2928,20 @@ export function TeamChannelWorkspace({
     const nextPending = {
       clientMessageId: options.clientMessageId ?? crypto.randomUUID(),
       body,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(options.mentionUserIds
+        ? { mentionUserIds: options.mentionUserIds }
+        : {})
     };
     draftByAuthority.current.set(capturedKey, {
       ...draftByAuthority.current.get(capturedKey),
       text: nextDraftText,
+      mentionUserIds: options.mentionUserIds ?? [],
       pendingSend: nextPending
     });
     setPendingSend(nextPending);
     setDraftText(nextDraftText);
+    setDraftMentionUserIds([]);
     let requestStarted = false;
     try {
       await persistDraft(
@@ -2760,7 +2957,10 @@ export function TeamChannelWorkspace({
           threadId: capturedThreadId
         },
         clientMessageId: nextPending.clientMessageId,
-        body
+        body,
+        ...(nextPending.mentionUserIds?.length
+          ? { mentionUserIds: nextPending.mentionUserIds }
+          : {})
       });
       if (revokedRef.current) return false;
       const acceptedReceipt =
@@ -2828,6 +3028,9 @@ export function TeamChannelWorkspace({
         await persistDraft(capturedAuthority, retained).catch(() => undefined);
         if (currentlySelected && authorityKey === capturedKey) {
           setDraftText(retained.text);
+          setDraftMentionUserIds(
+            retained.mentionUserIds ?? nextPending.mentionUserIds ?? []
+          );
           setPendingSend(retained.pendingSend);
           setStatus(
             "Send status is unknown. Resolve the original send before retrying."
@@ -2848,6 +3051,7 @@ export function TeamChannelWorkspace({
         await persistDraft(capturedAuthority, settled);
         if (currentlySelected && authorityKey === capturedKey) {
           setDraftText(settled.text);
+          setDraftMentionUserIds(settled.mentionUserIds ?? []);
           setPendingSend(settled.pendingSend);
           setStatus(
             "Not sent. Your draft is saved on this device; retry when connected."
@@ -2885,6 +3089,9 @@ export function TeamChannelWorkspace({
         authorityKey === capturedKey
       ) {
         setDraftText(settled.text);
+        setDraftMentionUserIds(
+          settled.mentionUserIds ?? nextPending.mentionUserIds ?? []
+        );
         setPendingSend(settled.pendingSend);
         setStatus(
           requestStarted
@@ -2918,6 +3125,12 @@ export function TeamChannelWorkspace({
     setStatus(null);
     try {
       if (intent.agent.kind === "colleague") {
+        if (intent.mentionUserIds.length > 0) {
+          setStatus(
+            "Remove human mentions before sending a request to another Agent."
+          );
+          return false;
+        }
         await teamAgentRequestsClient.createRequest(capturedTeamId, {
           idempotencyKey: intent.idempotencyKey,
           teamProjectId,
@@ -2953,10 +3166,15 @@ export function TeamChannelWorkspace({
       }
       if (!capturedThreadId) return false;
       const sent = intent.rootMessageId
-        ? await sendThreadReply(intent.text, intent.sendClientMessageId)
+        ? await sendThreadReply(
+            intent.text,
+            intent.sendClientMessageId,
+            intent.mentionUserIds
+          )
         : await send(intent.text, {
             awaitReceipt: true,
-            clientMessageId: intent.sendClientMessageId
+            clientMessageId: intent.sendClientMessageId,
+            mentionUserIds: intent.mentionUserIds
           });
       if (!sent) return false;
       if (
@@ -3014,7 +3232,9 @@ export function TeamChannelWorkspace({
     selection: ChatComposerSelection
   ) => {
     if (!selection.agentId || !activeTeam || activeDirectMessage) {
-      if (await send(text)) {
+      if (
+        await send(text, { mentionUserIds: selection.mentionUserIds ?? [] })
+      ) {
         setTeamMentionSelection((current) =>
           current?.scopeKey === teamMentionScopeKey
             ? { ...current, agentId: null }
@@ -3036,7 +3256,8 @@ export function TeamChannelWorkspace({
       agent,
       text,
       idempotencyKey: crypto.randomUUID(),
-      sendClientMessageId: crypto.randomUUID()
+      sendClientMessageId: crypto.randomUUID(),
+      mentionUserIds: selection.mentionUserIds ?? []
     };
     if (activeThread?.kind === "team_project_channel") {
       await completeAgentMention(intent, activeThread.teamProjectId);
@@ -3070,7 +3291,10 @@ export function TeamChannelWorkspace({
         threadId: capturedThreadId
       },
       clientMessageId: original.clientMessageId,
-      body: original.body
+      body: original.body,
+      ...(original.mentionUserIds?.length
+        ? { mentionUserIds: original.mentionUserIds }
+        : {})
     });
     if (revokedRef.current) return;
     const message =
@@ -3167,6 +3391,7 @@ export function TeamChannelWorkspace({
     if (!callbackAuthorityKey) return;
     const latest = draftByAuthority.current.get(callbackAuthorityKey) ?? {
       text: draftText,
+      mentionUserIds: draftMentionUserIds,
       pendingSend
     };
     const updated = teamDraftAfterTextChange({
@@ -3179,6 +3404,30 @@ export function TeamChannelWorkspace({
     if (!updated) return;
     draftByAuthority.current.set(callbackAuthorityKey, updated);
     setDraftText(text);
+  };
+  const changeDraftMentionUserIds = (userIds: string[]) => {
+    const key = authorityKey;
+    if (!key || !authority) return;
+    setDraftMentionUserIds(userIds);
+    const current = draftByAuthority.current.get(key) ?? {
+      text: draftText,
+      pendingSend,
+      mentionUserIds: draftMentionUserIds
+    };
+    const next = { ...current, mentionUserIds: userIds };
+    draftByAuthority.current.set(key, next);
+    void persistDraft(authority, next).catch(() => {
+      if (authorityKeyRef.current === key && !revokedRef.current)
+        setStatus("Draft could not be saved on this device.");
+    });
+  };
+  const changeThreadMentionUserIds = (userIds: string[]) => {
+    const root = visibleOpenRoot;
+    if (!authority || !root) return;
+    setThreadMentionUserIds(userIds);
+    const key = JSON.stringify({ ...authority, rootMessageId: root.id });
+    const current = draftByAuthority.current.get(key);
+    saveReplyDraft(root.id, current?.text ?? threadDraftText, userIds);
   };
 
   const createChannel = async (name: string) => {
@@ -3412,6 +3661,7 @@ export function TeamChannelWorkspace({
             .map((person) => ({ id: person.id, name: person.displayName }))}
           principalUserId={snapshot.navigation.teamPrincipal?.id ?? ""}
           directMessages={activeTeam.directMessages}
+          forYouBadgeCount={teamOverview.snapshot?.badgeCount ?? 0}
           selectedId={
             forYouOpen ? "for-you" : squareOpen ? "public-square" : threadId
           }
@@ -3464,16 +3714,21 @@ export function TeamChannelWorkspace({
             }
           >
             {forYouOpen ? (
-              <TeamAgentRequestInbox
-                key={`requests:${activeTeam.id}`}
-                teamId={activeTeam.id}
-                viewerId={snapshot.navigation.teamPrincipal?.id ?? ""}
-                authorityKey={`${snapshot.connection.backendId}:${snapshot.navigation.teamPrincipal?.id ?? ""}:${activeTeam.id}`}
-                refreshRevision={agentRequestRevision}
-                client={teamAgentRequestsClient}
-                onAuthorizationLost={handleSquareAuthorizationLost}
-                onReview={(request) => void openRequestReview(request)}
-                onViewWork={openRequestWork}
+              <TeamAttentionView
+                state={teamOverview.state}
+                snapshot={teamOverview.snapshot}
+                refreshing={teamOverview.refreshing}
+                mutationError={teamOverview.mutationError}
+                pendingItemIds={teamOverview.pendingItemIds}
+                selectedTeamId={overviewTeamFilter}
+                onTeamChange={setOverviewTeamFilter}
+                onRefresh={teamOverview.refresh}
+                onOpen={(item) => void openAttentionItem(item)}
+                onClear={(item, cleared) =>
+                  void teamOverview.setCleared(item, cleared)
+                }
+                onSeen={(item) => teamOverview.setSeen(item)}
+                onLoadMore={teamOverview.loadMore}
               />
             ) : squareOpen ? (
               <PublicSquare
@@ -3630,6 +3885,10 @@ export function TeamChannelWorkspace({
                                 branch="shared"
                                 value={visibleDraftText}
                                 onChange={changeDraftText}
+                                initialMentionUserIds={draftMentionUserIds}
+                                onMentionUserIdsChange={
+                                  changeDraftMentionUserIds
+                                }
                                 onSend={(text, selection) =>
                                   sendTeamComposer(text, selection)
                                 }
@@ -3637,6 +3896,19 @@ export function TeamChannelWorkspace({
                                   activeDirectMessage
                                     ? []
                                     : teamAgentMentions.options
+                                }
+                                teamMembers={
+                                  activeDirectMessage
+                                    ? []
+                                    : activeTeam.people
+                                        .filter(
+                                          (person) =>
+                                            person.membershipState === "enabled"
+                                        )
+                                        .map((person) => ({
+                                          id: person.id,
+                                          name: person.displayName
+                                        }))
                                 }
                                 activeAgentId={activeMentionAgentId}
                                 onActiveAgentChange={(agentId) =>
@@ -3775,10 +4047,20 @@ export function TeamChannelWorkspace({
                       }
                       connected={snapshot.connection.state === "live"}
                       replyDraft={threadDraftText}
+                      replyMentionUserIds={threadMentionUserIds}
+                      onReplyMentionUserIdsChange={changeThreadMentionUserIds}
                       pendingSend={threadPendingSend}
                       pendingStatus={threadSendStatus}
                       editDrafts={threadEditDrafts}
                       agents={teamAgentMentions.options}
+                      teamMembers={activeTeam.people
+                        .filter(
+                          (person) => person.membershipState === "enabled"
+                        )
+                        .map((person) => ({
+                          id: person.id,
+                          name: person.displayName
+                        }))}
                       key={`${authorityKey ?? ""}:${visibleOpenRoot.id}`}
                       agentRequests={
                         activeThread && (
@@ -3854,6 +4136,7 @@ export function TeamChannelWorkspace({
                             text,
                             idempotencyKey: crypto.randomUUID(),
                             sendClientMessageId: crypto.randomUUID(),
+                            mentionUserIds: selection.mentionUserIds ?? [],
                             rootMessageId: visibleOpenRoot.id
                           };
                           if (activeThread?.kind === "team_project_channel")
@@ -3868,7 +4151,11 @@ export function TeamChannelWorkspace({
                           else setPendingAgentMention(intent);
                           return;
                         }
-                        await sendThreadReply(text);
+                        await sendThreadReply(
+                          text,
+                          undefined,
+                          selection.mentionUserIds ?? []
+                        );
                       }}
                       onRetryPending={async () => {
                         if (threadPendingSend)

@@ -147,6 +147,7 @@ export interface CollaborationMessageRecord {
   editedAt: string | null;
   replyCount: number;
   unreadReplyCount: number;
+  mentionUserIds: string[];
   reactions: Array<{
     emoji: (typeof COLLABORATION_REACTION_EMOJI)[number];
     count: number;
@@ -456,6 +457,7 @@ export interface CollaborationRepository {
       idempotencyKey: string;
       bodyText: string;
       metadata?: Record<string, unknown>;
+      mentionUserIds?: string[];
       provenance?: CollaborationMessageProvenance;
     }
   ): Promise<CollaborationMessageRecord | null>;
@@ -467,6 +469,7 @@ export interface CollaborationRepository {
       idempotencyKey: string;
       bodyText: string;
       metadata?: Record<string, unknown>;
+      mentionUserIds?: string[];
       provenance?: CollaborationMessageProvenance;
     }
   ): Promise<CollaborationMessageSendResult | null>;
@@ -531,6 +534,7 @@ export interface CollaborationRepository {
       messageId: string;
       bodyText: string;
       expectedVersion: number;
+      mentionUserIds?: string[];
     }
   ): Promise<CollaborationMessageRecord | null>;
   setMessageReaction(
@@ -2094,6 +2098,13 @@ const mapMessageRow = async (
     editedAt: iso(row.edited_at),
     replyCount: Number(row.reply_count ?? 0),
     unreadReplyCount: Number(row.unread_reply_count ?? 0),
+    mentionUserIds: Array.isArray(
+      (metadata as { mentionUserIds?: unknown }).mentionUserIds
+    )
+      ? (metadata as { mentionUserIds: unknown[] }).mentionUserIds.filter(
+          (id): id is string => typeof id === "string"
+        )
+      : [],
     reactions: (row.reactions ?? []).map((reaction) => ({
       emoji: reaction.emoji,
       count: Number(reaction.count),
@@ -3866,6 +3877,7 @@ const sendCollaborationMessage = async (
     idempotencyKey: string;
     bodyText: string;
     metadata?: Record<string, unknown>;
+    mentionUserIds?: string[];
     provenance?: CollaborationMessageProvenance;
   }
 ): Promise<CollaborationMessageSendResult | null> => {
@@ -3879,10 +3891,14 @@ const sendCollaborationMessage = async (
     "bodyText",
     MAX_MESSAGE_BODY_BYTES
   );
-  const metadata = canonicalize(input.metadata ?? {}) as Record<
-    string,
-    unknown
-  >;
+  const metadata = canonicalize({
+    ...(input.metadata ?? {}),
+    ...((input.mentionUserIds?.length ?? 0) > 0
+      ? { mentionUserIds: input.mentionUserIds }
+      : input.metadata?.mentionUserIds !== undefined
+        ? { mentionUserIds: input.metadata.mentionUserIds }
+        : {})
+  }) as Record<string, unknown>;
   const provenance = canonicalize(
     input.provenance ?? {
       kind: "user_message",
@@ -3915,6 +3931,42 @@ const sendCollaborationMessage = async (
     forUpdate: true
   });
   if (!thread) return null;
+  if (input.mentionUserIds?.length) {
+    if (thread.scope !== "team" || input.mentionUserIds.includes(actor.userId))
+      throw new CollaborationStateConflictError(
+        "Mentions must target other Team members"
+      );
+    const targets = await client.query<{ user_id: string }>(
+      `select membership.user_id from team_memberships membership
+         join users target on target.id=membership.user_id
+        where membership.team_id=$1 and membership.user_id=any($2::uuid[])
+          and membership.status='enabled' and membership.disabled_at is null
+          and target.disabled_at is null and target.deleted_at is null
+          and (not ($3::text in ('dm','group_dm')) or exists (
+            select 1 from collaboration_participants participant
+            where participant.thread_id=$4 and participant.team_id=$1 and participant.user_id=membership.user_id
+          ))
+          and ($3::text <> 'workspace_channel' or exists (
+            select 1 from team_workspaces workspace
+            join team_workspace_access_grants access on access.team_workspace_id=workspace.id
+              and access.team_id=workspace.team_id and access.user_id=membership.user_id
+              and access.disabled_at is null and access.access in ('read','write')
+            where workspace.id=$5 and workspace.team_id=$1
+              and workspace.lifecycle='active' and workspace.archived_at is null
+          ))`,
+      [
+        thread.team_id,
+        input.mentionUserIds,
+        thread.kind,
+        thread.id,
+        thread.team_workspace_id
+      ]
+    );
+    if (targets.rows.length !== input.mentionUserIds.length)
+      throw new CollaborationStateConflictError(
+        "Mentioned Team member is unavailable"
+      );
+  }
   const rootMessageId = input.rootMessageId ?? null;
   if (rootMessageId) {
     if (
@@ -4167,6 +4219,7 @@ const editCollaborationMessage = async (
     messageId: string;
     bodyText: string;
     expectedVersion: number;
+    mentionUserIds?: string[];
   }
 ): Promise<CollaborationMessageRecord | null> => {
   const bodyText = requireBoundedUtf8(
@@ -4185,6 +4238,42 @@ const editCollaborationMessage = async (
     !["team_channel", "team_project_channel"].includes(thread.kind)
   )
     return null;
+  if (input.mentionUserIds) {
+    if (input.mentionUserIds.includes(actor.userId))
+      throw new CollaborationStateConflictError(
+        "Mentions must target other Team members"
+      );
+    const targets = await client.query<{ user_id: string }>(
+      `select membership.user_id from team_memberships membership
+         join users target on target.id=membership.user_id
+        where membership.team_id=$1 and membership.user_id=any($2::uuid[])
+          and membership.status='enabled' and membership.disabled_at is null
+          and target.disabled_at is null and target.deleted_at is null
+          and (not ($3::text in ('dm','group_dm')) or exists (
+            select 1 from collaboration_participants participant
+            where participant.thread_id=$4 and participant.team_id=$1 and participant.user_id=membership.user_id
+          ))
+          and ($3::text <> 'workspace_channel' or exists (
+            select 1 from team_workspaces workspace
+            join team_workspace_access_grants access on access.team_workspace_id=workspace.id
+              and access.team_id=workspace.team_id and access.user_id=membership.user_id
+              and access.disabled_at is null and access.access in ('read','write')
+            where workspace.id=$5 and workspace.team_id=$1
+              and workspace.lifecycle='active' and workspace.archived_at is null
+          ))`,
+      [
+        thread.team_id,
+        input.mentionUserIds,
+        thread.kind,
+        thread.id,
+        thread.team_workspace_id
+      ]
+    );
+    if (targets.rows.length !== input.mentionUserIds.length)
+      throw new CollaborationStateConflictError(
+        "Mentioned Team member is unavailable"
+      );
+  }
   const selected = await client.query<MessageRow>(
     `select ${selectMessageColumnsSql} from collaboration_messages cm
        left join users sender on sender.id=cm.sender_user_id
@@ -4212,6 +4301,25 @@ const editCollaborationMessage = async (
   );
   if (typeof oldBody !== "string")
     throw new Error("Encrypted collaboration message body is unavailable");
+  const oldMetadata = await decryptMessageField(
+    client,
+    actor,
+    provider,
+    row,
+    "metadata"
+  );
+  if (
+    typeof oldMetadata !== "object" ||
+    oldMetadata === null ||
+    Array.isArray(oldMetadata)
+  )
+    throw new Error("Encrypted collaboration message metadata is unavailable");
+  const nextMetadata = canonicalize({
+    ...(oldMetadata as Record<string, unknown>),
+    ...(input.mentionUserIds === undefined
+      ? {}
+      : { mentionUserIds: input.mentionUserIds })
+  });
   const revisionColumn = `revision_${row.version}`;
   await client.query(
     `insert into collaboration_message_revisions(message_id,revision,editor_user_id,body_marker)
@@ -4239,6 +4347,29 @@ const editCollaborationMessage = async (
       collaborationScope: thread.scope
     }
   });
+  if (input.mentionUserIds !== undefined) {
+    await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+      sourceTable: "collaboration_messages",
+      sourceId: row.id,
+      sourceColumn: "metadata",
+      plaintext: nextMetadata,
+      visibility: "team",
+      teamId: thread.team_id,
+      teamWorkspaceId: thread.team_workspace_id,
+      scope: {
+        teamId: thread.team_id,
+        workspaceId: thread.team_workspace_id,
+        objectClass: "collaboration_message"
+      },
+      rowFamily: "collaboration_message",
+      aad: {
+        threadId: thread.id,
+        threadSequence: Number(row.thread_sequence),
+        collaborationScope: thread.scope,
+        threadKind: thread.kind
+      }
+    });
+  }
   const updated = await client.query<MessageRow>(
     `update collaboration_messages set version=version+1,edited_at=now(),edited_body_marker=$3,updated_at=now()
       where id=$1 and thread_id=$2 and version=$4

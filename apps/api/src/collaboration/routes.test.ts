@@ -10,7 +10,9 @@ import type {
   CollaborationThreadRecord,
   CreateCollaborationThreadInput,
   MemorySourceRepository,
-  PersonalNoteRecord
+  PersonalNoteRecord,
+  TeamOverviewRepository,
+  TeamOverviewSourcesRepository
 } from "@koed/db";
 import {
   CollaborationIdempotencyConflictError,
@@ -18,9 +20,11 @@ import {
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  teamOverviewSchemaVersion,
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
 } from "@koed/shared";
+import type { TeamOverviewItem } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -850,6 +854,10 @@ const buildTestServer = async (
     deploymentProfile?: string;
     koedHome?: string;
     localEdge?: Record<string, unknown>;
+    teamOverview?: {
+      repository: TeamOverviewRepository;
+      sources: TeamOverviewSourcesRepository;
+    };
   } = {}
 ) => {
   const app = Fastify({ logger: false });
@@ -891,7 +899,14 @@ const buildTestServer = async (
       koedHome: options.koedHome ?? "/tmp/koed-test"
     } as never,
     localEdge: options.localEdge ?? ({} as never),
+    deploymentIdentity: {
+      inspect: () => ({ deploymentId: "collaboration-test" })
+    } as never,
     requireCollaborationRepository: () => fixture.repository,
+    requireTeamOverviewRepository: () =>
+      options.teamOverview?.repository ?? ({} as never),
+    requireTeamOverviewSourcesRepository: () =>
+      options.teamOverview?.sources ?? ({} as never),
     requireSharedMemoryRepository: () => ({
       async listWorkspaceGrants(_actor, input) {
         const available =
@@ -1016,6 +1031,554 @@ const deviceHeaders = (
 });
 
 describe("collaboration HTTP routes", () => {
+  it("counts one grouped Team root and resurfaces only a newer revision after Clear", async () => {
+    const fixture = createCollaborationFixture();
+    const threadId = randomUUID();
+    const rootMessageId = randomUUID();
+    let item: TeamOverviewItem = {
+      sourceEventId: `message-root:${rootMessageId}`,
+      source: "message_attention",
+      sourceId: threadId,
+      sourceRevision: "g1-five-replies",
+      teamId: fixture.ids.teamA,
+      teamName: "Team A",
+      kind: "message",
+      priority: "attention",
+      state: "recent",
+      title: "Unread replies to your message",
+      summary: "Latest relevant reply",
+      updatedAt: iso,
+      unreadCount: 5,
+      destination: { kind: "thread", threadId, rootMessageId }
+    };
+    let currentState: {
+      ownerUserId: string;
+      teamId: string;
+      sourceEventId: string;
+      source: TeamOverviewItem["source"];
+      sourceId: string;
+      sourceRevision: string;
+      cleared: boolean;
+      seen: boolean;
+      updatedAt: string;
+    } | null = null;
+    const overviewRepository = {
+      async listAuthorizedTeams(actor: ActorContext) {
+        return actor.userId === fixture.ids.alice
+          ? [{ teamId: fixture.ids.teamA, name: "Team A" }]
+          : [];
+      },
+      async listReminderStates(actor: ActorContext) {
+        return currentState?.ownerUserId === actor.userId ? [currentState] : [];
+      },
+      async setReminderState(
+        actor: ActorContext,
+        input: {
+          teamId: string;
+          sourceEventId: string;
+          source: TeamOverviewItem["source"];
+          sourceId: string;
+          sourceRevision: string;
+          cleared?: boolean;
+          seen?: boolean;
+        }
+      ) {
+        if (
+          actor.userId !== fixture.ids.alice ||
+          input.sourceEventId !== item.sourceEventId ||
+          input.sourceRevision !== item.sourceRevision
+        )
+          return null;
+        currentState = {
+          ownerUserId: actor.userId,
+          teamId: input.teamId,
+          sourceEventId: input.sourceEventId,
+          source: input.source,
+          sourceId: input.sourceId,
+          sourceRevision: input.sourceRevision,
+          cleared: input.cleared ?? currentState?.cleared ?? false,
+          seen: input.seen ?? currentState?.seen ?? false,
+          updatedAt: iso
+        };
+        return currentState;
+      }
+    } as unknown as TeamOverviewRepository;
+    const sources = {
+      async listCurrentItems() {
+        return { attention: [item], catchUp: [] };
+      },
+      async getCurrentSourceWithClient() {
+        return null;
+      },
+      async validateCurrentSourceWithClient() {
+        return false;
+      }
+    } as unknown as TeamOverviewSourcesRepository;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      teamOverview: { repository: overviewRepository, sources }
+    });
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview",
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = jsonBody<{
+      badgeCount: number;
+      teams: Array<{ badgeCount: number }>;
+      attention: TeamOverviewItem[];
+    }>(first);
+    expect(firstBody.badgeCount).toBe(1);
+    expect(firstBody.teams[0]?.badgeCount).toBe(1);
+    expect(firstBody.attention).toHaveLength(1);
+    expect(firstBody.attention[0]?.unreadCount).toBe(5);
+
+    const clear = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/overview/${encodeURIComponent(item.sourceEventId)}/clear`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: item.sourceRevision }
+    });
+    expect(clear.statusCode).toBe(200);
+    const afterClear = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview",
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(
+      jsonBody<{
+        badgeCount: number;
+        attention: TeamOverviewItem[];
+        cleared: TeamOverviewItem[];
+      }>(afterClear)
+    ).toMatchObject({
+      badgeCount: 0,
+      attention: [],
+      cleared: [{ sourceRevision: "g1-five-replies" }]
+    });
+
+    item = {
+      ...item,
+      sourceRevision: "g2-six-replies",
+      unreadCount: 6,
+      summary: "A new relevant reply"
+    };
+    const resurfaced = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview",
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(
+      jsonBody<{ badgeCount: number; attention: TeamOverviewItem[] }>(
+        resurfaced
+      )
+    ).toMatchObject({
+      badgeCount: 1,
+      attention: [{ unreadCount: 6, sourceRevision: "g2-six-replies" }]
+    });
+    const staleClear = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/overview/${encodeURIComponent(item.sourceEventId)}/clear`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: "g1-five-replies" }
+    });
+    expect(staleClear.statusCode).toBe(409);
+    await app.close();
+  });
+
+  it("pages while keeping global and per-Team attention counts, and enforces action scope", async () => {
+    const fixture = createCollaborationFixture();
+    const threadId = randomUUID();
+    const sourceItems: TeamOverviewItem[] = [
+      {
+        sourceEventId: `message-root:${randomUUID()}`,
+        source: "message_attention",
+        sourceId: threadId,
+        sourceRevision: "root-v1",
+        teamId: fixture.ids.teamA,
+        teamName: "Team A",
+        kind: "message",
+        priority: "attention",
+        state: "recent",
+        title: "Mention",
+        summary: "Please review",
+        updatedAt: iso,
+        unreadCount: 2,
+        destination: { kind: "thread", threadId, rootMessageId: randomUUID() }
+      },
+      {
+        sourceEventId: `request:${randomUUID()}`,
+        source: "agent_request",
+        sourceId: randomUUID(),
+        sourceRevision: "request-v1",
+        teamId: fixture.ids.teamB,
+        teamName: "Team B",
+        kind: "agent_request",
+        priority: "attention",
+        state: "recent",
+        title: "Agent request needs review",
+        summary: "A request",
+        updatedAt: "2026-07-18T00:00:00.000Z",
+        destination: {
+          kind: "agent_request",
+          requestId: randomUUID(),
+          threadId: randomUUID(),
+          rootMessageId: null
+        }
+      },
+      {
+        sourceEventId: `job-outcome:${randomUUID()}`,
+        source: "team_job_outcome",
+        sourceId: randomUUID(),
+        sourceRevision: "outcome-v1",
+        teamId: fixture.ids.teamA,
+        teamName: "Team A",
+        kind: "job_outcome",
+        priority: "attention",
+        state: "recent",
+        title: "Published Job completed",
+        summary: "Build completed",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+        destination: {
+          kind: "team_job",
+          publicationId: randomUUID(),
+          jobId: randomUUID(),
+          teamProjectId: randomUUID()
+        }
+      }
+    ];
+    let states: Array<{
+      ownerUserId: string;
+      teamId: string;
+      sourceEventId: string;
+      source: TeamOverviewItem["source"];
+      sourceId: string;
+      sourceRevision: string;
+      cleared: boolean;
+      seen: boolean;
+      updatedAt: string;
+    }> = [];
+    let forceSourceCompareAndSetMiss = false;
+    const teams = [
+      { teamId: fixture.ids.teamA, name: "Team A" },
+      { teamId: fixture.ids.teamB, name: "Team B" }
+    ];
+    const overviewRepository = {
+      async listAuthorizedTeams(actor: ActorContext) {
+        return actor.userId === fixture.ids.alice ? teams : [];
+      },
+      async listReminderStates(actor: ActorContext) {
+        return states.filter((state) => state.ownerUserId === actor.userId);
+      },
+      async setReminderState(
+        actor: ActorContext,
+        input: {
+          teamId: string;
+          sourceEventId: string;
+          source: TeamOverviewItem["source"];
+          sourceId: string;
+          sourceRevision: string;
+          cleared?: boolean;
+          seen?: boolean;
+        }
+      ) {
+        if (forceSourceCompareAndSetMiss) return null;
+        const item = sourceItems.find(
+          (candidate) =>
+            candidate.teamId === input.teamId &&
+            candidate.sourceEventId === input.sourceEventId &&
+            candidate.sourceRevision === input.sourceRevision
+        );
+        if (
+          actor.userId !== fixture.ids.alice ||
+          !item ||
+          !teams.some((team) => team.teamId === input.teamId)
+        )
+          return null;
+        const old = states.find(
+          (state) =>
+            state.ownerUserId === actor.userId &&
+            state.teamId === input.teamId &&
+            state.sourceEventId === input.sourceEventId
+        );
+        const state = {
+          ownerUserId: actor.userId,
+          teamId: input.teamId,
+          sourceEventId: input.sourceEventId,
+          source: input.source,
+          sourceId: input.sourceId,
+          sourceRevision: input.sourceRevision,
+          cleared: input.cleared ?? old?.cleared ?? false,
+          seen: input.seen ?? old?.seen ?? false,
+          updatedAt: iso
+        };
+        states = [
+          ...states.filter(
+            (candidate) => candidate.sourceEventId !== input.sourceEventId
+          ),
+          state
+        ];
+        return state;
+      }
+    } as unknown as TeamOverviewRepository;
+    const sources = {
+      async listCurrentItems() {
+        return {
+          attention: sourceItems.filter(
+            (item) => item.source !== "team_job_outcome"
+          ),
+          catchUp: sourceItems.filter(
+            (item) => item.source === "team_job_outcome"
+          )
+        };
+      },
+      async getCurrentSourceWithClient() {
+        return null;
+      },
+      async validateCurrentSourceWithClient() {
+        return false;
+      }
+    } as unknown as TeamOverviewSourcesRepository;
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      teamOverview: { repository: overviewRepository, sources }
+    });
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview?limit=1",
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    const firstPage = jsonBody<{
+      badgeCount: number;
+      teams: Array<{ teamId: string; badgeCount: number }>;
+      attention: TeamOverviewItem[];
+      nextCursor: string | null;
+    }>(first);
+    expect(firstPage.badgeCount).toBe(2);
+    expect(firstPage.teams).toEqual([
+      { teamId: fixture.ids.teamA, name: "Team A", badgeCount: 1 },
+      { teamId: fixture.ids.teamB, name: "Team B", badgeCount: 1 }
+    ]);
+    expect(firstPage.attention).toHaveLength(1);
+    expect(firstPage.nextCursor).not.toBeNull();
+    const second = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(
+      jsonBody<{ badgeCount: number; attention: TeamOverviewItem[] }>(second)
+    ).toMatchObject({
+      badgeCount: 2,
+      attention: [{ teamId: fixture.ids.teamA }]
+    });
+    const malformedCursor = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview?cursor=invalid!",
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(malformedCursor.statusCode).toBe(400);
+
+    const attentionItem = sourceItems[0]!;
+    const clear = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: attentionItem.sourceRevision }
+    });
+    expect(clear.statusCode).toBe(200);
+    const restore = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${attentionItem.teamId}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/restore`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: attentionItem.sourceRevision }
+    });
+    expect(restore.statusCode).toBe(200);
+
+    const outcome = sourceItems[2]!;
+    const seen = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: outcome.sourceRevision }
+    });
+    expect(seen.statusCode).toBe(200);
+    forceSourceCompareAndSetMiss = true;
+    const producerRaced = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${outcome.teamId}/overview/${encodeURIComponent(outcome.sourceEventId)}/seen`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: outcome.sourceRevision }
+    });
+    expect(producerRaced.statusCode).toBe(409);
+    forceSourceCompareAndSetMiss = false;
+    const foreignTeam = randomUUID();
+    const foreign = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${foreignTeam}/overview/${encodeURIComponent(attentionItem.sourceEventId)}/clear`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { sourceRevision: attentionItem.sourceRevision }
+    });
+    expect(foreign.statusCode).toBe(403);
+    const token = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/teams/overview",
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(token.statusCode).toBe(403);
+    sourceItems[0] = { ...attentionItem, sourceRevision: "root-v2" };
+    const changedFeedCursor = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/teams/overview?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(changedFeedCursor.statusCode).toBe(409);
+    await app.close();
+  });
+
+  it("forwards Team overview reads and exact-revision writes through the same upstream authority", async () => {
+    const fixture = createCollaborationFixture();
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-team-overview-proxy-")
+    );
+    const configDirectory = resolve(koedHome, "config");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      resolve(configDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "paired-local-token" })
+    );
+    const upstreamPath = resolve(configDirectory, "upstream-backends.json");
+    writeFileSync(
+      upstreamPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: { teamWorkspaceRead: "enabled" },
+            credential: { status: "configured" },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:15:00.000Z",
+              schemaVersion: 9,
+              payload: {
+                capabilitySchemaVersion: 9,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                },
+                protocols: {
+                  collaborationRealtime: {
+                    version: COLLABORATION_CONTRACT_VERSION,
+                    transport: "sse"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      })
+    );
+    const calls: Array<{
+      method: string;
+      path: string;
+      authorization: string | undefined;
+      body: string | null;
+    }> = [];
+    const teamId = fixture.ids.teamA;
+    const snapshot = {
+      schemaVersion: teamOverviewSchemaVersion,
+      access: {
+        accountScope: "verified-upstream-user",
+        backendId: "team-backend"
+      },
+      generatedAt: iso,
+      teams: [{ teamId, name: "Team A", badgeCount: 0 }],
+      coverage: [
+        "message_attention",
+        "agent_request",
+        "team_job_action",
+        "team_job_outcome",
+        "pull_request_action"
+      ].map((source) => ({ source, complete: true, nextCursor: null })),
+      currentJobOutcomes: [],
+      attention: [],
+      catchUp: [],
+      cleared: [],
+      nextCursor: null,
+      badgeCount: 0
+    };
+    const app = await buildTestServer(fixture, undefined, undefined, {
+      deploymentProfile: "local_personal",
+      koedHome,
+      localEdge: {
+        upstreamBackendsPath: upstreamPath,
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Bearer enrolled-team-credential",
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = input instanceof URL ? input : new URL(String(input));
+          calls.push({
+            method: init?.method ?? "GET",
+            path: `${url.pathname}${url.search}`,
+            authorization:
+              new Headers(init?.headers).get("authorization") ?? undefined,
+            body: typeof init?.body === "string" ? init.body : null
+          });
+          return new Response(
+            JSON.stringify(
+              init?.method === "POST"
+                ? {
+                    sourceEventId: "job-outcome:one",
+                    sourceRevision: "v1",
+                    cleared: false,
+                    seen: true
+                  }
+                : snapshot
+            ),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+      }
+    });
+    try {
+      const read = await app.inject({
+        method: "GET",
+        url: "/v1/collaboration/teams/overview?limit=5",
+        headers: { authorization: "Bearer paired-local-token" }
+      });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(
+        jsonBody<{ access: { accountScope: string } }>(read).access.accountScope
+      ).toBe("verified-upstream-user");
+      const write = await app.inject({
+        method: "POST",
+        url: `/v1/collaboration/teams/${teamId}/overview/job-outcome%3Aone/seen`,
+        headers: { authorization: "Bearer paired-local-token" },
+        payload: { sourceRevision: "v1" }
+      });
+      expect(write.statusCode).toBe(200);
+      expect(calls).toEqual([
+        {
+          method: "GET",
+          path: "/v1/collaboration/teams/overview?limit=5",
+          authorization: "Bearer enrolled-team-credential",
+          body: null
+        },
+        {
+          method: "POST",
+          path: `/v1/collaboration/teams/${teamId}/overview/job-outcome%3Aone/seen`,
+          authorization: "Bearer enrolled-team-credential",
+          body: JSON.stringify({ sourceRevision: "v1" })
+        }
+      ]);
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("does not allow a personal API Token to read hosted Team Public Square data", async () => {
     const fixture = createCollaborationFixture();
     const app = await buildTestServer(fixture);

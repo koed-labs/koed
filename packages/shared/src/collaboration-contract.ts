@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { collaborationMentionUserIdsSchema } from "./team-overview.js";
 import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
@@ -808,6 +809,7 @@ export const collaborationMessageSchema = z
     version: positiveVersionSchema.default(1),
     replyCount: nonNegativeSequenceSchema.default(0),
     unreadReplyCount: nonNegativeSequenceSchema.default(0),
+    mentionUserIds: collaborationMentionUserIdsSchema.default([]),
     reactions: z
       .array(
         z
@@ -2820,18 +2822,21 @@ export const collaborationRendererCommandSchema = z
       thread: collaborationThreadReferenceSchema,
       clientMessageId: z.uuid(),
       rootMessageId: z.uuid().nullable().default(null),
-      body: collaborationMessageBodySchema
+      body: collaborationMessageBodySchema,
+      mentionUserIds: collaborationMentionUserIdsSchema.optional()
     }),
     command("collaboration.retry_message", {
       thread: collaborationThreadReferenceSchema,
       clientMessageId: z.uuid(),
       rootMessageId: z.uuid().nullable().default(null),
-      body: collaborationMessageBodySchema
+      body: collaborationMessageBodySchema,
+      mentionUserIds: collaborationMentionUserIdsSchema.optional()
     }),
     command("collaboration.edit_message", {
       thread: collaborationThreadReferenceSchema,
       messageId: z.uuid(),
       body: collaborationMessageBodySchema,
+      mentionUserIds: collaborationMentionUserIdsSchema.optional(),
       expectedVersion: positiveVersionSchema
     }),
     command("collaboration.set_message_reaction", {

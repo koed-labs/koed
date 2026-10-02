@@ -478,6 +478,13 @@
       "when": 1790960000000,
       "tag": "0067_home_reminder_states",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790963600000,
+      "tag": "0068_team_overview_states",
+      "breakpoints": true
     }
   ]
 }

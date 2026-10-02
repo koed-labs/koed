@@ -9,7 +9,7 @@ import {
   useRef,
   useState
 } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CollaborationMessage,
   CollaborationThread
@@ -34,10 +34,7 @@ import { TeamChannelMessageContent } from "@/components/TeamChannelMessageConten
 import { SharedChatUI } from "@/components/SharedChatUI";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
 import { PublicSquare } from "@/components/PublicSquare";
-import {
-  TeamAgentRequestInbox,
-  TeamChannelAgentRequests
-} from "@/components/TeamAgentRequestViews";
+import { TeamChannelAgentRequests } from "@/components/TeamAgentRequestViews";
 import type { HostedTeam, HostedUser } from "@/lib/hosted-session";
 import { loadHostedLaunchOptions } from "@/lib/hosted-managed-chats";
 import {
@@ -63,6 +60,9 @@ import {
   forwardableTeamRequestsForReply
 } from "@/lib/team-agent-channel-sharing";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import type { TeamOverviewItem } from "@koed/shared/team-overview";
+import { useTeamOverview } from "@/lib/use-team-overview";
+import { TeamAttentionView } from "@/components/TeamAttentionView";
 import { toTeamChatMessages } from "@/lib/team-chat-messages";
 import { createBrowserTeamDraftStore } from "@/lib/browser-team-draft-store";
 import {
@@ -110,6 +110,10 @@ export function HostedTeamChannels({
   onAuthorizationLost: () => void;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const routedThreadId = searchParams.get("thread");
+  const routedRootMessageId = searchParams.get("root");
+  const routedSquareJobId = searchParams.get("squareJob");
   const client = useMemo(() => new HostedTeamCollaborationClient(), []);
   const publicSquareClient = useMemo(
     () => new PublicSquareClient("hosted"),
@@ -119,6 +123,26 @@ export function HostedTeamChannels({
     () => new TeamAgentRequestsClient("hosted"),
     []
   );
+  const teamAccessScopeKey = `${user.id}:${allTeams
+    .map((item) => item.id)
+    .sort()
+    .join(",")}`;
+  const attentionNavigationScope = `${teamAccessScopeKey}:${team.id}`;
+  const attentionNavigationScopeRef = useRef(attentionNavigationScope);
+  const attentionNavigationGeneration = useRef(0);
+  useLayoutEffect(() => {
+    if (attentionNavigationScopeRef.current === attentionNavigationScope)
+      return;
+    attentionNavigationScopeRef.current = attentionNavigationScope;
+    attentionNavigationGeneration.current += 1;
+  }, [attentionNavigationScope]);
+  const teamOverview = useTeamOverview({
+    transport: "hosted",
+    identityKey: teamAccessScopeKey,
+    enabled: allTeams.some((item) => item.id === team.id)
+  });
+  const refreshTeamOverview = teamOverview.refresh;
+  const [overviewTeamFilter, setOverviewTeamFilter] = useState("all");
   const drafts = useMemo(() => {
     try {
       return createBrowserTeamDraftStore();
@@ -139,6 +163,9 @@ export function HostedTeamChannels({
   const [squareOpen, setSquareOpen] = useState(false);
   const [focusSquareJobId, setFocusSquareJobId] = useState<string | null>(null);
   const [forYouOpen, setForYouOpen] = useState(false);
+  useEffect(() => {
+    if (forYouOpen) refreshTeamOverview();
+  }, [forYouOpen, refreshTeamOverview]);
   const [agentOfferRevision, setAgentOfferRevision] = useState(0);
   const [agentRequestRevision, setAgentRequestRevision] = useState(0);
   const [channelRequests, setChannelRequests] = useState<TeamAgentRequest[]>(
@@ -163,6 +190,9 @@ export function HostedTeamChannels({
   >(null);
   const [threadHasOlder, setThreadHasOlder] = useState(false);
   const [threadDraftText, setThreadDraftText] = useState("");
+  const [threadMentionUserIds, setThreadMentionUserIds] = useState<string[]>(
+    []
+  );
   const [threadPendingSend, setThreadPendingSend] =
     useState<StudioTeamDraft["pendingSend"]>(null);
   const [threadSendStatus, setThreadSendStatus] = useState<
@@ -189,6 +219,7 @@ export function HostedTeamChannels({
   const [beforeSequence, setBeforeSequence] = useState<number | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [draftText, setDraftText] = useState("");
+  const [draftMentionUserIds, setDraftMentionUserIds] = useState<string[]>([]);
   const [teamMentionSelection, setTeamMentionSelection] =
     useState<ScopedTeamMentionSelection | null>(null);
   const [pendingSend, setPendingSend] =
@@ -327,6 +358,7 @@ export function HostedTeamChannels({
     agent: TeamAgentMention;
     text: string;
     idempotencyKey: string;
+    mentionUserIds: string[];
     rootMessageId?: string;
   } | null>(null);
   const [agentMentionBusy, setAgentMentionBusy] = useState(false);
@@ -749,6 +781,7 @@ export function HostedTeamChannels({
       const capturedDraftGeneration = ++threadDraftEditGeneration.current;
       setOpenRootAuthorityKey(capturedAuthorityKey);
       setThreadDraftText("");
+      setThreadMentionUserIds([]);
       setOpenRootMessage(root);
       openRootRef.current = root;
       setThreadReplies([]);
@@ -769,6 +802,7 @@ export function HostedTeamChannels({
               return;
             if (threadDraftEditGeneration.current === capturedDraftGeneration)
               setThreadDraftText(stored?.text ?? "");
+            setThreadMentionUserIds(stored?.mentionUserIds ?? []);
             setThreadPendingSend(stored?.pendingSend ?? null);
             setThreadSendStatus(stored?.pendingSend ? "pending" : null);
             if (stored?.pendingSend)
@@ -790,12 +824,223 @@ export function HostedTeamChannels({
     [authority, authorityKey, drafts, loadRootReplies]
   );
 
+  const openAttentionItem = useCallback(
+    async (item: TeamOverviewItem) => {
+      const generation = ++attentionNavigationGeneration.current;
+      const capturedScope = attentionNavigationScope;
+      const isCurrent = () =>
+        attentionNavigationGeneration.current === generation &&
+        attentionNavigationScopeRef.current === capturedScope &&
+        !revokedRef.current;
+      const destination = item.destination;
+      if (destination.kind === "pull_request_review") {
+        router.push(
+          `/pull-requests?review=${encodeURIComponent(destination.reviewId)}`
+        );
+        return;
+      }
+      if (destination.kind === "team_job") {
+        if (item.teamId !== team.id) {
+          const query = new URLSearchParams({
+            team: item.teamId,
+            squareJob: destination.jobId
+          });
+          router.push(`/collaboration?${query}`);
+          return;
+        }
+        setForYouOpen(false);
+        setFocusSquareJobId(destination.jobId);
+        setSquareOpen(true);
+        return;
+      }
+      if (destination.kind === "agent_request") {
+        try {
+          const request = await teamAgentRequestsClient.findInboxRequest(
+            item.teamId,
+            destination.requestId
+          );
+          if (
+            !isCurrent() ||
+            !allTeams.some((entry) => entry.id === item.teamId)
+          )
+            return;
+          if (request) {
+            const review = await teamAgentRequestsClient.getReview(
+              item.teamId,
+              request.id
+            );
+            if (
+              !isCurrent() ||
+              !allTeams.some((entry) => entry.id === item.teamId)
+            )
+              return;
+            const connection = await publicSquareClient.getConnection(
+              item.teamId,
+              request.teamProjectId
+            );
+            if (
+              !isCurrent() ||
+              !allTeams.some((entry) => entry.id === item.teamId)
+            )
+              return;
+            if (connection.localProjectId) {
+              const query = new URLSearchParams({
+                chat: "1",
+                agent: request.agentId,
+                project: connection.localProjectId,
+                teamRequest: request.id,
+                teamRequestTeam: item.teamId,
+                teamRequestVersion: String(request.version),
+                teamReviewVersion: String(review.version)
+              });
+              if (review.executionId)
+                query.set("execution", review.executionId);
+              router.push(`/?${query}`);
+              return;
+            }
+          }
+        } catch (failure) {
+          if (
+            failure instanceof HostedTeamRequestError &&
+            [401, 403].includes(failure.status)
+          ) {
+            handleAuthorizationLost();
+            return;
+          }
+        }
+      }
+      const threadId = destination.threadId;
+      if (item.teamId !== team.id) {
+        const query = new URLSearchParams({
+          team: item.teamId,
+          thread: threadId
+        });
+        if (destination.rootMessageId)
+          query.set("root", destination.rootMessageId);
+        router.push(`/collaboration?${query}`);
+        return;
+      }
+      setForYouOpen(false);
+      setSquareOpen(false);
+      setThreadId(threadId);
+      if (destination.rootMessageId) {
+        const existing = messages.find(
+          (message) => message.id === destination.rootMessageId
+        );
+        if (existing) openMessageThread(existing);
+        else {
+          try {
+            const page = await client.loadMessages(
+              team.id,
+              threadId,
+              null,
+              50,
+              destination.rootMessageId
+            );
+            if (
+              !isCurrent() ||
+              selectedThreadRef.current !== destination.threadId
+            )
+              return;
+            const root = page.items.find(
+              (message) => message.id === destination.rootMessageId
+            );
+            if (root) openMessageThread(root);
+          } catch (failure) {
+            if (
+              failure instanceof HostedTeamRequestError &&
+              [401, 403].includes(failure.status)
+            )
+              handleAuthorizationLost();
+          }
+        }
+      }
+    },
+    [
+      client,
+      handleAuthorizationLost,
+      attentionNavigationScope,
+      allTeams,
+      messages,
+      openMessageThread,
+      publicSquareClient,
+      router,
+      team.id,
+      teamAgentRequestsClient
+    ]
+  );
+
+  const consumedAttentionRoute = useRef("");
+  useEffect(() => {
+    if (!navigationReady) return;
+    if (routedSquareJobId) {
+      const routeKey = `${team.id}:square:${routedSquareJobId}`;
+      if (consumedAttentionRoute.current === routeKey) return;
+      consumedAttentionRoute.current = routeKey;
+      setForYouOpen(false);
+      setFocusSquareJobId(routedSquareJobId);
+      setSquareOpen(true);
+      return;
+    }
+    if (
+      !routedThreadId ||
+      !activeThreads.some((thread) => thread.id === routedThreadId)
+    )
+      return;
+    const routeKey = `${team.id}:${routedThreadId}:${routedRootMessageId ?? ""}`;
+    if (consumedAttentionRoute.current === routeKey) return;
+    consumedAttentionRoute.current = routeKey;
+    setForYouOpen(false);
+    setSquareOpen(false);
+    setThreadId(routedThreadId);
+    if (routedRootMessageId) {
+      const existing = messages.find(
+        (message) => message.id === routedRootMessageId
+      );
+      if (existing)
+        queueMicrotask(() => {
+          if (consumedAttentionRoute.current === routeKey)
+            openMessageThread(existing);
+        });
+      else
+        void client
+          .loadMessages(team.id, routedThreadId, null, 50, routedRootMessageId)
+          .then((page) => {
+            const root = page.items.find(
+              (message) => message.id === routedRootMessageId
+            );
+            if (root) openMessageThread(root);
+          })
+          .catch(() => undefined);
+    }
+  }, [
+    activeThreads,
+    client,
+    messages,
+    navigationReady,
+    openMessageThread,
+    routedRootMessageId,
+    routedSquareJobId,
+    routedThreadId,
+    team.id
+  ]);
+
   const saveReplyDraft = useCallback(
-    (rootMessageId: string, text: string, pending = threadPendingSend) => {
+    (
+      rootMessageId: string,
+      text: string,
+      pending = threadPendingSend,
+      mentionUserIds = threadMentionUserIds
+    ) => {
       if (!authority || !drafts) return;
       const capturedAuthorityKey = authorityKey;
       const scopedAuthority = { ...authority, rootMessageId };
-      const value = { text, pendingSend: pending, receiptAckPending: null };
+      const value = {
+        text,
+        mentionUserIds,
+        pendingSend: pending,
+        receiptAckPending: null
+      };
       draftByAuthority.current.set(JSON.stringify(scopedAuthority), value);
       void drafts.save(scopedAuthority, value).catch(() => {
         if (
@@ -807,7 +1052,7 @@ export function HostedTeamChannels({
           );
       });
     },
-    [authority, authorityKey, drafts, threadPendingSend]
+    [authority, authorityKey, drafts, threadMentionUserIds, threadPendingSend]
   );
 
   const sendThreadReply = useCallback(
@@ -847,6 +1092,7 @@ export function HostedTeamChannels({
       setThreadPendingSend(identity);
       setThreadSendStatus("pending");
       setThreadDraftText(pendingDraft.text);
+      setThreadMentionUserIds([]);
       try {
         await drafts.save(scopedAuthority, pendingDraft);
       } catch {
@@ -886,7 +1132,8 @@ export function HostedTeamChannels({
           root.threadId,
           identity.body,
           identity.clientMessageId,
-          root.id
+          root.id,
+          identity.mentionUserIds ?? []
         );
         const message = receipt.message;
         if (receipt.acceptedBody !== identity.body)
@@ -917,6 +1164,7 @@ export function HostedTeamChannels({
           setThreadPendingSend(settled.pendingSend);
           setThreadSendStatus(null);
           setThreadDraftText(settled.text);
+          setThreadMentionUserIds(settled.mentionUserIds ?? []);
           setOpenRootMessage((item) =>
             item?.id === root.id
               ? { ...item, replyCount: item.replyCount + 1 }
@@ -934,6 +1182,7 @@ export function HostedTeamChannels({
           authorityKeyRef.current === authorityKey &&
           openRootRef.current?.id === root.id
         ) {
+          setThreadMentionUserIds(identity.mentionUserIds ?? []);
           setThreadSendStatus(
             failure instanceof HostedTeamRequestError &&
               [400, 404, 422].includes(failure.status)
@@ -1520,6 +1769,7 @@ export function HostedTeamChannels({
         const draft = stored.cached ?? teamDraftForHydration(stored.stored);
         draftByAuthority.current.set(JSON.stringify(authority), draft);
         setDraftText(draft.text);
+        setDraftMentionUserIds(draft.mentionUserIds ?? []);
         setPendingSend(draft.pendingSend);
         setHydrated(true);
         setHydratedKey(JSON.stringify(authority));
@@ -1566,6 +1816,7 @@ export function HostedTeamChannels({
     if (!drafts || !authority || !draftReady) return;
     const value: StudioTeamDraft = {
       text: draftText,
+      mentionUserIds: draftMentionUserIds,
       pendingSend,
       updatedAt: new Date().toISOString()
     };
@@ -1582,7 +1833,15 @@ export function HostedTeamChannels({
       window.clearTimeout(timer);
       void persist().catch(() => undefined);
     };
-  }, [authority, authorityKey, draftText, drafts, draftReady, pendingSend]);
+  }, [
+    authority,
+    authorityKey,
+    draftMentionUserIds,
+    draftText,
+    drafts,
+    draftReady,
+    pendingSend
+  ]);
   useEffect(() => {
     const capturedOwnerKey = ownerKey;
     const unsubscribe = client.subscribeTeam(
@@ -1732,7 +1991,7 @@ export function HostedTeamChannels({
     visibleRead
   ]);
 
-  const send = async (body: string) => {
+  const send = async (body: string, mentionUserIds: string[] = []) => {
     if (!activeThread || !authority || !drafts || !draftReady) return false;
     if (visiblePendingSend) {
       setError("Resolve the earlier send before sending edited text.");
@@ -1747,17 +2006,24 @@ export function HostedTeamChannels({
     const identity = {
       clientMessageId: crypto.randomUUID(),
       body,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      mentionUserIds
     };
     draftByAuthority.current.set(capturedKey, {
       text: "",
+      mentionUserIds,
       pendingSend: identity
     });
     setPendingSend(identity);
     setDraftText("");
+    setDraftMentionUserIds([]);
     let requestStarted = false;
     try {
-      await drafts.save(capturedAuthority, { text: "", pendingSend: identity });
+      await drafts.save(capturedAuthority, {
+        text: "",
+        mentionUserIds,
+        pendingSend: identity
+      });
       if (
         revokedRef.current ||
         !mountedRef.current ||
@@ -1769,7 +2035,9 @@ export function HostedTeamChannels({
         capturedTeamId,
         capturedThreadId,
         identity.body,
-        identity.clientMessageId
+        identity.clientMessageId,
+        null,
+        identity.mentionUserIds
       );
       const message = receipt.message;
       if (receipt.acceptedBody !== identity.body)
@@ -1814,6 +2082,7 @@ export function HostedTeamChannels({
       if (currentlySelected && authorityKey === capturedKey) {
         setPendingSend(settled.pendingSend);
         setDraftText(settled.text);
+        setDraftMentionUserIds(settled.mentionUserIds ?? []);
         setError(null);
       }
       return message.delivery === "sent";
@@ -1852,6 +2121,9 @@ export function HostedTeamChannels({
       ) {
         setPendingSend(settled.pendingSend);
         setDraftText(settled.text);
+        setDraftMentionUserIds(
+          settled.mentionUserIds ?? identity.mentionUserIds ?? []
+        );
       }
       if (
         failure instanceof HostedTeamRequestError &&
@@ -1895,6 +2167,12 @@ export function HostedTeamChannels({
     setError(null);
     try {
       if (intent.agent.kind === "colleague") {
+        if (intent.mentionUserIds.length > 0) {
+          setError(
+            "Remove human mentions before sending a request to another Agent."
+          );
+          return false;
+        }
         await teamAgentRequestsClient.createRequest(capturedTeamId, {
           idempotencyKey: intent.idempotencyKey,
           teamProjectId,
@@ -1925,8 +2203,13 @@ export function HostedTeamChannels({
         return false;
       }
       const sent = targetRootMessageId
-        ? await sendThreadReply(intent.text)
-        : await send(intent.text);
+        ? await sendThreadReply(intent.text, undefined, {
+            clientMessageId: crypto.randomUUID(),
+            body: intent.text,
+            createdAt: new Date().toISOString(),
+            mentionUserIds: intent.mentionUserIds
+          })
+        : await send(intent.text, intent.mentionUserIds);
       if (!sent) return false;
       if (
         team.id !== capturedTeamId ||
@@ -1977,7 +2260,12 @@ export function HostedTeamChannels({
     selection: ChatComposerSelection
   ) => {
     if (!selection.agentId) {
-      await sendThreadReply(text);
+      await sendThreadReply(text, undefined, {
+        clientMessageId: crypto.randomUUID(),
+        body: text,
+        createdAt: new Date().toISOString(),
+        mentionUserIds: selection.mentionUserIds ?? []
+      });
       return;
     }
     const agent = teamAgentMentions.options.find(
@@ -1992,6 +2280,7 @@ export function HostedTeamChannels({
       agent,
       text,
       idempotencyKey: crypto.randomUUID(),
+      mentionUserIds: selection.mentionUserIds ?? [],
       rootMessageId: root.id
     };
     if (activeThread?.kind === "team_project_channel") {
@@ -2008,7 +2297,7 @@ export function HostedTeamChannels({
     selection: ChatComposerSelection
   ) => {
     if (!selection.agentId || activeDirectMessage) {
-      if (await send(text)) {
+      if (await send(text, selection.mentionUserIds ?? [])) {
         setTeamMentionSelection((current) =>
           current?.scopeKey === teamMentionScopeKey
             ? { ...current, agentId: null }
@@ -2026,7 +2315,12 @@ export function HostedTeamChannels({
       );
       return;
     }
-    const intent = { agent, text, idempotencyKey: crypto.randomUUID() };
+    const intent = {
+      agent,
+      text,
+      idempotencyKey: crypto.randomUUID(),
+      mentionUserIds: selection.mentionUserIds ?? []
+    };
     if (activeThread?.kind === "team_project_channel") {
       await completeAgentMention(intent, activeThread.teamProjectId);
     } else {
@@ -2050,7 +2344,9 @@ export function HostedTeamChannels({
         team.id,
         capturedThreadId,
         pending.body,
-        pending.clientMessageId
+        pending.clientMessageId,
+        null,
+        pending.mentionUserIds ?? []
       );
       const message = receipt.message;
       if (receipt.acceptedBody !== pending.body)
@@ -2231,8 +2527,39 @@ export function HostedTeamChannels({
   };
   const updateDraft = (value: string) => {
     if (authorityKey && hydratedKey === authorityKey)
-      draftByAuthority.current.set(authorityKey, { text: value, pendingSend });
+      draftByAuthority.current.set(authorityKey, {
+        ...(draftByAuthority.current.get(authorityKey) ?? {}),
+        text: value,
+        mentionUserIds: draftMentionUserIds,
+        pendingSend
+      });
     setDraftText(value);
+  };
+  const updateMentionUserIds = (userIds: string[]) => {
+    setDraftMentionUserIds(userIds);
+    if (authorityKey && hydratedKey === authorityKey) {
+      const current = draftByAuthority.current.get(authorityKey) ?? {
+        text: draftText,
+        pendingSend
+      };
+      draftByAuthority.current.set(authorityKey, {
+        ...current,
+        mentionUserIds: userIds
+      });
+    }
+  };
+  const updateThreadMentionUserIds = (userIds: string[]) => {
+    setThreadMentionUserIds(userIds);
+    const root = openRootRef.current;
+    if (!root || !authority) return;
+    const key = JSON.stringify({ ...authority, rootMessageId: root.id });
+    const current = draftByAuthority.current.get(key);
+    saveReplyDraft(
+      root.id,
+      current?.text ?? threadDraftText,
+      current?.pendingSend ?? threadPendingSend,
+      userIds
+    );
   };
 
   return (
@@ -2258,6 +2585,7 @@ export function HostedTeamChannels({
               { kind: "dm" | "group_dm" }
             > => thread.kind === "dm" || thread.kind === "group_dm"
           )}
+          forYouBadgeCount={teamOverview.snapshot?.badgeCount ?? 0}
           selectedId={
             forYouOpen ? "for-you" : squareOpen ? "public-square" : threadId
           }
@@ -2316,16 +2644,21 @@ export function HostedTeamChannels({
             }
           >
             {forYouOpen ? (
-              <TeamAgentRequestInbox
-                key={`requests:${user.id}:${team.id}`}
-                teamId={team.id}
-                viewerId={user.id}
-                authorityKey={`${typeof window === "undefined" ? "" : window.location.origin}:${user.id}:${team.id}`}
-                refreshRevision={agentRequestRevision}
-                client={teamAgentRequestsClient}
-                onAuthorizationLost={handleAuthorizationLost}
-                onReview={(request) => void openRequestReview(request)}
-                onViewWork={openRequestWork}
+              <TeamAttentionView
+                state={teamOverview.state}
+                snapshot={teamOverview.snapshot}
+                refreshing={teamOverview.refreshing}
+                mutationError={teamOverview.mutationError}
+                pendingItemIds={teamOverview.pendingItemIds}
+                selectedTeamId={overviewTeamFilter}
+                onTeamChange={setOverviewTeamFilter}
+                onRefresh={teamOverview.refresh}
+                onOpen={(item) => void openAttentionItem(item)}
+                onClear={(item, cleared) =>
+                  void teamOverview.setCleared(item, cleared)
+                }
+                onSeen={(item) => teamOverview.setSeen(item)}
+                onLoadMore={teamOverview.loadMore}
               />
             ) : squareOpen ? (
               <PublicSquare
@@ -2478,6 +2811,8 @@ export function HostedTeamChannels({
                                 branch="shared"
                                 value={visibleDraftText}
                                 onChange={updateDraft}
+                                initialMentionUserIds={draftMentionUserIds}
+                                onMentionUserIdsChange={updateMentionUserIds}
                                 onSend={(text, selection) =>
                                   sendTeamComposer(text, selection)
                                 }
@@ -2485,6 +2820,19 @@ export function HostedTeamChannels({
                                   activeDirectMessage
                                     ? []
                                     : teamAgentMentions.options
+                                }
+                                teamMembers={
+                                  activeDirectMessage
+                                    ? []
+                                    : people
+                                        .filter(
+                                          (person) =>
+                                            person.membershipState === "enabled"
+                                        )
+                                        .map((person) => ({
+                                          id: person.id,
+                                          name: person.displayName
+                                        }))
                                 }
                                 activeAgentId={activeMentionAgentId}
                                 onActiveAgentChange={(agentId) =>
@@ -2636,10 +2984,20 @@ export function HostedTeamChannels({
                       principalUserId={user.id}
                       connected={connected}
                       replyDraft={threadDraftText}
+                      replyMentionUserIds={threadMentionUserIds}
+                      onReplyMentionUserIdsChange={updateThreadMentionUserIds}
                       pendingSend={threadPendingSend}
                       pendingStatus={threadSendStatus}
                       editDrafts={threadEditDrafts}
                       agents={teamAgentMentions.options}
+                      teamMembers={people
+                        .filter(
+                          (person) => person.membershipState === "enabled"
+                        )
+                        .map((person) => ({
+                          id: person.id,
+                          name: person.displayName
+                        }))}
                       agentRequests={
                         activeThread &&
                         activeThread.kind !== "dm" &&

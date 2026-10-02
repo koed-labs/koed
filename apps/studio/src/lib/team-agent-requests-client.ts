@@ -146,6 +146,22 @@ export class TeamAgentRequestsClient {
     return parsed.data;
   }
 
+  async findInboxRequest(
+    teamId: string,
+    requestId: string
+  ): Promise<TeamAgentRequest | null> {
+    let cursor: string | undefined;
+    const visitedCursors = new Set<string>();
+    do {
+      const page = await this.listInbox(teamId, { limit: 100, cursor });
+      const match = page.requests.find((request) => request.id === requestId);
+      if (match) return match;
+      if (!page.nextCursor || visitedCursors.has(page.nextCursor)) return null;
+      visitedCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (true);
+  }
+
   async createRequest(
     teamId: string,
     input: CreateTeamAgentRequestInput

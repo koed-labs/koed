@@ -27,10 +27,13 @@ export type StudioTeamDraftAuthority = {
 
 export type StudioTeamDraft = {
   text: string;
+  /** Selected structured human mentions for the unsent draft. */
+  mentionUserIds?: string[];
   pendingSend: {
     clientMessageId: string;
     body: string;
     createdAt: string;
+    mentionUserIds?: string[];
   } | null;
   receiptAckPending?: {
     clientMessageId: string;

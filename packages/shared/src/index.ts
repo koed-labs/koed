@@ -248,6 +248,27 @@ export {
   updateTeamAgentRequestReviewInputSchema,
   withdrawTeamAgentRequestInputSchema
 } from "./team-agent-requests-contract.js";
+export {
+  collaborationMentionUserIdsSchema,
+  teamOverviewAccessSchema,
+  teamOverviewCoverageSchema,
+  teamOverviewDestinationSchema,
+  teamOverviewItemSchema,
+  teamOverviewMutationResultSchema,
+  teamOverviewQuerySchema,
+  teamOverviewSchemaVersion,
+  teamOverviewSnapshotSchema,
+  teamOverviewSourceMutationSchema,
+  teamOverviewSourceSchema,
+  teamOverviewTeamSchema
+} from "./team-overview.js";
+export type {
+  TeamOverviewDestination,
+  TeamOverviewItem,
+  TeamOverviewSnapshot,
+  TeamOverviewSource,
+  TeamOverviewTeam
+} from "./team-overview.js";
 export type {
   CreateTeamAgentRequestInput,
   DecideTeamAgentRequestInput,

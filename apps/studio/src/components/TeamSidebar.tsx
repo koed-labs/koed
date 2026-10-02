@@ -65,6 +65,7 @@ export function TeamChannelNavigation({
   people = [],
   principalUserId,
   directMessages = [],
+  forYouBadgeCount = 0,
   selectedId,
   forYouSelected = false,
   onOpenForYou,
@@ -81,6 +82,7 @@ export function TeamChannelNavigation({
   directMessages?: Array<
     Extract<CollaborationThread, { kind: "dm" | "group_dm" }>
   >;
+  forYouBadgeCount?: number;
   selectedId: string;
   forYouSelected?: boolean;
   onOpenForYou?: () => void;
@@ -170,6 +172,11 @@ export function TeamChannelNavigation({
           >
             <Bell className="mr-2 h-4 w-4" />
             For you
+            {forYouBadgeCount > 0 && (
+              <span className="ml-auto rounded-full bg-surface-active px-1.5 py-0.5 text-[10px] tabular-nums text-foreground-secondary">
+                {forYouBadgeCount > 99 ? "99+" : forYouBadgeCount}
+              </span>
+            )}
           </button>
           <button
             type="button"

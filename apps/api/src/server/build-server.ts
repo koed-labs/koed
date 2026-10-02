@@ -13,6 +13,8 @@ import {
   createCollaborationRepository,
   createDbPool,
   createHomeRepository,
+  createTeamOverviewRepository,
+  createTeamOverviewSourcesRepository,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createPersonalDeviceSyncRepository,
@@ -24,6 +26,8 @@ import {
   type CollaborationRealtimeMaterializationRepository,
   type CollaborationRepository,
   type HomeRepository,
+  type TeamOverviewRepository,
+  type TeamOverviewSourcesRepository,
   type EmbeddingCapacityRepository,
   type MemorySourceRepository,
   type PrivacyClassificationRepository,
@@ -389,6 +393,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const teamEnvelopeEncryptionProvider =
     options.teamEnvelopeEncryptionProvider ??
     createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
+  const teamOverviewSourcesRepository: TeamOverviewSourcesRepository | null =
+    pool
+      ? createTeamOverviewSourcesRepository(pool, {
+          envelopeEncryptionProvider,
+          teamEnvelopeEncryptionProvider
+        })
+      : null;
+  const teamOverviewRepository: TeamOverviewRepository | null =
+    pool && teamOverviewSourcesRepository
+      ? createTeamOverviewRepository(pool, teamOverviewSourcesRepository)
+      : null;
   const privacyFingerprintRoot = resolveApiDataEncryptionKeyFromEnv();
   const privacyClassificationRepository =
     options.privacyClassificationRepository ??
@@ -1828,8 +1843,25 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCollaborationRoutes(app, {
     config: routeContext.config,
     localEdge: routeContext.localEdge,
+    deploymentIdentity: routeContext.deploymentIdentity,
     requireCollaborationRepository: requireRepository,
     requireTeamAgentRequestsRepository: requireRepository,
+    requireTeamOverviewRepository: () => {
+      if (!teamOverviewRepository)
+        throw Object.assign(
+          new Error("Team overview authority is unavailable"),
+          { statusCode: 503 }
+        );
+      return teamOverviewRepository;
+    },
+    requireTeamOverviewSourcesRepository: () => {
+      if (!teamOverviewSourcesRepository)
+        throw Object.assign(
+          new Error("Team overview sources are unavailable"),
+          { statusCode: 503 }
+        );
+      return teamOverviewSourcesRepository;
+    },
     createOwnerJobWithClient: (client, input) =>
       requireRepository().createManagedConversationAcceptedAgentAssignmentWithClient(
         client,

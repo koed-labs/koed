@@ -33,15 +33,18 @@ export function TeamMessageThreadPane({
   principalUserId,
   connected,
   replyDraft,
+  replyMentionUserIds = [],
   pendingSend,
   pendingStatus,
   editDrafts,
   agents = [],
+  teamMembers = [],
   agentRequests,
   forwardRequestsByMessage = {},
   forwardRequestTextById = {},
   onClose,
   onReplyDraftChange,
+  onReplyMentionUserIdsChange,
   onSendReply,
   onRetryPending,
   onStartEdit,
@@ -60,6 +63,7 @@ export function TeamMessageThreadPane({
   principalUserId: string;
   connected: boolean;
   replyDraft: string;
+  replyMentionUserIds?: string[];
   pendingSend: {
     clientMessageId: string;
     body: string;
@@ -68,11 +72,13 @@ export function TeamMessageThreadPane({
   pendingStatus: "pending" | "uncertain" | "retry_failed" | null;
   editDrafts: ReadonlyMap<string, ThreadEditDraft>;
   agents?: readonly ChatMentionAgent[];
+  teamMembers?: readonly { id: string; name: string }[];
   agentRequests?: ReactNode;
   forwardRequestsByMessage?: Record<string, TeamAgentRequest[]>;
   forwardRequestTextById?: Record<string, string>;
   onClose: () => void;
   onReplyDraftChange: (text: string) => void;
+  onReplyMentionUserIdsChange?: (userIds: string[]) => void;
   onSendReply: (
     text: string,
     selection: ChatComposerSelection
@@ -261,8 +267,11 @@ export function TeamMessageThreadPane({
                     branch="shared"
                     value={replyDraft}
                     onChange={onReplyDraftChange}
+                    initialMentionUserIds={replyMentionUserIds}
+                    onMentionUserIdsChange={onReplyMentionUserIdsChange}
                     onSend={onSendReply}
                     agents={agents}
+                    teamMembers={teamMembers}
                     showExecutionControls={false}
                     switchToExecutionControlsOnMention={agents.length > 0}
                     showMetaBar={false}

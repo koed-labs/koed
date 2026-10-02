@@ -99,6 +99,15 @@ const validPendingSend = (pendingSend) => {
   );
 };
 
+const validMentionUserIds = (mentionUserIds) =>
+  mentionUserIds === undefined ||
+  (Array.isArray(mentionUserIds) &&
+    mentionUserIds.length <= 40 &&
+    new Set(mentionUserIds).size === mentionUserIds.length &&
+    mentionUserIds.every(
+      (userId) => typeof userId === "string" && UUID.test(userId)
+    ));
+
 const validReceiptAckPending = (receiptAckPending) => {
   if (receiptAckPending === undefined || receiptAckPending === null)
     return true;
@@ -156,6 +165,7 @@ const parseTeamState = (value, authority) => {
         (key) =>
           ![
             "text",
+            "mentionUserIds",
             "pendingSend",
             "receiptAckPending",
             "edit",
@@ -164,6 +174,7 @@ const parseTeamState = (value, authority) => {
       ) ||
       typeof draft.text !== "string" ||
       Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
+      !validMentionUserIds(draft.mentionUserIds) ||
       !validPendingSend(draft.pendingSend) ||
       !validReceiptAckPending(draft.receiptAckPending) ||
       !validEditDraft(draft.edit) ||
@@ -331,6 +342,7 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
         !draft ||
         typeof draft.text !== "string" ||
         Buffer.byteLength(draft.text, "utf8") > MAX_DRAFT_BYTES ||
+        !validMentionUserIds(draft.mentionUserIds) ||
         !validPendingSend(draft.pendingSend) ||
         !validReceiptAckPending(draft.receiptAckPending) ||
         !validEditDraft(draft.edit)
@@ -350,6 +362,7 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
           const draftKey = draftKeyFor(authority);
           if (
             draft.text.length === 0 &&
+            (!draft.mentionUserIds || draft.mentionUserIds.length === 0) &&
             draft.pendingSend === null &&
             !draft.receiptAckPending &&
             !draft.edit
@@ -364,6 +377,9 @@ export const createStudioTeamDraftStore = ({ userDataPath }) => {
             }
             nextDrafts[draftKey] = {
               text: draft.text,
+              ...(draft.mentionUserIds?.length
+                ? { mentionUserIds: draft.mentionUserIds }
+                : {}),
               pendingSend: draft.pendingSend,
               receiptAckPending: draft.receiptAckPending ?? null,
               ...(draft.edit ? { edit: draft.edit } : {}),

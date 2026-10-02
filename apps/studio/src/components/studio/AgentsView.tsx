@@ -10,6 +10,7 @@ import {
 import { LayoutGrid, List, Plus } from "lucide-react";
 import type { AgentDefinition } from "@/lib/collab";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
+import { AgentTeamAvailability } from "./AgentTeamAvailability";
 import { CreateAgentModal } from "@/components/CreateAgentModal";
 import { StudioSidebar } from "./StudioSidebar";
 import { AgentDetailPanel } from "./AgentDetailPanel";
@@ -1231,6 +1232,16 @@ export function AgentsView({
             cloneLoading={cloneLoadingId === selected.id}
             restoring={restoringId === selected.id}
             lifecycleError={lifecycleError}
+            teamAvailability={
+              selected.lifecycle === "active" && draftScope ? (
+                <AgentTeamAvailability
+                  key={`${draftScope.backendId}:${draftScope.ownerId}:${selected.id}`}
+                  agentId={selected.id}
+                  ownerId={draftScope.ownerId}
+                  backendId={draftScope.backendId}
+                />
+              ) : undefined
+            }
           />
         )}
 

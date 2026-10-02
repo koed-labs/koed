@@ -7,7 +7,8 @@ import {
   COLLABORATION_NAME_MAX_CODE_POINTS,
   COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
   COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES,
-  collaborationReactionEmojiSchema
+  collaborationReactionEmojiSchema,
+  collaborationMentionUserIdsSchema
 } from "@koed/shared";
 import { publicSquareLocalProjectIdSchema } from "@koed/shared/public-square";
 
@@ -177,7 +178,8 @@ export const transitionCollaborationThreadSchema = z
 export const createCollaborationMessageSchema = z
   .object({
     bodyText: messageBodySchema,
-    rootMessageId: strictUuidSchema.nullable().optional()
+    rootMessageId: strictUuidSchema.nullable().optional(),
+    mentionUserIds: collaborationMentionUserIdsSchema.optional()
   })
   .strict();
 
@@ -209,7 +211,8 @@ export const collaborationMessageParamsSchema = z
 export const editCollaborationMessageSchema = z
   .object({
     bodyText: messageBodySchema,
-    expectedVersion: z.number().int().safe().positive()
+    expectedVersion: z.number().int().safe().positive(),
+    mentionUserIds: collaborationMentionUserIdsSchema.optional()
   })
   .strict();
 

@@ -39,6 +39,10 @@
       "types": "./dist/team-agent-requests-contract.d.ts",
       "import": "./dist/team-agent-requests-contract.js"
     },
+    "./team-overview": {
+      "types": "./dist/team-overview.d.ts",
+      "import": "./dist/team-overview.js"
+    },
     "./private-network": {
       "types": "./dist/private-network.d.ts",
       "import": "./dist/private-network.js"

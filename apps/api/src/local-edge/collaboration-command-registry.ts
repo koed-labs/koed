@@ -207,7 +207,10 @@ const teamMessageOperation = (
     path: `${teamThreadPath(command.input.thread)}/messages`,
     body: {
       bodyText: command.input.body,
-      rootMessageId: command.input.rootMessageId ?? null
+      rootMessageId: command.input.rootMessageId ?? null,
+      ...(command.input.mentionUserIds?.length
+        ? { mentionUserIds: command.input.mentionUserIds }
+        : {})
     },
     resultKey: "message",
     idempotencyKey: command.input.clientMessageId
@@ -230,7 +233,10 @@ const teamMessageMutationOperation = (
         path: messagePath,
         body: {
           bodyText: command.input.body,
-          expectedVersion: command.input.expectedVersion
+          expectedVersion: command.input.expectedVersion,
+          ...(command.input.mentionUserIds !== undefined
+            ? { mentionUserIds: command.input.mentionUserIds }
+            : {})
         },
         resultKey: "message"
       }
@@ -265,7 +271,9 @@ const matchesMessage = (
   result.threadId === command.input.thread.threadId &&
   result.teamId === command.input.thread.teamId &&
   result.acceptedBody === command.input.body &&
-  result.rootMessageId === (command.input.rootMessageId ?? null);
+  result.rootMessageId === (command.input.rootMessageId ?? null) &&
+  JSON.stringify(result.mentionUserIds ?? []) ===
+    JSON.stringify(command.input.mentionUserIds ?? []);
 
 const matchesMessageMutation = (
   command:
@@ -282,7 +290,12 @@ const matchesMessageMutation = (
     return false;
   }
   if (command.command === "collaboration.edit_message") {
-    return result.body === command.input.body;
+    return (
+      result.body === command.input.body &&
+      (command.input.mentionUserIds === undefined ||
+        JSON.stringify(result.mentionUserIds ?? []) ===
+          JSON.stringify(command.input.mentionUserIds))
+    );
   }
   if (!Array.isArray(result.reactions)) return false;
   const reaction = (result.reactions as Array<Record<string, unknown>>).find(

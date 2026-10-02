@@ -15564,4 +15564,42 @@ export const homeReminderStates = pgTable(
   ]
 );
 
+/** Stores only Team-scoped overview clear/seen state and exact source revisions. */
+export const teamOverviewReminderStates = pgTable(
+  "team_overview_reminder_states",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    sourceEventId: text("source_event_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    cleared: boolean("cleared").notNull().default(false),
+    seen: boolean("seen").notNull().default(false),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.teamId, table.sourceEventId]
+    }),
+    index("team_overview_reminder_states_team_updated_idx").on(
+      table.teamId,
+      table.ownerUserId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "team_overview_source_kind_check",
+      sql`${table.sourceKind} in ('message_attention', 'agent_request', 'team_job_action', 'team_job_outcome', 'pull_request_action')`
+    ),
+    check(
+      "team_overview_source_event_id_check",
+      sql`${table.sourceEventId} ~ '^[A-Za-z0-9._:-]+$'`
+    )
+  ]
+);
+
 export * from "./personal-device-sync-relay-schema.js";

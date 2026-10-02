@@ -32,6 +32,7 @@ const pendingSend = {
   body: "Draft body that must remain byte-for-byte stable.",
   createdAt: "2026-09-27T18:00:00.000Z"
 };
+const mentionUserIds = ["99999999-9999-4999-8999-999999999999"];
 
 describe("Studio Team draft store", () => {
   it("encrypts drafts at rest and restores the exact uncertain send after restart", async () => {
@@ -39,7 +40,7 @@ describe("Studio Team draft store", () => {
     const first = createStudioTeamDraftStore({ userDataPath });
     await first.save({
       authority,
-      draft: { text: "Unsaved edit", pendingSend }
+      draft: { text: "Unsaved edit", pendingSend, mentionUserIds }
     });
 
     const stored = await readFile(
@@ -53,6 +54,7 @@ describe("Studio Team draft store", () => {
     const afterRestart = createStudioTeamDraftStore({ userDataPath });
     assert.deepEqual(await afterRestart.load(authority), {
       text: "Unsaved edit",
+      mentionUserIds,
       pendingSend,
       receiptAckPending: null,
       updatedAt: (await afterRestart.load(authority)).updatedAt

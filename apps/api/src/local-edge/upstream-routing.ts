@@ -516,6 +516,14 @@ export const assertUpstreamOperationPathAllowed = (
   }
   if (operationFamily === "team_chat_write" && parsed.search === "") {
     if (
+      method === "POST" &&
+      new RegExp(
+        `^${agentTeam}/overview/(?:[A-Za-z0-9._:-]|%[0-9a-f]{2}){1,160}/(?:clear|restore|seen)$`,
+        "i"
+      ).test(pathname)
+    )
+      return;
+    if (
       (method === "POST" && requestPath.test(pathname)) ||
       (method === "POST" &&
         new RegExp(`^${chatMessages}$`, "i").test(pathname)) ||
@@ -548,6 +556,32 @@ export const assertUpstreamOperationPathAllowed = (
   const publicSquareTeam =
     "/v1/collaboration/teams/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/public-square";
   if (operationFamily === "team_chat_read") {
+    if (method === "GET" && pathname === "/v1/collaboration/teams/overview") {
+      const keys = [...parsed.searchParams.keys()];
+      if (
+        keys.some((key) => key !== "limit" && key !== "cursor") ||
+        new Set(keys).size !== keys.length
+      )
+        deny();
+      const limit = parsed.searchParams.get("limit");
+      if (
+        limit !== null &&
+        (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > 100)
+      )
+        deny();
+      const cursor = parsed.searchParams.get("cursor");
+      if (
+        cursor !== null &&
+        (cursor.length === 0 ||
+          cursor.length > 512 ||
+          Array.from(cursor).some((character) => {
+            const code = character.charCodeAt(0);
+            return code < 32 || code === 127;
+          }))
+      )
+        deny();
+      return;
+    }
     if (
       method === "GET" &&
       new RegExp(`^${publicSquareTeam}$`, "i").test(pathname)
