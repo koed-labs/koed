@@ -17,7 +17,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
       </head>
-      <body className="flex h-screen overflow-hidden bg-background text-foreground select-none">
+      <body className="flex h-dvh overflow-hidden bg-background text-foreground select-none">
         <ThemeProvider>
           <BuildViewProvider>{children}</BuildViewProvider>
         </ThemeProvider>

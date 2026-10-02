@@ -84,7 +84,7 @@ function layoutSquare(
       Math.floor((width + GAP) / (ROOM_MIN_WIDTH + GAP))
     )
   );
-  const roomWidth = (width - GAP * (cols - 1)) / cols;
+  const roomWidth = Math.max(ROOM_MIN_WIDTH, (width - GAP * (cols - 1)) / cols);
   const perRow = Math.max(
     1,
     Math.floor((roomWidth - PAD * 2 + (SLOT_X - 32)) / SLOT_X)
@@ -151,6 +151,7 @@ function layoutSquare(
     positions,
     idleTop,
     idleHeight,
+    width: Math.max(width, ROOM_MIN_WIDTH),
     height: idleTop + idleHeight
   };
 }
@@ -429,177 +430,179 @@ export function PublicSquareView({
           here when an owner shares them.
         </div>
       ) : (
-        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="min-w-0">
-            <div
-              ref={mapRef}
-              className="relative"
-              style={{ height: layout.height }}
-            >
-              {layout.rooms.map((room) => {
-                const jobsHere = jobs.filter(
-                  (job) => job.publication.projectId === room.project.id
-                );
-                const roomLatest = jobsHere
-                  .map((job) => observedEvent(job, asOf))
-                  .filter(
-                    (event): event is NonNullable<typeof event> =>
-                      event !== null
-                  )
-                  .sort((left, right) => right.at - left.at)[0];
-                const selected = selectedRoom?.id === room.project.id;
-                return (
-                  <div
-                    key={room.project.id}
-                    className={`absolute rounded-2xl border bg-surface/20 transition-[opacity,border-color] duration-300 ${selected ? "border-accent" : "border-border"} ${selectedRoom && !selected ? "opacity-45" : ""}`}
-                    style={{
-                      left: room.x,
-                      top: room.y,
-                      width: room.width,
-                      height: room.height,
-                      ...ROOM_TEXTURE
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSelection(
-                          selected
-                            ? null
-                            : { kind: "room", id: room.project.id }
-                        )
-                      }
-                      aria-label={`Show ${room.project.name} jobs`}
-                      className="flex h-16 w-full flex-col justify-center gap-1 rounded-t-2xl border-b border-border/60 px-3.5 text-left transition-colors hover:bg-surface-hover/40"
-                    >
-                      <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${teamTone(room.project.id).solid}`}
-                        />
-                        <span className="truncate">{room.project.name}</span>
-                        <span className="ml-auto flex-shrink-0 text-xs font-normal text-subtle">
-                          {jobsHere.length}{" "}
-                          {jobsHere.length === 1 ? "job" : "jobs"}
-                        </span>
-                      </span>
-                      <span className="truncate text-xs text-subtle">
-                        {roomLatest && asOf !== null
-                          ? `${roomLatest.agentName} ${roomLatest.phrase} · ${timeAgoLabel(new Date(roomLatest.at).toISOString(), asOf)}`
-                          : jobsHere.length
-                            ? `${jobsHere.length} active ${jobsHere.length === 1 ? "Job" : "Jobs"}`
-                            : "No active Jobs"}
-                      </span>
-                    </button>
-                    {room.labels.map((label) => (
-                      <span
-                        key={label.id}
-                        className="absolute left-3.5 text-[10px] font-medium uppercase tracking-wider text-faint"
-                        style={{ top: label.y }}
-                      >
-                        {label.label} · {label.count}
-                      </span>
-                    ))}
-                  </div>
-                );
-              })}
-              {jobs.map((job) => {
-                const position = layout.positions.get(job.id);
-                if (!position) return null;
-                const selected = selectedJob?.id === job.id;
-                const dimmed =
-                  selectedRoom !== null &&
-                  job.publication.projectId !== selectedRoom.id;
-                const moving =
-                  job.zone === "working" || job.zone === "checking";
-                return (
-                  <button
-                    key={job.publication.id}
-                    type="button"
-                    onClick={() => setSelection({ kind: "job", id: job.id })}
-                    title={`${job.publication.agentName} · ${job.publication.ownerName} · ${job.statusLabel}`}
-                    aria-label={`${job.publication.agentName} Job, ${job.publication.ownerName}, ${job.statusLabel}`}
-                    className="ps-move absolute h-10 w-8"
-                    style={{
-                      left: position.x,
-                      top: position.y,
-                      opacity: job.zone === "offline" ? 0.35 : dimmed ? 0.3 : 1
-                    }}
-                  >
-                    <span
-                      className={`relative block rounded-md ${moving ? "ps-bob" : ""} ${selected ? "ring-2 ring-accent ring-offset-2 ring-offset-background" : ""}`}
-                    >
-                      <SquareAvatar
-                        name={job.publication.agentName}
-                        toneId={job.publication.agentId}
-                        size="md"
-                      />
-                      {job.zone === "checking" && (
-                        <span className="absolute -right-1.5 -top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success text-background ring-2 ring-background">
-                          <Check className="h-2.5 w-2.5" strokeWidth={3} />
-                        </span>
-                      )}
-                      {job.publication.status === "waiting" && (
-                        <span
-                          className={`absolute -right-1.5 -top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold ring-2 ring-background ${job.waitingOnViewer ? "bg-accent text-white" : "bg-warning text-background"}`}
-                        >
-                          !
-                        </span>
-                      )}
-                      {job.zone === "offline" && (
-                        <WifiOff className="absolute -right-1.5 -top-1.5 h-3.5 w-3.5 rounded-full bg-background p-0.5 text-muted" />
-                      )}
-                    </span>
-                    <span
-                      className={`absolute left-1/2 top-[35px] h-1.5 w-1.5 -translate-x-1/2 rounded-full ${teamTone(job.publication.ownerId).solid}`}
-                    />
-                  </button>
-                );
-              })}
+            <div ref={mapRef} className="max-w-full overflow-x-auto">
               <div
-                className="absolute left-0 right-0 rounded-2xl border border-border bg-surface/10"
-                style={{ top: layout.idleTop, height: layout.idleHeight }}
+                className="relative"
+                style={{ width: layout.width, height: layout.height }}
               >
-                <span className="absolute left-3.5 top-3.5 text-[10px] font-medium uppercase tracking-wider text-faint">
-                  Idle Agents · {idleAgents.length}
-                </span>
-                {idleAgents.length === 0 && (
-                  <span className="absolute left-3.5 top-9 text-xs text-subtle">
-                    No explicitly available Agents without an active Job in this
-                    Team.
-                  </span>
-                )}
-              </div>
-              {idleAgents.map((agent) => {
-                const id = `${agent.ownerId}:${agent.agentId}`;
-                const position = layout.positions.get(id);
-                if (!position) return null;
-                const selected =
-                  selection?.kind === "idle" && selection.id === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setSelection({ kind: "idle", id })}
-                    title={`${agent.agentName} · ${agent.ownerName} · No active Job in this Team`}
-                    aria-label={`${agent.agentName}, ${agent.ownerName}, No active Job in this Team`}
-                    className="ps-move absolute h-10 w-8 opacity-55"
-                    style={{ left: position.x, top: position.y }}
-                  >
-                    <span
-                      className={`relative block rounded-md ${selected ? "ring-2 ring-accent ring-offset-2 ring-offset-background" : ""}`}
+                {layout.rooms.map((room) => {
+                  const jobsHere = jobs.filter(
+                    (job) => job.publication.projectId === room.project.id
+                  );
+                  const roomLatest = jobsHere
+                    .map((job) => observedEvent(job, asOf))
+                    .filter(
+                      (event): event is NonNullable<typeof event> =>
+                        event !== null
+                    )
+                    .sort((left, right) => right.at - left.at)[0];
+                  const selected = selectedRoom?.id === room.project.id;
+                  return (
+                    <div
+                      key={room.project.id}
+                      className={`absolute rounded-2xl border bg-surface/20 transition-[opacity,border-color] duration-300 ${selected ? "border-accent" : "border-border"} ${selectedRoom && !selected ? "opacity-45" : ""}`}
+                      style={{
+                        left: room.x,
+                        top: room.y,
+                        width: room.width,
+                        height: room.height,
+                        ...ROOM_TEXTURE
+                      }}
                     >
-                      <SquareAvatar
-                        name={agent.agentName}
-                        toneId={agent.agentId}
-                        size="md"
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelection(
+                            selected
+                              ? null
+                              : { kind: "room", id: room.project.id }
+                          )
+                        }
+                        aria-label={`Show ${room.project.name} jobs`}
+                        className="flex h-16 w-full flex-col justify-center gap-1 rounded-t-2xl border-b border-border/60 px-3.5 text-left transition-colors hover:bg-surface-hover/40"
+                      >
+                        <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                          <span
+                            className={`h-1.5 w-1.5 rounded-full ${teamTone(room.project.id).solid}`}
+                          />
+                          <span className="truncate">{room.project.name}</span>
+                          <span className="ml-auto flex-shrink-0 text-xs font-normal text-subtle">
+                            {jobsHere.length}{" "}
+                            {jobsHere.length === 1 ? "job" : "jobs"}
+                          </span>
+                        </span>
+                        <span className="truncate text-xs text-subtle">
+                          {roomLatest && asOf !== null
+                            ? `${roomLatest.agentName} ${roomLatest.phrase} · ${timeAgoLabel(new Date(roomLatest.at).toISOString(), asOf)}`
+                            : jobsHere.length
+                              ? `${jobsHere.length} active ${jobsHere.length === 1 ? "Job" : "Jobs"}`
+                              : "No active Jobs"}
+                        </span>
+                      </button>
+                      {room.labels.map((label) => (
+                        <span
+                          key={label.id}
+                          className="absolute left-3.5 text-[10px] font-medium uppercase tracking-wider text-faint"
+                          style={{ top: label.y }}
+                        >
+                          {label.label} · {label.count}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })}
+                {jobs.map((job) => {
+                  const position = layout.positions.get(job.id);
+                  if (!position) return null;
+                  const selected = selectedJob?.id === job.id;
+                  const dimmed =
+                    selectedRoom !== null &&
+                    job.publication.projectId !== selectedRoom.id;
+                  const moving =
+                    job.zone === "working" || job.zone === "checking";
+                  return (
+                    <button
+                      key={job.publication.id}
+                      type="button"
+                      onClick={() => setSelection({ kind: "job", id: job.id })}
+                      title={`${job.publication.agentName} · ${job.publication.ownerName} · ${job.statusLabel}`}
+                      aria-label={`${job.publication.agentName} Job, ${job.publication.ownerName}, ${job.statusLabel}`}
+                      className="ps-move absolute h-10 w-8"
+                      style={{
+                        left: position.x,
+                        top: position.y,
+                        opacity:
+                          job.zone === "offline" ? 0.35 : dimmed ? 0.3 : 1
+                      }}
+                    >
+                      <span
+                        className={`relative block rounded-md ${moving ? "ps-bob" : ""} ${selected ? "ring-2 ring-accent ring-offset-2 ring-offset-background" : ""}`}
+                      >
+                        <SquareAvatar
+                          name={job.publication.agentName}
+                          toneId={job.publication.agentId}
+                          size="md"
+                        />
+                        {job.zone === "checking" && (
+                          <span className="absolute -right-1.5 -top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success text-background ring-2 ring-background">
+                            <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                          </span>
+                        )}
+                        {job.publication.status === "waiting" && (
+                          <span
+                            className={`absolute -right-1.5 -top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold ring-2 ring-background ${job.waitingOnViewer ? "bg-accent text-white" : "bg-warning text-background"}`}
+                          >
+                            !
+                          </span>
+                        )}
+                        {job.zone === "offline" && (
+                          <WifiOff className="absolute -right-1.5 -top-1.5 h-3.5 w-3.5 rounded-full bg-background p-0.5 text-muted" />
+                        )}
+                      </span>
+                      <span
+                        className={`absolute left-1/2 top-[35px] h-1.5 w-1.5 -translate-x-1/2 rounded-full ${teamTone(job.publication.ownerId).solid}`}
                       />
+                    </button>
+                  );
+                })}
+                <div
+                  className="absolute left-0 right-0 rounded-2xl border border-border bg-surface/10"
+                  style={{ top: layout.idleTop, height: layout.idleHeight }}
+                >
+                  <span className="absolute left-3.5 top-3.5 text-[10px] font-medium uppercase tracking-wider text-faint">
+                    Idle Agents · {idleAgents.length}
+                  </span>
+                  {idleAgents.length === 0 && (
+                    <span className="absolute left-3.5 top-9 text-xs text-subtle">
+                      No explicitly available Agents without an active Job in
+                      this Team.
                     </span>
-                    <span
-                      className={`absolute left-1/2 top-[35px] h-1.5 w-1.5 -translate-x-1/2 rounded-full ${teamTone(agent.ownerId).solid}`}
-                    />
-                  </button>
-                );
-              })}
+                  )}
+                </div>
+                {idleAgents.map((agent) => {
+                  const id = `${agent.ownerId}:${agent.agentId}`;
+                  const position = layout.positions.get(id);
+                  if (!position) return null;
+                  const selected =
+                    selection?.kind === "idle" && selection.id === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setSelection({ kind: "idle", id })}
+                      title={`${agent.agentName} · ${agent.ownerName} · No active Job in this Team`}
+                      aria-label={`${agent.agentName}, ${agent.ownerName}, No active Job in this Team`}
+                      className="ps-move absolute h-10 w-8 opacity-55"
+                      style={{ left: position.x, top: position.y }}
+                    >
+                      <span
+                        className={`relative block rounded-md ${selected ? "ring-2 ring-accent ring-offset-2 ring-offset-background" : ""}`}
+                      >
+                        <SquareAvatar
+                          name={agent.agentName}
+                          toneId={agent.agentId}
+                          size="md"
+                        />
+                      </span>
+                      <span
+                        className={`absolute left-1/2 top-[35px] h-1.5 w-1.5 -translate-x-1/2 rounded-full ${teamTone(agent.ownerId).solid}`}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <section
@@ -691,7 +694,7 @@ export function PublicSquareView({
             </div>
           </div>
 
-          <aside className="min-w-0 lg:sticky lg:top-0 lg:self-start">
+          <aside className="min-w-0 xl:sticky xl:top-0 xl:self-start">
             {selection?.kind === "idle" && model.idleById.get(selection.id) ? (
               <IdlePanel
                 agent={model.idleById.get(selection.id)!}

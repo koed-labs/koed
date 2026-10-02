@@ -558,9 +558,9 @@ export function ChatComposer({
   }, [openMenu]);
 
   return (
-    <div ref={composerRef} className="relative">
+    <div ref={composerRef} className="relative [container-type:inline-size]">
       {showMetaBar && (
-        <div className="mb-1.5 flex items-center gap-3 overflow-hidden rounded-lg bg-surface-hover/70 px-3 py-1.5 text-xs text-foreground-secondary">
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-surface-hover/70 px-2.5 py-1.5 text-xs text-foreground-secondary sm:px-3">
           <span className="flex min-w-0 items-center gap-1.5">
             <Folder className="h-3.5 w-3.5 flex-shrink-0 text-subtle" />
             <span className="truncate">{projectName}</span>
@@ -764,7 +764,7 @@ export function ChatComposer({
                   id="chat-composer-emoji-picker"
                   role="listbox"
                   aria-label="Choose an emoji"
-                  className="absolute bottom-full left-0 z-30 mb-2 grid w-56 grid-cols-8 gap-1 rounded-md border border-border-strong bg-surface p-2 shadow-xl"
+                  className="absolute bottom-full left-0 z-30 mb-2 grid w-[min(14rem,calc(100cqw-1rem))] grid-cols-8 gap-1 rounded-md border border-border-strong bg-surface p-2 shadow-xl"
                 >
                   {[
                     "😀",
@@ -822,7 +822,7 @@ export function ChatComposer({
 
         {mentionQuery && (
           <div
-            className="absolute bottom-full left-2 z-40 mb-2 max-h-56 w-64 overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-xl"
+            className="absolute bottom-full left-2 z-40 mb-2 max-h-56 w-[min(16rem,calc(100cqw-1rem))] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-xl"
             role="listbox"
             aria-label="Available agents"
           >
@@ -894,8 +894,8 @@ export function ChatComposer({
           </p>
         )}
 
-        <div className="mt-1 flex flex-wrap items-center justify-between gap-2 pt-1">
-          <div className="flex min-w-0 items-center gap-1">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pt-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
             {executionControlsVisible && (
               <>
                 {!executionPreset && (
@@ -943,7 +943,7 @@ export function ChatComposer({
                   </button>
 
                   {openMenu === "access" && (
-                    <div className="absolute bottom-full left-0 z-30 mb-2 w-56 rounded-xl border border-border-strong bg-surface p-1 shadow-xl shadow-black/50">
+                    <div className="absolute bottom-full left-0 z-30 mb-2 w-[min(14rem,calc(100cqw-1rem))] rounded-xl border border-border-strong bg-surface p-1 shadow-xl shadow-black/50">
                       {ACCESS_MODES.map((mode) => {
                         const selected = mode.id === effectiveAccess.id;
                         const disabled = Boolean(executionPreset);
@@ -990,7 +990,7 @@ export function ChatComposer({
             )}
           </div>
 
-          <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+          <div className="ml-auto flex min-w-0 max-w-full flex-shrink-0 items-center gap-1">
             {executionControlsVisible && (
               <div className="relative">
                 <button
@@ -1013,7 +1013,7 @@ export function ChatComposer({
                 </button>
 
                 {openMenu === "model" && (
-                  <div className="absolute bottom-full right-0 z-30 mb-2 w-[220px] rounded-2xl border border-border-strong bg-surface px-3 py-3 shadow-xl shadow-black/50">
+                  <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(220px,calc(100cqw-1rem))] rounded-2xl border border-border-strong bg-surface px-3 py-3 shadow-xl shadow-black/50">
                     <div className="mb-3 flex items-start justify-between">
                       <Zap className="mt-0.5 h-4 w-4 text-subtle" />
                       <button

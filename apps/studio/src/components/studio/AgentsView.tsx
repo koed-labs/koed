@@ -887,12 +887,12 @@ export function AgentsView({
       onPullRequests={onPullRequests}
       onPlugins={onPlugins}
     >
-      <div className="flex h-full min-h-0 flex-col bg-background text-foreground drag-region md:flex-row">
+      <div className="flex h-full min-h-0 flex-col bg-background text-foreground drag-region xl:flex-row">
         <div
-          className={`min-h-0 min-w-0 flex-1 overflow-y-auto no-drag ${selected ? "hidden md:block" : ""}`}
+          className={`min-h-0 min-w-0 flex-1 overflow-y-auto no-drag ${selected ? "hidden xl:block" : ""}`}
         >
           <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-8 sm:py-10">
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <h1 className="text-3xl font-semibold">Agents</h1>
               <button
                 type="button"

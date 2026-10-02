@@ -65,11 +65,11 @@ export function AddAgentModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[calc(100vh-2rem)] w-[420px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-2rem)]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4">
@@ -84,7 +84,7 @@ export function AddAgentModal({
                 <ArrowLeft className="h-4 w-4" />
               </button>
             )}
-            <h2 className="text-base font-semibold text-foreground">
+            <h2 className="min-w-0 text-base font-semibold text-foreground">
               {selected
                 ? `Configure ${selected.name}`
                 : `Add an agent to ${projectName}`}

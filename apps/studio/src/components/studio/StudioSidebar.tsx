@@ -141,6 +141,8 @@ export function StudioSidebar({
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(
     null
   );
+  const mobileOpenButtonRef = useRef<HTMLButtonElement>(null);
+  const wasMobileNavigationOpen = useRef(false);
   const projectSearchRef = useRef<HTMLInputElement>(null);
 
   const readAvailableHostWidth = useCallback(() => {
@@ -165,9 +167,10 @@ export function StudioSidebar({
   }, [projectSearchOpen]);
 
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
-  const filteredProjects = projects.filter((project) =>
-    !isSyntheticIndependentProject(project.id, project.name) &&
-    project.name.toLocaleLowerCase().includes(normalizedProjectSearch)
+  const filteredProjects = projects.filter(
+    (project) =>
+      !isSyntheticIndependentProject(project.id, project.name) &&
+      project.name.toLocaleLowerCase().includes(normalizedProjectSearch)
   );
   const activeManagedConversations = managedConversations.filter((chat) =>
     ["running", "ready", "starting"].includes(chat.state.toLowerCase())
@@ -175,7 +178,8 @@ export function StudioSidebar({
   const registeredProjectIdSet = new Set(registeredProjectIds);
   const managedByProject = new Map<string, HomeExecution[]>();
   for (const chat of activeManagedConversations) {
-    if (!chat.projectId || !registeredProjectIdSet.has(chat.projectId)) continue;
+    if (!chat.projectId || !registeredProjectIdSet.has(chat.projectId))
+      continue;
     const group = managedByProject.get(chat.projectId) ?? [];
     group.push(chat);
     managedByProject.set(chat.projectId, group);
@@ -215,7 +219,7 @@ export function StudioSidebar({
   }, [canCreateLocalProject, onNewProject, router]);
 
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 639px)");
+    const media = window.matchMedia("(max-width: 767px)");
     const syncNarrowScreen = () => {
       setIsNarrowScreen(media.matches);
       setMobileNavigationOpen(false);
@@ -224,6 +228,27 @@ export function StudioSidebar({
     media.addEventListener("change", syncNarrowScreen);
     return () => media.removeEventListener("change", syncNarrowScreen);
   }, []);
+
+  useEffect(() => {
+    if (!isNarrowScreen || !mobileNavigationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMobileNavigationOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isNarrowScreen, mobileNavigationOpen]);
+
+  useEffect(() => {
+    if (
+      isNarrowScreen &&
+      wasMobileNavigationOpen.current &&
+      !mobileNavigationOpen
+    )
+      mobileOpenButtonRef.current?.focus();
+    wasMobileNavigationOpen.current = mobileNavigationOpen;
+  }, [isNarrowScreen, mobileNavigationOpen]);
 
   const openNavigation = () => {
     if (!isNarrowScreen) {
@@ -349,7 +374,7 @@ export function StudioSidebar({
   return (
     <>
       <aside
-        className="flex h-screen w-[72px] flex-shrink-0 flex-col items-center bg-sidebar py-4 pt-10 drag-region"
+        className="flex h-dvh min-h-0 w-[72px] flex-shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 items-center bg-sidebar py-4 pt-10 drag-region"
         aria-label="Personal workspace"
       >
         <Tooltip content="Personal Workspace" side="right">
@@ -376,9 +401,12 @@ export function StudioSidebar({
         {isNarrowScreen && navigationCollapsed && (
           <Tooltip content="Open workspace navigation" side="right">
             <button
+              ref={mobileOpenButtonRef}
               type="button"
               onClick={openNavigation}
               aria-label="Open workspace navigation"
+              aria-controls="workspace-navigation"
+              aria-expanded={false}
               className="mt-3 flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-surface-hover hover:text-foreground"
             >
               <PanelLeftOpen className="h-5 w-5" />
@@ -399,7 +427,7 @@ export function StudioSidebar({
       </aside>
       {navigationCollapsed && (
         <div
-          className={`flex h-screen w-8 shrink-0 items-start justify-center bg-background pt-[22px] no-drag ${isNarrowScreen ? "hidden" : ""}`}
+          className={`flex h-dvh w-8 shrink-0 items-start justify-center bg-background pt-[22px] no-drag ${isNarrowScreen ? "hidden" : ""}`}
         >
           <button
             type="button"
@@ -424,8 +452,9 @@ export function StudioSidebar({
           )}
           <aside
             ref={navRef}
+            id="workspace-navigation"
             style={{ width: `${renderedSidebarWidth}px` }}
-            className={`flex h-screen min-w-0 shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region ${isResizing ? "select-none" : ""} ${isNarrowScreen ? "fixed inset-y-0 left-[72px] z-40 max-w-[calc(100vw-72px)] shadow-xl" : ""}`}
+            className={`flex h-dvh min-w-0 shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region ${isResizing ? "select-none" : ""} ${isNarrowScreen ? "fixed inset-y-0 left-[72px] z-40 max-w-[calc(100vw-72px)] shadow-xl" : ""}`}
             aria-label={settingsMode ? "Settings" : "Workspace sections"}
           >
             {settingsMode ? (
@@ -698,7 +727,9 @@ export function StudioSidebar({
                                   if (
                                     /^lp_[0-9a-f]{32}$/iu.test(project.id) &&
                                     registeredProjectIdSet.has(project.id) &&
-                                    Array.from(event.dataTransfer.types).includes(
+                                    Array.from(
+                                      event.dataTransfer.types
+                                    ).includes(
                                       "application/x-koed-managed-execution"
                                     )
                                   )
@@ -748,7 +779,9 @@ export function StudioSidebar({
                                     className="flex w-full items-center rounded-md py-1.5 pl-7 pr-2 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
                                   >
                                     <MessageSquare className="mr-2 h-3 w-3 shrink-0" />
-                                    <span className="truncate">{chat.title}</span>
+                                    <span className="truncate">
+                                      {chat.title}
+                                    </span>
                                   </button>
                                 )
                               )}
@@ -769,7 +802,9 @@ export function StudioSidebar({
                           )}
                         </button>
                         {chatsExpanded &&
-                          (chats.length + standaloneManagedConversations.length === 0 ? (
+                          (chats.length +
+                            standaloneManagedConversations.length ===
+                          0 ? (
                             <p className="px-2 py-2 text-xs text-subtle">
                               No active chats are connected.
                             </p>
@@ -839,7 +874,7 @@ export function StudioSidebar({
               resizeStartRef.current = null;
               setIsResizing(false);
             }}
-            className={`flex h-screen w-2 shrink-0 cursor-col-resize touch-none items-stretch justify-center ${isResizing ? "select-none" : ""} ${isNarrowScreen ? "hidden" : ""}`}
+            className={`flex h-dvh w-2 shrink-0 cursor-col-resize touch-none items-stretch justify-center ${isResizing ? "select-none" : ""} ${isNarrowScreen ? "hidden" : ""}`}
           >
             <span className="w-px bg-border transition-colors hover:bg-accent" />
           </div>

@@ -383,14 +383,14 @@ function AgentIdentityEditor({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
       onClick={close}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-editor-title"
-        className="flex max-h-[calc(100vh-2rem)] w-[920px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-[920px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-2rem)]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4">
@@ -412,7 +412,7 @@ function AgentIdentityEditor({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="grid min-h-0 flex-1 gap-6 overflow-y-auto px-5 pb-5 md:grid-cols-[240px_1fr]">
+        <div className="grid min-h-0 flex-1 gap-6 overflow-y-auto px-4 pb-5 sm:px-5 lg:grid-cols-[240px_minmax(0,1fr)]">
           <PixelkinLab
             key={JSON.stringify(draftAvatar?.spec ?? null)}
             ref={labRef}
@@ -675,7 +675,7 @@ function AgentIdentityEditor({
       </div>
       {replaceTemplateConfirmOpen && (
         <div
-          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+          className="fixed inset-0 z-[110] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
           onClick={(event) => {
             event.stopPropagation();
             setReplaceTemplateConfirmOpen(false);
@@ -686,7 +686,7 @@ function AgentIdentityEditor({
             aria-modal="true"
             aria-labelledby="replace-template-title"
             aria-describedby="replace-template-description"
-            className="w-[400px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+            className="max-h-[calc(100dvh-1rem)] w-full max-w-[400px] overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:p-5"
             onClick={(event) => event.stopPropagation()}
           >
             <h2

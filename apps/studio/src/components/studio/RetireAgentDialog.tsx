@@ -25,7 +25,7 @@ export function RetireAgentDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
       onClick={() => !saving && onCancel()}
     >
       <div
@@ -33,7 +33,7 @@ export function RetireAgentDialog({
         aria-modal="true"
         aria-labelledby="retire-agent-title"
         aria-describedby="retire-agent-description"
-        className="w-[400px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+        className="max-h-[calc(100dvh-1rem)] w-full max-w-[400px] overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:p-5"
         onClick={(event) => event.stopPropagation()}
       >
         <h2

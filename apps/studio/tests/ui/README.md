@@ -14,4 +14,6 @@ Every same-origin `/me`, `/v1/*`, and `/studio-api/*` request is intercepted by 
 
 Current coverage exercises Agents collection filters and cards/list views, verified working activity and Project summaries, stale detail responses, retirement, older Job pagination with retry and original attribution, and late pages after changing Agents. It also covers hosted Team navigation, author controls, thread-draft scoping and reload recovery, keyboard navigation between conversation markers, human versus Agent composer controls, and an offline reply retried once while preserving later typing.
 
+Responsive cases also cover 320–1440px widths, short phone viewports, selected Agent profiles, creation dialogs, Team navigation and draft preservation, reply panels, Agent menus, Public Square, preview Build panels and Settings. See [Studio responsive layouts](../../../../docs/studio-responsive-layout.md).
+
 These tests verify browser behavior against synthetic API contracts. They do not validate backend authorization, provider execution, deployment routing, real realtime delivery, or persistence across browsers and devices. Backend and API contract tests remain separate gates.

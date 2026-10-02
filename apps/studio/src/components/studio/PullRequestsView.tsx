@@ -486,7 +486,7 @@ function PullRequestDetail({
             {pullRequest.author} · updated{" "}
             {formatUpdatedAt(pullRequest.updatedAt)} · #{pullRequest.number}
           </p>
-          <div className="mt-8 grid grid-cols-[110px_1fr] gap-y-4 text-sm">
+          <div className="mt-8 grid grid-cols-1 gap-y-2 break-words text-sm sm:grid-cols-[110px_minmax(0,1fr)] sm:gap-y-4">
             <div className="flex items-center gap-2 text-subtle">
               <GitBranch className="h-4 w-4" /> Branch
             </div>

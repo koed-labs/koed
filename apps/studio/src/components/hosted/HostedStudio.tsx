@@ -171,7 +171,7 @@ export function HostedStudio({ view }: HostedStudioProps) {
         : undefined;
 
   return (
-    <div className="flex h-screen min-h-0 w-full bg-background text-foreground">
+    <div className="flex h-full min-h-0 w-full bg-background text-foreground">
       <HostedGlobalNav
         teams={teams}
         personalActive={view === "home"}
@@ -357,7 +357,7 @@ function HostedGlobalNav({
     "text-team-6"
   ];
   return (
-    <div className="relative z-50 flex h-screen w-[72px] flex-shrink-0 flex-col items-center border-r border-border bg-sidebar py-4 pt-10">
+    <div className="relative z-50 flex h-full min-h-0 w-[72px] flex-shrink-0 flex-col overflow-y-auto items-center border-r border-border bg-sidebar py-4 pt-10">
       <button
         type="button"
         onClick={onOpenPersonal}
@@ -425,7 +425,7 @@ function HostedContextSidebar({
       id={id}
       role="navigation"
       aria-label="Team navigation"
-      className="relative flex h-screen w-72 max-w-[calc(100vw-72px)] flex-shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region"
+      className="relative flex h-full w-72 max-w-[calc(100vw-72px)] flex-shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region"
     >
       <div className="px-3 py-2 no-drag">
         <div className="mb-1 flex items-center gap-2">

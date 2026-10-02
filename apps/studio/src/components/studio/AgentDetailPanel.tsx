@@ -107,7 +107,7 @@ export function AgentDetailPanel({
   return (
     <aside
       aria-label={`${agent.name} details`}
-      className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto border-t border-border bg-background no-drag md:w-[380px] md:flex-none md:border-l md:border-t-0"
+      className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto border-t border-border bg-background no-drag xl:w-[380px] xl:flex-none xl:border-l xl:border-t-0"
     >
       <div className="flex items-start justify-between gap-2 px-5 pt-5">
         <div className="flex min-w-0 items-center gap-3">

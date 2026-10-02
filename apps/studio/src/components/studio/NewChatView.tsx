@@ -263,9 +263,9 @@ export function NewChatView({
     <div className="relative flex h-full min-h-0 w-full">
       <main className="flex min-w-0 flex-1 flex-col">
         <header
-          className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 sm:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}
+          className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 xl:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}
         >
-          <p className="flex-1 text-sm text-foreground no-drag">
+          <p className="min-w-0 flex-1 truncate text-sm text-foreground no-drag">
             Personal / New chat
           </p>
           {runtime?.onEndSession ? (

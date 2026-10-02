@@ -61,8 +61,10 @@ export function BuildActivityPanel({
   const [availablePanelWidth, setAvailablePanelWidth] = useState(
     Number.POSITIVE_INFINITY
   );
+  const [showCompactCard, setShowCompactCard] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+  const panelAnchorRef = useRef<HTMLDivElement>(null);
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(
     null
   );
@@ -157,6 +159,17 @@ export function BuildActivityPanel({
   );
 
   useEffect(() => {
+    const host = panelAnchorRef.current?.parentElement;
+    if (!host) return;
+    const syncCompactMode = () =>
+      setShowCompactCard(window.innerWidth >= 1280 && host.clientWidth >= 1280);
+    syncCompactMode();
+    const observer = new ResizeObserver(syncCompactMode);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [mode]);
+
+  useEffect(() => {
     if (mode !== "expanded" || !panelRef.current?.parentElement) return;
     const parent = panelRef.current.parentElement;
     const syncToAvailableWidth = () => {
@@ -193,7 +206,14 @@ export function BuildActivityPanel({
   if (mode === "compact") {
     return (
       <>
-        <div className="absolute right-0 top-0 z-30 max-w-full p-3 sm:hidden">
+        <div
+          ref={panelAnchorRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0 top-0 h-px w-px opacity-0"
+        />
+        <div
+          className={`${showCompactCard ? "hidden" : "absolute"} right-0 top-0 z-30 max-w-full p-3`}
+        >
           <button
             type="button"
             onClick={() => setMode("expanded")}
@@ -204,7 +224,9 @@ export function BuildActivityPanel({
             <FileCode2 className="h-4 w-4" />
           </button>
         </div>
-        <div className="absolute right-0 top-0 z-30 hidden max-w-full p-3 sm:block">
+        <div
+          className={`${showCompactCard ? "absolute" : "hidden"} right-0 top-0 z-30 max-w-full p-3`}
+        >
           <div className="w-[300px] max-w-full overflow-hidden rounded-xl border border-border bg-surface shadow-lg shadow-black/20">
             <BuildPanelHeader
               title={title}
@@ -292,7 +314,11 @@ function BuildPanelHeader({
     <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <h2 className="flex items-center text-foreground" aria-label="Build" title="Build">
+          <h2
+            className="flex items-center text-foreground"
+            aria-label="Build"
+            title="Build"
+          >
             <Hammer className="h-4 w-4" aria-hidden="true" />
           </h2>
           {activity?.source === "demo" && (

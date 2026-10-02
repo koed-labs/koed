@@ -217,7 +217,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
               wasAtBottom.current = isAtBottom();
             }}
           >
-            <div ref={contentRef}>
+            <div ref={contentRef} className="min-w-0 max-w-full">
               {children}
               {messages.length > 0 ? (
                 <div className={listClassName} aria-live="polite">
@@ -235,7 +235,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
                           ? "true"
                           : undefined
                       }
-                      className="scroll-mt-4"
+                      className="min-w-0 max-w-full scroll-mt-4"
                     >
                       {renderMessage?.(message)}
                     </div>
@@ -334,7 +334,7 @@ export function AgentChatMessage({
   const author = message.author ?? null;
   if (message.role === "user") {
     return (
-      <div className="flex justify-end">
+      <div className="flex min-w-0 justify-end">
         <div
           className={`${maxWidthClass} whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-surface-hover px-4 py-3 text-foreground ${compact ? "text-xs leading-5" : "text-[15px] leading-relaxed"}`}
         >
@@ -345,8 +345,10 @@ export function AgentChatMessage({
     );
   }
   return (
-    <div className="flex justify-start">
-      <div className={`flex ${maxWidthClass} items-start gap-3`}>
+    <div className="flex min-w-0 justify-start">
+      <div
+        className={`flex min-w-0 ${maxWidthClass} items-start gap-2 sm:gap-3`}
+      >
         {author ? (
           <AgentAvatarView
             image={author.avatar?.image}

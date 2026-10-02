@@ -24,7 +24,7 @@ import {
   GitPullRequest,
   House,
   Bot,
-  Inbox,
+  Inbox
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -41,7 +41,14 @@ import { isPersistedThread } from "@/lib/workspace";
 const THREAD_DRAG_TYPE = "application/x-koed-thread";
 
 function ChatAgentAvatar() {
-  return <AgentAvatarView spec={DEFAULT_PIXELKIN_SPEC} name="Koed" size="sm" className="flex-shrink-0" />;
+  return (
+    <AgentAvatarView
+      spec={DEFAULT_PIXELKIN_SPEC}
+      name="Koed"
+      size="sm"
+      className="flex-shrink-0"
+    />
+  );
 }
 
 function ChatAgentAvatars({ thread }: { thread: Thread }) {
@@ -51,14 +58,20 @@ function ChatAgentAvatars({ thread }: { thread: Thread }) {
 
 type ShareModalState = {
   isOpen: boolean;
-  type: 'project' | 'thread';
+  type: "project" | "thread";
   id: string;
   projectId?: string; // needed if type is thread
   title: string;
   currentSharedWith: string[];
 };
 
-export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: { previewMode?: boolean; mobileOverlay?: boolean }) {
+export function ProjectSidebar({
+  previewMode = false,
+  mobileOverlay = false
+}: {
+  previewMode?: boolean;
+  mobileOverlay?: boolean;
+}) {
   const { isOpen, toggleSidebar, width, startResizing } = useSidebar();
   const pathname = usePathname();
   const router = useRouter();
@@ -76,7 +89,7 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
     setActiveThreadId,
     draftProject,
     personalView,
-    openHome,
+    openHome
   } = useWorkspace();
   const { projects, threads, teams } = workspace;
   const homePath = previewMode ? "/personal-preview" : "/";
@@ -87,32 +100,64 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [moveMenuThreadId, setMoveMenuThreadId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [pendingMove, setPendingMove] = useState<{ threadId: string; threadTitle: string; projectId: string | null; destinationLabel: string } | null>(null);
+  const [pendingMove, setPendingMove] = useState<{
+    threadId: string;
+    threadTitle: string;
+    projectId: string | null;
+    destinationLabel: string;
+  } | null>(null);
 
-  const personalThreads = threads.filter((thread) => thread.projectId === null && isPersistedThread(thread));
-  const isHomeActive = pathname === homePath && personalView === "home" && !activeThread && !draftProject;
-  const isNewChatActive = pathname === homePath && personalView === "chat" && !activeThread && !draftProject;
+  const personalThreads = threads.filter(
+    (thread) => thread.projectId === null && isPersistedThread(thread)
+  );
+  const isHomeActive =
+    pathname === homePath &&
+    personalView === "home" &&
+    !activeThread &&
+    !draftProject;
+  const isNewChatActive =
+    pathname === homePath &&
+    personalView === "chat" &&
+    !activeThread &&
+    !draftProject;
+
+  const closeMobileNavigation = () => {
+    if (mobileOverlay && window.matchMedia("(max-width: 767px)").matches) {
+      toggleSidebar();
+    }
+  };
 
   const openChat = (threadId: string) => {
     setActiveThreadId(threadId);
     router.push(homePath);
+    closeMobileNavigation();
   };
 
   const openPersonalHome = () => {
     openHome();
     router.push(homePath);
+    closeMobileNavigation();
   };
 
   const startNewChat = () => {
     startDraft(null);
     router.push(homePath);
+    closeMobileNavigation();
   };
 
   const requestMoveThread = (threadId: string, projectId: string | null) => {
     const thread = threads.find((item) => item.id === threadId);
     if (!thread) return;
-    const destinationLabel = projectId ? projects.find((item) => item.id === projectId)?.name ?? "another project" : "Chats";
-    setPendingMove({ threadId, threadTitle: thread.title, projectId, destinationLabel });
+    const destinationLabel = projectId
+      ? (projects.find((item) => item.id === projectId)?.name ??
+        "another project")
+      : "Chats";
+    setPendingMove({
+      threadId,
+      threadTitle: thread.title,
+      projectId,
+      destinationLabel
+    });
   };
   const confirmPendingMove = () => {
     if (!pendingMove) return;
@@ -120,9 +165,14 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
     setPendingMove(null);
   };
 
-  const acceptThreadDrop = (event: React.DragEvent, projectId: string | null) => {
+  const acceptThreadDrop = (
+    event: React.DragEvent,
+    projectId: string | null
+  ) => {
     event.preventDefault();
-    const threadId = event.dataTransfer.getData(THREAD_DRAG_TYPE) || event.dataTransfer.getData("text/plain");
+    const threadId =
+      event.dataTransfer.getData(THREAD_DRAG_TYPE) ||
+      event.dataTransfer.getData("text/plain");
     setDropTargetId(null);
     if (!threadId) return;
     requestMoveThread(threadId, projectId);
@@ -143,12 +193,29 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
     renameProject(id, newName);
   };
 
-  const handleRenameThread = (_projectId: string, threadId: string, newTitle: string) => {
+  const handleRenameThread = (
+    _projectId: string,
+    threadId: string,
+    newTitle: string
+  ) => {
     renameThread(threadId, newTitle);
   };
 
-  const openShareModal = (type: 'project' | 'thread', id: string, title: string, currentSharedWith: string[], projectId?: string) => {
-    setShareModal({ isOpen: true, type, id, title, currentSharedWith, projectId });
+  const openShareModal = (
+    type: "project" | "thread",
+    id: string,
+    title: string,
+    currentSharedWith: string[],
+    projectId?: string
+  ) => {
+    setShareModal({
+      isOpen: true,
+      type,
+      id,
+      title,
+      currentSharedWith,
+      projectId
+    });
   };
 
   const handleShareUpdate = (newSharedWith: string[]) => {
@@ -168,7 +235,10 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
   return (
     <>
       <div
-        className={`bg-surface border-r border-border flex flex-col flex-shrink-0 relative pt-6 drag-region ${mobileOverlay ? "fixed inset-y-0 left-[72px] z-40 h-dvh w-[min(var(--sidebar-width),calc(100vw-72px))] md:relative md:inset-auto md:z-auto md:h-screen md:w-[var(--sidebar-width)]" : "h-screen"}`}
+        aria-label={
+          previewMode ? "Personal workspace navigation" : "Project navigation"
+        }
+        className={`bg-surface border-r border-border flex flex-col flex-shrink-0 relative pt-6 drag-region ${mobileOverlay ? "fixed inset-y-0 left-[72px] z-40 h-dvh w-[min(var(--sidebar-width),calc(100vw-72px))] md:relative md:inset-auto md:z-auto md:h-dvh md:w-[var(--sidebar-width)]" : "h-dvh"}`}
         style={{ "--sidebar-width": `${width}px` } as React.CSSProperties}
       >
         {/* Top Actions */}
@@ -186,7 +256,9 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                 onClick={toggleSidebar}
                 type="button"
                 aria-label="Close sidebar"
-                {...(mobileOverlay ? { "data-mobile-sidebar-close": true } : {})}
+                {...(mobileOverlay
+                  ? { "data-mobile-sidebar-close": true }
+                  : {})}
                 className="p-1.5 hover:bg-surface-hover text-muted hover:text-foreground-secondary rounded-md transition-colors"
               >
                 <PanelLeftClose className="w-4 h-4" />
@@ -198,17 +270,29 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
             onClick={startNewChat}
             className={`flex items-center justify-between px-3 py-1.5 rounded-md text-sm font-medium transition-colors group ${isNewChatActive ? "bg-surface-hover text-foreground" : "hover:bg-surface-hover/50 text-foreground-secondary hover:text-foreground"}`}
           >
-            <span className="flex items-center"><MessageSquare className="w-4 h-4 mr-2" /> New chat</span>
+            <span className="flex items-center">
+              <MessageSquare className="w-4 h-4 mr-2" /> New chat
+            </span>
             <Edit2 className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 text-subtle" />
           </button>
 
-          <Link href="/pull-requests" className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${pathname === '/pull-requests' ? 'bg-surface-hover text-foreground' : 'hover:bg-surface-hover/50 text-muted hover:text-foreground-secondary'}`}>
+          <Link
+            href="/pull-requests"
+            className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${pathname === "/pull-requests" ? "bg-surface-hover text-foreground" : "hover:bg-surface-hover/50 text-muted hover:text-foreground-secondary"}`}
+          >
             <GitPullRequest className="w-4 h-4 mr-2" /> Pull Requests
           </Link>
-          <Link href="/agents" className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${pathname === '/agents' ? 'bg-surface-hover text-foreground' : 'hover:bg-surface-hover/50 text-muted hover:text-foreground-secondary'}`}>
+          <Link
+            href="/agents"
+            className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${pathname === "/agents" ? "bg-surface-hover text-foreground" : "hover:bg-surface-hover/50 text-muted hover:text-foreground-secondary"}`}
+          >
             <Bot className="w-4 h-4 mr-2" /> Agents
           </Link>
-          <div aria-disabled="true" title="Memory Inbox is not connected yet." className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium text-faint">
+          <div
+            aria-disabled="true"
+            title="Memory Inbox is not connected yet."
+            className="flex items-center px-3 py-1.5 rounded-md text-sm font-medium text-faint"
+          >
             <Inbox className="w-4 h-4 mr-2" /> Memory Inbox
           </div>
         </div>
@@ -251,17 +335,21 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
           className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 space-y-0.5 no-drag"
           onDragEnd={() => setDropTargetId(null)}
         >
-          {isProjectsExpanded && (
-            projects.length === 0 ? (
+          {isProjectsExpanded &&
+            (projects.length === 0 ? (
               <p className="px-3 py-6 text-xs text-subtle">
                 No projects yet. Use + to create one.
               </p>
             ) : (
-              projects.map(project => (
+              projects.map((project) => (
                 <ProjectItem
                   key={project.id}
                   project={project}
-                  threads={threads.filter((thread) => thread.projectId === project.id && isPersistedThread(thread))}
+                  threads={threads.filter(
+                    (thread) =>
+                      thread.projectId === project.id &&
+                      isPersistedThread(thread)
+                  )}
                   activeThreadId={activeThread?.id ?? null}
                   isDropTarget={dropTargetId === project.id}
                   isDraftTarget={draftProject?.id === project.id}
@@ -270,12 +358,28 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                   moveMenuThreadId={moveMenuThreadId}
                   onRenameProject={handleRenameProject}
                   onRenameThread={handleRenameThread}
-                  onShareProject={() => openShareModal('project', project.id, project.name, project.sharedWith || [])}
-                  onShareThread={(threadId, title, sharedWith) => openShareModal('thread', threadId, title, sharedWith, project.id)}
+                  onShareProject={() =>
+                    openShareModal(
+                      "project",
+                      project.id,
+                      project.name,
+                      project.sharedWith || []
+                    )
+                  }
+                  onShareThread={(threadId, title, sharedWith) =>
+                    openShareModal(
+                      "thread",
+                      threadId,
+                      title,
+                      sharedWith,
+                      project.id
+                    )
+                  }
                   onSelectThread={openChat}
                   onCreateThread={() => {
                     startDraft(project.id);
                     router.push(homePath);
+                    closeMobileNavigation();
                   }}
                   onArchiveThread={archiveThread}
                   onMoveThread={(threadId, projectId) => {
@@ -283,7 +387,9 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                     setMoveMenuThreadId(null);
                   }}
                   onToggleMoveMenu={(threadId) => {
-                    setMoveMenuThreadId((current) => (current === threadId ? null : threadId));
+                    setMoveMenuThreadId((current) =>
+                      current === threadId ? null : threadId
+                    );
                   }}
                   onDragOverProject={() => setDropTargetId(project.id)}
                   onDragLeaveProject={() => {
@@ -292,8 +398,7 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                   onDropThread={(event) => acceptThreadDrop(event, project.id)}
                 />
               ))
-            )
-          )}
+            ))}
           {personalThreads.length > 0 && (
             <div
               className={`mt-3 rounded-md ${dropTargetId === "chats" ? "bg-surface-hover/80 ring-1 ring-accent" : ""}`}
@@ -302,7 +407,9 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                 setDropTargetId("chats");
               }}
               onDragLeave={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                if (
+                  !event.currentTarget.contains(event.relatedTarget as Node)
+                ) {
                   if (dropTargetId === "chats") setDropTargetId(null);
                 }
               }}
@@ -354,7 +461,9 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                               className="rounded p-1 text-muted transition-colors hover:bg-surface-active hover:text-foreground-secondary"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                setMoveMenuThreadId((current) => (current === thread.id ? null : thread.id));
+                                setMoveMenuThreadId((current) =>
+                                  current === thread.id ? null : thread.id
+                                );
                               }}
                             >
                               <FolderInput className="h-3 w-3" />
@@ -380,7 +489,7 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                           projects={projects}
                           excludeProjectId={null}
                           onSelect={(projectId) => {
-              requestMoveThread(thread.id, projectId);
+                            requestMoveThread(thread.id, projectId);
                             setMoveMenuThreadId(null);
                           }}
                           onClose={() => setMoveMenuThreadId(null)}
@@ -407,7 +516,10 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
           <div className="bg-surface border border-border rounded-xl w-80 shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
             <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-background/50">
               <h3 className="text-sm font-medium text-foreground truncate pr-4">
-                Share <span className="text-muted">&ldquo;{shareModal.title}&rdquo;</span>
+                Share{" "}
+                <span className="text-muted">
+                  &ldquo;{shareModal.title}&rdquo;
+                </span>
               </h3>
               <button
                 className="text-subtle hover:text-foreground-secondary transition-colors"
@@ -420,7 +532,7 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
               <div className="px-2 py-1.5 mb-1 text-[11px] font-semibold text-subtle uppercase tracking-wider">
                 Select Teams
               </div>
-              {teams.map(team => {
+              {teams.map((team) => {
                 const isShared = shareModal.currentSharedWith.includes(team.id);
                 return (
                   <div
@@ -428,13 +540,22 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
                     className="flex items-center justify-between px-3 py-2 hover:bg-surface-hover rounded-lg cursor-pointer transition-colors group"
                     onClick={() => {
                       const newShared = isShared
-                        ? shareModal.currentSharedWith.filter(id => id !== team.id)
+                        ? shareModal.currentSharedWith.filter(
+                            (id) => id !== team.id
+                          )
                         : [...shareModal.currentSharedWith, team.id];
-                      setShareModal({ ...shareModal, currentSharedWith: newShared });
+                      setShareModal({
+                        ...shareModal,
+                        currentSharedWith: newShared
+                      });
                     }}
                   >
-                    <span className="text-sm text-foreground-secondary">{team.name}</span>
-                    <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${isShared ? 'bg-chip border-chip text-chip-foreground' : 'border-border-strong group-hover:border-border-strong text-transparent'}`}>
+                    <span className="text-sm text-foreground-secondary">
+                      {team.name}
+                    </span>
+                    <div
+                      className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${isShared ? "bg-chip border-chip text-chip-foreground" : "border-border-strong group-hover:border-border-strong text-transparent"}`}
+                    >
                       <Check className="w-3 h-3" strokeWidth={3} />
                     </div>
                   </div>
@@ -459,7 +580,9 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
             id: thread.id,
             title: thread.title,
             projectId: thread.projectId,
-            projectName: projects.find((project) => project.id === thread.projectId)?.name ?? "Personal",
+            projectName:
+              projects.find((project) => project.id === thread.projectId)
+                ?.name ?? "Personal"
           }))}
           teams={teams}
           onClose={() => setIsSearchOpen(false)}
@@ -489,7 +612,7 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
               path: project.path,
               branch: project.branch,
               githubRepo: project.githubRepo,
-              sharedWith: project.sharedWith,
+              sharedWith: project.sharedWith
             });
             setIsCreateOpen(false);
           }}
@@ -497,15 +620,51 @@ export function ProjectSidebar({ previewMode = false, mobileOverlay = false }: {
       )}
       {pendingMove && (
         // Keep this generic confirmation scoped to the preview WorkspaceProvider move.
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag" onClick={() => setPendingMove(null)}>
-          <div role="dialog" aria-modal="true" aria-labelledby="move-thread-title" className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+          onClick={() => setPendingMove(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="move-thread-title"
+            className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="px-5 py-4">
-              <h2 id="move-thread-title" className="text-base font-semibold text-foreground">Move thread?</h2>
-              <p className="mt-2 text-sm leading-relaxed text-muted">Move <span className="font-medium text-foreground-secondary">&ldquo;{pendingMove.threadTitle}&rdquo;</span> to <span className="font-medium text-foreground-secondary">{pendingMove.destinationLabel}</span>?</p>
+              <h2
+                id="move-thread-title"
+                className="text-base font-semibold text-foreground"
+              >
+                Move thread?
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-muted">
+                Move{" "}
+                <span className="font-medium text-foreground-secondary">
+                  &ldquo;{pendingMove.threadTitle}&rdquo;
+                </span>{" "}
+                to{" "}
+                <span className="font-medium text-foreground-secondary">
+                  {pendingMove.destinationLabel}
+                </span>
+                ?
+              </p>
             </div>
             <div className="flex justify-end gap-2 border-t border-border bg-background/40 px-5 py-3">
-              <button type="button" className="rounded-md px-3.5 py-2 text-sm font-medium text-foreground-secondary hover:bg-surface-hover" onClick={() => setPendingMove(null)}>Cancel</button>
-              <button type="button" className="rounded-md bg-chip px-4 py-2 text-sm font-medium text-chip-foreground hover:bg-white" onClick={confirmPendingMove}>Move</button>
+              <button
+                type="button"
+                className="rounded-md px-3.5 py-2 text-sm font-medium text-foreground-secondary hover:bg-surface-hover"
+                onClick={() => setPendingMove(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-md bg-chip px-4 py-2 text-sm font-medium text-chip-foreground hover:bg-white"
+                onClick={confirmPendingMove}
+              >
+                Move
+              </button>
             </div>
           </div>
         </div>
@@ -519,7 +678,7 @@ function MoveToMenu({
   excludeProjectId,
   allowUnassign,
   onSelect,
-  onClose,
+  onClose
 }: {
   projects: Project[];
   excludeProjectId: string | null;
@@ -527,7 +686,9 @@ function MoveToMenu({
   onSelect: (projectId: string | null) => void;
   onClose: () => void;
 }) {
-  const destinations = projects.filter((project) => project.id !== excludeProjectId);
+  const destinations = projects.filter(
+    (project) => project.id !== excludeProjectId
+  );
 
   return (
     <>
@@ -582,7 +743,7 @@ function ProjectItem({
   onToggleMoveMenu,
   onDragOverProject,
   onDragLeaveProject,
-  onDropThread,
+  onDropThread
 }: {
   project: Project;
   threads: Thread[];
@@ -593,9 +754,17 @@ function ProjectItem({
   projects: Project[];
   moveMenuThreadId: string | null;
   onRenameProject: (id: string, newName: string) => void;
-  onRenameThread: (projectId: string, threadId: string, newTitle: string) => void;
+  onRenameThread: (
+    projectId: string,
+    threadId: string,
+    newTitle: string
+  ) => void;
   onShareProject: () => void;
-  onShareThread: (threadId: string, title: string, sharedWith: string[]) => void;
+  onShareThread: (
+    threadId: string,
+    title: string,
+    sharedWith: string[]
+  ) => void;
   onSelectThread: (threadId: string) => void;
   onCreateThread: () => void;
   onArchiveThread: (threadId: string) => void;
@@ -611,10 +780,17 @@ function ProjectItem({
 
   // Renaming state
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingType, setEditingType] = useState<'project' | 'thread' | null>(null);
+  const [editingType, setEditingType] = useState<"project" | "thread" | null>(
+    null
+  );
   const [editValue, setEditValue] = useState("");
 
-  const startEditing = (id: string, type: 'project' | 'thread', currentValue: string, e: React.MouseEvent) => {
+  const startEditing = (
+    id: string,
+    type: "project" | "thread",
+    currentValue: string,
+    e: React.MouseEvent
+  ) => {
     e.stopPropagation();
     setEditingId(id);
     setEditingType(type);
@@ -623,17 +799,17 @@ function ProjectItem({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if (e.key === "Enter") {
       saveEdit();
-    } else if (e.key === 'Escape') {
+    } else if (e.key === "Escape") {
       cancelEdit();
     }
   };
 
   const saveEdit = () => {
-    if (editingType === 'project') {
+    if (editingType === "project") {
       onRenameProject(project.id, editValue);
-    } else if (editingType === 'thread' && editingId) {
+    } else if (editingType === "thread" && editingId) {
       onRenameThread(project.id, editingId, editValue);
     }
     cancelEdit();
@@ -648,7 +824,9 @@ function ProjectItem({
   // Helper to get team names for tooltip
   const getSharedTeamsText = (sharedIds?: string[]) => {
     if (!sharedIds || sharedIds.length === 0) return "";
-    const names = sharedIds.map(id => teams.find(t => t.id === id)?.name).filter(Boolean);
+    const names = sharedIds
+      .map((id) => teams.find((t) => t.id === id)?.name)
+      .filter(Boolean);
     return `Shared with: ${names.join(", ")}`;
   };
 
@@ -674,7 +852,11 @@ function ProjectItem({
         onClick={() => setExpanded(!expanded)}
       >
         <div className="mr-1.5 text-subtle group-hover:text-foreground-secondary transition-colors">
-          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          {expanded ? (
+            <ChevronDown className="w-4 h-4" />
+          ) : (
+            <ChevronRight className="w-4 h-4" />
+          )}
         </div>
 
         <div className="flex items-center text-sm font-medium text-foreground-secondary truncate flex-1">
@@ -683,7 +865,7 @@ function ProjectItem({
           ) : (
             <Folder className="w-4 h-4 mr-2 text-muted flex-shrink-0" />
           )}
-          {editingType === 'project' && editingId === project.id ? (
+          {editingType === "project" && editingId === project.id ? (
             <input
               autoFocus
               className="bg-background border border-border-strong rounded px-1.5 py-0.5 text-foreground outline-none w-full"
@@ -709,12 +891,12 @@ function ProjectItem({
 
         {/* GitHub Status Dot */}
         <div className="flex items-center mx-2 flex-shrink-0">
-          {project.gitStatus === 'dirty' && (
+          {project.gitStatus === "dirty" && (
             <Tooltip content="Uncommitted changes">
               <span className="w-1.5 h-1.5 rounded-full bg-warning block" />
             </Tooltip>
           )}
-          {project.gitStatus === 'clean' && (
+          {project.gitStatus === "clean" && (
             <Tooltip content="Clean working tree">
               <span className="w-1.5 h-1.5 rounded-full bg-success block" />
             </Tooltip>
@@ -749,16 +931,20 @@ function ProjectItem({
             />
             <div
               className="fixed w-64 bg-surface border border-border-strong rounded-lg shadow-xl z-50 p-2 text-xs text-foreground-secondary"
-              style={{ left: '352px', top: `${menuPos.top}px` }}
+              style={{ left: "352px", top: `${menuPos.top}px` }}
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-2 pb-2 border-b border-border">
-                <span className="font-semibold text-foreground truncate pr-2">{project.name}</span>
+                <span className="font-semibold text-foreground truncate pr-2">
+                  {project.name}
+                </span>
                 <div className="flex items-center gap-1">
                   <Tooltip content="Rename Project">
                     <button
                       className="p-1 hover:bg-surface-hover rounded text-muted hover:text-foreground transition-colors"
-                      onClick={(e) => startEditing(project.id, 'project', project.name, e)}
+                      onClick={(e) =>
+                        startEditing(project.id, "project", project.name, e)
+                      }
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>
@@ -785,7 +971,9 @@ function ProjectItem({
 
               <div className="flex items-center py-1.5 text-muted">
                 <Folder className="w-3.5 h-3.5 mr-2 flex-shrink-0" />
-                <span className="truncate" title={project.path}>{project.path}</span>
+                <span className="truncate" title={project.path}>
+                  {project.path}
+                </span>
               </div>
 
               <div className="flex items-center py-1.5 text-muted">
@@ -800,11 +988,13 @@ function ProjectItem({
       {/* Threads List (Expanded) */}
       {expanded && (
         <div className="mt-0.5 ml-6 pl-2 space-y-0.5">
-          {threads.map(thread => (
+          {threads.map((thread) => (
             <div
               key={thread.id}
               className={`group relative flex items-center rounded-md cursor-pointer transition-colors ${
-                activeThreadId === thread.id ? 'bg-surface-hover text-foreground' : 'text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary'
+                activeThreadId === thread.id
+                  ? "bg-surface-hover text-foreground"
+                  : "text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
               }`}
               draggable
               onDragStart={(event) => {
@@ -814,7 +1004,7 @@ function ProjectItem({
               }}
               onClick={() => onSelectThread(thread.id)}
             >
-              {editingType === 'thread' && editingId === thread.id ? (
+              {editingType === "thread" && editingId === thread.id ? (
                 <input
                   autoFocus
                   className="bg-background border border-border-strong rounded px-1.5 py-0.5 text-xs text-foreground outline-none w-full"
@@ -858,7 +1048,11 @@ function ProjectItem({
                         className="p-1 hover:bg-surface-active rounded text-muted hover:text-foreground-secondary"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onShareThread(thread.id, thread.title, thread.sharedWith || []);
+                          onShareThread(
+                            thread.id,
+                            thread.title,
+                            thread.sharedWith || []
+                          );
                         }}
                       >
                         <Share2 className="w-3 h-3" />
@@ -867,7 +1061,9 @@ function ProjectItem({
                     <Tooltip content="Rename Thread">
                       <button
                         className="p-1 hover:bg-surface-active rounded text-muted hover:text-foreground-secondary"
-                        onClick={(e) => startEditing(thread.id, 'thread', thread.title, e)}
+                        onClick={(e) =>
+                          startEditing(thread.id, "thread", thread.title, e)
+                        }
                       >
                         <Edit2 className="w-3 h-3" />
                       </button>
@@ -891,7 +1087,9 @@ function ProjectItem({
                       projects={projects}
                       excludeProjectId={project.id}
                       allowUnassign
-                      onSelect={(projectId) => onMoveThread(thread.id, projectId)}
+                      onSelect={(projectId) =>
+                        onMoveThread(thread.id, projectId)
+                      }
                       onClose={() => onToggleMoveMenu(thread.id)}
                     />
                   )}

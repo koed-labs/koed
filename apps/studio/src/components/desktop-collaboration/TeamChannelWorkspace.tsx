@@ -3348,7 +3348,7 @@ export function TeamChannelWorkspace({
   return (
     <div className="flex h-full min-h-0 w-full bg-background text-foreground">
       <SidebarProvider>
-        <aside className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-sidebar py-4 pt-10">
+        <aside className="flex min-h-0 w-[72px] shrink-0 flex-col items-center overflow-y-auto border-r border-border bg-sidebar py-4 pt-10">
           <Link
             href="/"
             aria-label="Personal Workspace"

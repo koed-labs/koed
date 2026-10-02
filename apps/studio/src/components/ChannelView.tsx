@@ -149,7 +149,7 @@ export function ChannelHeader({
           {members.length + agents.length}
         </button>
         {open && (
-          <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-lg border border-border-strong bg-surface p-2 shadow-xl shadow-black/50">
+          <div className="absolute right-0 top-full z-30 mt-2 w-64 max-w-[calc(100vw-104px)] rounded-lg border border-border-strong bg-surface p-2 shadow-xl shadow-black/50">
             <label className="mb-2 flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5">
               <Search className="h-3.5 w-3.5 text-subtle" />
               <input

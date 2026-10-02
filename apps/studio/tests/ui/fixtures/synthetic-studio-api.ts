@@ -418,6 +418,13 @@ export class SyntheticStudioApi {
       await route.fulfill({ json: { runners: [], instances: [] } });
       return;
     }
+    if (path === "/studio-api/collaboration/session" && method === "GET") {
+      await route.fulfill({
+        status: 404,
+        json: { error: "Synthetic local connection unavailable" }
+      });
+      return;
+    }
     if (path === "/studio-api/projects/capabilities" && method === "GET") {
       await route.fulfill({ json: { canCreateLocalProject: false } });
       return;
@@ -427,6 +434,43 @@ export class SyntheticStudioApi {
       return;
     }
 
+    if (
+      path === `/v1/teams/${ids.team}/memory-retention/members` &&
+      method === "GET"
+    ) {
+      await route.fulfill({
+        json: {
+          teamId: ids.team,
+          members: [
+            {
+              userId: ids.user,
+              displayName: "Synthetic user",
+              enabled: true,
+              version: 1
+            }
+          ]
+        }
+      });
+      return;
+    }
+    if (path === "/v1/shared-memory/owned-shares" && method === "GET") {
+      await route.fulfill({
+        json: {
+          shares: [],
+          pagination: {
+            limit: 100,
+            hasMore: false,
+            next: null,
+            snapshotAt: now
+          }
+        }
+      });
+      return;
+    }
+    if (path === "/v1/personal-agent-role-templates" && method === "GET") {
+      await route.fulfill({ json: { templates: [] } });
+      return;
+    }
     if (path === "/v1/personal-agents" && method === "GET") {
       await route.fulfill({ json: { agents: this.agents } });
       return;
@@ -560,11 +604,46 @@ export class SyntheticStudioApi {
     if (path === `${teamPrefix}/public-square` && method === "GET") {
       await route.fulfill({
         json: {
-          teamId: ids.team,
-          projects: [],
-          publications: [],
-          messages: [],
-          nextCursor: null
+          page: {
+            teamId: ids.team,
+            items: [
+              {
+                id: ids.olderJob,
+                jobId: ids.root,
+                agentId: ids.busyAgent,
+                agentName: "Busy Reviewer",
+                ownerId: ids.user,
+                ownerName: "Synthetic user",
+                projectId: ids.launch,
+                projectName: "Synthetic launch",
+                status: "running",
+                lastKnownStatus: null,
+                phase: "checking",
+                phaseObservedAt: now,
+                publishedAt: now,
+                startedAt: now,
+                updatedAt: now,
+                completedAt: null,
+                lastSeenAt: now,
+                ownerLeftTeam: false,
+                sharedBrief:
+                  "Exercise the responsive Project room and Agent card.",
+                version: 1,
+                canEditBrief: false,
+                canRemoveRetainedBrief: false
+              }
+            ],
+            idleAgents: [
+              {
+                agentId: ids.idleAgent,
+                agentName: "Idle Planner",
+                ownerId: ids.user,
+                ownerName: "Synthetic user"
+              }
+            ],
+            nextCursor: null,
+            serverTime: now
+          }
         }
       });
       return;

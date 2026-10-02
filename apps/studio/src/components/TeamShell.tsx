@@ -29,11 +29,11 @@ export function TeamShell({
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <header
-        className={`z-10 flex items-center px-4 bg-background/80 backdrop-blur-sm drag-region ${
+        className={`z-10 flex min-w-0 items-center px-3 sm:px-4 bg-background/80 backdrop-blur-sm drag-region ${
           hasHeaderText ? "h-14 pt-4" : "py-2"
         }`}
       >
-        <div className="flex items-center gap-3 no-drag">
+        <div className="flex min-w-0 items-center gap-3 no-drag">
           {!isOpen && (
             <Tooltip content="Open Sidebar" side="bottom">
               <button
@@ -49,9 +49,11 @@ export function TeamShell({
             </Tooltip>
           )}
           {heading ? (
-            <p className="text-sm text-foreground">{heading}</p>
+            <p className="min-w-0 truncate text-sm text-foreground">
+              {heading}
+            </p>
           ) : (
-            <div className="text-sm text-muted">
+            <div className="min-w-0 truncate text-sm text-muted">
               {(crumbs ?? []).map((crumb, index) => (
                 <span key={`${crumb}-${index}`}>
                   {index > 0 && <span className="mx-2 text-faint">/</span>}
@@ -75,7 +77,7 @@ export function TeamShell({
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {wallpaper && <ChannelWallpaper />}
           <main
-            className={`relative min-h-0 flex-1 p-4 ${chatLayout ? "flex flex-col overflow-hidden" : "overflow-y-auto"}`}
+            className={`relative min-h-0 min-w-0 flex-1 ${chatLayout ? "flex flex-col overflow-hidden p-2 sm:p-4" : "overflow-y-auto p-4"}`}
           >
             {children}
           </main>

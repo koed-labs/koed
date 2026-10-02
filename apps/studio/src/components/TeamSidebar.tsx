@@ -90,164 +90,198 @@ export function TeamChannelNavigation({
   onCreate: () => void;
   onNewDirectMessage: (participantUserIds: string[]) => Promise<void>;
 }) {
-  const { isOpen, toggleSidebar, width } = useSidebar();
+  const { isOpen, toggleSidebar, width, isNarrowScreen } = useSidebar();
   const [newDmOpen, setNewDmOpen] = useState(false);
-  if (!isOpen) return null;
   const openMobileDestination = (callback: () => void) => {
     callback();
-    if (window.matchMedia("(max-width: 767px)").matches) toggleSidebar();
+    if (isNarrowScreen) toggleSidebar();
   };
+  // The compact team sidebar is a drawer over the active channel.
+  // Navigation remains visible on desktop and keeps its existing width.
+  // Escape is handled here because this navigation is mounted directly by
+  // the live Team shell rather than through ContextSidebar.
+  useEffect(() => {
+    if (!isNarrowScreen || !isOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isNarrowScreen, isOpen, toggleSidebar]);
+  if (!isOpen) return null;
   return (
-    <aside
-      id="team-navigation"
-      role="navigation"
-      aria-label="Team navigation"
-      className="relative flex h-full max-w-[calc(100vw-72px)] shrink-0 flex-col border-r border-border bg-surface pt-6 md:max-w-none"
-      style={{ width: `${width}px` }}
-    >
-      <div className="px-3 py-2">
-        <div className="mb-1 flex items-center gap-2">
-          <div className="min-w-0 flex-1 px-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
-              Team
-            </p>
-            <p className="truncate text-sm font-medium text-foreground">
-              {teamName}
-            </p>
-          </div>
-          <Tooltip content="Close Sidebar" side="bottom">
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              aria-label="Close team navigation"
-              className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
-            >
-              <PanelLeftClose className="h-4 w-4" />
-            </button>
-          </Tooltip>
-        </div>
-      </div>
-      <div className="flex flex-col gap-0.5 px-3 py-2">
+    <>
+      {isNarrowScreen && (
         <button
           type="button"
-          disabled={!onOpenForYou}
-          aria-current={forYouSelected ? "page" : undefined}
-          onClick={onOpenForYou}
-          title={
-            !onOpenForYou
-              ? "Team requests are unavailable here yet."
-              : undefined
-          }
-          className={`${NAV_ITEM} w-full ${forYouSelected ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE} ${!onOpenForYou ? "cursor-not-allowed opacity-60" : ""}`}
-        >
-          <Bell className="mr-2 h-4 w-4" />
-          For you
-        </button>
-        <button
-          type="button"
-          disabled={!onOpenSquare}
-          aria-current={squareSelected ? "page" : undefined}
-          onClick={onOpenSquare}
-          title={
-            !onOpenSquare ? "Public Square is unavailable here yet." : undefined
-          }
-          className={`${NAV_ITEM} w-full ${squareSelected ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE} ${!onOpenSquare ? "cursor-not-allowed opacity-60" : ""}`}
-        >
-          <Globe className="mr-2 h-4 w-4" />
-          Public Square
-        </button>
-      </div>
-      <nav className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 space-y-0.5">
-        {channels.map((channel) => (
-          <button
-            key={channel.id}
-            type="button"
-            aria-current={channel.id === selectedId ? "page" : undefined}
-            onClick={() => openMobileDestination(() => onSelect(channel.id))}
-            className={`${NAV_ITEM} w-full ${channel.id === selectedId ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE}`}
-          >
-            <Hash className="mr-2 h-4 w-4 flex-shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-left">
-              {channel.name ?? "Shared Project"}
-            </span>
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={onCreate}
-          className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-subtle transition-colors hover:bg-surface-hover/30 hover:text-foreground-secondary"
-        >
-          <Plus className="mr-2.5 h-3.5 w-3.5" />
-          <span className="text-xs">New channel</span>
-        </button>
-        <div className="mt-4 flex items-center justify-between px-4 py-1.5">
-          <span className="flex items-center text-sm font-medium text-foreground-secondary">
-            <Users className="mr-2 h-4 w-4 text-subtle" />
-            Colleagues
-          </span>
-          <Tooltip content="New direct message" side="bottom">
-            <button
-              type="button"
-              aria-label="New direct message"
-              onClick={() => setNewDmOpen(true)}
-              className="rounded-md p-1 text-subtle transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </Tooltip>
-        </div>
-        {directMessages
-          .slice()
-          .sort(
-            (left, right) =>
-              Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)
-          )
-          .map((thread) => {
-            const others = thread.participants.filter(
-              (person) => person.id !== principalUserId
-            );
-            const name =
-              others.map((person) => person.displayName).join(", ") ||
-              "Direct message";
-            const unread = thread.unreadCount > 0;
-            return (
-              <button
-                key={thread.id}
-                type="button"
-                aria-current={thread.id === selectedId ? "page" : undefined}
-                aria-label={name}
-                onClick={() => openMobileDestination(() => onSelect(thread.id))}
-                className={`${ROW_ITEM} ${unread ? "font-semibold" : ""} ${thread.id === selectedId ? ROW_ITEM_ACTIVE : ROW_ITEM_INACTIVE}`}
-              >
-                <span className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">
-                  {thread.kind === "group_dm" ? (
-                    <Users className="h-3.5 w-3.5" />
-                  ) : (
-                    name.slice(0, 1).toUpperCase()
-                  )}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-left">
-                  {name}
-                </span>
-                {unread && (
-                  <span
-                    aria-label={`${thread.unreadCount} unread`}
-                    className="ml-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                  />
-                )}
-              </button>
-            );
-          })}
-      </nav>
-      {newDmOpen && (
-        <NewDirectMessageModal
-          members={people}
-          principalUserId={principalUserId}
-          onClose={() => setNewDmOpen(false)}
-          onStart={onNewDirectMessage}
+          aria-label="Close team navigation"
+          onClick={toggleSidebar}
+          className="fixed inset-y-0 left-[72px] right-0 z-30 bg-black/35"
         />
       )}
-    </aside>
+      <aside
+        id="team-navigation"
+        role="navigation"
+        aria-label="Team navigation"
+        className={`flex shrink-0 flex-col border-r border-border bg-surface pt-6 ${isNarrowScreen ? "fixed inset-y-0 left-[72px] z-40 h-dvh max-w-[calc(100vw-72px)] shadow-xl" : "relative h-full max-w-none"}`}
+        style={{
+          width: isNarrowScreen
+            ? `min(${width}px, calc(100vw - 72px))`
+            : `${width}px`
+        }}
+      >
+        <div className="px-3 py-2">
+          <div className="mb-1 flex items-center gap-2">
+            <div className="min-w-0 flex-1 px-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-subtle">
+                Team
+              </p>
+              <p className="truncate text-sm font-medium text-foreground">
+                {teamName}
+              </p>
+            </div>
+            <Tooltip content="Close Sidebar" side="bottom">
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                aria-label="Close team navigation"
+                className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+        <div className="flex flex-col gap-0.5 px-3 py-2">
+          <button
+            type="button"
+            disabled={!onOpenForYou}
+            aria-current={forYouSelected ? "page" : undefined}
+            onClick={() => onOpenForYou && openMobileDestination(onOpenForYou)}
+            title={
+              !onOpenForYou
+                ? "Team requests are unavailable here yet."
+                : undefined
+            }
+            className={`${NAV_ITEM} w-full ${forYouSelected ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE} ${!onOpenForYou ? "cursor-not-allowed opacity-60" : ""}`}
+          >
+            <Bell className="mr-2 h-4 w-4" />
+            For you
+          </button>
+          <button
+            type="button"
+            disabled={!onOpenSquare}
+            aria-current={squareSelected ? "page" : undefined}
+            onClick={() => onOpenSquare && openMobileDestination(onOpenSquare)}
+            title={
+              !onOpenSquare
+                ? "Public Square is unavailable here yet."
+                : undefined
+            }
+            className={`${NAV_ITEM} w-full ${squareSelected ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE} ${!onOpenSquare ? "cursor-not-allowed opacity-60" : ""}`}
+          >
+            <Globe className="mr-2 h-4 w-4" />
+            Public Square
+          </button>
+        </div>
+        <nav className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 space-y-0.5">
+          {channels.map((channel) => (
+            <button
+              key={channel.id}
+              type="button"
+              aria-current={channel.id === selectedId ? "page" : undefined}
+              onClick={() => openMobileDestination(() => onSelect(channel.id))}
+              className={`${NAV_ITEM} w-full ${channel.id === selectedId ? NAV_ITEM_ACTIVE : NAV_ITEM_INACTIVE}`}
+            >
+              <Hash className="mr-2 h-4 w-4 flex-shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {channel.name ?? "Shared Project"}
+              </span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onCreate}
+            className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-subtle transition-colors hover:bg-surface-hover/30 hover:text-foreground-secondary"
+          >
+            <Plus className="mr-2.5 h-3.5 w-3.5" />
+            <span className="text-xs">New channel</span>
+          </button>
+          <div className="mt-4 flex items-center justify-between px-4 py-1.5">
+            <span className="flex items-center text-sm font-medium text-foreground-secondary">
+              <Users className="mr-2 h-4 w-4 text-subtle" />
+              Colleagues
+            </span>
+            <Tooltip content="New direct message" side="bottom">
+              <button
+                type="button"
+                aria-label="New direct message"
+                onClick={() => setNewDmOpen(true)}
+                className="rounded-md p-1 text-subtle transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
+          </div>
+          {directMessages
+            .slice()
+            .sort(
+              (left, right) =>
+                Date.parse(right.lastActivityAt) -
+                Date.parse(left.lastActivityAt)
+            )
+            .map((thread) => {
+              const others = thread.participants.filter(
+                (person) => person.id !== principalUserId
+              );
+              const name =
+                others.map((person) => person.displayName).join(", ") ||
+                "Direct message";
+              const unread = thread.unreadCount > 0;
+              return (
+                <button
+                  key={thread.id}
+                  type="button"
+                  aria-current={thread.id === selectedId ? "page" : undefined}
+                  aria-label={name}
+                  onClick={() =>
+                    openMobileDestination(() => onSelect(thread.id))
+                  }
+                  className={`${ROW_ITEM} ${unread ? "font-semibold" : ""} ${thread.id === selectedId ? ROW_ITEM_ACTIVE : ROW_ITEM_INACTIVE}`}
+                >
+                  <span className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-hover text-[10px] font-semibold text-muted">
+                    {thread.kind === "group_dm" ? (
+                      <Users className="h-3.5 w-3.5" />
+                    ) : (
+                      name.slice(0, 1).toUpperCase()
+                    )}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    {name}
+                  </span>
+                  {unread && (
+                    <span
+                      aria-label={`${thread.unreadCount} unread`}
+                      className="ml-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    />
+                  )}
+                </button>
+              );
+            })}
+        </nav>
+        {newDmOpen && (
+          <NewDirectMessageModal
+            members={people}
+            principalUserId={principalUserId}
+            onClose={() => setNewDmOpen(false)}
+            onStart={onNewDirectMessage}
+          />
+        )}
+      </aside>
+    </>
   );
 }
 
@@ -348,7 +382,7 @@ export function TeamSidebar() {
         id="team-navigation"
         role="navigation"
         aria-label="Team navigation"
-        className="relative flex h-screen max-w-[calc(100vw-72px)] flex-shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region md:max-w-none"
+        className="relative flex h-dvh max-w-[calc(100vw-72px)] flex-shrink-0 flex-col border-r border-border bg-surface pt-6 drag-region md:max-w-none"
         style={{ width: `${width}px` }}
       >
         <div className="px-3 py-2 no-drag">
@@ -756,7 +790,7 @@ function NewDirectMessageDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-team-dm-title"
-        className="flex max-h-[calc(100vh-2rem)] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+        className="flex max-h-[calc(100dvh-2rem)] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4">

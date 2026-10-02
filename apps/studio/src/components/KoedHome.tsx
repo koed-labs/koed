@@ -277,7 +277,7 @@ export function KoedHome() {
       </header>
       <main className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-4xl pt-6 pb-20">
-          <div className="mb-6 flex items-center justify-between gap-4 px-1">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 px-1">
             <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-subtle">
               <Sparkles className="h-3 w-3 text-faint" />
               Suggested by Koed
@@ -461,7 +461,7 @@ export function FeaturedInvitation({
       title={title}
       className={`group relative flex w-full items-stretch overflow-hidden rounded-2xl border text-left transition-all duration-200 hover:shadow-xl hover:shadow-black/5 ${style.border} ${style.glow}`}
     >
-      <div className="min-w-0 flex-1 px-7 py-8">
+      <div className="min-w-0 flex-1 px-4 py-5 sm:px-7 sm:py-8">
         <div className="flex items-start justify-between gap-4">
           <div
             className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl ${style.iconChip}`}
@@ -476,7 +476,7 @@ export function FeaturedInvitation({
         >
           {kickerSuffix(item)}
         </p>
-        <p className="mt-3 max-w-2xl text-[28px] font-medium leading-[1.15] tracking-tight text-foreground">
+        <p className="mt-3 max-w-2xl text-2xl font-medium leading-[1.15] tracking-tight text-foreground sm:text-[28px]">
           {item.title}
         </p>
         <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-muted">

@@ -53,11 +53,11 @@ export function CreateChannelModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
       onClick={onClose}
     >
       <div
-        className="w-[480px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden"
+        className="max-h-[calc(100dvh-1rem)] w-full max-w-[480px] overflow-y-auto rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-2rem)]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4">
@@ -76,7 +76,7 @@ export function CreateChannelModal({
 
         <div className="px-5 pb-5">
           <p className="mb-3 text-sm text-muted">What kind of channel?</p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <SelectionTypeCard
               selected={channelType === "chat"}
               icon={<Hash className="h-4 w-4" />}

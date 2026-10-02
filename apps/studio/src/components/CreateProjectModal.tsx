@@ -159,13 +159,13 @@ export function CreateProjectModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-2 backdrop-blur-sm no-drag sm:p-4"
       onClick={() => {
         if (!saving) onClose();
       }}
     >
       <div
-        className="w-[520px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-[520px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-2rem)]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-project-title"
@@ -201,7 +201,7 @@ export function CreateProjectModal({
           </button>
         </div>
 
-        <div className="px-5 pb-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5 sm:px-5">
           {liveMode && (
             <p className="mb-4 text-xs text-subtle">
               Choose a local folder to register it as a Koed project. The folder
@@ -211,7 +211,7 @@ export function CreateProjectModal({
           {!forceTeamId && (
             <>
               <p className="mb-3 text-sm text-muted">Project type</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <SelectionTypeCard
                   selected={projectType === "local"}
                   icon={<Laptop className="h-4 w-4" />}
