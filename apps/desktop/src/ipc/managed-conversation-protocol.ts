@@ -1,10 +1,16 @@
 import {
+  MANAGED_CONVERSATION_CONTROL_ACTIONS,
+  type ManagedConversationControlActionId
+} from "@koed/mcp-server/managed-conversation-command-types";
+import {
+  aiClientIdentifierPattern,
   isSupportedAiClientDriverId,
   parseManagedConversationSettings,
   type AiClientPermissionMode,
   type ManagedConversationSettingsChange,
   type SupportedAiClientDriverId
 } from "@koed/shared/ai-client-contract";
+import type { ManagedConversationSlashCommand } from "../renderer/views/personal/ai-client-slash-suggestions.js";
 
 export const managedConversationCommandChannel =
   "koed:managed-conversation:command";
@@ -204,6 +210,24 @@ export type ManagedConversationForkRequest = {
     | "independent_work";
 };
 
+export type ManagedConversationCommandDiscoveryRequest = {
+  operation: "command_discovery";
+  aiClientDriverId: SupportedAiClientDriverId;
+  aiClientInstanceId: string;
+  projectId?: string;
+  mode?: "file" | "draft";
+};
+
+export type ManagedConversationControlActionRequest = {
+  operation: "control_action";
+  aiClientDriverId: SupportedAiClientDriverId;
+  aiClientInstanceId: string;
+  operationId: string;
+  actionId: ManagedConversationControlActionId;
+  executionGeneration: number;
+  arguments: string[];
+};
+
 export type ManagedConversationRequest =
   | ManagedConversationStartRequest
   | ManagedConversationLaunchOptionsRequest
@@ -219,7 +243,9 @@ export type ManagedConversationRequest =
   | ManagedConversationControlRequest
   | ManagedConversationTransferStatusRequest
   | ManagedConversationHandoffRequest
-  | ManagedConversationForkRequest;
+  | ManagedConversationForkRequest
+  | ManagedConversationCommandDiscoveryRequest
+  | ManagedConversationControlActionRequest;
 
 export type ManagedConversationIdentity = {
   executionId: string | null;
@@ -332,6 +358,34 @@ export type ManagedConversationLaunchOptions = {
   }>;
 };
 
+export type ManagedConversationControlActionResult =
+  | {
+      operation: "control_action";
+      status: "accepted" | "already_accepted" | "unknown";
+      operationId: string;
+      executionGeneration: number;
+    }
+  | {
+      operation: "control_action";
+      status: "rejected";
+      operationId: string;
+      executionGeneration: number;
+      reason: string;
+    };
+
+export type ManagedConversationCommandDiscoveryResult =
+  | {
+      operation: "command_discovery";
+      status: "ok";
+      commands: ManagedConversationSlashCommand[];
+    }
+  | {
+      operation: "command_discovery";
+      status: "unavailable" | "stale" | "unauthorized";
+      commands: [];
+      message?: string;
+    };
+
 export type ManagedConversationResult =
   | {
       operation: "launch_options";
@@ -443,7 +497,9 @@ export type ManagedConversationResult =
       executionId: string;
       operationId: string;
       targetDeviceId: string;
-    };
+    }
+  | ManagedConversationCommandDiscoveryResult
+  | ManagedConversationControlActionResult;
 
 export const parseManagedConversationRequest = (
   value: unknown
@@ -871,6 +927,136 @@ export const parseManagedConversationRequest = (
       operationId: identifier(input.operationId, "Fork operation id"),
       targetDeviceId: identifier(input.targetDeviceId, "Target device id"),
       reason: input.reason
+    };
+  }
+  if (input.operation === "control_action") {
+    exactKeys(
+      input,
+      [
+        "operation",
+        "aiClientDriverId",
+        "aiClientInstanceId",
+        "operationId",
+        "actionId",
+        "executionGeneration",
+        "arguments"
+      ],
+      "Managed Conversation control action"
+    );
+    if (
+      typeof input.aiClientDriverId !== "string" ||
+      !isSupportedAiClientDriverId(input.aiClientDriverId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action driver is invalid."
+      );
+    }
+    const rawInstanceId = input.aiClientInstanceId;
+    if (
+      typeof rawInstanceId !== "string" ||
+      rawInstanceId.length === 0 ||
+      rawInstanceId.length > 128 ||
+      rawInstanceId.trim() !== rawInstanceId ||
+      !aiClientIdentifierPattern.test(rawInstanceId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action instance id is invalid."
+      );
+    }
+    if (
+      typeof input.actionId !== "string" ||
+      !Object.hasOwn(MANAGED_CONVERSATION_CONTROL_ACTIONS, input.actionId)
+    ) {
+      throw new TypeError("Managed Conversation control action id is invalid.");
+    }
+    if (
+      !Number.isSafeInteger(input.executionGeneration) ||
+      (input.executionGeneration as number) < 1
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action generation is invalid."
+      );
+    }
+    if (
+      !Array.isArray(input.arguments) ||
+      input.arguments.length > 32 ||
+      input.arguments.some(
+        (argument) => typeof argument !== "string" || argument.length > 4096
+      )
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action arguments are invalid."
+      );
+    }
+    return {
+      operation: "control_action",
+      aiClientDriverId: input.aiClientDriverId,
+      aiClientInstanceId: rawInstanceId,
+      operationId: identifier(input.operationId, "Control action operation id"),
+      actionId: input.actionId as ManagedConversationControlActionId,
+      executionGeneration: input.executionGeneration as number,
+      arguments: input.arguments as string[]
+    };
+  }
+  if (input.operation === "command_discovery") {
+    exactKeys(
+      input,
+      [
+        "operation",
+        "aiClientDriverId",
+        "aiClientInstanceId",
+        ...(Object.hasOwn(input, "projectId") ? ["projectId"] : []),
+        ...(Object.hasOwn(input, "mode") ? ["mode"] : [])
+      ],
+      "Managed Conversation command discovery"
+    );
+    if (
+      typeof input.aiClientDriverId !== "string" ||
+      !isSupportedAiClientDriverId(input.aiClientDriverId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery driver is invalid."
+      );
+    }
+    const rawInstanceId = input.aiClientInstanceId;
+    if (
+      typeof rawInstanceId !== "string" ||
+      rawInstanceId.length === 0 ||
+      rawInstanceId.length > 128 ||
+      rawInstanceId.trim() !== rawInstanceId ||
+      !aiClientIdentifierPattern.test(rawInstanceId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery instance id is invalid."
+      );
+    }
+    const rawProjectId = input.projectId;
+    if (
+      rawProjectId !== undefined &&
+      (typeof rawProjectId !== "string" ||
+        rawProjectId.length === 0 ||
+        rawProjectId.length > 128 ||
+        rawProjectId.trim() !== rawProjectId)
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery project id is invalid."
+      );
+    }
+    if (
+      input.mode !== undefined &&
+      input.mode !== "draft" &&
+      input.mode !== "file"
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery mode is invalid."
+      );
+    }
+    return {
+      operation: "command_discovery",
+      aiClientDriverId: input.aiClientDriverId,
+      aiClientInstanceId: rawInstanceId,
+      ...(typeof rawProjectId === "string" ? { projectId: rawProjectId } : {}),
+      ...(input.mode ? { mode: input.mode } : {})
     };
   }
   throw new TypeError("Unsupported Managed Conversation operation.");
@@ -1787,6 +1973,203 @@ export const parseManagedConversationResult = (
       targetDeviceId: identifier(result.targetDeviceId, "Target device id")
     };
   }
+  if (result.operation === "control_action") {
+    if (
+      result.status !== "accepted" &&
+      result.status !== "already_accepted" &&
+      result.status !== "unknown" &&
+      result.status !== "rejected"
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action status is invalid."
+      );
+    }
+    exactKeys(
+      result,
+      [
+        "operation",
+        "status",
+        "operationId",
+        "executionGeneration",
+        ...(result.status === "rejected" ? ["reason"] : [])
+      ],
+      "Managed Conversation control action result"
+    );
+    if (
+      !Number.isSafeInteger(result.executionGeneration) ||
+      (result.executionGeneration as number) < 1
+    ) {
+      throw new TypeError(
+        "Managed Conversation control action generation is invalid."
+      );
+    }
+    const actionStatus = result.status as
+      | "accepted"
+      | "already_accepted"
+      | "unknown"
+      | "rejected";
+    const common = {
+      operation: "control_action" as const,
+      operationId: identifier(
+        result.operationId,
+        "Control action operation id"
+      ),
+      executionGeneration: result.executionGeneration as number
+    };
+    if (actionStatus === "rejected") {
+      return {
+        ...common,
+        status: "rejected",
+        reason: identifier(result.reason, "Control action rejection reason")
+      };
+    }
+    return { ...common, status: actionStatus };
+  }
+  if (result.operation === "command_discovery") {
+    const status =
+      result.status as ManagedConversationCommandDiscoveryResult["status"];
+    const isOkStatus = status === "ok";
+    const hasMessage = result.message !== undefined;
+    const allowedKeys = isOkStatus
+      ? ["operation", "status", "commands"]
+      : hasMessage
+        ? ["operation", "status", "commands", "message"]
+        : ["operation", "status", "commands"];
+    exactKeys(
+      result,
+      allowedKeys,
+      "Managed Conversation command discovery result"
+    );
+    if (
+      status !== "ok" &&
+      status !== "unavailable" &&
+      status !== "stale" &&
+      status !== "unauthorized"
+    ) {
+      throw new TypeError(
+        "Managed Conversation command discovery status is invalid."
+      );
+    }
+    if (!Array.isArray(result.commands)) {
+      throw new TypeError(
+        "Managed Conversation command discovery commands must be an array."
+      );
+    }
+    if (!isOkStatus && result.commands.length > 0) {
+      throw new TypeError(
+        "Managed Conversation command discovery non-ok results must have empty commands array."
+      );
+    }
+    if (isOkStatus && result.commands.length > 128) {
+      throw new TypeError(
+        "Managed Conversation command discovery returns too many commands."
+      );
+    }
+    for (const cmd of result.commands) {
+      const command = record(cmd, "Managed Conversation slash command");
+      exactKeys(
+        command,
+        [
+          "name",
+          "description",
+          ...(Object.hasOwn(command, "argumentHint") ? ["argumentHint"] : []),
+          "kind",
+          "source",
+          "scope",
+          ...(Object.hasOwn(command, "verification") ? ["verification"] : []),
+          ...(Object.hasOwn(command, "invocation") ? ["invocation"] : [])
+        ],
+        "Managed Conversation slash command"
+      );
+      if (
+        typeof command.name !== "string" ||
+        command.name.length === 0 ||
+        command.name.length > 64 ||
+        command.name.trim() !== command.name
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command name is invalid."
+        );
+      }
+      if (
+        typeof command.description !== "string" ||
+        command.description.length > 512
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command description is invalid."
+        );
+      }
+      if (command.kind !== "command" && command.kind !== "skill") {
+        throw new TypeError(
+          "Managed Conversation command discovery command kind is invalid."
+        );
+      }
+      if (
+        command.source !== "provider" &&
+        command.source !== "builtin" &&
+        command.source !== "global-file" &&
+        command.source !== "project-file"
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command source is invalid."
+        );
+      }
+      if (
+        command.verification !== undefined &&
+        command.verification !== "verified" &&
+        command.verification !== "unverified"
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery verification is invalid."
+        );
+      }
+      if (command.invocation !== undefined) {
+        const invocation = record(command.invocation, "Command invocation");
+        if (invocation.type === "prompt") {
+          exactKeys(invocation, ["type"], "Command invocation");
+        } else if (
+          invocation.type === "control_action" &&
+          invocation.actionId === "codex.compact"
+        ) {
+          exactKeys(invocation, ["type", "actionId"], "Command invocation");
+        } else {
+          throw new TypeError(
+            "Managed Conversation command invocation is invalid."
+          );
+        }
+      }
+      if (command.scope !== "global" && command.scope !== "project") {
+        throw new TypeError(
+          "Managed Conversation command discovery command scope is invalid."
+        );
+      }
+      if (
+        command.argumentHint !== undefined &&
+        (typeof command.argumentHint !== "string" ||
+          command.argumentHint.length > 64)
+      ) {
+        throw new TypeError(
+          "Managed Conversation command discovery command argument hint is invalid."
+        );
+      }
+    }
+    if (isOkStatus) {
+      return {
+        operation: "command_discovery",
+        status: "ok",
+        commands: result.commands as ManagedConversationSlashCommand[]
+      };
+    }
+    return {
+      operation: "command_discovery",
+      status: status as Exclude<
+        ManagedConversationCommandDiscoveryResult["status"],
+        "ok"
+      >,
+      commands: result.commands as [],
+      ...(hasMessage ? { message: result.message as string } : {})
+    };
+  }
   throw new TypeError("Unsupported Managed Conversation result.");
 };
 
@@ -1875,4 +2258,9 @@ export interface ManagedConversationDesktopApi {
   fork: (
     input: Omit<ManagedConversationForkRequest, "operation">
   ) => Promise<Extract<ManagedConversationResult, { operation: "fork" }>>;
+  discoverCommands: (
+    input: Omit<ManagedConversationCommandDiscoveryRequest, "operation">
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "command_discovery" }>
+  >;
 }

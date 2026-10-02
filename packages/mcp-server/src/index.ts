@@ -61,6 +61,7 @@ export {
 export {
   checkCodexAppServerAvailability,
   inspectCodexAppServer,
+  listCodexAppServerSkills,
   resolveCodexHome,
   runCodexAppServerJsonTask
 } from "./codex-app-server-runner.js";
@@ -85,6 +86,27 @@ export {
   CodexManagedConversationIdentityError,
   CodexManagedConversationSession
 } from "./codex-managed-conversation.js";
+export { MANAGED_CONVERSATION_CONTROL_ACTIONS } from "./managed-conversation-command-types.js";
+export type {
+  ManagedConversationCommand,
+  ManagedConversationCommandActionRequest,
+  ManagedConversationCommandCatalog,
+  ManagedConversationCommandDiscoveryRequest,
+  ManagedConversationCommandDiscoveryResult,
+  ManagedConversationCommandKind,
+  ManagedConversationCommandListing,
+  ManagedConversationCommandScope,
+  ManagedConversationCommandSession,
+  ManagedConversationCommandSource,
+  ManagedConversationCommandVerification,
+  ManagedConversationControlActionDefinition,
+  ManagedConversationControlActionId,
+  ManagedConversationControlActionResult,
+  ManagedConversationControlActionState,
+  ManagedConversationDraftCommandLister,
+  ManagedConversationDraftCommandListingInput,
+  ManagedConversationProvider
+} from "./managed-conversation-command-types.js";
 export type {
   CodexManagedConversationConfig,
   CodexManagedConversationSealedSource,
@@ -94,6 +116,7 @@ export {
   CLAUDE_MANAGED_CONVERSATION_PROVIDER,
   ClaudeManagedConversationCancelledError,
   ClaudeManagedConversationSession,
+  claudeFileCommands,
   createManagedClaudeSessionStore,
   destroyManagedClaudeHome,
   forkClaudeTranscript,

@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { loadPrompt } from "./prompt-loader.js";
+import { assertCodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
 
 export interface CodexTokenUsageBreakdown {
   totalTokens?: number;
@@ -776,6 +777,19 @@ export class CodexAppServerClient {
       refreshToken: false
     });
     return asRecord(response.result);
+  }
+
+  async listSkills(cwd: string): Promise<unknown> {
+    const response = await this.request("skills/list", {
+      cwds: [cwd],
+      forceReload: false
+    });
+    return response.result;
+  }
+
+  async compactThread(threadId: string): Promise<unknown> {
+    const response = await this.request("thread/compact/start", { threadId });
+    return response.result;
   }
 
   async startThread(
@@ -2096,6 +2110,38 @@ export const listCodexAppServerModels = async (
   } finally {
     clearTimeout(timeout);
     client.close();
+    removeIsolatedCodexHome(isolatedHome);
+  }
+};
+
+export const listCodexAppServerSkills = async (
+  input: {
+    appServerBinary: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    clientName?: string;
+  },
+  timeoutMs = 5_000
+): Promise<unknown> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, "command-listing");
+  let client: CodexAppServerClient | undefined;
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const env = { ...input.env, CODEX_HOME: isolatedHome };
+    const compatibility = assertCodexConversationProtocolCompatibility({
+      binary: input.appServerBinary,
+      cwd: input.cwd,
+      env,
+      timeoutMs
+    });
+    if (!compatibility.requestMethods.includes("skills/list")) return null;
+    client = new CodexAppServerClient(input.appServerBinary, input.cwd, env);
+    timeout = setTimeout(() => client?.close(), timeoutMs);
+    await client.initialize(input.clientName ?? "koed-draft-command-listing");
+    return await client.listSkills(input.cwd);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (client) await client.closeAndWait().catch(() => undefined);
     removeIsolatedCodexHome(isolatedHome);
   }
 };

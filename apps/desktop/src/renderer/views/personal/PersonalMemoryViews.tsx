@@ -59,6 +59,8 @@ import {
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { DesktopApi } from "../../../types.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { findUnverifiedSlashCommand } from "./ai-client-slash-suggestions.js";
+import { useSlashCommandDiscovery } from "./use-slash-command-discovery.js";
 
 import {
   NativeConversationSurface,
@@ -1059,6 +1061,10 @@ function ProjectDetail({
           key={project.id}
           api={managedConversations}
           projectId={project.id}
+          projectRoot={project.contextKind === "project" ? project.path : null}
+          commandProjectId={
+            project.contextKind === "project" ? project.id : null
+          }
           options={launchOptions}
           selection={launchSelection}
           onChange={setLaunchSelection}
@@ -1595,6 +1601,7 @@ function StoreConversation({
         <ManagedConversationComposer
           api={managedConversations}
           authorizeTransfer={authorizeManagedConversationTransfer}
+          project={project}
           conversation={
             managedDraft?.conversation ?? {
               executionId: null,
@@ -2003,6 +2010,7 @@ function ManagedRuntimeItemView({
 function ManagedConversationComposer({
   api,
   authorizeTransfer,
+  project,
   conversation,
   draftScopeId,
   initialSelection,
@@ -2023,6 +2031,7 @@ function ManagedConversationComposer({
 }: {
   api: ManagedConversationDesktopApi;
   authorizeTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
+  project: PersonalDesktopProject;
   conversation: ManagedConversationIdentity;
   draftScopeId: string | null;
   initialSelection?: Parameters<ManagedConversationDesktopApi["start"]>[0];
@@ -2099,6 +2108,7 @@ function ManagedConversationComposer({
   const [settingsError, setSettingsError] = useState(
     initialPrompt?.status === "rejected" ? initialPrompt.message : ""
   );
+  const [commandDispatchError, setCommandDispatchError] = useState("");
   const refreshSettingsOptions = useCallback(() => {
     void api
       .launchOptions()
@@ -2126,6 +2136,26 @@ function ManagedConversationComposer({
   const [runtime, setRuntime] =
     useState<ManagedConversationRuntimeState | null>(null);
   const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
+
+  // Slash command discovery
+  const resolvedProvider =
+    resolvedConversation.executionOwner?.driverId ?? null;
+  const resolvedInstanceId =
+    resolvedConversation.executionOwner?.instanceId ?? null;
+  const resolvedProjectId = project?.id ?? null;
+  const resolvedCwd = project?.path ?? null;
+
+  const {
+    commands: slashCommands,
+    loading: slashLoading,
+    error: slashError
+  } = useSlashCommandDiscovery(
+    api,
+    resolvedProvider,
+    resolvedInstanceId,
+    resolvedProjectId,
+    resolvedCwd
+  );
   const [state, setState] = useState<ComposerState>({
     status: "attaching",
     message: "Confirming local AI Client execution…"
@@ -2575,6 +2605,13 @@ function ManagedConversationComposer({
   ]);
 
   const submit = useCallback(async () => {
+    const unverifiedCommand = findUnverifiedSlashCommand(draft, slashCommands);
+    if (unverifiedCommand) {
+      setCommandDispatchError(
+        `/${unverifiedCommand} is not verified and cannot be dispatched.`
+      );
+      return;
+    }
     if (
       submissionInFlightRef.current ||
       !ownerSendReady ||
@@ -2733,7 +2770,8 @@ function ManagedConversationComposer({
     state.status,
     settingsChange,
     refreshSettingsOptions,
-    refreshRuntimeSnapshot
+    refreshRuntimeSnapshot,
+    slashCommands
   ]);
 
   const respondToRuntimeItem = useCallback(
@@ -3004,6 +3042,7 @@ function ManagedConversationComposer({
           draftRef.current = value;
           draftEditedRef.current = true;
           setDraftError("");
+          setCommandDispatchError("");
           submissionRef.current = null;
         }}
         onSubmit={() => (promptActive ? interruptRuntime() : void submit())}
@@ -3062,7 +3101,18 @@ function ManagedConversationComposer({
           }
         }}
         value={draft}
+        autocompleteOptions={slashCommands}
+        autocompleteLoading={slashLoading}
+        autocompleteError={slashError}
+        onAutocompleteSelect={() => {
+          // Command already selected by the input handler, no action needed.
+        }}
       />
+      {commandDispatchError ? (
+        <p className="personal-managed-error" role="alert">
+          {commandDispatchError}
+        </p>
+      ) : null}
       {settingsError && (
         <p className="personal-managed-error" role="alert">
           {settingsError}

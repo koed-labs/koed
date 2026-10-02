@@ -190,6 +190,7 @@ describe("Managed Conversation preload bridge", () => {
     expect(Object.keys(api).sort()).toEqual([
       "deleteDraft",
       "deleteRecovery",
+      "discoverCommands",
       "fork",
       "handoff",
       "inspect",
@@ -321,6 +322,51 @@ describe("Managed Conversation preload bridge", () => {
       operationId: "fork-1",
       targetDeviceId: "device-2",
       reason: "independent_work"
+    });
+  });
+
+  it("discovers validated provider commands through the managed conversation bridge", async () => {
+    const invoke = vi.fn(async (_channel, request: any) => ({
+      operation: request.operation,
+      status: "ok",
+      commands: [
+        {
+          name: "review",
+          description: "Review current changes",
+          argumentHint: "[path]",
+          kind: "command",
+          source: "provider",
+          scope: "project"
+        }
+      ]
+    }));
+    const api = createManagedConversationPreloadApi(invoke);
+
+    await expect(
+      api.discoverCommands({
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        projectId: "project-1"
+      })
+    ).resolves.toEqual({
+      operation: "command_discovery",
+      status: "ok",
+      commands: [
+        {
+          name: "review",
+          description: "Review current changes",
+          argumentHint: "[path]",
+          kind: "command",
+          source: "provider",
+          scope: "project"
+        }
+      ]
+    });
+    expect(invoke).toHaveBeenCalledWith(managedConversationCommandChannel, {
+      operation: "command_discovery",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
+      projectId: "project-1"
     });
   });
 

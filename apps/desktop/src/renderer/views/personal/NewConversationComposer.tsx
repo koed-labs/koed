@@ -7,6 +7,7 @@ import type {
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ConversationSelection } from "./ConversationSettings.js";
 import { ConversationInput } from "./ConversationInput.js";
+import { useSlashCommandDiscovery } from "./use-slash-command-discovery.js";
 
 import type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
 export type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
@@ -18,6 +19,8 @@ export function NewConversationComposer({
   showContextHelp = true,
   placeholder = "Tell the selected AI Client what to do",
   projectId,
+  projectRoot,
+  commandProjectId,
   options,
   selection,
   onChange,
@@ -30,6 +33,8 @@ export function NewConversationComposer({
   showContextHelp?: boolean;
   placeholder?: string;
   projectId: string | null;
+  projectRoot?: string | null;
+  commandProjectId?: string | null;
   options: ManagedConversationLaunchOptions | null;
   selection: ConversationSelection;
   onChange: (value: ConversationSelection) => void;
@@ -53,6 +58,13 @@ export function NewConversationComposer({
   const initialPromptRef = useRef<InitialConversationPrompt | null>(null);
   const instance = options?.instances.find(
     (item) => item.instanceId === selection.instanceId
+  );
+  const slashCommands = useSlashCommandDiscovery(
+    api,
+    instance?.driverId ?? null,
+    instance?.instanceId ?? null,
+    commandProjectId === undefined ? projectId : commandProjectId,
+    projectRoot ?? null
   );
   const available =
     api &&
@@ -197,6 +209,9 @@ export function NewConversationComposer({
               : undefined,
           onChange
         }}
+        autocompleteOptions={slashCommands.commands}
+        autocompleteLoading={slashCommands.loading}
+        autocompleteError={slashCommands.error}
         value={prompt}
       />
       {showContextHelp ? (

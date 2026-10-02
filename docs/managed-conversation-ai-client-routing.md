@@ -57,7 +57,11 @@ Recents reads additional graph pages until it collects the requested number of
 Conversations or reaches the end. Subagent rows consume raw offsets but do not
 consume Conversation slots. An owner change clears and reloads both recent lists.
 Launch selections resolve model defaults through the canonical ID, qualified ID,
-or model alias from the capability snapshot.
+or model alias from the capability snapshot. Model labels preserve the AI Client's
+`displayName`, including available version qualifiers; model values remain unchanged.
+Launch options read the selected instance's latest unexpired snapshot, not a new SDK
+model query. Local AI Runtime refresh defaults to five minutes with a ten-minute
+snapshot lifetime; refresh capabilities when labels lag behind the CLI's catalog.
 
 After API readiness, the supervisor resolves the active local API Token and
 passes the same credential to the Worker and Local AI Runtime. This includes
@@ -72,6 +76,84 @@ Managed Codex launches mark Koed as a required MCP Server. Codex waits for its
 tools before the first turn and fails startup if the server cannot initialize.
 Desktop credentials include the distinct file, terminal, preview, and source-control
 operation families; none grants an AI Client permission or a remote mutation approval.
+
+## Slash command suggestions
+
+Desktop command discovery reaches the Worker adapters through
+`discoverCommands` IPC → the Koed Server manager →
+`POST /v1/managed-conversations/commands`. Draft Codex discovery uses a temporary,
+non-Project working directory and normalizes the nested `skills/list` response
+(`data[].skills`), excluding disabled and repository-scoped entries. It uses the
+selected instance's configured executable. Claude Code draft discovery reads only
+the selected instance's global commands and skills through the bounded file
+adapter; it does not inherit the API process's Project directory. Pi draft
+discovery remains a bounded file fallback.
+The route requires an owned, enabled instance and a fresh capability snapshot that
+marks slash-command discovery ready. Hosted execution does not read an Operator's
+local command files. Codex managed sessions now expose read-only `listCommands()`
+and a purpose-specific `skills/list` RPC wrapper, but API/Worker discovery routing
+has not yet been connected to that live session owner.
+
+The standalone API Docker image runs the MCP Server package build before building
+and deploying the API. This includes the bundled prompt assets required by the
+discovery adapters' import graph; TypeScript project compilation alone does not
+copy them. The image build imports the deployed routes from `/deploy/api`, outside
+the source checkout, so missing packaged dependencies or prompt assets fail the
+build rather than API startup.
+
+A Chat without a Project requests client-global definitions only. A Project Chat
+requests both global and Project definitions. The API resolves a supplied Project
+ID against Koed's local Project registry and passes only that verified root to the
+adapter; the renderer never supplies an arbitrary working directory. A Project
+command with the same kind and name takes precedence over the global definition.
+
+The fallback adapters read metadata from bounded Markdown files and return names,
+descriptions, optional argument hints, command/skill kind, provenance, verification,
+and `global` or `project` scope. File entries are unverified and must be revalidated
+before executable dispatch. Codex live listing supports provider skills and the
+allowlisted `/compact` built-in; custom prompts remain file-backed and unverified.
+The API currently does not expose invocation metadata or dispatch control actions.
+The adapters do not return prompt bodies, scrape Conversations, or invoke a provider
+shell. Supported roots are:
+
+- Codex: `<CODEX_HOME>/prompts` and `<Project>/.codex/prompts`.
+- Claude Code: `<CLAUDE_CONFIG_DIR>/commands` and `skills`, plus the corresponding
+  `<Project>/.claude/commands` and `skills` roots. Skill names use `SKILL.md`
+  frontmatter `name`, falling back to the containing directory name. Nested sync
+  directories are storage paths, not slash-command namespaces; their UUID prefixes
+  must not consume the command-name length budget. Command files retain relative
+  path namespaces.
+- Pi: `<PI_CODING_AGENT_DIR>/prompts` and `skills`, plus the corresponding
+  `<Project>/.pi/prompts` and `skills` roots.
+
+When the environment variable is unset, each AI Client uses its standard home
+configuration directory. Symlinks that escape the selected configuration or
+Project root are ignored. Discovery scans at most 128 returned commands, bounds
+Markdown size and directory traversal, and fails closed after a two-second
+adapter deadline. The Desktop hook debounces requests by 500 ms and keeps
+instance-and-scope-keyed results for up to 30 seconds when a refresh fails;
+unauthorized and stale results clear the cached suggestions. Typing `/` also
+shows loading, failure, and no-match states when there are no suggestions;
+an empty list no longer hides discovery diagnostics. The suggestion popup is
+anchored to the composer with a bounded, scrollable height and an opaque themed
+background, rather than positioned above the page's clipped content. Keyboard
+navigation scrolls the selected suggestion into view without moving textarea
+focus. Enter or Tab inserts the selected suggestion without submitting. Shift+Enter
+retains newline insertion, Shift+Tab retains focus navigation, and IME composition
+is not intercepted. When there is no selectable suggestion, Enter uses normal
+submission behavior and Tab uses normal focus navigation; loading, error, and
+no-match diagnostics remain visible. Before launch options arrive, the AI Client picker shows
+“Loading AI Clients…” instead of reporting the selected client unavailable.
+To validate
+visibility in a local Electron test window on the new Chat screen, launch with
+`--remote-debugging-port=9223` and run
+`node apps/desktop/scripts/validate-slash-suggestions.mjs`. Use localhost-only
+debugging for testing and restart without the port afterward.
+Pi's file fallback does not
+include package-provided skills or symlinks outside its configured roots, so such
+installations can legitimately return no entries. Suggestions do not execute a provider command when selected. End-to-end exact
+invocation parsing and control-action dispatch remain pending; until then, do not
+route `/compact` through ordinary prompt submission.
 
 The execution persists driver, instance, model, reasoning effort, permission
 mode, and runner identity. The driver and instance remain fixed for that
