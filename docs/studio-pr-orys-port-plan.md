@@ -1,3 +1,40 @@
+# Current PR implementation scope (2026-10-02)
+
+The User approved a unified feature covering former integration Tickets 16–18.
+The existing Studio PR prototype defines the user flow and presentation. Orys at
+`bb94822abf0c989a1840a028666ccb5652efea5d` is a code reference only.
+This section supersedes conflicting scope assumptions in the historical plan below.
+
+- Reuse an explicitly selected supported GitHub CLI account; offer browser sign-in
+  when needed. Keep credentials on the selected authorized computer.
+- Browse a combined authored/requested-review inbox with separate filters and
+  authorized repository selection, including bounded details, code, checks and discussions.
+- Assign PR work to owned Agents through existing managed Conversations and Jobs.
+  Preserve private chat and encrypted history across revisions, restarts and devices.
+  Multiple Agents can review independently with separate Jobs and review drafts.
+- Offer verified matching Project context; a Project is not required. Review exact
+  base/head revisions in an isolated checkout, preserving the user's Project files.
+- Team Project review Jobs follow existing Public Square sharing rules. Personal
+  Jobs remain private and appear in Home and Agents activity.
+- Review is read-only by default. Explicit fix requests use existing permissions.
+  Normal branch pushes require inspecting and confirming exact changes. No merge
+  or non-fast-forward push feature is included.
+- Support Comment, Approve and Request changes with selected inline findings,
+  draft editing and exact-content confirmation. Revalidate account, repository,
+  permissions and revisions before dispatch. Reconcile uncertain writes instead
+  of blind retries.
+- New commits mark reviews outdated. The User explicitly initiates another review.
+  Existing authorized Memory can inform work, but findings need current code evidence;
+  private Memory content/citations are not automatically posted to GitHub.
+- Web Studio uses the existing authorized local runner gateway, including offline
+  Pending work and cancellation before claiming. Browser code receives no secrets.
+
+Pipeline editors, extra notification designs and other Orys UI additions are not
+requirements of this implementation. Existing Agent/tool wiring remains authoritative.
+The API enforces permission and publication checks independently of disabled controls.
+
+## Historical reference plan
+
 # Orys to Koed: Pull Requests integration plan
 
 Status: incremental implementation; contracts, local identity, PR browsing and local PR chat are implemented in the Studio prototype.

@@ -344,6 +344,12 @@ export {
   type PersonalAgentRepository
 } from "./personal-agent-repository.js";
 export {
+  createPullRequestRepository,
+  type PullRequestRepository,
+  type PullRequestOperationClaim,
+  type CreatePullRequestReviewInput
+} from "./pull-request-repository.js";
+export {
   createPublicSquareRepository,
   type PublicSquareRepository,
   type PublicSquarePublicationRecord

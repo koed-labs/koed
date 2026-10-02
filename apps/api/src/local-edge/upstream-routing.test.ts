@@ -1220,3 +1220,86 @@ describe("Team message upstream route grants", () => {
     }
   });
 });
+
+describe("Pull Request authority route allowlist", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  it("admits only bounded typed PR routes under managed execution", () => {
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        `/v1/pull-requests/${id}/draft/frozen`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        `/v1/pull-requests/${id}/draft/frozen`
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/pull-requests/runners"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/action-grants"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/pull-requests/runners?token=secret"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        `/v1/pull-requests/${id}/draft/freeze`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        `/v1/pull-requests/runner/reviews/${id}/freezes/${id}`
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        `/v1/pull-requests/${id}/execute`
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/pull-requests?authorization=secret"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/operations?before=x"
+      )
+    ).toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "POST",
+        "/v1/pull-requests/not-a-review/refresh"
+      )
+    ).toThrow();
+  });
+});

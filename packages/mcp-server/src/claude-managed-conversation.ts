@@ -77,7 +77,7 @@ export interface ClaudeManagedConversationConfig {
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
   onTextDelta?: (delta: string, turnId: string) => void;
-  executionPolicy?: () => "work" | "planning" | "summary";
+  executionPolicy?: () => "work" | "planning" | "review" | "summary";
   personalAgentToolsEnabled?: () => boolean;
   personalAgentTurnStatusHandler?: (
     status: "complete" | "awaiting_owner"
@@ -1086,7 +1086,7 @@ export class ClaudeManagedConversationSession {
     let intentTurnActive = true;
     const executionPolicy = this.config.executionPolicy?.() ?? "work";
     const agentToolsEnabled =
-      executionPolicy === "work" &&
+      (executionPolicy === "work" || executionPolicy === "review") &&
       (this.config.personalAgentToolsEnabled?.() ?? true);
     const permissionMode =
       executionPolicy === "work" ? this.config.permissionMode : "default";
@@ -1224,7 +1224,7 @@ export class ClaudeManagedConversationSession {
           tools:
             executionPolicy === "summary"
               ? []
-              : executionPolicy === "planning"
+              : executionPolicy === "planning" || executionPolicy === "review"
                 ? planningTools
                 : (this.config.tools ?? []),
           ...(this.config.canUseTool
@@ -1233,7 +1233,7 @@ export class ClaudeManagedConversationSession {
           allowedTools: [
             ...(executionPolicy === "work"
               ? (this.config.allowedTools ?? [])
-              : executionPolicy === "planning"
+              : executionPolicy === "planning" || executionPolicy === "review"
                 ? planningTools
                 : []),
             ...(intentHandler

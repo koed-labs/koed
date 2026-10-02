@@ -1029,7 +1029,9 @@ describe("high-risk action grant routes", () => {
           teamWorkspaceId: ids.target,
           mode: "snapshot",
           maximumFidelity: "memory_events",
-          includeCuratedMemory: false
+          includeCuratedMemory: false,
+          retentionEnabled: true,
+          memberRetentionVersion: 1
         }
       }
     });
@@ -1082,7 +1084,9 @@ describe("high-risk action grant routes", () => {
       teamWorkspaceId: ids.target,
       mode: "snapshot",
       maximumFidelity: "memory_events",
-      includeCuratedMemory: false
+      includeCuratedMemory: false,
+      retentionEnabled: true,
+      memberRetentionVersion: 1
     });
     expect(
       (sharedFixture.repository.createActionGrant as ReturnType<typeof vi.fn>)
@@ -1125,7 +1129,9 @@ describe("high-risk action grant routes", () => {
           teamWorkspaceId: ids.target,
           mode: "snapshot",
           maximumFidelity: "memory_events",
-          includeCuratedMemory: false
+          includeCuratedMemory: false,
+          retentionEnabled: true,
+          memberRetentionVersion: 1
         }
       }
     });
@@ -1189,6 +1195,8 @@ describe("high-risk action grant routes", () => {
           mode: "snapshot",
           maximumFidelity: "lcm_rollups",
           includeCuratedMemory: false,
+          retentionEnabled: true,
+          memberRetentionVersion: 1,
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null

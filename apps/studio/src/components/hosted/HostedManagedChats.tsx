@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { parsePullRequestReviewOutput } from "@koed/shared/pull-requests";
 import {
   Check,
   LoaderCircle,
@@ -125,6 +126,8 @@ export function HostedManagedChats({
   initialAgentId,
   initialExecutionId,
   initialDraft = "",
+  embeddedReview,
+  onDraftChange,
   teamRequestId,
   teamRequestTeamId,
   teamRequestExpectedRequestVersion,
@@ -135,6 +138,8 @@ export function HostedManagedChats({
   initialAgentId?: string;
   initialExecutionId?: string;
   initialDraft?: string;
+  embeddedReview?: { reviewId: string; executionId: string; agentId: string };
+  onDraftChange?: (draft: string) => void;
   teamRequestId?: string;
   teamRequestTeamId?: string;
   teamRequestExpectedRequestVersion?: number;
@@ -163,6 +168,9 @@ export function HostedManagedChats({
     null
   );
   const [draft, setDraft] = useState(initialDraft);
+  useEffect(() => {
+    onDraftChange?.(draft);
+  }, [draft, onDraftChange]);
   const [recoveryScope, setRecoveryScope] =
     useState<HostedRecoveryScope | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] =
@@ -372,11 +380,29 @@ export function HostedManagedChats({
   const refreshList = useCallback(
     async (signal?: AbortSignal) => {
       const values = await listHostedManagedConversations(signal);
+      if (
+        embeddedReview &&
+        !values.some((item) => item.id === embeddedReview.executionId)
+      ) {
+        const bound = await loadHostedManagedConversation(
+          embeddedReview.executionId,
+          signal
+        );
+        const execution = bound.runtime.execution;
+        values.push({
+          ...execution,
+          createdAt: "",
+          updatedAt: "",
+          startedAt: null,
+          stoppedAt: null
+        });
+      }
       if (signal?.aborted) return;
       setExecutions(values);
       const current = selectedIdRef.current;
-      const next =
-        current && values.some((item) => item.id === current)
+      const next = embeddedReview
+        ? embeddedReview.executionId
+        : current && values.some((item) => item.id === current)
           ? current
           : (values[0]?.id ?? null);
       if (next !== current) {
@@ -395,7 +421,7 @@ export function HostedManagedChats({
         setProjectMovePickerOpen(false);
       }
     },
-    [setScopedPendingRecoveryOperation]
+    [setScopedPendingRecoveryOperation, embeddedReview]
   );
 
   const reconcilePromptOperation = useCallback(
@@ -1076,6 +1102,14 @@ export function HostedManagedChats({
         );
         if (controller.signal.aborted || selectedIdRef.current !== selectedId)
           return;
+        if (
+          embeddedReview &&
+          value.state.activeAgentId !== embeddedReview.agentId
+        ) {
+          throw new Error(
+            "This PR review is assigned to a different Agent. Reload the review before continuing."
+          );
+        }
         setRuntime(value.runtime);
         setMessages(value.state.messages);
         setJobMarkers(
@@ -1150,7 +1184,8 @@ export function HostedManagedChats({
     selectedId,
     reconcileStartOperation,
     reconcilePromptOperation,
-    launchOptions
+    launchOptions,
+    embeddedReview
   ]);
 
   const selected = useMemo(
@@ -1367,13 +1402,22 @@ export function HostedManagedChats({
       selectedRuntime,
       messages
     );
-    return hostedMessagesForSelection(
+    const visible = hostedMessagesForSelection(
       selectedId,
       selectedRuntime?.execution.id ?? null,
       withTransientOutput,
       pendingMessage
     );
-  }, [messages, pendingMessage, selectedId, selectedRuntime]);
+    return embeddedReview
+      ? visible.map((message) => {
+          const output =
+            message.role === "assistant"
+              ? parsePullRequestReviewOutput(message.content)
+              : null;
+          return output ? { ...message, content: output.displayText } : message;
+        })
+      : visible;
+  }, [messages, pendingMessage, selectedId, selectedRuntime, embeddedReview]);
   const runtimeRequests = useMemo(
     () => pendingChatRequests(selectedRuntime),
     [selectedRuntime]
@@ -1548,6 +1592,14 @@ export function HostedManagedChats({
       | undefined;
     try {
       const ownerState = await loadHostedManagedConversation(selected.id);
+      if (
+        embeddedReview &&
+        ownerState.state.activeAgentId !== embeddedReview.agentId
+      ) {
+        throw new Error(
+          "This PR review is assigned to a different Agent. Reload before sending."
+        );
+      }
       agentAttribution =
         hostedActiveAgentAttribution(ownerState.state) ?? undefined;
       if (continueWithoutMemory && !agentAttribution)
@@ -2230,41 +2282,47 @@ export function HostedManagedChats({
       ) : null}
       <section
         aria-label="Your Koed Conversations"
-        className="mb-6 rounded-xl border border-border bg-surface p-4 md:p-5"
+        className={
+          embeddedReview
+            ? "flex h-full min-h-0 flex-col"
+            : "mb-6 rounded-xl border border-border bg-surface p-4 md:p-5"
+        }
       >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-base font-semibold text-foreground">
-              Your Conversations
-            </h1>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
-              Continue managed Conversations from your Koed devices. Messages
-              and controls use your signed-in Koed session.
-            </p>
+        {!embeddedReview && (
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-base font-semibold text-foreground">
+                Your Conversations
+              </h1>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
+                Continue managed Conversations from your Koed devices. Messages
+                and controls use your signed-in Koed session.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void openNewConversation()}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90"
+              >
+                New Conversation
+              </button>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+                />{" "}
+                Refresh
+              </button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => void openNewConversation()}
-              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90"
-            >
-              New Conversation
-            </button>
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              disabled={refreshing}
-              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
-            >
-              <RefreshCw
-                className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
-              />{" "}
-              Refresh
-            </button>
-          </div>
-        </div>
+        )}
 
-        {newConversationOpen && (
+        {!embeddedReview && newConversationOpen && (
           <form
             className="mt-4 rounded-lg border border-border bg-background p-3"
             onSubmit={(event) => {
@@ -2625,48 +2683,56 @@ export function HostedManagedChats({
             No managed Conversations are available for this account.
           </p>
         ) : (
-          <div className="mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-            <nav
-              aria-label="Managed Conversations"
-              className="max-h-56 space-y-1 overflow-y-auto lg:max-h-[520px]"
-            >
-              {executions.map((execution) => (
-                <button
-                  key={execution.id}
-                  type="button"
-                  onClick={() => {
-                    setMemoryRecallFailure(null);
-                    setError(null);
-                    selectedIdRef.current = execution.id;
-                    recoveryOperationRef.current = null;
-                    setScopedPendingRecoveryOperation(null, execution.id);
-                    setSelectedId(execution.id);
-                    setRuntime(null);
-                    setMessages([]);
-                    setPendingMessage(null);
-                    setStatus(null);
-                    setLatestProjectMove(null);
-                    setProjectMoveLoaded(false);
-                    setProjectMoveDialogOpen(false);
-                    setProjectMovePickerOpen(false);
-                  }}
-                  aria-current={
-                    execution.id === selectedId ? "true" : undefined
-                  }
-                  className={`w-full rounded-md px-3 py-2 text-left ${execution.id === selectedId ? "bg-surface-hover text-foreground" : "text-foreground-secondary hover:bg-surface-hover"}`}
-                >
-                  <span className="block truncate text-xs font-medium">
-                    {execution.model} · {execution.provider}
-                  </span>
-                  <span className="mt-1 block text-[11px] text-muted">
-                    {stateLabel(execution)} ·{" "}
-                    {new Date(execution.updatedAt).toLocaleString()}
-                  </span>
-                </button>
-              ))}
-            </nav>
+          <div
+            className={
+              embeddedReview
+                ? "flex min-h-[340px] min-w-0 flex-1 flex-col"
+                : "mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)]"
+            }
+          >
+            {!embeddedReview && (
+              <nav
+                aria-label="Managed Conversations"
+                className="max-h-56 space-y-1 overflow-y-auto lg:max-h-[520px]"
+              >
+                {executions.map((execution) => (
+                  <button
+                    key={execution.id}
+                    type="button"
+                    onClick={() => {
+                      setMemoryRecallFailure(null);
+                      setError(null);
+                      selectedIdRef.current = execution.id;
+                      recoveryOperationRef.current = null;
+                      setScopedPendingRecoveryOperation(null, execution.id);
+                      setSelectedId(execution.id);
+                      setRuntime(null);
+                      setMessages([]);
+                      setPendingMessage(null);
+                      setStatus(null);
+                      setLatestProjectMove(null);
+                      setProjectMoveLoaded(false);
+                      setProjectMoveDialogOpen(false);
+                      setProjectMovePickerOpen(false);
+                    }}
+                    aria-current={
+                      execution.id === selectedId ? "true" : undefined
+                    }
+                    className={`w-full rounded-md px-3 py-2 text-left ${execution.id === selectedId ? "bg-surface-hover text-foreground" : "text-foreground-secondary hover:bg-surface-hover"}`}
+                  >
+                    <span className="block truncate text-xs font-medium">
+                      {execution.model} · {execution.provider}
+                    </span>
+                    <span className="mt-1 block text-[11px] text-muted">
+                      {stateLabel(execution)} ·{" "}
+                      {new Date(execution.updatedAt).toLocaleString()}
+                    </span>
+                  </button>
+                ))}
+              </nav>
+            )}
 
-            <div className="flex min-h-[340px] min-w-0 flex-col rounded-lg border border-border bg-background">
+            <div className="flex min-h-[340px] min-w-0 flex-1 flex-col rounded-lg border border-border bg-background">
               <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                   <p className="truncate text-xs font-medium text-foreground">
@@ -2743,7 +2809,7 @@ export function HostedManagedChats({
                   )}
                 </div>
               </div>
-              {selectedRuntime && (
+              {!embeddedReview && selectedRuntime && (
                 <div className="border-b border-border px-3 py-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="mr-auto text-[11px] text-muted">

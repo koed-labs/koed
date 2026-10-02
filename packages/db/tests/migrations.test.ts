@@ -306,9 +306,9 @@ describe("Personal Agent reasoning effort constraint migration", () => {
         { checkConstraints: Record<string, { value: string }> }
       >;
     };
-    expect(journal.entries.at(-1)).toEqual(
-      expect.objectContaining({ idx: 58, tag: "0058_windy_warpath" })
-    );
+    expect(
+      journal.entries.find((entry) => entry.tag === "0058_windy_warpath")
+    ).toEqual(expect.objectContaining({ idx: 58, tag: "0058_windy_warpath" }));
 
     for (const table of [
       "public.personal_agent_identities",

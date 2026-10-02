@@ -454,6 +454,11 @@ export interface ManagedConversationRepository {
         expectedRequestVersion: number;
         expectedReviewVersion: number;
       };
+      initialPullRequestReviewId?: string;
+      bindInitialPullRequestReviewWithClient?: (
+        client: pg.PoolClient,
+        executionId: string
+      ) => Promise<void>;
       bindInitialTeamAgentRequestWithClient?: (
         client: pg.PoolClient,
         executionId: string
@@ -1417,6 +1422,7 @@ const startDigest = (input: {
     expectedRequestVersion: number;
     expectedReviewVersion: number;
   };
+  initialPullRequestReviewId?: string;
   initialMemoryStatus?: PersonalMemoryTurnContext["status"];
   deferUntilRuntimeBinding?: boolean;
 }): string =>
@@ -1451,6 +1457,9 @@ const startDigest = (input: {
         : {}),
       ...(input.initialTeamAgentRequest
         ? { initialTeamAgentRequest: input.initialTeamAgentRequest }
+        : {}),
+      ...(input.initialPullRequestReviewId
+        ? { initialPullRequestReviewId: input.initialPullRequestReviewId }
         : {}),
       ...(input.initialMemoryStatus === "skipped"
         ? { continueWithoutMemory: true }
@@ -1561,6 +1570,47 @@ const notifyManagedConversationCommand = (
        json_build_object('executionId', $1::uuid)::text
      )`,
     [executionId]
+  );
+
+/**
+ * Publish only the Job record to Team Projects the owner has explicitly linked
+ * to this same local Project. The Public Square connection is not transcript
+ * sharing: no command payload, prompt, or Conversation content is copied.
+ */
+const publishPersonalAgentJobToConnectedProjects = (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  jobId: string
+) =>
+  client.query(
+    `insert into personal_agent_team_job_publications
+       (team_id, team_project_id, owner_user_id, job_id, connection_id,
+        last_known_status, last_seen_at, completed_at)
+     select c.team_id, c.team_project_id, j.owner_user_id, j.id, c.id,
+            j.state, e.runner_last_seen_at,
+            case when j.state in ('succeeded', 'failed', 'canceled')
+                 then j.updated_at else null end
+       from personal_agent_execution_jobs j
+       join managed_conversation_executions e
+         on e.id = j.conversation_id and e.owner_user_id = j.owner_user_id
+        and e.state <> 'failed'
+       join public_square_project_connections c
+         on c.actor_user_id = j.owner_user_id
+        and c.local_project_id = j.project_id
+       join collaboration_team_shared_projects sp
+         on sp.id = c.team_project_id and sp.team_id = c.team_id
+        and sp.unshared_at is null
+       join collaboration_threads t
+         on t.team_project_id = sp.id and t.team_id = sp.team_id
+        and t.lifecycle = 'active'
+       join team_memberships tm
+         on tm.team_id = c.team_id and tm.user_id = j.owner_user_id
+        and tm.status = 'enabled'
+      where j.id = $1 and j.owner_user_id = $2
+        and j.project_id is not null and j.state in ('queued', 'running')
+      for share of c, tm
+     on conflict (connection_id, job_id) do nothing`,
+    [jobId, ownerUserId]
   );
 
 const assertNoPendingManagedConversationProjectMove = async (
@@ -2499,6 +2549,11 @@ export const createManagedConversationRepository = (
               execution.project_id
             ]
           );
+          await publishPersonalAgentJobToConnectedProjects(
+            client,
+            actor.userId,
+            jobId
+          );
           await client.query(
             `insert into personal_agent_execution_job_events
               (owner_user_id, job_id, sequence, event_id, execution_generation,
@@ -3145,6 +3200,11 @@ export const createManagedConversationRepository = (
           input.localProjectId
         ]
       );
+      await publishPersonalAgentJobToConnectedProjects(
+        client,
+        input.ownerUserId,
+        jobId
+      );
       await client.query(
         `insert into personal_agent_execution_job_events
           (owner_user_id, job_id, sequence, event_id, execution_generation,
@@ -3172,6 +3232,8 @@ export const createManagedConversationRepository = (
         (input.initialAgentId !== undefined &&
           (!input.initialPrompt?.trim() ||
             !input.initialPromptClientUserMessageId)) ||
+        (input.initialPullRequestReviewId !== undefined &&
+          !input.bindInitialPullRequestReviewWithClient) ||
         (input.initialTeamAgentRequest !== undefined &&
           !input.bindInitialTeamAgentRequestWithClient) ||
         (input.initialPromptClientUserMessageId !== undefined &&
@@ -3225,6 +3287,7 @@ export const createManagedConversationRepository = (
               input.initialPromptClientUserMessageId,
             initialAgentId: input.initialAgentId,
             initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+            initialPullRequestReviewId: input.initialPullRequestReviewId,
             initialTeamAgentRequest: input.initialTeamAgentRequest,
             initialMemoryStatus: input.initialPersonalMemoryContext?.status,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
@@ -3264,6 +3327,7 @@ export const createManagedConversationRepository = (
             input.initialPromptClientUserMessageId,
           initialAgentId: input.initialAgentId,
           initialExpectedAgentVersion: input.initialExpectedAgentVersion,
+          initialPullRequestReviewId: input.initialPullRequestReviewId,
           initialTeamAgentRequest: input.initialTeamAgentRequest,
           initialMemoryStatus: input.initialPersonalMemoryContext?.status,
           deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
@@ -3531,6 +3595,12 @@ export const createManagedConversationRepository = (
               replayed: false
             };
           }
+        }
+        if (input.initialPullRequestReviewId) {
+          await input.bindInitialPullRequestReviewWithClient!(
+            client,
+            executionId
+          );
         }
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
@@ -4010,6 +4080,11 @@ export const createManagedConversationRepository = (
               "Agent task",
               current.project_id
             ]
+          );
+          await publishPersonalAgentJobToConnectedProjects(
+            client,
+            actor.userId,
+            personalAgent.jobId
           );
           await client.query(
             `insert into personal_agent_execution_job_events

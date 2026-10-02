@@ -78,6 +78,14 @@
     "./source-control": {
       "types": "./dist/source-control.d.ts",
       "import": "./dist/source-control.js"
+    },
+    "./pull-requests": {
+      "types": "./dist/pull-requests.d.ts",
+      "import": "./dist/pull-requests.js"
+    },
+    "./github-delegated": {
+      "types": "./dist/github-delegated.d.ts",
+      "import": "./dist/github-delegated.js"
     }
   },
   "files": [

@@ -58,6 +58,9 @@ type HighRiskRepository = Pick<
   | "getTeamMembership"
   | "getLegalHoldApprovalReview"
   | "getTeamInviteCreationReview"
+  | "getPullRequestReview"
+  | "getFrozenPullRequestReview"
+  | "getPullRequestOperation"
 >;
 
 export interface HighRiskRouteContext {

@@ -42,6 +42,11 @@ import {
 } from "@/lib/studio-skills";
 import { Tooltip } from "@/components/Tooltip";
 import { StudioSidebar } from "./StudioSidebar";
+import {
+  pullRequestOperationData,
+  pullRequestsClient
+} from "@/lib/pull-requests-client";
+import type { PullRequestRunner } from "@/lib/pull-requests-client";
 
 type PluginsMode = "live" | "demo";
 type GitHubState = "disconnected" | "connected" | "error";
@@ -49,16 +54,16 @@ type GitHubState = "disconnected" | "connected" | "error";
 type GitHubStatus = {
   state: GitHubState;
   login: string | null;
+  accountId?: string | null;
+  connectionGeneration?: number;
   message: string | null;
   capabilities: {
     readPullRequests: boolean;
-    publishReviews: false;
+    publishReviews: boolean;
   };
 };
 
-type SessionPayload = {
-  csrfToken: string | null;
-};
+type GitHubAccount = { login: string; active: boolean; state?: string };
 
 type CatalogPlugin = {
   title: string;
@@ -112,33 +117,37 @@ function sanitizeMessage(value: unknown, fallback: string) {
     .slice(0, 280);
 }
 
-function isStatus(value: unknown): value is GitHubStatus {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<GitHubStatus>;
-  const capabilities = candidate.capabilities;
-  return (
-    (candidate.state === "disconnected" ||
-      candidate.state === "connected" ||
-      candidate.state === "error") &&
-    (candidate.login === null || typeof candidate.login === "string") &&
-    (candidate.message === null || typeof candidate.message === "string") &&
-    Boolean(capabilities) &&
-    typeof capabilities?.readPullRequests === "boolean" &&
-    capabilities.publishReviews === false
-  );
-}
-
-function parseSession(value: unknown): SessionPayload {
-  if (!value || typeof value !== "object") return { csrfToken: null };
-  const csrfToken = (value as { csrfToken?: unknown }).csrfToken;
+function statusFromOperation(
+  value: Record<string, unknown>
+): GitHubStatus | null {
+  const account =
+    value.account && typeof value.account === "object"
+      ? (value.account as Record<string, unknown>)
+      : null;
+  const connected = value.state === "connected";
+  const state: GitHubState = connected
+    ? "connected"
+    : value.state === "reauthorization_required"
+      ? "error"
+      : "disconnected";
+  if (
+    account &&
+    (typeof account.id !== "string" || typeof account.login !== "string")
+  )
+    return null;
   return {
-    csrfToken:
-      typeof csrfToken === "string" && csrfToken.length > 0 ? csrfToken : null
+    state,
+    login: account && typeof account.login === "string" ? account.login : null,
+    accountId: account && typeof account.id === "string" ? account.id : null,
+    connectionGeneration: Number.isSafeInteger(value.connectionGeneration)
+      ? Number(value.connectionGeneration)
+      : undefined,
+    message: state === "error" ? "Reconnect GitHub in Plugins." : null,
+    capabilities: {
+      readPullRequests: connected,
+      publishReviews: connected
+    }
   };
-}
-
-async function readJson(response: Response) {
-  return response.json().catch(() => null) as Promise<unknown>;
 }
 
 function PluginCard({ plugin }: { plugin: CatalogPlugin }) {
@@ -204,95 +213,152 @@ export function PluginsView({
   const [status, setStatus] = useState<GitHubStatus>(
     mode === "demo" ? DISCONNECTED_STATUS : DISCONNECTED_STATUS
   );
-  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<GitHubAccount[]>([]);
+  const [runners, setRunners] = useState<PullRequestRunner[]>([]);
+  const [runnerId, setRunnerId] = useState("");
+  const [accountLoading, setAccountLoading] = useState(false);
   const [loading, setLoading] = useState(mode === "live");
   const [mutating, setMutating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
+  const targetOption = useMemo(() => {
+    const target =
+      runners.find((runner) => runner.deviceId === runnerId) ?? runners[0];
+    return target
+      ? { deviceId: target.deviceId, deploymentId: target.deploymentId }
+      : undefined;
+  }, [runnerId, runners]);
 
-  const loadStatus = useCallback(async () => {
-    if (mode === "demo") return;
-    const sequence = ++requestSequenceRef.current;
-    controllerRef.current?.abort();
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    setLoading(true);
-    setError(null);
-    try {
-      const [sessionResponse, statusResponse] = await Promise.all([
-        fetch("/studio-api/github/session", {
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-          signal: controller.signal
-        }),
-        fetch("/studio-api/github/status", {
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-          signal: controller.signal
-        })
-      ]);
-      const sessionPayload = await readJson(sessionResponse);
-      const statusPayload = await readJson(statusResponse);
-      if (!sessionResponse.ok) {
-        throw new Error(
-          sanitizeMessage(
-            (sessionPayload as { message?: unknown } | null)?.message,
-            "Studio session is unavailable."
-          )
+  const refreshAccounts = useCallback(
+    async (targetOverride?: { deviceId: string; deploymentId: string }) => {
+      if (mode === "demo") return;
+      setAccountLoading(true);
+      try {
+        const operation = await pullRequestsClient.runOperation(
+          { kind: "accounts" },
+          { target: targetOverride ?? targetOption }
         );
-      }
-      if (!statusResponse.ok || !isStatus(statusPayload)) {
-        throw new Error(
-          sanitizeMessage(
-            (statusPayload as { message?: unknown } | null)?.message,
-            "GitHub connection status is unavailable."
-          )
+        const data = pullRequestOperationData(operation);
+        const values = Array.isArray(data.accounts)
+          ? data.accounts
+          : Array.isArray(data)
+            ? data
+            : [];
+        setAccounts(
+          values.flatMap((value) => {
+            if (!value || typeof value !== "object") return [];
+            const account = value as Record<string, unknown>;
+            return typeof account.login === "string"
+              ? [
+                  {
+                    login: account.login,
+                    active: account.active === true,
+                    ...(typeof account.state === "string"
+                      ? { state: account.state }
+                      : {})
+                  }
+                ]
+              : [];
+          })
         );
+      } catch {
+        setAccounts([]);
+      } finally {
+        setAccountLoading(false);
       }
-      if (sequence !== requestSequenceRef.current) return;
-      setCsrfToken(parseSession(sessionPayload).csrfToken);
-      setStatus(statusPayload);
-      if (statusPayload.state === "error") {
-        setError(
-          sanitizeMessage(
-            statusPayload.message,
+    },
+    [mode, targetOption]
+  );
+
+  const loadStatus = useCallback(
+    async (targetOverride?: { deviceId: string; deploymentId: string }) => {
+      if (mode === "demo") return;
+      const sequence = ++requestSequenceRef.current;
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      setLoading(true);
+      setError(null);
+      try {
+        const statusOperation = await pullRequestsClient.runOperation(
+          { kind: "connection_status" },
+          { signal: controller.signal, target: targetOverride ?? targetOption }
+        );
+        const statusPayload = statusFromOperation(
+          pullRequestOperationData(statusOperation)
+        );
+        if (!statusPayload)
+          throw new Error("GitHub connection status is unavailable.");
+        if (sequence !== requestSequenceRef.current) return;
+        setStatus(statusPayload);
+        if (statusPayload.state === "error") {
+          setError(
+            sanitizeMessage(
+              statusPayload.message,
+              "GitHub status could not be loaded."
+            )
+          );
+        }
+      } catch (reason) {
+        if (
+          sequence !== requestSequenceRef.current ||
+          (reason as { name?: string })?.name === "AbortError"
+        )
+          return;
+        setStatus({
+          ...DISCONNECTED_STATUS,
+          state: "error",
+          message: sanitizeMessage(
+            reason instanceof Error ? reason.message : null,
             "GitHub status could not be loaded."
           )
-        );
+        });
+        setError("GitHub status could not be loaded.");
+      } finally {
+        if (sequence === requestSequenceRef.current) {
+          setLoading(false);
+          controllerRef.current = null;
+        }
       }
-    } catch (reason) {
-      if (
-        sequence !== requestSequenceRef.current ||
-        (reason as { name?: string })?.name === "AbortError"
-      )
-        return;
-      setStatus({
-        ...DISCONNECTED_STATUS,
-        state: "error",
-        message: sanitizeMessage(
-          reason instanceof Error ? reason.message : null,
-          "GitHub status could not be loaded."
-        )
-      });
-      setError("GitHub status could not be loaded.");
-    } finally {
-      if (sequence === requestSequenceRef.current) {
-        setLoading(false);
-        controllerRef.current = null;
-      }
-    }
-  }, [controllerRef, mode, requestSequenceRef]);
+    },
+    [controllerRef, mode, requestSequenceRef, targetOption]
+  );
+  const loadStatusRef = useRef(loadStatus);
+  const refreshAccountsRef = useRef(refreshAccounts);
+  useEffect(() => {
+    loadStatusRef.current = loadStatus;
+    refreshAccountsRef.current = refreshAccounts;
+  }, [loadStatus, refreshAccounts]);
 
   useEffect(() => {
     // The request synchronizes the page with the local Studio gateway.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (mode === "live") void loadStatus();
+    if (mode === "live") {
+      void pullRequestsClient
+        .listRunners()
+        .then((available) => {
+          setRunners(available);
+          setRunnerId((current) =>
+            available.some((runner) => runner.deviceId === current)
+              ? current
+              : (available[0]?.deviceId ?? "")
+          );
+          const first = available[0];
+          const firstTarget = first
+            ? { deviceId: first.deviceId, deploymentId: first.deploymentId }
+            : undefined;
+          void loadStatusRef.current(firstTarget);
+          void refreshAccountsRef.current(firstTarget);
+        })
+        .finally(() => {
+          // Runner lookup failure is surfaced by the following status refresh.
+        });
+    }
     return () => {
       requestSequenceRef.current += 1;
       controllerRef.current?.abort();
     };
-  }, [loadStatus, mode]);
+  }, [mode]);
 
   const connect = useCallback(async () => {
     if (mode === "demo") {
@@ -300,41 +366,15 @@ export function PluginsView({
       setError(null);
       return;
     }
-    if (!csrfToken) {
-      setError("Studio session is not ready. Refresh and try again.");
-      return;
-    }
     setMutating(true);
     setError(null);
     try {
-      const sessionResponse = await fetch("/studio-api/github/session", {
-        cache: "no-store"
-      });
-      const freshToken = parseSession(
-        await readJson(sessionResponse)
-      ).csrfToken;
-      if (!sessionResponse.ok || !freshToken)
-        throw new Error("Studio session is unavailable. Please refresh.");
-      setCsrfToken(freshToken);
-      const response = await fetch("/studio-api/github/connect", {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          "x-studio-csrf": freshToken
-        },
-        body: "{}"
-      });
-      const payload = await readJson(response);
-      if (!response.ok || !isStatus(payload)) {
-        throw new Error(
-          sanitizeMessage(
-            (payload as { message?: unknown } | null)?.message,
-            "GitHub could not be connected."
-          )
-        );
-      }
-      setStatus(payload);
+      await pullRequestsClient.runOperation(
+        { kind: "browser_sign_in" },
+        { target: targetOption }
+      );
+      await refreshAccounts();
+      await loadStatus();
     } catch (reason) {
       const message = sanitizeMessage(
         reason instanceof Error ? reason.message : null,
@@ -345,7 +385,7 @@ export function PluginsView({
     } finally {
       setMutating(false);
     }
-  }, [csrfToken, mode]);
+  }, [loadStatus, mode, refreshAccounts, targetOption]);
 
   const disconnect = useCallback(async () => {
     if (mode === "demo") {
@@ -353,41 +393,25 @@ export function PluginsView({
       setError(null);
       return;
     }
-    if (!csrfToken) {
-      setError("Studio session is not ready. Refresh and try again.");
+    if (!status.accountId || !status.login || !status.connectionGeneration) {
+      setError(
+        "GitHub account status is unavailable. Refresh before disconnecting."
+      );
       return;
     }
     setMutating(true);
     setError(null);
     try {
-      const sessionResponse = await fetch("/studio-api/github/session", {
-        cache: "no-store"
-      });
-      const freshToken = parseSession(
-        await readJson(sessionResponse)
-      ).csrfToken;
-      if (!sessionResponse.ok || !freshToken)
-        throw new Error("Studio session is unavailable. Please refresh.");
-      setCsrfToken(freshToken);
-      const response = await fetch("/studio-api/github/disconnect", {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          "x-studio-csrf": freshToken
+      await pullRequestsClient.runOperation(
+        {
+          kind: "disconnect",
+          account: { id: status.accountId, login: status.login },
+          connectionGeneration: status.connectionGeneration
         },
-        body: "{}"
-      });
-      const payload = await readJson(response);
-      if (!response.ok || !isStatus(payload)) {
-        throw new Error(
-          sanitizeMessage(
-            (payload as { message?: unknown } | null)?.message,
-            "GitHub could not be disconnected."
-          )
-        );
-      }
-      setStatus(payload);
+        { target: targetOption }
+      );
+      await refreshAccounts();
+      await loadStatus();
     } catch (reason) {
       const message = sanitizeMessage(
         reason instanceof Error ? reason.message : null,
@@ -397,7 +421,33 @@ export function PluginsView({
     } finally {
       setMutating(false);
     }
-  }, [csrfToken, mode]);
+  }, [loadStatus, mode, refreshAccounts, status, targetOption]);
+
+  const selectAccount = useCallback(
+    async (login: string) => {
+      if (!login || mode === "demo") return;
+      setMutating(true);
+      setError(null);
+      try {
+        await pullRequestsClient.runOperation(
+          { kind: "connect", login },
+          { target: targetOption }
+        );
+        await refreshAccounts();
+        await loadStatus();
+      } catch (reason) {
+        setError(
+          sanitizeMessage(
+            reason instanceof Error ? reason.message : null,
+            "GitHub account could not be selected."
+          )
+        );
+      } finally {
+        setMutating(false);
+      }
+    },
+    [loadStatus, mode, refreshAccounts, targetOption]
+  );
 
   const connected = status.state === "connected";
   const normalizedQuery = query.trim().toLowerCase();
@@ -613,11 +663,7 @@ export function PluginsView({
                         <button
                           type="button"
                           onClick={() => void connect()}
-                          disabled={
-                            loading ||
-                            mutating ||
-                            (mode === "live" && !csrfToken)
-                          }
+                          disabled={loading || mutating}
                           className="inline-flex items-center gap-1.5 rounded-md bg-chip px-3 py-1.5 text-sm font-medium text-chip-foreground disabled:opacity-50"
                         >
                           {mutating && (
@@ -642,11 +688,8 @@ export function PluginsView({
                       !connected &&
                       status.state !== "error" && (
                         <p className="mt-5 border-t border-border pt-4 text-xs text-subtle">
-                          Connect uses the existing local{" "}
-                          <code className="text-foreground-secondary">gh</code>{" "}
-                          sign-in only after you choose Connect. Koed uses that
-                          credential for transient authenticated reads; it is
-                          never exposed to Studio or stored in the browser.
+                          GitHub sign-in runs on the selected authorized runner.
+                          Choose an existing account or start browser sign-in.
                         </p>
                       )}
                     {visibleError && (
@@ -657,6 +700,70 @@ export function PluginsView({
                         <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         {visibleError}
                       </p>
+                    )}
+
+                    {mode === "live" && (
+                      <div className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                        <label className="text-xs text-muted">
+                          Authorized runner
+                          <select
+                            value={runnerId}
+                            onChange={(event) =>
+                              setRunnerId(event.currentTarget.value)
+                            }
+                            disabled={mutating || runners.length === 0}
+                            className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground disabled:opacity-60"
+                          >
+                            <option value="">Select a runner…</option>
+                            {runners.map((runner) => (
+                              <option
+                                key={runner.deviceId}
+                                value={runner.deviceId}
+                              >
+                                {runner.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="text-xs text-muted">
+                          GitHub account{" "}
+                          {accountLoading && (
+                            <span className="text-subtle">· loading…</span>
+                          )}
+                          <select
+                            value={status.login ?? ""}
+                            onChange={(event) =>
+                              void selectAccount(event.currentTarget.value)
+                            }
+                            disabled={
+                              mutating ||
+                              accountLoading ||
+                              accounts.length === 0
+                            }
+                            className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground disabled:opacity-60"
+                          >
+                            <option value="">
+                              Select an authorized account…
+                            </option>
+                            {accounts.map((account) => (
+                              <option key={account.login} value={account.login}>
+                                {account.login}
+                                {account.active ? " · active" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void connect()}
+                          disabled={mutating || loading}
+                          className="rounded-md border border-border px-3 py-2 text-sm text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+                        >
+                          {mutating
+                            ? "Opening sign-in…"
+                            : "Sign in with GitHub"}
+                        </button>
+                      </div>
                     )}
 
                     {connected && (
@@ -686,11 +793,7 @@ export function PluginsView({
                           <button
                             type="button"
                             onClick={() => void connect()}
-                            disabled={
-                              loading ||
-                              mutating ||
-                              (mode === "live" && !csrfToken)
-                            }
+                            disabled={loading || mutating}
                             className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted disabled:opacity-50"
                             title="Revalidate the active GitHub CLI account"
                           >
@@ -735,8 +838,8 @@ export function PluginsView({
           {activeTab === "plugins" && (
             <p className="mt-10 flex items-center gap-2 text-xs text-subtle">
               <ShieldCheck className="h-3.5 w-3.5" />
-              Pull request browsing is read-only. Automated review runs and GitHub
-              publication are unavailable.
+              Pull request browsing is read-only. Automated review runs and
+              GitHub publication are unavailable.
             </p>
           )}
         </div>

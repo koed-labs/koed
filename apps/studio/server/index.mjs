@@ -18,9 +18,7 @@ import {
   collaborationRendererEventSchema,
   collaborationSnapshotSchema
 } from "@koed/shared/collaboration";
-import { createGithubConnector } from "./github.mjs";
-import { createPrChatRuntime } from "./pr-chat.mjs";
-import { handlePrChat } from "./pr-chat-http.mjs";
+import { handlePullRequests } from "./pull-requests-http.mjs";
 import {
   handlePersonalAgents,
   handleManagedConversations,
@@ -709,55 +707,6 @@ const githubPaths = new Set([
   "/studio-api/github/pull"
 ]);
 
-const githubQuery = (url, required, optional = []) => {
-  const allowed = new Set([...required, ...optional]);
-  const values = {};
-  for (const [key, value] of url.searchParams) {
-    if (!allowed.has(key) || Object.hasOwn(values, key) || !value)
-      throw Object.assign(new Error("invalid_query"), { statusCode: 400 });
-    values[key] = value;
-  }
-  for (const key of required) {
-    if (!Object.hasOwn(values, key))
-      throw Object.assign(new Error("invalid_query"), { statusCode: 400 });
-  }
-  return values;
-};
-
-const githubReadFailure = (error) => {
-  switch (error?.message) {
-    case "github_invalid_page":
-    case "github_invalid_repository":
-    case "github_invalid_pull_request":
-      return { status: 400, error: "invalid_request" };
-    case "github_not_connected":
-      return { status: 401, error: "github_disconnected" };
-    case "github_read_rejected":
-    case "github_identity_rejected":
-    case "github_cli_missing":
-    case "github_cli_auth_failed":
-      return { status: 401, error: "github_authentication_rejected" };
-    case "github_rate_limited":
-      return { status: 429, error: "github_rate_limited" };
-    case "github_account_changed":
-      return { status: 409, error: "github_account_changed" };
-    case "github_read_forbidden":
-      return { status: 403, error: "github_access_denied" };
-    case "github_read_timeout":
-    case "github_identity_timeout":
-      return { status: 504, error: "github_timeout" };
-    case "github_response_too_large":
-      return { status: 502, error: "github_response_too_large" };
-    case "github_read_invalid":
-      return { status: 502, error: "github_invalid_response" };
-    case "github_read_unavailable":
-    case "github_read_failed":
-      return { status: 502, error: "github_unavailable" };
-    default:
-      return { status: 502, error: "github_read_failed" };
-  }
-};
-
 const exactRequestOrigin = (request) => {
   const origin = String(request.headers.origin ?? "");
   const host = String(request.headers.host ?? "");
@@ -1302,8 +1251,6 @@ export const createStudioServer = ({
   fetchImpl = globalThis.fetch,
   readFile = fs.readFile,
   now = () => new Date(),
-  githubConnector = createGithubConnector({ fetchImpl }),
-  prChatRuntime,
   listLocalSources = (options = {}) =>
     listLocalConversationSources({ ...options, env: environment }),
   listProjects = () => listProjectMetadata(resolveKoedServerPaths(environment)),
@@ -1330,7 +1277,6 @@ export const createStudioServer = ({
     throw new Error("Studio server must bind to loopback.");
   let activePort = Number.isFinite(port) ? port : DEFAULT_PORT;
   let rootPromise;
-  let chatRuntime = prChatRuntime;
   let retainedCatalog = retainedWorkspaceCatalog;
   let retainedCheckoutDriver;
   const githubSessions = new Map();
@@ -1410,118 +1356,6 @@ export const createStudioServer = ({
         : Promise.resolve(token);
   const resolveAccess = async () => {
     return validatePairedLocalApiAccess(await providedResolveAccess());
-  };
-  const resolvePrAgentContext = async ({
-    agentId,
-    expectedAgentVersion,
-    prompt,
-    scope,
-    pullRequest,
-    files
-  }) => {
-    let access;
-    try {
-      if (providedResolveAccess) {
-        access = await resolveAccess();
-      } else {
-        if (!localApiBase(apiBase)) throw new Error("invalid_local_api_base");
-        const apiToken = await resolveToken();
-        if (!apiToken) throw new Error("missing_local_api_token");
-        access = { apiOrigin: apiBase, apiToken };
-      }
-    } catch {
-      throw new Error("agent_context_unavailable");
-    }
-    const headers = {
-      accept: "application/json",
-      authorization: `Bearer ${access.apiToken}`
-    };
-    const agentUrl = requestUrl(
-      access.apiOrigin,
-      `/v1/personal-agents/${encodeURIComponent(agentId)}`
-    );
-    const agentResponse = await fetchImpl(agentUrl, {
-      headers,
-      redirect: "error",
-      signal: AbortSignal.timeout(10_000)
-    });
-    if (!agentResponse.ok) {
-      await agentResponse.body?.cancel?.();
-      throw new Error("agent_context_unavailable");
-    }
-    const agentPayload = await parseJsonBody(agentResponse, 128 * 1024);
-    const agent = agentPayload?.agent;
-    if (
-      !agent ||
-      agent.id !== agentId ||
-      agent.lifecycle !== "active" ||
-      (expectedAgentVersion !== undefined &&
-        agent.currentVersion !== expectedAgentVersion)
-    )
-      throw new Error("agent_context_unavailable");
-
-    const memoryQuery = [
-      `GitHub pull request ${scope.repo}#${scope.number}: ${pullRequest.title}`,
-      `Branches: ${pullRequest.baseBranch} <- ${pullRequest.headBranch}`,
-      `User request: ${String(prompt).slice(0, 2_000)}`,
-      `Changed files: ${files
-        .map((file) => file.path)
-        .slice(0, 30)
-        .join(", ")}`
-    ].join("\n");
-    const memoryResponse = await fetchImpl(
-      requestUrl(access.apiOrigin, "/v1/memory/search"),
-      {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({
-          query: memoryQuery,
-          retrieval_scope: "personal",
-          search_domain: "global",
-          limit: 5,
-          strict_limit: true
-        }),
-        redirect: "error",
-        signal: AbortSignal.timeout(15_000)
-      }
-    );
-    if (!memoryResponse.ok) {
-      await memoryResponse.body?.cancel?.();
-      throw new Error("agent_context_unavailable");
-    }
-    const memoryPayload = await parseJsonBody(memoryResponse, 256 * 1024);
-    const memoryEvidence = (
-      Array.isArray(memoryPayload?.hits) ? memoryPayload.hits : []
-    )
-      .filter((hit) => hit?.visibility === "personal")
-      .slice(0, 5)
-      .map((hit) => ({
-        summaryText: String(hit.summaryText ?? "").slice(0, 3_500),
-        citation: hit.citation ?? null
-      }));
-    let avatar = null;
-    if (typeof agent.avatarReference === "string") {
-      try {
-        avatar = JSON.parse(agent.avatarReference);
-      } catch {
-        avatar = null;
-      }
-    }
-    return {
-      id: agent.id,
-      name: String(agent.name ?? "").slice(0, 100),
-      role: String(agent.role ?? "").slice(0, 200),
-      lifecycle: agent.lifecycle,
-      currentVersion: agent.currentVersion,
-      provider: String(agent.defaultProvider ?? ""),
-      model: String(agent.defaultModel ?? ""),
-      soulInstructions: String(agentPayload.soulInstructions ?? "").slice(
-        0,
-        24 * 1024
-      ),
-      avatar,
-      memoryEvidence
-    };
   };
   const server = createHttpServer(async (request, response) => {
     try {
@@ -2031,6 +1865,7 @@ export const createStudioServer = ({
       )
         return;
       if (
+        (await handlePullRequests({ ...localApiOptions, environment })) ||
         (await handlePersonalAgents(localApiOptions)) ||
         (await handleTeamAgentRequests(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||
@@ -2039,30 +1874,12 @@ export const createStudioServer = ({
       )
         return;
       if (requestUrlObject.pathname.startsWith("/studio-api/pr-chat/")) {
-        chatRuntime ??= createPrChatRuntime({
-          github: githubConnector,
-          resolveAgentContext: resolvePrAgentContext
+        sendJson(response, 410, {
+          error:
+            "This preview chat endpoint has been replaced by managed Pull Request review chats."
         });
-      }
-      if (
-        await handlePrChat({
-          request,
-          url: requestUrlObject,
-          runtime: chatRuntime,
-          validCsrf: (incoming) => {
-            const origin = exactRequestOrigin(incoming);
-            return Boolean(
-              origin &&
-              validGithubSession(
-                String(incoming.headers["x-studio-csrf"] ?? ""),
-                origin
-              )
-            );
-          },
-          send: (status, body) => sendJson(response, status, body)
-        })
-      )
         return;
+      }
       if (requestUrlObject.pathname.startsWith("/studio-api/projects")) {
         if (
           ![
@@ -2235,11 +2052,13 @@ export const createStudioServer = ({
         return;
       }
       if (githubPaths.has(requestUrlObject.pathname)) {
-        const isGithubRead =
-          requestUrlObject.pathname === "/studio-api/github/repositories" ||
-          requestUrlObject.pathname === "/studio-api/github/pulls" ||
-          requestUrlObject.pathname === "/studio-api/github/pull";
-        if (!isGithubRead && requestUrlObject.search) {
+        if (requestUrlObject.pathname !== "/studio-api/github/session") {
+          sendJson(response, 410, {
+            error: "Use the selected computer’s managed GitHub connection."
+          });
+          return;
+        }
+        if (requestUrlObject.search) {
           sendJson(response, 400, { error: "query_not_allowed" });
           return;
         }
@@ -2262,86 +2081,6 @@ export const createStudioServer = ({
           sendJson(response, 200, { csrfToken });
           return;
         }
-        if (
-          request.method === "GET" &&
-          requestUrlObject.pathname === "/studio-api/github/status"
-        ) {
-          sendJson(response, 200, githubConnector.getStatus());
-          return;
-        }
-        if (isGithubRead) {
-          if (request.method !== "GET") {
-            sendJson(response, 405, { error: "method_not_allowed" });
-            return;
-          }
-          let query;
-          try {
-            if (requestUrlObject.pathname === "/studio-api/github/repositories")
-              query = githubQuery(requestUrlObject, [], ["page"]);
-            else if (requestUrlObject.pathname === "/studio-api/github/pulls")
-              query = githubQuery(requestUrlObject, ["repo"], ["page"]);
-            else query = githubQuery(requestUrlObject, ["repo", "number"]);
-          } catch {
-            sendJson(response, 400, { error: "invalid_request" });
-            return;
-          }
-          try {
-            const result =
-              requestUrlObject.pathname === "/studio-api/github/repositories"
-                ? await githubConnector.readRepositories({
-                    page: query.page ?? "1"
-                  })
-                : requestUrlObject.pathname === "/studio-api/github/pulls"
-                  ? await githubConnector.readPullRequests({
-                      repo: query.repo,
-                      page: query.page ?? "1"
-                    })
-                  : await githubConnector.readPullRequest({
-                      repo: query.repo,
-                      number: query.number
-                    });
-            sendJson(response, 200, result);
-          } catch (error) {
-            const failure = githubReadFailure(error);
-            sendJson(response, failure.status, { error: failure.error });
-          }
-          return;
-        }
-        if (
-          request.method !== "POST" ||
-          (requestUrlObject.pathname !== "/studio-api/github/connect" &&
-            requestUrlObject.pathname !== "/studio-api/github/disconnect")
-        ) {
-          sendJson(response, 405, { error: "method_not_allowed" });
-          return;
-        }
-        const csrfToken = String(request.headers["x-studio-csrf"] ?? "");
-        if (!requestOrigin || !validGithubSession(csrfToken, requestOrigin)) {
-          sendJson(response, 403, { error: "forbidden" });
-          return;
-        }
-        if (
-          String(request.headers["content-type"] ?? "").toLowerCase() !==
-          "application/json"
-        ) {
-          sendJson(response, 415, { error: "unsupported_media_type" });
-          return;
-        }
-        try {
-          await readEmptyJsonObject(request);
-        } catch (error) {
-          sendJson(response, error?.statusCode === 413 ? 413 : 400, {
-            error:
-              error?.statusCode === 413 ? "body_too_large" : "invalid_payload"
-          });
-          return;
-        }
-        const body =
-          requestUrlObject.pathname === "/studio-api/github/connect"
-            ? await githubConnector.connect()
-            : githubConnector.disconnect();
-        sendJson(response, 200, body);
-        return;
       }
       if (
         request.method === "GET" &&
@@ -2512,7 +2251,6 @@ export const createStudioServer = ({
           close: () =>
             new Promise((resolveClose) =>
               server.close(() => {
-                chatRuntime?.close?.();
                 resolveClose();
               })
             )

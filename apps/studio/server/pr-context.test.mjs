@@ -16,25 +16,33 @@ const pr = {
   deletions: 0,
   changed_files: 31
 };
-const response = (value) => new Response(JSON.stringify(value));
+const accountStatus = {
+  hosts: { "github.com": [{ login: "alice", active: true, state: "success" }] }
+};
+const delegatedFixture = (api) =>
+  createGithubConnector({
+    execFile: async (_file, args) => {
+      if (args[0] === "auth" && args[1] === "status")
+        return { stdout: JSON.stringify(accountStatus) };
+      if (args[0] === "api" && args[3] === "user")
+        return { stdout: JSON.stringify({ id: 123, login: "alice" }) };
+      if (args[0] === "api")
+        return { stdout: JSON.stringify(await api(args[3])) };
+      throw new Error("unexpected gh command");
+    }
+  });
 
 test("PR context is bounded and flags omitted files and patches", async () => {
-  const connector = createGithubConnector({
-    execFile: async () => ({ stdout: "fixture" }),
-    fetchImpl: async (url) => {
-      if (url.endsWith("/user")) return response({ login: "alice" });
-      if (url.includes("/files?"))
-        return response(
-          Array.from({ length: 30 }, (_, i) => ({
-            filename: `file-${i}.ts`,
-            status: "modified",
-            patch: "x".repeat(20000),
-            additions: 1,
-            deletions: 0
-          }))
-        );
-      return response(pr);
-    }
+  const connector = delegatedFixture(async (url) => {
+    if (url.includes("/files?"))
+      return Array.from({ length: 30 }, (_, i) => ({
+        filename: `file-${i}.ts`,
+        status: "modified",
+        patch: "x".repeat(20000),
+        additions: 1,
+        deletions: 0
+      }));
+    return pr;
   });
   await connector.connect();
   const result = await connector.readPullRequestContext({
@@ -49,17 +57,13 @@ test("PR context is bounded and flags omitted files and patches", async () => {
 
 test("PR context refuses a changed head during patch retrieval", async () => {
   let reads = 0;
-  const connector = createGithubConnector({
-    execFile: async () => ({ stdout: "fixture" }),
-    fetchImpl: async (url) => {
-      if (url.endsWith("/user")) return response({ login: "alice" });
-      if (url.includes("/files?")) return response([]);
-      reads++;
-      return response({
-        ...pr,
-        head: { ...pr.head, sha: (reads > 1 ? "c" : "a").repeat(40) }
-      });
-    }
+  const connector = delegatedFixture(async (url) => {
+    if (url.includes("/files?")) return [];
+    reads++;
+    return {
+      ...pr,
+      head: { ...pr.head, sha: (reads > 1 ? "c" : "a").repeat(40) }
+    };
   });
   await connector.connect();
   await assert.rejects(

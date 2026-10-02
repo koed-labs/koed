@@ -1,3 +1,4 @@
+import { registerPullRequestRoutes } from "../pull-requests/index.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -1902,6 +1903,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerConversationSourceRestoreRoutes(app, routeContext);
   registerManagedConversationRoutes(app, routeContext);
   registerSourceControlRoutes(app, routeContext);
+  registerPullRequestRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);

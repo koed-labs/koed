@@ -6,7 +6,8 @@ const reads = new Set(["read", "grep", "find", "ls"]);
 const edits = new Set(["write", "edit"]);
 const managedAgentSignals = new Set([
   "koed_agent_intent",
-  "koed_agent_turn_status"
+  "koed_agent_turn_status",
+  "koed_job_phase"
 ]);
 
 // Loaded explicitly by the managed runner, not by normal Pi discovery.

@@ -1863,3 +1863,61 @@ test("blocks unresolved prompts even when a later control command masks them or 
     false
   );
 });
+
+test("shared managed chat uses native proxy and CSRF on Desktop, hosted authority on web", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    calls.push({ path: String(input), init });
+    return String(input).endsWith("/session")
+      ? json({ csrfToken: "native-fixture-csrf" })
+      : json({ command: { id: commandId, state: "queued" } }, 202);
+  };
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { pathname: "/pull-requests" } }
+    });
+    await queueHostedConversationPrompt(
+      execution,
+      "Continue",
+      { idempotencyKey: "native-send", clientUserMessageId: "native-message" },
+      undefined,
+      fetcher
+    );
+    assert.deepEqual(
+      calls.map((call) => call.path),
+      [
+        "/studio-api/github/session",
+        `/studio-api/managed-conversations/${id}/prompts`
+      ]
+    );
+    assert.equal(
+      new Headers(calls[1].init?.headers).get("x-studio-csrf"),
+      "native-fixture-csrf"
+    );
+    calls.length = 0;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { pathname: "/studio/pull-requests" } }
+    });
+    await queueHostedConversationPrompt(
+      execution,
+      "Continue",
+      { idempotencyKey: "web-send", clientUserMessageId: "web-message" },
+      undefined,
+      fetcher
+    );
+    assert.deepEqual(
+      calls.map((call) => call.path),
+      [`/v1/managed-conversations/${id}/prompts`]
+    );
+    assert.equal(
+      new Headers(calls[0].init?.headers).get("x-studio-csrf"),
+      null
+    );
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "window", descriptor);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});

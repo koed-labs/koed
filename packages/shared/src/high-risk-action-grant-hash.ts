@@ -12,7 +12,11 @@ export const HIGH_RISK_ACTION_GRANT_HASH_DOMAINS = {
   managedConversationTransferScope:
     "koed:high-risk:managed-conversation-transfer-scope:v1",
   managedConversationTransferRequest:
-    "koed:high-risk:managed-conversation-transfer-request:v1"
+    "koed:high-risk:managed-conversation-transfer-request:v1",
+  pullRequestSourceControlScope:
+    "koed:high-risk:pull-request-source-control-scope:v1",
+  pullRequestSourceControlRequest:
+    "koed:high-risk:pull-request-source-control-request:v1"
 } as const;
 
 export type HighRiskActionGrantHashDomain =

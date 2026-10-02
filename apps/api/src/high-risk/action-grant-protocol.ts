@@ -291,7 +291,8 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       maximumFidelity: createPendingShareSchema.shape.maximumFidelity,
       includeCuratedMemory: createPendingShareSchema.shape.includeCuratedMemory,
       retentionEnabled: createPendingShareSchema.shape.retentionEnabled,
-      memberRetentionVersion: createPendingShareSchema.shape.memberRetentionVersion,
+      memberRetentionVersion:
+        createPendingShareSchema.shape.memberRetentionVersion,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
@@ -425,6 +426,30 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
           ])
         })
         .strict()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("source_control.pull_request_publish"),
+      requestId: uuidSchema,
+      reviewId: uuidSchema,
+      frozenReviewId: uuidSchema,
+      confirmationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+      expectedReviewRevision: z.number().int().positive(),
+      targetDeviceId: uuidSchema,
+      targetDeploymentId: uuidSchema
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("source_control.pull_request_push"),
+      requestId: uuidSchema,
+      reviewId: uuidSchema,
+      proposalId: uuidSchema,
+      confirmationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+      expectedReviewRevision: z.number().int().positive(),
+      targetDeviceId: uuidSchema,
+      targetDeploymentId: uuidSchema
     })
     .strict()
 ]);
@@ -864,6 +889,28 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
           reason: intent.reason
         }
       };
+    case "collaboration.publish_pull_request_review":
+      return {
+        action: "source_control.pull_request_publish",
+        requestId: intent.requestId,
+        reviewId: intent.reviewId,
+        frozenReviewId: intent.frozenReviewId,
+        confirmationDigest: intent.confirmationDigest,
+        expectedReviewRevision: intent.expectedReviewRevision,
+        targetDeviceId: intent.targetDeviceId,
+        targetDeploymentId: intent.targetDeploymentId
+      };
+    case "collaboration.push_pull_request":
+      return {
+        action: "source_control.pull_request_push",
+        requestId: intent.requestId,
+        reviewId: intent.reviewId,
+        proposalId: intent.proposalId,
+        confirmationDigest: intent.confirmationDigest,
+        expectedReviewRevision: intent.expectedReviewRevision,
+        targetDeviceId: intent.targetDeviceId,
+        targetDeploymentId: intent.targetDeploymentId
+      };
     default:
       return null;
   }
@@ -987,5 +1034,69 @@ export const resolveHighRiskActionGrantOperation = (input: {
     case "managed_conversation.handoff":
     case "managed_conversation.fork":
       return bindManagedConversationTransferOperation(intent);
+    case "source_control.pull_request_publish":
+    case "source_control.pull_request_push":
+      return bindPullRequestSourceControlOperation(intent);
   }
+};
+
+export const bindPullRequestSourceControlOperation = (
+  intent: Extract<
+    HighRiskActionGrantIntent,
+    { action: `source_control.${string}` }
+  >
+): HighRiskResolvedActionGrantOperation => {
+  const payload =
+    intent.action === "source_control.pull_request_publish"
+      ? {
+          kind: "publish_review",
+          reviewId: intent.reviewId,
+          frozenReviewId: intent.frozenReviewId,
+          confirmationDigest: intent.confirmationDigest,
+          expectedReviewRevision: intent.expectedReviewRevision
+        }
+      : {
+          kind: "push",
+          reviewId: intent.reviewId,
+          pushProposalId: intent.proposalId,
+          confirmationDigest: intent.confirmationDigest,
+          expectedReviewRevision: intent.expectedReviewRevision
+        };
+  const body = {
+    requestId: intent.requestId,
+    payload,
+    target: {
+      deviceId: intent.targetDeviceId,
+      deploymentId: intent.targetDeploymentId
+    }
+  };
+  const path = "/v1/pull-requests/operations";
+  return {
+    operationFamily: "managed_execution",
+    action: intent.action,
+    teamId: null,
+    targetId: intent.reviewId,
+    method: "POST",
+    path,
+    body,
+    scopeHash: highRiskActionGrantCanonicalHash(
+      HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.pullRequestSourceControlScope,
+      {
+        action: intent.action,
+        reviewId: intent.reviewId,
+        referenceId:
+          intent.action === "source_control.pull_request_publish"
+            ? intent.frozenReviewId
+            : intent.proposalId,
+        confirmationDigest: intent.confirmationDigest,
+        expectedReviewRevision: intent.expectedReviewRevision,
+        targetDeviceId: intent.targetDeviceId,
+        targetDeploymentId: intent.targetDeploymentId
+      }
+    ),
+    requestHash: highRiskActionGrantCanonicalHash(
+      HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.pullRequestSourceControlRequest,
+      { method: "POST", path, body }
+    )
+  };
 };

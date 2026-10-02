@@ -95,3 +95,9 @@ describe("managed Pi tool permissions", () => {
     );
   });
 });
+
+it("permits authenticated Agent phase signals without asking for filesystem permission", async () => {
+  const f = fixture("supervised", true);
+  expect(await f.call("koed_job_phase")).toBeUndefined();
+  expect(f.select).not.toHaveBeenCalled();
+});

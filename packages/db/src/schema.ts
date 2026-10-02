@@ -9447,6 +9447,266 @@ export const personalAgentTeamJobPublications = pgTable(
   ]
 );
 
+export const pullRequestReviews = pgTable(
+  "pull_request_reviews",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => personalAgentIdentities.id, { onDelete: "restrict" }),
+    agentVersion: integer("agent_version").notNull(),
+    executionId: uuid("execution_id").references(
+      () => managedConversationExecutions.id,
+      { onDelete: "set null" }
+    ),
+    projectId: text("project_id"),
+    targetDeviceId: uuid("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    accountId: text("account_id").notNull(),
+    repositoryId: text("repository_id").notNull(),
+    pullRequestNumber: integer("pull_request_number").notNull(),
+    expectedBaseSha: text("expected_base_sha").notNull(),
+    expectedHeadSha: text("expected_head_sha").notNull(),
+    connectionGeneration: integer("connection_generation").notNull(),
+    workMode: text("work_mode").notNull().default("review"),
+    reviewedBaseSha: text("reviewed_base_sha"),
+    reviewedHeadSha: text("reviewed_head_sha"),
+    reviewedExecutionGeneration: integer("reviewed_execution_generation"),
+    status: text("status").notNull().default("starting"),
+    revision: integer("revision").notNull().default(1),
+    draftRevision: integer("draft_revision").notNull().default(0),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    encryptedSelection: jsonb("encrypted_selection")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pull_request_reviews_owner_id_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("pull_request_reviews_owner_idempotency_unique").on(
+      table.ownerUserId,
+      table.idempotencyKey
+    ),
+    unique("pull_request_reviews_agent_pr_unique").on(
+      table.ownerUserId,
+      table.agentId,
+      table.accountId,
+      table.repositoryId,
+      table.pullRequestNumber
+    ),
+    index("pull_request_reviews_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc(),
+      table.id.desc()
+    ),
+    index("pull_request_reviews_execution_idx").on(
+      table.ownerUserId,
+      table.executionId
+    ),
+    check(
+      "pull_request_reviews_agent_version_check",
+      sql`${table.agentVersion} > 0`
+    ),
+    check(
+      "pull_request_reviews_sha_check",
+      sql`${table.expectedBaseSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.expectedHeadSha} ~ '^[0-9a-fA-F]{40,64}$'`
+    ),
+    check(
+      "pull_request_reviews_generation_check",
+      sql`${table.connectionGeneration} > 0`
+    ),
+    check(
+      "pull_request_reviews_number_check",
+      sql`${table.pullRequestNumber} > 0`
+    ),
+    check(
+      "pull_request_reviews_status_check",
+      sql`${table.status} in ('starting','active','stale','draft','frozen','published','uncertain','failed','cancelled')`
+    ),
+    check(
+      "pull_request_reviews_work_mode_check",
+      sql`${table.workMode} in ('review','fix')`
+    ),
+    check(
+      "pull_request_reviews_revision_check",
+      sql`${table.revision} > 0 and ${table.draftRevision} >= 0`
+    ),
+    check(
+      "pull_request_reviews_reviewed_proof_check",
+      sql`(${table.reviewedBaseSha} is null and ${table.reviewedHeadSha} is null and ${table.reviewedExecutionGeneration} is null) or (${table.reviewedBaseSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.reviewedHeadSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.reviewedExecutionGeneration} > 0)`
+    )
+  ]
+);
+
+export const pullRequestReviewDrafts = pgTable(
+  "pull_request_review_drafts",
+  {
+    id: id(),
+    reviewId: uuid("review_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    revision: integer("revision").notNull(),
+    origin: text("origin").notNull().default("owner"),
+    agentJobId: uuid("agent_job_id").references(
+      () => personalAgentExecutionJobs.id,
+      { onDelete: "set null" }
+    ),
+    executionGeneration: integer("execution_generation"),
+    accountId: text("account_id").notNull(),
+    baseSha: text("base_sha").notNull(),
+    headSha: text("head_sha").notNull(),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.reviewId, table.ownerUserId],
+      foreignColumns: [pullRequestReviews.id, pullRequestReviews.ownerUserId],
+      name: "pull_request_review_drafts_review_fk"
+    }).onDelete("cascade"),
+    unique("pull_request_review_drafts_revision_unique").on(
+      table.reviewId,
+      table.revision
+    ),
+    unique("pull_request_review_drafts_job_unique").on(
+      table.reviewId,
+      table.agentJobId
+    ),
+    check(
+      "pull_request_review_drafts_revision_check",
+      sql`${table.revision} > 0`
+    ),
+    check(
+      "pull_request_review_drafts_origin_check",
+      sql`${table.origin} in ('agent','owner')`
+    ),
+    check(
+      "pull_request_review_drafts_sha_check",
+      sql`${table.baseSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.headSha} ~ '^[0-9a-fA-F]{40,64}$'`
+    )
+  ]
+);
+
+export const pullRequestReviewFreezes = pgTable(
+  "pull_request_review_freezes",
+  {
+    id: id(),
+    reviewId: uuid("review_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    draftRevision: integer("draft_revision").notNull(),
+    accountId: text("account_id").notNull(),
+    connectionGeneration: integer("connection_generation").notNull(),
+    state: text("state").notNull().default("frozen"),
+    baseSha: text("base_sha").notNull(),
+    headSha: text("head_sha").notNull(),
+    digest: text("digest").notNull(),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.reviewId, table.ownerUserId],
+      foreignColumns: [pullRequestReviews.id, pullRequestReviews.ownerUserId],
+      name: "pull_request_review_freezes_review_fk"
+    }).onDelete("cascade"),
+    unique("pull_request_review_freezes_draft_unique").on(
+      table.reviewId,
+      table.draftRevision
+    ),
+    check(
+      "pull_request_review_freezes_digest_check",
+      sql`${table.digest} ~ '^[0-9a-f]{64}$' and ${table.draftRevision} > 0 and ${table.connectionGeneration} > 0`
+    ),
+    check(
+      "pull_request_review_freezes_state_check",
+      sql`${table.state} in ('frozen','dispatching','published','uncertain')`
+    ),
+    check(
+      "pull_request_review_freezes_sha_check",
+      sql`${table.baseSha} ~ '^[0-9a-fA-F]{40,64}$' and ${table.headSha} ~ '^[0-9a-fA-F]{40,64}$'`
+    )
+  ]
+);
+
+export const pullRequestOperations = pgTable(
+  "pull_request_operations",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    reviewId: uuid("review_id"),
+    targetDeviceId: uuid("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    requestId: text("request_id").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    kind: text("kind").notNull(),
+    state: text("state").notNull().default("pending"),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    encryptedResult:
+      jsonb("encrypted_result").$type<EncryptedPayloadEnvelope>(),
+    errorCode: text("error_code"),
+    revision: integer("revision").notNull().default(1),
+    attempt: integer("attempt").notNull().default(0),
+    writeDispatched: boolean("write_dispatched").notNull().default(false),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    claimedByRunnerId: text("claimed_by_runner_id"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.reviewId, table.ownerUserId],
+      foreignColumns: [pullRequestReviews.id, pullRequestReviews.ownerUserId],
+      name: "pull_request_operations_review_fk"
+    }).onDelete("cascade"),
+    unique("pull_request_operations_owner_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    index("pull_request_operations_claim_idx")
+      .on(table.targetDeploymentId, table.targetDeviceId, table.createdAt)
+      .where(sql`${table.state} = 'pending'`),
+    index("pull_request_operations_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc(),
+      table.id.desc()
+    ),
+    check(
+      "pull_request_operations_kind_check",
+      sql`${table.kind} in ('connection_status','accounts','connect','browser_sign_in','disconnect','repositories','inbox','pull_request_details','prepare_checkout','publish_review','reconcile_review','prepare_push','push','reconcile_push')`
+    ),
+    check(
+      "pull_request_operations_state_check",
+      sql`${table.state} in ('pending','claimed','completed','failed','uncertain','cancelled')`
+    ),
+    check(
+      "pull_request_operations_revision_check",
+      sql`${table.revision} > 0 and ${table.attempt} >= 0`
+    ),
+    check(
+      "pull_request_operations_lease_check",
+      sql`(${table.state} = 'claimed' and ${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null and ${table.claimedByRunnerId} is not null) or (${table.state} <> 'claimed' and ${table.leaseToken} is null and ${table.leaseExpiresAt} is null and ${table.claimedByRunnerId} is null)`
+    )
+  ]
+);
+
 export const collaborationThreads = pgTable(
   "collaboration_threads",
   {

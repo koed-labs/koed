@@ -22,15 +22,40 @@ import {
   type PersonalAgent
 } from "@/lib/personal-agents-client";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
-import type { ChatMentionAgent } from "../ChatComposer";
+import type { ChatMentionAgent, ChatComposerSelection } from "../ChatComposer";
+import type {
+  PullRequestReviewRecord,
+  PullRequestReviewDraft,
+  PullRequestFrozenReview,
+  PullRequestOperationRecord
+} from "@koed/shared/pull-requests";
+import {
+  pullRequestOperationData,
+  pullRequestsClient,
+  type PullRequestActionGrantStatus,
+  type PullRequestRunner
+} from "@/lib/pull-requests-client";
+import {
+  hostedLaunchInstancesForDevice,
+  loadHostedManagedConversation,
+  loadHostedLaunchOptions,
+  queueHostedConversationPrompt,
+  startHostedManagedConversation,
+  type HostedLaunchOptions
+} from "@/lib/hosted-managed-chats";
 import {
   PRChatPanel,
-  type PRChatAdapter,
   type PRChatMessage,
   type PRChatScope
 } from "./PRChatPanel";
 import { PRMarkdown } from "./PRMarkdown";
+import { PullRequestReviewPanel } from "./PullRequestReviewPanel";
+import {
+  PullRequestPushPanel,
+  type PullRequestPushProposal
+} from "./PullRequestPushPanel";
 import { StudioSidebar } from "./StudioSidebar";
+import { HostedManagedChats } from "../hosted/HostedManagedChats";
 import { RepositoryPicker } from "./RepositoryPicker";
 import {
   boundPullRequestListWidth,
@@ -71,8 +96,10 @@ const PULL_REQUEST_FILTERS: Array<{ id: PullRequestFilter; label: string }> = [
 type GitHubStatus = {
   state: "disconnected" | "connected" | "error";
   login: string | null;
+  accountId?: string | null;
+  connectionGeneration?: number;
   message: string | null;
-  capabilities: { readPullRequests: boolean; publishReviews: false };
+  capabilities: { readPullRequests: boolean; publishReviews: boolean };
 };
 
 type Repository = { id: string; fullName: string; private: boolean };
@@ -96,6 +123,11 @@ type PullRequest = {
   additions?: number;
   deletions?: number;
   changedFiles?: number;
+  repositoryFullName?: string;
+  inboxOrigin?:
+    | "requested_review"
+    | "authored"
+    | "authored_and_requested_review";
 };
 
 const DEMO_REPOSITORIES: Repository[] = [
@@ -206,10 +238,14 @@ function parseStatus(value: unknown): GitHubStatus | null {
   return {
     state: value.state as GitHubStatus["state"],
     login: value.login as string | null,
+    accountId: typeof value.accountId === "string" ? value.accountId : null,
+    connectionGeneration: Number.isSafeInteger(value.connectionGeneration)
+      ? Number(value.connectionGeneration)
+      : undefined,
     message: typeof value.message === "string" ? value.message : null,
     capabilities: {
       readPullRequests: capabilities.readPullRequests,
-      publishReviews: false
+      publishReviews: capabilities.publishReviews === true
     }
   };
 }
@@ -256,6 +292,91 @@ function parsePullRequest(value: unknown): PullRequest | null {
   return request;
 }
 
+function parsePushProposal(
+  operation: PullRequestOperationRecord
+): PullRequestPushProposal | null {
+  if (operation.state !== "completed" || !operation.result) return null;
+  const value = isRecord(operation.result.proposal)
+    ? operation.result.proposal
+    : operation.result;
+  const headRepository = isRecord(value.headRepository)
+    ? value.headRepository
+    : null;
+  const fields = [
+    "headBranch",
+    "remoteSha",
+    "checkoutHead",
+    "treeSha",
+    "diff",
+    "diffDigest",
+    "commitSha"
+  ] as const;
+  if (
+    !headRepository ||
+    typeof headRepository.fullName !== "string" ||
+    fields.some((field) => typeof value[field] !== "string")
+  )
+    return null;
+  return {
+    id: operation.id,
+    headRepository: { fullName: headRepository.fullName },
+    headBranch: value.headBranch as string,
+    remoteSha: value.remoteSha as string,
+    checkoutHead: value.checkoutHead as string,
+    treeSha: value.treeSha as string,
+    diff: value.diff as string,
+    diffDigest: value.diffDigest as string,
+    commitSha: value.commitSha as string
+  };
+}
+
+function parseInboxItem(value: unknown): PullRequest | null {
+  if (!isRecord(value)) return null;
+  const pullRequestValue = isRecord(value.pullRequest)
+    ? value.pullRequest
+    : value;
+  const number =
+    typeof value.number === "number"
+      ? value.number
+      : isRecord(pullRequestValue) &&
+          typeof pullRequestValue.number === "number"
+        ? pullRequestValue.number
+        : null;
+  if (number === null) return null;
+  const repositoryFullName =
+    typeof value.repository === "string"
+      ? value.repository
+      : isRecord(value.repository)
+        ? asString(value.repository.fullName)
+        : "";
+  if (!repositoryFullName.includes("/")) return null;
+  const detail = parsePullRequest(pullRequestValue);
+  const url = asString(value.url, detail?.url ?? "");
+  const origin =
+    value.origin === "authored" ||
+    value.origin === "requested_review" ||
+    value.origin === "authored_and_requested_review"
+      ? value.origin
+      : undefined;
+  return {
+    number,
+    title: asString(value.title, detail?.title ?? "Untitled pull request"),
+    state: detail?.state ?? "open",
+    draft: detail?.draft ?? false,
+    author: asAuthor(value.author ?? detail?.author),
+    requestedReviewers: [],
+    headSha: detail?.headSha ?? "",
+    baseSha: detail?.baseSha ?? "",
+    headBranch: detail?.headBranch ?? "",
+    baseBranch: detail?.baseBranch ?? "",
+    updatedAt: asString(value.updatedAt, detail?.updatedAt ?? ""),
+    url,
+    ...(detail ?? {}),
+    repositoryFullName,
+    ...(origin ? { inboxOrigin: origin } : {})
+  };
+}
+
 function sanitizeMessage(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim()
     ? value.replace(/[\r\n]+/g, " ").slice(0, 240)
@@ -266,10 +387,6 @@ function mergePullRequests(current: PullRequest[], next: PullRequest[]) {
   const merged = new Map(current.map((item) => [item.number, item]));
   for (const item of next) merged.set(item.number, item);
   return [...merged.values()];
-}
-
-function isAccessInvalidation(status: number | undefined) {
-  return status === 401 || status === 403 || status === 409;
 }
 
 function formatUpdatedAt(value: string) {
@@ -298,8 +415,12 @@ function safeGitHubUrl(value: string) {
   }
 }
 
-async function readJson(response: Response) {
-  return response.json().catch(() => null) as Promise<unknown>;
+function chatPermissionForRuntime(
+  value: string
+): ChatComposerSelection["permissionMode"] {
+  if (value === "supervised" || value === "ask") return "ask";
+  if (value === "full_access" || value === "full") return "full";
+  return "read";
 }
 
 function PullRequestRow({
@@ -337,6 +458,12 @@ function PullRequestRow({
           </span>
         </span>
         <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-subtle">
+          {pullRequest.repositoryFullName && (
+            <span className="font-medium text-foreground-secondary">
+              {pullRequest.repositoryFullName}
+            </span>
+          )}
+          {pullRequest.repositoryFullName && <span>·</span>}
           <span>{pullRequest.author}</span>
           <span>·</span>
           <span>{formatUpdatedAt(pullRequest.updatedAt)}</span>
@@ -353,9 +480,12 @@ function PullRequestRow({
 
 function PullRequestDetail({
   pullRequest,
+  detailPayload,
   onClose,
   chatOpen,
+  codeOpen,
   onSummary,
+  onCode,
   onChat,
   chatAvailable,
   chatScope,
@@ -363,18 +493,75 @@ function PullRequestDetail({
   chatDraft,
   onChatDraftChange,
   onChatMessagesChange,
-  chatAdapter,
+  onChatAuthorizationLost,
   chatAgents,
   chatModelOptions,
   chatInitialModel,
   chatInitialEffort,
+  chatInitialPermissionMode,
   demo,
-  chatAvailabilityMessage
+  chatAvailabilityMessage,
+  reviewAgentId,
+  onReviewAgentChange,
+  reviewAgents,
+  reviewRunnerId,
+  onReviewRunnerChange,
+  reviewRunners,
+  reviewModelKey,
+  onReviewModelChange,
+  reviewModels,
+  reviewPermissionMode,
+  onReviewPermissionModeChange,
+  reviewPermissionModes,
+  reviewEffort,
+  onReviewEffortChange,
+  matchingProjects,
+  selectedProjectId,
+  onSelectedProjectChange,
+  onStartAgentReview,
+  reviewJobBusy,
+  reviewError,
+  reviewRecord,
+  reviewDraft,
+  frozenReview,
+  onSaveReviewDraft,
+  onFreezeReview,
+  onPublishReview,
+  publishGrant,
+  onApprovePublishGrant,
+  onCheckPublishGrant,
+  pendingPublishOperation,
+  onCheckPendingPublish,
+  onCancelPendingPublish,
+  onReviewLatest,
+  onEnableFixes,
+  enablingFixes,
+  publishedReviewUrl,
+  reconcilePublishedReview,
+  uncertainPublishOperationId,
+  canApprove,
+  canPublishReview,
+  pushProposal,
+  pendingPushOperationId,
+  onCheckPendingPush,
+  onCancelPendingPush,
+  uncertainPushOperationId,
+  pushBusy,
+  pushError,
+  onPreparePush,
+  onPushProposal,
+  onReconcilePush,
+  pushGrant,
+  onApprovePushGrant,
+  onCheckPushGrant
 }: {
   pullRequest: PullRequest;
+  detailPayload: Record<string, unknown> | null;
   onClose: () => void;
   chatOpen: boolean;
+  codeOpen: boolean;
   onSummary: () => void;
+  onCode: () => void;
   onChat: () => void;
   chatAvailable: boolean;
   chatScope: PRChatScope | null;
@@ -382,14 +569,83 @@ function PullRequestDetail({
   chatDraft: string;
   onChatDraftChange: (value: string) => void;
   onChatMessagesChange: React.Dispatch<React.SetStateAction<PRChatMessage[]>>;
-  chatAdapter?: PRChatAdapter | null;
+  onChatAuthorizationLost: () => void;
   chatAgents: readonly ChatMentionAgent[];
   chatModelOptions: readonly AgentModelCapability[];
   chatInitialModel: string;
   chatInitialEffort: string;
+  chatInitialPermissionMode: ChatComposerSelection["permissionMode"];
   demo: boolean;
   chatAvailabilityMessage: string | null;
+  reviewAgentId: string | null;
+  onReviewAgentChange: (id: string) => void;
+  reviewAgents: readonly ChatMentionAgent[];
+  reviewRunnerId: string;
+  onReviewRunnerChange: (id: string) => void;
+  reviewRunners: readonly { deviceId: string; displayName: string }[];
+  reviewModelKey: string;
+  onReviewModelChange: (key: string) => void;
+  reviewModels: readonly AgentModelCapability[];
+  reviewPermissionMode: string;
+  onReviewPermissionModeChange: (mode: string) => void;
+  reviewPermissionModes: readonly string[];
+  reviewEffort: string;
+  onReviewEffortChange: (value: string) => void;
+  matchingProjects: readonly { id: string; name: string }[];
+  selectedProjectId: string;
+  onSelectedProjectChange: (projectId: string) => void;
+  onStartAgentReview: () => void;
+  reviewJobBusy: boolean;
+  reviewError: string | null;
+  reviewRecord: PullRequestReviewRecord | null;
+  reviewDraft: PullRequestReviewDraft | null;
+  frozenReview: PullRequestFrozenReview | null;
+  onSaveReviewDraft: (value: {
+    event: NonNullable<PullRequestReviewDraft["event"]> | null;
+    body: string;
+    findings: PullRequestReviewDraft["findings"];
+  }) => Promise<void>;
+  onFreezeReview: () => Promise<void>;
+  onPublishReview: (id: string) => Promise<void>;
+  publishGrant: PullRequestActionGrantStatus | null;
+  onApprovePublishGrant: () => Promise<void>;
+  onCheckPublishGrant: () => Promise<void>;
+  pendingPublishOperation: PullRequestOperationRecord | null;
+  onCheckPendingPublish: () => Promise<void>;
+  onCancelPendingPublish: () => Promise<void>;
+  onReviewLatest: () => void;
+  onEnableFixes: (request: string) => Promise<void>;
+  enablingFixes: boolean;
+  publishedReviewUrl: string | null;
+  reconcilePublishedReview: () => Promise<void>;
+  uncertainPublishOperationId: string | null;
+  canApprove: boolean;
+  canPublishReview: boolean;
+  pushProposal: PullRequestPushProposal | null;
+  pendingPushOperationId: string | null;
+  onCheckPendingPush: () => Promise<void>;
+  onCancelPendingPush: () => Promise<void>;
+  uncertainPushOperationId: string | null;
+  pushBusy: boolean;
+  pushError: string | null;
+  onPreparePush: () => Promise<void>;
+  onPushProposal: (proposalId: string, diffDigest: string) => Promise<void>;
+  onReconcilePush: () => Promise<void>;
+  pushGrant: PullRequestActionGrantStatus | null;
+  onApprovePushGrant: () => Promise<void>;
+  onCheckPushGrant: () => Promise<void>;
 }) {
+  const embeddedReview = useMemo(
+    () =>
+      chatScope
+        ? {
+            reviewId: chatScope.reviewId,
+            executionId: chatScope.executionId,
+            agentId: chatScope.agentId
+          }
+        : undefined,
+    [chatScope]
+  );
   const link = safeGitHubUrl(pullRequest.url);
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -398,15 +654,14 @@ function PullRequestDetail({
           <button
             type="button"
             onClick={onSummary}
-            className={`rounded px-3 py-1 text-xs font-medium ${chatOpen ? "text-muted hover:bg-surface-hover hover:text-foreground-secondary" : "bg-surface-hover text-foreground-secondary"}`}
+            className={`rounded px-3 py-1 text-xs font-medium ${!chatOpen && !codeOpen ? "bg-surface-hover text-foreground-secondary" : "text-muted hover:bg-surface-hover hover:text-foreground-secondary"}`}
           >
             Summary
           </button>
           <button
             type="button"
-            disabled
-            title="Code view is unavailable in the read-only integration"
-            className="inline-flex items-center gap-1 rounded px-3 py-1 text-xs font-medium text-faint"
+            onClick={onCode}
+            className={`inline-flex items-center gap-1 rounded px-3 py-1 text-xs font-medium ${codeOpen ? "bg-surface-hover text-foreground-secondary" : "text-muted hover:bg-surface-hover hover:text-foreground-secondary"}`}
           >
             <Code className="h-3.5 w-3.5" /> Code
           </button>
@@ -437,11 +692,27 @@ function PullRequestDetail({
           </button>
           <button
             type="button"
-            disabled
-            title="Review submission is unavailable in the read-only integration"
-            className="inline-flex items-center gap-1.5 rounded-md bg-surface-hover px-3 py-1.5 text-xs font-medium text-faint"
+            disabled={
+              !reviewAgentId ||
+              !reviewRunnerId ||
+              !reviewModelKey ||
+              reviewJobBusy ||
+              demo
+            }
+            title={
+              demo
+                ? "Agent reviews are unavailable in demo mode"
+                : "Start a review Job with the selected Agent"
+            }
+            onClick={onStartAgentReview}
+            className="inline-flex items-center gap-1.5 rounded-md bg-chip px-3 py-1.5 text-xs font-medium text-chip-foreground disabled:opacity-50"
           >
-            <Send className="h-3.5 w-3.5" /> Submit review
+            {reviewJobBusy ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}{" "}
+            Review with Agent
           </button>
           <button
             type="button"
@@ -455,28 +726,176 @@ function PullRequestDetail({
         </div>
       </header>
       {chatOpen && chatScope ? (
-        <PRChatPanel
-          key={`${chatScope.repositoryId}:${chatScope.pullRequestNumber}:${chatScope.headSha}:${chatScope.accountId}`}
-          pullRequest={{
-            number: pullRequest.number,
-            title: pullRequest.title,
-            repositoryFullName: chatScope.repositoryFullName,
-            baseBranch: pullRequest.baseBranch,
-            headBranch: pullRequest.headBranch
-          }}
-          scope={chatScope}
-          messages={chatMessages}
-          draft={chatDraft}
-          onDraftChange={onChatDraftChange}
-          onMessagesChange={onChatMessagesChange}
-          adapter={chatAdapter}
-          agents={chatAgents}
-          modelOptions={chatModelOptions}
-          initialModel={chatInitialModel}
-          initialEffort={chatInitialEffort}
-          demo={demo}
-          availabilityMessage={chatAvailabilityMessage}
-        />
+        demo ? (
+          <PRChatPanel
+            key={`${chatScope.reviewId}:${chatScope.agentId}`}
+            pullRequest={{
+              number: pullRequest.number,
+              title: pullRequest.title,
+              repositoryFullName: chatScope.repositoryFullName,
+              baseBranch: pullRequest.baseBranch,
+              headBranch: pullRequest.headBranch
+            }}
+            scope={chatScope}
+            messages={chatMessages}
+            draft={chatDraft}
+            onDraftChange={onChatDraftChange}
+            onMessagesChange={onChatMessagesChange}
+            agents={chatAgents.filter(
+              (agent) => agent.id === chatScope.agentId
+            )}
+            activeAgentId={chatScope.agentId}
+            modelOptions={chatModelOptions}
+            initialModel={chatInitialModel}
+            initialEffort={chatInitialEffort}
+            initialPermissionMode={chatInitialPermissionMode}
+            demo
+            availabilityMessage={chatAvailabilityMessage}
+          />
+        ) : (
+          <HostedManagedChats
+            key={`${chatScope.reviewId}:${chatScope.executionId}`}
+            initialExecutionId={chatScope.executionId}
+            initialAgentId={chatScope.agentId}
+            initialDraft={chatDraft}
+            onDraftChange={onChatDraftChange}
+            embeddedReview={embeddedReview}
+            onAuthorizationLost={onChatAuthorizationLost}
+          />
+        )
+      ) : chatOpen ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
+          <div className="max-w-md">
+            <h1 className="text-lg font-semibold text-foreground">
+              Start an Agent review
+            </h1>
+            <p className="mt-2 text-sm text-muted">
+              Select an available Agent, runner, and model below. The Agent will
+              create a review Job and keep its chat history with that review.
+            </p>
+            <button
+              type="button"
+              onClick={onSummary}
+              className="mt-4 rounded-md border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface-hover"
+            >
+              Choose review settings
+            </button>
+          </div>
+        </div>
+      ) : codeOpen ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <h1 className="text-xl font-semibold text-foreground">
+            Code and activity
+          </h1>
+          {Array.isArray(detailPayload?.files) &&
+          detailPayload.files.length > 0 ? (
+            <div className="mt-4 space-y-4">
+              {detailPayload.files.map((value, index) => {
+                const file = isRecord(value) ? value : {};
+                const filename = asString(file.filename, `File ${index + 1}`);
+                return (
+                  <article
+                    key={`${filename}:${index}`}
+                    className="overflow-hidden rounded-lg border border-border"
+                  >
+                    <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface/40 px-3 py-2 text-xs">
+                      <code className="break-all text-foreground-secondary">
+                        {filename}
+                      </code>
+                      <span className="text-subtle">
+                        {asString(file.status, "changed")} · +
+                        {String(file.additions ?? 0)} / -
+                        {String(file.deletions ?? 0)}
+                      </span>
+                    </header>
+                    <pre className="max-h-[32rem] overflow-auto p-3 text-xs leading-5 text-foreground-secondary">
+                      {asString(
+                        file.patch,
+                        "Patch omitted by the bounded GitHub response."
+                      )}
+                    </pre>
+                  </article>
+                );
+              })}
+              {detailPayload.filesTruncated === true && (
+                <p className="text-xs text-subtle">
+                  GitHub truncated the file list; not all changed files are
+                  shown.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-muted">
+              Diff files are not available in this bounded response. Open the
+              pull request on GitHub for the complete diff.
+            </p>
+          )}
+          <div className="mt-8 grid gap-6 lg:grid-cols-2">
+            {(["comments", "reviewComments", "reviews", "checks"] as const).map(
+              (key) => {
+                const pr = isRecord(detailPayload?.pullRequest)
+                  ? detailPayload.pullRequest
+                  : {};
+                const values = Array.isArray(pr[key])
+                  ? pr[key]
+                  : detailPayload?.[key];
+                const truncated =
+                  pr[`${key}Truncated`] === true ||
+                  detailPayload?.[`${key}Truncated`] === true;
+                return (
+                  <section
+                    key={key}
+                    className="rounded-lg border border-border p-3"
+                  >
+                    <h2 className="text-sm font-medium capitalize text-foreground-secondary">
+                      {key === "reviewComments" ? "Inline comments" : key}
+                    </h2>
+                    {Array.isArray(values) && values.length ? (
+                      <ul className="mt-3 space-y-2">
+                        {values.map((entry, index) => {
+                          const item = isRecord(entry) ? entry : {};
+                          const user = isRecord(item.user) ? item.user : {};
+                          return (
+                            <li
+                              key={String(item.id ?? index)}
+                              className="border-t border-border/60 pt-2 text-xs text-muted"
+                            >
+                              <span className="font-medium text-foreground-secondary">
+                                {asString(
+                                  user.login,
+                                  asString(item.state, "Activity")
+                                )}
+                              </span>
+                              <p className="mt-1 whitespace-pre-wrap">
+                                {asString(
+                                  item.body,
+                                  asString(
+                                    item.conclusion,
+                                    asString(item.status, "")
+                                  )
+                                )}
+                              </p>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-subtle">
+                        No {key === "reviewComments" ? "inline comments" : key}{" "}
+                        returned.
+                      </p>
+                    )}
+                    {truncated && (
+                      <p className="mt-2 text-xs text-subtle">
+                        This section was truncated by GitHub.
+                      </p>
+                    )}
+                  </section>
+                );
+              }
+            )}
+          </div>
+        </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           <h1 className="text-2xl font-semibold leading-tight text-foreground">
@@ -533,6 +952,187 @@ function PullRequestDetail({
             )}
           </div>
           <div className="mt-10 border-t border-border/60 pt-6">
+            <h2 className="font-medium text-foreground-secondary">
+              Start an Agent review
+            </h2>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-2">
+              <label className="text-xs text-muted">
+                Agent
+                <select
+                  value={reviewAgentId ?? ""}
+                  onChange={(event) =>
+                    onReviewAgentChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="">Select an available Agent…</option>
+                  {reviewAgents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Runner
+                <select
+                  value={reviewRunnerId}
+                  onChange={(event) =>
+                    onReviewRunnerChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="">Select a runner…</option>
+                  {reviewRunners.map((runner) => (
+                    <option key={runner.deviceId} value={runner.deviceId}>
+                      {runner.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Model
+                <select
+                  value={reviewModelKey}
+                  onChange={(event) =>
+                    onReviewModelChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="">Select a supported model…</option>
+                  {reviewModels.map((model) => (
+                    <option
+                      key={`${model.provider}:${model.id}:${model.instanceId ?? ""}`}
+                      value={`${model.provider}:${model.id}`}
+                    >
+                      {model.displayName} · {model.provider}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Reasoning effort
+                <select
+                  value={reviewEffort}
+                  onChange={(event) =>
+                    onReviewEffortChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  {(
+                    reviewModels.find(
+                      (model) =>
+                        `${model.provider}:${model.id}` === reviewModelKey
+                    )?.supportedReasoningEfforts ?? []
+                  ).map((effort) => (
+                    <option key={effort} value={effort}>
+                      {effort}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                After explicit fixes approval
+                <select
+                  value={reviewPermissionMode}
+                  onChange={(event) =>
+                    onReviewPermissionModeChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="">Select permission…</option>
+                  {reviewPermissionModes.map((permission) => (
+                    <option key={permission} value={permission}>
+                      {permission}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Project
+                <select
+                  value={selectedProjectId}
+                  onChange={(event) =>
+                    onSelectedProjectChange(event.currentTarget.value)
+                  }
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                >
+                  <option value="">No Project (standalone Job)</option>
+                  {matchingProjects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-subtle">
+              Review Jobs are forced read-only. This permission is used only
+              after you separately approve a written fixes request.
+            </p>
+            {reviewError && (
+              <p role="alert" className="mt-2 text-xs text-danger">
+                {reviewError}
+              </p>
+            )}
+          </div>
+          {reviewRecord && (
+            <PullRequestReviewPanel
+              review={reviewRecord}
+              draft={reviewDraft}
+              frozenReview={frozenReview}
+              latestScope={{
+                baseSha: pullRequest.baseSha,
+                headSha: pullRequest.headSha
+              }}
+              error={reviewError}
+              saving={false}
+              freezing={false}
+              publishing={false}
+              publishedUrl={publishedReviewUrl}
+              onSaveDraft={onSaveReviewDraft}
+              onFreeze={onFreezeReview}
+              onPublish={onPublishReview}
+              publishGrant={publishGrant}
+              onApprovePublishGrant={onApprovePublishGrant}
+              onCheckPublishGrant={onCheckPublishGrant}
+              pendingOperation={
+                pendingPublishOperation
+                  ? {
+                      id: pendingPublishOperation.id,
+                      state: pendingPublishOperation.state
+                    }
+                  : null
+              }
+              onCheckPending={onCheckPendingPublish}
+              onCancelPending={onCancelPendingPublish}
+              onCheckOutcome={reconcilePublishedReview}
+              canCheckOutcome={Boolean(uncertainPublishOperationId)}
+              canApprove={canApprove}
+              canPublish={canPublishReview}
+              onReviewLatest={onReviewLatest}
+              onEnableFixes={onEnableFixes}
+              enablingFixes={enablingFixes}
+            />
+          )}
+          {reviewRecord?.workMode === "fix" && (
+            <PullRequestPushPanel
+              proposal={pushProposal}
+              busy={pushBusy}
+              pendingOperationId={pendingPushOperationId}
+              onCheckPending={onCheckPendingPush}
+              onCancelPending={onCancelPendingPush}
+              uncertainOperationId={uncertainPushOperationId}
+              error={pushError}
+              onPrepare={onPreparePush}
+              onPush={onPushProposal}
+              onReconcile={onReconcilePush}
+              actionGrant={pushGrant}
+              onApproveActionGrant={onApprovePushGrant}
+              onCheckActionGrant={onCheckPushGrant}
+            />
+          )}
+          <div className="mt-10 border-t border-border/60 pt-6">
             <h2 className="flex items-center gap-2 font-medium text-foreground-secondary">
               Description <ChevronDown className="h-4 w-4 text-subtle" />
             </h2>
@@ -547,10 +1147,6 @@ function PullRequestDetail({
               </p>
             )}
           </div>
-          <div className="mt-8 border-t border-border/60 pt-5 text-xs text-subtle">
-            Review submission and code review remain unavailable in this
-            read-only GitHub integration.
-          </div>
         </div>
       )}
     </section>
@@ -562,18 +1158,65 @@ export function PullRequestsView({
   onHome,
   onNewChat,
   onPlugins,
-  onUseRealGitHub,
-  chatAdapter
+  onUseRealGitHub
 }: {
   mode: PullRequestsMode;
   onHome: () => void;
   onNewChat: () => void;
   onPlugins: () => void;
   onUseRealGitHub?: () => void;
-  chatAdapter?: PRChatAdapter | null;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [chatAgents, setChatAgents] = useState<ChatMentionAgent[]>([]);
+  const [launchOptions, setLaunchOptions] =
+    useState<HostedLaunchOptions | null>(null);
+  const [sourceControlRunners, setSourceControlRunners] = useState<
+    PullRequestRunner[]
+  >([]);
+  const [reviewAgentId, setReviewAgentId] = useState<string | null>(null);
+  const [reviewRunnerId, setReviewRunnerId] = useState("");
+  const [reviewModelKey, setReviewModelKey] = useState("");
+  const [reviewPermissionMode, setReviewPermissionMode] = useState("");
+  const [reviewExecutionEffort, setReviewExecutionEffort] = useState("high");
+  const [reviewJobBusy, setReviewJobBusy] = useState(false);
+  const [enablingFixes, setEnablingFixes] = useState(false);
+  const [reviewRecord, setReviewRecord] =
+    useState<PullRequestReviewRecord | null>(null);
+  const [reviewExecutionGeneration, setReviewExecutionGeneration] = useState<
+    number | null
+  >(null);
+  const [reviewDraft, setReviewDraft] = useState<PullRequestReviewDraft | null>(
+    null
+  );
+  const [frozenReview, setFrozenReview] =
+    useState<PullRequestFrozenReview | null>(null);
+  const [publishedReviewUrl, setPublishedReviewUrl] = useState<string | null>(
+    null
+  );
+  const [uncertainPublishOperationId, setUncertainPublishOperationId] =
+    useState<string | null>(null);
+  const [pendingPublishOperation, setPendingPublishOperation] =
+    useState<PullRequestOperationRecord | null>(null);
+  const [pushProposal, setPushProposal] =
+    useState<PullRequestPushProposal | null>(null);
+  const [pendingPushOperation, setPendingPushOperation] =
+    useState<PullRequestOperationRecord | null>(null);
+  const [uncertainPushOperationId, setUncertainPushOperationId] = useState<
+    string | null
+  >(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushError, setPushError] = useState<string | null>(null);
+  const [pushGrant, setPushGrant] = useState<{
+    status: PullRequestActionGrantStatus;
+    commandRequestId: string;
+    operationRequestId: string;
+  } | null>(null);
+  const [publishGrant, setPublishGrant] = useState<{
+    status: PullRequestActionGrantStatus;
+    commandRequestId: string;
+    operationRequestId: string;
+  } | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [chatModelOptions, setChatModelOptions] = useState<
     AgentModelCapability[]
   >([DEFAULT_PR_MODEL]);
@@ -592,10 +1235,27 @@ export function PullRequestsView({
   const [pullRequestsMore, setPullRequestsMore] = useState(false);
   const [pullRequestPage, setPullRequestPage] = useState(1);
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
+  const [selectedRepositoryFullName, setSelectedRepositoryFullName] = useState<
+    string | null
+  >(null);
+  const [inboxCursor, setInboxCursor] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<PullRequest | null>(
     null
   );
-  const [detailView, setDetailView] = useState<"summary" | "chat">("summary");
+  const [detailPayload, setDetailPayload] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
+  const [detailOperationId, setDetailOperationId] = useState<string | null>(
+    null
+  );
+  const [matchingProjects, setMatchingProjects] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [detailView, setDetailView] = useState<"summary" | "code" | "chat">(
+    "summary"
+  );
   const [chatMessagesByScope, setChatMessagesByScope] = useState<
     Record<string, PRChatMessage[]>
   >({});
@@ -615,16 +1275,23 @@ export function PullRequestsView({
   const [demoPreferenceResolved, setDemoPreferenceResolved] = useState(false);
   const sequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
+  const sourceControlRunnersRef = useRef(sourceControlRunners);
+  useEffect(() => {
+    sourceControlRunnersRef.current = sourceControlRunners;
+  }, [sourceControlRunners]);
 
   useEffect(() => {
     if (mode === "demo") return;
     const controller = new AbortController();
     Promise.all([
       personalAgentsHttpAdapter.list(controller.signal),
-      personalAgentsHttpAdapter.capabilities(controller.signal)
+      personalAgentsHttpAdapter.capabilities(controller.signal),
+      loadHostedLaunchOptions(controller.signal)
     ])
-      .then(([agents, capabilities]) => {
+      .then(([agents, capabilities, availableLaunchOptions]) => {
         if (controller.signal.aborted) return;
+        setLaunchOptions(availableLaunchOptions);
+        setReviewRunnerId("");
         setChatAgents(
           agents
             .filter((agent: PersonalAgent) => agent.lifecycle === "active")
@@ -653,6 +1320,7 @@ export function PullRequestsView({
         if (!controller.signal.aborted) {
           setChatAgents([]);
           setChatModelOptions([DEFAULT_PR_MODEL]);
+          setLaunchOptions(null);
         }
       });
     return () => controller.abort();
@@ -661,10 +1329,6 @@ export function PullRequestsView({
   const loadedRepositoryRef = useRef<string | null>(null);
   const detailSequenceRef = useRef(0);
   const detailControllerRef = useRef<AbortController | null>(null);
-  const repositoryPaginationControllerRef = useRef<AbortController | null>(
-    null
-  );
-  const repositoryPaginationRunRef = useRef(0);
   const repositorySelectionIntentRef = useRef(false);
   const demoPreferenceAppliedRef = useRef(false);
   const detailLayoutRef = useRef<HTMLDivElement>(null);
@@ -676,158 +1340,29 @@ export function PullRequestsView({
     setChatDraftsByScope({});
   }, []);
 
-  const clearAccessData = useCallback(() => {
-    sequenceRef.current += 1;
-    detailSequenceRef.current += 1;
-    controllerRef.current?.abort();
-    detailControllerRef.current?.abort();
-    repositoryPaginationRunRef.current += 1;
-    repositoryPaginationControllerRef.current?.abort();
-    statusRef.current = null;
-    loadedRepositoryRef.current = null;
-    setStatus(null);
-    setRepositories([]);
-    setRepository(null);
-    setPullRequests([]);
-    setSelectedNumber(null);
-    setSelectedDetail(null);
-    resetChatState();
-    setPullRequestsMore(false);
-    setStale(false);
-    setLoading(false);
-    setLoadingMore(false);
-    repositorySelectionIntentRef.current = false;
-    demoPreferenceAppliedRef.current = false;
-    setDemoPreferenceResolved(false);
-  }, [resetChatState]);
-
-  const run = useCallback(
-    async <T,>(url: string, signal: AbortSignal): Promise<T> => {
-      const response = await fetch(url, {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-        signal
-      });
-      const payload = await readJson(response);
-      if (
-        !response.ok ||
-        (isRecord(payload) && typeof payload.error === "string")
-      ) {
-        const error = new Error(
-          sanitizeMessage(
-            isRecord(payload) ? payload.error : null,
-            "GitHub data is unavailable."
-          )
-        ) as Error & { status?: number };
-        error.status = response.status;
-        throw error;
-      }
-      return payload as T;
-    },
-    []
-  );
-
-  const cancelRepositoryPagination = useCallback(() => {
-    repositoryPaginationRunRef.current += 1;
-    repositoryPaginationControllerRef.current?.abort();
-    repositoryPaginationControllerRef.current = null;
+  const targetForRunner = useCallback((deviceId: string | null | undefined) => {
+    const runners = sourceControlRunnersRef.current;
+    if (deviceId) {
+      const selected = runners.find((runner) => runner.deviceId === deviceId);
+      if (selected)
+        return {
+          deviceId: selected.deviceId,
+          deploymentId: selected.deploymentId
+        };
+    }
+    if (
+      typeof window !== "undefined" &&
+      !window.location.pathname.startsWith("/studio")
+    )
+      return undefined;
+    const fallback = runners[0];
+    return fallback
+      ? { deviceId: fallback.deviceId, deploymentId: fallback.deploymentId }
+      : undefined;
   }, []);
-
-  const startRepositoryPagination = useCallback(
-    (
-      startPage: number,
-      hasMore: boolean,
-      initialRepositories: Repository[],
-      preferredFullName: string | null
-    ) => {
-      if (mode === "demo" || !hasMore) return;
-      cancelRepositoryPagination();
-      const runId = repositoryPaginationRunRef.current;
-      const controller = new AbortController();
-      repositoryPaginationControllerRef.current = controller;
-      void (async () => {
-        let page = startPage;
-        let more: boolean = hasMore;
-        let pagesLoaded = 0;
-        let knownRepositories = initialRepositories;
-        let preferredFound = knownRepositories.some(
-          (item) => item.fullName === preferredFullName
-        );
-        try {
-          while (more && pagesLoaded < 8) {
-            const payload = await run<unknown>(
-              `/studio-api/github/repositories?page=${page}`,
-              controller.signal
-            );
-            if (
-              runId !== repositoryPaginationRunRef.current ||
-              controller.signal.aborted
-            )
-              return;
-            const next =
-              isRecord(payload) && Array.isArray(payload.repositories)
-                ? payload.repositories
-                    .map(parseRepository)
-                    .filter((value): value is Repository => Boolean(value))
-                : [];
-            const merged = new Map(
-              knownRepositories.map((item) => [item.id, item])
-            );
-            for (const item of next) merged.set(item.id, item);
-            knownRepositories = [...merged.values()];
-            setRepositories(knownRepositories);
-            if (!preferredFound && preferredFullName) {
-              const preferred = knownRepositories.find(
-                (item) => item.fullName === preferredFullName
-              );
-              if (preferred && !repositorySelectionIntentRef.current) {
-                preferredFound = true;
-                setRepository(preferred);
-              }
-            }
-            more = isRecord(payload) && payload.hasMore === true;
-            page += 1;
-            pagesLoaded += 1;
-          }
-          if (
-            runId === repositoryPaginationRunRef.current &&
-            !repositorySelectionIntentRef.current &&
-            !preferredFound
-          ) {
-            setRepository((current) => current ?? knownRepositories[0] ?? null);
-          }
-        } catch (reason) {
-          if (
-            runId !== repositoryPaginationRunRef.current ||
-            controller.signal.aborted ||
-            (reason as { name?: string })?.name === "AbortError"
-          )
-            return;
-          const statusCode = (reason as { status?: number }).status;
-          if (isAccessInvalidation(statusCode)) {
-            clearAccessData();
-          } else {
-            setStale(true);
-            setError(
-              sanitizeMessage(
-                reason instanceof Error ? reason.message : null,
-                "More repositories are unavailable."
-              )
-            );
-          }
-        } finally {
-          if (repositoryPaginationControllerRef.current === controller) {
-            repositoryPaginationControllerRef.current = null;
-          }
-        }
-      })();
-    },
-    [cancelRepositoryPagination, clearAccessData, mode, run]
-  );
 
   const loadStatusAndRepositories = useCallback(async () => {
     if (mode === "demo") return;
-    cancelRepositoryPagination();
     const sequence = ++sequenceRef.current;
     controllerRef.current?.abort();
     const controller = new AbortController();
@@ -836,16 +1371,57 @@ export function PullRequestsView({
     setLoadingMore(false);
     setError(null);
     try {
-      const payload = await run<unknown>(
-        "/studio-api/github/status",
+      const availableRunners = await pullRequestsClient.listRunners(
         controller.signal
       );
+      if (sequence !== sequenceRef.current) return;
+      setSourceControlRunners(availableRunners);
+      setReviewRunnerId((current) =>
+        availableRunners.some((runner) => runner.deviceId === current)
+          ? current
+          : (availableRunners[0]?.deviceId ?? "")
+      );
+      const target =
+        targetForRunner(reviewRunnerId) ??
+        (availableRunners[0]
+          ? {
+              deviceId: availableRunners[0].deviceId,
+              deploymentId: availableRunners[0].deploymentId
+            }
+          : undefined);
+      const statusOperation = await pullRequestsClient.runOperation(
+        { kind: "connection_status" },
+        { signal: controller.signal, target }
+      );
+      const statusValue = pullRequestOperationData(statusOperation);
+      const accountValue = isRecord(statusValue.account)
+        ? statusValue.account
+        : null;
+      const payload = {
+        state:
+          statusValue.state === "reauthorization_required"
+            ? "error"
+            : statusValue.state,
+        accountId: accountValue?.id,
+        login: accountValue?.login ?? null,
+        connectionGeneration: statusValue.connectionGeneration,
+        message:
+          statusValue.state === "reauthorization_required"
+            ? "Reconnect GitHub in Plugins."
+            : null,
+        capabilities: statusValue.capabilities ?? {
+          readPullRequests: statusValue.state === "connected",
+          publishReviews: statusValue.state === "connected"
+        }
+      };
       const nextStatus = parseStatus(payload);
       if (!nextStatus)
         throw new Error("GitHub connection status is unavailable.");
       if (sequence !== sequenceRef.current) return;
       const previousStatus = statusRef.current;
-      const identityChanged = previousStatus?.login !== nextStatus.login;
+      const identityChanged =
+        previousStatus?.accountId !== nextStatus.accountId ||
+        previousStatus?.login !== nextStatus.login;
       const accessLost =
         nextStatus.state !== "connected" ||
         !nextStatus.capabilities.readPullRequests;
@@ -865,18 +1441,44 @@ export function PullRequestsView({
         setLoading(false);
         return;
       }
-      const repositoriesPayload = await run<unknown>(
-        "/studio-api/github/repositories?page=1",
-        controller.signal
-      );
-      if (sequence !== sequenceRef.current) return;
-      const nextRepositories =
-        isRecord(repositoriesPayload) &&
-        Array.isArray(repositoriesPayload.repositories)
-          ? repositoriesPayload.repositories
-              .map(parseRepository)
-              .filter((value): value is Repository => Boolean(value))
+      if (
+        !nextStatus.accountId ||
+        !nextStatus.connectionGeneration ||
+        !nextStatus.login
+      ) {
+        setRepositories([]);
+        setRepository(null);
+        setPullRequests([]);
+        return;
+      }
+      const nextRepositories: Repository[] = [];
+      let cursor: string | null = null;
+      let hasMore = true;
+      for (let page = 0; hasMore && page < 8; page += 1) {
+        const operation = await pullRequestsClient.runOperation(
+          {
+            kind: "repositories",
+            account: { id: nextStatus.accountId, login: nextStatus.login },
+            connectionGeneration: nextStatus.connectionGeneration,
+            cursor
+          },
+          { signal: controller.signal, target }
+        );
+        const result = pullRequestOperationData(operation);
+        const pageItems = Array.isArray(result.repositories)
+          ? result.repositories
           : [];
+        nextRepositories.push(
+          ...pageItems
+            .map(parseRepository)
+            .filter((value): value is Repository => Boolean(value))
+        );
+        hasMore = result.hasMore === true;
+        cursor =
+          typeof result.nextCursor === "string" ? result.nextCursor : null;
+        if (hasMore && !cursor) break;
+      }
+      if (sequence !== sequenceRef.current) return;
       const savedPreference = readRepositoryPreference(
         getSessionStorage(),
         repositoryPreferenceKey("live", nextStatus.login ?? "unknown")
@@ -886,37 +1488,24 @@ export function PullRequestsView({
             (item) => item.fullName === savedPreference.fullName
           )
         : null;
-      const repositoriesHaveMore =
-        isRecord(repositoriesPayload) && repositoriesPayload.hasMore === true;
       setStale(false);
       setRepositories(nextRepositories);
       setRepository((current) => {
         if (repositorySelectionIntentRef.current) return current;
         if (preferredRepository) return preferredRepository;
-        if (savedPreference && repositoriesHaveMore) return null;
         return (
           nextRepositories.find(
             (item) => item.fullName === current?.fullName
-          ) ??
-          nextRepositories[0] ??
-          null
+          ) ?? null
         );
       });
-      startRepositoryPagination(
-        2,
-        repositoriesHaveMore,
-        nextRepositories,
-        savedPreference?.fullName ?? null
-      );
     } catch (reason) {
       if (
         sequence !== sequenceRef.current ||
         (reason as { name?: string })?.name === "AbortError"
       )
         return;
-      const statusCode = (reason as { status?: number }).status;
-      if (isAccessInvalidation(statusCode)) clearAccessData();
-      else setStale(true);
+      setStale(true);
       setError(
         sanitizeMessage(
           reason instanceof Error ? reason.message : null,
@@ -929,14 +1518,7 @@ export function PullRequestsView({
         controllerRef.current = null;
       }
     }
-  }, [
-    cancelRepositoryPagination,
-    clearAccessData,
-    mode,
-    resetChatState,
-    run,
-    startRepositoryPagination
-  ]);
+  }, [mode, resetChatState, reviewRunnerId, targetForRunner]);
 
   // The effect owns the lifetime of the live gateway request.
   useEffect(() => {
@@ -945,9 +1527,8 @@ export function PullRequestsView({
     return () => {
       sequenceRef.current += 1;
       controllerRef.current?.abort();
-      cancelRepositoryPagination();
     };
-  }, [cancelRepositoryPagination, loadStatusAndRepositories]);
+  }, [loadStatusAndRepositories]);
 
   useEffect(() => {
     if (
@@ -987,19 +1568,12 @@ export function PullRequestsView({
 
   const loadPullRequests = useCallback(
     async (nextRepository: Repository | null) => {
-      if (!nextRepository) {
-        sequenceRef.current += 1;
-        controllerRef.current?.abort();
-        setPullRequests([]);
-        setPullRequestsMore(false);
-        setSelectedNumber(null);
-        setSelectedDetail(null);
-        setLoading(false);
-        setLoadingMore(false);
-        return;
-      }
       if (mode === "demo") {
-        setPullRequests(DEMO_PULL_REQUESTS[nextRepository.fullName] ?? []);
+        setPullRequests(
+          nextRepository
+            ? (DEMO_PULL_REQUESTS[nextRepository.fullName] ?? [])
+            : []
+        );
         setPullRequestPage(1);
         setPullRequestsMore(false);
         return;
@@ -1012,36 +1586,74 @@ export function PullRequestsView({
       setLoadingMore(false);
       setError(null);
       setPullRequestPage(1);
-      if (loadedRepositoryRef.current !== nextRepository.fullName) {
+      if (loadedRepositoryRef.current !== (nextRepository?.fullName ?? "*")) {
         setPullRequests([]);
         setSelectedNumber(null);
+        setSelectedRepositoryFullName(null);
         setSelectedDetail(null);
       }
-      loadedRepositoryRef.current = nextRepository.fullName;
+      loadedRepositoryRef.current = nextRepository?.fullName ?? "*";
       try {
-        const payload = await run<unknown>(
-          `/studio-api/github/pulls?repo=${encodeURIComponent(nextRepository.fullName)}&page=1`,
-          controller.signal
+        if (!status?.accountId || !status.login || !status.connectionGeneration)
+          throw new Error("Reconnect GitHub before loading the inbox.");
+        const operation = await pullRequestsClient.runOperation(
+          {
+            kind: "inbox",
+            account: { id: status.accountId, login: status.login },
+            connectionGeneration: status.connectionGeneration,
+            repository: nextRepository
+              ? {
+                  id: nextRepository.id,
+                  owner: nextRepository.fullName.split("/")[0] ?? "",
+                  name: nextRepository.fullName.split("/")[1] ?? "",
+                  fullName: nextRepository.fullName
+                }
+              : null,
+            cursor: null
+          },
+          { signal: controller.signal, target: targetForRunner(reviewRunnerId) }
         );
         if (sequence !== sequenceRef.current) return;
-        const nextPulls =
-          isRecord(payload) && Array.isArray(payload.pullRequests)
-            ? payload.pullRequests
-                .map(parsePullRequest)
-                .filter((value): value is PullRequest => Boolean(value))
+        const result = pullRequestOperationData(operation);
+        if (Array.isArray(result.repositories)) {
+          const verifiedRepositories = result.repositories
+            .map(parseRepository)
+            .filter((value): value is Repository => Boolean(value));
+          setRepositories((current) => {
+            const merged = new Map(
+              current.map((item) => [item.fullName, item])
+            );
+            for (const item of verifiedRepositories)
+              merged.set(item.fullName, item);
+            return [...merged.values()];
+          });
+        }
+        const inboxItems = Array.isArray(result.items)
+          ? result.items
+          : Array.isArray(result.pullRequests)
+            ? result.pullRequests
             : [];
+        const nextPulls = inboxItems
+          .map(parseInboxItem)
+          .filter((value): value is PullRequest => Boolean(value));
         setStale(false);
         setPullRequests(nextPulls);
-        setPullRequestsMore(isRecord(payload) && payload.hasMore === true);
+        setPullRequestPage(1);
+        setInboxCursor(
+          result.hasMore === true
+            ? typeof result.nextCursor === "string"
+              ? result.nextCursor
+              : "2"
+            : null
+        );
+        setPullRequestsMore(result.hasMore === true);
       } catch (reason) {
         if (
           sequence !== sequenceRef.current ||
           (reason as { name?: string })?.name === "AbortError"
         )
           return;
-        const statusCode = (reason as { status?: number }).status;
-        if (isAccessInvalidation(statusCode)) clearAccessData();
-        else setStale(true);
+        setStale(true);
         setError(
           sanitizeMessage(
             reason instanceof Error ? reason.message : null,
@@ -1055,18 +1667,30 @@ export function PullRequestsView({
         }
       }
     },
-    [clearAccessData, mode, run]
+    [mode, status, reviewRunnerId, targetForRunner]
   );
 
   // Repository changes are synchronized with the live gateway.
   useEffect(() => {
-    if (repository || loadedRepositoryRef.current) {
+    if (
+      status?.state === "connected" ||
+      repository ||
+      loadedRepositoryRef.current
+    ) {
       void loadPullRequests(repository);
     }
-  }, [loadPullRequests, repository]);
+  }, [loadPullRequests, repository, status?.state]);
 
   const loadMorePullRequests = async () => {
-    if (mode === "demo" || !repository || !pullRequestsMore || loadingMore)
+    if (
+      mode === "demo" ||
+      !pullRequestsMore ||
+      loadingMore ||
+      !status?.accountId ||
+      !status.login ||
+      !status.connectionGeneration ||
+      !inboxCursor
+    )
       return;
     const nextPage = pullRequestPage + 1;
     const sequence = ++sequenceRef.current;
@@ -1074,29 +1698,61 @@ export function PullRequestsView({
     controllerRef.current = controller;
     setLoadingMore(true);
     try {
-      const payload = await run<unknown>(
-        `/studio-api/github/pulls?repo=${encodeURIComponent(repository.fullName)}&page=${nextPage}`,
-        controller.signal
+      const operation = await pullRequestsClient.runOperation(
+        {
+          kind: "inbox",
+          account: { id: status.accountId, login: status.login },
+          connectionGeneration: status.connectionGeneration,
+          repository: repository
+            ? {
+                id: repository.id,
+                owner: repository.fullName.split("/")[0] ?? "",
+                name: repository.fullName.split("/")[1] ?? "",
+                fullName: repository.fullName
+              }
+            : null,
+          cursor: inboxCursor
+        },
+        { signal: controller.signal, target: targetForRunner(reviewRunnerId) }
       );
       if (sequence !== sequenceRef.current) return;
-      const next =
-        isRecord(payload) && Array.isArray(payload.pullRequests)
-          ? payload.pullRequests
-              .map(parsePullRequest)
-              .filter((value): value is PullRequest => Boolean(value))
+      const result = pullRequestOperationData(operation);
+      if (Array.isArray(result.repositories)) {
+        const verifiedRepositories = result.repositories
+          .map(parseRepository)
+          .filter((value): value is Repository => Boolean(value));
+        setRepositories((current) => {
+          const merged = new Map(current.map((item) => [item.fullName, item]));
+          for (const item of verifiedRepositories)
+            merged.set(item.fullName, item);
+          return [...merged.values()];
+        });
+      }
+      const inboxItems = Array.isArray(result.items)
+        ? result.items
+        : Array.isArray(result.pullRequests)
+          ? result.pullRequests
           : [];
+      const next = inboxItems
+        .map(parseInboxItem)
+        .filter((value): value is PullRequest => Boolean(value));
       setStale(false);
       setPullRequests((current) => mergePullRequests(current, next));
       setPullRequestPage(nextPage);
-      setPullRequestsMore(isRecord(payload) && payload.hasMore === true);
+      setInboxCursor(
+        result.hasMore === true
+          ? typeof result.nextCursor === "string"
+            ? result.nextCursor
+            : String(nextPage + 1)
+          : null
+      );
+      setPullRequestsMore(result.hasMore === true);
     } catch (reason) {
       if (
         sequence === sequenceRef.current &&
         (reason as { name?: string })?.name !== "AbortError"
       ) {
-        const statusCode = (reason as { status?: number }).status;
-        if (isAccessInvalidation(statusCode)) clearAccessData();
-        else setStale(true);
+        setStale(true);
         setError(
           sanitizeMessage(
             reason instanceof Error ? reason.message : null,
@@ -1110,34 +1766,192 @@ export function PullRequestsView({
   };
 
   useEffect(() => {
-    if (selectedNumber === null || !repository) {
+    if (selectedNumber === null || !selectedRepositoryFullName) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedDetail(null);
       return;
     }
-    const summary = pullRequests.find((item) => item.number === selectedNumber);
+    const summary = pullRequests.find(
+      (item) =>
+        item.number === selectedNumber &&
+        item.repositoryFullName === selectedRepositoryFullName
+    );
     if (mode === "demo") {
       setSelectedDetail(summary ?? null);
+      setDetailPayload(null);
+      setMatchingProjects([]);
+      return;
+    }
+    const selectedRepository = repositories.find(
+      (item) => item.fullName === selectedRepositoryFullName
+    );
+    if (
+      !selectedRepository ||
+      !status?.accountId ||
+      !status.login ||
+      !status.connectionGeneration
+    ) {
+      setSelectedDetail(null);
       return;
     }
     setSelectedDetail(null);
+    setDetailPayload(null);
+    setDetailOperationId(null);
+    setMatchingProjects([]);
+    setReviewRecord(null);
+    setReviewDraft(null);
+    setFrozenReview(null);
+    setPublishedReviewUrl(null);
+    setUncertainPublishOperationId(null);
+    setPublishGrant(null);
+    setPendingPublishOperation(null);
+    setPendingPushOperation(null);
+    setUncertainPushOperationId(null);
+    setPushProposal(null);
+    setPushGrant(null);
+    setPushError(null);
     const sequence = ++detailSequenceRef.current;
     detailControllerRef.current?.abort();
     const controller = new AbortController();
     detailControllerRef.current = controller;
-    void run<unknown>(
-      `/studio-api/github/pull?repo=${encodeURIComponent(repository.fullName)}&number=${selectedNumber}`,
-      controller.signal
-    )
-      .then((payload) => {
+    void pullRequestsClient
+      .runOperation(
+        {
+          kind: "pull_request_details",
+          account: { id: status.accountId, login: status.login },
+          connectionGeneration: status.connectionGeneration,
+          repository: {
+            id: selectedRepository.id,
+            owner: selectedRepository.fullName.split("/")[0] ?? "",
+            name: selectedRepository.fullName.split("/")[1] ?? "",
+            fullName: selectedRepository.fullName
+          },
+          pullRequestNumber: selectedNumber
+        },
+        { signal: controller.signal, target: targetForRunner(reviewRunnerId) }
+      )
+      .then(async (operation) => {
         if (sequence !== detailSequenceRef.current) return;
-        const detail = isRecord(payload)
-          ? parsePullRequest(payload.pullRequest)
-          : null;
+        const result = pullRequestOperationData(operation);
+        const detail = parsePullRequest(result.pullRequest);
         if (!detail || detail.number !== selectedNumber) {
           throw new Error("Pull request details are unavailable.");
         }
-        setSelectedDetail(detail);
+        setSelectedDetail({
+          ...detail,
+          repositoryFullName: selectedRepository.fullName
+        });
+        setDetailPayload(result);
+        setDetailOperationId(operation.id);
+        setMatchingProjects(
+          Array.isArray(result.matchingProjects)
+            ? result.matchingProjects.flatMap((project) => {
+                if (!project || typeof project !== "object") return [];
+                const candidate = project as Record<string, unknown>;
+                return typeof candidate.id === "string" &&
+                  typeof candidate.name === "string"
+                  ? [{ id: candidate.id, name: candidate.name }]
+                  : [];
+              })
+            : []
+        );
+        setSelectedProjectId("");
+        try {
+          const existingReviews = await pullRequestsClient.listReviews(
+            {
+              repository: selectedRepository.id,
+              number: selectedNumber
+            },
+            controller.signal
+          );
+          if (sequence !== detailSequenceRef.current) return;
+          const matching = existingReviews
+            .filter(
+              (review) =>
+                review.account.id === status.accountId &&
+                review.repository.fullName === selectedRepository.fullName &&
+                review.pullRequestNumber === selectedNumber
+            )
+            .sort((left, right) =>
+              right.updatedAt.localeCompare(left.updatedAt)
+            );
+          const chosen =
+            matching.find((review) => review.agentId === reviewAgentId) ??
+            matching[0];
+          if (chosen) {
+            setReviewRecord(chosen);
+            setReviewAgentId(chosen.agentId);
+            setSelectedProjectId(chosen.projectId ?? "");
+            const operations = await pullRequestsClient.listOperations(
+              { limit: 100 },
+              controller.signal
+            );
+            const pending = operations.operations.find(
+              (candidate) =>
+                candidate.reviewId === chosen.id &&
+                (candidate.state === "pending" ||
+                  candidate.state === "claimed") &&
+                (candidate.payload.kind === "publish_review" ||
+                  candidate.payload.kind === "prepare_push" ||
+                  candidate.payload.kind === "push")
+            );
+            if (pending?.payload.kind === "publish_review")
+              setPendingPublishOperation(pending);
+            if (
+              pending?.payload.kind === "prepare_push" ||
+              pending?.payload.kind === "push"
+            )
+              setPendingPushOperation(pending);
+            const uncertain = operations.operations.find(
+              (candidate) =>
+                candidate.reviewId === chosen.id &&
+                candidate.state === "uncertain" &&
+                (candidate.payload.kind === "publish_review" ||
+                  candidate.payload.kind === "push")
+            );
+            if (uncertain?.payload.kind === "publish_review")
+              setUncertainPublishOperationId(uncertain.id);
+            if (uncertain?.payload.kind === "push")
+              setUncertainPushOperationId(uncertain.id);
+            if (chosen.executionId) {
+              const [draft, frozen, conversation] = await Promise.all([
+                pullRequestsClient.getDraft(chosen.id, controller.signal),
+                pullRequestsClient.getFrozenReview(
+                  chosen.id,
+                  controller.signal
+                ),
+                loadHostedManagedConversation(
+                  chosen.executionId,
+                  controller.signal
+                )
+              ]);
+              if (sequence !== detailSequenceRef.current) return;
+              setReviewDraft(draft);
+              setFrozenReview(frozen);
+              setReviewExecutionGeneration(
+                conversation.runtime.execution.executionGeneration
+              );
+              setReviewPermissionMode(
+                conversation.runtime.execution.permissionMode
+              );
+              setReviewModelKey(
+                `${conversation.runtime.execution.provider}:${conversation.runtime.execution.model}`
+              );
+              setReviewExecutionEffort(
+                conversation.runtime.execution.reasoningEffort ?? "high"
+              );
+            }
+          }
+        } catch (reason) {
+          if (
+            sequence !== detailSequenceRef.current ||
+            (reason as { name?: string })?.name === "AbortError"
+          )
+            return;
+          setReviewError(
+            `Could not restore this review Conversation: ${sanitizeMessage(reason instanceof Error ? reason.message : null, "The saved Conversation is unavailable.")}`
+          );
+        }
       })
       .catch((reason) => {
         if (
@@ -1145,9 +1959,7 @@ export function PullRequestsView({
           (reason as { name?: string })?.name === "AbortError"
         )
           return;
-        const statusCode = (reason as { status?: number }).status;
-        if (isAccessInvalidation(statusCode)) clearAccessData();
-        else setStale(true);
+        setStale(true);
         setError(
           sanitizeMessage(
             reason instanceof Error ? reason.message : null,
@@ -1163,19 +1975,92 @@ export function PullRequestsView({
       detailSequenceRef.current += 1;
       controller.abort();
     };
-  }, [clearAccessData, mode, pullRequests, repository, run, selectedNumber]);
+  }, [
+    mode,
+    pullRequests,
+    repositories,
+    reviewRunnerId,
+    selectedNumber,
+    selectedRepositoryFullName,
+    reviewAgentId,
+    status,
+    targetForRunner
+  ]);
+
+  useEffect(() => {
+    if (mode === "demo" || !reviewRecord?.executionId || reviewDraft !== null)
+      return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void Promise.all([
+        pullRequestsClient.getReview(reviewRecord.id),
+        pullRequestsClient.getDraft(reviewRecord.id)
+      ])
+        .then(([latestReview, latestDraft]) => {
+          if (!active) return;
+          setReviewRecord((current) =>
+            current?.id === latestReview.id &&
+            latestReview.revision >= current.revision
+              ? latestReview
+              : current
+          );
+          if (latestDraft) setReviewDraft(latestDraft);
+        })
+        .catch(() => {
+          // Temporary polling failures leave the durable conversation visible.
+        });
+    }, 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [mode, reviewDraft, reviewRecord?.executionId, reviewRecord?.id]);
+
+  const activeReviewId = reviewRecord?.id;
+  useEffect(() => {
+    if (mode === "demo" || !activeReviewId) return;
+    let active = true;
+    void pullRequestsClient
+      .listOperations({ limit: 100 })
+      .then((page) => {
+        if (!active) return;
+        const matching = page.operations.find(
+          (operation) =>
+            operation.reviewId === activeReviewId &&
+            operation.payload.kind === "publish_review" &&
+            operation.payload.reviewId === activeReviewId &&
+            (operation.state === "pending" ||
+              operation.state === "claimed" ||
+              operation.state === "uncertain")
+        );
+        if (!matching) return;
+        if (matching.state === "uncertain")
+          setUncertainPublishOperationId(matching.id);
+        else setPendingPublishOperation(matching);
+      })
+      .catch(() => {
+        /* The durable review remains usable when operation history is unavailable. */
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeReviewId, mode]);
 
   const filteredPullRequests = useMemo(() => {
     const login = status?.login?.toLocaleLowerCase("en-US") ?? "";
     const query = search.trim().toLocaleLowerCase("en-US");
     return pullRequests.filter((item) => {
-      const authored =
-        login !== "" && item.author.toLocaleLowerCase("en-US") === login;
-      const reviewing =
-        login !== "" &&
-        item.requestedReviewers.some(
-          (reviewer) => reviewer.toLocaleLowerCase("en-US") === login
-        );
+      const authored = item.inboxOrigin
+        ? item.inboxOrigin === "authored" ||
+          item.inboxOrigin === "authored_and_requested_review"
+        : login !== "" && item.author.toLocaleLowerCase("en-US") === login;
+      const reviewing = item.inboxOrigin
+        ? item.inboxOrigin === "requested_review" ||
+          item.inboxOrigin === "authored_and_requested_review"
+        : login !== "" &&
+          item.requestedReviewers.some(
+            (reviewer) => reviewer.toLocaleLowerCase("en-US") === login
+          );
       const tabMatches =
         tab === "all" || (tab === "authored" ? authored : reviewing);
       const filterMatches = matchesPullRequestFilter(item, filter);
@@ -1183,7 +2068,7 @@ export function PullRequestsView({
         tabMatches &&
         filterMatches &&
         (!query ||
-          `${item.title} ${item.author} #${item.number}`
+          `${item.repositoryFullName ?? ""} ${item.title} ${item.author} #${item.number}`
             .toLocaleLowerCase("en-US")
             .includes(query))
       );
@@ -1251,6 +2136,148 @@ export function PullRequestsView({
     },
     []
   );
+
+  const startAgentReview = async () => {
+    const selectedRepository =
+      repositories.find(
+        (item) => item.fullName === selectedRepositoryFullName
+      ) ?? repository;
+    if (
+      !selectedDetail ||
+      !selectedRepository ||
+      !reviewAgentId ||
+      !launchOptions
+    )
+      return;
+    const agent = chatAgents.find(
+      (candidate) => candidate.id === reviewAgentId
+    );
+    const selectedRunner = launchOptions.runners.find(
+      (runner) =>
+        runner.deviceId === reviewRunnerId &&
+        sourceControlRunners.some(
+          (target) => target.deviceId === runner.deviceId
+        )
+    );
+    const instances = hostedLaunchInstancesForDevice(
+      launchOptions,
+      reviewRunnerId
+    );
+    const selectedModel = instances
+      .flatMap((instance) => instance.models)
+      .find((model) => `${model.provider}:${model.id}` === reviewModelKey);
+    const selectedInstance = instances.find(
+      (instance) => instance.instanceId === selectedModel?.instanceId
+    );
+    if (
+      !agent ||
+      !selectedRunner ||
+      !selectedModel ||
+      !selectedInstance?.permissionModes.includes(reviewPermissionMode) ||
+      !selectedModel.supportedReasoningEfforts.includes(reviewExecutionEffort)
+    ) {
+      setReviewError(
+        "Choose an available Agent, runner, and supported model before starting a review."
+      );
+      return;
+    }
+    if (!status?.accountId || !status.connectionGeneration) {
+      setReviewError("Refresh the GitHub connection before starting a review.");
+      return;
+    }
+    setReviewJobBusy(true);
+    setReviewError(null);
+    try {
+      if (!detailOperationId) {
+        throw new Error(
+          "Verified pull request details are still loading. Retry after the inbox finishes loading them."
+        );
+      }
+      const review = await pullRequestsClient.createReview({
+        requestId: crypto.randomUUID(),
+        detailsOperationId: detailOperationId,
+        agentId: agent.id,
+        ...(selectedProjectId ? { projectId: selectedProjectId } : {})
+      });
+      setReviewRecord(review);
+      if (review.executionId) {
+        if (
+          review.expectedHeadSha !== selectedDetail.headSha ||
+          review.expectedBaseSha !== selectedDetail.baseSha
+        ) {
+          setReviewError(
+            "This Agent already has a durable review for an older pull request revision. Choose Review latest changes to continue the same chat."
+          );
+          return;
+        }
+        const existing = await loadHostedManagedConversation(
+          review.executionId
+        );
+        setReviewExecutionGeneration(
+          existing.runtime.execution.executionGeneration
+        );
+        setReviewPermissionMode(existing.runtime.execution.permissionMode);
+        setReviewModelKey(
+          `${existing.runtime.execution.provider}:${existing.runtime.execution.model}`
+        );
+        setReviewExecutionEffort(
+          existing.runtime.execution.reasoningEffort ?? "high"
+        );
+        setReviewDraft(await pullRequestsClient.getDraft(review.id));
+        setDetailView("chat");
+        return;
+      }
+      setReviewDraft(null);
+      setFrozenReview(null);
+      const initialPrompt = `Review pull request #${selectedDetail.number} (${selectedRepository.fullName}). Goal: review the current pull request changes, identify actionable bugs or risks, and produce an editable review draft with a concise summary and inline findings. Do not modify files or push changes. Return the findings through the review draft workflow.`;
+      const started = await startHostedManagedConversation({
+        projectId: review.projectId ?? null,
+        contextKind: review.projectId ? "project" : "independent",
+        provider: selectedModel.provider,
+        aiClientInstanceId:
+          selectedModel.instanceId ?? selectedInstance.instanceId,
+        model: selectedModel.id,
+        reasoningEffort: reviewExecutionEffort,
+        permissionMode: reviewPermissionMode,
+        targetDeviceId: selectedRunner.deviceId,
+        idempotencyKey: crypto.randomUUID(),
+        initialPrompt,
+        initialPromptClientUserMessageId: crypto.randomUUID(),
+        agentId: agent.id,
+        expectedAgentVersion: agent.currentVersion,
+        pullRequestReviewId: review.id
+      });
+      const current = await pullRequestsClient.getReview(review.id);
+      if (current.executionId !== started.execution.id) {
+        throw new Error(
+          "The review Job did not bind to the started Conversation. Refresh the review before continuing."
+        );
+      }
+      setReviewRecord(current);
+      setReviewExecutionGeneration(started.execution.executionGeneration);
+      setReviewPermissionMode(started.execution.permissionMode);
+      setReviewModelKey(
+        `${started.execution.provider}:${started.execution.model}`
+      );
+      setReviewExecutionEffort(started.execution.reasoningEffort ?? "high");
+      const persistedConversation = await loadHostedManagedConversation(
+        current.executionId!
+      );
+      setReviewExecutionGeneration(
+        persistedConversation.runtime.execution.executionGeneration
+      );
+      setReviewDraft(await pullRequestsClient.getDraft(current.id));
+      setDetailView("chat");
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The Agent review could not be started."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
   const onDividerKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -1270,9 +2297,13 @@ export function PullRequestsView({
     [boundedListWidth]
   );
 
-  const chatAccountLogin = status?.login ?? null;
-  const chatRepositoryId = repository?.id ?? null;
-  const chatRepositoryFullName = repository?.fullName ?? null;
+  const chatAccountLogin = reviewRecord?.account.login ?? status?.login ?? null;
+  const chatRepository =
+    repositories.find((item) => item.fullName === selectedRepositoryFullName) ??
+    repository;
+  const chatRepositoryId = chatRepository?.id ?? null;
+  const chatRepositoryFullName =
+    selectedRepositoryFullName ?? repository?.fullName ?? null;
   const chatPullRequestNumber = selectedDetail?.number ?? null;
   const chatHeadSha = selectedDetail?.headSha ?? null;
   const chatBaseSha = selectedDetail?.baseSha ?? null;
@@ -1283,17 +2314,29 @@ export function PullRequestsView({
       !chatRepositoryFullName ||
       chatPullRequestNumber === null ||
       chatHeadSha === null ||
-      chatBaseSha === null
+      chatBaseSha === null ||
+      !reviewRecord?.executionId ||
+      !reviewRecord.agentId ||
+      reviewRecord.repository.fullName !== chatRepositoryFullName ||
+      reviewRecord.pullRequestNumber !== chatPullRequestNumber ||
+      reviewExecutionGeneration === null
     )
       return null;
     return {
-      accountId: chatAccountLogin,
+      accountId: reviewRecord.account.id,
       accountLogin: chatAccountLogin,
       repositoryId: chatRepositoryId,
       repositoryFullName: chatRepositoryFullName,
       pullRequestNumber: chatPullRequestNumber,
       headSha: chatHeadSha,
-      baseSha: chatBaseSha
+      baseSha: chatBaseSha,
+      reviewId: reviewRecord.id,
+      executionId: reviewRecord.executionId,
+      executionGeneration: reviewExecutionGeneration,
+      agentId: reviewRecord.agentId,
+      agentVersion:
+        chatAgents.find((agent) => agent.id === reviewRecord.agentId)
+          ?.currentVersion ?? reviewRecord.agentVersion
     };
   }, [
     chatAccountLogin,
@@ -1301,7 +2344,10 @@ export function PullRequestsView({
     chatHeadSha,
     chatPullRequestNumber,
     chatRepositoryFullName,
-    chatRepositoryId
+    chatRepositoryId,
+    reviewExecutionGeneration,
+    reviewRecord,
+    chatAgents
   ]);
 
   const chatAvailabilityMessage = (() => {
@@ -1315,16 +2361,15 @@ export function PullRequestsView({
     ) {
       return "Connect GitHub in Plugins before opening a pull request chat.";
     }
-    if (!chatAdapter) {
-      return "PR chat is not connected to the Studio runtime yet. Start the Koed chat runtime before sending a message.";
-    }
     return null;
   })();
 
   // Opening Chat is useful even when its runtime prerequisite is missing: the
   // panel explains the exact prerequisite and keeps Send disabled.
   const chatAvailable = Boolean(chatScope);
-  const chatScopeKey = chatScope ? JSON.stringify(chatScope) : null;
+  const chatScopeKey = chatScope
+    ? `${chatScope.reviewId}:${chatScope.agentId}`
+    : null;
   const chatMessages = chatScopeKey
     ? (chatMessagesByScope[chatScopeKey] ?? [])
     : [];
@@ -1350,6 +2395,813 @@ export function PullRequestsView({
     },
     [chatScopeKey]
   );
+
+  const reviewModels = useMemo(
+    () =>
+      launchOptions
+        ? hostedLaunchInstancesForDevice(launchOptions, reviewRunnerId).flatMap(
+            (instance) => instance.models
+          )
+        : [],
+    [launchOptions, reviewRunnerId]
+  );
+  const reviewRunners = useMemo(() => {
+    const available = new Set(
+      (launchOptions?.runners ?? []).map((runner) => runner.deviceId)
+    );
+    return sourceControlRunners
+      .filter((runner) => available.has(runner.deviceId))
+      .map((runner) => ({
+        deviceId: runner.deviceId,
+        displayName: runner.label
+      }));
+  }, [launchOptions, sourceControlRunners]);
+  const reviewPermissionModes = useMemo(() => {
+    const model = reviewModels.find(
+      (item) => `${item.provider}:${item.id}` === reviewModelKey
+    );
+    return (
+      launchOptions?.instances.find(
+        (item) => item.instanceId === model?.instanceId
+      )?.permissionModes ?? []
+    );
+  }, [launchOptions, reviewModelKey, reviewModels]);
+  const saveReviewDraft = async (value: {
+    event: NonNullable<PullRequestReviewDraft["event"]> | null;
+    body: string;
+    findings: PullRequestReviewDraft["findings"];
+  }) => {
+    if (!reviewRecord || reviewExecutionGeneration === null) return;
+    setReviewError(null);
+    try {
+      const saved = await pullRequestsClient.saveDraft(reviewRecord.id, {
+        expectedReviewRevision: reviewRecord.revision,
+        expectedDraftRevision: reviewDraft?.revision ?? 0,
+        executionGeneration: reviewExecutionGeneration,
+        connectionGeneration: reviewRecord.connectionGeneration,
+        accountId: reviewRecord.account.id,
+        baseSha: reviewRecord.expectedBaseSha,
+        headSha: reviewRecord.expectedHeadSha,
+        ...value
+      });
+      setReviewDraft(saved);
+      setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The review draft could not be saved."
+      );
+    }
+  };
+  const freezeReviewDraft = async () => {
+    if (!reviewRecord || !reviewDraft || reviewExecutionGeneration === null)
+      return;
+    setReviewError(null);
+    try {
+      setFrozenReview(
+        await pullRequestsClient.freezeDraft(reviewRecord.id, {
+          expectedReviewRevision: reviewRecord.revision,
+          expectedDraftRevision: reviewDraft.revision,
+          executionGeneration: reviewExecutionGeneration,
+          connectionGeneration: reviewRecord.connectionGeneration,
+          accountId: reviewRecord.account.id,
+          baseSha: reviewRecord.expectedBaseSha,
+          headSha: reviewRecord.expectedHeadSha
+        })
+      );
+      setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The exact review content could not be frozen."
+      );
+    }
+  };
+  const publishReview = async (frozenReviewId: string) => {
+    if (!reviewRecord) return;
+    setReviewError(null);
+    try {
+      const frozen = frozenReview?.id === frozenReviewId ? frozenReview : null;
+      if (!frozen)
+        throw new Error(
+          "The frozen review content is unavailable. Refresh before publishing."
+        );
+      let grant = publishGrant;
+      const nativeApprovalRequired =
+        pullRequestsClient.basePath.startsWith("/studio-api");
+      if (nativeApprovalRequired && !grant) {
+        const commandRequestId = crypto.randomUUID();
+        const operationRequestId = crypto.randomUUID();
+        const status = await pullRequestsClient.requestActionGrant({
+          kind: "publish_review",
+          commandRequestId,
+          requestId: operationRequestId,
+          reviewId: reviewRecord.id,
+          frozenReviewId,
+          confirmationDigest: frozen.digest,
+          expectedReviewRevision: reviewRecord.revision,
+          targetDeviceId: reviewRecord.targetDeviceId,
+          targetDeploymentId: reviewRecord.targetDeploymentId
+        });
+        grant = { status, commandRequestId, operationRequestId };
+        setPublishGrant(grant);
+        if (status.state !== "approved") return;
+      }
+      if (
+        grant &&
+        (grant.status.state === "review_required" ||
+          grant.status.state === "pending")
+      ) {
+        setReviewError(
+          "Source-control approval is required before this review can be published."
+        );
+        return;
+      }
+      if (grant && grant.status.state !== "approved") {
+        throw new Error(
+          `Source-control approval is ${grant.status.state}. Request a new exact-content confirmation before retrying.`
+        );
+      }
+      const publishPayload = {
+        kind: "publish_review" as const,
+        reviewId: reviewRecord.id,
+        frozenReviewId,
+        confirmationDigest: frozen.digest,
+        expectedReviewRevision: reviewRecord.revision
+      };
+      const publishConfirmation = {
+        confirmed: true,
+        frozenReviewId,
+        digest: frozen.digest
+      };
+      const publishOperation = await pullRequestsClient.createOperation(
+        publishPayload,
+        undefined,
+        grant?.operationRequestId,
+        publishConfirmation,
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          },
+          ...(grant
+            ? {
+                actionGrantId: grant.status.actionGrant.id,
+                commandRequestId: grant.commandRequestId
+              }
+            : {})
+        }
+      );
+      if (
+        publishOperation.state === "pending" ||
+        publishOperation.state === "claimed"
+      ) {
+        setPendingPublishOperation(publishOperation);
+        return;
+      }
+      const published = await pullRequestsClient.waitForOperation(
+        publishOperation,
+        {
+          onUpdate: (operation) => {
+            if (operation.state === "pending" || operation.state === "claimed")
+              setPendingPublishOperation(operation);
+          }
+        }
+      );
+      const result = pullRequestOperationData(published);
+      setUncertainPublishOperationId(null);
+      setPublishedReviewUrl(
+        typeof result.url === "string"
+          ? result.url
+          : typeof result.htmlUrl === "string"
+            ? result.htmlUrl
+            : null
+      );
+      setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+      setPublishGrant(null);
+      setPendingPublishOperation(null);
+    } catch (reason) {
+      if (
+        reason &&
+        typeof reason === "object" &&
+        typeof (reason as { operationId?: unknown }).operationId === "string"
+      ) {
+        const operationId = (reason as { operationId: string }).operationId;
+        try {
+          const operation = await pullRequestsClient.loadOperation(operationId);
+          if (operation.state === "pending" || operation.state === "claimed")
+            setPendingPublishOperation(operation);
+          else if (operation.state === "uncertain")
+            setUncertainPublishOperationId(operation.id);
+        } catch {
+          /* Preserve the operation identifier in the error for later recovery. */
+        }
+      }
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "GitHub did not confirm publication."
+      );
+    }
+  };
+  const checkPendingPublish = async () => {
+    if (!pendingPublishOperation) return;
+    setReviewJobBusy(true);
+    setReviewError(null);
+    try {
+      const operation = await pullRequestsClient.loadOperation(
+        pendingPublishOperation.id
+      );
+      setPendingPublishOperation(
+        operation.state === "pending" || operation.state === "claimed"
+          ? operation
+          : null
+      );
+      if (operation.state === "uncertain")
+        setUncertainPublishOperationId(operation.id);
+      if (operation.state === "completed") {
+        const result = pullRequestOperationData(operation);
+        setPublishedReviewUrl(
+          typeof result.url === "string"
+            ? result.url
+            : typeof result.htmlUrl === "string"
+              ? result.htmlUrl
+              : null
+        );
+        if (reviewRecord)
+          setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+      } else if (
+        operation.state === "failed" ||
+        operation.state === "cancelled"
+      ) {
+        setReviewError(
+          operation.errorCode
+            ? `Publication ${operation.state}: ${operation.errorCode}`
+            : `Publication ${operation.state}.`
+        );
+      }
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The publication status could not be checked."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
+  const cancelPendingPublish = async () => {
+    if (!pendingPublishOperation) return;
+    setReviewJobBusy(true);
+    try {
+      const operation = await pullRequestsClient.cancelOperation(
+        pendingPublishOperation.id,
+        pendingPublishOperation.revision
+      );
+      setPendingPublishOperation(
+        operation.state === "pending" || operation.state === "claimed"
+          ? operation
+          : null
+      );
+      if (operation.state === "cancelled")
+        setReviewError(
+          "The queued publication was cancelled before it completed."
+        );
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The publication could not be cancelled."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
+  const checkPendingPush = async () => {
+    if (!pendingPushOperation) return;
+    setPushBusy(true);
+    try {
+      const operation = await pullRequestsClient.loadOperation(
+        pendingPushOperation.id
+      );
+      if (operation.state === "pending" || operation.state === "claimed")
+        setPendingPushOperation(operation);
+      else setPendingPushOperation(null);
+      if (operation.state === "uncertain")
+        setUncertainPushOperationId(operation.id);
+      if (
+        operation.state === "completed" &&
+        operation.payload.kind === "prepare_push"
+      ) {
+        const proposal = parsePushProposal(operation);
+        if (proposal) setPushProposal(proposal);
+        else
+          setPushError(
+            "The runner returned an incomplete push proposal; no push was started."
+          );
+      } else if (
+        operation.state === "completed" &&
+        operation.payload.kind === "push"
+      ) {
+        setPushProposal(null);
+        setReviewRecord(
+          await pullRequestsClient.getReview(operation.payload.reviewId)
+        );
+      }
+    } catch (reason) {
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "The push status could not be checked."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const cancelPendingPush = async () => {
+    if (!pendingPushOperation) return;
+    setPushBusy(true);
+    try {
+      const operation = await pullRequestsClient.cancelOperation(
+        pendingPushOperation.id,
+        pendingPushOperation.revision
+      );
+      setPendingPushOperation(
+        operation.state === "pending" || operation.state === "claimed"
+          ? operation
+          : null
+      );
+      if (operation.state === "cancelled")
+        setPushError(
+          "The queued push operation was cancelled before it completed."
+        );
+    } catch (reason) {
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "The queued push operation could not be cancelled."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const updatePublishGrant = async (
+    command: "await" | "confirm",
+    decision?: "approve"
+  ) => {
+    if (!publishGrant) return;
+    setReviewJobBusy(true);
+    setReviewError(null);
+    try {
+      const status = await pullRequestsClient.updateActionGrant(
+        publishGrant.status.actionGrant.id,
+        {
+          requestId: crypto.randomUUID(),
+          command,
+          ...(decision ? { decision } : {}),
+          actionGrantId: publishGrant.status.actionGrant.id
+        }
+      );
+      setPublishGrant({ ...publishGrant, status });
+      if (
+        status.state === "denied" ||
+        status.state === "canceled" ||
+        status.state === "expired" ||
+        status.state === "revoked"
+      ) {
+        setReviewError(
+          `Source-control approval is ${status.state}; the frozen review remains unpublished.`
+        );
+      }
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The source-control approval status could not be updated."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
+  const reconcilePublishedReview = async () => {
+    if (!reviewRecord || !frozenReview || !uncertainPublishOperationId) return;
+    setReviewJobBusy(true);
+    setReviewError(null);
+    try {
+      const operation = await pullRequestsClient.runOperation(
+        {
+          kind: "reconcile_review",
+          reviewId: reviewRecord.id,
+          frozenReviewId: frozenReview.id,
+          uncertainOperationId: uncertainPublishOperationId
+        },
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          }
+        }
+      );
+      const result = pullRequestOperationData(operation);
+      setPublishedReviewUrl(
+        typeof result.url === "string"
+          ? result.url
+          : typeof result.htmlUrl === "string"
+            ? result.htmlUrl
+            : null
+      );
+      setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+      setUncertainPublishOperationId(null);
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The GitHub publication outcome is not yet known."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
+  const preparePushProposal = async () => {
+    if (!reviewRecord || reviewRecord.workMode !== "fix") return;
+    setPushBusy(true);
+    setPushError(null);
+    setPushProposal(null);
+    setPushGrant(null);
+    try {
+      const operation = await pullRequestsClient.createOperation(
+        {
+          kind: "prepare_push",
+          reviewId: reviewRecord.id,
+          expectedRevision: reviewRecord.revision
+        },
+        undefined,
+        undefined,
+        undefined,
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          }
+        }
+      );
+      if (operation.state === "pending" || operation.state === "claimed") {
+        setPendingPushOperation(operation);
+        return;
+      }
+      const completed = await pullRequestsClient.waitForOperation(operation, {
+        onUpdate: (next) => {
+          if (next.state === "pending" || next.state === "claimed")
+            setPendingPushOperation(next);
+        }
+      });
+      setPendingPushOperation(null);
+      const proposal = parsePushProposal(completed);
+      if (!proposal)
+        throw new Error(
+          "The runner returned an incomplete push proposal; no push was started."
+        );
+      setPushProposal(proposal);
+    } catch (reason) {
+      const operationId =
+        reason &&
+        typeof reason === "object" &&
+        typeof (reason as { operationId?: unknown }).operationId === "string"
+          ? (reason as { operationId: string }).operationId
+          : null;
+      if (operationId) {
+        try {
+          const operation = await pullRequestsClient.loadOperation(operationId);
+          if (operation.state === "pending" || operation.state === "claimed")
+            setPendingPushOperation(operation);
+          if (operation.state === "uncertain")
+            setUncertainPushOperationId(operation.id);
+        } catch {
+          /* Keep the operation id in the displayed error. */
+        }
+      }
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "A push proposal could not be prepared."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const pushProposalToGitHub = async (
+    proposalId: string,
+    diffDigest: string
+  ) => {
+    if (
+      !reviewRecord ||
+      !pushProposal ||
+      pushProposal.id !== proposalId ||
+      pushProposal.diffDigest !== diffDigest
+    )
+      return;
+    setPushBusy(true);
+    setPushError(null);
+    try {
+      let grant = pushGrant;
+      const nativeApprovalRequired =
+        pullRequestsClient.basePath.startsWith("/studio-api");
+      if (nativeApprovalRequired && !grant) {
+        const commandRequestId = crypto.randomUUID();
+        const operationRequestId = crypto.randomUUID();
+        const status = await pullRequestsClient.requestActionGrant({
+          kind: "push",
+          commandRequestId,
+          requestId: operationRequestId,
+          reviewId: reviewRecord.id,
+          proposalId,
+          confirmationDigest: diffDigest,
+          expectedReviewRevision: reviewRecord.revision,
+          targetDeviceId: reviewRecord.targetDeviceId,
+          targetDeploymentId: reviewRecord.targetDeploymentId
+        });
+        grant = { status, commandRequestId, operationRequestId };
+        setPushGrant(grant);
+        if (status.state !== "approved") {
+          setPushError(
+            "Source-control approval is required before pushing this proposal."
+          );
+          return;
+        }
+      }
+      if (grant && grant.status.state !== "approved") {
+        setPushError(
+          "Source-control approval is not complete; the prepared diff remains unchanged."
+        );
+        return;
+      }
+      const pushOperation = await pullRequestsClient.createOperation(
+        {
+          kind: "push",
+          reviewId: reviewRecord.id,
+          pushProposalId: proposalId,
+          confirmationDigest: diffDigest,
+          expectedReviewRevision: reviewRecord.revision
+        },
+        undefined,
+        grant?.operationRequestId,
+        { confirmed: true, proposalId, digest: diffDigest },
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          },
+          ...(grant
+            ? {
+                actionGrantId: grant.status.actionGrant.id,
+                commandRequestId: grant.commandRequestId
+              }
+            : {})
+        }
+      );
+      if (
+        pushOperation.state === "pending" ||
+        pushOperation.state === "claimed"
+      ) {
+        setPendingPushOperation(pushOperation);
+        return;
+      }
+      const operation = await pullRequestsClient.waitForOperation(
+        pushOperation,
+        {
+          onUpdate: (next) => {
+            if (next.state === "pending" || next.state === "claimed")
+              setPendingPushOperation(next);
+          }
+        }
+      );
+      setPendingPushOperation(null);
+      setUncertainPushOperationId(null);
+      setPushError(
+        operation.state === "completed"
+          ? null
+          : "The push operation did not complete."
+      );
+      if (operation.state === "completed") {
+        setPushProposal(null);
+        setPushGrant(null);
+        setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+      }
+    } catch (reason) {
+      const operationId =
+        reason &&
+        typeof reason === "object" &&
+        typeof (reason as { operationId?: unknown }).operationId === "string"
+          ? (reason as { operationId: string }).operationId
+          : null;
+      if (operationId) {
+        try {
+          const operation = await pullRequestsClient.loadOperation(operationId);
+          if (operation.state === "pending" || operation.state === "claimed")
+            setPendingPushOperation(operation);
+          if (operation.state === "uncertain")
+            setUncertainPushOperationId(operation.id);
+        } catch {
+          /* Keep operation id in the error for later recovery. */
+        }
+      }
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "GitHub did not confirm the push."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const reconcilePush = async () => {
+    if (!reviewRecord || !pushProposal || !uncertainPushOperationId) return;
+    setPushBusy(true);
+    setPushError(null);
+    try {
+      const operation = await pullRequestsClient.runOperation(
+        {
+          kind: "reconcile_push",
+          reviewId: reviewRecord.id,
+          pushProposalId: pushProposal.id,
+          uncertainOperationId: uncertainPushOperationId
+        },
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          }
+        }
+      );
+      setUncertainPushOperationId(null);
+      setPendingPushOperation(null);
+      setPushError(
+        operation.state === "completed"
+          ? "The remote outcome was reconciled. Review the pull request before preparing another proposal."
+          : null
+      );
+      setPushProposal(null);
+      setReviewRecord(await pullRequestsClient.getReview(reviewRecord.id));
+    } catch (reason) {
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "The push outcome is not yet known."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const updatePushGrant = async (
+    command: "await" | "confirm",
+    decision?: "approve"
+  ) => {
+    if (!pushGrant) return;
+    setPushBusy(true);
+    try {
+      const status = await pullRequestsClient.updateActionGrant(
+        pushGrant.status.actionGrant.id,
+        {
+          requestId: crypto.randomUUID(),
+          command,
+          ...(decision ? { decision } : {}),
+          actionGrantId: pushGrant.status.actionGrant.id
+        }
+      );
+      setPushGrant({ ...pushGrant, status });
+    } catch (reason) {
+      setPushError(
+        reason instanceof Error
+          ? reason.message
+          : "The source-control approval could not be checked."
+      );
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const reviewLatest = async () => {
+    const selectedRepository =
+      repositories.find(
+        (item) => item.fullName === selectedRepositoryFullName
+      ) ?? repository;
+    if (
+      !reviewRecord ||
+      !selectedRepository ||
+      !status?.accountId ||
+      !status.login ||
+      !status.connectionGeneration
+    )
+      return;
+    setReviewJobBusy(true);
+    setReviewError(null);
+    try {
+      const detailOperation = await pullRequestsClient.runOperation(
+        {
+          kind: "pull_request_details",
+          account: { id: status.accountId, login: status.login },
+          connectionGeneration: status.connectionGeneration,
+          repository: {
+            id: selectedRepository.id,
+            owner: selectedRepository.fullName.split("/")[0] ?? "",
+            name: selectedRepository.fullName.split("/")[1] ?? "",
+            fullName: selectedRepository.fullName
+          },
+          pullRequestNumber: reviewRecord.pullRequestNumber
+        },
+        {
+          target: {
+            deviceId: reviewRecord.targetDeviceId,
+            deploymentId: reviewRecord.targetDeploymentId
+          }
+        }
+      );
+      const result = pullRequestOperationData(detailOperation);
+      const updated = await pullRequestsClient.refreshReview(
+        reviewRecord.id,
+        reviewRecord.revision,
+        detailOperation.id
+      );
+      if (!updated.executionId)
+        throw new Error("The existing review Conversation is unavailable.");
+      setReviewRecord(updated);
+      setFrozenReview(null);
+      setSelectedDetail(parsePullRequest(result.pullRequest));
+      const loaded = await loadHostedManagedConversation(updated.executionId);
+      setReviewExecutionGeneration(
+        loaded.runtime.execution.executionGeneration
+      );
+      const prompt = `Review the latest changes to pull request #${updated.pullRequestNumber} (${updated.repository.fullName}). Goal: review the newly updated diff, identify actionable bugs or risks, and update the editable review draft. Do not modify files or push changes.`;
+      await queueHostedConversationPrompt(loaded.runtime.execution, prompt, {
+        idempotencyKey: crypto.randomUUID(),
+        clientUserMessageId: crypto.randomUUID(),
+        agentId: updated.agentId,
+        expectedAgentVersion:
+          chatAgents.find((agent) => agent.id === updated.agentId)
+            ?.currentVersion ?? updated.agentVersion
+      });
+      setReviewDraft(await pullRequestsClient.getDraft(updated.id));
+      setDetailView("chat");
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The latest pull request revision could not be assigned to the existing review Job."
+      );
+    } finally {
+      setReviewJobBusy(false);
+    }
+  };
+  const enableFixesAndSend = async (request: string) => {
+    if (
+      !reviewRecord?.executionId ||
+      !reviewExecutionGeneration ||
+      !request.trim()
+    )
+      return;
+    setEnablingFixes(true);
+    setReviewError(null);
+    try {
+      const enabled = await pullRequestsClient.enableFixes(
+        reviewRecord.id,
+        reviewRecord.revision
+      );
+      setReviewRecord(enabled);
+      const loaded = await loadHostedManagedConversation(
+        reviewRecord.executionId
+      );
+      if (
+        loaded.runtime.execution.executionGeneration !==
+        reviewExecutionGeneration
+      ) {
+        throw new Error(
+          "The review Job changed. Refresh before sending the fixes request."
+        );
+      }
+      await queueHostedConversationPrompt(
+        loaded.runtime.execution,
+        request.trim(),
+        {
+          idempotencyKey: crypto.randomUUID(),
+          clientUserMessageId: crypto.randomUUID(),
+          agentId: reviewRecord.agentId,
+          expectedAgentVersion:
+            chatAgents.find((agent) => agent.id === reviewRecord.agentId)
+              ?.currentVersion ?? reviewRecord.agentVersion
+        }
+      );
+      setDetailView("chat");
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "The explicit fixes request could not be sent."
+      );
+    } finally {
+      setEnablingFixes(false);
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 w-full">
@@ -1419,9 +3271,13 @@ export function PullRequestsView({
                           key={value}
                           type="button"
                           onClick={() => setTab(value)}
-                          className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize ${tab === value ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface hover:text-foreground-secondary"}`}
+                          className={`rounded-md px-3 py-1.5 text-sm font-medium ${tab === value ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface hover:text-foreground-secondary"}`}
                         >
-                          {value}
+                          {value === "reviewing"
+                            ? "Review requested"
+                            : value === "all"
+                              ? "All"
+                              : "Authored"}
                         </button>
                       )
                     )}
@@ -1440,6 +3296,18 @@ export function PullRequestsView({
                           </button>
                         )}
                       </>
+                    )}
+                    {repository && mode === "live" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          repositorySelectionIntentRef.current = true;
+                          setRepository(null);
+                        }}
+                        className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-hover"
+                      >
+                        All repositories
+                      </button>
                     )}
                     <RepositoryPicker
                       repositories={repositories}
@@ -1527,7 +3395,7 @@ export function PullRequestsView({
                   </div>
                   <div className="mt-3 flex items-center justify-between px-1">
                     <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
-                      {repository?.fullName ?? "Repository"}
+                      {repository?.fullName ?? "All authorized repositories"}
                     </p>
                     <span className="text-xs text-subtle">
                       {filteredPullRequests.length} loaded
@@ -1556,10 +3424,21 @@ export function PullRequestsView({
                     <div className="space-y-1">
                       {filteredPullRequests.map((item) => (
                         <PullRequestRow
-                          key={item.number}
+                          key={`${item.repositoryFullName ?? repository?.fullName ?? "repo"}#${item.number}`}
                           pullRequest={item}
-                          selected={selectedNumber === item.number}
-                          onClick={() => setSelectedNumber(item.number)}
+                          selected={
+                            selectedNumber === item.number &&
+                            selectedRepositoryFullName ===
+                              item.repositoryFullName
+                          }
+                          onClick={() => {
+                            setSelectedRepositoryFullName(
+                              item.repositoryFullName ??
+                                repository?.fullName ??
+                                null
+                            );
+                            setSelectedNumber(item.number);
+                          }}
                         />
                       ))}
                     </div>
@@ -1602,8 +3481,11 @@ export function PullRequestsView({
               {selectedDetail && (
                 <PullRequestDetail
                   pullRequest={selectedDetail}
+                  detailPayload={detailPayload}
                   chatOpen={detailView === "chat"}
+                  codeOpen={detailView === "code"}
                   onSummary={() => setDetailView("summary")}
+                  onCode={() => setDetailView("code")}
                   onChat={() => setDetailView("chat")}
                   chatAvailable={chatAvailable}
                   chatScope={chatScope}
@@ -1611,13 +3493,106 @@ export function PullRequestsView({
                   chatDraft={chatDraft}
                   onChatDraftChange={updateChatDraft}
                   onChatMessagesChange={updateChatMessages}
-                  chatAdapter={chatAdapter}
+                  onChatAuthorizationLost={() => {
+                    setReviewError(
+                      "Your session expired. Reconnect to Koed before continuing this review Job."
+                    );
+                    void loadStatusAndRepositories();
+                  }}
                   chatAgents={chatAgents}
                   chatModelOptions={chatModelOptions}
-                  chatInitialModel={`${DEFAULT_PR_MODEL.provider}:${DEFAULT_PR_MODEL.id}`}
-                  chatInitialEffort="High"
+                  chatInitialModel={
+                    reviewModelKey ||
+                    `${DEFAULT_PR_MODEL.provider}:${DEFAULT_PR_MODEL.id}`
+                  }
+                  chatInitialEffort={reviewExecutionEffort}
+                  chatInitialPermissionMode={chatPermissionForRuntime(
+                    reviewPermissionMode
+                  )}
                   demo={mode === "demo"}
                   chatAvailabilityMessage={chatAvailabilityMessage}
+                  reviewAgentId={reviewAgentId}
+                  onReviewAgentChange={setReviewAgentId}
+                  reviewAgents={chatAgents}
+                  reviewRunnerId={reviewRunnerId}
+                  onReviewRunnerChange={(deviceId) => {
+                    setReviewRunnerId(deviceId);
+                    setReviewModelKey("");
+                  }}
+                  reviewRunners={reviewRunners}
+                  reviewModelKey={reviewModelKey}
+                  onReviewModelChange={(key) => {
+                    setReviewModelKey(key);
+                    const model = reviewModels.find(
+                      (item) => `${item.provider}:${item.id}` === key
+                    );
+                    const instance = launchOptions?.instances.find(
+                      (item) => item.instanceId === model?.instanceId
+                    );
+                    setReviewExecutionEffort((current) =>
+                      model?.supportedReasoningEfforts.includes(current)
+                        ? current
+                        : (model?.supportedReasoningEfforts[0] ?? "")
+                    );
+                    setReviewPermissionMode(
+                      instance?.permissionModes.includes("ask")
+                        ? "ask"
+                        : (instance?.permissionModes[0] ?? "")
+                    );
+                  }}
+                  reviewModels={reviewModels}
+                  reviewPermissionMode={reviewPermissionMode}
+                  onReviewPermissionModeChange={setReviewPermissionMode}
+                  reviewPermissionModes={reviewPermissionModes}
+                  reviewEffort={reviewExecutionEffort}
+                  onReviewEffortChange={setReviewExecutionEffort}
+                  matchingProjects={matchingProjects}
+                  selectedProjectId={selectedProjectId}
+                  onSelectedProjectChange={setSelectedProjectId}
+                  onStartAgentReview={() => void startAgentReview()}
+                  reviewJobBusy={reviewJobBusy}
+                  reviewError={reviewError}
+                  reviewRecord={reviewRecord}
+                  reviewDraft={reviewDraft}
+                  frozenReview={frozenReview}
+                  onSaveReviewDraft={saveReviewDraft}
+                  onFreezeReview={freezeReviewDraft}
+                  onPublishReview={publishReview}
+                  publishGrant={publishGrant?.status ?? null}
+                  onApprovePublishGrant={() =>
+                    updatePublishGrant("confirm", "approve")
+                  }
+                  onCheckPublishGrant={() => updatePublishGrant("await")}
+                  pendingPublishOperation={pendingPublishOperation}
+                  onCheckPendingPublish={checkPendingPublish}
+                  onCancelPendingPublish={cancelPendingPublish}
+                  onReviewLatest={reviewLatest}
+                  onEnableFixes={enableFixesAndSend}
+                  enablingFixes={enablingFixes}
+                  publishedReviewUrl={publishedReviewUrl}
+                  reconcilePublishedReview={reconcilePublishedReview}
+                  uncertainPublishOperationId={uncertainPublishOperationId}
+                  canApprove={Boolean(
+                    status?.login &&
+                    selectedDetail.author.toLowerCase() !==
+                      status.login.toLowerCase()
+                  )}
+                  canPublishReview={selectedDetail.state === "open"}
+                  pushProposal={pushProposal}
+                  pendingPushOperationId={pendingPushOperation?.id ?? null}
+                  onCheckPendingPush={checkPendingPush}
+                  onCancelPendingPush={cancelPendingPush}
+                  uncertainPushOperationId={uncertainPushOperationId}
+                  pushBusy={pushBusy}
+                  pushError={pushError}
+                  onPreparePush={preparePushProposal}
+                  onPushProposal={pushProposalToGitHub}
+                  onReconcilePush={reconcilePush}
+                  pushGrant={pushGrant?.status ?? null}
+                  onApprovePushGrant={() =>
+                    updatePushGrant("confirm", "approve")
+                  }
+                  onCheckPushGrant={() => updatePushGrant("await")}
                   onClose={() => {
                     setSelectedNumber(null);
                     setSelectedDetail(null);

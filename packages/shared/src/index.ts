@@ -38,6 +38,37 @@ export {
 } from "./notification-drain-controller.js";
 
 export {
+  pullRequestAccountSchema,
+  pullRequestFindingSchema,
+  pullRequestFrozenReviewSchema,
+  pullRequestOperationKindSchema,
+  pullRequestOperationPageSchema,
+  pullRequestOperationPayloadSchema,
+  pullRequestOperationResultSchema,
+  pullRequestOperationSchema,
+  pullRequestOperationStateSchema,
+  pullRequestRepositorySchema,
+  pullRequestReviewDraftSchema,
+  pullRequestReviewSchema,
+  pullRequestReviewStatusSchema
+} from "./pull-requests.js";
+export type {
+  PullRequestAccount,
+  PullRequestFinding,
+  PullRequestFrozenReview,
+  PullRequestOperationKind,
+  PullRequestOperationPage,
+  PullRequestOperationPayload,
+  PullRequestOperationRecord,
+  PullRequestOperationResult,
+  PullRequestOperationState,
+  PullRequestRepository,
+  PullRequestReviewDraft,
+  PullRequestReviewRecord,
+  PullRequestReviewStatus
+} from "./pull-requests.js";
+
+export {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
   PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,

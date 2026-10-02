@@ -464,6 +464,13 @@
       "when": 1790848158661,
       "tag": "0065_agent_job_phases",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1790926020000,
+      "tag": "0066_pull_request_authority",
+      "breakpoints": true
     }
   ]
 }

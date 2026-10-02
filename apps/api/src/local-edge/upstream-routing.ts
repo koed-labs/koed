@@ -643,6 +643,72 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      pathname === "/v1/pull-requests" ||
+      pathname.startsWith("/v1/pull-requests/")
+    ) {
+      const id =
+        "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+      const matches = (pattern: string) =>
+        new RegExp(pattern, "i").test(pathname);
+      if (
+        pathname === "/v1/pull-requests/runners" &&
+        method === "GET" &&
+        parsed.searchParams.size === 0
+      )
+        return;
+      const list =
+        pathname === "/v1/pull-requests" ||
+        pathname === "/v1/pull-requests/operations";
+      if (list && (method === "GET" || method === "POST")) {
+        if (
+          (method === "POST" && parsed.searchParams.size !== 0) ||
+          [...parsed.searchParams.keys()].some(
+            (key) =>
+              ![
+                "limit",
+                "before",
+                "agentId",
+                "executionId",
+                "repository",
+                "number"
+              ].includes(key)
+          )
+        )
+          deny();
+        return;
+      }
+      if (parsed.searchParams.size !== 0) deny();
+      if (
+        method === "GET" &&
+        (matches(
+          `^/v1/pull-requests/${id}(?:/draft(?:/frozen)?|/freezes/${id})?$`
+        ) ||
+          matches(`^/v1/pull-requests/operations/${id}$`) ||
+          matches(`^/v1/pull-requests/runner/operations/${id}$`) ||
+          matches(
+            `^/v1/pull-requests/runner/reviews/${id}(?:/freezes/${id})?$`
+          ) ||
+          matches(`^/v1/pull-requests/runner/executions/${id}/review$`))
+      )
+        return;
+      if (method === "PUT" && matches(`^/v1/pull-requests/${id}/draft$`))
+        return;
+      if (
+        method === "POST" &&
+        (matches(
+          `^/v1/pull-requests/${id}/(?:draft/freeze|enable-fixes|refresh)$`
+        ) ||
+          matches(`^/v1/pull-requests/operations/${id}/cancel$`) ||
+          pathname === "/v1/pull-requests/runner/operations/claim" ||
+          matches(
+            `^/v1/pull-requests/runner/operations/${id}/(?:heartbeat|complete|fail)$`
+          ) ||
+          matches(`^/v1/pull-requests/runner/reviews/${id}/complete$`))
+      )
+        return;
+      deny();
+    }
+    if (
       /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/personal-agent-(?:intent|turn-status)$/.test(
         pathname
       )

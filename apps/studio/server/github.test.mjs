@@ -1,561 +1,513 @@
-import { afterEach, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { request } from "node:http";
 import { createGithubConnector } from "./github.mjs";
-import { startStudioServer } from "./index.mjs";
 
-const githubResponse = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" }
-  });
-
-const httpRequest = (url, { method = "GET", headers = {}, body } = {}) =>
-  new Promise((resolve, reject) => {
-    const req = request(url, { method, headers }, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        const text = Buffer.concat(chunks).toString("utf8");
-        resolve({
-          status: res.statusCode,
-          headers: res.headers,
-          body: text,
-          json: () => JSON.parse(text)
-        });
-      });
-    });
-    req.on("error", reject);
-    if (body !== undefined) req.write(body);
-    req.end();
-  });
-
-describe("GitHub connector", () => {
-  let started;
-
-  afterEach(async () => {
-    await started?.close?.();
-    started = undefined;
-  });
-
-  it("uses fixed gh arguments and keeps the token out of its status DTO", async () => {
-    const calls = [];
-    const connector = createGithubConnector({
-      execFile: async (...args) => {
-        calls.push(args);
-        return { stdout: "ghs-test-secret\n" };
-      },
-      fetchImpl: async (url, init) => {
-        assert.equal(url, "https://api.github.com/user");
-        assert.equal(init.method, "GET");
-        assert.equal(init.redirect, "error");
-        assert.equal(init.headers.authorization, "Bearer ghs-test-secret");
-        return githubResponse({ login: "octocat" });
-      }
-    });
-
-    assert.deepEqual(await connector.connect(), {
-      state: "connected",
-      login: "octocat",
-      message: null,
-      capabilities: { readPullRequests: true, publishReviews: false }
-    });
-    assert.deepEqual(calls[0]?.slice(0, 2), [
-      "gh",
-      ["auth", "token", "--hostname", "github.com"]
-    ]);
-    assert.equal(
-      JSON.stringify(connector.getStatus()).includes("secret"),
-      false
-    );
-  });
-
-  it("does not let a late connect win after disconnect", async () => {
-    let releaseToken;
-    const tokenReady = new Promise((resolve) => {
-      releaseToken = resolve;
-    });
-    const connector = createGithubConnector({
-      execFile: async () => {
-        await tokenReady;
-        return { stdout: "ghs-race-secret" };
-      },
-      fetchImpl: async () => githubResponse({ login: "late-user" })
-    });
-
-    const connecting = connector.connect();
-    assert.deepEqual(connector.disconnect().state, "disconnected");
-    releaseToken();
-    await connecting;
-    assert.equal(connector.getStatus().state, "disconnected");
-    assert.equal(connector.getStatus().login, null);
-  });
-
-  it("sanitizes gh failures", async () => {
-    const connector = createGithubConnector({
-      execFile: async () => {
-        const error = new Error("ghs-never-return-this");
-        error.stderr = "ghs-never-return-this";
-        throw error;
-      },
-      fetchImpl: async () => githubResponse({ login: "unexpected" })
-    });
-    const status = await connector.connect();
-    assert.equal(status.state, "error");
-    assert.equal(status.login, null);
-    assert.equal(status.message.includes("ghs-never-return-this"), false);
-  });
-
-  it("rejects provider redirects and does not expose provider errors", async () => {
-    let requestOptions;
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async (_url, options) => {
-        requestOptions = options;
-        throw new TypeError("redirected with fixture-token");
-      }
-    });
-    const status = await connector.connect();
-    assert.equal(requestOptions.redirect, "error");
-    assert.equal(status.state, "error");
-    assert.equal(status.message, "GitHub identity check failed.");
-    assert.equal(JSON.stringify(status).includes("fixture-token"), false);
-  });
-
-  it("rejects malformed and oversized identity responses", async () => {
-    for (const body of ["not-json", "x".repeat(70 * 1024)]) {
-      const connector = createGithubConnector({
-        execFile: async () => ({ stdout: "fixture-token" }),
-        fetchImpl: async () => new Response(body, { status: 200 })
-      });
-      const status = await connector.connect();
-      assert.equal(status.state, "error");
-      assert.equal(status.login, null);
-      assert.equal(JSON.stringify(status).includes("fixture-token"), false);
-    }
-  });
-
-  it("requires origin-scoped CSRF and an empty JSON object for writes", async () => {
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "ghs-http-secret" }),
-      fetchImpl: async () => githubResponse({ login: "octocat" })
-    });
-    started = await startStudioServer({
-      port: 0,
-      staticDir: "/tmp/koed-studio-missing-static",
-      githubConnector: connector
-    });
-    const origin = started.url;
-    const session = await httpRequest(`${origin}/studio-api/github/session`, {
-      headers: { origin }
-    });
-    assert.equal(session.status, 200);
-    const csrf = session.json().csrfToken;
-    assert.equal(typeof csrf, "string");
-
-    const missingCsrf = await httpRequest(
-      `${origin}/studio-api/github/connect`,
-      {
-        method: "POST",
-        headers: {
-          origin,
-          "content-type": "application/json",
-          "content-length": "2"
-        },
-        body: "{}"
-      }
-    );
-    assert.equal(missingCsrf.status, 403);
-
-    const wrongOrigin = await httpRequest(
-      `${origin}/studio-api/github/connect`,
-      {
-        method: "POST",
-        headers: {
-          origin: "http://localhost:1",
-          "x-studio-csrf": csrf,
-          "content-type": "application/json",
-          "content-length": "2"
-        },
-        body: "{}"
-      }
-    );
-    assert.equal(wrongOrigin.status, 403);
-
-    const wrongBody = await httpRequest(`${origin}/studio-api/github/connect`, {
-      method: "POST",
-      headers: {
-        origin,
-        "x-studio-csrf": csrf,
-        "content-type": "application/json",
-        "content-length": "13"
-      },
-      body: '{"extra":true}'
-    });
-    assert.equal(wrongBody.status, 400);
-
-    const connected = await httpRequest(`${origin}/studio-api/github/connect`, {
-      method: "POST",
-      headers: {
-        origin,
-        "x-studio-csrf": csrf,
-        "content-type": "application/json",
-        "content-length": "2"
-      },
-      body: "{}"
-    });
-    assert.equal(connected.status, 200);
-    assert.equal(connected.json().login, "octocat");
-    assert.equal(JSON.stringify(connected.json()).includes("secret"), false);
-  });
-
-  it("rejects missing and cross-origin browser credentials", async () => {
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async () => githubResponse({ login: "octocat" })
-    });
-    started = await startStudioServer({
-      port: 0,
-      staticDir: "/tmp/koed-studio-missing-static",
-      githubConnector: connector
-    });
-    const origin = started.url;
-    const session = await httpRequest(`${origin}/studio-api/github/session`, {
-      headers: { origin }
-    });
-    const csrf = session.json().csrfToken;
-    const missingOrigin = await httpRequest(
-      `${origin}/studio-api/github/connect`,
-      {
-        method: "POST",
-        headers: {
-          "x-studio-csrf": csrf,
-          "content-type": "application/json",
-          "content-length": "2"
-        },
-        body: "{}"
-      }
-    );
-    assert.equal(missingOrigin.status, 403);
-    const crossOriginStatus = await httpRequest(
-      `${origin}/studio-api/github/status`,
-      {
-        headers: { origin: "http://localhost:1" }
-      }
-    );
-    assert.equal(crossOriginStatus.status, 403);
-    const crossOriginSession = await httpRequest(
-      `${origin}/studio-api/github/session`,
-      {
-        headers: { origin: "http://localhost:1" }
-      }
-    );
-    assert.equal(crossOriginSession.status, 403);
-  });
-
-  it("expires CSRF sessions", async () => {
-    let clock = 1_000;
-    started = await startStudioServer({
-      port: 0,
-      staticDir: "/tmp/koed-studio-missing-static",
-      now: () => new Date(clock),
-      githubSessionTtlMs: 10,
-      githubConnector: createGithubConnector({
-        execFile: async () => ({ stdout: "fixture-token" }),
-        fetchImpl: async () => githubResponse({ login: "octocat" })
+const hostAccounts = (...logins) => ({
+  hosts: {
+    "github.com": logins.map(
+      ({ login, active = false, state = "success" }) => ({
+        login,
+        active,
+        state
       })
-    });
-    const origin = started.url;
-    const session = await httpRequest(`${origin}/studio-api/github/session`, {
-      headers: { origin }
-    });
-    clock += 11;
-    const response = await httpRequest(
-      `${origin}/studio-api/github/disconnect`,
-      {
-        method: "POST",
-        headers: {
-          origin,
-          "x-studio-csrf": session.json().csrfToken,
-          "content-type": "application/json",
-          "content-length": "2"
-        },
-        body: "{}"
-      }
-    );
-    assert.equal(response.status, 403);
-  });
+    )
+  }
+});
 
-  it("lets a newer connect win when an older request finishes late", async () => {
-    let call = 0;
-    let releaseFirst;
-    const firstFetch = new Promise((resolve) => {
-      releaseFirst = resolve;
-    });
-    const connector = createGithubConnector({
-      execFile: async () => ({
-        stdout: ++call === 1 ? "token-one" : "token-two"
-      }),
-      fetchImpl: async (_url, options) => {
-        if (options.headers.authorization === "Bearer token-one") {
-          await firstFetch;
-          return githubResponse({ login: "older" });
-        }
-        return githubResponse({ login: "newer" });
-      }
-    });
-    const older = connector.connect();
-    await new Promise((resolve) => setImmediate(resolve));
-    const newer = connector.connect();
-    assert.equal((await newer).login, "newer");
-    releaseFirst();
-    await older;
-    assert.equal(connector.getStatus().login, "newer");
-  });
+const pullRequest = ({ number = 1, headSha = "a".repeat(40) } = {}) => ({
+  number,
+  title: "Example PR",
+  state: "open",
+  draft: false,
+  merged: false,
+  user: { login: "alice" },
+  requested_reviewers: [{ login: "octocat" }],
+  head: {
+    sha: headSha,
+    ref: "topic",
+    repo: { id: 2, full_name: "alice/repo" }
+  },
+  base: {
+    sha: "b".repeat(40),
+    ref: "main",
+    repo: { id: 1, full_name: "example/repo" }
+  },
+  updated_at: "2026-09-22T00:00:00Z",
+  html_url: `https://github.com/example/repo/pull/${number}`,
+  body: "Pull request body",
+  additions: 2,
+  deletions: 1,
+  changed_files: 1,
+  comments: 1,
+  review_comments: 1
+});
 
-  it("refreshes identity before reads and maps fixed GitHub responses", async () => {
-    const requests = [];
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async (url, options) => {
-        requests.push([url, options]);
-        if (url === "https://api.github.com/user")
-          return githubResponse({ login: "octocat" });
-        if (url.includes("/user/repos"))
-          return githubResponse([
-            { id: 1, full_name: "octocat/hello", private: true }
-          ]);
-        if (url.includes("/pulls/7"))
-          return githubResponse({
-            number: 7,
-            title: "Fix",
-            state: "closed",
-            draft: false,
-            merged_at: "2026-09-22T00:00:00Z",
-            user: { login: "octocat" },
-            requested_reviewers: [{ login: "reviewer" }],
-            head: { sha: "head", ref: "fix" },
-            base: { sha: "base", ref: "main" },
-            updated_at: "2026-09-22T00:00:00Z",
-            html_url: "https://github.com/octocat/hello/pull/7",
-            body: "body",
-            additions: 2,
-            deletions: 1,
-            changed_files: 1
-          });
-        return githubResponse([]);
-      }
-    });
-    await connector.connect();
-    assert.deepEqual(await connector.readRepositories(), {
-      repositories: [{ id: 1, fullName: "octocat/hello", private: true }],
-      hasMore: false,
-      page: 1
-    });
-    const detail = await connector.readPullRequest({
-      repo: "octocat/hello",
-      number: 7
-    });
-    assert.equal(detail.pullRequest.merged, true);
-    assert.equal(detail.pullRequest.bodyTruncated, false);
-    assert.equal(detail.pullRequest.changedFiles, 1);
-    const readRequest = requests.at(-1);
-    assert.equal(
-      readRequest[0],
-      "https://api.github.com/repos/octocat/hello/pulls/7"
-    );
-    assert.equal(readRequest[1].redirect, "error");
-  });
+const searchItem = ({ number, author = "alice", title = `PR ${number}` }) => ({
+  number,
+  title,
+  user: { login: author },
+  updated_at: "2026-10-01T00:00:00Z",
+  html_url: `https://github.com/example/repo/pull/${number}`,
+  repository_url: "https://api.github.com/repos/example/repo"
+});
 
-  it("fails closed when refreshed GitHub identity changes", async () => {
-    let identityChecks = 0;
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async (url) => {
-        if (url === "https://api.github.com/user")
-          return githubResponse({
-            login: identityChecks++ === 0 ? "octocat" : "other"
-          });
-        throw new Error("should-not-read");
-      }
-    });
-    await connector.connect();
-    await assert.rejects(
-      connector.readRepositories(),
-      (error) => error.message === "github_account_changed"
-    );
-    assert.equal(connector.getStatus().state, "error");
-  });
-
-  it("rejects unsafe repositories and malformed pull request payloads", async () => {
-    const connector = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async (url) => {
-        if (url.endsWith("/user")) return githubResponse({ login: "octocat" });
-        return githubResponse([{}]);
-      }
-    });
-    await connector.connect();
-    await assert.rejects(
-      connector.readPullRequests({ repo: "../secret" }),
-      (error) => error.message === "github_invalid_repository"
-    );
-    await assert.rejects(
-      connector.readPullRequests({ repo: "octocat/hello" }),
-      (error) => error.message === "github_read_invalid"
-    );
-  });
-
-  it("invalidates a connected status after credential rejection but not rate limits", async () => {
-    let tokenCalls = 0;
-    const rejected = createGithubConnector({
-      execFile: async () => {
-        if (tokenCalls++ === 0) return { stdout: "fixture-token" };
-        throw new Error("credential rejected");
-      },
-      fetchImpl: async () => githubResponse({ login: "octocat" })
-    });
-    await rejected.connect();
-    await assert.rejects(rejected.readRepositories());
-    assert.equal(rejected.getStatus().state, "error");
-
-    let requestCount = 0;
-    const rateLimited = createGithubConnector({
-      execFile: async () => ({ stdout: "fixture-token" }),
-      fetchImpl: async (url) => {
-        if (url.endsWith("/user")) return githubResponse({ login: "octocat" });
-        requestCount += 1;
-        return new Response("{}", {
-          status: 403,
-          headers: {
-            "content-type": "application/json",
-            "x-ratelimit-remaining": "0"
-          }
-        });
-      }
-    });
-    await rateLimited.connect();
-    await assert.rejects(
-      rateLimited.readRepositories(),
-      (error) => error.message === "github_rate_limited"
-    );
-    assert.equal(requestCount, 1);
-    assert.equal(rateLimited.getStatus().state, "connected");
-  });
-
-  it("signals lost authentication distinctly from temporary read failures", async () => {
-    let failure;
-    started = await startStudioServer({
-      port: 0,
-      githubConnector: {
-        readRepositories: async () => {
-          throw new Error(failure);
-        }
-      }
-    });
-    for (const [code, expected] of [
-      ["github_identity_rejected", 401],
-      ["github_cli_auth_failed", 401],
-      ["github_account_changed", 409],
-      ["github_rate_limited", 429],
-      ["github_identity_timeout", 504]
-    ]) {
-      failure = code;
-      const response = await httpRequest(
-        `${started.url}/studio-api/github/repositories?page=1`
-      );
-      assert.equal(response.status, expected, code);
+const createFixture = ({
+  api,
+  accounts = [{ login: "alice", active: true }],
+  env
+} = {}) => {
+  const calls = [];
+  let activeLogin = accounts.find((account) => account.active)?.login ?? null;
+  const execFile = async (file, args, options) => {
+    calls.push({ file, args, options });
+    assert.equal(file, "gh");
+    assert.equal(typeof options.timeout, "number");
+    assert.equal(typeof options.maxBuffer, "number");
+    assert.equal(options.env.GH_TOKEN, undefined);
+    assert.equal(options.env.GITHUB_TOKEN, undefined);
+    assert.equal(options.env.GIT_ASKPASS, undefined);
+    if (args[0] === "auth" && args[1] === "status") {
+      return {
+        stdout: JSON.stringify(
+          hostAccounts(
+            ...accounts.map((account) => ({
+              ...account,
+              active: account.login === activeLogin
+            }))
+          )
+        )
+      };
     }
-  });
+    if (args[0] === "auth" && args[1] === "switch") {
+      activeLogin = args[args.indexOf("--user") + 1];
+      return { stdout: "" };
+    }
+    if (args[0] === "auth" && args[1] === "login") {
+      activeLogin = accounts[0]?.login ?? null;
+      return { stdout: "" };
+    }
+    if (args[0] === "api" && args[3] === "user")
+      return { stdout: JSON.stringify({ id: 123, login: activeLogin }) };
+    if (args[0] === "api") {
+      const endpoint = args[3];
+      if (typeof api === "function")
+        return { stdout: JSON.stringify(await api(endpoint, args)) };
+      return { stdout: JSON.stringify(api?.[endpoint] ?? []) };
+    }
+    throw new Error(`unexpected gh args: ${args.join(" ")}`);
+  };
+  const connector = createGithubConnector({ execFile, environment: env });
+  return {
+    connector,
+    calls,
+    get activeLogin() {
+      return activeLogin;
+    },
+    setActiveLogin(login) {
+      activeLogin = login;
+    }
+  };
+};
 
-  it("rejects query arguments on connector endpoints", async () => {
-    started = await startStudioServer({
-      port: 0,
-      staticDir: "/tmp/koed-studio-missing-static",
-      githubConnector: createGithubConnector()
+describe("GitHub delegated CLI connector", () => {
+  it("discovers only public GitHub accounts, selects explicitly, and never reads a token", async () => {
+    const fixture = createFixture({
+      accounts: [
+        { login: "alice", active: true },
+        { login: "octocat", active: false }
+      ],
+      env: {
+        PATH: "/usr/bin",
+        GH_TOKEN: "must-not-inherit",
+        GITHUB_TOKEN: "must-not-inherit-either",
+        GIT_ASKPASS: "must-not-inherit",
+        APP_ACCESS_TOKEN: "must-not-inherit",
+        HOME: "/unexpected"
+      }
     });
-    const response = await httpRequest(
-      `${started.url}/studio-api/github/status?token=do-not-use`
+    assert.deepEqual(await fixture.connector.discoverAccounts(), [
+      { host: "github.com", login: "alice", active: true, state: "success" },
+      { host: "github.com", login: "octocat", active: false, state: "success" }
+    ]);
+    const status = await fixture.connector.selectAccount({ login: "octocat" });
+    assert.equal(status.state, "connected");
+    assert.equal(status.login, "octocat");
+    assert.equal(status.accountId, "123");
+    assert.equal(status.capabilities.publishReviews, true);
+    assert.equal(fixture.activeLogin, "octocat");
+    assert.deepEqual(
+      fixture.calls.find(
+        (call) => call.args[0] === "auth" && call.args[1] === "switch"
+      )?.args,
+      ["auth", "switch", "--hostname", "github.com", "--user", "octocat"]
     );
-    assert.equal(response.status, 400);
+    assert.ok(
+      fixture.calls.every(
+        ({ args }) =>
+          !(args[0] === "auth" && args[1] === "token") &&
+          !args.includes("--show-token")
+      )
+    );
+    assert.equal(JSON.stringify(status).includes("must-not-inherit"), false);
   });
 
-  it("serves bounded read-only repository and pull request routes", async () => {
-    const calls = [];
-    const githubConnector = {
-      getStatus: () => ({
-        state: "connected",
-        login: "octocat",
-        message: null,
-        capabilities: { readPullRequests: true, publishReviews: false }
-      }),
-      readRepositories: async (query) => {
-        calls.push(["repositories", query]);
+  it("keeps sign-in explicit and uses the browser login command only when requested", async () => {
+    const fixture = createFixture({
+      accounts: [{ login: "alice", active: false }]
+    });
+    assert.equal(fixture.calls.length, 0);
+    const status = await fixture.connector.beginBrowserSignIn();
+    assert.equal(status.login, "alice");
+    assert.deepEqual(
+      fixture.calls.find((call) => call.args[1] === "login")?.args,
+      [
+        "auth",
+        "login",
+        "--hostname",
+        "github.com",
+        "--web",
+        "--git-protocol",
+        "https"
+      ]
+    );
+  });
+
+  it("connects to the active identity and invalidates state on account drift or disconnect races", async () => {
+    const fixture = createFixture({
+      accounts: [{ login: "alice", active: true }]
+    });
+    const status = await fixture.connector.connect();
+    assert.equal(status.login, "alice");
+    assert.equal(
+      status.connectionGeneration,
+      fixture.connector.getGeneration()
+    );
+
+    const waiting = createFixture({
+      accounts: [{ login: "alice", active: true }]
+    });
+    let release;
+    const pending = new Promise((resolve) => (release = resolve));
+    const original = waiting.connector.connect.bind(waiting.connector);
+    const delayed = {
+      ...waiting.connector,
+      getActiveAccount: async () => {
+        await pending;
         return {
-          repositories: [{ id: 1, fullName: "octocat/hello", private: false }],
-          hasMore: false,
-          page: 2
-        };
-      },
-      readPullRequests: async (query) => {
-        calls.push(["pulls", query]);
-        return {
-          pullRequests: [],
-          hasMore: false,
-          page: 1
-        };
-      },
-      readPullRequest: async (query) => {
-        calls.push(["pull", query]);
-        return {
-          pullRequest: {
-            number: 7,
-            title: "Fix",
-            state: "open",
-            draft: false,
-            merged: false,
-            author: "octocat",
-            requestedReviewers: [],
-            headSha: "head",
-            baseSha: "base",
-            headBranch: "fix",
-            baseBranch: "main",
-            updatedAt: "2026-09-22T00:00:00Z",
-            url: "https://github.com/octocat/hello/pull/7",
-            body: "body",
-            additions: 1,
-            deletions: 1,
-            changedFiles: 1
-          }
+          host: "github.com",
+          login: "alice",
+          active: true,
+          state: "success"
         };
       }
     };
-    started = await startStudioServer({
-      port: 0,
-      staticDir: "/tmp/koed-studio-missing-static",
-      githubConnector
+    const racing = createGithubConnector({ delegatedCli: delayed });
+    const connecting = racing.connect();
+    racing.disconnect();
+    release();
+    await connecting;
+    assert.equal(racing.getStatus().state, "disconnected");
+    assert.equal(typeof original, "function");
+  });
+
+  it("rejects a read if the selected gh account changes while the API call is in flight", async () => {
+    let fixture;
+    fixture = createFixture({
+      api: async (endpoint) => {
+        if (endpoint.startsWith("user/repos?")) {
+          fixture.setActiveLogin("someone-else");
+          return [];
+        }
+        return [];
+      }
     });
-    const repositories = await httpRequest(
-      `${started.url}/studio-api/github/repositories?page=2`
+    await fixture.connector.connect();
+    await assert.rejects(
+      fixture.connector.readRepositories(),
+      (error) => error.code === "github_account_changed"
     );
-    assert.equal(repositories.status, 200);
-    assert.equal(repositories.json().repositories[0].fullName, "octocat/hello");
-    const pulls = await httpRequest(
-      `${started.url}/studio-api/github/pulls?repo=octocat%2Fhello`
+    assert.equal(fixture.connector.getStatus().state, "error");
+    assert.equal(fixture.connector.getStatus().login, null);
+  });
+
+  it("uses fixed GitHub API paths and validates repository and page inputs before subprocess execution", async () => {
+    const fixture = createFixture({
+      api: async (endpoint) => {
+        if (endpoint.startsWith("user/repos?"))
+          return [{ id: 10, full_name: "alice/repo", private: true }];
+        return [];
+      }
+    });
+    await fixture.connector.connect();
+    assert.deepEqual(await fixture.connector.readRepositories(), {
+      repositories: [{ id: 10, fullName: "alice/repo", private: true }],
+      hasMore: false,
+      page: 1
+    });
+    const before = fixture.calls.length;
+    await assert.rejects(
+      fixture.connector.readPullRequests({ repo: "../attacker?x=1" }),
+      (error) => error.code === "github_invalid_repository"
     );
-    assert.equal(pulls.status, 200);
-    const pull = await httpRequest(
-      `${started.url}/studio-api/github/pull?repo=octocat%2Fhello&number=7`
+    await assert.rejects(
+      fixture.connector.readRepositories({ page: 0 }),
+      (error) => error.code === "github_invalid_page"
     );
-    assert.equal(pull.status, 200);
-    assert.deepEqual(calls, [
-      ["repositories", { page: "2" }],
-      ["pulls", { repo: "octocat/hello", page: "1" }],
-      ["pull", { repo: "octocat/hello", number: "7" }]
+    assert.equal(fixture.calls.length, before);
+    const endpoint = fixture.calls.find(
+      (call) => call.args[0] === "api" && call.args[3]?.startsWith("user/repos")
+    )?.args[3];
+    assert.equal(
+      endpoint,
+      "user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&direction=desc&page=1&per_page=30&sort=updated"
+    );
+  });
+
+  it("reads a repository's provider identity and permission flags", async () => {
+    const fixture = createFixture({
+      api: async (endpoint) => {
+        if (endpoint === "repos/example/repo")
+          return {
+            id: 456,
+            full_name: "example/repo",
+            private: true,
+            permissions: { pull: true, push: false, admin: false }
+          };
+        return [];
+      }
+    });
+    await fixture.connector.connect();
+    assert.deepEqual(
+      await fixture.connector.readRepository({ repo: "example/repo" }),
+      {
+        id: "456",
+        fullName: "example/repo",
+        private: true,
+        permissions: { pull: true, push: false, admin: false }
+      }
+    );
+  });
+
+  it("deduplicates authored and requested-review inbox results and reports bounded truncation", async () => {
+    const fixture = createFixture({
+      api: async (endpoint) => {
+        if (endpoint.startsWith("search/issues?")) {
+          const requested = endpoint.includes("review-requested%3A%40me");
+          const page = Number(
+            new URLSearchParams(endpoint.split("?")[1]).get("page")
+          );
+          return {
+            incomplete_results: false,
+            total_count: 31,
+            items:
+              page === 1
+                ? requested
+                  ? [
+                      searchItem({ number: 1, author: "bob" }),
+                      searchItem({ number: 2, author: "alice" })
+                    ]
+                  : [
+                      searchItem({ number: 2, author: "alice" }),
+                      searchItem({ number: 3, author: "alice" })
+                    ]
+                : [
+                    searchItem({
+                      number: 4,
+                      author: requested ? "bob" : "alice"
+                    })
+                  ]
+          };
+        }
+        return [];
+      }
+    });
+    await fixture.connector.connect();
+    const inbox = await fixture.connector.readInbox({ maxPages: 1 });
+    assert.deepEqual(
+      inbox.items.map(({ number, origin }) => [number, origin]),
+      [
+        [1, "requested_review"],
+        [2, "authored_and_requested_review"],
+        [3, "authored"]
+      ]
+    );
+    assert.equal(inbox.truncated, true);
+    assert.equal(inbox.hasMore, true);
+    assert.equal(inbox.teamRequestsIncluded, false);
+    assert.match(inbox.limitation, /team-review/);
+  });
+
+  it("reads detail, comments, review history, and checks with explicit bounds", async () => {
+    const fixture = createFixture({
+      api: async (endpoint) => {
+        if (endpoint === "repos/example/repo/pulls/1") return pullRequest();
+        if (endpoint.endsWith("/issues/1/comments?per_page=30&page=1"))
+          return [
+            {
+              id: 1,
+              user: { login: "bob" },
+              body: "hello",
+              created_at: "2026-10-01T00:00:00Z",
+              html_url:
+                "https://github.com/example/repo/issues/1#issuecomment-1"
+            }
+          ];
+        if (endpoint.endsWith("/pulls/1/comments?per_page=30&page=1"))
+          return [
+            {
+              id: 2,
+              user: { login: "bob" },
+              body: "inline",
+              created_at: "2026-10-01T00:00:00Z",
+              html_url: "https://github.com/example/repo/pull/1#discussion_r2"
+            }
+          ];
+        if (endpoint.endsWith("/pulls/1/reviews?per_page=30&page=1"))
+          return [
+            {
+              id: 3,
+              user: { login: "bob" },
+              commit_id: "a".repeat(40),
+              state: "COMMENTED",
+              submitted_at: "2026-10-01T00:00:00Z",
+              body: "looks good",
+              html_url:
+                "https://github.com/example/repo/pull/1#pullrequestreview-3"
+            }
+          ];
+        if (endpoint.endsWith("/check-runs?per_page=30&page=1"))
+          return {
+            total_count: 1,
+            check_runs: [
+              {
+                id: 4,
+                name: "CI",
+                status: "completed",
+                conclusion: "success",
+                html_url: "https://github.com/example/repo/actions/runs/4"
+              }
+            ]
+          };
+        return [];
+      }
+    });
+    await fixture.connector.connect();
+    const detail = await fixture.connector.readPullRequest({
+      repo: "example/repo",
+      number: 1
+    });
+    assert.equal(detail.pullRequest.headSha, "a".repeat(40));
+    assert.deepEqual(detail.pullRequest.headRepository, {
+      id: "2",
+      fullName: "alice/repo"
+    });
+    assert.deepEqual(detail.pullRequest.baseRepository, {
+      id: "1",
+      fullName: "example/repo"
+    });
+    assert.equal(detail.comments[0].body, "hello");
+    assert.equal(detail.reviewComments[0].body, "inline");
+    assert.equal(detail.reviews[0].state, "COMMENTED");
+    assert.equal(detail.checks[0].conclusion, "success");
+    assert.equal(detail.commentsTruncated, false);
+  });
+
+  it("publishes only a bounded exact review after checking account and observed head, and supports reconciliation", async () => {
+    let writes = 0;
+    const fixture = createFixture({
+      api: async (endpoint, args) => {
+        if (endpoint === "repos/example/repo/pulls/1") return pullRequest();
+        if (
+          endpoint === "repos/example/repo/pulls/1/reviews" &&
+          args.includes("POST")
+        ) {
+          writes += 1;
+          return {
+            id: 44,
+            user: { login: "alice" },
+            commit_id: "a".repeat(40),
+            state: "APPROVED",
+            submitted_at: "2026-10-01T00:00:00Z",
+            body: "Approved",
+            html_url:
+              "https://github.com/example/repo/pull/1#pullrequestreview-44"
+          };
+        }
+        if (endpoint === "repos/example/repo/pulls/1/reviews/44")
+          return {
+            id: 44,
+            user: { login: "alice" },
+            commit_id: "a".repeat(40),
+            state: "APPROVED",
+            submitted_at: "2026-10-01T00:00:00Z",
+            body: "Approved",
+            html_url:
+              "https://github.com/example/repo/pull/1#pullrequestreview-44"
+          };
+        return [];
+      }
+    });
+    await fixture.connector.connect();
+    const result = await fixture.connector.publishReview({
+      repo: "example/repo",
+      number: 1,
+      expectedHeadSha: "a".repeat(40),
+      expectedAccountLogin: "alice",
+      commitId: "a".repeat(40),
+      event: "APPROVE",
+      body: "Approved",
+      comments: [
+        { path: "src/file.ts", line: 7, side: "RIGHT", body: "Check this" }
+      ]
+    });
+    assert.equal(result.review.id, 44);
+    assert.equal(writes, 1);
+    const write = fixture.calls.find((call) => call.args.includes("POST"));
+    assert.deepEqual(write.args.slice(0, 6), [
+      "api",
+      "--hostname",
+      "github.com",
+      "repos/example/repo/pulls/1/reviews",
+      "--method",
+      "POST"
     ]);
-    const arbitrary = await httpRequest(
-      `${started.url}/studio-api/github/pulls?repo=octocat%2Fhello&url=https%3A%2F%2Fevil.example`
+    assert.deepEqual(write.args.slice(0, 7), [
+      "api",
+      "--hostname",
+      "github.com",
+      "repos/example/repo/pulls/1/reviews",
+      "--method",
+      "POST",
+      "--input"
+    ]);
+    assert.equal(write.args[7], "-");
+    assert.equal(JSON.parse(write.options.input).event, "APPROVE");
+    assert.equal(JSON.parse(write.options.input).commit_id, "a".repeat(40));
+    assert.deepEqual(JSON.parse(write.options.input).comments, [
+      { path: "src/file.ts", line: 7, side: "RIGHT", body: "Check this" }
+    ]);
+    assert.equal(write.args.join(" ").includes("Approved"), false);
+    assert.deepEqual(
+      await fixture.connector.readPublishedReview({
+        repo: "example/repo",
+        number: 1,
+        reviewId: 44
+      }),
+      { review: result.review, hasMore: false }
     );
-    assert.equal(arbitrary.status, 400);
+    await assert.rejects(
+      fixture.connector.publishReview({
+        repo: "example/repo",
+        number: 1,
+        expectedHeadSha: "a".repeat(40),
+        expectedAccountLogin: "alice",
+        commitId: "a".repeat(40),
+        event: "APPROVE",
+        body: "x",
+        comments: [{ path: "../outside", line: 1, side: "RIGHT", body: "bad" }]
+      }),
+      (error) => error.code === "github_invalid_review"
+    );
+    assert.equal(writes, 1);
   });
 });

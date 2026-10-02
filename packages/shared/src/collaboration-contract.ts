@@ -2003,6 +2003,24 @@ export const collaborationActionGrantIntentSchema = z
         "origin_unavailable",
         "independent_work"
       ])
+    }),
+    actionGrantIntent("collaboration.publish_pull_request_review", {
+      requestId: z.uuid(),
+      reviewId: z.uuid(),
+      frozenReviewId: z.uuid(),
+      confirmationDigest: sha256Schema,
+      expectedReviewRevision: positiveVersionSchema,
+      targetDeviceId: z.uuid(),
+      targetDeploymentId: z.uuid()
+    }),
+    actionGrantIntent("collaboration.push_pull_request", {
+      requestId: z.uuid(),
+      reviewId: z.uuid(),
+      proposalId: z.uuid(),
+      confirmationDigest: sha256Schema,
+      expectedReviewRevision: positiveVersionSchema,
+      targetDeviceId: z.uuid(),
+      targetDeploymentId: z.uuid()
     })
   ])
   .superRefine((intent, context) => {

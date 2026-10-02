@@ -140,13 +140,16 @@ const browserStartSchema = startSchema
     initialPromptClientUserMessageId: z.string().uuid().optional(),
     agentId: z.uuid().optional(),
     expectedAgentVersion: z.number().int().positive().optional(),
-    continueWithoutMemory: z.literal(true).optional()
+    continueWithoutMemory: z.literal(true).optional(),
+    pullRequestReviewId: z.uuid().optional()
   })
   .strict()
   .refine(
     (input) =>
       (input.agentId === undefined) ===
         (input.expectedAgentVersion === undefined) &&
+      (!input.pullRequestReviewId ||
+        Boolean(input.agentId && input.initialPrompt?.trim())) &&
       (!input.teamAgentRequest ||
         Boolean(input.agentId && input.initialPrompt?.trim())) &&
       (input.agentId === undefined ||
@@ -2259,13 +2262,35 @@ export const registerManagedConversationRoutes = (
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
-      const browserSession = isHostedBrowserSession(request);
+      const pullRequestLaunch = Boolean(
+        (request.body as Record<string, unknown> | null)?.pullRequestReviewId
+      );
+      if (pullRequestLaunch && remoteAuthority()) {
+        const proxied = await proxyManaged(
+          "POST",
+          "/v1/managed-conversations",
+          browserStartSchema.parse(request.body)
+        );
+        if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      }
+      const localPrLaunch =
+        localExecutionProfiles.has(context.config.deploymentProfile) &&
+        pullRequestLaunch;
+      const browserSession =
+        isHostedBrowserSession(request) || pullRequestLaunch;
       const repository = context.requireRepository();
       if (browserSession) {
         const input = browserStartSchema.parse(request.body);
-        const target = (await targetDevices(repository, user.id)).find(
-          (candidate) => candidate.deviceId === input.targetDeviceId
-        );
+        const localRunner = localPrLaunch
+          ? await runnerIdentity(request)
+          : null;
+        const target = localRunner
+          ? localRunner.deviceId === input.targetDeviceId
+            ? localRunner
+            : null
+          : (await targetDevices(repository, user.id)).find(
+              (candidate) => candidate.deviceId === input.targetDeviceId
+            );
         if (!target) {
           throw Object.assign(
             new Error(
@@ -2278,10 +2303,12 @@ export const registerManagedConversationRoutes = (
           repository.listAiClientInstances({ userId: user.id }),
           repository.listDeviceCredentials({ userId: user.id })
         ]);
-        const selectedInstance = instances.find(
-          (candidate) =>
-            candidate.hostedInstanceId === input.aiClientInstanceId &&
-            candidate.sourceDeviceCredentialId !== null
+        const selectedInstance = instances.find((candidate) =>
+          localPrLaunch
+            ? candidate.instanceId === input.aiClientInstanceId &&
+              candidate.sourceDeviceCredentialId === null
+            : candidate.hostedInstanceId === input.aiClientInstanceId &&
+              candidate.sourceDeviceCredentialId !== null
         );
         const sourceCredential = credentials.find(
           (credential) =>
@@ -2293,7 +2320,7 @@ export const registerManagedConversationRoutes = (
             (credential.expiresAt === null ||
               Date.parse(credential.expiresAt) > Date.now())
         );
-        if (!selectedInstance || !sourceCredential) {
+        if (!selectedInstance || (!localPrLaunch && !sourceCredential)) {
           throw managedCapabilityUnavailable(
             "Selected AI Client instance is not published by the target runner"
           );
@@ -2302,13 +2329,39 @@ export const registerManagedConversationRoutes = (
           ...input,
           aiClientInstanceId: selectedInstance.instanceId
         };
-        await assertDeferredLaunchSelection(
-          repository,
-          user.id,
-          runnerInput,
-          sourceCredential.id
-        );
-        if (input.contextKind === "project") {
+        if (localPrLaunch) {
+          await assertLocalLaunchSelection(
+            repository,
+            user.id,
+            runnerInput,
+            null
+          );
+        } else {
+          await assertDeferredLaunchSelection(
+            repository,
+            user.id,
+            runnerInput,
+            sourceCredential!.id
+          );
+        }
+        if (input.contextKind === "project" && localPrLaunch) {
+          if (
+            !(await localProjectExecutionPath(
+              context.config.koedHome,
+              input.projectId!
+            ))
+          ) {
+            throw Object.assign(
+              new Error("Registered local Project is unavailable"),
+              { statusCode: 409 }
+            );
+          }
+        }
+        // A PR's optional Project is authorized by the completed, owner-scoped
+        // repository match and the atomic review binding. Hosted runners recheck
+        // its registered folder when they claim the start; it need not already
+        // have a captured Memory thread.
+        if (input.contextKind === "project" && !pullRequestLaunch) {
           const projects = await repository.listLcmGraphThreads(
             { userId: user.id },
             { projectId: input.projectId!, limit: 1, offset: 0 }
@@ -2386,6 +2439,34 @@ export const registerManagedConversationRoutes = (
                   initialExpectedAgentVersion:
                     initialAgentContext.expectedAgentVersion,
                   initialPersonalAgentContext: initialAgentContext.context
+                }
+              : {}),
+            ...(input.pullRequestReviewId
+              ? {
+                  initialPullRequestReviewId: input.pullRequestReviewId,
+                  bindInitialPullRequestReviewWithClient: async (
+                    client,
+                    executionId: string
+                  ) => {
+                    const bound =
+                      await repository.bindPullRequestReviewExecutionWithClient(
+                        client,
+                        { userId: user.id },
+                        {
+                          reviewId: input.pullRequestReviewId!,
+                          executionId,
+                          agentId: input.agentId!,
+                          projectId: input.projectId,
+                          runnerDeploymentId: target.deploymentId,
+                          runnerDeviceId: target.deviceId
+                        }
+                      );
+                    if (!bound)
+                      throw Object.assign(
+                        new Error("Pull Request review binding is unavailable"),
+                        { statusCode: 409 }
+                      );
+                  }
                 }
               : {}),
             ...(input.teamAgentRequest

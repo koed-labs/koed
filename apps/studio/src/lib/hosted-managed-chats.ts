@@ -831,6 +831,21 @@ const requestJson = async (
   } = {},
   fetcher: typeof fetch = fetch
 ): Promise<Record<string, unknown>> => {
+  // The same managed chat UI runs in hosted Studio and the native gateway.
+  // Native writes use the existing server-owned credential and CSRF boundary.
+  if (
+    typeof window !== "undefined" &&
+    window.location.pathname !== "/studio" &&
+    !window.location.pathname.startsWith("/studio/") &&
+    (path === "/v1/managed-conversations" ||
+      path.startsWith("/v1/managed-conversations/") ||
+      path.startsWith("/v1/managed-conversations?"))
+  ) {
+    path = path.replace(
+      "/v1/managed-conversations",
+      "/studio-api/managed-conversations"
+    );
+  }
   let csrfToken: string | null = null;
   if (input.csrf && !path.startsWith("/studio-api/"))
     throw new HostedManagedChatError(
@@ -1192,6 +1207,7 @@ export async function startHostedManagedConversation(
     continueWithoutMemory?: true;
     agentId?: string;
     expectedAgentVersion?: number;
+    pullRequestReviewId?: string;
     teamAgentRequest?: {
       teamId: string;
       requestId: string;

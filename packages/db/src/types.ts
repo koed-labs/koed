@@ -40,6 +40,7 @@ import type { PublicSquareRepository } from "./public-square-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
+import type { PullRequestRepository } from "./pull-request-repository.js";
 
 export type Visibility = "personal";
 
@@ -1972,6 +1973,7 @@ export interface MemorySourceRepository
     MemoryAnswerTaskRepository,
     RecallFeedbackRepository,
     PersonalAgentRepository,
+    PullRequestRepository,
     PublicSquareRepository,
     SharedMemoryRepository,
     TeamConversationSourceRepository,

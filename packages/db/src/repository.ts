@@ -85,6 +85,7 @@ import {
 } from "./value-helpers.js";
 import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
+import { createPullRequestRepository } from "./pull-request-repository.js";
 import {
   codexIdePromptUserText,
   countTokensForModel,
@@ -4098,6 +4099,9 @@ export const createMemorySourceRepository = (
     ...createTeamAgentRequestsRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
+    }),
+    ...createPullRequestRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...sharedMemoryRepository,
     ...createTeamConversationSourceRepository(pool),

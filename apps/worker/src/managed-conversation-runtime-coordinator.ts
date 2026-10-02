@@ -1,3 +1,6 @@
+import { createPullRequestRunnerAuthority } from "./pull-request-authority-client.js";
+import { createPullRequestRunner } from "./pull-request-runner.js";
+import { createPullRequestPushDriver } from "./pull-request-push.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
@@ -305,7 +308,72 @@ export const createManagedConversationRuntimeCoordinator = (options: {
           }
         }
       : undefined;
-    return (options.createService ?? createManagedConversationService)({
+    const pullRequestAuthority = createPullRequestRunnerAuthority({
+      repository: options.localRepository,
+      ownerUserId: options.localOwnerUserId,
+      deviceId: options.deviceId,
+      deploymentId: options.deploymentId,
+      ...(authority
+        ? {
+            remote: {
+              baseUrl: authority.baseUrl,
+              authorization: authority.authorization,
+              fetch: options.fetch
+            }
+          }
+        : {})
+    });
+    const pushDriver = createPullRequestPushDriver({
+      koedHome: options.koedHome
+    });
+    const pullRequestRunner = createPullRequestRunner({
+      authority: pullRequestAuthority,
+      authorityId: authority?.backendId ?? "local",
+      koedHome: options.koedHome,
+      deviceId: options.deviceId,
+      deploymentId: options.deploymentId,
+      resolveCheckout: async (review) => {
+        if (!review.executionId) return null;
+        const actor = { userId: review.ownerUserId };
+        const [binding, execution] = await Promise.all([
+          repository.getManagedConversationRuntimeBinding(
+            actor,
+            review.executionId
+          ),
+          repository.getManagedConversationExecution(actor, review.executionId)
+        ]);
+        if (
+          !binding ||
+          binding.checkoutLifecycle !== "ready" ||
+          binding.executionId !== review.executionId ||
+          binding.deviceId !== options.deviceId ||
+          binding.deploymentId !== options.deploymentId ||
+          !execution ||
+          execution.ownerUserId !== review.ownerUserId ||
+          execution.runnerDeviceId !== options.deviceId ||
+          execution.runnerDeploymentId !== options.deploymentId ||
+          execution.executionGeneration !== binding.executionGeneration ||
+          !Number.isSafeInteger(execution.executionGeneration) ||
+          execution.executionGeneration < 1
+        )
+          return null;
+        return {
+          path: binding.projectPath,
+          executionGeneration: execution.executionGeneration
+        };
+      },
+      preparePush: pushDriver.preparePush,
+      push: pushDriver.push,
+      reconcilePush: pushDriver.reconcilePush,
+      onError: (code) =>
+        options.logger.warn(
+          { error_name: code },
+          "Pull Request runner operation failed"
+        )
+    });
+    const managedService = (
+      options.createService ?? createManagedConversationService
+    )({
       repository,
       apiUrl: options.apiUrl,
       apiToken: options.apiToken,
@@ -315,6 +383,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       deploymentId: options.deploymentId,
       koedHome: options.koedHome,
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      pullRequestControl: pullRequestRunner,
       ...(sourceRestoreControl ? { sourceRestoreControl } : {}),
       ...(sourcePublishControl ? { sourcePublishControl } : {}),
       commandWakePool: options.commandWakePool,
@@ -329,6 +398,17 @@ export const createManagedConversationRuntimeCoordinator = (options: {
         : {}),
       logger: options.logger
     });
+    return {
+      ...managedService,
+      start() {
+        managedService.start();
+        pullRequestRunner.start();
+      },
+      async stop() {
+        await pullRequestRunner.stop();
+        await managedService.stop();
+      }
+    };
   };
 
   const reconcile = async (): Promise<void> => {

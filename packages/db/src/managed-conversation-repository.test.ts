@@ -631,6 +631,164 @@ describe("managed Conversation initial Agent start", () => {
   });
 });
 
+describe("managed Agent Job Public Square publication", () => {
+  it("publishes a new Job in the same transaction through current authorized project links", async () => {
+    const ownerUserId = "4fe5d99e-f13d-4269-b66d-80e7f99bcaf0";
+    const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";
+    const commandId = "5224b37d-08b3-48f4-84d7-c4ba29ff63f7";
+    const agentId = "44444444-4444-4444-8444-444444444444";
+    const identityVersionId = "55555555-5555-4555-8555-555555555555";
+    const deviceId = "b118b2ac-652e-4084-bf0c-d8d6f63fafb2";
+    const deploymentId = "7c25f5d9-bdef-4bc7-a05d-d88d2eac027a";
+    const leaseToken = "a9678f28-e7b8-459f-9ea1-a93045e384e3";
+    const runnerId = "runner-one";
+    const projectId = "project:registered-here";
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 37).toString("base64")
+    );
+    const payload = {
+      prompt: "Review this pull request.",
+      personalAgent: {
+        jobId: null,
+        agentId,
+        agentVersion: 1,
+        identityVersionId
+      },
+      personalAgentContext: {
+        schemaVersion: 1,
+        identity: {
+          agentId,
+          version: 1,
+          identityVersionId,
+          name: "Reviewer",
+          role: "Review pull requests",
+          soulInstructions: "Find concrete risks."
+        },
+        project: { projectId, name: "Project" },
+        activeJob: null,
+        pendingTeamRequestId: null,
+        memory: { searchDomain: "project", evidence: [] }
+      }
+    };
+    const encryptedPayload = await provider.encrypt({
+      plaintext: JSON.stringify(payload),
+      scope: {
+        tenantId: ownerUserId,
+        objectClass: "managed_conversation_prompt"
+      },
+      provenance: {
+        rowFamily: "managed_conversation_commands",
+        sourceId: commandId
+      },
+      ciphertextLocation: "managed_conversation_commands.encrypted_payload",
+      aad: { ownerUserId, executionId, commandId }
+    });
+    const now = new Date();
+    const commandRow = {
+      id: commandId,
+      owner_user_id: ownerUserId,
+      execution_id: executionId,
+      command_kind: "prompt",
+      state: "dispatching",
+      execution_generation: 3,
+      lease_token: leaseToken,
+      lease_expires_at: new Date(Date.now() + 60_000),
+      encrypted_payload: encryptedPayload
+    };
+    const executionRow = {
+      id: executionId,
+      owner_user_id: ownerUserId,
+      project_id: projectId,
+      execution_generation: 3,
+      state: "running",
+      runner_id: runnerId,
+      runner_device_id: deviceId,
+      runner_deployment_id: deploymentId
+    };
+    const outboxRow = {
+      id: "99999999-9999-4999-8999-999999999999",
+      cursor: "1",
+      protocol_version: 1,
+      family: "managed_conversation_changed",
+      scope: "personal",
+      personal_owner_user_id: ownerUserId,
+      team_id: null,
+      team_workspace_id: null,
+      thread_id: null,
+      message_id: null,
+      share_grant_id: null,
+      logical_memory_id: null,
+      resource_type: "managed_conversation_execution",
+      resource_id: executionId,
+      actor_principal_id: ownerUserId,
+      mutation_id: "managed-agent-intent-test",
+      occurred_at: now
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from managed_conversation_commands")) {
+        return { rows: [commandRow] };
+      }
+      if (sql.includes("from managed_conversation_executions")) {
+        return { rows: [executionRow] };
+      }
+      if (sql.includes("insert into collaboration_outbox")) {
+        return { rows: [outboxRow] };
+      }
+      return { rows: [] };
+    });
+    const client = { query, release: vi.fn() };
+    const repository = createManagedConversationRepository(
+      { connect: vi.fn(async () => client) } as unknown as pg.Pool,
+      { envelopeEncryptionProvider: provider }
+    );
+
+    await repository.recordPersonalAgentIntentForManagedCommand(
+      { userId: ownerUserId },
+      {
+        commandId,
+        executionId,
+        executionGeneration: 3,
+        leaseToken,
+        runnerId,
+        deviceId,
+        deploymentId,
+        providerTurnId: "codex-current-provider-turn",
+        intent: { kind: "assign", goal: "Review the pull request" }
+      }
+    );
+
+    const jobInsertIndex = query.mock.calls.findIndex(([sql]) =>
+      sql.includes("insert into personal_agent_execution_jobs")
+    );
+    const publicationIndex = query.mock.calls.findIndex(([sql]) =>
+      sql.includes("insert into personal_agent_team_job_publications")
+    );
+    const eventIndex = query.mock.calls.findIndex(([sql]) =>
+      sql.includes("insert into personal_agent_execution_job_events")
+    );
+    expect(jobInsertIndex).toBeGreaterThan(-1);
+    expect(publicationIndex).toBeGreaterThan(jobInsertIndex);
+    expect(eventIndex).toBeGreaterThan(publicationIndex);
+    const publicationSql = query.mock.calls[publicationIndex]?.[0] as string;
+    expect(publicationSql).toContain("c.actor_user_id = j.owner_user_id");
+    expect(publicationSql).toContain("c.local_project_id = j.project_id");
+    expect(publicationSql).toContain("sp.unshared_at is null");
+    expect(publicationSql).toContain("t.lifecycle = 'active'");
+    expect(publicationSql).toContain("tm.status = 'enabled'");
+    expect(publicationSql).toContain(
+      "on conflict (connection_id, job_id) do nothing"
+    );
+    expect(publicationSql).not.toMatch(/encrypted_payload|command_id|prompt/i);
+    const insertedJobId = query.mock.calls[jobInsertIndex]?.[1]?.[0];
+    expect(query.mock.calls[publicationIndex]?.[1]).toEqual([
+      insertedJobId,
+      ownerUserId
+    ]);
+    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(true);
+    expect(query.mock.calls.some(([sql]) => sql === "rollback")).toBe(false);
+  });
+});
+
 describe("managed Conversation start prompt dispatch", () => {
   const ownerUserId = "owner-user-id";
   const executionId = "d5fe6081-1d6c-4b5a-93c3-5f41d39a25fa";

@@ -1142,3 +1142,44 @@ describe("Claude per-turn planning and summary tool policy", () => {
     await session.closeAndWait();
   });
 });
+
+describe("Claude Pull Request review policy", () => {
+  it("keeps Agent Job reporting available while excluding file and command writes", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options: Options }) => {
+      async function* generate(): AsyncGenerator<SDKMessage, void> {
+        yield successResult(options.sessionId!, "Reviewed");
+      }
+      const stream = generate() as Query;
+      stream.close = vi.fn();
+      return stream;
+    });
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      permissionMode: "bypassPermissions",
+      tools: ["Bash", "Read", "Write"],
+      allowedTools: ["Bash"],
+      executionPolicy: () => "review",
+      personalAgentToolsEnabled: () => true,
+      personalAgentIntentHandler: vi.fn(async () => ({ recorded: true })),
+      personalAgentTurnStatusHandler: vi.fn(async () => {})
+    });
+    await session.start("Review the PR");
+    expect(queryOptions().tools).toEqual([
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "AskUserQuestion"
+    ]);
+    expect(queryOptions().allowedTools).toContain(
+      "mcp__koed_agent_assignment__koed_agent_turn_status"
+    );
+    expect(queryOptions().allowedTools).toContain(
+      "mcp__koed_agent_assignment__koed_agent_intent"
+    );
+    expect(queryOptions().allowedTools).not.toContain("Bash");
+    expect(queryOptions().allowDangerouslySkipPermissions).toBeUndefined();
+    await session.closeAndWait();
+  });
+});
