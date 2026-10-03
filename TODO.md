@@ -12,13 +12,20 @@ Follow-ups:
   integration review. Claude's isolated main-Conversation tests cover idle and
   foreground-tool completion, timeout, selected host stop, pending exit,
   revocation and expiry. Repeated calls and reopening delivery remain untested.
-  Bind Codex's verified interactive native queue mechanism to the shared
-  lifecycle only after a trustworthy current native receiver contract exists.
-  Codex 0.159.3 still lacks that contract in the reviewed public paths.
-  Loaded-thread metadata and delayed hooks are insufficient. Retain blocking
-  recall until that prerequisite is resolved. Assess CLI, IDE and Desktop
-  separately. A managed app-server result does not establish independent-client
-  support. Cold `codex exec` queue acceptance does not provide continuation.
+  Complete native qualification of the implemented opt-in Codex Stop adapter,
+  which uses the shared durable task runtime and exact originating turn.
+  A real native CLI 0.159.3 positive and separate revocation/expiry cases passed
+  review. Failure, explicit cancellation, observer timeout, pending exit and
+  fork/replacement checks remain; IDE and Desktop are source-grounded
+  candidates whose actual delivery is still untested.
+  The User accepts the upstream cancellation race temporarily: a hook result
+  can enter an interrupted original turn during Codex's abort grace interval.
+  Document this limitation and revalidate suppression after an upstream fix;
+  ownership, authorization, expiry and duplicate checks remain required.
+  Assess CLI, IDE and Desktop separately. The Stop route keeps the original
+  turn active; it does not wake a completed Conversation. Existing external
+  queue receiver and native MCP Tasks prerequisites remain unresolved for those
+  alternative paths. Retain blocking recall when deferred setup is unavailable.
 - Bind a maintained TypeScript MCP Tasks runtime to the existing execution owner
   when its SDK and supported AI Clients provide the required extension.
 - Defer managed Codex and Claude Agent SDK presentation adapters until the

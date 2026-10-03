@@ -38,16 +38,26 @@ The portable module is distributed with the standalone Pi package and exported
 from the MCP Server package. It has no Pi dependency. Future client adapters can
 reuse it or bind the same execution port to a maintained MCP Tasks extension.
 This lifecycle does not expose native MCP Tasks. Claude Code's host backgrounding
-uses the ordinary blocking MCP result path described below. A standalone Codex
-presentation adapter still requires a verified current native receiver contract.
-An isolated standalone Codex CLI prototype has proved real recall and automatic
-same-Conversation consumption through public native queue admission, including
-fresh-read suppression after revocation and expiry. However, loaded-thread
-metadata describes daemon residency, and native hooks do not invalidate the
-receiver immediately on switching. Neither establishes the current interactive
-origin needed for a supported adapter. Codex retains blocking recall while that
-host prerequisite remains unresolved; CLI prototype evidence does not certify
-IDE or Desktop behavior.
+uses the ordinary blocking MCP result path described below. Codex defaults to
+blocking recall. Its opt-in native CLI Stop adapter instead binds a protected
+one-use request to the original turn and supplies its result at that turn's
+stop boundary. See [Codex setup](codex-integration.md#optional-deferred-recall-in-the-native-cli).
+
+An isolated native Codex CLI 0.159.3 test with gpt-5.6-luna returned a pending
+receipt in 72 ms. The agent read and summarised a generated package file before
+real recall completed, then automatically consumed the answer and original
+source citation in the same turn. This qualifies the normal CLI path. Failure,
+explicit task cancellation, observer timeout, pending exit and fork ownership
+remain unverified. Separate isolated
+revocation and expiry cases confirmed that a fresh task read prevents cached
+answer delivery. Ordinary task GETs can return HTTP 200 with expired retention;
+the shared delivery lifecycle rejects that snapshot before presentation.
+
+External native queue presentation remains unsupported. Loaded-thread metadata
+does not establish the current interactive receiver. The Stop route avoids that
+receiver choice by retaining the original active turn. It does not prove idle
+wake-up, IDE, or Desktop delivery. The accepted upstream cancellation race can
+record a late hook prompt in an interrupted turn. Interrupt cleanup is advisory.
 
 ## Claude Code host backgrounding
 

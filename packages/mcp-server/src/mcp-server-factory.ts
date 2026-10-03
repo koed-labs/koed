@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  CODEX_DELIVERY_NONCE,
+  CodexDetachedMemoryIneligible,
+  CodexMemoryDelivery,
+  CodexMemoryReceiptStore,
+  canonicalCodexMemoryInput
+} from "./codex-memory-delivery.js";
+import { resolveKoedHome } from "./local-runtime-protocol.js";
+import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
   McpServer,
@@ -19,7 +27,10 @@ import {
   unavailableBackendToolCapabilities,
   type BackendToolCapabilities
 } from "./index.js";
-import { LocalAiRuntimeClient } from "./local-runtime-client.js";
+import {
+  LocalAiRuntimeClient,
+  LocalAiRuntimeError
+} from "./local-runtime-client.js";
 import type {
   LocalRuntimeCallerContext,
   LocalRuntimeToolName
@@ -159,6 +170,38 @@ export const createKoedMcpServer = async (
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
+  const deferredEnabled = environment.KOED_CODEX_STOP_DELIVERY === "1";
+  const deferred = deferredEnabled
+    ? new CodexMemoryDelivery(
+        new CodexMemoryReceiptStore(resolveKoedHome(environment)),
+        {
+          start: async (input, caller, key, signal) => {
+            try {
+              return await runtimeClient.startMemoryAnswerTask(
+                input,
+                caller,
+                key,
+                signal
+              );
+            } catch (error) {
+              if (
+                error instanceof LocalAiRuntimeError &&
+                error.statusCode === 409 &&
+                error.message ===
+                  "Team Workspace Memory Answer does not support detached tasks"
+              )
+                throw new CodexDetachedMemoryIneligible();
+              throw error;
+            }
+          },
+          get: (id, signal) => runtimeClient.getMemoryAnswerTask(id, signal),
+          cancel: (id, signal) =>
+            runtimeClient.cancelMemoryAnswerTask(id, signal)
+        },
+        undefined,
+        environment.KOED_CODEX_MEMORY_TOOL ?? "mcp__koed__memory_answer"
+      )
+    : undefined;
   let runtimeCapabilities: BackendToolCapabilities;
   let runtimeAvailable = true;
   let capabilitiesNeedRefresh = false;
@@ -194,17 +237,36 @@ export const createKoedMcpServer = async (
       {
         title: toolTitle(toolName),
         description: toolDescription(toolName),
-        inputSchema: toolSchema(toolName) as z.ZodObject
+        inputSchema: (toolName === "memory_answer" && deferredEnabled
+          ? memoryAnswerInputSchema.safeExtend({
+              [CODEX_DELIVERY_NONCE]: z
+                .string()
+                .regex(/^[a-f0-9]{64}$/)
+                .optional()
+            })
+          : toolSchema(toolName)) as z.ZodObject
       },
       async (input, context) => {
         try {
-          const response = await runtimeClient.callTool(
+          const caller = callerContextResolver({
+            defaultContext: defaultCallerContext(context),
+            requestContext: _requestContext
+          });
+          let response: Record<string, unknown> | undefined;
+          if (toolName === "memory_answer" && deferred) {
+            response = await deferred.accept(
+              input as Record<string, unknown>,
+              caller,
+              context.mcpReq.signal,
+              context.mcpReq._meta
+            );
+          }
+          response ??= await runtimeClient.callTool(
             toolName,
-            input as Record<string, unknown>,
-            callerContextResolver({
-              defaultContext: defaultCallerContext(context),
-              requestContext: _requestContext
-            }),
+            toolName === "memory_answer"
+              ? canonicalCodexMemoryInput(input as Record<string, unknown>)
+              : (input as Record<string, unknown>),
+            caller,
             context.mcpReq.signal,
             `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`
           );

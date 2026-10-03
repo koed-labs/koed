@@ -263,6 +263,112 @@ describe("Codex setup wrapper", () => {
     );
   });
 
+  it("preserves explicit deferred recall through packaged setup and repair", async () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "codex");
+    const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "runtime/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
+    const order: string[] = [];
+    const runtime = () => {
+      order.push("runtime");
+      return {
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: resolve(root, "runtime"),
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        privacyServiceEntry: "privacy",
+        mcpCli,
+        localAiRuntime: "local-ai",
+        captureHook,
+        dbPackageRoot: "db",
+        missing: []
+      } as never;
+    };
+    const result = await setupCodex({
+      environment: {
+        KOED_CODEX_STOP_DELIVERY: "1",
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
+        CODEX_CONFIG_PATH: resolve(codexHome, "config.toml"),
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper"
+      },
+      resolveRuntime: runtime,
+      provisionLocalApiToken: async () => {
+        order.push("provision");
+        mkdirSync(resolve(root, "config"), { recursive: true });
+        writeFileSync(
+          resolve(root, "config/local-app-credential.json"),
+          JSON.stringify({ apiToken: "core" })
+        );
+        return { token: "core", reused: false, ownerUserId: "owner" };
+      },
+      migrateCodex: () => ({ migrated: false }),
+      resolveCodexExecutable: () => "/bin/sh",
+      spawnSync: () => {
+        order.push("bootstrap");
+        return spawnResult();
+      },
+      registerAiClient: () => true
+    });
+
+    expect(result.ok).toBe(true);
+    const configPath = resolve(codexHome, "config.toml");
+    const installed = readFileSync(configPath, "utf8");
+    expect(installed).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
+    expect(installed).toContain("timeout = 305");
+    expect(installed).toContain("mcp__koed__memory_answer");
+    expect(installed).toContain("codex-memory-hook.js");
+    expect(installed).not.toContain("async = true");
+    const base = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      CODEX_HOME: codexHome,
+      KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
+    };
+    const repair = (selection?: string) =>
+      repairCodexIntegration({
+        environment: {
+          ...base,
+          ...(selection ? { KOED_CODEX_STOP_DELIVERY: selection } : {})
+        },
+        resolveRuntime: runtime,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
+    expect(repair("0").ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).not.toContain(
+      'KOED_CODEX_STOP_DELIVERY = "1"'
+    );
+    const blocking = readFileSync(configPath, "utf8");
+    rmSync(resolve(mcpCli, "../codex-memory-hook.js"));
+    expect(repair("1").ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+
+    expect(order).not.toContain("bootstrap");
+    expect(order.filter((entry) => entry === "runtime").length).toBeGreaterThan(
+      1
+    );
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      mcpCli
+    );
+  });
+
   it("stores the resolved absolute Codex path after setup", async () => {
     const root = tempDir();
     const bin = resolve(root, "bin");

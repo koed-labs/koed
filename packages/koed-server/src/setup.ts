@@ -188,6 +188,60 @@ const configureCodexIntegration = ({
       `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
   const codexInstructionsPath = resolveCodexGlobalInstructionsPath(environment);
+  const existing = existsSync(codexConfigPath)
+    ? String(readFileSync(codexConfigPath, "utf8"))
+    : "";
+  const withoutPrevious = stripCodexOwnershipBlock(existing);
+  const ownedContent = existing.slice(
+    existing.indexOf("# >>> koed"),
+    existing.indexOf("# <<< koed")
+  );
+  const deferredRecall =
+    environment.KOED_CODEX_STOP_DELIVERY === "1" ||
+    (environment.KOED_CODEX_STOP_DELIVERY !== "0" &&
+      /^KOED_CODEX_STOP_DELIVERY\s*=\s*"1"\s*$/m.test(ownedContent));
+  const memoryHook = resolve(dirname(runtime.mcpCli), "codex-memory-hook.js");
+  if (!/^[A-Za-z0-9_-]+$/.test(mcpName))
+    throw new Error("MEMORY_MCP_NAME must be a TOML bare server name.");
+  if (deferredRecall && !existsSync(memoryHook))
+    throw new Error(
+      `Deferred recall helper is missing: ${memoryHook}. Rebuild Koed packaging.`
+    );
+  const memoryTool = `mcp__${mcpName}__memory_answer`;
+  const quoteArgument = (value: string): string =>
+    process.platform === "win32"
+      ? JSON.stringify(value)
+      : "'" + value.replaceAll("'", "'\\''") + "'";
+  const memoryCommand = [
+    nodeCommand,
+    memoryHook,
+    "--koed-home",
+    paths.koedHome,
+    "--memory-tool",
+    memoryTool,
+    "--wait-ms",
+    "300000"
+  ]
+    .map(quoteArgument)
+    .join(" ");
+  const deliveryHooks = deferredRecall
+    ? [
+        ["PreToolUse", 10, `^${memoryTool}$`],
+        ["PostToolUse", 10, `^${memoryTool}$`],
+        ["Stop", 305],
+        ["SessionEnd", 10],
+        ["Interrupt", 3]
+      ]
+        .map(
+          ([event, timeout, matcher]) => `[[hooks.${event}]]
+${matcher ? `matcher = ${tomlString(String(matcher))}\n` : ""}[[hooks.${event}.hooks]]
+type = "command"
+command = ${tomlString(memoryCommand)}
+timeout = ${timeout}`
+        )
+        .join("\n\n")
+    : "";
+
   const guidancePath = resolveCodexGuidancePath(runtime.mcpCli);
   const existingInstructions = existsSync(codexInstructionsPath)
     ? String(readFileSync(codexInstructionsPath, "utf8"))
@@ -245,14 +299,12 @@ approval_mode = "approve"
 
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${tomlString(paths.koedHome)}
+${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${tomlString(memoryTool)}\n` : ""}
 
 ${hookBlocks}
+${deliveryHooks}
 ${markerEnd}
 `;
-  const existing = existsSync(codexConfigPath)
-    ? String(readFileSync(codexConfigPath, "utf8"))
-    : "";
-  const withoutPrevious = stripCodexOwnershipBlock(existing);
   mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
   writeFileSync(
     codexConfigPath,
@@ -267,6 +319,7 @@ ${markerEnd}
     command,
     stdout: [
       "Codex integration configured.",
+      `Memory recall mode: ${deferredRecall ? "deferred native Stop" : "blocking"}.`,
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
       `Wrote Codex MCP config: ${codexConfigPath}`,

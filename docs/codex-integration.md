@@ -6,9 +6,62 @@ see [Claude Code integration](claude-code-integration.md) and
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 Personal Memory Answers use [durable execution](durable-memory-answer.md).
-Current Codex waits outside the model loop for the terminal MCP result; native
-Responses async continuation remains capability-gated on an upstream Codex
-bridge that preserves the original call identity.
+Codex uses blocking recall by default. An optional native CLI integration lets
+the original turn continue while recall runs. Its synchronous Stop hook supplies
+the completed result when that turn reaches its stop boundary.
+
+## Optional deferred recall in the native CLI
+
+Enable the adapter through the packaged Local Operator Script:
+
+```bash
+koed-server setup codex --deferred-recall --json
+```
+
+From a contributor checkout, use `pnpm codex:configure --deferred-recall`.
+Restart Codex and review its native hook trust request before use. Setup installs
+matched PreToolUse and PostToolUse hooks, a synchronous Stop hook, and SessionEnd
+and Interrupt cleanup hooks. It preserves Capture Hooks and unrelated settings.
+A trusted PreToolUse hook binds each request to its exact native call. Missing
+readiness uses blocking recall instead.
+
+The default Stop wait is five minutes (`--wait-ms 300000`), with a 305-second
+native hook timeout. The helper accepts waits from 1,000 to 1,800,000 milliseconds.
+If you manually change that flag, set the native timeout to the wait in seconds,
+rounded up, plus five. A wait failure supplies no recalled answer and does not
+guarantee later delivery. The worker can continue under its separate hard limit.
+
+Plain setup or repair preserves the existing selection. Use `--blocking-recall`
+with setup to disable this adapter. Contributor `pnpm codex:configure --check`
+checks the owned configuration without writing. `--remove` removes only Koed's
+owned configuration and managed global guidance.
+
+Only one recall per native turn can use deferred delivery. Further calls in that
+turn use blocking recall. A missing pre-call hook uses blocking recall; a consumed
+or invalid receipt fails instead of starting another task. Unsupported native
+subagent calls also retain blocking recall.
+
+Receipt files contain task and origin identities, not recalled results. A crash
+can leave a locked receipt that cannot recover delivery. Expired unlocked state
+is collected, but locked state is retained and the store is bounded. To repair
+that state, first close all Codex sessions and stop their Koed MCP and hook
+processes, then clear only `KOED_HOME/codex-memory-delivery`. This does not cancel
+or replay durable tasks, and it does not restore delivery to exited sessions.
+
+Isolated Codex 0.159.3 native CLI tests verified useful-work overlap, automatic
+original-turn delivery, token revocation and expiry. Failure, explicit task
+cancellation, observer timeout, pending exit, fork ownership, and IDE and Desktop
+delivery remain unverified. Stop waits inside the original active turn. This integration
+does not wake an idle conversation or recover a result after session exit.
+The adapter uses the shared delivery lifecycle and the same durable executor.
+It does not poll through model tools or synthesize answers on the backend.
+The [manual test checklist](codex-deferred-recall-manual-tests.md) records the
+remaining cases, preparation, and required evidence.
+
+A confirmed interruption can still race a Stop hook that has already returned.
+Codex may record that late hook prompt in the interrupted turn. Interrupt cleanup
+is advisory and does not provide an atomic cancellation fence. This upstream
+limitation is accepted for this opt-in integration.
 
 ## Recommended Setup
 
