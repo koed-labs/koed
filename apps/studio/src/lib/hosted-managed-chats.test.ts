@@ -1196,10 +1196,22 @@ test("sends prompt and control mutations with generation and idempotency data", 
       "hello",
       { idempotencyKey: "send-key", clientUserMessageId: "client-id" },
       undefined,
-      fetcher
+      fetcher,
+      {
+        selectedResourceIds: [`res_${"a".repeat(64)}`],
+        selectedResourceHostedInstanceId: "hosted-codex-one"
+      }
     ),
     { commandId, state: "queued" }
   );
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    executionGeneration: execution.executionGeneration,
+    idempotencyKey: "send-key",
+    clientUserMessageId: "client-id",
+    prompt: "hello",
+    selectedResourceIds: [`res_${"a".repeat(64)}`],
+    selectedResourceHostedInstanceId: "hosted-codex-one"
+  });
   assert.deepEqual(
     await requestHostedConversationControl(
       execution,
@@ -1233,7 +1245,11 @@ test("sends prompt and control mutations with generation and idempotency data", 
     executionGeneration: 3,
     idempotencyKey: "send-key",
     clientUserMessageId: "client-id",
-    prompt: "hello"
+    prompt: "hello",
+    selectedResourceIds: [
+      "res_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    selectedResourceHostedInstanceId: "hosted-codex-one"
   });
   assert.equal(calls[0].init?.credentials, "include");
   assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
@@ -1626,18 +1642,35 @@ test("starts a selected-device Conversation and cancels only by execution genera
       projectId: "project-a",
       contextKind: "project",
       provider: "codex",
-      aiClientInstanceId: "codex.default",
+      aiClientInstanceId: "hosted-codex-one",
       model: "gpt-6-sol",
       reasoningEffort: "high",
       permissionMode: "supervised",
       targetDeviceId: "device-a",
       idempotencyKey: "start-key",
-      initialPrompt: "Begin"
+      initialPrompt: "Begin",
+      selectedResourceIds: [`res_${"b".repeat(64)}`],
+      selectedResourceHostedInstanceId: "hosted-codex-one"
     },
     undefined,
     fetcher
   );
   assert.equal(started.commandState, "queued");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    projectId: "project-a",
+    contextKind: "project",
+    provider: "codex",
+    aiClientInstanceId: "hosted-codex-one",
+    model: "gpt-6-sol",
+    reasoningEffort: "high",
+    permissionMode: "supervised",
+    targetDeviceId: "device-a",
+    idempotencyKey: "start-key",
+    initialPrompt: "Begin",
+    selectedResourceIds: [`res_${"b".repeat(64)}`],
+    selectedResourceHostedInstanceId: "hosted-codex-one",
+    runnerKind: "local_device"
+  });
   assert.deepEqual(
     await cancelHostedConversationStart(started.execution, undefined, fetcher),
     {
@@ -1657,13 +1690,17 @@ test("starts a selected-device Conversation and cancels only by execution genera
     projectId: "project-a",
     contextKind: "project",
     provider: "codex",
-    aiClientInstanceId: "codex.default",
+    aiClientInstanceId: "hosted-codex-one",
     model: "gpt-6-sol",
     reasoningEffort: "high",
     permissionMode: "supervised",
     targetDeviceId: "device-a",
     idempotencyKey: "start-key",
     initialPrompt: "Begin",
+    selectedResourceIds: [
+      "res_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    selectedResourceHostedInstanceId: "hosted-codex-one",
     runnerKind: "local_device"
   });
   assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {

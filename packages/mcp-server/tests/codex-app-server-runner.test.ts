@@ -38,6 +38,7 @@ const writeFakeAppServer = (
     turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
     transientErrorBeforeCompletion?: boolean;
     childCompletedNotifications?: number;
+    commandExecutionEvents?: boolean;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-codex-app-server.mjs");
@@ -127,6 +128,9 @@ const transientErrorBeforeCompletion = ${JSON.stringify(
 const childCompletedNotifications = ${JSON.stringify(
       options.childCompletedNotifications ?? 0
     )};
+const commandExecutionEvents = ${JSON.stringify(
+      options.commandExecutionEvents ?? false
+    )};
 let threadId = "thread-test";
 let turnId = "turn-test";
 let turnIndex = 0;
@@ -198,6 +202,10 @@ lineReader.on("line", (line) => {
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
     for (let child = 0; child < childCompletedNotifications; child += 1) {
       send({ method: "item/completed", params: { threadId: "child-thread", turnId: "child-turn", completedAtMs: child + 1, item: { id: "child-message-" + child, type: "agentMessage", text: "x".repeat(80) } } });
+    }
+    if (commandExecutionEvents) {
+      send({ method: "item/started", params: { threadId, turnId, item: { id: "command-test", type: "commandExecution", command: "pnpm test", status: "inProgress" } } });
+      send({ method: "item/completed", params: { threadId, turnId, item: { id: "command-test", type: "commandExecution", command: "pnpm test", status: "completed", aggregatedOutput: "3 tests passed", exitCode: 0 } } });
     }
     if (transientErrorBeforeCompletion) {
       send({ method: "error", params: { threadId, turnId, error: { message: "Reconnecting... 2/5" } } });
@@ -1103,6 +1111,48 @@ describe("Codex app-server runner", () => {
         "thread/start"
       );
       expect(providerActivity).toContain("Codex provider activity");
+    } finally {
+      session.close();
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports native command start and result events from the live app-server stream", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-command-events-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const commandEvents: Array<Record<string, unknown>> = [];
+    const session = new CodexAppServerThreadSession({
+      appServerBinary: writeFakeAppServer(tempDirectory, {
+        commandExecutionEvents: true
+      }),
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: tempDirectory,
+      env: {
+        ...process.env,
+        CODEX_HOME: realCodexHome,
+        FAKE_REAL_CODEX_HOME: realCodexHome
+      },
+      clientName: "koed-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: "",
+      onCommandExecutionEvent: (event) => commandEvents.push(event)
+    });
+
+    try {
+      await session.runTurn("Run the tests", 3000);
+      expect(commandEvents).toEqual([
+        { phase: "started", command: "pnpm test" },
+        {
+          phase: "completed",
+          command: "pnpm test",
+          result: "3 tests passed",
+          exitCode: 0
+        }
+      ]);
     } finally {
       session.close();
       fs.rmSync(tempDirectory, { recursive: true, force: true });

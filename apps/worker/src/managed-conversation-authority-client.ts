@@ -15,6 +15,7 @@ import type {
 import {
   fetchBoundedJsonObject,
   upstreamApiUrl,
+  type BuildProgressEvent,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
@@ -87,6 +88,7 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "listPersonalAgentExecutionAttempts"
   | "createPersonalAgentExecutionAttempt"
   | "recordPersonalAgentTurnOutput"
+  | "recordPersonalAgentBuildProgressEvent"
   | "completePersonalAgentExecutionAttempt"
 > & {
   createManagedConversationSourceDownloadAuthorization(input: {
@@ -354,6 +356,14 @@ export const createManagedConversationAuthorityClient = (options: {
         }
       );
       return object(payload.job, "Personal Agent job") as never;
+    },
+
+    async recordPersonalAgentBuildProgressEvent(_actor, event) {
+      await request(
+        "POST",
+        `/v1/managed-conversation-runner/personal-agent/jobs/${encodeURIComponent(event.jobId)}/build-progress`,
+        event
+      );
     },
 
     async completePersonalAgentExecutionAttempt(input) {

@@ -61,6 +61,44 @@ export type DesktopCommandName = (typeof desktopCommandNames)[number];
 
 const desktopCommandNameSet = new Set<string>(desktopCommandNames);
 
+export const studioDesktopCommandNames = [
+  "status",
+  "doctor",
+  "onboarding_status",
+  "onboarding_complete",
+  "setup_codex",
+  "check_codex",
+  "repair_codex",
+  "setup_pi",
+  "check_pi",
+  "repair_pi",
+  "setup_claude",
+  "check_claude",
+  "repair_claude",
+  "runtime_status",
+  "runtime_install",
+  "models_status",
+  "models_install",
+  "package_status",
+  "package_install",
+  "personal_sync_status",
+  "personal_sync_group_bootstrap",
+  "personal_sync_pairing_create",
+  "personal_sync_pairing_wait",
+  "personal_sync_pairing_status",
+  "personal_sync_pairing_cancel",
+  "personal_sync_pairing_redeem",
+  "personal_sync_device_rename",
+  "personal_sync_revoke"
+] as const satisfies readonly DesktopCommandName[];
+
+const studioDesktopCommandNameSet = new Set<string>(studioDesktopCommandNames);
+
+export const isStudioDesktopCommandName = (
+  value: unknown
+): value is (typeof studioDesktopCommandNames)[number] =>
+  typeof value === "string" && studioDesktopCommandNameSet.has(value);
+
 export const isDesktopCommandName = (
   value: unknown
 ): value is DesktopCommandName =>
@@ -99,3 +137,12 @@ export {
 export const setupCommandChannel = "koed:setup:command";
 export const setupProgressEventChannel = "koed:setup:progress";
 export const desktopStatusChangedChannel = "koed:status:changed";
+export const studioNotificationNavigationChannel =
+  "koed:studio-notifications:navigate";
+export const studioNotificationNotifyChannel =
+  "koed:studio-notifications:notify";
+export const studioNotificationGetPreferenceChannel =
+  "koed:studio-notifications:get-preference";
+export const studioNotificationSetPreferenceChannel =
+  "koed:studio-notifications:set-preference";
+export const studioNotificationResetChannel = "koed:studio-notifications:reset";

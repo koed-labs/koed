@@ -130,7 +130,15 @@ export interface CodexAppServerRunConfig {
   /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
   captureProcessMetrics?: boolean;
   onProviderActivity?: (status: string) => void;
+  onCommandExecutionEvent?: (event: {
+    phase: "started" | "completed";
+    command: string;
+    result?: string;
+    exitCode?: number;
+  }) => void | Promise<void>;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
+  /** Native Codex Skills revalidated against the source computer at invocation. */
+  selectedSkills?: Array<{ name: string; path: string }>;
   dynamicToolHandler?: (
     call: CodexAppServerDynamicToolCall
   ) => Promise<CodexAppServerDynamicToolResponse>;
@@ -773,6 +781,25 @@ export class CodexAppServerClient {
     return response.result;
   }
 
+  async listSkills(cwds: string[] = []): Promise<Record<string, unknown>> {
+    const params = { cwds, forceReload: true };
+    const response = await this.request("skills/list", params);
+    this.recordRawEvent("skills/list", params, response.result);
+    return asRecord(response.result);
+  }
+
+  async listInstalledApps(): Promise<Record<string, unknown>> {
+    const response = await this.request("app/installed", {});
+    this.recordRawEvent("app/installed", {}, response.result);
+    return asRecord(response.result);
+  }
+
+  async listMcpServerStatuses(): Promise<Record<string, unknown>> {
+    const response = await this.request("mcpServerStatus/list", {});
+    this.recordRawEvent("mcpServerStatus/list", {}, response.result);
+    return asRecord(response.result);
+  }
+
   async readAccount(): Promise<Record<string, unknown>> {
     const response = await this.request("account/read", {
       refreshToken: false
@@ -880,9 +907,19 @@ export class CodexAppServerClient {
     config: CodexAppServerRunConfig,
     clientUserMessageId?: string
   ): Promise<string> {
+    const selectedSkills = config.selectedSkills ?? [];
+    const skillText = selectedSkills.map((skill) => `$${skill.name}`).join(" ");
+    const text = [skillText, prompt].filter(Boolean).join(" ");
     const params = {
       threadId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: [
+        { type: "text", text, text_elements: [] },
+        ...selectedSkills.map((skill) => ({
+          type: "skill",
+          name: skill.name,
+          path: skill.path
+        }))
+      ],
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
       cwd: config.cwd,
       approvalPolicy: config.approvalPolicy ?? "never",
@@ -1267,6 +1304,20 @@ export class CodexAppServerClient {
       }
       this.dispatchTransientEvent(rawEvent);
       return;
+    }
+
+    if (
+      message.method === "item/started" ||
+      message.method === "item/completed"
+    ) {
+      const params = asRecord(message.params);
+      const item = asRecord(params.item);
+      if (
+        item.type === "commandExecution" &&
+        typeof item.command === "string"
+      ) {
+        this.dispatchTransientEvent(rawEvent);
+      }
     }
 
     if (message.method === "item/completed") {
@@ -1789,6 +1840,30 @@ export class CodexAppServerThreadSession {
         : undefined,
       {
         captureProcessMetrics: config.captureProcessMetrics,
+        transientEventHandler: (event) => {
+          if (
+            event.method !== "item/started" &&
+            event.method !== "item/completed"
+          )
+            return;
+          const params = asRecord(event.params);
+          const item = asRecord(params.item);
+          if (
+            item.type !== "commandExecution" ||
+            typeof item.command !== "string"
+          )
+            return;
+          const exitCode = item.exitCode;
+          const result = item.aggregatedOutput;
+          return config.onCommandExecutionEvent?.({
+            phase: event.method === "item/started" ? "started" : "completed",
+            command: item.command,
+            ...(typeof result === "string" ? { result } : {}),
+            ...(typeof exitCode === "number" && Number.isInteger(exitCode)
+              ? { exitCode }
+              : {})
+          });
+        },
         ...(config.appServerConfigOverrides
           ? { configOverrides: config.appServerConfigOverrides }
           : {})

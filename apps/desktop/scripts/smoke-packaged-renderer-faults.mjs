@@ -1,3 +1,4 @@
+import { URL } from "node:url";
 /* global AbortSignal, clearTimeout, console, fetch, setTimeout, WebSocket */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -217,7 +218,7 @@ export const trustedClick = async ({ cdp, evaluate, locator }) => {
   });
 };
 
-export const smokePackagedRendererFaults = async ({
+export const smokeLegacyPackagedRendererFaults = async ({
   executable,
   env,
   koedHome
@@ -661,3 +662,182 @@ export const smokePackagedRendererFaults = async ({
     });
   }
 };
+
+export const smokePackagedStudioRenderer = async ({
+  executable,
+  env,
+  koedHome
+}) => {
+  const userDataDir = mkdtempSync(resolve(tmpdir(), "koed-renderer-faults-"));
+  const debuggingPort =
+    45_000 +
+    [...userDataDir].reduce(
+      (hash, character) => (hash * 33 + character.codePointAt(0)) % 10_000,
+      0
+    );
+  const launchEnvironment = { ...env, KOED_HOME: koedHome };
+  delete launchEnvironment.ELECTRON_RUN_AS_NODE;
+  let stdoutTail = "";
+  let stderrTail = "";
+  let childExit;
+  const child = spawn(
+    executable,
+    [
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      "--no-first-run"
+    ],
+    {
+      env: launchEnvironment,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  child.stdout.on("data", (chunk) => {
+    stdoutTail = appendOutputTail(stdoutTail, chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderrTail = appendOutputTail(stderrTail, chunk);
+  });
+  child.on("exit", (code, signal) => {
+    childExit = { code, signal };
+  });
+  let cdp;
+  try {
+    const target = await waitForRendererTarget({
+      debuggingPort,
+      readChildExit: () => childExit
+    });
+    if (!target) {
+      const exitDetail = childExit
+        ? ` Electron exited with code ${String(childExit.code)} and signal ${String(childExit.signal)}.`
+        : " Electron remained running.";
+      const output = redactLaunchOutput(
+        [stdoutTail, stderrTail].filter(Boolean).join("\n")
+      );
+      throw new Error(
+        `Packaged renderer CDP target was unavailable after 30 seconds.${exitDetail}${
+          output ? `\nPackaged Electron output:\n${output}` : ""
+        }`
+      );
+    }
+    cdp = await connect(target.webSocketDebuggerUrl);
+    await cdp.call("Runtime.enable");
+    await cdp.call("Page.enable");
+    const evaluate = async (expression) => {
+      const response = await cdp.call("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true
+      });
+      if (response.exceptionDetails) {
+        throw new Error(
+          response.exceptionDetails.exception?.description ??
+            response.exceptionDetails.text
+        );
+      }
+      return response.result.value;
+    };
+    console.error("[packaged-renderer] Studio entrypoint started");
+    await waitFor(
+      evaluate,
+      `document.querySelector('.koed-setup-card h1')?.textContent?.trim() === 'Set up Koed'`,
+      "Studio first-launch setup",
+      `({title:document.title,body:document.body.innerText.slice(0,1000),url:location.href})`
+    );
+    const entrypoint = await evaluate(`location.href`);
+    if (!/^http:\/\/127\.0\.0\.1:\d+\//u.test(entrypoint))
+      throw new Error("Packaged Desktop did not open the Studio gateway.");
+    const nativeSetup = await evaluate(`window.koedDesktop.setup.inspect()`);
+    if (!nativeSetup || !nativeSetup.stages)
+      throw new Error(
+        "Studio did not expose the original native setup inspection."
+      );
+    const rejected = await evaluate(
+      `(() => {
+        try {
+          return Promise.resolve(window.koedDesktop.invoke('open_personal_memory'))
+            .then(() => false, () => true);
+        } catch {
+          return true;
+        }
+      })()`
+    );
+    if (!rejected)
+      throw new Error(
+        "Studio's narrow command allowlist accepted an unrelated legacy command."
+      );
+    await cdp.call("Page.reload");
+    await waitFor(
+      evaluate,
+      `document.querySelector('.koed-setup-card h1')?.textContent?.trim() === 'Set up Koed'`,
+      "setup after reload"
+    );
+    await cdp.call("Page.navigate", {
+      url: new URL("/settings", entrypoint).href
+    });
+    await waitFor(
+      evaluate,
+      `document.body.innerText.includes('Setup & health') && document.body.innerText.includes('AI Clients & models')`,
+      "Studio Settings setup navigation",
+      `document.body.innerText.slice(0,1000)`
+    );
+    await evaluate(
+      `[...document.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Setup & health')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `document.body.innerText.includes('Local runtime')`,
+      "native setup health status"
+    );
+    const hydrationFailure = cdp.notifications.some((item) => {
+      if (
+        !["Runtime.consoleAPICalled", "Runtime.exceptionThrown"].includes(
+          item.method
+        )
+      )
+        return false;
+      const text = JSON.stringify(item.params);
+      return /hydration failed|hydration mismatch|hydrated but some attributes|Minified React error #(?:418|423|425)/iu.test(
+        text
+      );
+    });
+    if (hydrationFailure)
+      throw new Error(
+        "Packaged Studio reported a hydration failure during setup or Settings navigation."
+      );
+    const targets = await fetch(
+      `http://127.0.0.1:${debuggingPort}/json/list`
+    ).then((response) => response.json());
+    if (
+      targets.some(
+        (item) =>
+          item.type === "page" && String(item.url).startsWith("koed://app")
+      )
+    )
+      throw new Error("An unexpected legacy Koed window was opened.");
+    return {
+      studioDefaultEntrypoint: true,
+      firstLaunchSetup: true,
+      nativeSetupInspection: true,
+      hydrationErrorsAbsent: true,
+      reload: true,
+      settingsNavigation: true,
+      narrowCommandAuthority: true,
+      legacyWindowAbsent: true
+    };
+  } finally {
+    cdp?.close();
+    await terminateChild(child);
+    // Electron's own helper/GPU processes can briefly outlive the main
+    // process and still hold file handles in userDataDir, racing this
+    // recursive delete with ENOTEMPTY; retry to absorb that.
+    rmSync(userDataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200
+    });
+  }
+};
+
+export const smokePackagedRendererFaults = smokePackagedStudioRenderer;

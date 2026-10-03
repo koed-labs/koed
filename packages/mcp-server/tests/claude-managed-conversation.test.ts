@@ -153,6 +153,67 @@ const queryOptions = (callIndex = 0): Options => {
 };
 
 describe("ClaudeManagedConversationSession", () => {
+  it("reports live Bash tool-use and tool-result messages without transcript parsing", async () => {
+    const { config } = fixture();
+    const commandEvents: Array<{
+      phase: string;
+      command: string;
+      result?: string;
+    }> = [];
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([
+        {
+          type: "assistant",
+          session_id: options!.sessionId!,
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-use-1",
+                name: "Bash",
+                input: { command: "pnpm test" }
+              }
+            ]
+          }
+        } as unknown as SDKMessage,
+        {
+          type: "user",
+          session_id: options!.sessionId!,
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-use-1",
+                content: "3 tests passed"
+              }
+            ]
+          }
+        } as unknown as SDKMessage,
+        successResult(options!.sessionId!)
+      ])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onCommandExecutionEvent: (event) => commandEvents.push(event)
+    });
+    try {
+      await session.start();
+      await session.prompt("Run the tests");
+      expect(commandEvents).toEqual([
+        { phase: "started", command: "pnpm test" },
+        {
+          phase: "completed",
+          command: "pnpm test",
+          result: "3 tests passed"
+        }
+      ]);
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
   it("leaves CLAUDE_CONFIG_DIR unset when using Claude's native HOME default", async () => {
     const { config } = fixture();
     sdk.query.mockImplementation(({ options }: { options?: Options }) =>

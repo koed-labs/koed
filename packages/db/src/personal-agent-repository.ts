@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
+  buildProgressEventSchema,
   assertPersonalAgentAttemptRuntimeIdentity,
   assertPersonalAgentIsActive,
   decryptEnvelopeToUtf8,
@@ -22,6 +23,7 @@ import {
   type PersonalAgentIdentityVersion,
   type PersonalAgentInstructionSource,
   type PersonalAgentRoleTemplate,
+  type BuildProgressEvent,
   personalAgentRoleTemplateSchema
 } from "@koed/shared";
 import {
@@ -36,6 +38,7 @@ const SOUL_SOURCE_TABLE = "personal_agent_identity_versions" as const;
 const SOUL_SOURCE_COLUMN = "soul_instructions" as const;
 const OUTPUT_SOURCE_TABLE = "personal_agent_execution_jobs" as const;
 const OUTPUT_SOURCE_COLUMN = "assistant_output" as const;
+const BUILD_PROGRESS_SOURCE_COLUMN = "build_progress" as const;
 
 // Job goals live in encrypted command payloads. Keep their short display
 // titles out of the plaintext job row as well.
@@ -309,6 +312,14 @@ export interface PersonalAgentRepository {
     actor: ActorContext,
     input: { jobId: string }
   ): Promise<string | null>;
+  recordPersonalAgentBuildProgressEvent(
+    actor: ActorContext,
+    event: BuildProgressEvent
+  ): Promise<void>;
+  getPersonalAgentBuildProgress(
+    actor: ActorContext,
+    input: { executionId: string; jobId: string }
+  ): Promise<BuildProgressEvent[]>;
   getPersonalAgentExecutionJob(
     actor: ActorContext,
     jobId: string
@@ -731,6 +742,151 @@ export const createPersonalAgentRepository = (
       }
     );
     return typeof result?.plaintext === "string" ? result.plaintext : null;
+  };
+
+  const decryptBuildProgress = async (
+    client: pg.Pool | pg.PoolClient,
+    actor: ActorContext,
+    jobId: string
+  ): Promise<BuildProgressEvent[]> => {
+    const result = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+      client,
+      actor,
+      requireProvider(),
+      {
+        sourceTable: OUTPUT_SOURCE_TABLE,
+        sourceId: jobId,
+        sourceColumn: BUILD_PROGRESS_SOURCE_COLUMN
+      }
+    );
+    if (!result) return [];
+    if (!Array.isArray(result.plaintext) || result.plaintext.length > 2_000) {
+      throw new Error("Encrypted Build progress is invalid");
+    }
+    return result.plaintext.map((event) =>
+      buildProgressEventSchema.parse(event)
+    );
+  };
+
+  const recordPersonalAgentBuildProgressEvent = async (
+    actor: ActorContext,
+    value: BuildProgressEvent
+  ): Promise<void> => {
+    const event = buildProgressEventSchema.parse(value);
+    if (Buffer.byteLength(JSON.stringify(event), "utf8") > 64 * 1024) {
+      throw new Error("Build progress event exceeded its size limit");
+    }
+    await withTransaction(async (client) => {
+      const result = await client.query<{
+        id: string;
+        owner_user_id: string;
+        conversation_id: string;
+        last_attempt_id: string | null;
+        execution_generation: number;
+      }>(
+        `select j.id, j.owner_user_id, j.conversation_id, j.last_attempt_id,
+                e.execution_generation
+           from personal_agent_execution_jobs j
+           join managed_conversation_executions e
+             on e.id = j.conversation_id and e.owner_user_id = j.owner_user_id
+          where j.id = $1 and j.owner_user_id = $2
+          for update of j`,
+        [event.jobId, actor.userId]
+      );
+      const job = result.rows[0];
+      if (!job || job.conversation_id !== event.executionId) {
+        throw Object.assign(new Error("Personal Agent Job not found"), {
+          code: "PERSONAL_AGENT_JOB_NOT_FOUND"
+        });
+      }
+      if (job.execution_generation !== event.executionGeneration) {
+        throw Object.assign(new Error("Build progress execution is stale"), {
+          code: "MANAGED_CONVERSATION_GENERATION_CONFLICT"
+        });
+      }
+      const attemptResult = await client.query<AttemptRow>(
+        `select id, owner_user_id, job_id, command_id, attempt_number,
+                attribution_kind, agent_id, agent_version, provider, model,
+                ai_client_instance_id, reasoning_effort, permission_mode,
+                managed_execution_id, managed_execution_generation, status,
+                outcome, started_at, phase, phase_observed_at, completed_at
+           from personal_agent_execution_attempts
+          where id = $1 and job_id = $2 and owner_user_id = $3
+          for update`,
+        [event.attemptId, event.jobId, actor.userId]
+      );
+      const attempt = attemptResult.rows[0];
+      if (!attempt) {
+        throw Object.assign(new Error("Personal Agent attempt not found"), {
+          code: "PERSONAL_AGENT_ATTEMPT_NOT_FOUND"
+        });
+      }
+      await assertCurrentRunningPersonalAgentAttempt(client, job, attempt);
+      const existing = await decryptBuildProgress(client, actor, event.jobId);
+      if (existing.some((candidate) => candidate.id === event.id)) return;
+      const events = [...existing, event];
+      if (events.length > 2_000) {
+        throw Object.assign(new Error("Build progress history is full"), {
+          code: "BUILD_PROGRESS_CAPACITY"
+        });
+      }
+      const plaintext = JSON.stringify(events);
+      if (Buffer.byteLength(plaintext, "utf8") > 8 * 1024 * 1024) {
+        throw Object.assign(new Error("Build progress history is full"), {
+          code: "BUILD_PROGRESS_CAPACITY"
+        });
+      }
+      await upsertEncryptedFieldPayloadWithClient(
+        client,
+        actor,
+        requireProvider(),
+        {
+          sourceTable: OUTPUT_SOURCE_TABLE,
+          sourceId: event.jobId,
+          sourceColumn: BUILD_PROGRESS_SOURCE_COLUMN,
+          plaintext: events,
+          plaintextContentType: "application/json",
+          visibility: "personal",
+          rowFamily: "personal_agent_build_progress",
+          scope: {
+            tenantId: actor.userId,
+            objectClass: "personal_agent_build_progress"
+          },
+          aad: { jobId: event.jobId, executionId: event.executionId }
+        }
+      );
+      await client.query(
+        `update personal_agent_execution_jobs
+            set build_progress = $3::jsonb
+          where id = $1 and owner_user_id = $2`,
+        [
+          event.jobId,
+          actor.userId,
+          JSON.stringify({
+            contentEncrypted: true,
+            encryptedSourceTable: OUTPUT_SOURCE_TABLE,
+            encryptedSourceColumn: BUILD_PROGRESS_SOURCE_COLUMN
+          })
+        ]
+      );
+    });
+  };
+
+  const getPersonalAgentBuildProgress = async (
+    actor: ActorContext,
+    input: { executionId: string; jobId: string }
+  ): Promise<BuildProgressEvent[]> => {
+    const job = await pool.query<{ id: string }>(
+      `select id from personal_agent_execution_jobs
+        where id = $1 and conversation_id = $2 and owner_user_id = $3`,
+      [input.jobId, input.executionId, actor.userId]
+    );
+    if (!job.rows[0]) {
+      throw Object.assign(new Error("Personal Agent Job not found"), {
+        code: "PERSONAL_AGENT_JOB_NOT_FOUND"
+      });
+    }
+    return decryptBuildProgress(pool, actor, input.jobId);
   };
 
   const insertVersion = async (
@@ -2557,7 +2713,7 @@ export const createPersonalAgentRepository = (
 
   const assertCurrentRunningPersonalAgentAttempt = async (
     client: pg.PoolClient,
-    job: JobRow,
+    job: Pick<JobRow, "owner_user_id" | "conversation_id" | "last_attempt_id">,
     attempt: Pick<
       AttemptRow,
       "id" | "status" | "managed_execution_id" | "managed_execution_generation"
@@ -3240,6 +3396,8 @@ export const createPersonalAgentRepository = (
     createPersonalAgentExecutionJob,
     recordPersonalAgentTurnOutput,
     getPersonalAgentTurnOutput,
+    recordPersonalAgentBuildProgressEvent,
+    getPersonalAgentBuildProgress,
     getPersonalAgentExecutionJob,
     listPersonalAgentExecutionJobs,
     countPersonalAgentExecutionJobs,

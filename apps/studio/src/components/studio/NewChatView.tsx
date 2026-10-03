@@ -110,6 +110,14 @@ export type NewChatViewProps = {
   initialSelection?: ChatComposerSelection;
   suggestions?: NewChatSuggestion[];
   activity?: BuildActivity | null;
+  onBuildJobSelect?: (jobId: string) => void;
+  onBuildAttention?: (runtimeItemId: string) => void;
+  clientResourceScope?: {
+    projectId: string | null;
+    hostedInstanceId?: string;
+    instanceId?: string;
+    provider?: string;
+  };
   onDemoMessage?: (text: string) => void;
   agents?: readonly ChatMentionAgent[];
   activeAgentId?: string | null;
@@ -150,6 +158,9 @@ export function NewChatView({
   initialSelection,
   suggestions = DEFAULT_SUGGESTIONS,
   activity,
+  onBuildJobSelect,
+  onBuildAttention,
+  clientResourceScope,
   onDemoMessage,
   agents,
   activeAgentId,
@@ -325,6 +336,9 @@ export function NewChatView({
                   }
                   projectName={projectName}
                   branch={branch}
+                  clientResourceScope={
+                    mode === "live" ? clientResourceScope : undefined
+                  }
                   value={draft}
                   onChange={(value) => {
                     setEditedDraft(value);
@@ -581,6 +595,7 @@ export function NewChatView({
                 {runtime?.pendingRequests?.map((request) => (
                   <section
                     key={request.id}
+                    id={`runtime-item-${request.id}`}
                     className="mb-3 rounded-md border border-warning/30 bg-surface px-3 py-3"
                     aria-label={`${request.kind.replaceAll("_", " ")} request`}
                   >
@@ -782,6 +797,8 @@ export function NewChatView({
 
       <BuildActivityPanel
         activity={resolvedActivity}
+        onJobSelect={onBuildJobSelect}
+        onAttention={onBuildAttention}
         onModeChange={setBuildPanelMode}
         className="max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:shadow-2xl"
       />

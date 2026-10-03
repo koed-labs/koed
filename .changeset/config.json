@@ -18,6 +18,7 @@
     "@koed/memory-ui",
     "@koed/privacy-service",
     "@koed/shared",
+    "@koed/studio",
     "@koed/ui",
     "@koed/worker",
     "@koed/koed-server",

@@ -10,6 +10,9 @@ import {
   useState
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
+
+const MAX_NOTIFICATION_ROOT_SEARCH_PAGES = 20;
 import type {
   CollaborationMessage,
   CollaborationThread
@@ -316,6 +319,14 @@ export function HostedTeamChannels({
   const activeThread =
     activeThreads.find((thread) => thread.id === threadId) ?? null;
   const activeThreadId = activeThread?.id ?? null;
+  useEffect(() => {
+    if (!activeThreadId) return;
+    return registerStudioNotificationViewedChat({
+      kind: "team",
+      teamId: team.id,
+      threadId: activeThreadId
+    });
+  }, [activeThreadId, team.id]);
   const activeThreadKind = activeThread?.kind ?? null;
   const teamMentionScopeKey = JSON.stringify({
     backendId: typeof window === "undefined" ? "" : window.location.origin,
@@ -1002,16 +1013,34 @@ export function HostedTeamChannels({
           if (consumedAttentionRoute.current === routeKey)
             openMessageThread(existing);
         });
-      else
-        void client
-          .loadMessages(team.id, routedThreadId, null, 50, routedRootMessageId)
-          .then((page) => {
+      else {
+        void (async () => {
+          let beforeSequence: number | null = null;
+          for (
+            let pageIndex = 0;
+            pageIndex < MAX_NOTIFICATION_ROOT_SEARCH_PAGES;
+            pageIndex += 1
+          ) {
+            if (consumedAttentionRoute.current !== routeKey) return;
+            const page = await client.loadMessages(
+              team.id,
+              routedThreadId,
+              beforeSequence,
+              50
+            );
             const root = page.items.find(
               (message) => message.id === routedRootMessageId
             );
-            if (root) openMessageThread(root);
-          })
-          .catch(() => undefined);
+            if (root) {
+              if (consumedAttentionRoute.current === routeKey)
+                openMessageThread(root);
+              return;
+            }
+            if (!page.hasOlder || page.nextBeforeSequence === null) return;
+            beforeSequence = page.nextBeforeSequence;
+          }
+        })().catch(() => undefined);
+      }
     }
   }, [
     activeThreads,

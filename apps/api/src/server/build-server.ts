@@ -1,4 +1,5 @@
 import { registerPullRequestRoutes } from "../pull-requests/index.js";
+import { registerAiClientResourceRoutes } from "../ai-client-resources/index.js";
 import { registerHomeRoutes } from "../home/index.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
@@ -1943,6 +1944,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerManagedConversationRoutes(app, routeContext);
   registerSourceControlRoutes(app, routeContext);
   registerPullRequestRoutes(app, routeContext);
+  registerAiClientResourceRoutes(app, routeContext);
   registerHomeRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);

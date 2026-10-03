@@ -14,7 +14,10 @@ import {
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
-import { assertNoSourceCheckoutResolution } from "./smoke-packaged-desktop-app.mjs";
+import {
+  assertNoSourceCheckoutResolution,
+  createSmokeEnv
+} from "./smoke-packaged-desktop-app.mjs";
 
 const createRuntimeRoot = ({ withAssets = true } = {}) => {
   const runtimeRoot = mkdtempSync(resolve(tmpdir(), "koed-smoke-assets-"));
@@ -141,4 +144,31 @@ test("packaged smoke rejects source-checkout artifact resolution", () => {
       artifactPath: "/Applications/Koed.app/Contents/Resources/koed-runtime/api"
     })
   );
+});
+
+test("packaged smoke overrides inherited capture and provider discovery paths", () => {
+  const home = resolve(tmpdir(), "owned-smoke-profile");
+  const environment = createSmokeEnv(
+    { resourcesPath: "/packaged/resources" },
+    home,
+    {
+      MEMORY_HISTORICAL_IMPORT_ENABLED: "true",
+      MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "true",
+      MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "true",
+      MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "true",
+      CODEX_HOME: "/operator/codex",
+      CLAUDE_CONFIG_DIR: "/operator/claude",
+      PI_CODING_AGENT_DIR: "/operator/pi"
+    }
+  );
+  for (const key of [
+    "MEMORY_HISTORICAL_IMPORT_ENABLED",
+    "MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED",
+    "MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED",
+    "MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED"
+  ])
+    assert.equal(environment[key], "false");
+  assert.equal(environment.CODEX_HOME, resolve(home, "codex"));
+  assert.equal(environment.CLAUDE_CONFIG_DIR, resolve(home, "claude"));
+  assert.equal(environment.PI_CODING_AGENT_DIR, resolve(home, "pi"));
 });

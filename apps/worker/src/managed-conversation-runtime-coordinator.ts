@@ -1,6 +1,8 @@
 import { createPullRequestRunnerAuthority } from "./pull-request-authority-client.js";
 import { createPullRequestRunner } from "./pull-request-runner.js";
 import { createPullRequestPushDriver } from "./pull-request-push.js";
+import { createAiClientResourceRunnerAuthority } from "./ai-client-resource-authority-client.js";
+import { createAiClientResourceRunner } from "./ai-client-resource-runner.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
@@ -371,6 +373,34 @@ export const createManagedConversationRuntimeCoordinator = (options: {
           "Pull Request runner operation failed"
         )
     });
+    const aiClientResourceAuthority = createAiClientResourceRunnerAuthority({
+      repository: options.localRepository,
+      ownerUserId: options.localOwnerUserId,
+      deviceId: options.deviceId,
+      deploymentId: options.deploymentId,
+      ...(authority
+        ? {
+            remote: {
+              baseUrl: authority.baseUrl,
+              authorization: authority.authorization,
+              fetch: options.fetch
+            }
+          }
+        : {})
+    });
+    const aiClientResourceRunner = createAiClientResourceRunner({
+      authority: aiClientResourceAuthority,
+      repository: options.localRepository,
+      localOwnerUserId: options.localOwnerUserId,
+      deviceId: options.deviceId,
+      deploymentId: options.deploymentId,
+      koedHome: options.koedHome,
+      onError: (code) =>
+        options.logger.warn(
+          { error_name: code },
+          "AI Client resource discovery failed"
+        )
+    });
     const managedService = (
       options.createService ?? createManagedConversationService
     )({
@@ -403,8 +433,10 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       start() {
         managedService.start();
         pullRequestRunner.start();
+        aiClientResourceRunner.start();
       },
       async stop() {
+        await aiClientResourceRunner.stop();
         await pullRequestRunner.stop();
         await managedService.stop();
       }

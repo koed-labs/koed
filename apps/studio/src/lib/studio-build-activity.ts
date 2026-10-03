@@ -21,13 +21,24 @@ export type BuildActivityEventKind =
   | "completed"
   | "blocked"
   | "failed"
-  | "message";
+  | "message"
+  | "input-required"
+  | "workspace-observed"
+  | "phase";
+
+export type BuildActivityJob = {
+  id: string;
+  title: string;
+  state: BuildActivityState;
+  createdAt?: string;
+};
 
 export type BuildFileChange = {
   path: string;
   change: "added" | "modified" | "deleted" | "renamed" | "unknown";
   additions?: number;
   deletions?: number;
+  baseline?: boolean;
 };
 
 export type BuildActivityEvent = {
@@ -44,12 +55,17 @@ export type BuildActivityEvent = {
     branch?: string;
     status?: string;
     command?: string;
+    result?: string;
     files?: BuildFileChange[];
     diff?: {
       filesChanged?: number;
       additions?: number;
       deletions?: number;
     };
+  };
+  attention?: {
+    runtimeItemId: string;
+    kind: "user_input" | "command_approval";
   };
 };
 
@@ -63,6 +79,9 @@ export type BuildActivity = {
   };
   events: BuildActivityEvent[];
   updatedAt?: number;
+  jobs?: BuildActivityJob[];
+  selectedJobId?: string;
+  availability?: "available" | "unavailable" | "no_project";
 };
 
 export type ObservedBuildTotals = {

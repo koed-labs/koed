@@ -56,6 +56,8 @@ const modelSchema = z
 const instanceSchema = z
   .object({
     instanceId: z.string().min(1),
+    hostedInstanceId: z.string().min(1).optional(),
+    sourceDeviceLabel: z.string().min(1).nullable().optional(),
     driverId: providerSchema,
     displayName: z.string().min(1),
     enabled: z.boolean()
@@ -72,6 +74,8 @@ const capabilityDescriptorSchema = z
 const snapshotSchema = z
   .object({
     instanceId: z.string().min(1),
+    hostedInstanceId: z.string().min(1).optional(),
+    sourceDeviceLabel: z.string().min(1).nullable().optional(),
     authenticationState: z.enum([
       "authenticated",
       "unauthenticated",

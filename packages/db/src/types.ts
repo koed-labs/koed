@@ -41,6 +41,7 @@ import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import type { PullRequestRepository } from "./pull-request-repository.js";
+import type { AiClientResourceRepository } from "./ai-client-resource-repository.js";
 
 export type Visibility = "personal";
 
@@ -1974,6 +1975,7 @@ export interface MemorySourceRepository
     RecallFeedbackRepository,
     PersonalAgentRepository,
     PullRequestRepository,
+    AiClientResourceRepository,
     PublicSquareRepository,
     SharedMemoryRepository,
     TeamConversationSourceRepository,

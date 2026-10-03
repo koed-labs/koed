@@ -19,7 +19,6 @@ import {
 } from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as capabilityRefresh from "./local-ai-client-refresh.js";
-afterEach(() => vi.restoreAllMocks());
 import {
   configureDetectedSetupAiClients,
   createKoedEnvironment,
@@ -32,6 +31,26 @@ import {
   setupServicesHealthy,
   setupIntegrationHealthy
 } from "./manager.js";
+
+const temporaryDesktopCredentialHomes = new Set<string>();
+const teamBackendOwnerPrincipalId = "33333333-3333-4333-8333-333333333333";
+
+const createTeamBackendOwnerCredential = () => {
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-team-backend-owner-"));
+  temporaryDesktopCredentialHomes.add(koedHome);
+  const credential = storeDesktopLocalCredential(koedHome, {
+    ownerUserId: teamBackendOwnerPrincipalId,
+    operationFamilies: ["personal_collaboration_read"]
+  });
+  return { koedHome, reference: credential.reference };
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const koedHome of temporaryDesktopCredentialHomes)
+    rmSync(koedHome, { recursive: true, force: true });
+  temporaryDesktopCredentialHomes.clear();
+});
 
 type FakeChildProcess = EventEmitter & {
   killed: boolean;
@@ -4023,13 +4042,79 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("connects a Team Backend by registering, validating, enabling policy, and starting enrollment", async () => {
-    const calls: string[][] = [];
-    const opened: string[] = [];
+  it("requires a stored authenticated owner before mutating a Team Backend", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-team-backend-empty-"));
+    temporaryDesktopCredentialHomes.add(koedHome);
+    const execFile = vi.fn();
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.handlers.upstream_connect!({ url: "https://team.example.test" })
+    ).resolves.toMatchObject({
+      ok: false,
+      state: "not_ready",
+      error: "Local Personal Memory is not ready."
+    });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("does not connect with a corrupted Desktop owner credential", async () => {
+    const { koedHome, reference } = createTeamBackendOwnerCredential();
+    const storePath = resolve(koedHome, "secrets", "upstream-credentials.json");
+    const store = JSON.parse(readFileSync(storePath, "utf8")) as {
+      secrets: Record<string, { ciphertext: string }>;
+    };
+    const envelope = store.secrets[reference];
+    expect(envelope).toBeDefined();
+    envelope!.ciphertext = `${envelope!.ciphertext.startsWith("A") ? "B" : "A"}${envelope!.ciphertext.slice(1)}`;
+    writeFileSync(storePath, `${JSON.stringify(store)}\n`, "utf8");
+    const execFile = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.handlers.upstream_connect!({ url: "https://team.example.test" })
+    ).resolves.toMatchObject({
+      ok: false,
+      state: "not_ready",
+      error: "Local Personal Memory is not ready."
+    });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("connects a Team Backend by registering, validating, enabling policy, and starting enrollment", async () => {
+    const calls: string[][] = [];
+    const opened: string[] = [];
+    const { koedHome } = createTeamBackendOwnerCredential();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
@@ -4120,6 +4205,8 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         "start",
         "--id",
         "team-vps",
+        "--source-owner-principal-id",
+        teamBackendOwnerPrincipalId,
         "--json"
       ]
     ]);
@@ -4129,10 +4216,11 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
   });
 
   it("returns the activation URL without waiting for the system browser", async () => {
+    const { koedHome } = createTeamBackendOwnerCredential();
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: koedHome },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
@@ -4180,10 +4268,11 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
   it("does not report a revoked enrollment as a new browser challenge", async () => {
     const opened: string[] = [];
+    const { koedHome } = createTeamBackendOwnerCredential();
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: koedHome },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],

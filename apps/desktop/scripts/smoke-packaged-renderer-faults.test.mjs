@@ -1,4 +1,4 @@
-/* global process */
+/* global clearInterval, process, setInterval */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -57,25 +57,30 @@ test("trusted renderer clicks foreground the page and dispatch real mouse input"
 
 test("renderer target discovery bounds a stalled CDP request", async () => {
   const startedAt = performance.now();
-  const target = await waitForRendererTarget({
-    debuggingPort: 45_001,
-    readChildExit: () => undefined,
-    startupTimeoutMs: 40,
-    requestTimeoutMs: 10,
-    delayImpl: async () => {},
-    fetchImpl: (_url, { signal }) =>
-      new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), {
-          once: true
-        });
-      })
-  });
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    const target = await waitForRendererTarget({
+      debuggingPort: 45_001,
+      readChildExit: () => undefined,
+      startupTimeoutMs: 40,
+      requestTimeoutMs: 10,
+      delayImpl: async () => {},
+      fetchImpl: (_url, { signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true
+          });
+        })
+    });
 
-  assert.equal(target, undefined);
-  assert.ok(
-    performance.now() - startedAt < 500,
-    "stalled discovery should honor the configured deadline"
-  );
+    assert.equal(target, undefined);
+    assert.ok(
+      performance.now() - startedAt < 500,
+      "stalled discovery should honor the configured deadline"
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test("renderer target discovery returns the first page target", async () => {

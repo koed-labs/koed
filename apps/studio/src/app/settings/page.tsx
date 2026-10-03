@@ -10,6 +10,11 @@ import { StudioSidebar } from "@/components/studio/StudioSidebar";
 import type { BuildViewMode } from "@/lib/buildView";
 import { BackendConnectionSettings } from "./BackendConnectionSettings";
 import { TeamMemorySettings } from "./TeamMemorySettings";
+import { StudioAiClientSettings } from "./StudioAiClientSettings";
+import { StudioDevicesSettings } from "./StudioDevicesSettings";
+import { StudioSetupSettings } from "./StudioSetupSettings";
+import { StudioSettingsComputerContext } from "./StudioSettingsComputerContext";
+import { StudioNotificationSettings } from "./StudioNotificationSettings";
 
 const THEME_OPTIONS: { id: ThemeName; label: string; detail: string }[] = [
   { id: "dark", label: "Dark", detail: "Zinc chrome on a near-black canvas." },
@@ -88,6 +93,7 @@ export default function SettingsPage() {
   const { view, setView } = useBuildView();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
 
   return (
     <div className="flex h-full min-h-0 w-full">
@@ -174,6 +180,18 @@ export default function SettingsPage() {
             </fieldset>
           </section>
 
+          <StudioNotificationSettings />
+
+          <StudioSettingsComputerContext.Provider
+            value={{ selectedDeviceId, setSelectedDeviceId }}
+          >
+            <StudioAiClientSettings />
+
+            <StudioSetupSettings />
+          </StudioSettingsComputerContext.Provider>
+
+          <StudioDevicesSettings />
+
           <BackendConnectionSettings />
 
           <TeamMemorySettings />
@@ -186,8 +204,7 @@ export default function SettingsPage() {
               Plugins
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted">
-              Browse and manage integrations available to your Personal and Team
-              workspaces.
+              View the Plugins and Skills configured in your AI Clients.
             </p>
             <Link
               href="/plugins"
@@ -203,7 +220,8 @@ export default function SettingsPage() {
                     Manage plugins
                   </span>
                   <span className="mt-1 block text-xs text-subtle">
-                    Install, configure, and remove plugins.
+                    Manage installation and connections in the original AI
+                    Client.
                   </span>
                 </span>
               </span>

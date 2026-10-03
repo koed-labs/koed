@@ -4992,6 +4992,16 @@ export const createKoedServerManager = ({
     if (!parsedUrl.ok) {
       return { ok: false, error: parsedUrl.error };
     }
+    const sourceOwnerPrincipalId = readDesktopLocalCredentialAuthorization(
+      resolveKoedHome(environment)
+    )?.ownerUserId;
+    if (!sourceOwnerPrincipalId) {
+      return {
+        ok: false,
+        state: "not_ready",
+        error: personalMemoryErrorMessage("not_ready")
+      };
+    }
     const registerResult = await runJson(
       [
         "upstream",
@@ -5047,7 +5057,15 @@ export const createKoedServerManager = ({
       return policyResult;
     }
     const enrollResult = await runJson(
-      ["upstream", "enroll", "start", "--id", backendId],
+      [
+        "upstream",
+        "enroll",
+        "start",
+        "--id",
+        backendId,
+        "--source-owner-principal-id",
+        sourceOwnerPrincipalId
+      ],
       60_000
     );
     if (!resultOk(enrollResult)) {

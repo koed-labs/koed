@@ -2,8 +2,13 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   collaborationCommandResultSchema,
+  collaborationDurableSendSchema,
+  collaborationMessagePageSchema,
+  collaborationMessageSchema,
   collaborationRendererEventSchema,
   collaborationSafeErrorMessages,
+  pendingShareSchema,
+  sharedMemoryPreviewSchema,
   collaborationSnapshotSchema,
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
@@ -127,15 +132,17 @@ const personalChannel = () => ({
   name: "scratch"
 });
 
-const emptyPage = (threadId: string) => ({
-  snapshotRevision: revision,
-  olderCursor: null,
-  newerCursor: null,
-  hasOlder: false,
-  hasNewer: false,
-  threadId,
-  items: []
-});
+const emptyPage = (threadId: string) =>
+  collaborationMessagePageSchema.parse({
+    snapshotRevision: revision,
+    olderCursor: null,
+    newerCursor: null,
+    hasOlder: false,
+    hasNewer: false,
+    threadId,
+    rootMessageId: null,
+    items: []
+  });
 
 const fixture = (options?: {
   selectedTeam?: boolean;
@@ -361,49 +368,53 @@ const personalMemoryEntry = () => ({
   syncState: "ready" as const
 });
 
-const sharedPreview = () => ({
-  source: {
-    kind: "captured_session" as const,
-    sessionId: ids.capturedSession,
-    logicalMemoryId: ids.logicalMemory
-  },
-  logicalMemoryId: ids.logicalMemory,
-  teamId: ids.team,
-  workspaceId: ids.workspace,
-  sourceCapabilities: ["memory_events" as const],
-  activationRepresentation: "memory_events" as const,
-  mode: "continuous" as const,
-  maximumFidelity: "memory_events" as const,
-  includeCuratedMemory: false,
-  previewRevision: 1,
-  sourceRevision: 12,
-  policyRevision: 1,
-  contentPolicyVersion: 1,
-  classifierVersion: 1,
-  sourceContentHash: "a".repeat(64),
-  previewHash: "b".repeat(64),
-  itemCount: 1,
-  items: [
-    {
-      id: ids.sourceItem,
-      representation: "memory_events" as const,
-      sequence: 1,
-      occurredAt: timestamp,
-      sourceItems: [
-        {
-          id: ids.sourcePart,
-          sourceKind: "agent_message" as const,
-          occurredAt: timestamp,
-          body: "Exact redacted preview",
-          actorName: "Codex",
-          toolName: null,
-          toolCallId: null
-        }
-      ]
-    }
-  ],
-  nextCursor: null
-});
+const sharedPreview = () =>
+  sharedMemoryPreviewSchema.parse({
+    source: {
+      kind: "captured_session" as const,
+      sessionId: ids.capturedSession,
+      logicalMemoryId: ids.logicalMemory
+    },
+    logicalMemoryId: ids.logicalMemory,
+    teamId: ids.team,
+    workspaceId: ids.workspace,
+    sourceCapabilities: ["memory_events" as const],
+    activationRepresentation: "memory_events" as const,
+    mode: "continuous" as const,
+    maximumFidelity: "memory_events" as const,
+    includeCuratedMemory: false,
+    retentionEnabled: false,
+    retentionPolicyEnabled: false,
+    memberRetentionVersion: 1,
+    previewRevision: 1,
+    sourceRevision: 12,
+    policyRevision: 1,
+    contentPolicyVersion: 1,
+    classifierVersion: 1,
+    sourceContentHash: "a".repeat(64),
+    previewHash: "b".repeat(64),
+    itemCount: 1,
+    items: [
+      {
+        id: ids.sourceItem,
+        representation: "memory_events" as const,
+        sequence: 1,
+        occurredAt: timestamp,
+        sourceItems: [
+          {
+            id: ids.sourcePart,
+            sourceKind: "agent_message" as const,
+            occurredAt: timestamp,
+            body: "Exact redacted preview",
+            actorName: "Codex",
+            toolName: null,
+            toolCallId: null
+          }
+        ]
+      }
+    ],
+    nextCursor: null
+  });
 
 const success = (
   command: CollaborationRendererCommand,
@@ -590,7 +601,7 @@ const success = (
       break;
     case "collaboration.share_memory":
       data = {
-        pendingShare: {
+        pendingShare: pendingShareSchema.parse({
           source: command.input.source,
           sourceCapabilities: command.input.sourceCapabilities,
           activationRepresentation: command.input.activationRepresentation,
@@ -601,6 +612,8 @@ const success = (
           logicalMemoryId: command.input.logicalMemoryId,
           teamId: command.input.teamId,
           workspaceId: command.input.workspaceId,
+          retentionEnabled: command.input.retentionEnabled,
+          memberRetentionVersion: command.input.memberRetentionVersion,
           maximumFidelity: command.input.maximumFidelity,
           includeCuratedMemory: command.input.includeCuratedMemory,
           mode: command.input.mode,
@@ -619,7 +632,7 @@ const success = (
           revokedAt: null,
           grantId: null,
           grantVersion: null
-        }
+        })
       };
       break;
     case "collaboration.rename_thread":
@@ -681,7 +694,8 @@ const success = (
           delivery: "sent",
           recipientStatus: "sent",
           failure: null
-        }
+        },
+        acceptedBody: command.input.body
       };
       break;
     case "collaboration.mark_read":
@@ -939,7 +953,7 @@ describe("collaboration renderer client", () => {
       clientMessageId: id(90),
       body: "Persist before transport."
     };
-    const durableSend = {
+    const durableSend = collaborationDurableSendSchema.parse({
       clientMessageId: input.clientMessageId,
       authority: {
         scope: "personal" as const,
@@ -954,7 +968,7 @@ describe("collaboration renderer client", () => {
       failure: null,
       createdAt: timestamp,
       updatedAt: timestamp
-    };
+    });
     mock.command.mockImplementationOnce(async (command) =>
       collaborationCommandResultSchema.parse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -968,7 +982,7 @@ describe("collaboration renderer client", () => {
     await client.sendMessage(input);
 
     expect(client.current()?.outbox).toEqual([durableSend]);
-    const confirmedMessage = {
+    const confirmedMessage = collaborationMessageSchema.parse({
       id: ids.message,
       clientMessageId: input.clientMessageId,
       threadId: ids.personalChannel,
@@ -985,7 +999,7 @@ describe("collaboration renderer client", () => {
       delivery: "sent" as const,
       recipientStatus: null,
       failure: null
-    };
+    });
     const confirmation = collaborationRendererEventSchema.parse({
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       type: "durable_send",
@@ -1092,7 +1106,8 @@ describe("collaboration renderer client", () => {
               retryable: true,
               retryAfterMs: null
             }
-          }
+          },
+          acceptedBody: input.body
         }
       })
     );
@@ -1116,7 +1131,7 @@ describe("collaboration renderer client", () => {
     expect(mock.command).toHaveBeenLastCalledWith(
       expect.objectContaining({
         command: "collaboration.retry_message",
-        input
+        input: { ...input, rootMessageId: null }
       })
     );
     expect(client.current()?.view).toMatchObject({
@@ -2154,7 +2169,7 @@ describe("collaboration renderer client", () => {
     });
 
     const eventId = id(20);
-    const message = {
+    const message = collaborationMessageSchema.parse({
       id: ids.message,
       threadId: ids.personalChannel,
       scope: "personal" as const,
@@ -2170,7 +2185,7 @@ describe("collaboration renderer client", () => {
       delivery: "sent" as const,
       recipientStatus: null,
       failure: null
-    };
+    });
     const realtime = (deliveryId: string): CollaborationRendererEvent => ({
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       type: "update",
@@ -2262,7 +2277,7 @@ describe("collaboration renderer client", () => {
       },
       update: {
         type: "message_created",
-        message: {
+        message: collaborationMessageSchema.parse({
           id: ids.message,
           threadId: ids.personalChannel,
           scope: "personal",
@@ -2278,7 +2293,7 @@ describe("collaboration renderer client", () => {
           delivery: "sent",
           recipientStatus: null,
           failure: null
-        }
+        })
       }
     });
 
@@ -2819,7 +2834,7 @@ describe("collaboration renderer client", () => {
       },
       update: {
         type: "message_created",
-        message: {
+        message: collaborationMessageSchema.parse({
           id: messageId,
           threadId: ids.personalChannel,
           scope: "personal",
@@ -2835,7 +2850,7 @@ describe("collaboration renderer client", () => {
           delivery: "sent",
           recipientStatus: null,
           failure: null
-        }
+        })
       }
     });
     mock.emit(realtime(delivery(41), id(41), id(51), 1));
@@ -3114,7 +3129,7 @@ describe("collaboration renderer client", () => {
     const mock = createBridge(sharedFixture());
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
-    const incoming = {
+    const incoming = collaborationMessageSchema.parse({
       id: ids.message,
       threadId: ids.discussion,
       scope: "team" as const,
@@ -3130,7 +3145,7 @@ describe("collaboration renderer client", () => {
       delivery: "sent" as const,
       recipientStatus: null,
       failure: null
-    };
+    });
     mock.emit({
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       type: "update",
@@ -3185,6 +3200,7 @@ describe("collaboration renderer client", () => {
         type: "receipt_state_updated",
         readState: {
           threadId: ids.discussion,
+          rootMessageId: null,
           deliveredMessageId: ids.message,
           deliveredSequence: 1,
           deliveredAt: timestamp,
@@ -3224,7 +3240,7 @@ describe("collaboration renderer client", () => {
       }
       return success(command, fixture(), versions);
     });
-    const message = {
+    const message = collaborationMessageSchema.parse({
       id: ids.message,
       threadId: ids.personalChannel,
       scope: "personal" as const,
@@ -3240,7 +3256,7 @@ describe("collaboration renderer client", () => {
       delivery: "sent" as const,
       recipientStatus: null,
       failure: null
-    };
+    });
     const replay = (deliveryId: string): CollaborationRendererEvent => ({
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       type: "update",
@@ -3578,33 +3594,35 @@ describe("collaboration renderer client", () => {
                 }
               }
             : { selection: personal.selection, view: personal.view };
-        mock.emit({
-          contractVersion: COLLABORATION_CONTRACT_VERSION,
-          type: "update",
-          subscriptionId: ids.teamSubscription,
-          deliveryId: delivery(70),
-          eventId: id(70),
-          occurredAt: timestamp,
-          family:
-            transition === "workspace_access_downgrade"
-              ? "workspace_lifecycle_access"
-              : transition,
-          resource: {
-            scope: "team",
-            teamId: ids.team,
-            workspaceId:
-              transition === "team_membership_access" ? null : ids.workspace,
-            threadId: null,
-            messageId: null,
-            sharedSessionId: null,
-            shareGrantId: null
-          },
-          update: {
-            type: "navigation_snapshot",
-            navigation,
-            ...fallback
-          }
-        });
+        mock.emit(
+          collaborationRendererEventSchema.parse({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            type: "update",
+            subscriptionId: ids.teamSubscription,
+            deliveryId: delivery(70),
+            eventId: id(70),
+            occurredAt: timestamp,
+            family:
+              transition === "workspace_access_downgrade"
+                ? "workspace_lifecycle_access"
+                : transition,
+            resource: {
+              scope: "team",
+              teamId: ids.team,
+              workspaceId:
+                transition === "team_membership_access" ? null : ids.workspace,
+              threadId: null,
+              messageId: null,
+              sharedSessionId: null,
+              shareGrantId: null
+            },
+            update: {
+              type: "navigation_snapshot",
+              navigation,
+              ...fallback
+            }
+          })
+        );
       } else {
         mock.emit({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -3816,7 +3834,7 @@ describe("collaboration renderer client", () => {
       },
       update: {
         type: "message_created",
-        message: {
+        message: collaborationMessageSchema.parse({
           id: ids.message,
           clientMessageId: id(99),
           threadId: ids.channel,
@@ -3833,7 +3851,7 @@ describe("collaboration renderer client", () => {
           delivery: "sent",
           recipientStatus: null,
           failure: null
-        }
+        })
       }
     });
     await new Promise((resolve) => setTimeout(resolve, 10));

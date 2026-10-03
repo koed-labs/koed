@@ -5,6 +5,8 @@ import {
   COLLABORATION_DEFAULT_LIMITS,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   collaborationSafeErrorMessages,
+  collaborationMessagePageSchema,
+  collaborationMessageSchema,
   collaborationSnapshotSchema,
   type CollaborationMessage,
   type CollaborationSelection,
@@ -302,45 +304,48 @@ const message = (
   body: string,
   sender = alex,
   delivery: CollaborationMessage["delivery"] = "sent"
-): CollaborationMessage => ({
-  id,
-  threadId,
-  scope: threadId === ids.personalChannel ? "personal" : "team",
-  teamId: threadId === ids.personalChannel ? null : ids.team,
-  sequence: 1,
-  sender: participant(sender),
-  senderKind: "user",
-  body,
-  createdAt: at,
-  updatedAt: at,
-  editedAt: null,
-  deletedAt: null,
-  delivery,
-  recipientStatus: delivery === "sent" ? "sent" : null,
-  failure:
-    delivery === "failed"
-      ? {
-          code: "temporarily_unavailable",
-          userMessage: "Collaboration is temporarily unavailable.",
-          retryable: true,
-          retryAfterMs: null
-        }
-      : null
-});
+): CollaborationMessage =>
+  collaborationMessageSchema.parse({
+    id,
+    threadId,
+    scope: threadId === ids.personalChannel ? "personal" : "team",
+    teamId: threadId === ids.personalChannel ? null : ids.team,
+    sequence: 1,
+    sender: participant(sender),
+    senderKind: "user",
+    body,
+    createdAt: at,
+    updatedAt: at,
+    editedAt: null,
+    deletedAt: null,
+    delivery,
+    recipientStatus: delivery === "sent" ? "sent" : null,
+    failure:
+      delivery === "failed"
+        ? {
+            code: "temporarily_unavailable",
+            userMessage: "Collaboration is temporarily unavailable.",
+            retryable: true,
+            retryAfterMs: null
+          }
+        : null
+  });
 
 const page = (
   threadId: string,
   items: CollaborationMessage[] = [],
   hasOlder = false
-) => ({
-  snapshotRevision: revision,
-  olderCursor: hasOlder ? "cursor.page-000000001" : null,
-  newerCursor: null,
-  hasOlder,
-  hasNewer: false,
-  threadId,
-  items
-});
+) =>
+  collaborationMessagePageSchema.parse({
+    snapshotRevision: revision,
+    olderCursor: hasOlder ? "cursor.page-000000001" : null,
+    newerCursor: null,
+    hasOlder,
+    hasNewer: false,
+    threadId,
+    rootMessageId: null,
+    items
+  });
 
 const richSharedSource = `## Source formatting
 
@@ -2168,11 +2173,11 @@ describe("CollaborationApp", () => {
         workspaceId: ids.workspace,
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
-      mode: "continuous",
-      sourceRevision: 12,
-      retentionEnabled: false,
-      memberRetentionVersion: 1,
-      state: "activated",
+        mode: "continuous",
+        sourceRevision: 12,
+        retentionEnabled: false,
+        memberRetentionVersion: 1,
+        state: "activated",
         stage: "complete",
         workspaceAccessState: "active",
         sourceUpdateState: "failed",

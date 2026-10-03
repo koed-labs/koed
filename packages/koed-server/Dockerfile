@@ -5,7 +5,7 @@ WORKDIR /app
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+  && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 build-essential \
   && install -d -m 0755 /etc/apt/keyrings \
   && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg \
@@ -19,7 +19,7 @@ RUN apt-get update \
 
 COPY . .
 
-RUN pnpm install --frozen-lockfile \
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile \
   && pnpm source-runtime:prepare \
   && pnpm --filter @koed/koed-server build
 

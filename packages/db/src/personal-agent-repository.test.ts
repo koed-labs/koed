@@ -39,6 +39,9 @@ const rowIdentity = (input: {
 class PersonalAgentPool {
   readonly identityId = randomUUID();
   readonly versionId = randomUUID();
+  readonly buildProgressJobId = randomUUID();
+  readonly buildProgressExecutionId = randomUUID();
+  readonly buildProgressAttemptId = randomUUID();
   currentLifecycle: "active" | "retired" = "active";
   currentOwnerUserId = ownerId;
   currentName = "Atlas";
@@ -98,6 +101,90 @@ class PersonalAgentPool {
     if (sql.startsWith("with requested_agents as")) {
       this.activityQueries.push({ sql, values });
       return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
+    }
+    if (sql.startsWith("select j.id, j.owner_user_id, j.conversation_id")) {
+      const matches =
+        values[0] === this.buildProgressJobId && values[1] === ownerId;
+      return {
+        rows: matches
+          ? [
+              {
+                id: this.buildProgressJobId,
+                owner_user_id: ownerId,
+                conversation_id: this.buildProgressExecutionId,
+                last_attempt_id: this.buildProgressAttemptId,
+                execution_generation: 3
+              }
+            ]
+          : [],
+        rowCount: matches ? 1 : 0
+      } as unknown as pg.QueryResult<T>;
+    }
+    if (
+      sql.startsWith(
+        "select execution_generation from managed_conversation_executions"
+      )
+    ) {
+      const matches =
+        values[0] === this.buildProgressExecutionId && values[1] === ownerId;
+      return {
+        rows: matches ? [{ execution_generation: 3 }] : [],
+        rowCount: matches ? 1 : 0
+      } as unknown as pg.QueryResult<T>;
+    }
+    if (
+      sql.startsWith(
+        "select id, owner_user_id, job_id, command_id, attempt_number"
+      ) &&
+      sql.includes("from personal_agent_execution_attempts")
+    ) {
+      const matches =
+        values[0] === this.buildProgressAttemptId &&
+        values[1] === this.buildProgressJobId &&
+        values[2] === ownerId;
+      return {
+        rows: matches
+          ? [
+              {
+                id: this.buildProgressAttemptId,
+                owner_user_id: ownerId,
+                job_id: this.buildProgressJobId,
+                command_id: randomUUID(),
+                attempt_number: 1,
+                attribution_kind: "agent",
+                agent_id: randomUUID(),
+                agent_version: 1,
+                provider: "codex",
+                model: "model",
+                ai_client_instance_id: "codex.default",
+                reasoning_effort: null,
+                permission_mode: "supervised",
+                managed_execution_id: this.buildProgressExecutionId,
+                managed_execution_generation: 3,
+                status: "running",
+                outcome: null,
+                started_at: now,
+                phase: "working",
+                phase_observed_at: now,
+                completed_at: null
+              }
+            ]
+          : [],
+        rowCount: matches ? 1 : 0
+      } as unknown as pg.QueryResult<T>;
+    }
+    if (
+      sql.startsWith("select id from personal_agent_execution_jobs") &&
+      sql.includes("conversation_id = $2")
+    ) {
+      const matches =
+        values[0] === this.buildProgressJobId &&
+        values[1] === this.buildProgressExecutionId &&
+        values[2] === ownerId;
+      return {
+        rows: matches ? [{ id: this.buildProgressJobId }] : [],
+        rowCount: matches ? 1 : 0
+      } as unknown as pg.QueryResult<T>;
     }
     if (sql.startsWith("with requested_project_agents as")) {
       this.activityProjectQueries.push({ sql, values });
@@ -223,6 +310,11 @@ class PersonalAgentPool {
         ],
         rowCount: 1
       } as unknown as pg.QueryResult<T>;
+    }
+    if (
+      sql.startsWith("update personal_agent_execution_jobs set build_progress")
+    ) {
+      return { rows: [], rowCount: 1 } as unknown as pg.QueryResult<T>;
     }
     if (sql.startsWith("select id, agent_id, owner_user_id, version")) {
       return {
@@ -719,6 +811,47 @@ const createRepository = (pool: PersonalAgentPool, plaintext = "") => {
 };
 
 describe("Personal Agent repository", () => {
+  it("stores Build progress in owner-encrypted Job history and rejects other owners", async () => {
+    const pool = new PersonalAgentPool();
+    const event = {
+      id: "build:job-started",
+      jobId: pool.buildProgressJobId,
+      attemptId: pool.buildProgressAttemptId,
+      executionId: pool.buildProgressExecutionId,
+      executionGeneration: 3,
+      at: now.toISOString(),
+      kind: "started" as const,
+      story: { title: "Build started" }
+    };
+    const repository = createRepository(pool, JSON.stringify([event]));
+
+    await repository.recordPersonalAgentBuildProgressEvent(
+      { userId: ownerId },
+      event
+    );
+    expect(pool.encryptedValues?.[6]).toBe("personal_agent_execution_jobs");
+    expect(pool.encryptedValues?.[8]).toBe("build_progress");
+    expect(JSON.stringify(pool.encryptedValues)).not.toContain("Build started");
+    await expect(
+      repository.getPersonalAgentBuildProgress(
+        { userId: ownerId },
+        {
+          executionId: pool.buildProgressExecutionId,
+          jobId: pool.buildProgressJobId
+        }
+      )
+    ).resolves.toEqual([event]);
+    await expect(
+      repository.getPersonalAgentBuildProgress(
+        { userId: otherOwnerId },
+        {
+          executionId: pool.buildProgressExecutionId,
+          jobId: pool.buildProgressJobId
+        }
+      )
+    ).rejects.toMatchObject({ code: "PERSONAL_AGENT_JOB_NOT_FOUND" });
+  });
+
   it("loads a bounded activity batch in owner-scoped queries and keeps missing Agents unknown", async () => {
     const pool = new PersonalAgentPool();
     const repository = createRepository(pool);

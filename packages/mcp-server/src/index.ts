@@ -44,6 +44,14 @@ export {
 } from "./ai-client-instance-registry.js";
 export type { LocalAiClientInstanceConfiguration } from "./ai-client-instance-registry.js";
 export {
+  discoverConfiguredAiClientResources,
+  revalidateSelectedNativeSkills
+} from "./ai-client-resource-catalog.js";
+export type {
+  DiscoverConfiguredAiClientResourcesInput,
+  NativeSkillInvocation
+} from "./ai-client-resource-catalog.js";
+export {
   publishAiClientCapabilities,
   startAiClientCapabilityPublisher
 } from "./ai-client-capability-publisher.js";

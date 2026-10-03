@@ -41,6 +41,10 @@ import {
 import { TeamShell } from "@/components/TeamShell";
 import { TeamChannelMessageContent } from "@/components/TeamChannelMessageContent";
 import { TeamChannelNavigation } from "@/components/TeamSidebar";
+import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
+import { findAuthorizedStudioNotificationDestination } from "@/lib/studio-notification-destination";
+import { findStudioNotificationRoot } from "@/lib/studio-notification-root-search";
+import type { StudioNotificationNavigation } from "@koed/shared/studio-notifications";
 import { PublicSquare } from "@/components/PublicSquare";
 import { TeamChannelAgentRequests } from "@/components/TeamAgentRequestViews";
 import { SidebarProvider } from "@/components/SidebarContext";
@@ -173,12 +177,14 @@ export function TeamChannelWorkspace({
   snapshot: initialSnapshot,
   client,
   drafts,
-  onRefresh
+  onRefresh,
+  notificationNavigation = null
 }: {
   snapshot: CollaborationSnapshot;
   client: StudioCollaborationClient;
   drafts: DraftStore;
   onRefresh: () => void;
+  notificationNavigation?: StudioNotificationNavigation | null;
 }) {
   const router = useRouter();
   const [snapshot, setSnapshot] = useState<CollaborationSnapshot | null>(
@@ -218,6 +224,12 @@ export function TeamChannelWorkspace({
     if (forYouOpen) refreshTeamOverview();
   }, [forYouOpen, refreshTeamOverview]);
   const pendingAttentionItem = useRef<TeamOverviewItem | null>(null);
+  const pendingNotificationDestination = useRef<{
+    teamId: string;
+    threadId: string;
+    rootMessageId: string | null;
+  } | null>(null);
+  const handledNotificationMessage = useRef<string | null>(null);
   const [agentOfferRevision, setAgentOfferRevision] = useState(0);
   const [agentRequestRevision, setAgentRequestRevision] = useState(0);
   const [channelRequests, setChannelRequests] = useState<TeamAgentRequest[]>(
@@ -511,6 +523,14 @@ export function TeamChannelWorkspace({
     setThreadId(fallbackThreadId);
   const activeThread = threads.find((thread) => thread.id === threadId) ?? null;
   const activeThreadId = activeThread?.id ?? null;
+  useEffect(() => {
+    if (!teamId || !activeThreadId) return;
+    return registerStudioNotificationViewedChat({
+      kind: "team",
+      teamId,
+      threadId: activeThreadId
+    });
+  }, [activeThreadId, teamId]);
   const connectionState = snapshot?.connection.state;
   const visibleRead =
     visibleReadState &&
@@ -963,6 +983,7 @@ export function TeamChannelWorkspace({
         void invalidateDraftAuthority(authorityToPurge).catch(() => undefined);
       revokedRef.current = true;
       snapshotEpoch.current += 1;
+      pendingNotificationDestination.current = null;
       selectedRef.current = { teamId: "", threadId: "" };
       setVisibleRead(null);
       setSnapshot(null);
@@ -1353,7 +1374,6 @@ export function TeamChannelWorkspace({
     },
     [authority, authorityKey, drafts, loadRootReplies, persistDraft]
   );
-
   const saveReplyDraft = useCallback(
     (rootMessageId: string, text: string, mentionUserIds?: string[]) => {
       if (
@@ -2584,6 +2604,64 @@ export function TeamChannelWorkspace({
     }
   };
 
+  const openTeamThreadDestination = async (destination: {
+    teamId: string;
+    threadId: string;
+    rootMessageId: string | null;
+  }) => {
+    const capturedEpoch = snapshotEpoch.current;
+    const stillCurrent = () =>
+      !revokedRef.current &&
+      snapshotEpoch.current === capturedEpoch &&
+      selectedTeamIdRef.current === destination.teamId;
+    const thread = threads.find(
+      (candidate) => candidate.id === destination.threadId
+    );
+    if (!thread || !(await selectThread(thread))) return;
+    if (!stillCurrent() || activeTeam?.id !== destination.teamId) return;
+    const selectedGeneration = threadSelectionGeneration.current;
+    setForYouOpen(false);
+    setSquareOpen(false);
+    if (!destination.rootMessageId) return;
+    const root = messages.find(
+      (message) => message.id === destination.rootMessageId
+    );
+    if (root) {
+      openMessageThread(root);
+      return;
+    }
+    const loadedRoot = await findStudioNotificationRoot(
+      destination.rootMessageId,
+      async (direction, cursor) => {
+        const result = await run("collaboration.load_message_page", {
+          thread: {
+            scope: "team",
+            teamId: destination.teamId,
+            threadId: destination.threadId
+          },
+          rootMessageId: null,
+          direction,
+          cursor,
+          limit: 50
+        });
+        if (
+          !stillCurrent() ||
+          selectedRef.current.teamId !== destination.teamId ||
+          selectedRef.current.threadId !== destination.threadId ||
+          threadSelectionGeneration.current !== selectedGeneration ||
+          !result.ok ||
+          !("page" in result.data)
+        )
+          return null;
+        const parsed = collaborationMessagePageSchema.safeParse(
+          result.data.page
+        );
+        return parsed.success ? parsed.data : null;
+      }
+    );
+    if (loadedRoot) openMessageThread(loadedRoot);
+  };
+
   const openAttentionHere = async (item: TeamOverviewItem) => {
     const capturedEpoch = snapshotEpoch.current;
     const capturedSelectionGeneration = threadSelectionGeneration.current;
@@ -2621,48 +2699,11 @@ export function TeamChannelWorkspace({
         return;
       }
     }
-    const thread = threads.find(
-      (candidate) => candidate.id === destination.threadId
-    );
-    if (!thread || !(await selectThread(thread))) return;
-    if (!stillCurrent() || activeTeam?.id !== item.teamId) return;
-    const selectedGeneration = threadSelectionGeneration.current;
-    setForYouOpen(false);
-    setSquareOpen(false);
-    if (!destination.rootMessageId) return;
-    const root = messages.find(
-      (message) => message.id === destination.rootMessageId
-    );
-    if (root) {
-      openMessageThread(root);
-      return;
-    }
-    const result = await run("collaboration.load_message_page", {
-      thread: {
-        scope: "team",
-        teamId: item.teamId,
-        threadId: destination.threadId
-      },
-      rootMessageId: destination.rootMessageId,
-      direction: "newer",
-      cursor: null,
-      limit: 50
+    await openTeamThreadDestination({
+      teamId: item.teamId,
+      threadId: destination.threadId,
+      rootMessageId: destination.rootMessageId ?? null
     });
-    if (
-      !stillCurrent() ||
-      selectedRef.current.teamId !== item.teamId ||
-      selectedRef.current.threadId !== destination.threadId ||
-      threadSelectionGeneration.current !== selectedGeneration
-    )
-      return;
-    if (!result.ok || !("page" in result.data)) return;
-    const parsed = collaborationMessagePageSchema.safeParse(result.data.page);
-    const loadedRoot = parsed.success
-      ? parsed.data.items.find(
-          (message) => message.id === destination.rootMessageId
-        )
-      : undefined;
-    if (loadedRoot) openMessageThread(loadedRoot);
   };
 
   const openPendingAttention = useEffectEvent(openAttentionHere);
@@ -2692,8 +2733,52 @@ export function TeamChannelWorkspace({
       );
     }
   };
+  const openPendingNotificationDestination = useEffectEvent(
+    openTeamThreadDestination
+  );
 
   useEffect(() => {
+    const navigation = notificationNavigation;
+    if (!navigation || navigation.kind !== "team_thread") return;
+    if (handledNotificationMessage.current === navigation.messageId) return;
+    if (!snapshot || revokedRef.current) return;
+    const destination = findAuthorizedStudioNotificationDestination(
+      snapshot,
+      navigation
+    );
+    if (!destination) return;
+    handledNotificationMessage.current = navigation.messageId;
+    queueMicrotask(() => {
+      if (revokedRef.current) return;
+      if (destination.teamId !== selectedTeamIdRef.current) {
+        pendingNotificationDestination.current = destination;
+        setForYouOpen(false);
+        setSquareOpen(false);
+        setTeamId(destination.teamId);
+        return;
+      }
+      void openPendingNotificationDestination(destination);
+    });
+  }, [notificationNavigation, snapshot]);
+
+  useEffect(() => {
+    const pendingDestination = pendingNotificationDestination.current;
+    if (
+      pendingDestination &&
+      pendingDestination.teamId === activeTeam?.id &&
+      threads.some((thread) => thread.id === pendingDestination.threadId)
+    ) {
+      pendingNotificationDestination.current = null;
+      void openPendingNotificationDestination(pendingDestination).catch(
+        (failure) =>
+          setStatus(
+            failure instanceof Error
+              ? failure.message
+              : "The notification destination could not be opened."
+          )
+      );
+      return;
+    }
     const pending = pendingAttentionItem.current;
     if (!pending || pending.teamId !== activeTeam?.id) return;
     pendingAttentionItem.current = null;

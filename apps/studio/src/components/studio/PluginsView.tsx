@@ -42,6 +42,7 @@ import {
 } from "@/lib/studio-skills";
 import { Tooltip } from "@/components/Tooltip";
 import { StudioSidebar } from "./StudioSidebar";
+import { ClientResourcesView } from "./ClientResourcesView";
 import {
   pullRequestOperationData,
   pullRequestsClient
@@ -451,7 +452,7 @@ export function PluginsView({
 
   const connected = status.state === "connected";
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredOtherPlugins = OTHER_PLUGINS.filter(
+  const filteredOtherPlugins = (mode === "demo" ? OTHER_PLUGINS : []).filter(
     (plugin) =>
       !normalizedQuery ||
       plugin.title.toLowerCase().includes(normalizedQuery) ||
@@ -532,8 +533,8 @@ export function PluginsView({
           </h1>
           <p className="mb-6 mt-2 text-sm text-muted">
             {activeTab === "skills"
-              ? "Browse skills from Personal, System, and koed-self-hosted catalogs."
-              : "Connect tools that Koed can use for your personal workspace."}
+              ? "Use Skills configured in your selected AI Client and computer."
+              : "Your GitHub connection and configured AI Client integrations."}
           </p>
           <div className="relative mb-6">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle" />
@@ -550,7 +551,7 @@ export function PluginsView({
               }
             />
           </div>
-          {activeTab === "plugins" && (
+          {activeTab === "plugins" && mode === "demo" && (
             <div
               className="mb-8 flex items-center gap-2"
               role="group"
@@ -575,7 +576,9 @@ export function PluginsView({
             </div>
           )}
 
-          {activeTab === "skills" ? (
+          {activeTab === "skills" && mode === "live" ? (
+            <ClientResourcesView kind="skills" query={query} />
+          ) : activeTab === "skills" ? (
             <SkillsView
               mode={mode}
               query={query}
@@ -835,11 +838,14 @@ export function PluginsView({
             </>
           )}
 
+          {activeTab === "plugins" && mode === "live" && (
+            <ClientResourcesView kind="plugins" query={query} />
+          )}
           {activeTab === "plugins" && (
             <p className="mt-10 flex items-center gap-2 text-xs text-subtle">
               <ShieldCheck className="h-3.5 w-3.5" />
-              Pull request browsing is read-only. Automated review runs and
-              GitHub publication are unavailable.
+              GitHub writes require your review and explicit approval. AI Client
+              integrations retain their existing permissions.
             </p>
           )}
         </div>

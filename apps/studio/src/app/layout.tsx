@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "../../.desktop-ui/index.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { BuildViewProvider } from "@/components/BuildViewProvider";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/lib/theme";
+import { StudioStartupGate } from "./StudioStartupGate";
+import { StudioNotificationsProvider } from "@/components/StudioNotificationsProvider";
 
 export const metadata: Metadata = {
   title: "Koed Studio",
@@ -19,7 +22,11 @@ export default function RootLayout({
       </head>
       <body className="flex h-dvh overflow-hidden bg-background text-foreground select-none">
         <ThemeProvider>
-          <BuildViewProvider>{children}</BuildViewProvider>
+          <StudioNotificationsProvider>
+            <BuildViewProvider>
+              <StudioStartupGate>{children}</StudioStartupGate>
+            </BuildViewProvider>
+          </StudioNotificationsProvider>
         </ThemeProvider>
       </body>
     </html>

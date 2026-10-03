@@ -14,6 +14,11 @@ import type {
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
+import type {
+  StudioNotificationIntent,
+  StudioNotificationNavigation,
+  StudioNotificationSource
+} from "@koed/shared/studio-notifications";
 
 export type ComponentState =
   | "not_configured"
@@ -155,6 +160,15 @@ export interface DesktopLaunchAtStartupState {
 }
 
 export interface DesktopApi {
+  notifications?: {
+    notify: (intent: StudioNotificationIntent) => Promise<{ shown: boolean }>;
+    getPreference: () => Promise<{ enabled: boolean }>;
+    setEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>;
+    reset: (source?: StudioNotificationSource) => Promise<void>;
+    onNavigate: (
+      listener: (navigation: StudioNotificationNavigation) => void
+    ) => () => void;
+  };
   featureFlags?: DesktopFeatureFlags;
   invoke: <T = unknown>(
     command: string,

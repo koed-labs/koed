@@ -74,22 +74,49 @@ export const modelMatches = (
 ): boolean =>
   [model.id, model.fullId, model.model].some((value) => value === candidate);
 
-export const snapshotFor = (readModel: ReadModel, instanceId: string) =>
-  readModel.capabilitySnapshots.find(
+export const snapshotFor = (
+  readModel: ReadModel,
+  instanceId: string,
+  provider?: string
+) => {
+  const matchingInstances = readModel.instances.filter(
+    (instance) =>
+      instance.instanceId === instanceId &&
+      (provider === undefined || instance.driverId === provider)
+  );
+  const instance = matchingInstances[0];
+  if (!instance) return undefined;
+  if (instance.hostedInstanceId) {
+    return readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.hostedInstanceId === instance.hostedInstanceId
+    );
+  }
+  if (
+    readModel.instances.filter(
+      (candidate) => candidate.instanceId === instanceId
+    ).length > 1
+  ) {
+    return undefined;
+  }
+  return readModel.capabilitySnapshots.find(
     (snapshot) => snapshot.instanceId === instanceId
   );
+};
 
 export const statusFor = (
   readModel: ReadModel,
   instanceId: string,
-  flowKey?: LocalAiClientFlowKey
+  flowKey?: LocalAiClientFlowKey,
+  provider?: string
 ) => {
   const instance = readModel.instances.find(
-    (candidate) => candidate.instanceId === instanceId
+    (candidate) =>
+      candidate.instanceId === instanceId &&
+      (provider === undefined || candidate.driverId === provider)
   );
   if (!instance) return { available: false, text: "instance unavailable" };
   if (!instance.enabled) return { available: false, text: "disabled" };
-  const snapshot = snapshotFor(readModel, instanceId);
+  const snapshot = snapshotFor(readModel, instanceId, instance.driverId);
   if (!snapshot)
     return { available: false, text: "missing capability snapshot" };
   const expiresAt = Date.parse(snapshot.expiresAt);
@@ -135,14 +162,28 @@ export const assignmentStatusFor = (
     | undefined,
   flowKey?: LocalAiClientFlowKey
 ) => {
+  const matchingInstances = readModel.instances.filter(
+    (candidate) =>
+      candidate.instanceId === draft.ai_client_instance_id &&
+      candidate.driverId === draft.provider
+  );
+  if (matchingInstances.length > 1) {
+    return {
+      available: false,
+      text: "same Client ID is reported by multiple computers; choose a computer in Chat"
+    };
+  }
   const instanceStatus = statusFor(
     readModel,
     draft.ai_client_instance_id,
-    flowKey
+    flowKey,
+    draft.provider
   );
   if (!instanceStatus.available) return instanceStatus;
   const instance = readModel.instances.find(
-    (candidate) => candidate.instanceId === draft.ai_client_instance_id
+    (candidate) =>
+      candidate.instanceId === draft.ai_client_instance_id &&
+      candidate.driverId === draft.provider
   );
   if (instance?.driverId !== draft.provider) {
     return {
@@ -174,7 +215,8 @@ export const assignmentFrom = (
   if (setting) {
     const reportedModel = snapshotFor(
       readModel,
-      setting.aiClientInstanceId
+      setting.aiClientInstanceId,
+      setting.provider
     )?.models.find((model) => modelMatches(model, setting.model));
     return {
       provider: setting.provider,
@@ -208,6 +250,8 @@ export const searchableInstance = (
 ): string =>
   [
     instance.instanceId,
+    instance.hostedInstanceId,
+    instance.sourceDeviceLabel,
     instance.driverId,
     instance.displayName,
     instance.enabled ? "enabled" : "disabled",

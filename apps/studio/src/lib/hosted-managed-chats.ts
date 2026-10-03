@@ -569,6 +569,9 @@ const projectExecution = (value: unknown): AgentExecution => {
   return {
     id: execution.id,
     projectId: execution.projectId,
+    ...(execution.runnerDeviceId
+      ? { runnerDeviceId: execution.runnerDeviceId }
+      : {}),
     provider: execution.provider,
     aiClientInstanceId: execution.aiClientInstanceId,
     model: execution.model,
@@ -1149,6 +1152,12 @@ export async function loadHostedLaunchOptions(
                   {
                     provider: value.driverId as string,
                     instanceId: value.instanceId as string,
+                    ...(typeof value.hostedInstanceId === "string"
+                      ? { hostedInstanceId: value.hostedInstanceId }
+                      : {}),
+                    computerLabel: runners.find(
+                      (runner) => runner.deviceId === value.runnerDeviceId
+                    )?.displayName,
                     id: model.id,
                     displayName:
                       typeof model.displayName === "string"
@@ -1169,6 +1178,16 @@ export async function loadHostedLaunchOptions(
         return [
           {
             instanceId: value.instanceId,
+            hostedInstanceId:
+              typeof value.hostedInstanceId === "string"
+                ? value.hostedInstanceId
+                : value.instanceId,
+            sourceDeviceLabel:
+              typeof value.sourceDeviceLabel === "string"
+                ? value.sourceDeviceLabel
+                : typeof value.deviceLabel === "string"
+                  ? value.deviceLabel
+                  : null,
             runnerDeviceId: value.runnerDeviceId,
             driverId: value.driverId,
             models,
@@ -1204,6 +1223,8 @@ export async function startHostedManagedConversation(
     idempotencyKey: string;
     initialPrompt?: string;
     initialPromptClientUserMessageId?: string;
+    selectedResourceIds?: string[];
+    selectedResourceHostedInstanceId?: string;
     continueWithoutMemory?: true;
     agentId?: string;
     expectedAgentVersion?: number;
@@ -1319,6 +1340,20 @@ export async function loadHostedManagedConversation(
       runtime.execution.executionGeneration
     )
   };
+}
+
+export async function loadHostedBuildProgress(
+  executionId: string,
+  jobId: string,
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch
+): Promise<Record<string, unknown>> {
+  assertExecutionId(executionId);
+  return requestJson(
+    `/v1/managed-conversations/${encodeURIComponent(executionId)}/build-progress?jobId=${encodeURIComponent(jobId)}`,
+    { signal },
+    fetcher
+  );
 }
 
 export async function loadHostedManagedConversationAccess(
@@ -1498,6 +1533,8 @@ export async function queueHostedConversationPrompt(
     continueWithoutMemory?: true;
     purpose?: "team_summary_draft";
     teamSummary?: { teamId: string; requestId: string; jobId: string };
+    selectedResourceIds?: string[];
+    selectedResourceHostedInstanceId?: string;
   } = {}
 ): Promise<{ commandId: string; state: string }> {
   assertExecutionId(execution.id);
@@ -1518,6 +1555,16 @@ export async function queueHostedConversationPrompt(
           : {}),
         ...(options.continueWithoutMemory
           ? { continueWithoutMemory: true }
+          : {}),
+        ...(options.selectedResourceIds?.length
+          ? { selectedResourceIds: options.selectedResourceIds }
+          : {}),
+        ...(options.selectedResourceIds?.length &&
+        options.selectedResourceHostedInstanceId
+          ? {
+              selectedResourceHostedInstanceId:
+                options.selectedResourceHostedInstanceId
+            }
           : {}),
         ...(options.purpose
           ? { purpose: options.purpose, teamSummary: options.teamSummary }

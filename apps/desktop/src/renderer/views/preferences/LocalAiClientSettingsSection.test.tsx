@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LocalAiClientResponse } from "../../../ipc/local-ai-client-protocol.js";
+import { assignmentStatusFor } from "./local-ai-client-settings-helpers.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 
 const assignment = (
@@ -166,6 +167,58 @@ describe("Agent Configuration selectors", () => {
     delete window.koedDesktop;
   });
 
+  it("distinguishes matching Client IDs by provider but detects same-provider computer ambiguity", () => {
+    const readModel = response().readModel;
+    const codex = readModel.instances[0]!;
+    const claude = readModel.instances[1]!;
+    const codexSnapshot = readModel.capabilitySnapshots[0]!;
+    const claudeSnapshot = readModel.capabilitySnapshots[1]!;
+    codex.instanceId = "shared.instance";
+    codex.hostedInstanceId = "codex-computer-instance";
+    claude.instanceId = "shared.instance";
+    claude.hostedInstanceId = "claude-computer-instance";
+    codexSnapshot.instanceId = "shared.instance";
+    codexSnapshot.hostedInstanceId = "codex-computer-instance";
+    claudeSnapshot.instanceId = "shared.instance";
+    claudeSnapshot.hostedInstanceId = "claude-computer-instance";
+
+    const codexAssignment = assignment(
+      "codex",
+      "shared.instance",
+      "gpt-5.6-luna"
+    );
+    expect(
+      assignmentStatusFor(
+        readModel,
+        codexAssignment,
+        codexSnapshot.models[0],
+        "conversations"
+      )
+    ).toMatchObject({ available: true, text: "ready" });
+
+    readModel.instances.push({
+      ...codex,
+      hostedInstanceId: "second-codex-computer-instance",
+      sourceDeviceLabel: "Second computer"
+    });
+    readModel.capabilitySnapshots.push({
+      ...codexSnapshot,
+      hostedInstanceId: "second-codex-computer-instance",
+      observedAt: "2026-01-02T00:00:00.000Z"
+    });
+    expect(
+      assignmentStatusFor(
+        readModel,
+        codexAssignment,
+        codexSnapshot.models[0],
+        "conversations"
+      )
+    ).toMatchObject({
+      available: false,
+      text: expect.stringContaining("multiple computers")
+    });
+  });
+
   it("saves a conversation default using conversation capabilities", async () => {
     container = document.createElement("div");
     document.body.append(container);
@@ -189,7 +242,7 @@ describe("Agent Configuration selectors", () => {
       'select[aria-label="Conversations Agent"]'
     )!;
     await act(async () => {
-      select.value = "claude.work";
+      select.value = "claude\u0000claude.work";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await act(async () => {

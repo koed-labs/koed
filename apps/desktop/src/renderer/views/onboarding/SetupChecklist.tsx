@@ -152,12 +152,14 @@ function SetupStageRow({ stage }: { stage: DesktopSetupStage }) {
 
 export type SetupChecklistProps = {
   onComplete: () => Promise<void> | void;
+  nativeRunConfirmation?: boolean;
   showTrustGuide?: boolean;
   statusStore: DesktopStatusStore;
 };
 
 export function SetupChecklist({
   onComplete,
+  nativeRunConfirmation = false,
   // Temporarily skip the memory welcome guide; retain it for re-enabling later.
   showTrustGuide = false,
   statusStore
@@ -329,7 +331,13 @@ export function SetupChecklist({
                   Continue
                 </Button>
               ) : (
-                <Button disabled={running} onClick={() => setConfirmOpen(true)}>
+                <Button
+                  disabled={running}
+                  onClick={() => {
+                    if (nativeRunConfirmation) void run();
+                    else setConfirmOpen(true);
+                  }}
+                >
                   {failed ? "Retry setup" : "Set up Koed"}
                 </Button>
               )}
@@ -338,25 +346,27 @@ export function SetupChecklist({
         )}
       </section>
 
-      <Dialog onOpenChange={setConfirmOpen} open={confirmOpen}>
-        <DialogPopup>
-          <DialogHeader>
-            <DialogTitle>Set up Koed on this computer?</DialogTitle>
-            <DialogDescription>
-              Koed will install or link its local runtime, download and verify
-              the embedding model, start local services, and prepare Koed core
-              artifacts. Detected AI Client setup remains optional. Existing
-              completed steps will be left alone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose render={<Button variant="outline" />}>
-              Cancel
-            </DialogClose>
-            <Button onClick={() => void run()}>Set up Koed</Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
+      {!nativeRunConfirmation ? (
+        <Dialog onOpenChange={setConfirmOpen} open={confirmOpen}>
+          <DialogPopup>
+            <DialogHeader>
+              <DialogTitle>Set up Koed on this computer?</DialogTitle>
+              <DialogDescription>
+                Koed will install or link its local runtime, download and verify
+                the embedding model, start local services, and prepare Koed core
+                artifacts. Detected AI Client setup remains optional. Existing
+                completed steps will be left alone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" />}>
+                Cancel
+              </DialogClose>
+              <Button onClick={() => void run()}>Set up Koed</Button>
+            </DialogFooter>
+          </DialogPopup>
+        </Dialog>
+      ) : null}
     </main>
   );
 }

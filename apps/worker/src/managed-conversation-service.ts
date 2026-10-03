@@ -1,6 +1,11 @@
 import { pullRequestReadToolAllowed } from "./pull-request-tool-scope.js";
 import { pullRequestReviewOutput } from "./pull-request-review-output.js";
 import {
+  captureBuildWorkspace,
+  compareBuildWorkspaceObservations,
+  type BuildWorkspaceObservation
+} from "./build-progress-capture.js";
+import {
   pullRequestCheckoutKey,
   pullRequestProcessEnvironment
 } from "./pull-request-checkout.js";
@@ -83,6 +88,8 @@ import {
   retainManagedClaudeHome,
   resolveClaudeManagedConversationSource,
   localAiClientInstanceConfigIdentity,
+  revalidateSelectedNativeSkills,
+  type NativeSkillInvocation,
   resolveConfiguredLocalAiClientInstance,
   requireSupportedAiClientPermissionMode,
   resolveCodexHome,
@@ -108,6 +115,8 @@ import {
   managedConversationTargetReadinessEvidenceDigest,
   managedConversationTargetReadinessIsFresh,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
+  type BuildProgressEvent,
+  managedConversationSelectedResourceIdsSchema,
   personalAgentExecutionContextSchema,
   personalAgentIntentSignalJsonSchema,
   personalAgentPhaseJsonSchema,
@@ -1078,6 +1087,10 @@ export const createManagedConversationService = (options: {
     string,
     ClaimedManagedConversationCommand
   >();
+  const selectedNativeSkillsByExecution = new Map<
+    string,
+    NativeSkillInvocation[]
+  >();
   const activePromptDispatches = new Map<string, string[]>();
   const deferredInterruptTargets = new Map<string, string>();
   const awaitingPromptDispatchControls = new Map<string, Set<string>>();
@@ -1149,6 +1162,10 @@ export const createManagedConversationService = (options: {
     }
   >();
   const personalAgentAttemptsByCommand = new Map<string, string>();
+  const buildWorkspaceBaselinesByAttempt = new Map<
+    string,
+    BuildWorkspaceObservation
+  >();
   const personalAgentOverridesByCommand = new Map<
     string,
     {
@@ -2004,6 +2021,197 @@ export const createManagedConversationService = (options: {
     return { jobId: job.id, attemptId: attempt.id };
   };
 
+  const recordBuildProgress = async (
+    command: PersonalAgentCommandContext,
+    draft: Omit<
+      BuildProgressEvent,
+      | "id"
+      | "jobId"
+      | "attemptId"
+      | "executionId"
+      | "executionGeneration"
+      | "at"
+    >,
+    activeAttempt?: { jobId: string; attemptId: string } | null
+  ): Promise<void> => {
+    const personalAgent = personalAgentJobFor(command);
+    if (!personalAgent) return;
+    const attempt =
+      activeAttempt ?? (await runningPersonalAgentAttempt(command, false));
+    if (!attempt) return;
+    const event: BuildProgressEvent = {
+      ...draft,
+      id: `build:${command.id}:${draft.kind}:${randomUUID()}`,
+      jobId: attempt.jobId,
+      attemptId: attempt.attemptId,
+      executionId: command.executionId,
+      executionGeneration: command.executionGeneration,
+      at: new Date().toISOString()
+    };
+    try {
+      await options.repository.recordPersonalAgentBuildProgressEvent(
+        { userId: command.ownerUserId },
+        event
+      );
+    } catch (error) {
+      options.logger.warn(
+        {
+          error_name: errorCode(error),
+          execution_id: command.executionId,
+          job_id: attempt.jobId,
+          event_kind: event.kind
+        },
+        "managed Build progress capture failed"
+      );
+    }
+  };
+
+  const captureBuildWorkspaceObservation = async (
+    command: PersonalAgentCommandContext,
+    attempt: { jobId: string; attemptId: string },
+    baseline: boolean
+  ): Promise<BuildWorkspaceObservation | null> => {
+    if (!command.execution.projectId) {
+      if (baseline) {
+        buildWorkspaceBaselinesByAttempt.set(attempt.attemptId, {
+          available: false,
+          status: "No Project attached",
+          files: []
+        });
+      }
+      return null;
+    }
+    const binding =
+      await options.repository.getManagedConversationRuntimeBinding(
+        { userId: command.ownerUserId },
+        command.executionId
+      );
+    const current = binding?.projectPath
+      ? await captureBuildWorkspace(binding.projectPath)
+      : ({
+          available: false,
+          status: "Project folder unavailable",
+          files: []
+        } satisfies BuildWorkspaceObservation);
+    if (baseline) {
+      buildWorkspaceBaselinesByAttempt.set(attempt.attemptId, current);
+      await recordBuildProgress(
+        command,
+        {
+          kind: "workspace_observed",
+          state: "running",
+          story: {
+            title: "Recorded the starting workspace state",
+            detail:
+              "These files were already changed when this Job started. Build progress reports observation and does not establish who authored a change."
+          },
+          technical: {
+            ...(current.branch ? { branch: current.branch } : {}),
+            status: current.status,
+            ...(current.diff ? { diff: current.diff } : {}),
+            files: current.files?.map((file) => ({ ...file, baseline: true }))
+          }
+        },
+        attempt
+      );
+      return current;
+    }
+    const original = buildWorkspaceBaselinesByAttempt.get(attempt.attemptId);
+    const observed = original
+      ? compareBuildWorkspaceObservations(original, current)
+      : current;
+    await recordBuildProgress(
+      command,
+      {
+        kind: "workspace_observed",
+        state: "running",
+        story: {
+          title:
+            observed.status === "No changes observed"
+              ? "No workspace changes were observed"
+              : "Observed the workspace while this Job was running",
+          detail:
+            "This is a read-only Git observation. Changes seen during a Job are not proof that the Agent authored them."
+        },
+        technical: {
+          ...(observed.branch ? { branch: observed.branch } : {}),
+          status: observed.status,
+          ...(observed.diff ? { diff: observed.diff } : {}),
+          ...(observed.files?.length ? { files: observed.files } : {})
+        }
+      },
+      attempt
+    );
+    return observed;
+  };
+
+  const boundedBuildCommandText = (value: string): string => {
+    const redacted = value
+      .replace(
+        /\b(api[_ -]?key|token|password|secret|credential|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+        "$1=[redacted]"
+      )
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
+      .replace(
+        /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/gu,
+        "[redacted]"
+      );
+    let bounded = redacted;
+    while (Buffer.byteLength(bounded, "utf8") > 16_384) {
+      bounded = bounded.slice(0, Math.max(0, bounded.length - 256));
+    }
+    return bounded;
+  };
+
+  const recordBuildCommandActivity = async (
+    command: PersonalAgentCommandContext,
+    input: {
+      phase: "started" | "completed";
+      command: string;
+      result?: string;
+      exitCode?: number;
+    }
+  ): Promise<void> => {
+    if (!personalAgentJobFor(command)) return;
+    const attempt = await runningPersonalAgentAttempt(command, false);
+    if (!attempt) return;
+    const result = [
+      ...(input.result?.trim() ? [input.result] : []),
+      ...(input.exitCode !== undefined ? [`Exit code: ${input.exitCode}`] : [])
+    ].join("\n");
+    await recordBuildProgress(
+      command,
+      {
+        kind: "command",
+        state: "running",
+        technical: {
+          command: boundedBuildCommandText(input.command),
+          ...(result ? { result: boundedBuildCommandText(result) } : {})
+        }
+      },
+      attempt
+    );
+  };
+
+  const recordBuildAttention = async (
+    command: PersonalAgentCommandContext,
+    runtimeItemId: string,
+    kind: "user_input" | "command_approval"
+  ): Promise<void> => {
+    await recordBuildProgress(command, {
+      kind: "input_required",
+      state: "blocked",
+      story: {
+        title: "Needs your input",
+        detail:
+          kind === "user_input"
+            ? "Open the existing question in this Conversation to answer."
+            : "Review the existing permission request in this Conversation."
+      },
+      attention: { runtimeItemId, kind }
+    });
+  };
+
   const personalAgentSignalCommand = (
     executionId: string,
     provider: ManagedConversationProvider,
@@ -2071,6 +2279,54 @@ export const createManagedConversationService = (options: {
         "PersonalAgentAttemptRecoveryPendingError"
       );
     }
+    await recordBuildProgress(
+      command,
+      {
+        kind: "started",
+        state: "running",
+        story: {
+          title: result.continuation
+            ? "Continued this Job"
+            : "Started work on this Job",
+          detail:
+            "The managed runtime accepted this Job. Progress comes from runtime events and explicit Agent signals."
+        }
+      },
+      attempt
+    );
+    if (command.execution.provider === "pi") {
+      await recordBuildProgress(
+        command,
+        {
+          kind: "message",
+          state: "running",
+          story: {
+            title: "Command history is unavailable for Pi",
+            detail:
+              "Pi's managed RPC stream does not currently expose normalized shell command start and result events. Read-only workspace observations remain available."
+          }
+        },
+        attempt
+      );
+    }
+    if (command.execution.projectId) {
+      await captureBuildWorkspaceObservation(command, attempt, true);
+    } else {
+      await recordBuildProgress(
+        command,
+        {
+          kind: "workspace_observed",
+          state: "running",
+          story: {
+            title: "No Project is attached",
+            detail:
+              "Workspace files and Git state are unavailable for this Job."
+          },
+          technical: { status: "No Project attached" }
+        },
+        attempt
+      );
+    }
     return {
       jobId: result.jobId,
       attemptId: attempt.attemptId,
@@ -2108,6 +2364,20 @@ export const createManagedConversationService = (options: {
       }
     );
     personalAgentTurnStatusByCommand.set(command.id, status);
+    await recordBuildProgress(command, {
+      kind: status === "complete" ? "message" : "blocked",
+      state: status === "complete" ? "running" : "blocked",
+      story: {
+        title:
+          status === "complete"
+            ? "Agent reports the assigned goal is complete"
+            : "Agent reports it needs your input",
+        detail:
+          status === "complete"
+            ? "The Agent sent its explicit completion signal. The runtime is recording the final Job result."
+            : "Review the Agent's message and any existing question or approval in this Conversation."
+      }
+    });
   };
 
   const recordPersonalAgentPhase = async (
@@ -2143,6 +2413,22 @@ export const createManagedConversationService = (options: {
         attemptId: attempt.attemptId,
         phase
       }
+    );
+    await recordBuildProgress(
+      command,
+      {
+        kind: "phase",
+        phase,
+        state: "running",
+        story: {
+          title:
+            phase === "working"
+              ? "Agent reports it is working"
+              : "Agent reports it is checking the result",
+          detail: "This progress update came from an explicit Agent signal."
+        }
+      },
+      attempt
     );
   };
 
@@ -2353,6 +2639,49 @@ export const createManagedConversationService = (options: {
       }
     }
     if (!active) return;
+    await captureBuildWorkspaceObservation(command, active, false);
+    const declaredComplete =
+      outcome === "succeeded" &&
+      Boolean(turnId) &&
+      managedPersonalAgentTurnDeclaredComplete(
+        command.payload,
+        personalAgentTurnStatusByCommand.get(command.id),
+        turnId
+      );
+    await recordBuildProgress(
+      command,
+      {
+        kind: declaredComplete
+          ? "completed"
+          : outcome === "failed"
+            ? "failed"
+            : outcome === "canceled" || outcome === "interrupted"
+              ? "blocked"
+              : "blocked",
+        state: declaredComplete
+          ? "completed"
+          : outcome === "failed"
+            ? "failed"
+            : "blocked",
+        story: {
+          title: declaredComplete
+            ? "Job completed"
+            : outcome === "failed"
+              ? "Job failed"
+              : outcome === "canceled"
+                ? "Job canceled"
+                : outcome === "interrupted"
+                  ? "Job was interrupted"
+                  : "Job is waiting for your input",
+          detail: declaredComplete
+            ? "The runtime recorded the Agent's explicit completion signal and final workspace observation."
+            : outcome === "succeeded"
+              ? "The provider turn ended without an explicit completion signal. The Job remains open for the owner."
+              : "This Job outcome was reported by the managed runtime."
+        }
+      },
+      active
+    );
     await options.repository.completePersonalAgentExecutionAttempt({
       actor,
       jobId: active.jobId,
@@ -2408,6 +2737,7 @@ export const createManagedConversationService = (options: {
       });
     }
     personalAgentAttemptsByCommand.delete(command.id);
+    buildWorkspaceBaselinesByAttempt.delete(active.attemptId);
     personalAgentTurnStatusByCommand.delete(command.id);
     personalAgentOverridesByCommand.delete(command.id);
   };
@@ -2674,6 +3004,23 @@ export const createManagedConversationService = (options: {
         approvalPolicy: permission.approvalPolicy,
         sandboxMode: permission.sandboxMode,
         approvalsReviewer: permission.approvalsReviewer,
+        onCommandExecutionEvent: (event) => {
+          const activeCommand = activePersonalAgentCommandByExecution.get(
+            execution.id
+          );
+          if (!activeCommand) return;
+          void recordBuildCommandActivity(activeCommand, event).catch(
+            (error) => {
+              options.logger.warn(
+                {
+                  error_name: errorCode(error),
+                  execution_id: execution.id
+                },
+                "managed Build command capture failed"
+              );
+            }
+          );
+        },
         dynamicTools: [
           {
             name: PERSONAL_AGENT_INTENT_TOOL_NAME,
@@ -2771,6 +3118,15 @@ export const createManagedConversationService = (options: {
                 })
               }
             );
+          const activeCommand = activePersonalAgentCommandByExecution.get(
+            execution.id
+          );
+          if (
+            activeCommand &&
+            (itemKind === "user_input" || itemKind === "command_approval")
+          ) {
+            await recordBuildAttention(activeCommand, item.id, itemKind);
+          }
           const response = await waitForRuntimeResponse(
             execution.ownerUserId,
             item.id,
@@ -2868,6 +3224,8 @@ export const createManagedConversationService = (options: {
         }
       },
       appServerForTurn: (base) => {
+        const selectedSkills =
+          selectedNativeSkillsByExecution.get(execution.id) ?? [];
         const activeCommand = activePersonalAgentCommandByExecution.get(
           execution.id
         );
@@ -2881,6 +3239,11 @@ export const createManagedConversationService = (options: {
             ...base,
             approvalPolicy: "never",
             sandboxMode: "read-only",
+            selectedSkills: selectedSkills.flatMap((skill) =>
+              skill.provider === "codex" && skill.providerPath
+                ? [{ name: skill.name, path: skill.providerPath }]
+                : []
+            ),
             dynamicTools: isReadOnlyPullRequest(execution.id)
               ? base.dynamicTools
               : []
@@ -2891,16 +3254,37 @@ export const createManagedConversationService = (options: {
               managedPromptPersonalAgentContext(activeCommand.payload)
             )
           : null;
-        if (!context?.success) return { ...base, dynamicTools: [] };
+        if (!context?.success)
+          return {
+            ...base,
+            selectedSkills: selectedSkills.flatMap((skill) =>
+              skill.provider === "codex" && skill.providerPath
+                ? [{ name: skill.name, path: skill.providerPath }]
+                : []
+            ),
+            dynamicTools: []
+          };
         if (!context.data.activeJob) {
           return {
             ...base,
+            selectedSkills: selectedSkills.flatMap((skill) =>
+              skill.provider === "codex" && skill.providerPath
+                ? [{ name: skill.name, path: skill.providerPath }]
+                : []
+            ),
             dynamicTools: (base.dynamicTools ?? []).filter(
               (tool) => tool.name === PERSONAL_AGENT_INTENT_TOOL_NAME
             )
           };
         }
-        return base;
+        return {
+          ...base,
+          selectedSkills: selectedSkills.flatMap((skill) =>
+            skill.provider === "codex" && skill.providerPath
+              ? [{ name: skill.name, path: skill.providerPath }]
+              : []
+          )
+        };
       },
       ...(override?.resume
         ? { resume: override.resume }
@@ -2974,6 +3358,21 @@ export const createManagedConversationService = (options: {
       permissionMode: permission.permissionMode,
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
+      onCommandExecutionEvent: (event) => {
+        const activeCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (!activeCommand) return;
+        void recordBuildCommandActivity(activeCommand, event).catch((error) => {
+          options.logger.warn(
+            {
+              error_name: errorCode(error),
+              execution_id: execution.id
+            },
+            "managed Build command capture failed"
+          );
+        });
+      },
       executionPolicy: () => {
         const activeCommand = activePersonalAgentCommandByExecution.get(
           execution.id
@@ -3104,6 +3503,16 @@ export const createManagedConversationService = (options: {
             )
           }
         );
+        const activeQuestionCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (isQuestion && activeQuestionCommand) {
+          await recordBuildAttention(
+            activeQuestionCommand,
+            item.id,
+            "user_input"
+          );
+        }
         let resolved = false;
         try {
           const response = await waitForRuntimeResponse(
@@ -3376,6 +3785,16 @@ export const createManagedConversationService = (options: {
             payload: { ...payload, supportsSessionApproval: true }
           }
         );
+        const activeApprovalCommand = activePersonalAgentCommandByExecution.get(
+          execution.id
+        );
+        if (activeApprovalCommand) {
+          await recordBuildAttention(
+            activeApprovalCommand,
+            item.id,
+            "command_approval"
+          );
+        }
         let resolved = false;
         try {
           const response = await waitForRuntimeResponse(
@@ -3675,6 +4094,85 @@ export const createManagedConversationService = (options: {
       );
     }
     return `${prompt}\n\n${sections.join("\n\n")}`;
+  };
+
+  const selectedNativeSkillsForCommand = async (
+    command: ClaimedManagedConversationCommand,
+    binding: ManagedConversationRuntimeBindingRecord
+  ): Promise<NativeSkillInvocation[]> => {
+    const parsed = managedConversationSelectedResourceIdsSchema.safeParse(
+      command.payload?.selectedResourceIds ?? []
+    );
+    if (!parsed.success)
+      throw managedConversationError("ManagedConversationPayloadError");
+    if (parsed.data.length === 0) return [];
+    const hostedInstanceId = command.payload?.selectedResourceHostedInstanceId;
+    if (typeof hostedInstanceId !== "string" || !hostedInstanceId.trim()) {
+      throw managedConversationError("ManagedConversationResourceScopeError");
+    }
+    const scopedInstances = (
+      await options.repository.listAiClientInstances({
+        userId: command.ownerUserId
+      })
+    ).filter(
+      (candidate) =>
+        candidate.enabled &&
+        candidate.instanceId === command.execution.aiClientInstanceId &&
+        candidate.driverId === command.execution.provider &&
+        candidate.hostedInstanceId === hostedInstanceId
+    );
+    if (scopedInstances.length !== 1)
+      throw managedConversationError("ManagedConversationResourceScopeError");
+    const scopedInstance = scopedInstances[0]!;
+    if (
+      command.execution.runnerDeviceId !== options.deviceId ||
+      command.execution.runnerDeploymentId !== options.deploymentId ||
+      binding.deviceId !== options.deviceId ||
+      binding.deploymentId !== options.deploymentId
+    )
+      throw managedConversationError("ManagedConversationResourceScopeError");
+    if (scopedInstance.sourceDeviceCredentialId) {
+      const sourceCredential = (
+        await options.repository.listDeviceCredentials({
+          userId: command.ownerUserId
+        })
+      ).find(
+        (credential) =>
+          credential.id === scopedInstance.sourceDeviceCredentialId
+      );
+      if (
+        !sourceCredential ||
+        sourceCredential.deviceInstanceId !== options.deviceId ||
+        sourceCredential.metadata.protocolDeploymentId !==
+          options.deploymentId ||
+        !sourceCredential.operationFamilies.includes("managed_execution") ||
+        sourceCredential.revokedAt !== null ||
+        (sourceCredential.expiresAt !== null &&
+          Date.parse(sourceCredential.expiresAt) <= Date.now())
+      )
+        throw managedConversationError("ManagedConversationResourceScopeError");
+    }
+    const instance = resolveConfiguredLocalAiClientInstance({
+      driverId: command.execution.provider,
+      instanceId: command.execution.aiClientInstanceId,
+      env: process.env
+    });
+    const environment = environmentForLocalAiClientInstance({
+      instance,
+      driverId: command.execution.provider,
+      env: process.env
+    });
+    return revalidateSelectedNativeSkills({
+      instance,
+      ownerUserId: command.ownerUserId,
+      hostedInstanceId,
+      projectId: command.execution.projectId,
+      projectPath: command.execution.projectId
+        ? await realpath(binding.projectPath)
+        : null,
+      selectedResourceIds: parsed.data,
+      environment
+    });
   };
 
   const recoverLocalRuntimeBinding = async (
@@ -7318,6 +7816,10 @@ export const createManagedConversationService = (options: {
       if (command.execution.provider === "pi") {
         await ensureTurnBaselineCheckpoint(command, checkpointBinding);
         const session = await sessionForPi(command.execution);
+        const nativeSkills = await selectedNativeSkillsForCommand(
+          command,
+          checkpointBinding
+        );
         const userPrompt = await promptWithFileMentions(
           command,
           checkpointBinding
@@ -7326,7 +7828,8 @@ export const createManagedConversationService = (options: {
         await withProviderLease(command, "pi", session, async (owned) => {
           assertPromptNotStopped(command);
           const result = await owned.prompt(
-            formatManagedTurnPrompt(command, userPrompt)
+            formatManagedTurnPrompt(command, userPrompt),
+            nativeSkills.map((skill) => skill.name)
           );
           await flushCompletedTransientOutput(
             `${command.executionId}:${result.turnId}:assistant`
@@ -7445,6 +7948,10 @@ export const createManagedConversationService = (options: {
         checkpointBinding
       );
       const turnPrompt = formatManagedTurnPrompt(command, providerPrompt);
+      const nativeSkills = await selectedNativeSkillsForCommand(
+        command,
+        checkpointBinding
+      );
       await runningPersonalAgentAttempt(command);
       if (command.execution.provider === "claude") {
         if (providerRuntime.provider !== "claude") {
@@ -7456,7 +7963,10 @@ export const createManagedConversationService = (options: {
           command,
           (session) => {
             assertPromptNotStopped(command);
-            return session.prompt(turnPrompt);
+            return session.prompt(
+              turnPrompt,
+              nativeSkills.map((skill) => skill.name)
+            );
           },
           providerRuntime.session
         );
@@ -7564,18 +8074,24 @@ export const createManagedConversationService = (options: {
           "ManagedConversationProviderMismatchError"
         );
       }
-      const result = await withLease(
-        command,
-        (session) => {
-          assertPromptNotStopped(command);
-          return session.runTurn(
-            turnPrompt,
-            turnTimeoutMs,
-            `koed-user-message:${clientUserMessageId}`
-          );
-        },
-        providerRuntime.session
-      );
+      selectedNativeSkillsByExecution.set(command.executionId, nativeSkills);
+      let result;
+      try {
+        result = await withLease(
+          command,
+          (session) => {
+            assertPromptNotStopped(command);
+            return session.runTurn(
+              turnPrompt,
+              turnTimeoutMs,
+              `koed-user-message:${clientUserMessageId}`
+            );
+          },
+          providerRuntime.session
+        );
+      } finally {
+        selectedNativeSkillsByExecution.delete(command.executionId);
+      }
       const binding = checkpointBinding;
       if (
         !command.execution.providerThreadId ||

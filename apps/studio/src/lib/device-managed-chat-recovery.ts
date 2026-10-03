@@ -12,6 +12,7 @@ export type DeviceManagedChatPendingOperation = Readonly<{
   clientUserMessageId: string;
   executionGeneration?: number;
   prompt: string;
+  selectedResourceIds?: readonly string[];
   requestFingerprint?: string;
   state: "pending" | "reconciling" | "accepted" | "rejected";
   commandId?: string;
@@ -35,6 +36,7 @@ export type ManagedChatSendRequestIdentity = Readonly<{
   model: string;
   reasoningEffort: string | null;
   permissionMode: string;
+  selectedResourceIds?: readonly string[];
   teamAgentRequestBinding?:
     | readonly [
         requestId: string,
@@ -98,6 +100,7 @@ export function managedChatSendRequestFingerprint(
     identity.model,
     identity.reasoningEffort,
     identity.permissionMode,
+    identity.selectedResourceIds ?? [],
     identity.teamAgentRequestBinding ?? null,
     identity.expectedSettings
       ? [
@@ -159,8 +162,8 @@ function isUnsubmittedStartToPromptTransition(
     if (
       !Array.isArray(previous) ||
       !Array.isArray(next) ||
-      ![12, 13].includes(previous.length) ||
-      ![12, 13].includes(next.length) ||
+      ![12, 13, 14].includes(previous.length) ||
+      ![12, 13, 14].includes(next.length) ||
       previous[0] !== "start" ||
       next[0] !== "prompt" ||
       previous[2] !== null ||
@@ -176,15 +179,26 @@ function isUnsubmittedStartToPromptTransition(
     ) {
       return false;
     }
-    const previousBinding = previous.length === 13 ? previous[11] : null;
-    const nextBinding = next.length === 13 ? next[11] : null;
+    const previousResources = previous.length === 14 ? previous[11] : [];
+    const nextResources = next.length === 14 ? next[11] : [];
+    if (JSON.stringify(previousResources) !== JSON.stringify(nextResources))
+      return false;
+    const previousBinding =
+      previous.length === 14
+        ? previous[12]
+        : previous.length === 13
+          ? previous[11]
+          : null;
+    const nextBinding =
+      next.length === 14 ? next[12] : next.length === 13 ? next[11] : null;
     if (JSON.stringify(previousBinding) !== JSON.stringify(nextBinding))
       return false;
     if (previous[1] !== next[1]) return false;
     for (let index = 4; index <= 10; index += 1) {
       if (previous[index] !== next[index]) return false;
     }
-    const expectedSettings = next.length === 13 ? next[12] : next[11];
+    const expectedSettings =
+      next.length === 14 ? next[13] : next.length === 13 ? next[12] : next[11];
     if (next[3] === null) return expectedSettings === null;
     return (
       Array.isArray(expectedSettings) &&
@@ -272,6 +286,14 @@ export function parseRecoveryRecord(
           !Number.isSafeInteger(candidate.executionGeneration) ||
           candidate.executionGeneration < 0)) ||
       typeof candidate.prompt !== "string" ||
+      (candidate.selectedResourceIds !== undefined &&
+        (!Array.isArray(candidate.selectedResourceIds) ||
+          candidate.selectedResourceIds.length > 8 ||
+          candidate.selectedResourceIds.some(
+            (id) => typeof id !== "string" || !/^res_[0-9a-f]{64}$/u.test(id)
+          ) ||
+          new Set(candidate.selectedResourceIds).size !==
+            candidate.selectedResourceIds.length)) ||
       (candidate.requestFingerprint !== undefined &&
         (typeof candidate.requestFingerprint !== "string" ||
           candidate.requestFingerprint.length > 8192)) ||
@@ -294,6 +316,9 @@ export function parseRecoveryRecord(
           ? { executionGeneration: candidate.executionGeneration }
           : {}),
         prompt: candidate.prompt,
+        ...(Array.isArray(candidate.selectedResourceIds)
+          ? { selectedResourceIds: candidate.selectedResourceIds as string[] }
+          : {}),
         ...(typeof candidate.requestFingerprint === "string"
           ? { requestFingerprint: candidate.requestFingerprint }
           : {}),

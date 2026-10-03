@@ -77,6 +77,12 @@ export interface ClaudeManagedConversationConfig {
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
   onTextDelta?: (delta: string, turnId: string) => void;
+  onCommandExecutionEvent?: (event: {
+    phase: "started" | "completed";
+    command: string;
+    result?: string;
+    exitCode?: number;
+  }) => void | Promise<void>;
   executionPolicy?: () => "work" | "planning" | "review" | "summary";
   personalAgentToolsEnabled?: () => boolean;
   personalAgentTurnStatusHandler?: (
@@ -1060,14 +1066,17 @@ export class ClaudeManagedConversationSession {
     };
   }
 
-  async prompt(prompt: string): Promise<ClaudeManagedConversationResult> {
+  async prompt(
+    prompt: string,
+    selectedSkills: readonly string[] = []
+  ): Promise<ClaudeManagedConversationResult> {
     const normalizedPrompt = assertNonEmpty(prompt, "Claude prompt");
     this.assertOpen();
     if (!this.started) {
       await this.start();
     }
     const operation = this.turnQueue.then(() =>
-      this.runPrompt(normalizedPrompt)
+      this.runPrompt(normalizedPrompt, selectedSkills)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -1077,7 +1086,8 @@ export class ClaudeManagedConversationSession {
   }
 
   private async runPrompt(
-    prompt: string
+    prompt: string,
+    selectedSkills: readonly string[]
   ): Promise<ClaudeManagedConversationResult> {
     this.assertOpen();
     const abortController = new AbortController();
@@ -1252,7 +1262,11 @@ export class ClaudeManagedConversationSession {
             ...(intentServer ? { koed_agent_assignment: intentServer } : {})
           },
           strictMcpConfig: true,
-          settingSources: this.config.settingSources ?? [],
+          settingSources:
+            selectedSkills.length > 0
+              ? (["user", "project"] as SettingSource[])
+              : (this.config.settingSources ?? []),
+          ...(selectedSkills.length > 0 ? { skills: [...selectedSkills] } : {}),
           sessionStore: this.sessionStore,
           persistSession: true,
           maxTurns: this.config.maxTurns ?? 1,
@@ -1278,6 +1292,7 @@ export class ClaudeManagedConversationSession {
     this.activeAbortController = abortController;
     this.activeQuery = stream;
     const providerEvents: SDKMessage[] = [];
+    const observedCommands = new Map<string, string>();
     const turnId = randomUUID();
     let result: SDKResultMessage | undefined;
     try {
@@ -1310,6 +1325,68 @@ export class ClaudeManagedConversationSession {
           }
         } else {
           providerEvents.push(message);
+          const sdkMessage = message as unknown as Record<string, unknown>;
+          const payload =
+            sdkMessage.message && typeof sdkMessage.message === "object"
+              ? (sdkMessage.message as Record<string, unknown>)
+              : null;
+          const blocks = Array.isArray(payload?.content) ? payload.content : [];
+          if (message.type === "assistant") {
+            for (const candidate of blocks) {
+              if (!candidate || typeof candidate !== "object") continue;
+              const block = candidate as Record<string, unknown>;
+              const input =
+                block.input && typeof block.input === "object"
+                  ? (block.input as Record<string, unknown>)
+                  : null;
+              if (
+                block.type !== "tool_use" ||
+                block.name !== "Bash" ||
+                typeof block.id !== "string" ||
+                typeof input?.command !== "string"
+              )
+                continue;
+              observedCommands.set(block.id, input.command);
+              await this.config.onCommandExecutionEvent?.({
+                phase: "started",
+                command: input.command
+              });
+            }
+          } else if (message.type === "user") {
+            for (const candidate of blocks) {
+              if (!candidate || typeof candidate !== "object") continue;
+              const block = candidate as Record<string, unknown>;
+              if (
+                block.type !== "tool_result" ||
+                typeof block.tool_use_id !== "string"
+              )
+                continue;
+              const command = observedCommands.get(block.tool_use_id);
+              if (!command) continue;
+              observedCommands.delete(block.tool_use_id);
+              const result =
+                typeof block.content === "string"
+                  ? block.content
+                  : Array.isArray(block.content)
+                    ? block.content
+                        .flatMap((part) =>
+                          part &&
+                          typeof part === "object" &&
+                          typeof (part as Record<string, unknown>).text ===
+                            "string"
+                            ? [(part as Record<string, unknown>).text as string]
+                            : []
+                        )
+                        .join("\n")
+                    : undefined;
+              await this.config.onCommandExecutionEvent?.({
+                phase: "completed",
+                command,
+                ...(result ? { result } : {}),
+                ...(block.is_error === true ? { exitCode: 1 } : {})
+              });
+            }
+          }
         }
         if (message.type === "result") {
           result = message;

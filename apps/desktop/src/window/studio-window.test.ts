@@ -9,6 +9,7 @@ import {
 import {
   createStudioWindowController,
   resolveStudioPaths,
+  studioWindowOptions,
   type StudioGatewayOptions,
   type StudioWindowLike
 } from "./studio-window.js";
@@ -18,24 +19,54 @@ const makeWindow = () => {
     | ((event: { preventDefault(): void }, url: string) => void)
     | undefined;
   let closed: (() => void) | undefined;
+  let closeRequested: ((event: { preventDefault(): void }) => void) | undefined;
+  let visible = false;
+  let focused = false;
   const window: StudioWindowLike = {
     webContents: {
       setWindowOpenHandler: vi.fn(),
       on: (_event, listener) => {
         navigation = listener;
-      }
+      },
+      send: vi.fn()
+    },
+    on: (_event, listener) => {
+      closeRequested = listener;
+      return window;
     },
     once: (_event, listener) => {
       closed = listener;
       return window;
     },
     loadURL: vi.fn(async () => undefined),
-    show: vi.fn(),
-    focus: vi.fn(),
+    show: vi.fn(() => {
+      visible = true;
+    }),
+    hide: vi.fn(() => {
+      visible = false;
+    }),
+    isVisible: vi.fn(() => visible),
+    isFocused: vi.fn(() => focused),
+    focus: vi.fn(() => {
+      focused = true;
+    }),
     close: vi.fn(() => closed?.()),
     isDestroyed: vi.fn(() => false)
   };
-  return { window, navigation: () => navigation!, closed: () => closed! };
+  return {
+    window,
+    navigation: () => navigation!,
+    closed: () => closed!,
+    requestClose: () => {
+      let prevented = false;
+      closeRequested?.({
+        preventDefault: () => {
+          prevented = true;
+        }
+      });
+      return prevented;
+    }
+  };
 };
 
 const collaborationSnapshot = (
@@ -201,6 +232,73 @@ describe("Studio window controller", () => {
     });
   });
 
+  it("starts a hidden renderer without exposing a window and disables hidden throttling", async () => {
+    expect(studioWindowOptions.webPreferences?.backgroundThrottling).toBe(
+      false
+    );
+    const fake = makeWindow();
+    const controller = createStudioWindowController({
+      platform: "darwin",
+      allowedRendererOrigins: new Set(["koed://app"]),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "t"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49821",
+        close: vi.fn(async () => undefined)
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+    await controller.openHidden();
+    expect(fake.window.show).not.toHaveBeenCalled();
+    expect(controller.isNotificationEligible()).toBe(true);
+    await controller.close();
+  });
+
+  it("hides on macOS close while retaining the gateway and notification poller", async () => {
+    const fake = makeWindow();
+    const closeGateway = vi.fn(async () => undefined);
+    const controller = createStudioWindowController({
+      platform: "darwin",
+      allowedRendererOrigins: new Set(["koed://app"]),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "t"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49821",
+        close: closeGateway
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+    await controller.open();
+    expect(fake.requestClose()).toBe(true);
+    expect(fake.window.hide).toHaveBeenCalledOnce();
+    expect(controller.isNotificationEligible()).toBe(true);
+    expect(closeGateway).not.toHaveBeenCalled();
+    await controller.open();
+    expect(fake.window.show).toHaveBeenCalledTimes(2);
+    await controller.close();
+    expect(closeGateway).toHaveBeenCalledOnce();
+  });
+
   it("trusts only its exact origin, focuses duplicates, and closes the gateway", async () => {
     const allowedRendererOrigins = new Set(["koed://app"]);
     const fake = makeWindow();
@@ -209,10 +307,17 @@ describe("Studio window controller", () => {
       apiToken: "t"
     });
     const closeGateway = vi.fn(async () => undefined);
-    const startGateway = vi.fn(async (_options: StudioGatewayOptions) => ({
-      url: "http://127.0.0.1:49821",
-      close: closeGateway
-    }));
+    const startGateway = vi
+      .fn<
+        (options: StudioGatewayOptions) => Promise<{
+          url: string;
+          close: () => Promise<void>;
+        }>
+      >()
+      .mockResolvedValue({
+        url: "http://127.0.0.1:49821",
+        close: closeGateway
+      });
     const controller = createStudioWindowController({
       allowedRendererOrigins,
       createWindow: () => fake.window,
@@ -250,7 +355,7 @@ describe("Studio window controller", () => {
     expect(
       await gatewayOptions?.registerProject({ path: "/tmp/a", name: "A" })
     ).toEqual({ ok: true });
-    expect(getAccess).toHaveBeenCalledTimes(2);
+    expect(getAccess).toHaveBeenCalledTimes(1);
 
     let blocked = false;
     fake.navigation()(
@@ -302,6 +407,7 @@ describe("Studio window controller", () => {
     });
 
     await expect(controller.open()).resolves.toBeUndefined();
+    expect(getAccess).not.toHaveBeenCalled();
     expect(fake.window.loadURL).toHaveBeenCalledWith("http://127.0.0.1:49822");
     expect(gatewayOptions?.apiBase).toBe("http://127.0.0.1:43300");
     await expect(gatewayOptions?.resolveToken()).rejects.toThrow(
@@ -315,7 +421,7 @@ describe("Studio window controller", () => {
       apiOrigin: "http://127.0.0.1:59451",
       apiToken: "paired-token"
     });
-    expect(getAccess).toHaveBeenCalledTimes(4);
+    expect(getAccess).toHaveBeenCalledTimes(3);
     await controller.close();
   });
 
@@ -623,7 +729,9 @@ describe("Studio window controller", () => {
       chooseProjectDirectory: async () => null,
       registerProject: async () => ({ ok: true }),
       collaboration: async (command) => {
-        commands.push(command.command);
+        commands.push(
+          collaborationRendererCommandSchema.parse(command).command
+        );
         return {
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: command.requestId,

@@ -67,17 +67,19 @@ export async function handlePersonalAgents({
   routeFamily = "personal-agents"
 }) {
   const routePrefix =
-    routeFamily === "home"
-      ? "/studio-api/home-feed"
-      : routeFamily === "public-square"
-        ? "/studio-api/public-square"
-        : routeFamily === "managed-conversations"
-          ? "/studio-api/managed-conversations"
-          : routeFamily === "team-agent-requests"
-            ? "/studio-api/collaboration"
-            : routeFamily === "personal-agent-role-templates"
-              ? "/studio-api/personal-agent-role-templates"
-              : prefix;
+    routeFamily === "ai-client-resources"
+      ? "/studio-api/ai-client-resources"
+      : routeFamily === "home"
+        ? "/studio-api/home-feed"
+        : routeFamily === "public-square"
+          ? "/studio-api/public-square"
+          : routeFamily === "managed-conversations"
+            ? "/studio-api/managed-conversations"
+            : routeFamily === "team-agent-requests"
+              ? "/studio-api/collaboration"
+              : routeFamily === "personal-agent-role-templates"
+                ? "/studio-api/personal-agent-role-templates"
+                : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -95,29 +97,37 @@ export async function handlePersonalAgents({
       ? teamAgentRequestsRoute(suffix)
       : null;
   const methods =
-    routeFamily === "home"
-      ? homeMethods(suffix)
-      : routeFamily === "team-agent-requests"
-        ? (teamAgentRequestRoute?.methods ?? [])
-        : routeFamily === "public-square"
-          ? (squareRoute?.methods ?? [])
-          : routeFamily === "personal-agent-role-templates"
-            ? suffix === ""
-              ? ["GET"]
-              : []
-            : routeFamily === "managed-conversations"
-              ? managedMethods(suffix)
-              : suffix === ""
-                ? ["GET", "POST"]
-                : activityRoute || historyMatch
-                  ? ["GET"]
-                  : suffix === "/capabilities"
+    routeFamily === "ai-client-resources"
+      ? suffix === "/instances"
+        ? ["GET"]
+        : suffix === "/discover"
+          ? ["POST"]
+          : new RegExp(`^/discover/${uuid}$`).test(suffix)
+            ? ["GET"]
+            : []
+      : routeFamily === "home"
+        ? homeMethods(suffix)
+        : routeFamily === "team-agent-requests"
+          ? (teamAgentRequestRoute?.methods ?? [])
+          : routeFamily === "public-square"
+            ? (squareRoute?.methods ?? [])
+            : routeFamily === "personal-agent-role-templates"
+              ? suffix === ""
+                ? ["GET"]
+                : []
+              : routeFamily === "managed-conversations"
+                ? managedMethods(suffix)
+                : suffix === ""
+                  ? ["GET", "POST"]
+                  : activityRoute || historyMatch
                     ? ["GET"]
-                    : match
-                      ? match[2]
-                        ? ["POST"]
-                        : ["GET", "PATCH"]
-                      : [];
+                    : suffix === "/capabilities"
+                      ? ["GET"]
+                      : match
+                        ? match[2]
+                          ? ["POST"]
+                          : ["GET", "PATCH"]
+                        : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -130,6 +140,9 @@ export async function handlePersonalAgents({
     routeFamily === "team-agent-requests" &&
     request.method === "GET" &&
     Boolean(teamAgentRequestRoute?.list);
+  const buildProgressRoute =
+    routeFamily === "managed-conversations" &&
+    new RegExp(`^/${uuid}/build-progress$`).test(suffix);
   const recoveryLookup =
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   const squareList =
@@ -139,6 +152,7 @@ export async function handlePersonalAgents({
   if (
     url.search &&
     !recoveryLookup &&
+    !buildProgressRoute &&
     !squareList &&
     !teamAgentRequestList &&
     !activityRoute &&
@@ -146,6 +160,14 @@ export async function handlePersonalAgents({
     !homeList
   ) {
     send(400, { error: "query_not_allowed" });
+    return true;
+  }
+  if (
+    buildProgressRoute &&
+    ([...url.searchParams.keys()].length !== 1 ||
+      !validUuid(url.searchParams.get("jobId")))
+  ) {
+    send(400, { error: "invalid_build_progress_query" });
     return true;
   }
   if (homeList && !validHomeFeedQuery(url.searchParams)) {
@@ -244,11 +266,13 @@ export async function handlePersonalAgents({
     }
     const upstream = await fetchImpl(
       new URL(
-        teamAgentRequestRoute
-          ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
-          : squareRoute
-            ? `${squareRoute.path}${squareList ? url.search : ""}`
-            : `/v1/${routeFamily}${suffix}${recoveryLookup || activityRoute || historyMatch || homeList ? url.search : ""}`,
+        routeFamily === "ai-client-resources" && suffix === "/instances"
+          ? "/v1/memory/local-agent-settings"
+          : teamAgentRequestRoute
+            ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
+            : squareRoute
+              ? `${squareRoute.path}${squareList ? url.search : ""}`
+              : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
         base
       ),
       {
@@ -339,11 +363,13 @@ export async function handlePersonalAgents({
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        const maximumResponseBytes = historyMatch
-          ? 8 * 1024 * 1024
-          : activityRoute
-            ? 1024 * 1024
-            : 4 * 1024 * 1024;
+        const maximumResponseBytes = buildProgressRoute
+          ? 9 * 1024 * 1024
+          : historyMatch
+            ? 8 * 1024 * 1024
+            : activityRoute
+              ? 1024 * 1024
+              : 4 * 1024 * 1024;
         if (size > maximumResponseBytes) {
           await reader.cancel();
           throw new Error("response_too_large");
@@ -401,7 +427,11 @@ function managedMethods(suffix) {
     return ["GET"];
   if (new RegExp(`^/${uuid}/project-moves/${uuid}/cancel$`).test(suffix))
     return ["POST"];
-  if (new RegExp(`^/${uuid}(?:/runtime|/agent-state)?$`).test(suffix))
+  if (
+    new RegExp(`^/${uuid}(?:/runtime|/agent-state|/build-progress)?$`).test(
+      suffix
+    )
+  )
     return ["GET"];
   if (new RegExp(`^/${uuid}/prompts/${uuid}/cancel$`).test(suffix))
     return ["POST"];
@@ -659,4 +689,11 @@ function validPublicSquareQuery(params) {
       cursor.length <= 512 &&
       !/[\u0000-\u001f\u007f]/.test(cursor))
   );
+}
+
+export function handleClientResources(options) {
+  return handlePersonalAgents({
+    ...options,
+    routeFamily: "ai-client-resources"
+  });
 }

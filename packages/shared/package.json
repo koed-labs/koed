@@ -94,6 +94,18 @@
     "./github-delegated": {
       "types": "./dist/github-delegated.d.ts",
       "import": "./dist/github-delegated.js"
+    },
+    "./ai-client-resource-catalog": {
+      "types": "./dist/ai-client-resource-catalog.d.ts",
+      "import": "./dist/ai-client-resource-catalog.js"
+    },
+    "./studio-notifications": {
+      "types": "./dist/studio-notifications.d.ts",
+      "import": "./dist/studio-notifications.js"
+    },
+    "./build-progress": {
+      "types": "./dist/build-progress.d.ts",
+      "import": "./dist/build-progress.js"
     }
   },
   "files": [

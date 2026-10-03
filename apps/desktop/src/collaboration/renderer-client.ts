@@ -507,6 +507,7 @@ const emptyMessagePage = (
 ): CollaborationMessagePage => ({
   snapshotRevision: snapshot.snapshotRevision,
   threadId: thread.id,
+  rootMessageId: null,
   items: [],
   olderCursor: null,
   newerCursor: null,
@@ -1653,9 +1654,12 @@ export const createCollaborationRendererClient = (
       "collaboration.preview_shared_memory": "Preview Shared Memory",
       "collaboration.share_memory": "Share Memory",
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
-      "collaboration.update_team_memory_retention": "Update Team memory retention",
-      "collaboration.remove_team_retained_memory": "Remove retained Team memory",
-      "collaboration.stop_owned_team_memory_updates": "Stop shared-memory updates",
+      "collaboration.update_team_memory_retention":
+        "Update Team memory retention",
+      "collaboration.remove_team_retained_memory":
+        "Remove retained Team memory",
+      "collaboration.stop_owned_team_memory_updates":
+        "Stop shared-memory updates",
       "collaboration.change_shared_memory_fidelity":
         "Change Shared Memory fidelity",
       "collaboration.share_conversation_source": "Share Conversation source",
@@ -1664,7 +1668,10 @@ export const createCollaborationRendererClient = (
       "collaboration.managed_conversation_handoff":
         "Move Conversation to another device",
       "collaboration.managed_conversation_fork":
-        "Fork Conversation on another device"
+        "Fork Conversation on another device",
+      "collaboration.publish_pull_request_review":
+        "Publish pull request review",
+      "collaboration.push_pull_request": "Push pull request"
     };
     return labels[intent];
   };
@@ -3907,7 +3914,10 @@ export const createCollaborationRendererClient = (
       return selectCreatedThread(result.data.thread);
     },
     async sendMessage(input) {
-      const result = await command("collaboration.send_message", input);
+      const result = await command("collaboration.send_message", {
+        ...input,
+        rootMessageId: null
+      });
       if (!result.ok || result.command !== "collaboration.send_message") {
         throw new Error("Unexpected collaboration result.");
       }
@@ -3926,7 +3936,10 @@ export const createCollaborationRendererClient = (
       return requireSnapshot();
     },
     async retryMessage(input) {
-      const result = await command("collaboration.retry_message", input);
+      const result = await command("collaboration.retry_message", {
+        ...input,
+        rootMessageId: null
+      });
       if (!result.ok || result.command !== "collaboration.retry_message") {
         throw new Error("Unexpected collaboration result.");
       }
@@ -3945,7 +3958,10 @@ export const createCollaborationRendererClient = (
       return requireSnapshot();
     },
     async markRead(input) {
-      const result = await command("collaboration.mark_read", input);
+      const result = await command("collaboration.mark_read", {
+        ...input,
+        rootMessageId: null
+      });
       if (!result.ok || result.command !== "collaboration.mark_read") {
         throw new Error("Unexpected collaboration result.");
       }
@@ -3970,6 +3986,7 @@ export const createCollaborationRendererClient = (
       const current = requireSnapshot();
       const result = await command("collaboration.load_message_page", {
         ...input,
+        rootMessageId: null,
         limit: current.limits.historyPageMaxItems
       });
       if (!result.ok || result.command !== "collaboration.load_message_page") {

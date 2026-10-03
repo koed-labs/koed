@@ -1,0 +1,21 @@
+# Overlay the existing server deployment; use a distinct Compose project and env file.
+services:
+  koed-server:
+    image: ${STUDIO_STAGING_IMAGE:?Set a reviewed Koed runtime image}
+    environment:
+      KOED_STUDIO_STATIC_ROOT: /app/studio
+      API_BROWSER_PUBLIC_URL: ${API_BROWSER_PUBLIC_URL:?Set the staging HTTPS origin}
+      API_COOKIE_SECURE: "true"
+      KOED_ALLOW_PUBLIC_REGISTRATION: "false"
+    volumes:
+      - ${STUDIO_STAGING_STATIC_DIR:?Set the hosted Studio export directory}:/app/studio:ro
+
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:?set the staging PostgreSQL port}:5432"
+
+  privacy-service:
+    image: ${STUDIO_STAGING_IMAGE:?Set a reviewed Koed runtime image}
+
+  embedding-service:
+    image: ${STUDIO_STAGING_EMBEDDING_IMAGE:?Set a reviewed embedding runtime image}

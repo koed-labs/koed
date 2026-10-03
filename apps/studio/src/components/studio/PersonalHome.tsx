@@ -729,6 +729,7 @@ export function PersonalHome({
                       );
                       startChat(text, hasVerifiedModel ? selection : undefined);
                     }}
+                    clientResourceScope={{ projectId: filter ?? null }}
                     modelOptions={modelOptions}
                     initialModel={
                       firstModelOption

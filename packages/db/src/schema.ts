@@ -4472,6 +4472,7 @@ export const personalAgentExecutionJobs = pgTable(
     title: text("title").notNull().default("Agent task"),
     projectId: text("project_id"),
     outputReference: jsonb("output_reference"),
+    buildProgress: jsonb("build_progress"),
     version: integer("version").notNull().default(1),
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
     attemptsStarted: integer("attempts_started").notNull().default(0),
@@ -13467,6 +13468,86 @@ export const aiClientCapabilitySnapshots = pgTable(
     check(
       "ai_client_capability_snapshots_expiry_check",
       sql`${table.expiresAt} > ${table.observedAt}`
+    )
+  ]
+);
+
+export const aiClientResourceDiscoveryOperations = pgTable(
+  "ai_client_resource_discovery_operations",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    aiClientInstanceId: text("ai_client_instance_id").notNull(),
+    sourceDeviceCredentialId: uuid("source_device_credential_id")
+      .notNull()
+      .default("00000000-0000-0000-0000-000000000000"),
+    hostedInstanceId: text("hosted_instance_id").notNull(),
+    provider: text("provider").notNull(),
+    computerLabel: text("computer_label"),
+    targetDeviceId: text("target_device_id").notNull(),
+    targetDeploymentId: uuid("target_deployment_id").notNull(),
+    projectId: text("project_id"),
+    requestId: uuid("request_id").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    state: text("state").notNull().default("pending"),
+    revision: integer("revision").notNull().default(1),
+    attempt: integer("attempt").notNull().default(0),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    claimedByRunnerId: text("claimed_by_runner_id"),
+    catalog: jsonb("catalog").$type<Record<string, unknown> | null>(),
+    errorCode: text("error_code"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.ownerUserId,
+        table.aiClientInstanceId,
+        table.sourceDeviceCredentialId
+      ],
+      foreignColumns: [
+        aiClientInstances.ownerUserId,
+        aiClientInstances.instanceId,
+        aiClientInstances.sourceDeviceCredentialId
+      ],
+      name: "ai_client_resource_discovery_instance_fk"
+    }).onDelete("cascade"),
+    uniqueIndex("ai_client_resource_discovery_request_unique").on(
+      table.ownerUserId,
+      table.requestId
+    ),
+    index("ai_client_resource_discovery_runner_claim_idx").on(
+      table.ownerUserId,
+      table.targetDeploymentId,
+      table.targetDeviceId,
+      table.state,
+      table.createdAt
+    ),
+    index("ai_client_resource_discovery_hosted_scope_idx").on(
+      table.ownerUserId,
+      table.hostedInstanceId,
+      table.projectId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "ai_client_resource_discovery_identity_check",
+      sql`${table.hostedInstanceId} <> ''
+        and ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and ${table.provider} in ('codex','claude','pi')
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'
+        and ${table.targetDeviceId} <> ''`
+    ),
+    check(
+      "ai_client_resource_discovery_state_check",
+      sql`${table.state} in ('pending','running','completed','failed')
+        and ${table.revision} > 0
+        and ${table.attempt} >= 0
+        and ((${table.state} = 'running') = (${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null and ${table.claimedByRunnerId} is not null))
+        and ((${table.state} = 'completed') = (${table.catalog} is not null))
+        and ((${table.state} = 'failed') = (${table.errorCode} is not null))`
     )
   ]
 );

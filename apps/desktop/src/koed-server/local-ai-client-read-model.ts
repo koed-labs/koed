@@ -29,6 +29,14 @@ const readInstances = (value: unknown) =>
         return [
           {
             instanceId,
+            ...(text(item.hostedInstanceId)
+              ? { hostedInstanceId: text(item.hostedInstanceId)! }
+              : {}),
+            ...(item.sourceDeviceLabel === null ||
+            (typeof item.sourceDeviceLabel === "string" &&
+              item.sourceDeviceLabel.trim().length > 0)
+              ? { sourceDeviceLabel: item.sourceDeviceLabel }
+              : {}),
             driverId,
             displayName: text(item.displayName) ?? instanceId,
             enabled: item.enabled === true
@@ -91,6 +99,14 @@ const readSnapshots = (value: unknown) =>
         return [
           {
             instanceId,
+            ...(text(item.hostedInstanceId)
+              ? { hostedInstanceId: text(item.hostedInstanceId)! }
+              : {}),
+            ...(item.sourceDeviceLabel === null ||
+            (typeof item.sourceDeviceLabel === "string" &&
+              item.sourceDeviceLabel.trim().length > 0)
+              ? { sourceDeviceLabel: item.sourceDeviceLabel }
+              : {}),
             authenticationState: readAuthentication(item.authenticationState),
             healthState: readHealth(item.healthState),
             models: readModels(item.models),

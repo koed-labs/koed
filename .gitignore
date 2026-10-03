@@ -28,3 +28,10 @@ packages/evals/reports/experience-replay/
 apps/history-browser/*
 !apps/history-browser/Dockerfile
 !apps/history-browser/package.json
+
+# Generated bundle of the shared Desktop controls for Studio.
+apps/studio/.desktop-ui/
+
+# Local review credentials, isolated databases and temporary build evidence.
+.scratch/
+.cache/

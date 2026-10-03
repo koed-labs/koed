@@ -1,0 +1,1 @@
+ALTER TABLE "personal_agent_execution_jobs" ADD COLUMN "build_progress" jsonb;

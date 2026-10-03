@@ -452,6 +452,12 @@ export class SyntheticStudioApi {
       });
       return;
     }
+    if (path === "/v1/memory/local-agent-settings" && method === "GET") {
+      await route.fulfill({
+        json: { settings: [], instances: [], capabilitySnapshots: [] }
+      });
+      return;
+    }
     if (path === "/v1/managed-conversations/access" && method === "GET") {
       await route.fulfill({
         json: { backendId: url.origin, user: { id: ids.user } }

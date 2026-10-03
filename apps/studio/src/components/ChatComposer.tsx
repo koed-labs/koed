@@ -34,6 +34,12 @@ import {
   Zap
 } from "lucide-react";
 import { Tooltip } from "./Tooltip";
+import {
+  NativeSkillPicker,
+  type NativeSkill,
+  type NativeSkillScope,
+  type NativeSkillKeyboardHandler
+} from "./NativeSkillPicker";
 import { formatComposerText, type ComposerFormat } from "@/lib/chatFormatting";
 
 const MODELS = [
@@ -92,6 +98,8 @@ export type ChatComposerSelection = Readonly<{
   effort: string;
   permissionMode: AccessMode;
   instanceId?: string;
+  hostedInstanceId?: string;
+  selectedResourceIds?: string[];
 }>;
 
 export type ChatComposerRestoreSelection = Readonly<{
@@ -152,6 +160,8 @@ type ChatComposerProps = {
   onAgentMention?: (agentId: string) => void;
   onActiveAgentChange?: (agentId: string | null) => void;
   modelOptions?: readonly AgentModelCapability[];
+  clientResourceScope?: NativeSkillScope;
+  onSelectedResourceIdsChange?: (resourceIds: string[]) => void;
   restoreSelection?: ChatComposerRestoreSelection;
   initialPermissionMode?: AccessMode;
   initialModel?: string;
@@ -192,6 +202,8 @@ export function ChatComposer({
   onAgentMention,
   onActiveAgentChange,
   modelOptions = [],
+  clientResourceScope,
+  onSelectedResourceIdsChange,
   restoreSelection,
   initialPermissionMode = "full",
   initialModel,
@@ -260,6 +272,15 @@ export function ChatComposer({
     null
   );
   const [isModelListOpen, setIsModelListOpen] = useState(false);
+  const [selectedSkills, setSelectedSkills] = useState<{
+    key: string;
+    skills: NativeSkill[];
+  } | null>(null);
+  const skillKeyboardRef = useRef<NativeSkillKeyboardHandler | null>(null);
+  const [skillCaret, setSkillCaret] = useState<number | null>(null);
+  const [dismissedSkillQuery, setDismissedSkillQuery] = useState<string | null>(
+    null
+  );
   const composerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [mentionQuery, setMentionQuery] = useState<{
@@ -373,20 +394,83 @@ export function ChatComposer({
   const effectiveEffortLabel = executionPreset
     ? (executionPreset.effort ?? "Not set")
     : effortLabel;
-  const selectedCapability = modelOptions.find(
-    (option) => `${option.provider}:${option.id}` === model
+  const capabilityKey = (option: AgentModelCapability) => {
+    const base = `${option.provider}:${option.id}`;
+    const duplicates = modelOptions.filter(
+      (item) => item.provider === option.provider && item.id === option.id
+    );
+    return duplicates.length > 1
+      ? `${base}:${option.hostedInstanceId ?? option.instanceId ?? "unscoped"}`
+      : base;
+  };
+  const selectedCandidates = modelOptions.filter(
+    (option) =>
+      capabilityKey(option) === model ||
+      `${option.provider}:${option.id}` === model
   );
+  const selectedCapability =
+    selectedCandidates.length === 1 ? selectedCandidates[0] : undefined;
+  const resourceScope = clientResourceScope
+    ? {
+        ...clientResourceScope,
+        hostedInstanceId:
+          clientResourceScope.hostedInstanceId ??
+          selectedCapability?.hostedInstanceId,
+        provider: clientResourceScope.provider ?? selectedCapability?.provider,
+        instanceId:
+          clientResourceScope.instanceId ?? selectedCapability?.instanceId
+      }
+    : null;
+  const skillScopeKey = JSON.stringify(resourceScope);
+  const skillSelection =
+    selectedSkills?.key === skillScopeKey ? selectedSkills.skills : [];
+  useEffect(() => {
+    onSelectedResourceIdsChange?.(
+      selectedSkills?.key === skillScopeKey
+        ? selectedSkills.skills.map((skill) => skill.resourceId)
+        : []
+    );
+  }, [onSelectedResourceIdsChange, selectedSkills, skillScopeKey]);
+  const slashMatch =
+    resourceScope && executionControlsVisible && !selectedAgent?.teamRequestOnly
+      ? /(?:^|\s)\/([^\s/]*)$/.exec(draft.slice(0, skillCaret ?? draft.length))
+      : null;
+  const slashQuery =
+    slashMatch && dismissedSkillQuery !== `${skillScopeKey}:${draft}`
+      ? slashMatch[1]
+      : null;
+  const selectNativeSkill = (skill: NativeSkill) => {
+    if (!slashMatch || skillSelection.length >= 8) return;
+    setSelectedSkills({
+      key: skillScopeKey,
+      skills: [
+        ...skillSelection.filter(
+          (item) => item.resourceId !== skill.resourceId
+        ),
+        skill
+      ]
+    });
+    const end = skillCaret ?? draft.length;
+    const start = end - slashMatch[1].length - 1;
+    setDraft(`${draft.slice(0, start)}${draft.slice(end)}`);
+    setSkillCaret(start);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(start, start);
+    });
+  };
   const effectiveModel =
     executionPreset?.model ?? selectedCapability?.displayName ?? model;
   const availableModelOptions = modelOptions.length
     ? modelOptions.map((option) => ({
-        id: `${option.provider}:${option.id}`,
-        label: option.displayName?.trim() || option.id
+        id: capabilityKey(option),
+        label: `${option.displayName?.trim() || option.id}${modelOptions.filter((item) => item.provider === option.provider && item.id === option.id).length > 1 ? ` · ${option.computerLabel ?? option.instanceId ?? "Choose Client"}` : ""}`
       }))
     : MODELS.map((name) => ({ id: name, label: name }));
   const modelIncompatible = Boolean(
+    !executionPreset &&
+    executionControlsVisible &&
     !selectedAgent?.teamRequestOnly &&
-    selectedAgent &&
     modelOptions.length > 0 &&
     !selectedCapability
   );
@@ -507,6 +591,14 @@ export function ChatComposer({
               (candidate) => effortIndexFor(candidate) === effortIndex
             ) ?? EFFORT_LEVELS[effortIndex]),
       permissionMode: effectiveAccess.id,
+      ...(skillSelection.length
+        ? {
+            selectedResourceIds: skillSelection.map((skill) => skill.resourceId)
+          }
+        : {}),
+      ...(selectedCapability?.hostedInstanceId
+        ? { hostedInstanceId: selectedCapability.hostedInstanceId }
+        : {}),
       instanceId: selectedCapability?.instanceId
     });
     const submittedDraftVersion = draftVersionRef.current;
@@ -516,7 +608,10 @@ export function ChatComposer({
         selection,
         continueWithoutMemory ? true : undefined
       );
-      if (draftVersionRef.current === submittedDraftVersion) setDraft("");
+      if (draftVersionRef.current === submittedDraftVersion) {
+        setDraft("");
+        setSelectedSkills(null);
+      }
       setMentionQuery(null);
     } catch {
       // Keep the draft available for retry when the runtime rejects a turn.
@@ -733,6 +828,39 @@ export function ChatComposer({
             <span className="text-subtle">Active respondent</span>
           </div>
         )}
+        {skillSelection.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1 px-2">
+            {skillSelection.map((skill) => (
+              <button
+                key={skill.resourceId}
+                type="button"
+                className="rounded border border-border px-2 py-1 text-xs text-foreground-secondary"
+                aria-label={`Remove Skill ${skill.name}`}
+                onClick={() =>
+                  setSelectedSkills({
+                    key: skillScopeKey,
+                    skills: skillSelection.filter(
+                      (item) => item.resourceId !== skill.resourceId
+                    )
+                  })
+                }
+              >
+                /{skill.name} ×
+              </button>
+            ))}
+          </div>
+        )}
+        {resourceScope && slashQuery !== null && (
+          <NativeSkillPicker
+            scope={resourceScope}
+            query={slashQuery}
+            keyboardRef={skillKeyboardRef}
+            onSelect={selectNativeSkill}
+            onDismiss={() =>
+              setDismissedSkillQuery(`${skillScopeKey}:${draft}`)
+            }
+          />
+        )}
         <textarea
           ref={textareaRef}
           placeholder={placeholder}
@@ -744,7 +872,11 @@ export function ChatComposer({
           }
           rows={allowEnterNewline ? 2 : 1}
           value={draft}
+          onSelect={(event) =>
+            setSkillCaret(event.currentTarget.selectionStart)
+          }
           onChange={(event) => {
+            setSkillCaret(event.target.selectionStart);
             setDraft(event.target.value);
             setHighlightedMentionIndex(0);
             setMentionQuery(
@@ -755,6 +887,20 @@ export function ChatComposer({
             );
           }}
           onKeyDown={(event) => {
+            if (slashQuery !== null && skillKeyboardRef.current?.(event)) {
+              event.preventDefault();
+              return;
+            }
+            if (
+              slashQuery !== null &&
+              (event.key === "Enter" || event.key === "Escape")
+            ) {
+              event.preventDefault();
+              if (event.key === "Escape")
+                setDismissedSkillQuery(`${skillScopeKey}:${draft}`);
+              return;
+            }
+
             if ((event.metaKey || event.ctrlKey) && !event.shiftKey) {
               const format =
                 event.key.toLowerCase() === "b"
@@ -978,9 +1124,11 @@ export function ChatComposer({
         )}
         {(modelIncompatible || agentNeedsExplicitModelSelection) && (
           <p className="px-2 pb-2 text-xs text-warning" role="status">
-            {selectedAgent?.defaultProvider && selectedAgent.defaultModel
-              ? "The active Agent’s default model is unavailable. Choose an available model for this Job from the model control. The Agent profile defaults will stay unchanged."
-              : "This Agent has no default model. Choose an available model for this Job from the model control. The Agent profile will stay unchanged."}
+            {!selectedAgent
+              ? "Choose an available model and AI Client for this chat. If several computers offer this model, select its exact Client."
+              : selectedAgent.defaultProvider && selectedAgent.defaultModel
+                ? "The active Agent’s default model is unavailable. Choose an available model for this Job from the model control. The Agent profile defaults will stay unchanged."
+                : "This Agent has no default model. Choose an available model for this Job from the model control. The Agent profile will stay unchanged."}
           </p>
         )}
         {effortIncompatible && (

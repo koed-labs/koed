@@ -325,8 +325,11 @@ const backfillSources: Partial<
     activePredicate: "invalidated_at is null"
   },
   personal_agent_execution_jobs: {
-    columns: new Set(["assistant_output"]),
-    valueSql: textValue,
+    columns: new Set(["assistant_output", "build_progress"]),
+    valueSql: (sourceColumn) =>
+      sourceColumn === "assistant_output"
+        ? textValue(sourceColumn)
+        : jsonbValue(sourceColumn),
     activePredicate: "true"
   }
 };

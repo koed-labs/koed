@@ -113,6 +113,11 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "POST",
+    "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/build-progress",
+    "Append encrypted Build progress for the current Personal Agent job attempt."
+  ],
+  [
+    "POST",
     "/v1/managed-conversation-runner/personal-agent/jobs/{jobId}/attempts/{attemptId}/output",
     "Persist output for an attempt on a Personal Agent job assigned to this runner."
   ],
@@ -1170,6 +1175,48 @@ export const routeIdentityContracts = [
     "session_or_api_token",
     "local_synthesis",
     "Read local AI Client instances and capability snapshots."
+  ),
+  route(
+    "POST",
+    "/v1/ai-client-resources/discover",
+    "session_or_device_credential",
+    "local_synthesis",
+    "Request a bounded, Project-scoped native AI Client resource catalog."
+  ),
+  route(
+    "GET",
+    "/v1/ai-client-resources/discover/{operationId}",
+    "session_or_device_credential",
+    "local_synthesis",
+    "Read an owner-scoped native AI Client resource discovery operation."
+  ),
+  route(
+    "POST",
+    "/v1/ai-client-resources/runner/operations/claim",
+    "device_credential",
+    "local_synthesis",
+    "Claim bounded native AI Client resource discovery operations for this runner."
+  ),
+  route(
+    "POST",
+    "/v1/ai-client-resources/runner/operations/{operationId}/heartbeat",
+    "device_credential",
+    "local_synthesis",
+    "Renew an assigned native AI Client resource discovery lease."
+  ),
+  route(
+    "POST",
+    "/v1/ai-client-resources/runner/operations/{operationId}/complete",
+    "device_credential",
+    "local_synthesis",
+    "Publish a safe, scoped native AI Client resource catalog."
+  ),
+  route(
+    "POST",
+    "/v1/ai-client-resources/runner/operations/{operationId}/fail",
+    "device_credential",
+    "local_synthesis",
+    "Settle an unavailable native AI Client resource discovery operation."
   ),
   route(
     "PUT",
@@ -2554,6 +2601,16 @@ export const routeIdentityContracts = [
     "session_or_api_token",
     "personal_memory",
     "Read the latest provider-attributed context usage for one managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/build-progress",
+    "session_or_device_credential",
+    "personal_memory",
+    "Read the owning User's encrypted Build progress for one Job.",
     "none",
     "implemented",
     localEdgeDeploymentModes

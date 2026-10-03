@@ -676,6 +676,28 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "managed_execution") {
+    if (pathname.startsWith("/v1/ai-client-resources/")) {
+      const id =
+        "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+      if (parsed.searchParams.size !== 0) deny();
+      if (
+        (method === "POST" &&
+          pathname === "/v1/ai-client-resources/discover") ||
+        (method === "GET" &&
+          new RegExp(`^/v1/ai-client-resources/discover/${id}$`, "i").test(
+            pathname
+          )) ||
+        (method === "POST" &&
+          pathname === "/v1/ai-client-resources/runner/operations/claim") ||
+        (method === "POST" &&
+          new RegExp(
+            `^/v1/ai-client-resources/runner/operations/${id}/(?:heartbeat|complete|fail)$`,
+            "i"
+          ).test(pathname))
+      )
+        return;
+      deny();
+    }
     if (
       ((pathname === "/v1/home" || pathname === "/v1/home/access") &&
         method === "GET") ||
@@ -917,7 +939,7 @@ export const assertUpstreamOperationPathAllowed = (
           pathname
         )) ||
       (method === "POST" &&
-        /^\/v1\/managed-conversation-runner\/personal-agent\/jobs\/[^/]+\/attempts(?:\/[^/]+\/(?:output|complete))?$/.test(
+        /^\/v1\/managed-conversation-runner\/personal-agent\/jobs\/[^/]+\/(?:attempts(?:\/[^/]+\/(?:output|complete))?|build-progress)$/.test(
           pathname
         )) ||
       pathname === "/v1/managed-conversations" ||
@@ -925,7 +947,7 @@ export const assertUpstreamOperationPathAllowed = (
         pathname === "/v1/managed-conversations/recovery/lookup") ||
       pathname === "/v1/managed-conversations/target-devices" ||
       /^\/v1\/managed-conversations\/[^/]+$/.test(pathname) ||
-      /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks|runtime|interrupt|stop)$/.test(
+      /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks|runtime|interrupt|stop|build-progress)$/.test(
         pathname
       ) ||
       /^\/v1\/managed-conversations\/[^/]+\/runtime-items\/[^/]+\/respond$/.test(

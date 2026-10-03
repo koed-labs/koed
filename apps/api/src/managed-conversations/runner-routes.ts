@@ -8,12 +8,19 @@ import {
   managedConversationFileOperationResultSchema,
   personalAgentIntentSignalSchema,
   personalAgentPhaseSchema,
+  buildProgressEventSchema,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import { resolveConversationSourceDownloadMaterial } from "../source-replication/download-material.js";
 import { sourceReplicationRecipientKeySchema } from "../source-replication/schemas.js";
+import {
+  aiClientResourceCatalogSchema,
+  aiClientResourceDiscoveryRunnerClaimPageSchema,
+  aiClientResourceDiscoveryRunnerCompleteSchema,
+  aiClientResourceDiscoveryRunnerFailSchema
+} from "@koed/shared";
 
 const uuid = z.uuid();
 const boundedRunnerId = z.string().trim().min(1).max(160);
@@ -31,6 +38,7 @@ const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const projectMoveParamsSchema = z.object({ moveId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
 const personalAgentJobParamsSchema = z.object({ jobId: uuid }).strict();
+const buildProgressParamsSchema = z.object({ jobId: uuid }).strict();
 const personalAgentIntentBodySchema = z
   .object({
     leaseToken: uuid,
@@ -1216,6 +1224,48 @@ export const registerManagedConversationRunnerRoutes = (
         jobId,
         ...query
       });
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/personal-agent/jobs/:jobId/build-progress",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { jobId } = buildProgressParamsSchema.parse(request.params);
+      const event = buildProgressEventSchema.parse(request.body);
+      const { repository, actor, job, execution } =
+        await requirePersonalAgentJobForRunner(context, auth, jobId);
+      if (
+        event.jobId !== jobId ||
+        event.executionId !== execution.id ||
+        event.executionGeneration !== execution.executionGeneration ||
+        job.conversationId !== execution.id
+      ) {
+        throw Object.assign(new Error("Build progress execution is stale"), {
+          statusCode: 409
+        });
+      }
+      const attempts = await repository.listPersonalAgentExecutionAttempts(
+        actor,
+        { jobId, limit: 100 }
+      );
+      const attempt = attempts.attempts.find(
+        (entry) => entry.id === event.attemptId
+      );
+      if (
+        !attempt ||
+        attempt.status !== "running" ||
+        job.lastAttemptId !== attempt.id ||
+        attempt.managedExecutionId !== execution.id ||
+        attempt.managedExecutionGeneration !== execution.executionGeneration
+      ) {
+        throw Object.assign(new Error("Build progress attempt is stale"), {
+          statusCode: 409
+        });
+      }
+      await repository.recordPersonalAgentBuildProgressEvent(actor, event);
+      return { accepted: true };
     }
   );
 
@@ -2962,6 +3012,112 @@ export const registerManagedConversationRunnerRoutes = (
             { executionId, ...input }
           )
       };
+    }
+  );
+
+  // Bounded, pre-Job native resource discovery. The operation is owned by the
+  // authenticated User and assigned to this exact enrolled runner/device.
+  app.post(
+    "/v1/ai-client-resources/runner/operations/claim",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const body = claimSchema.parse(request.body);
+      const operations = await context
+        .requireRepository()
+        .claimAiClientResourceDiscoveryOperations({
+          ownerUserId: auth.userId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          ...body
+        });
+      return aiClientResourceDiscoveryRunnerClaimPageSchema.parse({
+        operations
+      });
+    }
+  );
+  app.post(
+    "/v1/ai-client-resources/runner/operations/:operationId/heartbeat",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const params = z
+        .object({ operationId: uuid })
+        .strict()
+        .parse(request.params);
+      const body = z
+        .object({
+          runnerId: boundedRunnerId,
+          leaseToken: uuid,
+          revision: z.number().int().positive(),
+          leaseMs
+        })
+        .strict()
+        .parse(request.body);
+      const accepted = await context
+        .requireRepository()
+        .heartbeatAiClientResourceDiscoveryOperation({
+          operationId: params.operationId,
+          ownerUserId: auth.userId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          ...body
+        });
+      return { accepted };
+    }
+  );
+  app.post(
+    "/v1/ai-client-resources/runner/operations/:operationId/complete",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const params = z
+        .object({ operationId: uuid })
+        .strict()
+        .parse(request.params);
+      const body = aiClientResourceDiscoveryRunnerCompleteSchema.parse(
+        request.body
+      );
+      const operation = await context
+        .requireRepository()
+        .completeAiClientResourceDiscoveryOperation({
+          operationId: params.operationId,
+          ownerUserId: auth.userId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          runnerId: body.runnerId,
+          leaseToken: body.leaseToken,
+          revision: body.revision,
+          catalog: aiClientResourceCatalogSchema.parse(body.catalog)
+        });
+      return { operation };
+    }
+  );
+  app.post(
+    "/v1/ai-client-resources/runner/operations/:operationId/fail",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const params = z
+        .object({ operationId: uuid })
+        .strict()
+        .parse(request.params);
+      const body = aiClientResourceDiscoveryRunnerFailSchema.parse(
+        request.body
+      );
+      const operation = await context
+        .requireRepository()
+        .failAiClientResourceDiscoveryOperation({
+          operationId: params.operationId,
+          ownerUserId: auth.userId,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          runnerId: body.runnerId,
+          leaseToken: body.leaseToken,
+          revision: body.revision,
+          errorCode: body.errorCode
+        });
+      return { operation };
     }
   );
 

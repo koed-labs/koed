@@ -36,6 +36,7 @@ import {
   themePreferenceSetChannel,
   hardwareAccelerationGetChannel,
   hardwareAccelerationSetChannel,
+  isStudioDesktopCommandName,
   launchAtStartupGetChannel,
   launchAtStartupSetChannel,
   type DesktopCommandName
@@ -85,6 +86,14 @@ const trustedSender = (
     return false;
   }
 };
+
+const trustedStudioOrDesktopSender = (
+  event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">,
+  allowedRendererOrigins: ReadonlySet<string>,
+  studioRendererOrigins?: ReadonlySet<string>
+): boolean =>
+  trustedSender(event, allowedRendererOrigins) ||
+  Boolean(studioRendererOrigins && trustedSender(event, studioRendererOrigins));
 
 const senderContexts = new WeakMap<
   WebContents,
@@ -146,6 +155,7 @@ export const registerDesktopCommandHandlers = (
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
     studioRendererOrigins?: ReadonlySet<string>;
+    confirmStudioSetupRun?: (sender: WebContents) => Promise<boolean>;
     studioChatRecovery?: (
       request: StudioChatRecoveryRequest
     ) => Promise<unknown>;
@@ -186,11 +196,24 @@ export const registerDesktopCommandHandlers = (
   ipcMain.handle(
     invokeChannel,
     async (event, command: unknown, args?: Record<string, unknown>) => {
-      if (!trustedSender(event, options.allowedRendererOrigins)) {
+      if (
+        !trustedStudioOrDesktopSender(
+          event,
+          options.allowedRendererOrigins,
+          options.studioRendererOrigins
+        )
+      ) {
         throw new Error("Untrusted Desktop IPC sender.");
       }
       if (!isDesktopCommandName(command)) {
         throw new Error("Unsupported Desktop command.");
+      }
+      if (
+        options.studioRendererOrigins &&
+        trustedSender(event, options.studioRendererOrigins) &&
+        !isStudioDesktopCommandName(command)
+      ) {
+        throw new Error("Unsupported Studio Desktop command.");
       }
       if (command === "collaboration") {
         throw new Error("Use the strict collaboration command channel.");
@@ -218,11 +241,33 @@ export const registerDesktopCommandHandlers = (
   );
 
   ipcMain.handle(setupCommandChannel, async (event, operation: unknown) => {
-    if (!trustedSender(event, options.allowedRendererOrigins)) {
+    if (
+      !trustedStudioOrDesktopSender(
+        event,
+        options.allowedRendererOrigins,
+        options.studioRendererOrigins
+      )
+    ) {
       throw new Error("Untrusted Desktop IPC sender.");
     }
     if (operation !== "inspect" && operation !== "run") {
       throw new Error("Unsupported Desktop setup operation.");
+    }
+    const studioSender = Boolean(
+      options.studioRendererOrigins &&
+      trustedSender(event, options.studioRendererOrigins)
+    );
+    if (operation === "run" && studioSender) {
+      if (!options.confirmStudioSetupRun) {
+        throw new Error("Native setup confirmation is unavailable.");
+      }
+      const confirmed = await options.confirmStudioSetupRun(event.sender);
+      if (!confirmed) {
+        return await handlers.setup_inspect(
+          undefined,
+          contextForSender(event.sender)
+        );
+      }
     }
     const handler =
       operation === "inspect" ? handlers.setup_inspect : handlers.setup_run;
@@ -252,7 +297,13 @@ export const registerDesktopCommandHandlers = (
   });
 
   ipcMain.handle(clipboardWriteChannel, async (event, value: unknown) => {
-    if (!trustedSender(event, options.allowedRendererOrigins)) {
+    if (
+      !trustedStudioOrDesktopSender(
+        event,
+        options.allowedRendererOrigins,
+        options.studioRendererOrigins
+      )
+    ) {
       throw new Error("Untrusted Desktop IPC sender.");
     }
     if (
@@ -327,7 +378,13 @@ export const registerDesktopCommandHandlers = (
   ipcMain.handle(
     personalDevicePairingLinkConsumeChannel,
     async (event, expectedLink: unknown) => {
-      if (!trustedSender(event, options.allowedRendererOrigins)) {
+      if (
+        !trustedStudioOrDesktopSender(
+          event,
+          options.allowedRendererOrigins,
+          options.studioRendererOrigins
+        )
+      ) {
         throw new Error("Untrusted Desktop IPC sender.");
       }
       if (expectedLink !== undefined && typeof expectedLink !== "string") {
@@ -341,7 +398,13 @@ export const registerDesktopCommandHandlers = (
   );
 
   ipcMain.handle(localAiClientCommandChannel, async (event, value: unknown) => {
-    if (!trustedSender(event, options.allowedRendererOrigins)) {
+    if (
+      !trustedStudioOrDesktopSender(
+        event,
+        options.allowedRendererOrigins,
+        options.studioRendererOrigins
+      )
+    ) {
       throw new Error("Untrusted Desktop IPC sender.");
     }
     const request = localAiClientCommandSchema.parse(value);

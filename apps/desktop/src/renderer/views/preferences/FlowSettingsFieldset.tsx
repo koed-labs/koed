@@ -126,8 +126,8 @@ const FlowInputs = ({
       readModel={readModel}
       state={state}
       status={viewModel.status}
-      onChange={(instanceId) =>
-        updateInstanceDraft(readModel, flow, draft, instanceId, updateDraft)
+      onChange={(instance) =>
+        updateInstanceDraft(readModel, flow, draft, instance, updateDraft)
       }
     />
     <ModelSelect
@@ -160,9 +160,15 @@ const buildFlowViewModel = (
   search: string
 ): FlowViewModel => {
   const instance = readModel.instances.find(
-    (candidate) => candidate.instanceId === draft.ai_client_instance_id
+    (candidate) =>
+      candidate.instanceId === draft.ai_client_instance_id &&
+      candidate.driverId === draft.provider
   );
-  const snapshot = snapshotFor(readModel, draft.ai_client_instance_id);
+  const snapshot = snapshotFor(
+    readModel,
+    draft.ai_client_instance_id,
+    draft.provider
+  );
   const models = snapshot?.models ?? [];
   const selectedModel = models.find((model) =>
     modelMatches(model, draft.model)
@@ -186,17 +192,18 @@ const updateInstanceDraft = (
   readModel: ReadModel,
   flow: Flow,
   draft: Draft,
-  instanceId: string,
+  nextInstance: ReadModel["instances"][number],
   updateDraft: Props["updateDraft"]
 ) => {
-  const nextInstance = readModel.instances.find(
-    (candidate) => candidate.instanceId === instanceId
-  );
-  const nextModel = snapshotFor(readModel, instanceId)?.models[0];
+  const nextModel = snapshotFor(
+    readModel,
+    nextInstance.instanceId,
+    nextInstance.driverId
+  )?.models[0];
   updateDraft(flow.key, {
     ...draft,
-    provider: nextInstance?.driverId ?? draft.provider,
-    ai_client_instance_id: instanceId,
+    provider: nextInstance.driverId,
+    ai_client_instance_id: nextInstance.instanceId,
     model: nextModel ? modelId(nextModel) : draft.model,
     reasoning_effort: nextModel?.reasoningEfforts[0] ?? "none"
   });
@@ -235,37 +242,79 @@ const InstanceSelect = ({
 }: SelectProps & {
   options: ReadModel["instances"];
   readModel: ReadModel;
-  onChange: (instanceId: string) => void;
-}) => (
-  <label>
-    Agent
-    <select
-      aria-describedby={`${flow.key}-status`}
-      aria-invalid={!status.available}
-      aria-label={`${flow.label} Agent`}
-      disabled={state.pending}
-      onChange={(event) => onChange(event.currentTarget.value)}
-      value={
-        readModel.instances.find(
-          (candidate) => candidate.instanceId === draft.ai_client_instance_id
-        )?.instanceId ?? draft.ai_client_instance_id
-      }
-    >
-      {!readModel.instances.some(
-        (candidate) => candidate.instanceId === draft.ai_client_instance_id
-      ) ? (
-        <option value={draft.ai_client_instance_id}>
-          {draft.ai_client_instance_id} — Unavailable
-        </option>
-      ) : null}
-      {options.map((candidate) => (
-        <option key={candidate.instanceId} value={candidate.instanceId}>
-          {instanceOptionLabel(readModel, candidate, flow.key)}
-        </option>
-      ))}
-    </select>
-  </label>
-);
+  onChange: (instance: ReadModel["instances"][number]) => void;
+}) => {
+  const groups = new Map<string, ReadModel["instances"]>();
+  for (const candidate of options) {
+    const computer = candidate.sourceDeviceLabel?.trim() || "This computer";
+    groups.set(computer, [...(groups.get(computer) ?? []), candidate]);
+  }
+  const assignedInstance = readModel.instances.find(
+    (candidate) =>
+      candidate.instanceId === draft.ai_client_instance_id &&
+      candidate.driverId === draft.provider
+  );
+  const assignedValue = `${draft.provider}\u0000${draft.ai_client_instance_id}`;
+  return (
+    <label>
+      Agent
+      <select
+        aria-describedby={`${flow.key}-status`}
+        aria-invalid={!status.available}
+        aria-label={`${flow.label} Agent`}
+        disabled={state.pending}
+        onChange={(event) => {
+          const selected = options.find(
+            (candidate) =>
+              `${candidate.driverId}\u0000${candidate.instanceId}` ===
+              event.currentTarget.value
+          );
+          if (selected) onChange(selected);
+        }}
+        value={
+          assignedInstance
+            ? `${assignedInstance.driverId}\u0000${assignedInstance.instanceId}`
+            : assignedValue
+        }
+      >
+        {!assignedInstance ? (
+          <option value={assignedValue}>
+            {draft.ai_client_instance_id} — Unavailable
+          </option>
+        ) : null}
+        {[...groups.entries()].map(([computer, instances]) => {
+          const computerLabel = computer;
+          return (
+            <optgroup key={computerLabel} label={computerLabel}>
+              {instances.map((candidate) => (
+                <option
+                  key={
+                    candidate.hostedInstanceId ??
+                    `${computerLabel}:${candidate.instanceId}`
+                  }
+                  value={`${candidate.driverId}\u0000${candidate.instanceId}`}
+                  disabled={
+                    readModel.instances.filter(
+                      (instance) =>
+                        instance.instanceId === candidate.instanceId &&
+                        instance.driverId === candidate.driverId
+                    ).length > 1
+                  }
+                >
+                  {instanceOptionLabel(readModel, candidate, flow.key)}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
+      </select>
+      <span className="koed-visually-hidden">
+        Reported AI Client rows are grouped by computer. Assignment IDs remain
+        the provider’s client-local IDs.
+      </span>
+    </label>
+  );
+};
 
 const ModelSelect = ({
   flow,
@@ -432,12 +481,16 @@ const filteredInstances = (
       !search ||
       searchableInstance(
         candidate,
-        snapshotFor(readModel, candidate.instanceId)
+        snapshotFor(readModel, candidate.instanceId, candidate.driverId)
       ).includes(search)
   );
   if (
     current &&
-    !options.some((candidate) => candidate.instanceId === current.instanceId)
+    !options.some(
+      (candidate) =>
+        candidate.instanceId === current.instanceId &&
+        candidate.driverId === current.driverId
+    )
   )
     options.unshift(current);
   return options;
@@ -448,10 +501,28 @@ const instanceOptionLabel = (
   instance: ReadModel["instances"][number],
   flowKey: LocalAiClientFlowKey
 ): string => {
-  const status = statusFor(readModel, instance.instanceId, flowKey);
+  const matchingInstances = readModel.instances.filter(
+    (candidate) =>
+      candidate.instanceId === instance.instanceId &&
+      candidate.driverId === instance.driverId
+  );
+  if (matchingInstances.length > 1) {
+    const computer = instance.sourceDeviceLabel?.trim();
+    return `${instance.displayName}${computer ? ` · ${computer}` : ""} — same Client ID on multiple computers; choose in Chat`;
+  }
+  const status = statusFor(
+    readModel,
+    instance.instanceId,
+    flowKey,
+    instance.driverId
+  );
+  const computer = instance.sourceDeviceLabel?.trim();
+  const displayName = computer
+    ? `${instance.displayName} · ${computer}`
+    : instance.displayName;
   return status.available
-    ? instance.displayName
-    : `${instance.displayName} — ${capitalizeOptionLabel(status.text)}`;
+    ? displayName
+    : `${displayName} — ${capitalizeOptionLabel(status.text)}`;
 };
 
 const capitalizeOptionLabel = (value: string): string =>

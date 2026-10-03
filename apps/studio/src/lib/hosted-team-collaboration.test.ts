@@ -96,6 +96,22 @@ test("maps authorized Team REST records into renderer channel and history shapes
   assert.equal(requests[1]?.url.includes("limit=50"), true);
 });
 
+test("preserves structured Team mention recipients when normalizing message history", async () => {
+  const mentioned = { ...rawMessage, mentionUserIds: [otherMemberId] };
+  const client = new HostedTeamCollaborationClient(
+    async () =>
+      new Response(
+        JSON.stringify({
+          messages: [mentioned],
+          hasMore: false,
+          nextBeforeSequence: null
+        })
+      )
+  );
+  const page = await client.loadMessages(teamId, threadId);
+  assert.deepEqual(page.items[0]?.mentionUserIds, [otherMemberId]);
+});
+
 test("maps Team people and direct-message REST records and preserves historical membership state", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const dm = {

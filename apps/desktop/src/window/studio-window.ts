@@ -18,7 +18,14 @@ import {
   type CollaborationApprovalReview
 } from "@koed/shared";
 import type { DesktopCommandContext } from "../koed-server/manager.js";
-import { desktopRendererOrigin } from "../ipc/protocol.js";
+import {
+  desktopRendererOrigin,
+  studioNotificationNavigationChannel
+} from "../ipc/protocol.js";
+import {
+  studioNotificationNavigationSchema,
+  type StudioNotificationNavigation
+} from "@koed/shared/studio-notifications";
 
 export interface StudioCollaborationSnapshot {
   connection: CollaborationSnapshot["connection"];
@@ -47,10 +54,18 @@ export interface StudioWindowLike {
       event: "will-navigate",
       listener: (event: { preventDefault(): void }, url: string) => void
     ): void;
+    send(channel: string, value: unknown): void;
   };
+  on(
+    event: "close",
+    listener: (event: { preventDefault(): void }) => void
+  ): this;
   once(event: "closed", listener: () => void): this;
   loadURL(url: string): Promise<void>;
   show(): void;
+  hide(): void;
+  isVisible(): boolean;
+  isFocused(): boolean;
   focus(): void;
   close(): void;
   isDestroyed(): boolean;
@@ -161,7 +176,8 @@ export const studioWindowOptions: BrowserWindowConstructorOptions = {
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
-    webSecurity: true
+    webSecurity: true,
+    backgroundThrottling: false
   }
 };
 
@@ -186,12 +202,22 @@ export const createStudioWindowController = (input: {
   ) => Promise<boolean>;
   getTeamDraftStore?: () => Promise<StudioTeamDraftStore>;
   openExternal: (url: string) => Promise<unknown>;
-}): { open: () => Promise<void>; close: () => Promise<void> } => {
+  platform?: NodeJS.Platform;
+}): {
+  open: () => Promise<void>;
+  openHidden: () => Promise<void>;
+  close: () => Promise<void>;
+  isNotificationEligible: () => boolean;
+  navigateToNotification: (
+    navigation: StudioNotificationNavigation
+  ) => Promise<void>;
+} => {
   let window: StudioWindowLike | null = null;
   let gateway: StudioGateway | null = null;
   let opening: Promise<void> | null = null;
   let closing: Promise<void> | null = null;
   let studioOrigin: string | null = null;
+  const forceClosingWindows = new WeakSet<StudioWindowLike>();
   let collaborationLifecycle: AbortController | null = null;
   let collaborationOwnerId: string | null = null;
 
@@ -556,7 +582,7 @@ export const createStudioWindowController = (input: {
       });
       return runOwnedStudioCommand(grantCommand, lifecycle, ownerId);
     };
-    let grantResult = await actionCommand(
+    const grantResult = await actionCommand(
       "collaboration.request_action_grant",
       { intent }
     );
@@ -945,7 +971,10 @@ export const createStudioWindowController = (input: {
       await opening?.catch(() => undefined);
       const currentWindow = window;
       window = null;
-      if (currentWindow && !currentWindow.isDestroyed()) currentWindow.close();
+      if (currentWindow && !currentWindow.isDestroyed()) {
+        forceClosingWindows.add(currentWindow);
+        currentWindow.close();
+      }
       await disposeGateway();
     })().finally(() => {
       closing = null;
@@ -953,29 +982,27 @@ export const createStudioWindowController = (input: {
     return closing;
   };
 
-  const open = async () => {
+  const open = async (hidden = false) => {
     if (closing) await closing;
     if (opening) return opening;
     if (window && !window.isDestroyed()) {
-      window.show();
-      window.focus();
+      if (!hidden) {
+        window.show();
+        window.focus();
+      }
       return;
     }
     if (window || gateway) await close();
     opening = (async () => {
       collaborationLifecycle = new AbortController();
       collaborationOwnerId = `studio-window:${randomUUID()}`;
-      let access: StudioLocalAccess | null = null;
-      try {
-        access = await input.getAccess();
-      } catch {
-        // Studio remains useful while Koed services start or recover.
-      }
+      // First-launch setup must open before credentials or local services exist.
+      // Authenticated gateway requests resolve their current authority lazily.
       const paths = input.getPaths();
       const started = await input.startGateway({
         host: "127.0.0.1",
         port: 0,
-        apiBase: access?.apiOrigin ?? input.defaultApiOrigin,
+        apiBase: input.defaultApiOrigin,
         staticDir: paths.staticDir,
         resolveToken: async () => (await input.getAccess()).apiToken,
         resolveAccess: input.getAccess,
@@ -1056,12 +1083,21 @@ export const createStudioWindowController = (input: {
             event.preventDefault();
           }
         });
+        createdWindow.on("close", (event) => {
+          if (
+            input.platform === "darwin" &&
+            !forceClosingWindows.has(createdWindow)
+          ) {
+            event.preventDefault();
+            createdWindow.hide();
+          }
+        });
         createdWindow.once("closed", () => {
           if (window === createdWindow) window = null;
           void disposeGateway();
         });
         await createdWindow.loadURL(started.url);
-        if (!createdWindow.isDestroyed()) createdWindow.show();
+        if (!createdWindow.isDestroyed() && !hidden) createdWindow.show();
       } catch (error) {
         const failedWindow = window;
         window = null;
@@ -1085,5 +1121,30 @@ export const createStudioWindowController = (input: {
     return opening;
   };
 
-  return { open, close };
+  const isNotificationEligible = (): boolean =>
+    Boolean(
+      window &&
+      !window.isDestroyed() &&
+      (!window.isVisible() || !window.isFocused())
+    );
+  const openHidden = async (): Promise<void> => open(true);
+  const navigateToNotification = async (
+    value: StudioNotificationNavigation
+  ): Promise<void> => {
+    const navigation = studioNotificationNavigationSchema.parse(value);
+    await open();
+    const currentWindow = window;
+    if (!currentWindow || currentWindow.isDestroyed()) return;
+    currentWindow.webContents.send(
+      studioNotificationNavigationChannel,
+      navigation
+    );
+  };
+  return {
+    open: () => open(false),
+    openHidden,
+    close,
+    isNotificationEligible,
+    navigateToNotification
+  };
 };

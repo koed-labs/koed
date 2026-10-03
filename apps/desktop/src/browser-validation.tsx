@@ -4,6 +4,8 @@ import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
+  collaborationMessagePageSchema,
+  collaborationMessageSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationCommandResult,
@@ -726,15 +728,17 @@ const collaborationFixture = (): CollaborationSnapshot => {
     unreadCompanionCount: 0,
     version: 1
   };
-  const page = (threadId: string, items: unknown[] = []) => ({
-    snapshotRevision: revision,
-    olderCursor: null,
-    newerCursor: null,
-    hasOlder: false,
-    hasNewer: false,
-    threadId,
-    items
-  });
+  const page = (threadId: string, items: unknown[] = []) =>
+    collaborationMessagePageSchema.parse({
+      snapshotRevision: revision,
+      olderCursor: null,
+      newerCursor: null,
+      hasOlder: false,
+      hasNewer: false,
+      threadId,
+      rootMessageId: null,
+      items
+    });
   const teams = Array.from({ length: 50 }, (_, teamIndex) => {
     const teamId = teamIndex === 0 ? uuid(16) : uuid(500_000 + teamIndex);
     const workspaces = Array.from({ length: 20 }, (_, workspaceIndex) => {
@@ -1415,36 +1419,39 @@ const interactionMessage = (
   body: string,
   sequence: number,
   id = uuid(200 + sequence)
-) => ({
-  id,
-  threadId,
-  scope: "team" as const,
-  teamId,
-  sequence,
-  sender: interactionParticipant(actor),
-  senderKind: "user" as const,
-  body,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-  editedAt: null,
-  deletedAt: null,
-  delivery: "sent" as const,
-  recipientStatus: "sent" as const,
-  failure: null
-});
+) =>
+  collaborationMessageSchema.parse({
+    id,
+    threadId,
+    scope: "team" as const,
+    teamId,
+    sequence,
+    sender: interactionParticipant(actor),
+    senderKind: "user" as const,
+    body,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    editedAt: null,
+    deletedAt: null,
+    delivery: "sent" as const,
+    recipientStatus: "sent" as const,
+    failure: null
+  });
 
 const interactionPage = (
   threadId: string,
   items: ReturnType<typeof interactionMessage>[]
-) => ({
-  snapshotRevision: revision,
-  olderCursor: null,
-  newerCursor: null,
-  hasOlder: false,
-  hasNewer: false,
-  threadId,
-  items
-});
+) =>
+  collaborationMessagePageSchema.parse({
+    snapshotRevision: revision,
+    olderCursor: null,
+    newerCursor: null,
+    hasOlder: false,
+    hasNewer: false,
+    threadId,
+    rootMessageId: null,
+    items
+  });
 
 const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   let connection: CollaborationSnapshot["connection"] = {

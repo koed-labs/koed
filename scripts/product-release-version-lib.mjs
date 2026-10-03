@@ -24,6 +24,7 @@ export const internalWorkspacePackageNames = [
   "@koed/memory-ui",
   "@koed/privacy-service",
   "@koed/shared",
+  "@koed/studio",
   "@koed/ui",
   "@koed/worker"
 ];

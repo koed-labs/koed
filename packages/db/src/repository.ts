@@ -86,6 +86,7 @@ import {
 import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import { createPullRequestRepository } from "./pull-request-repository.js";
+import { createAiClientResourceRepository } from "./ai-client-resource-repository.js";
 import {
   codexIdePromptUserText,
   countTokensForModel,
@@ -4103,6 +4104,7 @@ export const createMemorySourceRepository = (
     ...createPullRequestRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createAiClientResourceRepository(pool),
     ...sharedMemoryRepository,
     ...createTeamConversationSourceRepository(pool),
     ...createHighRiskActionRepository(db, {

@@ -38,6 +38,8 @@ export type BuildActivityPanelProps = {
   initialMode?: Exclude<BuildPanelMode, "hidden">;
   onModeChange?: (mode: BuildPanelMode) => void;
   className?: string;
+  onJobSelect?: (jobId: string) => void;
+  onAttention?: (runtimeItemId: string) => void;
 };
 
 const STATUS_DOT: Record<BuildActivity["state"], string> = {
@@ -53,7 +55,9 @@ export function BuildActivityPanel({
   activity = null,
   initialMode = "compact",
   onModeChange,
-  className = ""
+  className = "",
+  onJobSelect,
+  onAttention
 }: BuildActivityPanelProps) {
   const [mode, setModeState] = useState<BuildPanelMode>(initialMode);
   const [view, setView] = useState<BuildViewMode>("story");
@@ -69,7 +73,10 @@ export function BuildActivityPanel({
     null
   );
   const resolved = activity ?? null;
-  const title = resolved?.project?.name ?? "Build activity";
+  const title =
+    resolved?.jobs?.find((job) => job.id === resolved.selectedJobId)?.title ??
+    resolved?.project?.name ??
+    "Build activity";
 
   const setMode = (next: BuildPanelMode) => {
     setModeState(next);
@@ -233,6 +240,9 @@ export function BuildActivityPanel({
               activity={resolved}
               view={view}
               setView={setView}
+              jobs={resolved?.jobs ?? []}
+              selectedJobId={resolved?.selectedJobId}
+              onJobSelect={onJobSelect}
               onClose={() => setMode("hidden")}
             />
             <button
@@ -284,11 +294,18 @@ export function BuildActivityPanel({
           activity={resolved}
           view={view}
           setView={setView}
+          jobs={resolved?.jobs ?? []}
+          selectedJobId={resolved?.selectedJobId}
+          onJobSelect={onJobSelect}
           onMinimize={() => setMode("compact")}
           onClose={() => setMode("hidden")}
         />
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          <BuildDetails activity={resolved} view={view} />
+          <BuildDetails
+            activity={resolved}
+            view={view}
+            onAttention={onAttention}
+          />
         </div>
       </aside>
     </>
@@ -300,6 +317,9 @@ function BuildPanelHeader({
   activity,
   view,
   setView,
+  jobs,
+  selectedJobId,
+  onJobSelect,
   onMinimize,
   onClose
 }: {
@@ -307,6 +327,9 @@ function BuildPanelHeader({
   activity: BuildActivity | null;
   view: BuildViewMode;
   setView: (view: BuildViewMode) => void;
+  jobs: NonNullable<BuildActivity>["jobs"];
+  selectedJobId?: string;
+  onJobSelect?: (jobId: string) => void;
   onMinimize?: () => void;
   onClose: () => void;
 }) {
@@ -330,6 +353,26 @@ function BuildPanelHeader({
         <p className="truncate text-xs text-subtle">{title}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {jobs && jobs.length > 1 && (
+          <label className="sr-only" htmlFor="build-job-history">
+            Select Job history
+          </label>
+        )}
+        {jobs && jobs.length > 1 && (
+          <select
+            id="build-job-history"
+            aria-label="Select Job history"
+            value={selectedJobId ?? jobs[0]?.id ?? ""}
+            onChange={(event) => onJobSelect?.(event.currentTarget.value)}
+            className="max-w-32 rounded-md border border-border bg-background px-1.5 py-1 text-[10px] text-foreground-secondary"
+          >
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                {job.title}
+              </option>
+            ))}
+          </select>
+        )}
         <BuildViewToggle view={view} setView={setView} />
         {onMinimize && (
           <button
@@ -430,13 +473,15 @@ function BuildSummary({
 
 function BuildDetails({
   activity,
-  view
+  view,
+  onAttention
 }: {
   activity: BuildActivity | null;
   view: BuildViewMode;
+  onAttention?: (runtimeItemId: string) => void;
 }) {
   return view === "story" ? (
-    <StoryDetails activity={activity} />
+    <StoryDetails activity={activity} onAttention={onAttention} />
   ) : (
     <AdvancedDetails activity={activity} />
   );
@@ -463,12 +508,29 @@ function ActivityHeader({ activity }: { activity: BuildActivity }) {
   );
 }
 
-function StoryDetails({ activity }: { activity: BuildActivity | null }) {
+function StoryDetails({
+  activity,
+  onAttention
+}: {
+  activity: BuildActivity | null;
+  onAttention?: (runtimeItemId: string) => void;
+}) {
   if (!activity) return <EmptyActivity />;
   const events = storyEvents(activity);
+  const attention = [...events].reverse().find((event) => event.attention);
   return (
     <>
       <ActivityHeader activity={activity} />
+      {attention?.attention ? (
+        <button
+          type="button"
+          onClick={() => onAttention?.(attention.attention!.runtimeItemId)}
+          className="mb-4 flex w-full items-center justify-between rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-left text-sm font-semibold text-warning"
+        >
+          <span>Needs your input</span>
+          <span className="text-xs font-medium">Open existing request</span>
+        </button>
+      ) : null}
       {events.length === 0 ? (
         <EmptyActivity />
       ) : (

@@ -25,6 +25,7 @@ import {
   personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel,
   personalMemoryCommandChannel,
+  isStudioDesktopCommandName,
   setupCommandChannel,
   setupProgressEventChannel,
   themePreferenceGetChannel,
@@ -50,7 +51,10 @@ const renderer = (url = "koed://app/") => {
 };
 
 describe("desktop IPC command registry", () => {
-  const register = () => {
+  const register = (
+    studioRendererOrigins?: ReadonlySet<string>,
+    confirmStudioSetupRun?: (sender: EventEmitter) => Promise<boolean>
+  ) => {
     const registered = new Map<string, (...args: any[]) => Promise<unknown>>();
     const collaboration = vi.fn(
       (
@@ -209,6 +213,8 @@ describe("desktop IPC command registry", () => {
       } as never,
       {
         allowedRendererOrigins: new Set(["koed://app"]),
+        studioRendererOrigins,
+        confirmStudioSetupRun: confirmStudioSetupRun as never,
         personalMemory,
         managedConversation: managedConversation as never,
         managedProject: managedProject as never,
@@ -313,6 +319,43 @@ describe("desktop IPC command registry", () => {
     );
   });
 
+  it("requires native confirmation before Studio setup can run", async () => {
+    const studioOrigin = "http://127.0.0.1:43111";
+    const studioEvent = renderer(`${studioOrigin}/settings`);
+    const confirmStudioSetupRun = vi.fn(async () => false);
+    const cancelled = register(
+      new Set([studioOrigin]),
+      confirmStudioSetupRun as never
+    );
+    const setup = cancelled.registered.get(setupCommandChannel)!;
+
+    await expect(setup(studioEvent, "run")).resolves.toEqual({
+      state: "ready"
+    });
+    expect(confirmStudioSetupRun).toHaveBeenCalledWith(studioEvent.sender);
+    expect(cancelled.setupRun).not.toHaveBeenCalled();
+
+    const confirmedCall = vi.fn(async () => true);
+    const confirmed = register(new Set([studioOrigin]), confirmedCall as never);
+    await expect(
+      confirmed.registered.get(setupCommandChannel)!(studioEvent, "run")
+    ).resolves.toEqual({ state: "complete" });
+    expect(confirmedCall).toHaveBeenCalledWith(studioEvent.sender);
+    expect(confirmed.setupRun).toHaveBeenCalledWith(
+      { operatorConsented: true },
+      expect.objectContaining({ ownerId: "7" })
+    );
+
+    const missingConfirmation = register(new Set([studioOrigin]));
+    await expect(
+      missingConfirmation.registered.get(setupCommandChannel)!(
+        studioEvent,
+        "run"
+      )
+    ).rejects.toThrow("Native setup confirmation is unavailable");
+    expect(missingConfirmation.setupRun).not.toHaveBeenCalled();
+  });
+
   it("allows only known legacy commands from the trusted main frame", async () => {
     const { registered } = register();
     const invoke = registered.get(invokeChannel)!;
@@ -338,6 +381,39 @@ describe("desktop IPC command registry", () => {
     await expect(invoke(event, "collaboration", {})).rejects.toThrow(
       "strict collaboration command channel"
     );
+  });
+
+  it("limits Studio generic invokes to its shared command allowlist and main frame", async () => {
+    const studioOrigin = "http://127.0.0.1:43111";
+    const { registered } = register(new Set([studioOrigin]));
+    const invoke = registered.get(invokeChannel)!;
+    const studioEvent = renderer(`${studioOrigin}/settings`);
+
+    await expect(invoke(studioEvent, "status")).resolves.toMatchObject({
+      ok: true
+    });
+    expect(isStudioDesktopCommandName("status")).toBe(true);
+    expect(isStudioDesktopCommandName("setup_core")).toBe(false);
+    await expect(invoke(studioEvent, "setup_core")).rejects.toThrow(
+      "Unsupported Studio Desktop command"
+    );
+    expect(isDesktopCommandName("select_project_directory")).toBe(true);
+    expect(isStudioDesktopCommandName("select_project_directory")).toBe(false);
+    await expect(
+      invoke(renderer("koed://app/"), "select_project_directory")
+    ).resolves.toEqual({ localProjectId: "project-1" });
+    await expect(
+      invoke(renderer("https://attacker.example/"), "status")
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+    await expect(
+      invoke({ ...studioEvent, senderFrame: null }, "status")
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+    await expect(
+      invoke(
+        { ...studioEvent, senderFrame: { url: `${studioOrigin}/child` } },
+        "status"
+      )
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
   });
 
   it("rejects every mutating AI Client command without explicit consent", async () => {

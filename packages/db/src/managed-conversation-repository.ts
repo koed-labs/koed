@@ -5,6 +5,7 @@ import {
   decideConversationItemPresentation,
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
+  managedConversationSelectedResourceIdsSchema,
   personalAgentExecutionContextSchema,
   personalAgentIntentSignalSchema,
   personalMemoryTurnContextSchema,
@@ -444,6 +445,8 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       initialPrompt?: string;
       initialPromptClientUserMessageId?: string;
+      initialSelectedResourceIds?: string[];
+      initialSelectedResourceHostedInstanceId?: string;
       initialPersonalMemoryContext?: PersonalMemoryTurnContext;
       initialAgentId?: string;
       initialExpectedAgentVersion?: number;
@@ -478,6 +481,8 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       clientUserMessageId: string;
       prompt: string;
+      selectedResourceIds?: string[];
+      selectedResourceHostedInstanceId?: string;
       agentId?: string;
       expectedAgentVersion?: number;
       personalAgentContext?: PersonalAgentExecutionContext;
@@ -1414,6 +1419,8 @@ const startDigest = (input: {
   runnerDeviceId: string;
   initialPrompt?: string;
   initialPromptClientUserMessageId?: string;
+  initialSelectedResourceIds?: string[];
+  initialSelectedResourceHostedInstanceId?: string;
   initialAgentId?: string;
   initialExpectedAgentVersion?: number;
   initialTeamAgentRequest?: {
@@ -1443,6 +1450,15 @@ const startDigest = (input: {
       runnerDeploymentId: input.runnerDeploymentId,
       runnerDeviceId: input.runnerDeviceId,
       initialPrompt: input.initialPrompt ?? null,
+      ...(input.initialSelectedResourceIds?.length
+        ? { initialSelectedResourceIds: input.initialSelectedResourceIds }
+        : {}),
+      ...(input.initialSelectedResourceHostedInstanceId
+        ? {
+            initialSelectedResourceHostedInstanceId:
+              input.initialSelectedResourceHostedInstanceId
+          }
+        : {}),
       ...(input.initialPromptClientUserMessageId !== undefined
         ? {
             initialPromptClientUserMessageId:
@@ -1674,6 +1690,8 @@ export const createManagedConversationRepository = (
     commandId: string;
     prompt: string;
     clientUserMessageId?: string;
+    selectedResourceIds?: string[];
+    selectedResourceHostedInstanceId?: string;
     fileMentions?: Array<Record<string, unknown>>;
     settings: ManagedConversationSettings;
     personalAgent?: {
@@ -1696,6 +1714,15 @@ export const createManagedConversationRepository = (
         prompt: input.prompt,
         ...(input.clientUserMessageId
           ? { clientUserMessageId: input.clientUserMessageId }
+          : {}),
+        ...(input.selectedResourceIds?.length
+          ? { selectedResourceIds: input.selectedResourceIds }
+          : {}),
+        ...(input.selectedResourceHostedInstanceId
+          ? {
+              selectedResourceHostedInstanceId:
+                input.selectedResourceHostedInstanceId
+            }
           : {}),
         settings: input.settings,
         ...(input.personalAgent ? { personalAgent: input.personalAgent } : {}),
@@ -3222,6 +3249,21 @@ export const createManagedConversationRepository = (
     },
     async createManagedConversation(actor, input) {
       const projectId = input.projectId?.trim() || null;
+      const selectedResources =
+        managedConversationSelectedResourceIdsSchema.safeParse(
+          input.initialSelectedResourceIds ?? []
+        );
+      if (!selectedResources.success)
+        throw statusError("Selected AI Client Skills are invalid", 400);
+      const initialSelectedResourceIds = selectedResources.data;
+      if (
+        initialSelectedResourceIds.length > 0 !==
+        Boolean(input.initialSelectedResourceHostedInstanceId)
+      )
+        throw statusError(
+          "Selected AI Client Skills have no verified scope",
+          400
+        );
       if (
         (input.contextKind !== "independent" && !projectId) ||
         (input.contextKind === "independent" && projectId !== null) ||
@@ -3285,6 +3327,9 @@ export const createManagedConversationRepository = (
             initialPrompt: input.initialPrompt,
             initialPromptClientUserMessageId:
               input.initialPromptClientUserMessageId,
+            initialSelectedResourceIds,
+            initialSelectedResourceHostedInstanceId:
+              input.initialSelectedResourceHostedInstanceId,
             initialAgentId: input.initialAgentId,
             initialExpectedAgentVersion: input.initialExpectedAgentVersion,
             initialPullRequestReviewId: input.initialPullRequestReviewId,
@@ -3323,6 +3368,9 @@ export const createManagedConversationRepository = (
           runnerDeploymentId: input.runnerDeploymentId,
           runnerDeviceId: input.runnerDeviceId,
           initialPrompt: input.initialPrompt,
+          initialSelectedResourceIds,
+          initialSelectedResourceHostedInstanceId:
+            input.initialSelectedResourceHostedInstanceId,
           initialPromptClientUserMessageId:
             input.initialPromptClientUserMessageId,
           initialAgentId: input.initialAgentId,
@@ -3609,6 +3657,9 @@ export const createManagedConversationRepository = (
               commandId,
               prompt: input.initialPrompt,
               clientUserMessageId: input.initialPromptClientUserMessageId,
+              selectedResourceIds: initialSelectedResourceIds,
+              selectedResourceHostedInstanceId:
+                input.initialSelectedResourceHostedInstanceId,
               personalMemoryContext: initialPersonalMemoryContext,
               ...(initialPersonalAgent
                 ? { personalAgent: initialPersonalAgent }
@@ -3681,6 +3732,21 @@ export const createManagedConversationRepository = (
 
     async enqueueManagedConversationPrompt(actor, input) {
       const prompt = input.prompt.trim();
+      const selectedResources =
+        managedConversationSelectedResourceIdsSchema.safeParse(
+          input.selectedResourceIds ?? []
+        );
+      if (!selectedResources.success)
+        throw statusError("Selected AI Client Skills are invalid", 400);
+      const selectedResourceIds = selectedResources.data;
+      if (
+        selectedResourceIds.length > 0 !==
+        Boolean(input.selectedResourceHostedInstanceId)
+      )
+        throw statusError(
+          "Selected AI Client Skills have no verified scope",
+          400
+        );
       const settingsChange = input.settingsChange
         ? {
             expected: parseManagedConversationSettings(
@@ -3805,6 +3871,13 @@ export const createManagedConversationRepository = (
             executionGeneration: input.executionGeneration,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
+            ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
+            ...(input.selectedResourceHostedInstanceId
+              ? {
+                  selectedResourceHostedInstanceId:
+                    input.selectedResourceHostedInstanceId
+                }
+              : {}),
             fileMentionCommandIds,
             ...(input.serverPurpose
               ? {
@@ -4032,6 +4105,9 @@ export const createManagedConversationRepository = (
           executionId: input.executionId,
           commandId,
           prompt,
+          selectedResourceIds,
+          selectedResourceHostedInstanceId:
+            input.selectedResourceHostedInstanceId,
           fileMentions,
           settings,
           ...(personalAgent ? { personalAgent } : {}),
@@ -6329,6 +6405,24 @@ export const createManagedConversationRepository = (
           let initialPromptCommandQueued = false;
           if (row.command_kind === "start" && row.encrypted_payload) {
             const startPayload = await decryptPayload(row);
+            const startSelectedResources =
+              managedConversationSelectedResourceIdsSchema.safeParse(
+                startPayload?.selectedResourceIds ?? []
+              );
+            if (!startSelectedResources.success)
+              throw statusError("Selected AI Client Skills are invalid", 409);
+            const selectedResourceHostedInstanceId =
+              typeof startPayload?.selectedResourceHostedInstanceId === "string"
+                ? startPayload.selectedResourceHostedInstanceId
+                : undefined;
+            if (
+              startSelectedResources.data.length > 0 !==
+              Boolean(selectedResourceHostedInstanceId)
+            )
+              throw statusError(
+                "Selected AI Client Skill scope is invalid",
+                409
+              );
             const prompt =
               typeof startPayload?.prompt === "string"
                 ? startPayload.prompt.trim()
@@ -6428,6 +6522,12 @@ export const createManagedConversationRepository = (
                     executionGeneration: current.execution_generation,
                     clientUserMessageId,
                     prompt,
+                    ...(startSelectedResources.data.length
+                      ? { selectedResourceIds: startSelectedResources.data }
+                      : {}),
+                    ...(selectedResourceHostedInstanceId
+                      ? { selectedResourceHostedInstanceId }
+                      : {}),
                     fileMentionCommandIds: [],
                     ...(startAgent
                       ? {
@@ -6453,6 +6553,8 @@ export const createManagedConversationRepository = (
                   commandId: promptCommandId,
                   prompt,
                   clientUserMessageId,
+                  selectedResourceIds: startSelectedResources.data,
+                  selectedResourceHostedInstanceId,
                   settings,
                   ...(startAgent ? { personalAgent: startAgent } : {}),
                   ...(startAgentContext

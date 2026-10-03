@@ -60,6 +60,15 @@ export {
 } from "./notification-drain-controller.js";
 
 export {
+  buildProgressEventPageSchema,
+  buildProgressEventSchema
+} from "./build-progress.js";
+export type {
+  BuildProgressEvent,
+  BuildProgressEventPage
+} from "./build-progress.js";
+
+export {
   pullRequestAccountSchema,
   pullRequestFindingSchema,
   pullRequestFrozenReviewSchema,
@@ -509,6 +518,32 @@ export type {
   AiClientRecoveryActionId,
   SupportedAiClientDriverId
 } from "./ai-client-contract.js";
+export {
+  aiClientResourceCatalogSchema,
+  aiClientResourceCatalogVersion,
+  aiClientResourceDiscoveryOperationSchema,
+  aiClientResourceDiscoveryOperationStateSchema,
+  aiClientResourceDiscoveryRequestSchema,
+  aiClientResourceDiscoveryRunnerClaimPageSchema,
+  aiClientResourceDiscoveryRunnerClaimSchema,
+  aiClientResourceDiscoveryRunnerCompleteSchema,
+  aiClientResourceDiscoveryRunnerFailSchema,
+  aiClientResourceIdSchema,
+  aiClientResourceInvocationSchema,
+  aiClientResourceKindSchema,
+  aiClientResourceSchema,
+  aiClientResourceSourceSchema,
+  aiClientResourceStatusSchema,
+  managedConversationSelectedResourceIdsSchema
+} from "./ai-client-resource-catalog.js";
+export type {
+  AiClientResource,
+  AiClientResourceCatalog,
+  AiClientResourceDiscoveryOperation,
+  AiClientResourceDiscoveryRequest,
+  AiClientResourceDiscoveryRunnerClaim,
+  ManagedConversationSelectedResourceIds
+} from "./ai-client-resource-catalog.js";
 export {
   codeDefaultAssignmentFor,
   documentDefault,
@@ -2107,3 +2142,20 @@ export {
   type MemoryAnswerTaskOrigin,
   type MemoryAnswerTaskStatus
 } from "./memory-answer-task-contract.js";
+
+export {
+  classifyHomeNotification,
+  isTeamMessageNotificationCandidate,
+  studioNotificationClassificationSchema,
+  studioNotificationCopy,
+  studioNotificationIntentSchema,
+  studioNotificationNavigationSchema,
+  studioNotificationSourceSchema
+} from "./studio-notifications.js";
+export type {
+  StudioNotificationClassification,
+  StudioNotificationIntent,
+  StudioNotificationSourceItem,
+  StudioNotificationNavigation,
+  StudioNotificationSource
+} from "./studio-notifications.js";

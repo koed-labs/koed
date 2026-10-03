@@ -952,3 +952,6 @@ export function uniqueAgentCloneName(
     if (!normalizedNames.has(candidate.toLocaleLowerCase())) return candidate;
   }
 }
+
+// Shared Studio requests keep the existing session and native CSRF authority.
+export { call as studioAuthenticatedRequest };

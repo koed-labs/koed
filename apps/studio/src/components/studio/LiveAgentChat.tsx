@@ -13,6 +13,12 @@ import {
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
 import { managedAgentActivity } from "@/lib/managed-agent-activity";
 import {
+  activityWithBuildProgress,
+  buildProgressJobState,
+  parseBuildProgressPage,
+  unavailableBuildProgress
+} from "@/lib/build-progress-client";
+import {
   cancelLocalProjectMove,
   deleteLocalRetainedManagedWorktree,
   loadLatestLocalProjectMove,
@@ -31,6 +37,7 @@ import {
   teamQuestionSendStatus
 } from "@/lib/team-agent-channel-sharing";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
+import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
 import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
 import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
@@ -72,6 +79,7 @@ import {
   parseExecution,
   parseLaunchInstances,
   parseRuntime,
+  loadManagedBuildProgress,
   record,
   resolveLaunchSelection,
   shouldNavigateToExecutionAfterSendFailure,
@@ -202,8 +210,15 @@ export function LiveAgentChat({
       ? initialExecutionId
       : null
   );
+  useEffect(() => {
+    if (!executionId) return;
+    return registerStudioNotificationViewedChat({ kind: "agent", executionId });
+  }, [executionId]);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [activity, setActivity] = useState<BuildActivity | null>(null);
+  const [selectedBuildJobId, setSelectedBuildJobId] = useState<string | null>(
+    null
+  );
   const [jobMarkers, setJobMarkers] = useState<
     ReturnType<typeof managedAgentJobMarkers>
   >([]);
@@ -582,7 +597,70 @@ export function LiveAgentChat({
         return snapshot;
       if (state.executionGeneration !== snapshot.execution.executionGeneration)
         return snapshot;
-      setActivity(managedAgentActivity(state));
+      const baseActivity = managedAgentActivity(state);
+      const rawJobs = Array.isArray(state.jobs)
+        ? state.jobs.filter(record).slice(0, 20)
+        : [];
+      const jobs = rawJobs.flatMap((job) =>
+        typeof job.id === "string" && typeof job.title === "string"
+          ? [
+              {
+                id: job.id,
+                title: job.title,
+                state: buildProgressJobState(job.observedState ?? job.state),
+                createdAt:
+                  typeof job.createdAt === "string" ? job.createdAt : undefined
+              }
+            ]
+          : []
+      );
+      const preferredJobId =
+        selectedBuildJobId && jobs.some((job) => job.id === selectedBuildJobId)
+          ? selectedBuildJobId
+          : (jobs.find((job) => job.state === "running")?.id ??
+            jobs[0]?.id ??
+            null);
+      setSelectedBuildJobId(preferredJobId);
+      const projectName =
+        registeredProjects.find(
+          (project) => project.id === snapshot.execution.projectId
+        )?.name ??
+        (snapshot.execution.projectId ? "Project" : "Standalone chat");
+      setActivity({
+        ...baseActivity,
+        jobs,
+        ...(preferredJobId ? { selectedJobId: preferredJobId } : {}),
+        availability: snapshot.execution.projectId
+          ? "unavailable"
+          : "no_project"
+      });
+      if (preferredJobId) {
+        try {
+          const progressPayload = await loadManagedBuildProgress(
+            id,
+            preferredJobId,
+            signal
+          );
+          if (signal.aborted || sequence !== refreshSequence.current)
+            return snapshot;
+          const page = parseBuildProgressPage(progressPayload);
+          if (page) {
+            setActivity(
+              activityWithBuildProgress({
+                current: baseActivity,
+                page,
+                jobs,
+                projectName
+              })
+            );
+          } else {
+            setActivity(unavailableBuildProgress(baseActivity));
+          }
+        } catch {
+          if (!signal.aborted && sequence === refreshSequence.current)
+            setActivity(unavailableBuildProgress(baseActivity));
+        }
+      }
       const selectedAgentName =
         agents.find((agent) => agent.id === state.activeAgentId)?.name ?? null;
       setJobMarkers(
@@ -760,7 +838,13 @@ export function LiveAgentChat({
       }
       return snapshot;
     },
-    [agents, initialExecutionId, registeredProjects, settleRecoveredSend]
+    [
+      agents,
+      initialExecutionId,
+      registeredProjects,
+      selectedBuildJobId,
+      settleRecoveredSend
+    ]
   );
 
   const refreshRetainedWorkspaces = useCallback(
@@ -1104,6 +1188,7 @@ export function LiveAgentChat({
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
         permissionMode: settings.permissionMode,
+        selectedResourceIds: selection.selectedResourceIds ?? [],
         teamAgentRequestBinding:
           teamRequestId &&
           Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
@@ -1174,6 +1259,13 @@ export function LiveAgentChat({
               }
             : {}),
           prompt: text,
+          ...(selection.selectedResourceIds?.length
+            ? { selectedResourceIds: selection.selectedResourceIds }
+            : {}),
+          ...(selection.selectedResourceIds?.length &&
+          selection.hostedInstanceId
+            ? { selectedResourceHostedInstanceId: selection.hostedInstanceId }
+            : {}),
           ...(persistedRequestFingerprint
             ? { requestFingerprint: persistedRequestFingerprint }
             : {}),
@@ -1200,6 +1292,13 @@ export function LiveAgentChat({
             contextKind: projectId ? "project" : "independent",
             runnerKind: "local_device",
             idempotencyKey: request.startId,
+            ...(selection.selectedResourceIds?.length
+              ? { selectedResourceIds: selection.selectedResourceIds }
+              : {}),
+            ...(selection.selectedResourceIds?.length &&
+            selection.hostedInstanceId
+              ? { selectedResourceHostedInstanceId: selection.hostedInstanceId }
+              : {}),
             ...(teamRequestId &&
             teamRequestTeamId &&
             Number.isSafeInteger(teamRequestExpectedRequestVersion) &&
@@ -1324,6 +1423,7 @@ export function LiveAgentChat({
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
         permissionMode: settings.permissionMode,
+        selectedResourceIds: selection.selectedResourceIds ?? [],
         expectedSettings: {
           model: current.model,
           reasoningEffort: current.reasoningEffort,
@@ -1364,6 +1464,9 @@ export function LiveAgentChat({
           clientUserMessageId: request.messageId,
           executionGeneration: current.executionGeneration,
           prompt: text,
+          ...(selection.selectedResourceIds?.length
+            ? { selectedResourceIds: selection.selectedResourceIds }
+            : {}),
           ...(persistedRequestFingerprint
             ? { requestFingerprint: exactRequestFingerprint }
             : {}),
@@ -1387,6 +1490,13 @@ export function LiveAgentChat({
           agentId: selected.id,
           expectedAgentVersion: selected.currentVersion,
           ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
+          ...(selection.selectedResourceIds?.length
+            ? { selectedResourceIds: selection.selectedResourceIds }
+            : {}),
+          ...(selection.selectedResourceIds?.length &&
+          selection.hostedInstanceId
+            ? { selectedResourceHostedInstanceId: selection.hostedInstanceId }
+            : {}),
           ...(purpose ?? {}),
           ...(JSON.stringify(expected) === JSON.stringify(next)
             ? {}
@@ -2094,6 +2204,44 @@ export function LiveAgentChat({
             projectId ? (projectName ?? "Project chat") : "Standalone chat"
           }
           activity={activity}
+          onBuildJobSelect={(jobId) => {
+            setSelectedBuildJobId(jobId);
+            if (!executionId || lifecycle.current?.signal.aborted) return;
+            void loadManagedBuildProgress(
+              executionId,
+              jobId,
+              lifecycle.current?.signal
+            )
+              .then((payload) => {
+                const page = parseBuildProgressPage(payload);
+                if (!page) return;
+                setActivity((current) =>
+                  current
+                    ? activityWithBuildProgress({
+                        current,
+                        page,
+                        jobs: current.jobs,
+                        projectName: current.project?.name
+                      })
+                    : current
+                );
+              })
+              .catch(() => {
+                setActivity((current) =>
+                  current ? unavailableBuildProgress(current) : current
+                );
+              });
+          }}
+          onBuildAttention={(runtimeItemId) => {
+            document
+              .getElementById(`runtime-item-${runtimeItemId}`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
+          clientResourceScope={{
+            projectId: runtime?.execution.projectId ?? projectId ?? null,
+            instanceId: runtime?.execution.aiClientInstanceId,
+            provider: runtime?.execution.provider
+          }}
           agents={agents}
           activeAgentId={activeAgentId}
           conversationScopeKey={`${feedbackOwner?.backendId ?? "unknown-backend"}:${feedbackOwner?.ownerId ?? "unknown-owner"}:${teamRequestId ?? "personal"}:${executionId ?? "new"}`}

@@ -15,6 +15,7 @@ import {
   fetchBoundedJsonObject,
   isSupportedAiClientDriverId,
   managedConversationDiffPayloadSchema,
+  managedConversationSelectedResourceIdsSchema,
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
   managedDevelopmentPreviewAccessSchema,
@@ -103,6 +104,14 @@ const startSchema = z
     permissionMode: z.enum(["supervised", "auto_edit", "auto", "full_access"]),
     runnerKind: z.literal("local_device"),
     idempotencyKey: idempotencyKeySchema,
+    selectedResourceIds:
+      managedConversationSelectedResourceIdsSchema.optional(),
+    selectedResourceHostedInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(160)
+      .optional(),
     teamAgentRequest: z
       .object({
         teamId: z.uuid(),
@@ -115,6 +124,13 @@ const startSchema = z
   })
   .strict();
 
+const hasValidSelectedResourceScope = (input: {
+  selectedResourceIds?: string[];
+  selectedResourceHostedInstanceId?: string;
+}): boolean =>
+  input.selectedResourceHostedInstanceId === undefined ||
+  Boolean(input.selectedResourceIds?.length);
+
 const hasValidProjectContext = (input: {
   projectId: string | null;
   contextKind: "project" | "independent";
@@ -124,16 +140,19 @@ const hasValidProjectContext = (input: {
     : input.projectId !== null;
 
 const authorityStartSchema = startSchema
-  .extend({
+  .safeExtend({
     deferUntilRuntimeBinding: z.literal(true).optional()
   })
   .strict()
+  .refine(hasValidSelectedResourceScope, {
+    message: "An AI Client resource scope requires selected resources"
+  })
   .refine(hasValidProjectContext, {
     message: "Conversation context and Project selection do not match"
   });
 
 const browserStartSchema = startSchema
-  .extend({
+  .safeExtend({
     contextKind: z.enum(["project", "independent"]).default("project"),
     targetDeviceId: z.string().trim().min(1).max(128),
     initialPrompt: z.string().trim().min(1).max(256_000).optional(),
@@ -144,6 +163,9 @@ const browserStartSchema = startSchema
     pullRequestReviewId: z.uuid().optional()
   })
   .strict()
+  .refine(hasValidSelectedResourceScope, {
+    message: "An AI Client resource scope requires selected resources"
+  })
   .refine(
     (input) =>
       (input.agentId === undefined) ===
@@ -238,6 +260,7 @@ const agentStateQuerySchema = z
     before: z.string().min(1).max(512).optional()
   })
   .strict();
+const buildProgressQuerySchema = z.object({ jobId: z.uuid() }).strict();
 
 const agentStateTimelineCursorPrefix = "agent-state:v1:";
 const agentStateTimelineCursorSchema = z
@@ -391,13 +414,27 @@ const promptSchema = z
       .array(z.string().regex(/^mtc1_[A-Za-z0-9_-]{43}$/))
       .max(8)
       .optional(),
-    continueWithoutMemory: z.literal(true).optional()
+    continueWithoutMemory: z.literal(true).optional(),
+    selectedResourceIds:
+      managedConversationSelectedResourceIdsSchema.optional(),
+    selectedResourceHostedInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(160)
+      .optional()
   })
   .strict()
   .refine(
     (input) =>
       input.continueWithoutMemory === undefined || input.agentId !== undefined,
     { message: "Continue without Memory is available for Personal Agent Jobs" }
+  )
+  .refine(
+    (input) =>
+      input.selectedResourceHostedInstanceId === undefined ||
+      Boolean(input.selectedResourceIds?.length),
+    { message: "An AI Client resource scope requires selected resources" }
   )
   .refine(
     (input) =>
@@ -656,6 +693,7 @@ const publicExecution = (
   execution: {
     id: string;
     projectId: string | null;
+    runnerDeviceId: string;
     provider: string;
     aiClientInstanceId: string;
     model: string;
@@ -687,6 +725,7 @@ const publicExecution = (
 ) => ({
   id: execution.id,
   projectId: execution.projectId,
+  runnerDeviceId: execution.runnerDeviceId,
   provider: execution.provider,
   aiClientInstanceId: execution.aiClientInstanceId,
   model: execution.model,
@@ -2325,6 +2364,19 @@ export const registerManagedConversationRoutes = (
             "Selected AI Client instance is not published by the target runner"
           );
         }
+        if (
+          input.selectedResourceIds?.length &&
+          input.selectedResourceHostedInstanceId !== undefined &&
+          input.selectedResourceHostedInstanceId !==
+            selectedInstance.hostedInstanceId
+        ) {
+          throw Object.assign(
+            new Error(
+              "Selected AI Client resources belong to another instance"
+            ),
+            { statusCode: 409 }
+          );
+        }
         const runnerInput = {
           ...input,
           aiClientInstanceId: selectedInstance.instanceId
@@ -2427,6 +2479,13 @@ export const registerManagedConversationRoutes = (
             runnerDeploymentId: target.deploymentId,
             runnerDeviceId: target.deviceId,
             idempotencyKey: input.idempotencyKey,
+            ...(input.selectedResourceIds?.length
+              ? {
+                  initialSelectedResourceIds: input.selectedResourceIds,
+                  initialSelectedResourceHostedInstanceId:
+                    selectedInstance.hostedInstanceId
+                }
+              : {}),
             initialPrompt: input.initialPrompt,
             initialPromptClientUserMessageId:
               input.initialPromptClientUserMessageId,
@@ -2518,6 +2577,35 @@ export const registerManagedConversationRoutes = (
       const deferred =
         "deferUntilRuntimeBinding" in input &&
         input.deferUntilRuntimeBinding === true;
+      let initialSelectedResourceHostedInstanceId: string | undefined;
+      if (input.selectedResourceIds?.length) {
+        const candidates = (
+          await repository.listAiClientInstances({
+            userId: user.id
+          })
+        ).filter(
+          (candidate) =>
+            candidate.instanceId === input.aiClientInstanceId &&
+            candidate.driverId === input.provider &&
+            candidate.sourceDeviceCredentialId ===
+              runner.sourceDeviceCredentialId &&
+            candidate.enabled &&
+            Boolean(candidate.configIdentityHash) &&
+            (input.selectedResourceHostedInstanceId === undefined ||
+              candidate.hostedInstanceId ===
+                input.selectedResourceHostedInstanceId)
+        );
+        if (candidates.length !== 1) {
+          throw Object.assign(
+            new Error(
+              "Selected AI Client resources do not identify one authorized instance"
+            ),
+            { statusCode: 409 }
+          );
+        }
+        initialSelectedResourceHostedInstanceId =
+          candidates[0]!.hostedInstanceId;
+      }
       if (localExecution || !deferred) {
         await assertLocalLaunchSelection(
           repository,
@@ -2660,6 +2748,12 @@ export const registerManagedConversationRoutes = (
           runnerDeploymentId: runner.deploymentId,
           runnerDeviceId: runner.deviceId,
           idempotencyKey: input.idempotencyKey,
+          ...(input.selectedResourceIds?.length
+            ? {
+                initialSelectedResourceIds: input.selectedResourceIds,
+                initialSelectedResourceHostedInstanceId
+              }
+            : {}),
           ...(input.teamAgentRequest
             ? {
                 initialTeamAgentRequest: input.teamAgentRequest,
@@ -3138,6 +3232,49 @@ export const registerManagedConversationRoutes = (
             executionId,
             aiClientCapabilityIds.managedConversationSend
           );
+      let selectedResourceHostedInstanceId: string | undefined;
+      if (input.selectedResourceIds?.length) {
+        const [instances, credentials] = await Promise.all([
+          repository.listAiClientInstances({ userId: user.id }),
+          repository.listDeviceCredentials({ userId: user.id })
+        ]);
+        const matchingInstances = instances.filter((candidate) => {
+          if (
+            candidate.instanceId !== execution.aiClientInstanceId ||
+            candidate.driverId !== execution.provider ||
+            (input.selectedResourceHostedInstanceId !== undefined &&
+              candidate.hostedInstanceId !==
+                input.selectedResourceHostedInstanceId) ||
+            !candidate.enabled ||
+            !candidate.configIdentityHash
+          )
+            return false;
+          if (candidate.sourceDeviceCredentialId === null)
+            return localExecutionProfiles.has(context.config.deploymentProfile);
+          const credential = credentials.find(
+            (value) => value.id === candidate.sourceDeviceCredentialId
+          );
+          return Boolean(
+            credential &&
+            credential.deviceInstanceId === execution.runnerDeviceId &&
+            protocolDeploymentId(credential.metadata) ===
+              execution.runnerDeploymentId &&
+            credential.revokedAt === null &&
+            credential.operationFamilies.includes("managed_execution") &&
+            (credential.expiresAt === null ||
+              Date.parse(credential.expiresAt) > Date.now())
+          );
+        });
+        if (matchingInstances.length !== 1)
+          throw Object.assign(
+            new Error(
+              "Selected AI Client Skills are unavailable or ambiguous for this runner"
+            ),
+            { statusCode: 409 }
+          );
+        selectedResourceHostedInstanceId =
+          matchingInstances[0]!.hostedInstanceId;
+      }
       const pendingTeamRequest =
         typeof repository.getAwaitingOwnerRequestForExecution === "function"
           ? await repository.getAwaitingOwnerRequestForExecution(
@@ -3259,6 +3396,12 @@ export const registerManagedConversationRoutes = (
           idempotencyKey: input.idempotencyKey,
           clientUserMessageId: input.clientUserMessageId,
           prompt,
+          ...(input.selectedResourceIds?.length
+            ? {
+                selectedResourceIds: input.selectedResourceIds,
+                selectedResourceHostedInstanceId
+              }
+            : {}),
           ...(agentContext
             ? {
                 agentId: input.agentId!,
@@ -4623,6 +4766,78 @@ export const registerManagedConversationRoutes = (
         snapshotAt: new Date().toISOString(),
         executionGeneration: execution.executionGeneration,
         executionState: execution.state
+      };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversations/:executionId/build-progress",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const { jobId } = buildProgressQuerySchema.parse(request.query);
+      const query = new URLSearchParams({ jobId });
+      const proxied = await proxyManaged(
+        "GET",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/build-progress`,
+        undefined,
+        { query }
+      );
+      if (proxied) return proxied.payload;
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const execution = await repository.getManagedConversationExecution(
+        actor,
+        executionId
+      );
+      if (!execution) {
+        throw Object.assign(new Error("Managed Conversation not found"), {
+          statusCode: 404
+        });
+      }
+      const job = await repository.getPersonalAgentExecutionJob(actor, jobId);
+      if (!job || job.conversationId !== executionId) {
+        throw Object.assign(new Error("Personal Agent Job not found"), {
+          statusCode: 404
+        });
+      }
+      const storedEvents = await repository.getPersonalAgentBuildProgress(
+        actor,
+        {
+          executionId,
+          jobId
+        }
+      );
+      const runtimeItems = await repository.listManagedConversationRuntimeItems(
+        actor,
+        { executionId }
+      );
+      const actionableRuntimeItemIds = new Set(
+        runtimeItems
+          .filter(
+            (item) =>
+              item.executionGeneration === execution.executionGeneration &&
+              item.state === "pending"
+          )
+          .map((item) => item.id)
+      );
+      const events = storedEvents.map((event) => {
+        if (
+          !event.attention ||
+          actionableRuntimeItemIds.has(event.attention.runtimeItemId)
+        )
+          return event;
+        const { attention: _attention, ...resolvedEvent } = event;
+        return resolvedEvent;
+      });
+      return {
+        jobId,
+        events,
+        hasMore: false,
+        nextCursor: null,
+        availability: execution.projectId ? "available" : "no_project"
       };
     }
   );

@@ -15,3 +15,21 @@ coverage
 !.env.example
 *.tsbuildinfo
 **/*.tsbuildinfo
+
+# Private review state, credentials, native build work and browser artifacts.
+.scratch
+**/.scratch
+.cache
+**/.cache
+output/playwright
+**/.env
+**/.env.*
+!**/.env.example
+
+# Keep private trees excluded even when they contain example env files.
+.scratch/**
+**/.scratch/**
+.cache/**
+**/.cache/**
+
+apps/studio/.desktop-ui

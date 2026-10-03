@@ -2,14 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import { CollabSessionProvider } from "@/components/CollabSessionContext";
 import { CollabWorkspace } from "@/components/CollabWorkspace";
 import { ContextSidebar } from "@/components/ContextSidebar";
-import {
-  DesktopCollaborationRecoveryRail,
-  DesktopCollaborationStudio
-} from "@/components/desktop-collaboration/DesktopCollaborationStudio";
+import { DesktopCollaborationRecoveryRail } from "@/components/desktop-collaboration/DesktopCollaborationStudio";
 import { TeamChannelWorkspace } from "@/components/desktop-collaboration/TeamChannelWorkspace";
 import { GlobalNav } from "@/components/GlobalNav";
 import { SidebarProvider } from "@/components/SidebarContext";
@@ -18,8 +16,15 @@ import {
   WorkspaceProvider
 } from "@/components/WorkspaceProvider";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
-import { StudioCollaborationClient, StudioCollaborationRequestError } from "@/lib/studio-collaboration-client";
+import {
+  StudioCollaborationClient,
+  StudioCollaborationRequestError
+} from "@/lib/studio-collaboration-client";
 import type { CollaborationSnapshot } from "@koed/shared/collaboration";
+import {
+  studioNotificationNavigationSchema,
+  type StudioNotificationNavigation
+} from "@koed/shared/studio-notifications";
 
 function CollaborationPreview() {
   const { activeTeamId, hydrated, setActiveTeamId, workspace } = useWorkspace();
@@ -53,7 +58,11 @@ export default function CollaborationPage() {
       </Suspense>
     );
   }
-  return <CollaborationRuntime />;
+  return (
+    <Suspense fallback={null}>
+      <CollaborationRuntime />
+    </Suspense>
+  );
 }
 
 type CollaborationRouteState =
@@ -62,6 +71,23 @@ type CollaborationRouteState =
   | { mode: "loading" };
 
 function CollaborationRuntime() {
+  const searchParams = useSearchParams();
+  const notificationNavigation =
+    useMemo<StudioNotificationNavigation | null>(() => {
+      const teamId = searchParams.get("team");
+      const threadId = searchParams.get("thread");
+      const messageId = searchParams.get("message");
+      if (!teamId || !threadId || !messageId) return null;
+      const rootMessageId = searchParams.get("root");
+      const parsed = studioNotificationNavigationSchema.safeParse({
+        kind: "team_thread",
+        teamId,
+        threadId,
+        messageId,
+        rootMessageId
+      });
+      return parsed.success ? parsed.data : null;
+    }, [searchParams]);
   const client = useMemo(() => new StudioCollaborationClient(), []);
   const [route, setRoute] = useState<CollaborationRouteState>({
     mode: "loading"
@@ -78,9 +104,10 @@ function CollaborationRuntime() {
     try {
       result = { mode: "studio", snapshot: await client.loadSession() };
     } catch (error) {
-      result = error instanceof StudioCollaborationRequestError && error.status === 404
-        ? { mode: "preview" }
-        : { mode: "unavailable" };
+      result =
+        error instanceof StudioCollaborationRequestError && error.status === 404
+          ? { mode: "preview" }
+          : { mode: "unavailable" };
     }
     if (sequence !== requestSequence.current) return;
     routeRef.current = result;
@@ -118,6 +145,7 @@ function CollaborationRuntime() {
         client={client}
         drafts={client}
         onRefresh={refresh}
+        notificationNavigation={notificationNavigation}
       />
     );
   }

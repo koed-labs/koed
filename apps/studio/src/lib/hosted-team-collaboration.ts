@@ -187,6 +187,7 @@ const teamMessage = (
     version: value.version ?? 1,
     replyCount: value.replyCount ?? 0,
     unreadReplyCount: value.unreadReplyCount ?? 0,
+    mentionUserIds: value.mentionUserIds,
     reactions: Array.isArray(value.reactions) ? value.reactions : [],
     delivery: "sent",
     recipientStatus: value.recipientStatus,

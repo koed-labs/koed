@@ -7,6 +7,8 @@ import {
 export type AgentModelCapability = Readonly<{
   provider: string;
   instanceId?: string;
+  hostedInstanceId?: string;
+  computerLabel?: string;
   id: string;
   displayName?: string;
   supportedReasoningEfforts: readonly string[];

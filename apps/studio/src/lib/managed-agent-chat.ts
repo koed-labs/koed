@@ -12,6 +12,7 @@ export type ExecutionSettings = {
 export type AgentExecution = ExecutionSettings & {
   id: string;
   projectId: string | null;
+  runnerDeviceId?: string;
   provider: string;
   aiClientInstanceId: string;
   executionGeneration: number;
@@ -196,6 +197,9 @@ export function managedConversationControls(
 }
 export type LaunchInstance = {
   instanceId: string;
+  hostedInstanceId?: string;
+  runnerDeviceId?: string;
+  sourceDeviceLabel?: string | null;
   driverId: string;
   models: AgentModelCapability[];
   permissionModes: string[];
@@ -299,6 +303,18 @@ export async function managedRequest(
   return payload;
 }
 
+export async function loadManagedBuildProgress(
+  executionId: string,
+  jobId: string,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  return managedRequest(
+    `/${encodeURIComponent(executionId)}/build-progress?jobId=${encodeURIComponent(jobId)}`,
+    undefined,
+    signal
+  );
+}
+
 export async function loadManagedRecallFeedback(
   executionId: string,
   messageId: string,
@@ -352,6 +368,8 @@ export function parseExecution(value: unknown): AgentExecution {
     ) ||
     typeof value.provider !== "string" ||
     typeof value.aiClientInstanceId !== "string" ||
+    (value.runnerDeviceId !== undefined &&
+      typeof value.runnerDeviceId !== "string") ||
     typeof value.model !== "string" ||
     typeof value.state !== "string" ||
     !Number.isSafeInteger(value.executionGeneration) ||
@@ -402,6 +420,12 @@ export function parseLaunchInstances(
           {
             provider: item.driverId as string,
             instanceId: item.instanceId as string,
+            ...(typeof item.hostedInstanceId === "string"
+              ? { hostedInstanceId: item.hostedInstanceId }
+              : {}),
+            ...(typeof item.sourceDeviceLabel === "string"
+              ? { computerLabel: item.sourceDeviceLabel }
+              : {}),
             id: model.id,
             displayName:
               typeof model.displayName === "string"
@@ -419,6 +443,13 @@ export function parseLaunchInstances(
       return [
         {
           instanceId: item.instanceId,
+          ...(typeof item.hostedInstanceId === "string"
+            ? { hostedInstanceId: item.hostedInstanceId }
+            : {}),
+          ...(item.sourceDeviceLabel === null ||
+          typeof item.sourceDeviceLabel === "string"
+            ? { sourceDeviceLabel: item.sourceDeviceLabel }
+            : {}),
           driverId: item.driverId,
           models,
           permissionModes

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { registerStudioNotificationViewedChat } from "@/lib/studio-notification-viewed-chat";
 import { parsePullRequestReviewOutput } from "@koed/shared/pull-requests";
 import {
   Check,
@@ -22,6 +23,7 @@ import {
   loadHostedManagedConversation,
   loadHostedManagedConversationAccess,
   loadHostedRecallFeedback,
+  loadHostedBuildProgress,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedPromptOutcomeIsUncertain,
@@ -41,14 +43,24 @@ import {
   startHostedManagedConversation,
   type HostedLaunchOptions,
   type HostedConversationMessage,
+  type HostedConversationState,
   type HostedManagedExecution,
   type HostedProjectMove
 } from "@/lib/hosted-managed-chats";
 import {
   canCancelManagedConversationPrompt,
+  record,
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
+import { managedAgentActivity } from "@/lib/managed-agent-activity";
+import {
+  activityWithBuildProgress,
+  buildProgressJobState,
+  parseBuildProgressPage,
+  unavailableBuildProgress
+} from "@/lib/build-progress-client";
+import type { BuildActivity } from "@/lib/studio-build-activity";
 import {
   createDeviceManagedChatRecoveryStore,
   type DeviceManagedChatPendingOperation,
@@ -58,6 +70,7 @@ import { ProjectMoveConfirmation } from "@/components/ProjectMoveConfirmation";
 import { ProjectMovePicker } from "@/components/ProjectMovePicker";
 import { PrepareTeamQuestionAction } from "@/components/PrepareTeamQuestionAction";
 import { ChatComposer } from "@/components/ChatComposer";
+import { BuildActivityPanel } from "@/components/BuildActivityPanel";
 import { AgentChatMessage, SharedChatUI } from "@/components/SharedChatUI";
 import { MemoryAttributionNote } from "@/components/studio/MemoryAttributionNote";
 import { TeamAgentRequestReviewPanel } from "@/components/TeamAgentRequestViews";
@@ -158,7 +171,20 @@ export function HostedManagedChats({
   const [selectedId, setSelectedId] = useState<string | null>(
     initialExecutionId ?? null
   );
+  useEffect(() => {
+    if (!selectedId) return;
+    return registerStudioNotificationViewedChat({
+      kind: "agent",
+      executionId: selectedId
+    });
+  }, [selectedId]);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
+  const [buildActivity, setBuildActivity] = useState<BuildActivity | null>(
+    null
+  );
+  const [selectedBuildJobId, setSelectedBuildJobId] = useState<string | null>(
+    null
+  );
   const [messages, setMessages] = useState<HostedConversationMessage[]>([]);
   const [jobMarkers, setJobMarkers] = useState<ManagedAgentJobMarker[]>([]);
   const [jobMarkersExecutionId, setJobMarkersExecutionId] = useState<
@@ -226,6 +252,9 @@ export function HostedManagedChats({
   const [launchEffort, setLaunchEffort] = useState("");
   const [launchPermission, setLaunchPermission] = useState("");
   const [initialPrompt, setInitialPrompt] = useState("");
+  const [initialSelectedResourceIds, setInitialSelectedResourceIds] = useState<
+    string[]
+  >([]);
   const [memoryRecallFailure, setMemoryRecallFailure] = useState<{
     kind: "start" | "prompt";
     executionId?: string;
@@ -1090,6 +1119,74 @@ export function HostedManagedChats({
     setScopedPendingRecoveryOperation
   ]);
 
+  const refreshBuildActivity = useCallback(
+    async (
+      executionId: string,
+      generation: number,
+      projectId: string | null,
+      state: HostedConversationState,
+      signal?: AbortSignal
+    ) => {
+      const rawJobs = (state.jobs ?? []).filter(record).slice(0, 20);
+      const jobs = rawJobs.flatMap((job) =>
+        typeof job.id === "string" && typeof job.title === "string"
+          ? [
+              {
+                id: job.id,
+                title: job.title,
+                state: buildProgressJobState(job.observedState ?? job.state),
+                createdAt:
+                  typeof job.createdAt === "string" ? job.createdAt : undefined
+              }
+            ]
+          : []
+      );
+      const selectedJobId =
+        selectedBuildJobId && jobs.some((job) => job.id === selectedBuildJobId)
+          ? selectedBuildJobId
+          : (jobs.find((job) => job.state === "running")?.id ??
+            jobs[0]?.id ??
+            null);
+      const projectName =
+        launchOptions?.projects.find((project) => project.id === projectId)
+          ?.name ?? (projectId ? "Project" : "Managed runtime");
+      const base = managedAgentActivity(
+        state as unknown as Record<string, unknown>
+      );
+      setSelectedBuildJobId(selectedJobId);
+      setBuildActivity({
+        ...base,
+        jobs,
+        ...(selectedJobId ? { selectedJobId } : {}),
+        availability: projectId ? "unavailable" : "no_project"
+      });
+      if (!selectedJobId) return;
+      try {
+        const payload = await loadHostedBuildProgress(
+          executionId,
+          selectedJobId,
+          signal
+        );
+        if (signal?.aborted || selectedIdRef.current !== executionId) return;
+        const page = parseBuildProgressPage(payload);
+        if (
+          !page ||
+          page.events.some((event) => event.executionGeneration !== generation)
+        ) {
+          setBuildActivity(unavailableBuildProgress(base));
+          return;
+        }
+        setBuildActivity(
+          activityWithBuildProgress({ current: base, page, jobs, projectName })
+        );
+      } catch {
+        if (!signal?.aborted && selectedIdRef.current === executionId)
+          setBuildActivity(unavailableBuildProgress(base));
+      }
+    },
+    [launchOptions, selectedBuildJobId]
+  );
+
   useEffect(() => {
     if (!selectedId) return;
     const controller = new AbortController();
@@ -1127,6 +1224,13 @@ export function HostedManagedChats({
           })
         );
         setJobMarkersExecutionId(selectedId);
+        await refreshBuildActivity(
+          selectedId,
+          value.runtime.execution.executionGeneration,
+          value.runtime.execution.projectId,
+          value.state,
+          controller.signal
+        );
         setError(null);
         setStatus(null);
         setPendingMessage((pending) =>
@@ -1185,7 +1289,8 @@ export function HostedManagedChats({
     reconcileStartOperation,
     reconcilePromptOperation,
     launchOptions,
-    embeddedReview
+    embeddedReview,
+    refreshBuildActivity
   ]);
 
   const selected = useMemo(
@@ -1193,6 +1298,17 @@ export function HostedManagedChats({
     [executions, selectedId]
   );
   const selectedRuntime = runtime?.execution.id === selectedId ? runtime : null;
+  const selectedRuntimeResourceInstance = (() => {
+    if (!selectedRuntime) return undefined;
+    const matches = (launchOptions?.instances ?? []).filter(
+      (instance) =>
+        instance.instanceId === selectedRuntime.execution.aiClientInstanceId &&
+        instance.driverId === selectedRuntime.execution.provider &&
+        (!selectedRuntime.execution.runnerDeviceId ||
+          instance.runnerDeviceId === selectedRuntime.execution.runnerDeviceId)
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  })();
   useEffect(() => {
     const attempt = teamSummaryAttempt.current;
     const command = selectedRuntime?.latestCommand;
@@ -1449,6 +1565,12 @@ export function HostedManagedChats({
             })
           );
           setJobMarkersExecutionId(id);
+          await refreshBuildActivity(
+            id,
+            value.runtime.execution.executionGeneration,
+            value.runtime.execution.projectId,
+            value.state
+          );
           await refreshProjectMove(id);
         }
       }
@@ -1570,7 +1692,9 @@ export function HostedManagedChats({
       purpose: "team_summary_draft";
       teamSummary: { teamId: string; requestId: string; jobId: string };
     },
-    promptOverride?: string
+    promptOverride?: string,
+    selectedResourceIds: string[] = [],
+    selectedResourceHostedInstanceId = selectedRuntimeResourceInstance?.hostedInstanceId
   ) => {
     const prompt = (promptOverride ?? draft).trim();
     if (
@@ -1623,6 +1747,7 @@ export function HostedManagedChats({
       clientUserMessageId: crypto.randomUUID(),
       executionGeneration: selectedRuntime.execution.executionGeneration,
       prompt,
+      ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
       state: "pending"
     };
     const messageId = operation.clientUserMessageId;
@@ -1657,7 +1782,11 @@ export function HostedManagedChats({
           ...(continueWithoutMemory
             ? { continueWithoutMemory: true as const }
             : {}),
-          ...(purpose ?? {})
+          ...(purpose ?? {}),
+          ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
+          ...(selectedResourceIds.length && selectedResourceHostedInstanceId
+            ? { selectedResourceHostedInstanceId }
+            : {})
         }
       );
       if (selectedIdRef.current !== selected.id) return;
@@ -2012,7 +2141,11 @@ export function HostedManagedChats({
     void openNewConversation(initialAgentId);
   }, [initialAgentId, initialNewConversation, openNewConversation]);
 
-  const createConversation = async (continueWithoutMemory = false) => {
+  const createConversation = async (
+    continueWithoutMemory = false,
+    selectedResourceIds = initialSelectedResourceIds,
+    selectedResourceHostedInstanceId = launchInstance?.hostedInstanceId
+  ) => {
     if (
       !launchCanStart ||
       !launchInstance ||
@@ -2051,6 +2184,7 @@ export function HostedManagedChats({
       promptIdempotencyKey: crypto.randomUUID(),
       clientUserMessageId: crypto.randomUUID(),
       prompt,
+      ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
       state: "pending"
     };
     newStartOperationRef.current = operation;
@@ -2077,12 +2211,17 @@ export function HostedManagedChats({
         projectId: launchProjectId || null,
         contextKind: launchProjectId ? "project" : "independent",
         provider: launchInstance.driverId,
-        aiClientInstanceId: launchInstance.instanceId,
+        aiClientInstanceId:
+          launchInstance.hostedInstanceId ?? launchInstance.instanceId,
         model: launchModel.id,
         reasoningEffort: launchEffort || null,
         permissionMode: launchPermission,
         targetDeviceId: launchDeviceId,
         idempotencyKey: operation.startIdempotencyKey,
+        ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
+        ...(selectedResourceIds.length && selectedResourceHostedInstanceId
+          ? { selectedResourceHostedInstanceId }
+          : {}),
         ...(initialAgentId && launchAgent
           ? {
               agentId: launchAgent.id,
@@ -2529,6 +2668,18 @@ export function HostedManagedChats({
                       projectName={selectedProjectName ?? "Managed runtime"}
                       branch="managed runtime"
                       value={initialPrompt}
+                      clientResourceScope={{
+                        projectId: launchProjectId || null,
+                        hostedInstanceId: launchInstance?.hostedInstanceId,
+                        instanceId: launchInstance?.instanceId,
+                        provider: launchInstance?.driverId
+                      }}
+                      modelOptions={launchDeviceInstances.flatMap(
+                        (instance) => instance.models
+                      )}
+                      onSelectedResourceIdsChange={
+                        setInitialSelectedResourceIds
+                      }
                       required={Boolean(initialAgentId)}
                       ariaLabel={
                         initialAgentId
@@ -2686,8 +2837,8 @@ export function HostedManagedChats({
           <div
             className={
               embeddedReview
-                ? "flex min-h-[340px] min-w-0 flex-1 flex-col"
-                : "mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)]"
+                ? "flex min-h-[340px] min-w-0 flex-1 flex-col lg:flex-row"
+                : "mt-4 grid min-h-[340px] gap-4 lg:grid-cols-[220px_minmax(0,1fr)_auto]"
             }
           >
             {!embeddedReview && (
@@ -2707,6 +2858,8 @@ export function HostedManagedChats({
                       setScopedPendingRecoveryOperation(null, execution.id);
                       setSelectedId(execution.id);
                       setRuntime(null);
+                      setBuildActivity(null);
+                      setSelectedBuildJobId(null);
                       setMessages([]);
                       setPendingMessage(null);
                       setStatus(null);
@@ -2929,11 +3082,32 @@ export function HostedManagedChats({
                       onChange={updateDraft}
                       onSend={async (
                         _text,
-                        _selection,
+                        selection,
                         continueWithoutMemory
                       ) => {
-                        await send(continueWithoutMemory === true);
+                        await send(
+                          continueWithoutMemory === true,
+                          undefined,
+                          undefined,
+                          selection.selectedResourceIds ?? [],
+                          selection.hostedInstanceId
+                        );
                       }}
+                      clientResourceScope={{
+                        projectId: selectedRuntime?.execution.projectId ?? null,
+                        ...(selectedRuntimeResourceInstance?.hostedInstanceId
+                          ? {
+                              hostedInstanceId:
+                                selectedRuntimeResourceInstance.hostedInstanceId
+                            }
+                          : {}),
+                        instanceId:
+                          selectedRuntime?.execution.aiClientInstanceId,
+                        provider: selectedRuntime?.execution.provider
+                      }}
+                      modelOptions={launchOptions?.instances.flatMap(
+                        (instance) => instance.models
+                      )}
                       sendEnabled={canSend && !sending && !activePrompt}
                       sendDisabledReason={
                         error ??
@@ -3039,6 +3213,7 @@ export function HostedManagedChats({
                       return (
                         <article
                           key={request.id}
+                          id={`runtime-item-${request.id}`}
                           className="rounded-lg border border-border bg-surface p-3"
                           aria-label={
                             request.kind === "user_input"
@@ -3271,6 +3446,48 @@ export function HostedManagedChats({
                   ))}
               </SharedChatUI>
             </div>
+            <BuildActivityPanel
+              activity={selectedRuntime ? buildActivity : null}
+              onJobSelect={(jobId) => {
+                setSelectedBuildJobId(jobId);
+                if (!selectedRuntime || !buildActivity) return;
+                void loadHostedBuildProgress(
+                  selectedRuntime.execution.id,
+                  jobId
+                )
+                  .then((payload) => {
+                    const page = parseBuildProgressPage(payload);
+                    if (
+                      !page ||
+                      page.events.some(
+                        (event) =>
+                          event.executionGeneration !==
+                          selectedRuntime.execution.executionGeneration
+                      )
+                    ) {
+                      setBuildActivity(unavailableBuildProgress(buildActivity));
+                      return;
+                    }
+                    setBuildActivity(
+                      activityWithBuildProgress({
+                        current: buildActivity,
+                        page,
+                        jobs: buildActivity.jobs,
+                        projectName: selectedProjectName ?? undefined
+                      })
+                    );
+                  })
+                  .catch(() =>
+                    setBuildActivity(unavailableBuildProgress(buildActivity))
+                  );
+              }}
+              onAttention={(runtimeItemId) => {
+                document
+                  .getElementById(`runtime-item-${runtimeItemId}`)
+                  ?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+              className="max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:shadow-2xl"
+            />
           </div>
         )}
         {projectMoveDialogOpen && selectedRuntime && projectMoveDestination ? (

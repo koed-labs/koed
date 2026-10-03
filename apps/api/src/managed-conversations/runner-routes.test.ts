@@ -322,6 +322,86 @@ describe("managed Conversation runner routes", () => {
     }
   });
 
+  it("accepts Build progress only for the current owner-assigned execution generation", async () => {
+    const jobId = randomUUID();
+    const attemptId = randomUUID();
+    const recordProgress = vi.fn(async () => undefined);
+    const fixture = await buildServer({
+      repository: {
+        getPersonalAgentExecutionJob: vi.fn(async (actor, requestedJobId) => {
+          expect(actor).toEqual({ userId: ids.user });
+          expect(requestedJobId).toBe(jobId);
+          return {
+            id: jobId,
+            conversationId: ids.execution,
+            lastAttemptId: attemptId
+          };
+        }),
+        listPersonalAgentExecutionAttempts: vi.fn(async () => ({
+          attempts: [
+            {
+              id: attemptId,
+              status: "running",
+              managedExecutionId: ids.execution,
+              managedExecutionGeneration: 4
+            }
+          ]
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 4,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        recordPersonalAgentBuildProgressEvent: recordProgress
+      }
+    });
+    try {
+      const event = {
+        id: "build:job-started",
+        jobId,
+        attemptId,
+        executionId: ids.execution,
+        executionGeneration: 4,
+        at: new Date().toISOString(),
+        kind: "started",
+        story: { title: "Build started" }
+      };
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
+        headers: runnerHeaders,
+        payload: event
+      });
+      expect(response.statusCode).toBe(200);
+      expect(recordProgress).toHaveBeenCalledWith({ userId: ids.user }, event);
+
+      const withoutAttempt = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
+        headers: runnerHeaders,
+        payload: {
+          ...event,
+          id: "build:missing-attempt",
+          attemptId: undefined
+        }
+      });
+      expect(withoutAttempt.statusCode).toBe(400);
+      expect(recordProgress).toHaveBeenCalledOnce();
+
+      const stale = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/managed-conversation-runner/personal-agent/jobs/${jobId}/build-progress`,
+        headers: runnerHeaders,
+        payload: { ...event, id: "build:stale", executionGeneration: 3 }
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(recordProgress).toHaveBeenCalledOnce();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("rejects Personal Agent output and completion from a stale attempt", async () => {
     const jobId = randomUUID();
     const currentAttemptId = randomUUID();

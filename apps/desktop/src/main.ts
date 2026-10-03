@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   type MessageBoxOptions,
   nativeImage,
   nativeTheme,
@@ -14,6 +15,7 @@ import {
   Tray
 } from "electron";
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, promises as fsPromises } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -22,7 +24,11 @@ import {
   desktopStatusChangedChannel,
   desktopRendererOrigin,
   personalDevicePairingLinkChannel,
-  personalMemoryEventChannel
+  personalMemoryEventChannel,
+  studioNotificationGetPreferenceChannel,
+  studioNotificationNotifyChannel,
+  studioNotificationResetChannel,
+  studioNotificationSetPreferenceChannel
 } from "./ipc/protocol.js";
 import {
   createKoedEnvironment,
@@ -68,8 +74,6 @@ import {
 } from "./window/launch-at-startup.js";
 import {
   consumeDesktopActivation,
-  createDesktopWindowActivator,
-  isStudioReviewLaunch,
   shouldQuitAfterAllWindowsClosed
 } from "./window/lifecycle.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
@@ -79,7 +83,22 @@ import {
   menuBarIconFilename,
   type DesktopMenuBar
 } from "./tray/menu-bar.js";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  collaborationCommandResultSchema,
+  collaborationMessagePageSchema,
+  collaborationRendererCommandSchema,
+  collaborationSnapshotSchema,
+  studioNotificationIntentSchema,
+  studioNotificationSourceSchema
+} from "@koed/shared";
 import type { CollaborationApprovalReview } from "@koed/shared";
+import { createStudioNotificationAuthority } from "./window/studio-notification-authority.js";
+import {
+  createStudioNotificationController as createNativeNotifications,
+  createStudioNotificationPreferenceStore,
+  studioNotificationPreferencePath
+} from "./window/studio-notifications.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
@@ -89,10 +108,6 @@ const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
   resourcesPath: process.resourcesPath
 });
 const appName = "Koed";
-const studioReviewOnly = isStudioReviewLaunch({
-  appIsPackaged: app.isPackaged,
-  argv: process.argv
-});
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
   packagedDesktop: app.isPackaged,
@@ -121,12 +136,14 @@ let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
+let pairingNavigationPending = false;
 const managedPreviewController = createManagedPreviewController();
 
 const acceptPairingDeepLink = (value: string): string | null => {
   const pairingLink = pairingLinkFromDeepLink(value);
   if (!pairingLink) return null;
   pairingLinkInbox.accept(pairingLink);
+  pairingNavigationPending = true;
   return pairingLink;
 };
 
@@ -191,11 +208,15 @@ const openExternal = createExternalUrlOpener({
 });
 
 let studioBrowserWindow: BrowserWindow | null = null;
+let nativeStudioNotifications: ReturnType<
+  typeof createNativeNotifications
+> | null = null;
 let studioTeamDraftStore:
   | import("./window/studio-window.js").StudioTeamDraftStore
   | null = null;
 const studioWindowController = createStudioWindowController({
   allowedRendererOrigins,
+  platform: process.platform,
   studioRendererOrigins,
   createWindow: () => {
     studioBrowserWindow = new BrowserWindow({
@@ -209,7 +230,11 @@ const studioWindowController = createStudioWindowController({
   },
   confirmNativeReview: async (review: CollaborationApprovalReview) => {
     const reviewWindow = studioBrowserWindow;
-    if (!reviewWindow || reviewWindow.isDestroyed() || !reviewWindow.isVisible()) {
+    if (
+      !reviewWindow ||
+      reviewWindow.isDestroyed() ||
+      !reviewWindow.isVisible()
+    ) {
       return false;
     }
     const details = review.details
@@ -449,18 +474,6 @@ const createWindow = async () => {
     .catch(() => undefined);
 };
 
-const showDesktopWindow = createDesktopWindowActivator({
-  beforeOpen: async () => {
-    backgroundLaunchPending = false;
-    if (process.platform === "darwin") await app.dock?.show();
-  },
-  createWindow,
-  getWindow: () => mainWindow,
-  waitForBootstrap: async () => {
-    await bootstrapPromise;
-  }
-});
-
 const showStudioWindow = async (): Promise<void> => {
   await bootstrapPromise;
   backgroundLaunchPending = false;
@@ -468,16 +481,27 @@ const showStudioWindow = async (): Promise<void> => {
   await studioWindowController.open();
 };
 
-const showPrimaryWindow = studioReviewOnly
-  ? showStudioWindow
-  : showDesktopWindow;
+const showPrimaryWindow = showStudioWindow;
+
+async function navigateToStudioPairingSettings(): Promise<void> {
+  const window = studioBrowserWindow;
+  if (!window || window.isDestroyed()) return;
+  const current = new URL(window.webContents.getURL());
+  if (!studioRendererOrigins.has(current.origin)) return;
+  await window.loadURL(new URL("/settings/", current.origin).href);
+  pairingNavigationPending = false;
+}
 
 async function showPairingDeepLink(value: string): Promise<void> {
   const pairingLink = acceptPairingDeepLink(value);
   if (!pairingLink) return;
-  await showDesktopWindow();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
+  await showStudioWindow();
+  await navigateToStudioPairingSettings();
+  if (studioBrowserWindow && !studioBrowserWindow.isDestroyed()) {
+    studioBrowserWindow.webContents.send(
+      personalDevicePairingLinkChannel,
+      pairingLink
+    );
   }
 }
 
@@ -542,6 +566,180 @@ const bootstrap = async () => {
     personalDevicePairingStore
   );
   const server = koedServer;
+  if (!server) throw new Error("Koed server manager is unavailable.");
+  const runNotificationCollaborationCommand = async (commandValue: unknown) => {
+    const command = collaborationRendererCommandSchema.parse(commandValue);
+    const controller = new AbortController();
+    const timeout = AbortSignal.timeout(8_000);
+    const context = {
+      ownerId: `studio-native-notification:${command.requestId}`,
+      signal: AbortSignal.any([controller.signal, timeout]),
+      emitCollaborationEvent: () => undefined
+    };
+    try {
+      const result = collaborationCommandResultSchema.parse(
+        await server.handlers.collaboration(command, context)
+      );
+      if (
+        !result.ok ||
+        result.requestId !== command.requestId ||
+        result.command !== command.command
+      )
+        throw new Error("Notification message authority is unavailable.");
+      return result;
+    } finally {
+      controller.abort();
+    }
+  };
+  const authority = createStudioNotificationAuthority({
+    getAccess: () => server.studioLocalAccess(),
+    loadTeamMessage: async ({ teamId, threadId, rootMessageId, messageId }) => {
+      const load = await runNotificationCollaborationCommand({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: { forceRemoteNavigation: true }
+      });
+      if (load.command !== "collaboration.load")
+        throw new Error("Notification Team authority is unavailable.");
+      const snapshot = collaborationSnapshotSchema.parse(load.data.snapshot);
+      if (
+        snapshot.connection.state !== "live" ||
+        !snapshot.connection.backendId ||
+        !snapshot.navigation.teamPrincipal
+      )
+        throw new Error("Notification Team authority is unavailable.");
+      const team = snapshot.navigation.teams.find((item) => item.id === teamId);
+      if (!team) throw new Error("Notification Team authority was revoked.");
+      const pageResult = await runNotificationCollaborationCommand({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load_message_page",
+        input: {
+          thread: { scope: "team", teamId, threadId },
+          rootMessageId,
+          direction: "newer",
+          cursor: null,
+          limit: 50
+        }
+      });
+      if (pageResult.command !== "collaboration.load_message_page")
+        throw new Error("Notification message authority is unavailable.");
+      const page = collaborationMessagePageSchema.parse(pageResult.data.page);
+      const message = page.items.find((item) => item.id === messageId) ?? null;
+      const current = await runNotificationCollaborationCommand({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: { forceRemoteNavigation: true }
+      });
+      if (current.command !== "collaboration.load")
+        throw new Error("Notification Team authority is unavailable.");
+      const currentSnapshot = collaborationSnapshotSchema.parse(
+        current.data.snapshot
+      );
+      const currentTeam = currentSnapshot.navigation.teams.find(
+        (item) => item.id === teamId
+      );
+      if (
+        currentSnapshot.connection.state !== "live" ||
+        currentSnapshot.connection.backendId !==
+          snapshot.connection.backendId ||
+        currentSnapshot.navigation.teamPrincipal?.id !==
+          snapshot.navigation.teamPrincipal.id ||
+        !currentTeam
+      )
+        throw new Error("Notification Team authority changed during the read.");
+      const currentIsDirectMessage = currentTeam.directMessages.some(
+        (thread) => thread.id === threadId
+      );
+      return {
+        principalId: currentSnapshot.navigation.teamPrincipal!.id,
+        isDirectMessage: currentIsDirectMessage,
+        message: message
+          ? {
+              id: message.id,
+              scope: message.scope,
+              teamId: message.teamId,
+              senderKind: message.senderKind,
+              senderId: message.sender.id,
+              mentionUserIds: message.mentionUserIds
+            }
+          : null
+      };
+    }
+  });
+  nativeStudioNotifications?.dispose();
+  nativeStudioNotifications = createNativeNotifications({
+    resolve: authority.resolve,
+    getPreferenceScopes: authority.preferenceScopes,
+    preferences: createStudioNotificationPreferenceStore(
+      studioNotificationPreferencePath(app.getPath("userData"))
+    ),
+    createNativeNotification: (copy) => new Notification(copy),
+    canShowNativeNotification: () =>
+      Notification.isSupported() &&
+      studioWindowController.isNotificationEligible(),
+    openStudio: async (navigation) => {
+      await showStudioWindow();
+      await studioWindowController.navigateToNotification(navigation);
+    }
+  });
+  const trustedStudioNotificationSender = (
+    event: Electron.IpcMainInvokeEvent
+  ): boolean => {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame)
+      return false;
+    try {
+      return studioRendererOrigins.has(
+        desktopRendererOrigin(event.senderFrame.url)
+      );
+    } catch {
+      return false;
+    }
+  };
+  ipcMain.handle(
+    studioNotificationNotifyChannel,
+    async (event, value: unknown) => {
+      if (!trustedStudioNotificationSender(event))
+        throw new Error("Untrusted Studio IPC sender.");
+      return (
+        nativeStudioNotifications?.notify(
+          studioNotificationIntentSchema.parse(value)
+        ) ?? { shown: false }
+      );
+    }
+  );
+  ipcMain.handle(
+    studioNotificationResetChannel,
+    async (event, source: unknown) => {
+      if (!trustedStudioNotificationSender(event))
+        throw new Error("Untrusted Studio IPC sender.");
+      const parsedSource =
+        source === undefined
+          ? undefined
+          : studioNotificationSourceSchema.parse(source);
+      nativeStudioNotifications?.reset(parsedSource);
+      return { ok: true };
+    }
+  );
+  ipcMain.handle(studioNotificationGetPreferenceChannel, async (event) => {
+    if (!trustedStudioNotificationSender(event))
+      throw new Error("Untrusted Studio IPC sender.");
+    return nativeStudioNotifications?.getPreference() ?? { enabled: false };
+  });
+  ipcMain.handle(
+    studioNotificationSetPreferenceChannel,
+    async (event, enabled: unknown) => {
+      if (!trustedStudioNotificationSender(event))
+        throw new Error("Untrusted Studio IPC sender.");
+      if (typeof enabled !== "boolean")
+        throw new Error("Notification preference must be boolean.");
+      return (
+        nativeStudioNotifications?.setEnabled(enabled) ?? { enabled: false }
+      );
+    }
+  );
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {
     app.dock?.setIcon(desktopIcon);
@@ -550,6 +748,21 @@ const bootstrap = async () => {
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
     allowedRendererOrigins,
     studioRendererOrigins,
+    confirmStudioSetupRun: async (sender) => {
+      const window = BrowserWindow.fromWebContents(sender);
+      if (!window || window.isDestroyed()) return false;
+      const { response } = await dialog.showMessageBox(window, {
+        type: "question",
+        title: "Set up Koed on this computer?",
+        message: "Koed will prepare Personal Memory and local core services.",
+        detail:
+          "Koed will install or link its local runtime, download and verify the embedding model, start local services, and prepare Koed core artifacts. Detected AI Client setup remains optional. Existing completed steps will be left alone.",
+        buttons: ["Cancel", "Set up Koed"],
+        defaultId: 0,
+        cancelId: 0
+      });
+      return response === 1;
+    },
     studioChatRecovery: server.studioChatRecovery,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
@@ -620,12 +833,13 @@ const bootstrap = async () => {
       },
       buildMenu: (template) => Menu.buildFromTemplate(template),
       getStatus: () => server.handlers.status(),
-      openDesktop: showDesktopWindow,
+      openDesktop: showPrimaryWindow,
       quit: () => app.quit()
     });
   }
   await startDesktopWindowAndRuntime({
-    background: backgroundLaunchPending || studioReviewOnly,
+    // Studio opens below; never create the legacy window during normal startup.
+    background: true,
     createWindow,
     resumeRuntime: async () => {
       const persistentPdsStore = createPdsDesktopSecretStore({
@@ -664,8 +878,15 @@ const bootstrap = async () => {
       }
     }
   });
-  if (studioReviewOnly && !backgroundLaunchPending) {
+  if (
+    backgroundLaunchPending &&
+    !pairingNavigationPending &&
+    process.platform === "darwin"
+  ) {
+    await studioWindowController.openHidden();
+  } else if (!backgroundLaunchPending || pairingNavigationPending) {
     await studioWindowController.open();
+    if (pairingNavigationPending) await navigateToStudioPairingSettings();
   }
 };
 
@@ -688,9 +909,7 @@ app.on("activate", () => {
   const activation = consumeDesktopActivation(backgroundLaunchPending);
   backgroundLaunchPending = activation.backgroundLaunchPending;
   if (!activation.openWindow) return;
-  if (studioReviewOnly || BrowserWindow.getAllWindows().length === 0) {
-    void showPrimaryWindow();
-  }
+  void showPrimaryWindow();
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
@@ -700,6 +919,8 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();
+    nativeStudioNotifications?.dispose();
+    nativeStudioNotifications = null;
     await studioWindowController.close();
     await koedServer?.stop();
     desktopMenuBar?.dispose();

@@ -368,7 +368,10 @@ export class PiManagedConversationSession {
     return { provider: "pi", sessionId, transcriptPath };
   }
 
-  async prompt(prompt: string): Promise<{
+  async prompt(
+    prompt: string,
+    selectedSkills: readonly string[] = []
+  ): Promise<{
     identity: PiManagedConversationIdentity;
     text: string;
     turnId: string;
@@ -391,7 +394,14 @@ export class PiManagedConversationSession {
     // A process failure can precede the prompt-acceptance response.
     void settled.catch(() => undefined);
     try {
-      await this.request({ type: "prompt", message: prompt });
+      const skillInvocations = selectedSkills.map((name) => `/skill:${name}`);
+      await this.request({
+        type: "prompt",
+        message:
+          skillInvocations.length > 0
+            ? `${skillInvocations.join("\n")}\n${prompt}`
+            : prompt
+      });
       await settled;
       this.identity = this.readIdentity(
         await this.request({ type: "get_state" })

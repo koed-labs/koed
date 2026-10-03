@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Utility classes used by the reused Desktop controls and shared primitives. */
+@source "../../../desktop/src/renderer";
+@source "../../../../packages/ui/src";
+
 /*
   Koed design tokens.
   Every color used in components should come from one of these tokens
@@ -63,6 +67,13 @@
   --team-5: #fb923c;
   --team-6: #a3e635;
 
+  --card: var(--surface);
+  --card-foreground: var(--foreground);
+  --muted-foreground: var(--muted);
+  --primary: var(--accent);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--foreground);
+
   --wallpaper-image: url("/chat-wallpaper-dark.png");
   --wallpaper-opacity: 1;
 }
@@ -76,6 +87,16 @@
 
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+
+  /* Map reused Desktop primitives to the existing Studio palette. */
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted);
+  --color-input: var(--border-strong);
+  --color-ring: var(--accent);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--foreground);
+  --color-destructive: var(--danger);
 
   --color-foreground: var(--foreground);
   --color-foreground-secondary: var(--foreground-secondary);

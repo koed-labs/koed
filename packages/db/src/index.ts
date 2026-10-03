@@ -367,6 +367,11 @@ export {
   type CreatePullRequestReviewInput
 } from "./pull-request-repository.js";
 export {
+  createAiClientResourceRepository,
+  type AiClientResourceRepository,
+  type AiClientResourceDiscoveryTarget
+} from "./ai-client-resource-repository.js";
+export {
   createPublicSquareRepository,
   type PublicSquareRepository,
   type PublicSquarePublicationRecord
