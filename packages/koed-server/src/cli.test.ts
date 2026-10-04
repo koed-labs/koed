@@ -234,7 +234,7 @@ describe("JSON command output", () => {
     }));
     const startDaemon = vi.fn(() => ({
       ok: true as const,
-      state: "already_running" as const,
+      state: "starting" as const,
       koedHome,
       message: "already running"
     }));

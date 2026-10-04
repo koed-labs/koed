@@ -22,6 +22,7 @@ import {
   parseCanonicalPdsJson,
   pdsFinalizedStatementHash,
   pdsPublicKeyCommitment,
+  type PdsGroupStatement,
   signPdsGroupDraft,
   signPdsGroupFinal,
   signPdsRecord,
@@ -1365,7 +1366,7 @@ describe("Personal Sync control client", () => {
       }
     };
     let authorizedBundle: Record<string, unknown> | undefined;
-    let finalizedStatement: Record<string, unknown> | undefined;
+    let finalizedStatement: PdsGroupStatement | undefined;
     const fetch = async (url: string | URL, options?: RequestInit) => {
       const parsed = new URL(String(url));
       if (
@@ -1379,8 +1380,10 @@ describe("Personal Sync control client", () => {
           statement: string;
           key_bundle: string;
         };
-        const statement = JSON.parse(body.statement) as Record<string, unknown>;
-        const bundle = JSON.parse(body.key_bundle) as Record<string, unknown>;
+        const statement = JSON.parse(body.statement) as PdsGroupStatement;
+        const bundle = JSON.parse(body.key_bundle) as ReturnType<
+          typeof createPdsAuthorizedKeyBundle
+        >["bundle"];
         const statementDraft = statement.draft as Record<string, unknown>;
         const statementBody = statementDraft.body as Record<string, unknown>;
         const joining = fixture.request;
@@ -1564,7 +1567,7 @@ describe("Personal Sync control client", () => {
     };
     let visibleGroup: Record<string, unknown> = currentGroup;
     let finalizedBundle: Record<string, unknown> | undefined;
-    let finalizedStatement: Record<string, unknown> | undefined;
+    let finalizedStatement: PdsGroupStatement | undefined;
     let transitionDraft: Record<string, unknown> | undefined;
     let authorizedBundleDraft: Record<string, unknown> | undefined;
     let storedRuntime: string | undefined;
@@ -1586,11 +1589,10 @@ describe("Personal Sync control client", () => {
           statement: string;
           key_bundle: string;
         };
-        const statement = JSON.parse(body.statement) as Record<string, unknown>;
-        const keyBundle = JSON.parse(body.key_bundle) as Record<
-          string,
-          unknown
-        >;
+        const statement = JSON.parse(body.statement) as PdsGroupStatement;
+        const keyBundle = JSON.parse(body.key_bundle) as ReturnType<
+          typeof createPdsAuthorizedKeyBundle
+        >["bundle"];
         const draft = statement.draft as Record<string, unknown>;
         const keyBundleHash = (draft.body as Record<string, unknown>)
           .keyBundleHash;
