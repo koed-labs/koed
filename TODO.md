@@ -105,7 +105,6 @@ automatic verified current-work summary. See `docs/studio-personal-agents-plan.m
 - Implemented: cursor-based older Job history preserves original attribution and already loaded pages, with guarded retry and refresh.
 - Implemented: reusable synthetic Studio browser regression tests and a focused GitHub Actions workflow. See `apps/studio/tests/ui/README.md` for commands, coverage and limits.
 
-
 ## Personal Studio QA follow-ups — 2026-10-04
 
 - Complete the live rewritten-transcript continuation check after macOS
