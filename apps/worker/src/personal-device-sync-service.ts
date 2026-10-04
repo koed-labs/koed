@@ -32,7 +32,7 @@ export interface PdsWorkerSecureRuntime {
     groupId: string;
     transportId: string;
   }): Promise<"committed" | "acked" | "missing">;
-  /** Reconcile lifecycle controls; false pauses package work during an epoch transition. */
+  /** Reconcile durable lifecycle controls; false pauses mailbox, publication, and Recall work during epoch transitions. */
   pollLifecycle?(): Promise<boolean | void>;
   poll(): Promise<
     Array<{

@@ -1,12 +1,13 @@
 # Connect Personal devices
 
 Use private LAN or Tailscale by default. For devices on separate networks,
-configure `KOED_PDS_REQUEST_RELAY_URL` on both installations with same trusted
+configure `KOED_PDS_REQUEST_RELAY_URL` on both installations with the same trusted
 Paseo Relay WebSocket endpoint, for example `wss://relay.example/ws`. Paseo
 carries narrow pairing and PDS application tunnels; it does not approve devices,
 replace PDS durable sync, or receive plaintext pairing invitations. The
 installation that created the Personal Device Group remains its Authority/Relay
-host and retains membership authority.
+host and retains membership authority. Without Paseo, both installations need
+private-network reachability; no public pairing listener is provided.
 
 ## Joining through SSH
 
@@ -39,11 +40,10 @@ Never put that response in ordinary logs or share it beyond the existing device.
 ## Joining from Electron
 
 Authority-issued invitation QR codes and copy links use
-`koed://pair/redeem` deep links. Link wraps the private-network or
+`koed://pair/redeem` deep links. The link wraps the private-network or
 configured-relay invitation URL; opening it on the joining computer routes it
-to installed Koed Desktop. Native client validates underlying URL and performs
-pairing. This is OS app handoff, not a hosted Koed web client.
-
+to installed Koed Desktop. The native client validates the underlying URL and
+performs pairing. This is OS app handoff, not a hosted Koed web client.
 On the new installation, open **Devices → Connect to an existing device** and
 copy the request link. Paste it into **Devices → Add device** on the existing
 Authority-hosting Electron installation. Review and accept it there. Both CLI and
@@ -68,19 +68,30 @@ Without Paseo, the joining supervisor creates a narrow private-interface HTTP
 listener using an available port. Its address and port are in the request link;
 both installations must reach each other's private endpoints. With Paseo
 configured, pairing listeners bind loopback only and both installations make
-outbound WebSocket connections to configured relay. Pairing-control and PDS
+outbound WebSocket connections to the configured relay. Pairing-control and PDS
 traffic use distinct random relay capabilities, so competing processes cannot
-replace one another's route. Durable PDS synchronization still uses existing
+replace one another's route. Durable PDS synchronization still uses the existing
 Authority/Relay mailbox protocol through its authenticated application tunnel.
+The existing device must reach the joining request endpoint, and the joining
+device must reach the existing Authority/Relay endpoint for enrollment and
+subsequent synchronization. Reversing link direction does not remove these
+network requirements.
+
 During a membership epoch transition, an active device may use its prior-head
-certificate for certificate, lifecycle, and wake control only. Package publication
-and mailbox reconciliation pause until the Authority reports the data plane ready;
-the local worker retries lifecycle reconciliation rather than treating this
-expected transition window as a transport failure.
-Tunneled wake requests are bounded to five seconds because the Authority processes
-frames serially; cancelling a client connection does not cancel an already
-forwarded long poll. Direct HTTP wake requests retain their longer wait. Local
-work cancels the client wake and rearms it after reconciliation completes.
+certificate for certificate, lifecycle, and wake control only. Package
+publication and mailbox reconciliation pause until the Authority reports the
+data plane ready; the local worker retries lifecycle reconciliation rather than
+treating this expected transition window as a transport failure. A revocation
+epoch's recipient keys are issued only for devices still active after the
+revocation; revoked devices are excluded.
+
+Tunneled wake requests are bounded to five seconds because the Authority
+processes frames serially; cancelling a client connection does not cancel an
+already-forwarded long poll. Direct HTTP wake requests retain their longer wait.
+Local work cancels the client wake and rearms it after reconciliation completes. Forwarded HTTP 401 or 403 responses alone do not prove a device was
+revoked and must not delete its saved Relay route. Inbound Relay work queues are
+bounded by both request count and bytes, with cleanup for abandoned queued work.
+
 Epoch refresh retains previous membership certificates as historical signature
 proof for retained checkpoints. They do not grant current access or add devices
 to the active recipient set.

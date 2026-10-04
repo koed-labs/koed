@@ -15,6 +15,7 @@ import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
+import { resolveKoedAppRuntime } from "./app-runtime.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -386,11 +387,17 @@ export const setupPi = (
       action: "Fix malformed AI Client registry, then rerun Pi setup."
     };
   }
-  const sourceCandidates = [
-    resolve(paths.repoRoot, "packages/mcp-server/integrations/pi"),
-    resolve(paths.repoRoot, "koed-runtime/mcp-server/integrations/pi"),
-    resolve(paths.repoRoot, "mcp-server/integrations/pi")
-  ];
+  const runtime = resolveKoedAppRuntime(paths, environment);
+  const sourceCandidates =
+    runtime.kind === "source"
+      ? [resolve(runtime.root, "packages/mcp-server/integrations/pi")]
+      : [
+          resolve(
+            runtime.root,
+            "node_modules/@koed/mcp-server/integrations/pi"
+          ),
+          resolve(runtime.root, "mcp-server/integrations/pi")
+        ];
   const source = sourceCandidates.find(existsSync);
   const target = resolve(paths.koedHome, "integrations/pi");
   const requestedExecutable = environment.KOED_PI_EXECUTABLE?.trim() || "pi";

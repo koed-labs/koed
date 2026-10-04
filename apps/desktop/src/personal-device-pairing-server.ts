@@ -168,6 +168,13 @@ export type PersonalDevicePairingServer = {
   relayUrl: string | null;
 };
 
+export const isConfirmedPdsDeviceRevocation = (response: {
+  status: number;
+  headers?: Record<string, string>;
+}): boolean =>
+  response.status === 403 &&
+  response.headers?.["x-koed-pds-device-revocation"] === "confirmed";
+
 type PairingServerOptions = {
   port?: number;
   host?: string;
@@ -1544,7 +1551,7 @@ export const startPersonalDevicePairingServer = async (
         mode: "relay",
         signal
       });
-      if (forwarded.status === 401 || forwarded.status === 403) {
+      if (isConfirmedPdsDeviceRevocation(forwarded)) {
         void removePersistedRelayRoute(pending.id).catch(() => undefined);
         const session = relaySessions.get(pending.id);
         if (session) {

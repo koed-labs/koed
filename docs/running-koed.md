@@ -420,11 +420,10 @@ one-time QR code, copyable `koed://pair/redeem` link, and expiry. The link
 wraps a private-network or configured-relay invitation and is the enrollment
 capability: the second Desktop may scan the QR, open the link, or paste it under
 **Join with link**, then choose **Connect device**. Koed validates the signed
-request and completes enrollment
-automatically; no short-code comparison or **Approve device** action exists.
-The link is cleared after redemption and must never be logged or persisted.
-Paste or QR scan is preferred. Opening `koed://pair/redeem` uses OS protocol
-activation: macOS normally sends the URL through Electron's `open-url` event,
+request and completes enrollment automatically; no short-code comparison or
+**Approve device** action exists. The link is cleared after redemption and must
+never be logged or persisted. Paste or QR scan is preferred. Opening
+`koed://pair/redeem` uses OS protocol activation: macOS normally sends the URL through Electron's `open-url` event,
 while Windows/Linux may place it in argv on initial launch or single-instance
 activation. That platform behavior means Koed makes no blanket no-argv claim;
 users avoiding argv exposure should paste or scan. Joined devices are symmetric
@@ -433,18 +432,18 @@ packages directly when every recipient has a current reachable peer route, but
 V1 does not copy the Authority key or offer another invitation from those
 replicas. Unreachable devices continue through the configured relay.
 
-Pairing requires both devices to reach the inviting installation's private
-HTTP endpoint on TCP port `3310`. The listener binds one concrete non-loopback
-private IPv4 interface selected from available interfaces; it never binds
-`0.0.0.0` or a public address. This may be an RFC1918 LAN address or a
-Tailscale address in `100.64.0.0/10`; Tailscale must be configured so the
-inviting device's port is reachable over the tailnet. Invitation control and
-relay URLs use exact bound host and port. The HTTP pairing server remains
-private and must not be exposed to the public internet. The invitation lasts
-ten minutes, is invalidated after completion except for bounded final replay,
-and its bearer token is sensitive even though the application encrypts the
-enrollment ceremony. Koed then uses the existing signed PDS membership and
-encrypted relay protocol.
+Without Paseo, pairing uses the inviting installation's private HTTP endpoint
+on TCP port `3310`. The listener binds one concrete non-loopback private IPv4
+interface selected from available interfaces; it never binds `0.0.0.0` or a
+public address. This may be an RFC1918 LAN address or a Tailscale address in
+`100.64.0.0/10`; Tailscale must be configured so the endpoint is reachable over
+the tailnet. Invitation control and relay URLs use the exact bound host and
+port. For cross-network pairing, configure `KOED_PDS_REQUEST_RELAY_URL` on
+both installations; listeners bind loopback and make outbound relay sessions.
+Paseo carries encrypted application tunnels but does not replace signed PDS
+membership or durable sync. The invitation lasts ten minutes, is invalidated
+after completion except for bounded final replay, and its bearer token remains
+sensitive even though Koed encrypts the enrollment ceremony.
 
 After enrollment, every Desktop keeps its private-network package receive path
 available for certificate-authenticated encrypted replication and restores it

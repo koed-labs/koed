@@ -27,6 +27,7 @@ import {
   createKoedServerManager,
   createKoedEnvironment
 } from "../apps/desktop/dist-electron/koed-server/manager.js";
+import { ensurePdsDesktopAuthority } from "../apps/desktop/dist-electron/pds-authority.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const cliPath = join(repoRoot, "packages/koed-server/dist/cli.js");
@@ -135,6 +136,9 @@ const start = async (environment) => {
 try {
   const authority = createHome("authority");
   const joining = createHome("joining");
+  await ensurePdsDesktopAuthority(
+    createPdsApplicationSecretStore({ rootPath: authority.KOED_HOME })
+  );
   authority.PDS_AUTHORITY_SECRET_REF = "pds-authority";
   authority.PDS_RUNTIME_SECRET_REF = "pds-runtime";
   authority.PDS_DESKTOP_SECRET_STORAGE = "application_managed";

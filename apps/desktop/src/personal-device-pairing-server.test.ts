@@ -9,6 +9,7 @@ import {
 import { canonicalizePdsJson, PDS_PROTOCOL } from "@koed/shared";
 import { exchangeOverPaseoRelay, paseoRelayServerId } from "@koed/koed-server";
 import {
+  isConfirmedPdsDeviceRevocation,
   resolvePersonalDevicePairingPort,
   startPersonalDevicePairingServer,
   type PersonalDevicePairingInvitation
@@ -149,6 +150,16 @@ const exchange = async (
 };
 
 describe("Personal Device LAN pairing server", () => {
+  it("distinguishes confirmed device revocation from request authentication errors", () => {
+    expect(isConfirmedPdsDeviceRevocation({ status: 401 })).toBe(false);
+    expect(isConfirmedPdsDeviceRevocation({ status: 403 })).toBe(false);
+    expect(
+      isConfirmedPdsDeviceRevocation({
+        status: 403,
+        headers: { "x-koed-pds-device-revocation": "confirmed" }
+      })
+    ).toBe(true);
+  });
   it("uses one validated pairing port configuration", () => {
     expect(resolvePersonalDevicePairingPort(undefined)).toBe(3310);
     expect(resolvePersonalDevicePairingPort(" 43110 ")).toBe(43110);
@@ -444,6 +455,124 @@ describe("Personal Device LAN pairing server", () => {
       version: 1,
       routes: [{ id: "11111111-2222-4333-8444-555555555555" }]
     });
+  });
+
+  it("removes persisted PDS routes only after confirmed revocation over live relay", async () => {
+    const relay = new WebSocketServer({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/ws"
+    });
+    await new Promise<void>((resolve) => relay.once("listening", resolve));
+    const address = relay.address();
+    if (!address || typeof address === "string")
+      throw new Error("relay bind failed");
+    const relayUrl = `ws://127.0.0.1:${address.port}/ws`;
+    const routeId = "11111111-2222-4333-8444-555555555555";
+    const token = Buffer.alloc(32, 7).toString("base64url");
+    const persistedRoutes = new Map([
+      [routeId, { id: routeId, token, relayUrl, purpose: "pds" }]
+    ]);
+    const stored = new Map([
+      [
+        "pds-pairing-relay-routes",
+        JSON.stringify({ version: 2, routes: [...persistedRoutes.values()] })
+      ]
+    ]);
+    const relaySockets = new Map<
+      string,
+      { server?: WebSocket; client?: WebSocket }
+    >();
+    relay.on("connection", (socket, request) => {
+      const url = new URL(request.url ?? "/", "http://relay.invalid");
+      const serverId = url.searchParams.get("serverId") ?? "";
+      const pair = relaySockets.get(serverId) ?? {};
+      relaySockets.set(serverId, pair);
+      if (url.searchParams.get("role") === "server") pair.server = socket;
+      else pair.client = socket;
+      socket.on("message", (frame) => {
+        const target = socket === pair.server ? pair.client : pair.server;
+        if (target?.readyState === WebSocket.OPEN) target.send(frame);
+      });
+      socket.on("close", () => {
+        if (pair.server === socket) pair.server = undefined;
+        if (pair.client === socket) pair.client = undefined;
+      });
+    });
+    const forwardControl = vi.fn(async (input) => {
+      if (input.headers["x-pds-relay-proof"] === "valid-revoked-proof")
+        return {
+          status: 403,
+          headers: { "x-koed-pds-device-revocation": "confirmed" },
+          body: "{}"
+        };
+      return { status: 403, body: "{}" };
+    });
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      addresses: () => [],
+      relayUrl,
+      persistence: {
+        get: async (key) => stored.get(key) ?? null,
+        put: async (key, value) => void stored.set(key, value),
+        delete: async (key) => void stored.delete(key)
+      },
+      forwardControl
+    });
+    const relayRequest = async (proof: string) => {
+      const serverId = paseoRelayServerId(
+        PERSONAL_DEVICE_PAIRING_PROTOCOL,
+        routeId,
+        token
+      );
+      const client = new WebSocket(
+        `${relayUrl}?serverId=${serverId}&role=client`
+      );
+      await new Promise<void>((resolve, reject) => {
+        client.once("open", resolve);
+        client.once("error", reject);
+      });
+      const response = new Promise<Record<string, unknown>>(
+        (resolve, reject) => {
+          client.once("message", (data) => resolve(JSON.parse(String(data))));
+          client.once("error", reject);
+        }
+      );
+      client.send(
+        JSON.stringify({
+          protocol: "koed/pds-http-tunnel/v1",
+          request_id: randomUUID(),
+          method: "GET",
+          path: "/v1/personal-device-sync/relay/mailbox",
+          headers: { "x-pds-relay-proof": proof }
+        })
+      );
+      const result = await response;
+      client.close();
+      return result;
+    };
+    try {
+      await vi.waitFor(() => expect(relaySockets.size).toBeGreaterThan(0));
+      for (const proof of ["invalid-signature", "ordinary-auth-failure"]) {
+        await expect(relayRequest(proof)).resolves.toMatchObject({
+          status: 403
+        });
+        expect(
+          JSON.parse(stored.get("pds-pairing-relay-routes")!).routes
+        ).toHaveLength(1);
+      }
+      await expect(relayRequest("valid-revoked-proof")).resolves.toMatchObject({
+        status: 403
+      });
+      await vi.waitFor(() =>
+        expect(stored.has("pds-pairing-relay-routes")).toBe(false)
+      );
+      expect(forwardControl).toHaveBeenCalledTimes(3);
+    } finally {
+      await server.close();
+      for (const client of relay.clients) client.terminate();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
   });
 
   it("restores separate pairing and PDS relay sessions after restart", async () => {

@@ -2264,7 +2264,9 @@ const revokeActiveDevice = async (
   };
   const recipients = [
     ...groupMembers(current)
-      .filter((member) => member.device_id !== deviceId)
+      .filter(
+        (member) => member.status === "active" && member.device_id !== deviceId
+      )
       .map((member) => ({
         recipientId: responseString(member, "device_id"),
         recipientKind: "device" as const,

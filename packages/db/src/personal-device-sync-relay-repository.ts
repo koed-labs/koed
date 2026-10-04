@@ -69,6 +69,8 @@ export interface PdsRelayAuthContext {
   certificate: Record<string, unknown>;
   /** Control plane alone accepts an active unexpired prior-head/epoch certificate. */
   allowStaleHead?: boolean;
+  /** Set only for an Authority-certified member whose device is explicitly revoked. */
+  deviceRevoked?: boolean;
 }
 
 export interface PdsRelayTransportRecord {
@@ -331,21 +333,10 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       const group = row<Record<string, unknown>>(groups.rows[0]);
       if (
         group.state !== "active" ||
-        !pdsRelayControlAllowedDuringPending(
-          group.pending_epoch,
-          input.allowStaleHead === true
-        ) ||
         !certificateIsPdsValid(
           certificate,
           group.authority_public_key as string,
           group.authority_key_id as string
-        ) ||
-        (!input.allowStaleHead &&
-          certificate.statementHash !== group.head_hash) ||
-        !pdsRelayCertificateEpochAllowed(
-          certificate.epoch,
-          group.current_epoch,
-          input.allowStaleHead === true
         ) ||
         certificate.deviceId !== input.proof.deviceId ||
         certificate.deviceSigningKeyId !== input.proof.deviceSigningKeyId
@@ -353,13 +344,35 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         throw publicError();
       }
       const members = await client.query(
-        `select device_id,signing_key_id,signing_public_key from personal_device_group_members
-         where group_id=$1 and device_id=$2 and signing_key_id=$3 and status='active' for share`,
+        `select device_id,signing_key_id,signing_public_key,status from personal_device_group_members
+         where group_id=$1 and device_id=$2 and signing_key_id=$3 and status in ('active','revoked') for share`,
         [group.id, certificate.deviceId, certificate.deviceSigningKeyId]
       );
       if (!members.rowCount) throw publicError();
       const member = row<Record<string, unknown>>(members.rows[0]);
       if (member.signing_public_key !== certificate.deviceSigningPublicKey) {
+        throw publicError();
+      }
+      const deviceRevoked = member.status === "revoked";
+      if (
+        deviceRevoked
+          ? !pdsRelayCertificateEpochAllowed(
+              certificate.epoch,
+              group.current_epoch,
+              true
+            )
+          : !pdsRelayControlAllowedDuringPending(
+              group.pending_epoch,
+              input.allowStaleHead === true
+            ) ||
+            (!input.allowStaleHead &&
+              certificate.statementHash !== group.head_hash) ||
+            !pdsRelayCertificateEpochAllowed(
+              certificate.epoch,
+              group.current_epoch,
+              input.allowStaleHead === true
+            )
+      ) {
         throw publicError();
       }
       const recipients = await client.query(
@@ -382,7 +395,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
           )
         ),
         certificate,
-        allowStaleHead: input.allowStaleHead === true
+        allowStaleHead: input.allowStaleHead === true,
+        ...(deviceRevoked ? { deviceRevoked: true } : {})
       };
     } catch (error) {
       await client.query("rollback");

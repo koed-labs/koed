@@ -383,7 +383,8 @@ describe("SetupChecklist", () => {
     expect(container.textContent).toContain(
       "Complete the preceding setup steps before final verification."
     );
-    expect(container.textContent).toContain("Ready to set up");
+    expect(container.textContent).not.toContain("Ready to set up");
+    expect(container.querySelector(".koed-setup-footer > span")).toBeNull();
   });
 
   it("refreshes shared readiness when inspection finds setup complete", async () => {
@@ -489,7 +490,7 @@ describe("SetupChecklist", () => {
           .click()
       );
       await vi.waitFor(() =>
-        expect(container.textContent).toContain(`${label}: configured`)
+        expect(container.textContent).toContain(`${label}: ready`)
       );
       expect(invoke).toHaveBeenCalledWith(command, {
         operatorConsented: true
@@ -743,7 +744,7 @@ describe("SetupChecklist", () => {
 
     resolveSetup();
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Codex: configured")
+      expect(container.textContent).toContain("Codex: ready")
     );
   });
 
@@ -821,7 +822,7 @@ describe("SetupChecklist", () => {
 
     await vi.waitFor(() => {
       for (const { label } of singleClientCases) {
-        expect(container.textContent).toContain(`${label}: configured`);
+        expect(container.textContent).toContain(`${label}: ready`);
       }
     });
     expect(
@@ -1150,13 +1151,15 @@ describe("SetupChecklist", () => {
     expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
     expect(
       codexCard
-        .querySelector('[aria-label="Auto-capture"]')
+        .querySelector('[aria-label="Auto-capture: Unknown"]')
         ?.getAttribute("title")
-    ).toBe("Auto-capture");
-    expect(codexCard.querySelectorAll(".koed-client-cap-dot")).toHaveLength(0);
+    ).toBe("Auto-capture: Unknown");
+    expect(
+      codexCard.querySelectorAll(".koed-client-cap-dot.is-unknown")
+    ).toHaveLength(3);
     expect(
       container.querySelector('[aria-label="Capability status legend"]')
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("shows capability readiness after a client is configured", async () => {
@@ -1299,7 +1302,7 @@ describe("SetupChecklist", () => {
     expect(onComplete).toHaveBeenCalledOnce();
   });
 
-  it("records setup as configured without requiring capability check refresh", async () => {
+  it("records setup as ready without requiring capability check refresh", async () => {
     let configured = false;
     const status = {
       ...statusFixture("healthy"),
@@ -1359,7 +1362,7 @@ describe("SetupChecklist", () => {
         .click()
     );
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Codex: configured")
+      expect(container.textContent).toContain("Codex: ready")
     );
 
     expect(invoke.mock.calls.map(([command]) => command)).not.toContain(

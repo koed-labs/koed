@@ -2263,7 +2263,14 @@ export const createKoedServerManager = ({
             headers: {
               "content-type":
                 response.headers.get("content-type") ??
-                "application/json; charset=utf-8"
+                "application/json; charset=utf-8",
+              ...(response.headers.get("x-koed-pds-device-revocation")
+                ? {
+                    "x-koed-pds-device-revocation": response.headers.get(
+                      "x-koed-pds-device-revocation"
+                    )!
+                  }
+                : {})
             },
             body
           };
@@ -5551,11 +5558,7 @@ export const createKoedServerManager = ({
             throw new Error("The joining device has not completed enrollment.");
           return { ok: true, state: "connected" };
         } catch (error) {
-          try {
-            personalDevicePairingServer?.cancel(pairing.id);
-          } catch {
-            // Preserve enrollment failure when commit has made cancellation unsafe.
-          }
+          personalDevicePairingServer?.cancel(pairing.id);
           throw error;
         }
       },

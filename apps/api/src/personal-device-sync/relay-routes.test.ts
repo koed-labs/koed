@@ -3,15 +3,51 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizePdsJson,
+  PDS_PROTOCOL,
   pdsRelayBodyDigest,
-  pdsRelayRequestSigningBytes
+  pdsRelayRequestSigningBytes,
+  signPdsRecord
 } from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
+import { buildServer } from "../server/index.js";
 import { registerPersonalDeviceSyncRelayRoutes } from "./relay-routes.js";
 
 const deviceId = "AAAAAAAAAAAAAAAAAAAAAA";
 const signingKeyId = "AQEBAQEBAQEBAQEBAQEBAQ";
 const certificate = Buffer.from("{}", "utf8").toString("base64url");
+const makeAuthorityCertificate = (signingPublicKey: string) => {
+  const authorityKeys = generateKeyPairSync("ed25519");
+  const authorityKeyId = Buffer.alloc(16, 12).toString("base64url");
+  const unsigned = {
+    protocol: PDS_PROTOCOL,
+    groupId: Buffer.alloc(16, 13).toString("base64url"),
+    deviceId,
+    deviceSigningKeyId: signingKeyId,
+    deviceSigningPublicKey: signingPublicKey,
+    deviceKemKeyId: Buffer.alloc(16, 14).toString("base64url"),
+    deviceKemPublicKey: Buffer.alloc(32, 15).toString("base64url"),
+    epoch: "1",
+    operationFamilies: ["pds_relay"],
+    statementSequence: "1",
+    statementHash: Buffer.alloc(32, 16).toString("base64url"),
+    issuedAt: new Date(Date.now() - 1_000).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  };
+  return Buffer.from(
+    canonicalizePdsJson({
+      ...unsigned,
+      authoritySignature: {
+        keyId: authorityKeyId,
+        signature: signPdsRecord(
+          "membership-certificate",
+          unsigned,
+          authorityKeys.privateKey
+        )
+      }
+    }),
+    "utf8"
+  ).toString("base64url");
+};
 
 const relayProof = (input: {
   privateKey: KeyObject;
@@ -67,6 +103,77 @@ const relayContext = (
   }) as unknown as ApiRouteContext;
 
 describe("PDS relay routes", () => {
+  it("confirms revocation only after verifying a known revoked device signature", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const signingPublicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const signedCertificate = makeAuthorityCertificate(signingPublicKey);
+    const repository = {
+      authenticatePdsRelayRequest: vi.fn(async () => ({
+        groupDbId: "group-db",
+        groupId: "group",
+        headHash: "head",
+        epoch: "2",
+        deviceId,
+        signingKeyId,
+        signingPublicKey,
+        recipientDeviceIds: [],
+        certificate: {},
+        deviceRevoked: true
+      })),
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined)
+    };
+    const app = await buildServer({
+      repository: repository as never,
+      pdsAuthoritySigner: {} as never
+    });
+    const target = "/v1/personal-device-sync/relay/mailbox";
+    const request = (proof: string) =>
+      app.inject({
+        method: "GET",
+        url: target,
+        headers: {
+          "x-pds-membership-certificate": signedCertificate,
+          "x-pds-relay-proof": proof
+        }
+      });
+    const validProof = relayProof({
+      privateKey: keys.privateKey,
+      target,
+      nonce: Buffer.alloc(32, 10).toString("base64url")
+    });
+    const confirmed = await request(validProof);
+    expect(confirmed.statusCode).toBe(403);
+    expect(confirmed.headers["x-koed-pds-device-revocation"]).toBe("confirmed");
+    expect(repository.consumePdsRelayRequestNonce).not.toHaveBeenCalled();
+    expect(repository.authenticatePdsRelayRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        certificate: Buffer.from(signedCertificate, "base64url").toString(
+          "utf8"
+        )
+      })
+    );
+
+    const wrongKeys = generateKeyPairSync("ed25519");
+    const invalidProof = relayProof({
+      privateKey: wrongKeys.privateKey,
+      target,
+      nonce: Buffer.alloc(32, 11).toString("base64url")
+    });
+    const rejected = await request(invalidProof);
+    expect(rejected.statusCode).toBe(403);
+    expect(rejected.headers["x-koed-pds-device-revocation"]).toBeUndefined();
+
+    const ordinaryAuthFailure = await app.inject({
+      method: "GET",
+      url: target
+    });
+    expect(ordinaryAuthFailure.statusCode).toBe(403);
+    expect(
+      ordinaryAuthFailure.headers["x-koed-pds-device-revocation"]
+    ).toBeUndefined();
+    await app.close();
+  });
+
   it("stores and returns only signed, current peer route advertisements", async () => {
     const keys = generateKeyPairSync("ed25519");
     const publicKey = keys.publicKey.export({ format: "jwk" }).x!;

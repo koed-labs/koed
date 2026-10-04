@@ -1534,6 +1534,16 @@ describe("Personal Sync control client", () => {
     fixture.group.members[0]!.signing_key_id = sourceSigningKeyId;
     fixture.group.members[0]!.kem_key_id = sourceKemKeyId;
     fixture.group.members[1]!.device_id = targetDeviceId;
+    const revokedKem = testKey("x25519");
+    const previouslyRevoked = {
+      device_id: Buffer.alloc(16, 16).toString("base64url"),
+      signing_key_id: Buffer.alloc(16, 17).toString("base64url"),
+      signing_public_key: testKey("ed25519").publicKey,
+      kem_key_id: Buffer.alloc(16, 18).toString("base64url"),
+      kem_public_key: revokedKem.publicKey,
+      operation_families: ["pds_relay"],
+      status: "revoked"
+    };
     const recoveryKem = testKey("x25519");
     const currentGroup = {
       group_id: groupId,
@@ -1546,7 +1556,7 @@ describe("Personal Sync control client", () => {
         sequence: "1",
         hash: Buffer.alloc(32, 8).toString("base64url")
       },
-      members: fixture.group.members,
+      members: [...fixture.group.members, previouslyRevoked],
       recovery: {
         kem_key_id: "recovery-kem",
         kem_public_key: recoveryKem.publicKey
@@ -1725,6 +1735,9 @@ describe("Personal Sync control client", () => {
     });
     expect(authorizedBundleDraft?.recipientSnapshot as string[]).not.toContain(
       targetDeviceId
+    );
+    expect(authorizedBundleDraft?.recipientSnapshot as string[]).not.toContain(
+      previouslyRevoked.device_id
     );
     expect(JSON.parse(storedRuntime ?? "{}")).toMatchObject({
       groupSecrets: { currentEpoch: "2" },

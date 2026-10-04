@@ -4,15 +4,18 @@ import { withPaseoRelayClientLock } from "@koed/shared";
 
 const DEFAULT_ROUTE_CONTEXT = "koed/pds-device-request/v1";
 const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_QUEUED_MESSAGES = 64;
+const DEFAULT_MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 
-const rawDataText = (data: WebSocket.RawData): string => {
-  const bytes = Array.isArray(data)
+const rawDataBytes = (data: WebSocket.RawData): Buffer =>
+  Array.isArray(data)
     ? Buffer.concat(data)
     : Buffer.isBuffer(data)
       ? data
       : Buffer.from(data);
-  return bytes.toString("utf8");
-};
+
+const rawDataText = (data: WebSocket.RawData): string =>
+  rawDataBytes(data).toString("utf8");
 
 export const normalizeDeviceRequestRelayUrl = (value: string): string => {
   const url = new URL(value);
@@ -200,6 +203,8 @@ export const runPaseoRelayServer = async (input: {
   routeContext: string;
   signal: AbortSignal;
   maxFrameBytes?: number;
+  maxQueuedMessages?: number;
+  maxQueuedBytes?: number;
   onFrame: (frame: string, signal: AbortSignal) => Promise<string>;
   onConnected?: () => void;
 }): Promise<void> => {
@@ -248,42 +253,78 @@ const serveSocket = (
   input: {
     signal: AbortSignal;
     maxFrameBytes?: number;
+    maxQueuedMessages?: number;
+    maxQueuedBytes?: number;
     onFrame: (frame: string, signal: AbortSignal) => Promise<string>;
   }
 ): Promise<void> =>
   new Promise((resolve) => {
     const socketAbort = new AbortController();
     let pending = Promise.resolve();
+    let finished = false;
+    let queuedMessages = 0;
+    let queuedBytes = 0;
     const finish = () => {
+      if (finished) return;
+      finished = true;
       socketAbort.abort();
       socket.off("message", receive);
-      socket.off("close", finish);
       input.signal.removeEventListener("abort", stop);
       resolve();
     };
+    const closed = () => {
+      finish();
+      socket.off("error", failed);
+    };
+    const failed = () => finish();
     const stop = () => {
       socket.close();
       finish();
     };
     const receive = (data: WebSocket.RawData) => {
+      if (finished) return;
+      const bytes = rawDataBytes(data);
+      const frameBytes = bytes.byteLength;
+      const maxQueuedMessages =
+        input.maxQueuedMessages ?? DEFAULT_MAX_QUEUED_MESSAGES;
+      const maxQueuedBytes = input.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
+      if (frameBytes > (input.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)) {
+        socket.close(1009, "Request too large");
+        finish();
+        return;
+      }
+      if (
+        queuedMessages >= maxQueuedMessages ||
+        queuedBytes + frameBytes > maxQueuedBytes
+      ) {
+        socket.close(1009, "Request queue full");
+        finish();
+        return;
+      }
+      const frame = bytes.toString("utf8");
+      queuedMessages += 1;
+      queuedBytes += frameBytes;
       pending = pending.then(async () => {
-        if (input.signal.aborted || socket.readyState !== WebSocket.OPEN)
-          return;
-        const frame = rawDataText(data);
+        queuedMessages -= 1;
+        queuedBytes -= frameBytes;
         if (
-          Buffer.byteLength(frame) >
-          (input.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)
-        ) {
-          socket.close(1009, "Request too large");
+          finished ||
+          input.signal.aborted ||
+          socket.readyState !== WebSocket.OPEN
+        )
           return;
-        }
         const response = await input.onFrame(frame, socketAbort.signal);
-        if (socket.readyState === WebSocket.OPEN) socket.send(response);
+        if (!finished && socket.readyState === WebSocket.OPEN)
+          socket.send(response);
       });
-      void pending.catch(() => socket.close(1011, "Request failed"));
+      void pending.catch(() => {
+        socket.close(1011, "Request failed");
+        finish();
+      });
     };
     socket.on("message", receive);
-    socket.once("close", finish);
+    socket.once("close", closed);
+    socket.on("error", failed);
     input.signal.addEventListener("abort", stop, { once: true });
     if (input.signal.aborted) stop();
   });

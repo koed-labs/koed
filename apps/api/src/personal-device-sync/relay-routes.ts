@@ -18,8 +18,8 @@ import type { ApiRouteContext } from "../server/context.js";
 
 const MAX_RAW_BYTES = 1024 * 1024;
 type RawRequest = FastifyRequest & { pdsRelayRawBody?: Buffer };
-const error = (message: string, statusCode = 400): Error =>
-  Object.assign(new Error(message), { statusCode });
+const error = (message: string, statusCode = 400, code?: string): Error =>
+  Object.assign(new Error(message), { statusCode, ...(code ? { code } : {}) });
 const unavailable = (): never => {
   throw error("PDS relay resource is unavailable", 404);
 };
@@ -98,6 +98,9 @@ const authenticate = async (
     });
   } catch {
     throw error("PDS relay request proof is invalid", 403);
+  }
+  if (auth.deviceRevoked) {
+    throw error("PDS device is revoked", 403, "pds_device_revoked");
   }
   await relay.consumePdsRelayRequestNonce({
     ...auth,
