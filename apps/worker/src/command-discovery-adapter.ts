@@ -1,4 +1,5 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { opendir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { SupportedAiClientDriverId } from "@koed/shared/ai-client-contract";
@@ -91,15 +92,19 @@ const commandFromFile = async (
   sourceRoot: string,
   filePath: string,
   kind: SourceRoot["kind"],
+  signal: AbortSignal,
   fileName?: string,
   useClaudeSkillName = false
 ): Promise<FileCommand | null> => {
   try {
+    if (signal.aborted) return null;
     const resolvedFile = await realpath(filePath);
-    if (!within(sourceRoot, resolvedFile)) return null;
+    if (signal.aborted || !within(sourceRoot, resolvedFile)) return null;
     const fileStat = await stat(resolvedFile);
-    if (!fileStat.isFile() || fileStat.size > MAX_FILE_BYTES) return null;
-    const content = await readFile(resolvedFile, "utf8");
+    if (signal.aborted || !fileStat.isFile() || fileStat.size > MAX_FILE_BYTES)
+      return null;
+    const content = await readFile(resolvedFile, { encoding: "utf8", signal });
+    if (signal.aborted) return null;
     const defaultName =
       fileName ??
       relative(sourceRoot, filePath).slice(0, -extname(filePath).length);
@@ -129,65 +134,105 @@ const commandFromFile = async (
   }
 };
 
-const commandsInRoot = async (
-  source: SourceRoot
-): Promise<ManagedConversationSlashCommand[]> => {
-  let root: string;
+type CommandScan = {
+  source: SourceRoot;
+  root: string;
+  signal: AbortSignal;
+  remainingEntries: number;
+  commands: ManagedConversationSlashCommand[];
+};
+
+const boundedDirectoryEntries = async (
+  directory: string,
+  scan: CommandScan
+): Promise<Dirent[]> => {
+  if (scan.signal.aborted || scan.remainingEntries <= 0) return [];
+  const entries: Dirent[] = [];
   try {
-    const boundary = await realpath(source.boundary);
-    root = await realpath(source.path);
-    if (!within(boundary, root)) return [];
+    const handle = await opendir(directory, { bufferSize: 32 });
+    try {
+      while (!scan.signal.aborted && scan.remainingEntries > 0) {
+        const entry = await handle.read();
+        if (scan.signal.aborted || !entry) break;
+        scan.remainingEntries--;
+        entries.push(entry);
+      }
+    } finally {
+      await handle.close();
+    }
   } catch {
     return [];
   }
-  const commands: ManagedConversationSlashCommand[] = [];
-  const visit = async (directory: string, depth: number): Promise<void> => {
-    if (depth > MAX_SCAN_DEPTH || commands.length >= MAX_SCAN_ENTRIES) return;
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
+  return entries.sort((left, right) => left.name.localeCompare(right.name));
+};
+
+const visitCommandDirectory = async (
+  scan: CommandScan,
+  directory: string,
+  depth: number
+): Promise<void> => {
+  if (depth > MAX_SCAN_DEPTH || scan.signal.aborted) return;
+  const { source, root, signal } = scan;
+  for (const entry of await boundedDirectoryEntries(directory, scan)) {
+    if (signal.aborted) break;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await visitCommandDirectory(scan, path, depth + 1);
+      continue;
     }
-    for (const entry of entries.sort((left, right) =>
-      left.name.localeCompare(right.name)
-    )) {
-      if (commands.length >= MAX_SCAN_ENTRIES) break;
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path, depth + 1);
-        continue;
-      }
-      const isSkill = source.kind === "skill" && entry.name === "SKILL.md";
-      if (
-        source.kind === "skill"
-          ? !isSkill
-          : !entry.isFile() || extname(entry.name).toLowerCase() !== ".md"
-      )
-        continue;
-      const skillDirectory = relative(root, directory).split(/[\\/]/);
-      const rawName = isSkill
-        ? source.claudeSkillNames
-          ? skillDirectory[skillDirectory.length - 1]
-          : skillDirectory.join("/")
-        : relative(root, path).slice(0, -extname(path).length);
-      const command = await commandFromFile(
-        root,
-        path,
-        source.kind,
-        rawName,
-        source.claudeSkillNames
-      );
-      if (command)
-        commands.push({
-          ...command,
-          scope: source.scope,
-          source: source.scope === "project" ? "project-file" : "global-file"
-        });
-    }
+    const isSkill = source.kind === "skill" && entry.name === "SKILL.md";
+    if (
+      source.kind === "skill"
+        ? !isSkill
+        : !entry.isFile() || extname(entry.name).toLowerCase() !== ".md"
+    )
+      continue;
+    const skillDirectory = relative(root, directory).split(/[\\/]/);
+    const rawName = isSkill
+      ? source.claudeSkillNames
+        ? skillDirectory[skillDirectory.length - 1]
+        : skillDirectory.join("/")
+      : relative(root, path).slice(0, -extname(path).length);
+    const command = await commandFromFile(
+      root,
+      path,
+      source.kind,
+      signal,
+      rawName,
+      source.claudeSkillNames
+    );
+    if (command && !signal.aborted)
+      scan.commands.push({
+        ...command,
+        scope: source.scope,
+        source: source.scope === "project" ? "project-file" : "global-file"
+      });
+  }
+};
+
+const commandsInRoot = async (
+  source: SourceRoot,
+  signal: AbortSignal
+): Promise<ManagedConversationSlashCommand[]> => {
+  let root: string;
+  try {
+    if (signal.aborted) return [];
+    const boundary = await realpath(source.boundary);
+    if (signal.aborted) return [];
+    root = await realpath(source.path);
+    if (signal.aborted || !within(boundary, root)) return [];
+  } catch {
+    return [];
+  }
+  const scan: CommandScan = {
+    source,
+    root,
+    signal,
+    remainingEntries: MAX_SCAN_ENTRIES,
+    commands: []
   };
-  await visit(root, 0);
-  return commands;
+  await visitCommandDirectory(scan, root, 0);
+  return scan.commands;
 };
 
 const commandRoots = (
@@ -304,11 +349,25 @@ export const environmentForCommandDiscoveryInstance = (
   }
 };
 
+const mergeDiscoveredCommands = (
+  catalogs: ManagedConversationSlashCommand[][]
+): ManagedConversationSlashCommand[] => {
+  const byName = new Map<string, ManagedConversationSlashCommand>();
+  for (const command of catalogs.flat()) {
+    const key = `${command.kind}:${command.name.toLowerCase()}`;
+    const current = byName.get(key);
+    if (!current || command.scope === "project") byName.set(key, command);
+  }
+  return [...byName.values()].slice(0, MAX_COMMANDS);
+};
+
 export const createCommandDiscoveryAdapter: CommandDiscoveryAdapterFactory = (
   driverId,
   baseEnvironment = process.env
 ) => ({
   async discoverCommands(args) {
+    const controller = new AbortController();
+    const { signal } = controller;
     const discovery = (async (): Promise<ManagedConversationSlashCommand[]> => {
       const environment = environmentForCommandDiscoveryInstance(
         driverId,
@@ -321,30 +380,33 @@ export const createCommandDiscoveryAdapter: CommandDiscoveryAdapterFactory = (
         if (!isAbsolute(args.projectRoot)) return [];
         try {
           verifiedProjectRoot = await realpath(resolve(args.projectRoot));
-          if (!(await stat(verifiedProjectRoot)).isDirectory()) return [];
+          if (signal.aborted) return [];
+          const projectStat = await stat(verifiedProjectRoot);
+          if (signal.aborted || !projectStat.isDirectory()) return [];
         } catch {
           return [];
         }
       }
       const roots = commandRoots(driverId, environment, verifiedProjectRoot);
-      const discovered = await Promise.all(roots.map(commandsInRoot));
-      const byName = new Map<string, ManagedConversationSlashCommand>();
-      for (const command of discovered.flat()) {
-        const key = `${command.kind}:${command.name.toLowerCase()}`;
-        const current = byName.get(key);
-        if (!current || command.scope === "project") byName.set(key, command);
-      }
-      return [...byName.values()].slice(0, MAX_COMMANDS);
+      const discovered = await Promise.all(
+        roots.map((source) => commandsInRoot(source, signal))
+      );
+      if (signal.aborted) return [];
+      return mergeDiscoveredCommands(discovered);
     })().catch(() => []);
     let timeout: NodeJS.Timeout | undefined;
     const deadline = new Promise<ManagedConversationSlashCommand[]>(
       (resolve) => {
-        timeout = setTimeout(() => resolve([]), DISCOVERY_TIMEOUT_MS);
+        timeout = setTimeout(() => {
+          controller.abort();
+          resolve([]);
+        }, DISCOVERY_TIMEOUT_MS);
         timeout.unref?.();
       }
     );
     return Promise.race([discovery, deadline]).finally(() => {
       if (timeout) clearTimeout(timeout);
+      controller.abort();
     });
   }
 });

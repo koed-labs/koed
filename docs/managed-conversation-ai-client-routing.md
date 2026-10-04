@@ -128,9 +128,22 @@ shell. Supported roots are:
 
 When the environment variable is unset, each AI Client uses its standard home
 configuration directory. Symlinks that escape the selected configuration or
-Project root are ignored. Discovery scans at most 128 returned commands, bounds
-Markdown size and directory traversal, and fails closed after a two-second
-adapter deadline. The Desktop hook debounces requests by 500 ms and keeps
+Project root are ignored. File-backed discovery returns at most 128 commands and
+visits at most 256 file/directory entries per source root, sharing that root's
+budget across all descendants. Non-command files, directories, and rejected
+metadata consume the same budget. Streaming directory reads use fixed-size
+buffers; only the admitted, bounded entries are sorted. An oversized directory
+may therefore yield a truncated catalog rather than a globally sorted prefix.
+A containing directory that exhausts the budget leaves no entries for descendants;
+for example, 256 skill directories can yield an empty catalog without reading their
+`SKILL.md` files. Markdown size and scan depth remain bounded.
+
+The two-second adapter deadline cancels every root scan and returns an empty
+catalog. Metadata reads receive the cancellation signal, directory handles close,
+and no further traversal or metadata work is scheduled after cancellation.
+Already-running non-abortable filesystem calls may finish before cleanup; the
+deadline is not a promise that the operating system cancels those calls.
+The Desktop hook debounces requests by 500 ms and keeps
 instance-and-scope-keyed results for up to 30 seconds when a refresh fails;
 unauthorized and stale results clear the cached suggestions. Typing `/` also
 shows loading, failure, and no-match states when there are no suggestions;
