@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { HomeSnapshot } from "@koed/shared/home";
 import { HomeFeedClient } from "./home-feed-client";
 
@@ -35,6 +35,51 @@ const snapshot: HomeSnapshot = {
 };
 
 describe("HomeFeedClient", () => {
+  it("calls native fetch without using the client as its receiver", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      async function (this: unknown, input: RequestInfo | URL) {
+        if (this !== undefined && this !== globalThis)
+          throw new TypeError("Illegal invocation");
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith("/access"))
+          return Response.json({
+            accountScope: "owner-one",
+            backendId: "backend-one"
+          });
+        if (url === "/studio-api/github/session")
+          return Response.json({ csrfToken: "csrf-one" });
+        if (url.endsWith("/clear"))
+          return Response.json({
+            sourceEventId: item.sourceEventId,
+            sourceRevision: item.sourceRevision,
+            cleared: true
+          });
+        return Response.json(snapshot);
+      }
+    );
+    try {
+      const client = new HomeFeedClient("studio");
+      await expect(client.getAccess()).resolves.toMatchObject({
+        accountScope: "owner-one"
+      });
+      await expect(client.get()).resolves.toEqual(snapshot);
+      await expect(client.setCleared(item, true)).resolves.toMatchObject({
+        cleared: true
+      });
+      expect(calls).toEqual([
+        "/studio-api/home-feed/access",
+        "/studio-api/home-feed",
+        "/studio-api/github/session",
+        "/studio-api/home-feed/reminders/job%3Aone/clear"
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("validates the shared contract and uses the native proxy", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new HomeFeedClient("studio", async (input, init) => {

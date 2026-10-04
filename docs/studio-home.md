@@ -79,3 +79,9 @@ Prepare before/after project changes and per-user relevance separately from rend
 The Home page uses existing Koed routes and does not alter database tables or synthesis boundaries.
 The local adapter is not a replacement for API authorization.
 Each backend request must still authenticate with the configured Personal API Token.
+
+## Automatic refresh
+
+Personal Home refreshes its activity feed, conversation metadata and available models on entry, every 30 seconds after the previous refresh finishes, and when the window becomes active or reconnects. Hidden or offline windows do not poll. Requests cannot overlap. Each refresh has a 15-second timeout; failed automatic refreshes back off to 60 seconds, then at most 120 seconds. A failed refresh shows the manual Refresh control until a successful refresh. Existing content and composer drafts survive temporary failures; denied access clears protected data.
+
+Home uses `/studio-api/home?mode=metadata` to skip all per-conversation runtime-history scans. Pending actions come from the dedicated compact Home feed. The legacy full snapshot endpoint still serves callers that need runtime coverage; metadata snapshots explicitly report `coverage.requests: false`. Home does not download full messages or attachments for polling. Each browser response is limited to 1 MiB (access checks to 32 KiB). An activity refresh shares a 4 MiB budget across all loaded pages, with at most 32 requests and a shared timeout. Oversized streams are cancelled, the previous verified feed remains visible, and Refresh becomes available. Metadata and model requests add at most 2 MiB per cycle. Pagination fetches more data only when requested by the user.

@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
 
 (
@@ -16,6 +16,7 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   root = undefined;
+  vi.restoreAllMocks();
 });
 
 async function mount() {
@@ -60,6 +61,34 @@ async function click(element: HTMLElement) {
 }
 
 describe("chat control menu dismissal", () => {
+  it.each([
+    { top: 100, bottom: 128, side: "top-full", height: 360 },
+    { top: 320, bottom: 348, side: "bottom-full", height: 304 }
+  ])(
+    "fits the model popup into available space at $top px",
+    async ({ top, bottom, side, height }) => {
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(600);
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        top,
+        bottom,
+        left: 0,
+        right: 220,
+        width: 220,
+        height: bottom - top,
+        x: 0,
+        y: top,
+        toJSON: () => ({})
+      });
+      await mount();
+      await click(trigger());
+      const popup = container.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(popup.classList.contains(side)).toBe(true);
+      expect(popup.style.maxHeight).toBe(`${height}px`);
+      await click(popup.querySelector<HTMLButtonElement>("button.flex-col")!);
+      expect(popup.style.maxHeight).toBe(`${height}px`);
+    }
+  );
+
   it("closes after choosing a model or reasoning effort", async () => {
     await mount();
     await click(trigger());

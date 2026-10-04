@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import {
@@ -284,6 +284,56 @@ export function ChatComposer({
     null
   );
   const composerRef = useRef<HTMLDivElement>(null);
+  const modelMenuAnchorRef = useRef<HTMLDivElement>(null);
+  const [modelMenuLayout, setModelMenuLayout] = useState({
+    side: "above" as "above" | "below",
+    maxHeight: 360
+  });
+
+  useLayoutEffect(() => {
+    if (openMenu !== "model") return;
+    const anchor = modelMenuAnchorRef.current;
+    if (!anchor) return;
+    const updateLayout = () => {
+      const bounds = anchor.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      // Stay inside the visible part of the composer's scrolling panel,
+      // including Home's header, rather than just inside the window.
+      for (
+        let parent = anchor.parentElement;
+        parent;
+        parent = parent.parentElement
+      ) {
+        if (
+          /(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)
+        ) {
+          const rect = parent.getBoundingClientRect();
+          top = Math.max(top, rect.top);
+          bottom = Math.min(bottom, rect.bottom);
+        }
+      }
+      const above = Math.max(0, bounds.top - top - 16);
+      const below = Math.max(0, bottom - bounds.bottom - 16);
+      const side = below >= above ? "below" : "above";
+      const maxHeight = Math.min(360, side === "below" ? below : above);
+      setModelMenuLayout((current) =>
+        current.side === side && current.maxHeight === maxHeight
+          ? current
+          : { side, maxHeight }
+      );
+    };
+    updateLayout();
+    window.addEventListener("resize", updateLayout);
+    window.addEventListener("scroll", updateLayout, true);
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(anchor);
+    return () => {
+      window.removeEventListener("resize", updateLayout);
+      window.removeEventListener("scroll", updateLayout, true);
+      observer.disconnect();
+    };
+  }, [openMenu]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [mentionQuery, setMentionQuery] = useState<{
     query: string;
@@ -1248,7 +1298,11 @@ export function ChatComposer({
 
           <div className="ml-auto flex min-w-0 max-w-full flex-shrink-0 items-center gap-1">
             {executionControlsVisible && (
-              <div className="relative" data-composer-menu="model">
+              <div
+                ref={modelMenuAnchorRef}
+                className="relative"
+                data-composer-menu="model"
+              >
                 <button
                   type="button"
                   className="flex min-w-0 max-w-[12rem] items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-hover"
@@ -1269,8 +1323,17 @@ export function ChatComposer({
                 </button>
 
                 {openMenu === "model" && (
-                  <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(220px,calc(100cqw-1rem))] rounded-2xl border border-border-strong bg-surface px-3 py-3 shadow-xl shadow-black/50">
-                    <div className="mb-3 flex items-start justify-between">
+                  <div
+                    role="dialog"
+                    aria-label="Model and reasoning"
+                    style={{ maxHeight: modelMenuLayout.maxHeight }}
+                    className={`absolute right-0 z-30 flex w-[min(220px,calc(100cqw-1rem))] flex-col overflow-y-auto rounded-2xl border border-border-strong bg-surface px-3 py-3 shadow-xl shadow-black/50 ${
+                      modelMenuLayout.side === "below"
+                        ? "top-full mt-2"
+                        : "bottom-full mb-2"
+                    }`}
+                  >
+                    <div className="mb-3 flex shrink-0 items-start justify-between">
                       <Zap className="mt-0.5 h-4 w-4 text-subtle" />
                       <button
                         type="button"
@@ -1305,25 +1368,27 @@ export function ChatComposer({
                       </Tooltip>
                     </div>
 
-                    <EffortSlider
-                      effortIndex={presetEffortIndex}
-                      onChange={(index) => {
-                        setEffortIndex(index);
-                        setUnavailableEffort(null);
-                        setUnsupportedDefaultEffortFor(null);
-                        setOpenMenu(null);
-                        setIsModelListOpen(false);
-                      }}
-                      disabled={Boolean(executionPreset)}
-                      supportedIndices={
-                        modelOptions.length && selectedCapability
-                          ? supportedEffortIndices
-                          : undefined
-                      }
-                    />
+                    <div className="shrink-0">
+                      <EffortSlider
+                        effortIndex={presetEffortIndex}
+                        onChange={(index) => {
+                          setEffortIndex(index);
+                          setUnavailableEffort(null);
+                          setUnsupportedDefaultEffortFor(null);
+                          setOpenMenu(null);
+                          setIsModelListOpen(false);
+                        }}
+                        disabled={Boolean(executionPreset)}
+                        supportedIndices={
+                          modelOptions.length && selectedCapability
+                            ? supportedEffortIndices
+                            : undefined
+                        }
+                      />
+                    </div>
 
                     {isModelListOpen && (
-                      <div className="mt-3 space-y-0.5 border-t border-border pt-2">
+                      <div className="mt-3 min-h-0 overflow-y-auto overscroll-contain space-y-0.5 border-t border-border pt-2">
                         {availableModelOptions.map((option) => {
                           const disabled = Boolean(
                             executionPreset &&

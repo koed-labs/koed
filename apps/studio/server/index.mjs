@@ -490,7 +490,8 @@ export const readHomeSnapshot = async ({
   apiBase = DEFAULT_API_URL,
   token,
   resolveAccess,
-  now = () => new Date()
+  now = () => new Date(),
+  includeRuntime = true
 } = {}) => {
   const fetchedAt = now().toISOString();
   if (!token && typeof resolveAccess !== "function")
@@ -596,14 +597,15 @@ export const readHomeSnapshot = async ({
     );
   }
 
-  const runtimeResult = executionFailed
-    ? {
-        requests: [],
-        activityByExecution: new Map(),
-        failed: true,
-        capped: false
-      }
-    : await scanRuntime({ executions, fetchApi, warnings });
+  const runtimeResult =
+    executionFailed || !includeRuntime
+      ? {
+          requests: [],
+          activityByExecution: new Map(),
+          failed: true,
+          capped: false
+        }
+      : await scanRuntime({ executions, fetchApi, warnings });
   const mappedExecutions = executions.map((execution) => ({
     ...executionMap(execution, threadBySession),
     activity: executionFailed
@@ -615,13 +617,18 @@ export const readHomeSnapshot = async ({
   const coverage = {
     executions: !executionFailed && !executionCapped,
     requests:
+      includeRuntime &&
       !executionFailed &&
       !runtimeResult.failed &&
       !runtimeResult.capped &&
       !executionCapped,
     recents: !recentsFailed && !recentsCapped
   };
-  if (!coverage.executions || !coverage.requests || !coverage.recents) {
+  if (
+    !coverage.executions ||
+    (includeRuntime && !coverage.requests) ||
+    !coverage.recents
+  ) {
     warnings.push(
       "Home data is partial; missing records are not treated as clear."
     );
@@ -2169,8 +2176,17 @@ export const createStudioServer = ({
         request.method === "GET" &&
         requestUrlObject.pathname === "/studio-api/home"
       ) {
+        if (
+          requestUrlObject.search &&
+          requestUrlObject.search !== "?mode=metadata"
+        ) {
+          sendJson(response, 400, { error: "invalid_home_query" });
+          return;
+        }
         try {
           const snapshot = await readHomeSnapshot({
+            includeRuntime:
+              requestUrlObject.searchParams.get("mode") !== "metadata",
             fetchImpl,
             apiBase,
             ...(providedResolveAccess

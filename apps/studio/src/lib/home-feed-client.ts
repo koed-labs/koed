@@ -7,6 +7,7 @@ import {
   type HomeSnapshot,
   type HomeSource
 } from "@koed/shared/home";
+import { readHomeJson } from "./home-json";
 
 export type HomeFeedTransport = "studio" | "hosted";
 
@@ -26,7 +27,8 @@ export class HomeFeedClient {
 
   constructor(
     private readonly transport: HomeFeedTransport,
-    private readonly fetcher: typeof fetch = fetch
+    // Native browser fetch must not receive this client as its receiver.
+    private readonly fetcher: typeof fetch = (input, init) => fetch(input, init)
   ) {
     this.basePath =
       transport === "hosted" ? "/v1/home" : "/studio-api/home-feed";
@@ -34,7 +36,8 @@ export class HomeFeedClient {
 
   async get(
     input: { source?: HomeSource; cursor?: string; limit?: number } = {},
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    budget?: { remaining: number }
   ): Promise<HomeSnapshot> {
     const query = new URLSearchParams();
     if (input.source) query.set("source", input.source);
@@ -49,7 +52,11 @@ export class HomeFeedClient {
       headers: { accept: "application/json" },
       signal
     });
-    const payload: unknown = await response.json().catch(() => null);
+    const payload: unknown = await readHomeJson(
+      response,
+      1024 * 1024,
+      budget
+    ).catch(() => null);
     if (!response.ok) throw this.requestError(response.status);
     const parsed = homeSnapshotSchema.safeParse(payload);
     if (!parsed.success)
@@ -66,7 +73,9 @@ export class HomeFeedClient {
       headers: { accept: "application/json" },
       signal
     });
-    const payload: unknown = await response.json().catch(() => null);
+    const payload: unknown = await readHomeJson(response, 32 * 1024).catch(
+      () => null
+    );
     if (!response.ok) throw this.requestError(response.status);
     const parsed = homeAccessSchema.safeParse(payload);
     if (!parsed.success)

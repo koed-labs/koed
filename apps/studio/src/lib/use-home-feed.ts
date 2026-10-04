@@ -7,6 +7,7 @@ import {
   HomeFeedError,
   type HomeFeedTransport
 } from "./home-feed-client";
+import { useVisibleRefresh } from "./use-visible-refresh";
 
 export type HomeFeedState = "loading" | "ready" | "offline" | "unauthorized";
 const HOME_SOURCES: HomeSource[] = [
@@ -19,11 +20,13 @@ const HOME_SOURCES: HomeSource[] = [
 export function useHomeFeed({
   transport,
   identityKey,
-  enabled = true
+  enabled = true,
+  autoRefresh = true
 }: {
   transport: HomeFeedTransport;
   identityKey: string | null;
   enabled?: boolean;
+  autoRefresh?: boolean;
 }) {
   const client = useMemo(() => new HomeFeedClient(transport), [transport]);
   const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(null);
@@ -52,11 +55,15 @@ export function useHomeFeed({
   const controller = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!enabled || identityKey === null) return;
+    if (!enabled || identityKey === null || controller.current) return;
     const current = ++sequence.current;
-    controller.current?.abort();
     const nextController = new AbortController();
     controller.current = nextController;
+    const budget = { remaining: 4 * 1024 * 1024, requests: 0 };
+    const timeout = window.setTimeout(
+      () => nextController.abort(new Error("Home refresh timed out")),
+      15_000
+    );
     try {
       const access = await client.getAccess(nextController.signal);
       if (current !== sequence.current) return;
@@ -88,7 +95,8 @@ export function useHomeFeed({
         result = await readLoadedPages(
           client,
           nextController.signal,
-          pageDepth.current
+          pageDepth.current,
+          budget
         );
       } catch (error) {
         if (
@@ -100,7 +108,8 @@ export function useHomeFeed({
           result = await readLoadedPages(
             client,
             nextController.signal,
-            pageDepth.current
+            pageDepth.current,
+            budget
           );
         } else {
           throw error;
@@ -126,8 +135,15 @@ export function useHomeFeed({
       setSnapshot(result);
       setState("ready");
       setLastLoadedIdentity(identityKey);
+      return result.coverage.every(
+        (entry) => entry.complete || entry.nextCursor !== null
+      );
     } catch (error) {
-      if (current !== sequence.current || isAbortError(error)) return;
+      if (
+        current !== sequence.current ||
+        (isAbortError(error) && isAbortError(nextController.signal.reason))
+      )
+        return;
       if (
         error instanceof HomeFeedError &&
         (error.status === 401 || error.status === 403)
@@ -143,13 +159,17 @@ export function useHomeFeed({
         }
         setState("offline");
       }
+      return false;
     } finally {
+      window.clearTimeout(timeout);
       if (current === sequence.current) {
         setRefreshing(false);
         controller.current = null;
       }
     }
   }, [client, enabled, identityKey]);
+
+  useVisibleRefresh(refresh, autoRefresh && enabled && identityKey !== null);
 
   useEffect(() => {
     if (!enabled || identityKey === null) {
@@ -173,19 +193,10 @@ export function useHomeFeed({
       verifiedScopeRef.current = null;
       pageDepth.current = initialPageDepth();
     }
-    const initialRefresh = window.setTimeout(() => void refresh(), 0);
-    const onWake = () => void refresh();
-    const onOnline = () => void refresh();
-    window.addEventListener("focus", onWake);
-    window.addEventListener("online", onOnline);
-    const interval = window.setInterval(() => void refresh(), 30_000);
     return () => {
       sequence.current += 1;
       controller.current?.abort();
-      window.clearTimeout(initialRefresh);
-      window.removeEventListener("focus", onWake);
-      window.removeEventListener("online", onOnline);
-      window.clearInterval(interval);
+      controller.current = null;
     };
   }, [enabled, identityKey, refresh]);
 
@@ -201,6 +212,9 @@ export function useHomeFeed({
       setPendingItemIds((current) => new Set(current).add(item.sourceEventId));
       try {
         await client.setCleared(item, cleared);
+        // A poll started before the mutation may contain its old state.
+        controller.current?.abort();
+        controller.current = null;
         await refresh();
       } catch (error) {
         setMutationError(
@@ -251,6 +265,7 @@ export function useHomeFeed({
           setPendingItemIds(new Set());
           pageDepth.current = initialPageDepth();
           setState("loading");
+          controller.current = null;
           await refresh();
           return;
         }
@@ -278,6 +293,7 @@ export function useHomeFeed({
           setState("unauthorized");
         } else if (error instanceof HomeFeedError && error.status === 409) {
           pageDepth.current = initialPageDepth();
+          controller.current = null;
           await refresh();
         } else {
           setState("offline");
@@ -340,9 +356,13 @@ function initialPageDepth(): Record<HomeSource, number> {
 async function readLoadedPages(
   client: HomeFeedClient,
   signal: AbortSignal,
-  depth: Record<HomeSource, number>
+  depth: Record<HomeSource, number>,
+  budget: { remaining: number; requests: number }
 ): Promise<HomeSnapshot> {
-  const first = await client.get({}, signal);
+  // Bound the entire refresh, including pages explicitly opened by the user.
+  if (++budget.requests > 32)
+    throw new HomeFeedError("Home refresh exceeded its page budget.", 502);
+  const first = await client.get({}, signal, budget);
   const allPages = await Promise.all(
     HOME_SOURCES.map(async (source) => {
       const pages = [first];
@@ -354,7 +374,16 @@ async function readLoadedPages(
         pageIndex < depth[source] && cursor;
         pageIndex += 1
       ) {
-        const page = await client.get({ source, cursor, limit: 100 }, signal);
+        if (++budget.requests > 32)
+          throw new HomeFeedError(
+            "Home refresh exceeded its page budget.",
+            502
+          );
+        const page = await client.get(
+          { source, cursor, limit: 100 },
+          signal,
+          budget
+        );
         if (page.accountScope !== first.accountScope)
           throw new HomeFeedError("Home account changed while loading.", 409);
         pages.push(page);

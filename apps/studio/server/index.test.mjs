@@ -151,6 +151,33 @@ describe("Studio Home gateway", () => {
     assert.equal(JSON.stringify(snapshot).includes("test-secret"), false);
   });
 
+  it("returns compact Home metadata without fetching runtime histories", async () => {
+    const calls = [];
+    const fixture = homeFetch({
+      executions: Array.from({ length: 50 }, (_, i) => ({
+        ...execution,
+        id: `execution-${i}`
+      }))
+    });
+    const snapshot = await readHomeSnapshot({
+      fetchImpl: (url, init) => {
+        calls.push(new URL(url).pathname);
+        return fixture(url, init);
+      },
+      token: "test-secret",
+      includeRuntime: false
+    });
+    assert.equal(snapshot.state, "partial");
+    assert.equal(snapshot.executions.length, 50);
+    assert.deepEqual(snapshot.requests, []);
+    assert.equal(snapshot.coverage.requests, false);
+    assert.equal(
+      calls.some((path) => path.endsWith("/runtime")),
+      false
+    );
+    assert.equal(calls.length, 3);
+  });
+
   it("maps unauthorized access distinctly", async () => {
     const snapshot = await readHomeSnapshot({
       fetchImpl: async () => response({ error: "no" }, 401),
@@ -424,6 +451,16 @@ describe("Studio Home gateway", () => {
       token: "test-secret",
       fetchImpl: homeFetch({ executions: [], threads: [] })
     });
+    const compactHome = await get(
+      `${started.url}/studio-api/home?mode=metadata`
+    );
+    assert.equal(compactHome.status, 200);
+    assert.equal(JSON.parse(compactHome.body).state, "ready");
+    assert.equal(JSON.parse(compactHome.body).coverage.requests, false);
+    const invalidHomeQuery = await get(
+      `${started.url}/studio-api/home?mode=all`
+    );
+    assert.equal(invalidHomeQuery.status, 400);
     const sameOrigin = await get(`${started.url}/`);
     assert.equal(sameOrigin.status, 200);
     assert.equal(sameOrigin.body, "home");

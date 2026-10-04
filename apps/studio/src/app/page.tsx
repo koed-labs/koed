@@ -1,5 +1,7 @@
 "use client";
 
+import { readHomeJson } from "@/lib/home-json";
+
 import {
   Suspense,
   useCallback,
@@ -108,7 +110,8 @@ function LiveHome({
   const router = useRouter();
   const homeFeed = useHomeFeed({
     transport: "studio",
-    identityKey: "personal"
+    identityKey: "personal",
+    autoRefresh: false
   });
   const personalScopeKey = useVerifiedPersonalScope(homeScopeKey);
   const allProjects = useMemo(() => {
@@ -229,13 +232,18 @@ function LiveHome({
 
   useEffect(() => {
     const controller = new AbortController();
+    // Clear protected sidebar data before verifying a replacement scope.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHomeScopeKey(null);
-    fetch("/studio-api/home", {
+    fetch("/studio-api/home?mode=metadata", {
       headers: { Accept: "application/json" },
       cache: "no-store",
       signal: controller.signal
     })
-      .then(async (response) => (await response.json()) as unknown)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Home unavailable");
+        return readHomeJson(response);
+      })
       .then((payload) => {
         if (!payload || typeof payload !== "object") return;
         const snapshot = payload as {

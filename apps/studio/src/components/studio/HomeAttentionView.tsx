@@ -19,6 +19,7 @@ export function HomeAttentionView({
   pendingItemIds,
   loadingSources,
   canMutate,
+  showRefresh = true,
   onRefresh,
   onOpen,
   onSetCleared,
@@ -43,6 +44,7 @@ export function HomeAttentionView({
   pendingItemIds: ReadonlySet<string>;
   loadingSources: ReadonlySet<HomeSource>;
   canMutate: boolean;
+  showRefresh?: boolean;
   onRefresh: () => void;
   onOpen: (item: HomeItem) => void;
   onSetCleared: (item: HomeItem, cleared: boolean) => void;
@@ -103,14 +105,16 @@ export function HomeAttentionView({
                   ? "1 thing needs you."
                   : `${snapshot.badgeCount} things need you.`}
             </p>
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={refreshing}
-              className="shrink-0 rounded-md px-2 py-1 text-xs text-subtle hover:bg-surface-hover disabled:opacity-50"
-            >
-              {refreshing ? "Refreshing…" : "Refresh"}
-            </button>
+            {showRefresh && (
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={refreshing}
+                className="shrink-0 rounded-md px-2 py-1 text-xs text-subtle hover:bg-surface-hover disabled:opacity-50"
+              >
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
+            )}
           </div>
           {snapshot.coverage.some(
             (source) => !source.complete && !source.nextCursor

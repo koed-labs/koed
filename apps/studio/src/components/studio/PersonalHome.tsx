@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
-import { managedRequest, parseLaunchInstances } from "@/lib/managed-agent-chat";
+import { parseLaunchInstances } from "@/lib/managed-agent-chat";
+import { readHomeJson } from "@/lib/home-json";
+import { useVisibleRefresh } from "@/lib/use-visible-refresh";
 import type {
   HomeExecution,
   HomeRecent,
@@ -176,6 +178,9 @@ export function PersonalHome({
   const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+  const runnerLoadedRef = useRef(false);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -270,19 +275,25 @@ export function PersonalHome({
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setRefreshing(true);
+    const timeout = window.setTimeout(
+      () => controller.abort(new Error("Home refresh timed out")),
+      15_000
+    );
+    let denied = false;
     try {
-      const response = await fetch("/studio-api/home", {
+      const response = await fetch("/studio-api/home?mode=metadata", {
         headers: { Accept: "application/json" },
         cache: "no-store",
         signal: controller.signal
       });
-      const payload: unknown = await response.json().catch(() => null);
+      denied = response.status === 401 || response.status === 403;
+      if (!response.ok) throw new Error("Home unavailable");
+      const payload: unknown = await readHomeJson(response);
       if (!validSnapshot(payload)) throw new Error("Home unavailable");
       if (sequence !== requestSequenceRef.current) return;
+      if (payload.state === "unavailable") throw new Error("Home unavailable");
       if (
         payload.state === "unauthorized" ||
-        payload.state === "unavailable" ||
         (scopeRef.current !== undefined &&
           scopeRef.current !== payload.scopeKey)
       ) {
@@ -291,19 +302,31 @@ export function PersonalHome({
       scopeRef.current = payload.scopeKey;
       setSnapshot(payload);
       setLoadState("snapshot");
+      return (
+        (payload.state === "ready" || payload.state === "partial") &&
+        !payload.warnings.some((warning) =>
+          /could not be read|unauthorized/i.test(warning)
+        )
+      );
     } catch (reason: unknown) {
       if (
         sequence !== requestSequenceRef.current ||
-        (reason as { name?: string })?.name === "AbortError"
+        ((reason as { name?: string })?.name === "AbortError" &&
+          controller.signal.reason?.name === "AbortError")
       )
         return;
-      setFilter(null);
-      scopeRef.current = undefined;
-      setSnapshot(null);
-      setLoadState("offline");
+      if (denied) {
+        setFilter(null);
+        scopeRef.current = undefined;
+        setSnapshot(null);
+      }
+      setLoadState((current) =>
+        current === "snapshot" && !denied ? current : "offline"
+      );
+      return false;
     } finally {
+      window.clearTimeout(timeout);
       if (sequence === requestSequenceRef.current) {
-        setRefreshing(false);
         controllerRef.current = null;
       }
     }
@@ -385,50 +408,82 @@ export function PersonalHome({
     runnerControllerRef.current?.abort();
     const controller = new AbortController();
     runnerControllerRef.current = controller;
-    setLocalRunnerAvailability("checking");
+    if (!runnerLoadedRef.current) setLocalRunnerAvailability("checking");
+    const timeout = window.setTimeout(
+      () => controller.abort(new Error("Model availability check timed out")),
+      15_000
+    );
     try {
-      const payload = await managedRequest(
-        "/launch-options",
-        undefined,
-        controller.signal
+      const response = await fetch(
+        "/studio-api/managed-conversations/launch-options",
+        {
+          headers: { accept: "application/json" },
+          cache: "no-store",
+          signal: controller.signal
+        }
       );
+      if (!response.ok) throw new Error("Model availability unavailable");
+      const payload = (await readHomeJson(response)) as Record<string, unknown>;
       if (controller.signal.aborted) return;
       if (!Array.isArray(payload.instances)) {
         throw new Error("Invalid launch options response");
       }
       const instances = parseLaunchInstances(payload);
       if (sequence !== runnerRequestSequenceRef.current) return;
-      setModelOptions(instances.flatMap((instance) => instance.models));
+      const models = instances.flatMap((instance) => instance.models);
+      setModelOptions((current) =>
+        JSON.stringify(current) === JSON.stringify(models) ? current : models
+      );
       setLocalRunnerAvailability(
         instances.some((instance) => instance.models.length > 0)
           ? "available"
           : "unavailable"
       );
+      return models.length > 0;
     } catch {
-      if (
-        sequence === runnerRequestSequenceRef.current &&
-        !controller.signal.aborted
-      ) {
-        setModelOptions([]);
+      if (sequence === runnerRequestSequenceRef.current) {
         setLocalRunnerAvailability("unknown");
       }
+      return false;
     } finally {
+      window.clearTimeout(timeout);
       if (sequence === runnerRequestSequenceRef.current) {
         runnerControllerRef.current = null;
         setModelOptionsLoaded(true);
+        runnerLoadedRef.current = true;
       }
     }
   }, []);
 
+  const refreshFeed = homeFeed.refresh;
   const refresh = useCallback(() => {
-    void load();
-    void loadLocalRunnerAvailability();
-  }, [load, loadLocalRunnerAvailability]);
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    setRefreshing(true);
+    const pending = Promise.all([
+      load(),
+      loadLocalRunnerAvailability(),
+      refreshFeed()
+    ])
+      .then((results) => {
+        const success = results.every((result) => result !== false);
+        setRefreshFailed(!success);
+        return success;
+      })
+      .catch(() => {
+        setRefreshFailed(true);
+        return false;
+      })
+      .finally(() => {
+        setRefreshing(false);
+        refreshPromiseRef.current = null;
+      });
+    refreshPromiseRef.current = pending;
+    return pending;
+  }, [load, loadLocalRunnerAvailability, refreshFeed]);
+
+  useVisibleRefresh(refresh);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-    void loadLocalRunnerAvailability();
     return () => {
       requestSequenceRef.current += 1;
       controllerRef.current?.abort();
@@ -814,26 +869,37 @@ export function PersonalHome({
                           ? "Personal Home is unavailable right now."
                           : homeSummary(homeFeed.snapshot?.badgeCount ?? 0)}
                 </p>
-                <button
-                  type="button"
-                  onClick={refresh}
-                  disabled={refreshing}
-                  title="Refresh Home"
-                  className="shrink-0 rounded-md px-2 py-1 text-xs text-subtle transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
-                >
-                  {refreshing ? "Refreshing…" : "Refresh"}
-                </button>
+                {(refreshFailed ||
+                  homeFeed.state === "offline" ||
+                  homeFeed.state === "unauthorized") && (
+                  <button
+                    type="button"
+                    onClick={refresh}
+                    disabled={refreshing}
+                    title="Refresh Home"
+                    className="shrink-0 rounded-md px-2 py-1 text-xs text-subtle transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+                  >
+                    {refreshing ? "Refreshing…" : "Refresh"}
+                  </button>
+                )}
               </div>
-              <p className="mt-1 px-1 text-xs text-subtle" aria-live="polite">
-                Local runner:{" "}
-                {localRunnerAvailability === "checking"
-                  ? "checking availability…"
-                  : localRunnerAvailability === "available"
-                    ? "available"
-                    : localRunnerAvailability === "unavailable"
-                      ? "no ready local instance or model is available"
-                      : "availability unknown"}
-              </p>
+              {(localRunnerAvailability === "unavailable" ||
+                localRunnerAvailability === "unknown") && (
+                <p
+                  className="mt-2 flex items-start gap-2 px-1 text-xs text-warning"
+                  role="status"
+                >
+                  <AlertTriangle
+                    className="h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {localRunnerAvailability === "unavailable"
+                      ? "No AI models are available on this computer. Check that your AI client is installed and signed in, then refresh Home."
+                      : "Could not check AI model availability. Check your AI client connection, then refresh Home."}
+                  </span>
+                </p>
+              )}
             </section>
             <section className="no-drag" aria-label="Start a chat">
               <SharedChatUI
@@ -937,6 +1003,7 @@ export function PersonalHome({
               </div>
             )}
             <HomeAttentionView
+              showRefresh={false}
               state={homeFeed.state}
               snapshot={homeFeed.snapshot}
               refreshing={homeFeed.refreshing}
@@ -944,7 +1011,7 @@ export function PersonalHome({
               pendingItemIds={homeFeed.pendingItemIds}
               loadingSources={homeFeed.loadingSources}
               canMutate={homeFeed.canMutate}
-              onRefresh={() => void homeFeed.refresh()}
+              onRefresh={() => void refresh()}
               onOpen={onOpenHomeItem}
               onSetCleared={(item, cleared) =>
                 void homeFeed.setCleared(item, cleared)
