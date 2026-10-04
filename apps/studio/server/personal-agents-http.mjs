@@ -79,7 +79,9 @@ export async function handlePersonalAgents({
               ? "/studio-api/collaboration"
               : routeFamily === "personal-agent-role-templates"
                 ? "/studio-api/personal-agent-role-templates"
-                : prefix;
+                : routeFamily === "personal-removals"
+                  ? "/studio-api/personal-removals"
+                  : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -115,19 +117,23 @@ export async function handlePersonalAgents({
               ? suffix === ""
                 ? ["GET"]
                 : []
-              : routeFamily === "managed-conversations"
-                ? managedMethods(suffix)
-                : suffix === ""
-                  ? ["GET", "POST"]
-                  : activityRoute || historyMatch
-                    ? ["GET"]
-                    : suffix === "/capabilities"
+              : routeFamily === "personal-removals"
+                ? suffix === ""
+                  ? ["GET", "PUT"]
+                  : []
+                : routeFamily === "managed-conversations"
+                  ? managedMethods(suffix)
+                  : suffix === ""
+                    ? ["GET", "POST"]
+                    : activityRoute || historyMatch
                       ? ["GET"]
-                      : match
-                        ? match[2]
-                          ? ["POST"]
-                          : ["GET", "PATCH"]
-                        : [];
+                      : suffix === "/capabilities"
+                        ? ["GET"]
+                        : match
+                          ? match[2]
+                            ? ["POST"]
+                            : ["GET", "PATCH"]
+                          : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -149,6 +155,8 @@ export async function handlePersonalAgents({
     routeFamily === "public-square" && squareRoute?.list === true;
   const homeList =
     routeFamily === "home" && suffix === "" && request.method === "GET";
+  const personalRemovalsRoute =
+    routeFamily === "personal-removals" && suffix === "";
   if (
     url.search &&
     !recoveryLookup &&
@@ -157,7 +165,8 @@ export async function handlePersonalAgents({
     !teamAgentRequestList &&
     !activityRoute &&
     !historyMatch &&
-    !homeList
+    !homeList &&
+    !personalRemovalsRoute
   ) {
     send(400, { error: "query_not_allowed" });
     return true;
@@ -266,13 +275,15 @@ export async function handlePersonalAgents({
     }
     const upstream = await fetchImpl(
       new URL(
-        routeFamily === "ai-client-resources" && suffix === "/instances"
-          ? "/v1/memory/local-agent-settings"
-          : teamAgentRequestRoute
-            ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
-            : squareRoute
-              ? `${squareRoute.path}${squareList ? url.search : ""}`
-              : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
+        routeFamily === "personal-removals"
+          ? "/v1/studio/personal-removals"
+          : routeFamily === "ai-client-resources" && suffix === "/instances"
+            ? "/v1/memory/local-agent-settings"
+            : teamAgentRequestRoute
+              ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
+              : squareRoute
+                ? `${squareRoute.path}${squareList ? url.search : ""}`
+                : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
         base
       ),
       {

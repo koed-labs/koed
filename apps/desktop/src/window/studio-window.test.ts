@@ -20,13 +20,21 @@ const makeWindow = () => {
     | undefined;
   let closed: (() => void) | undefined;
   let closeRequested: ((event: { preventDefault(): void }) => void) | undefined;
+  let didFinishLoad: (() => void) | undefined;
+  let currentUrl = "";
   let visible = false;
   let focused = false;
   const window: StudioWindowLike = {
     webContents: {
+      stop: vi.fn(),
+      getURL: vi.fn(() => currentUrl),
       setWindowOpenHandler: vi.fn(),
-      on: (_event, listener) => {
-        navigation = listener;
+      on: (event, listener) => {
+        if (event === "will-navigate") {
+          navigation = listener as typeof navigation;
+        } else {
+          didFinishLoad = listener as typeof didFinishLoad;
+        }
       },
       send: vi.fn()
     },
@@ -50,12 +58,24 @@ const makeWindow = () => {
     focus: vi.fn(() => {
       focused = true;
     }),
-    close: vi.fn(() => closed?.()),
+    close: vi.fn(() => {
+      let prevented = false;
+      closeRequested?.({
+        preventDefault: () => {
+          prevented = true;
+        }
+      });
+      if (!prevented) closed?.();
+    }),
     isDestroyed: vi.fn(() => false)
   };
   return {
     window,
     navigation: () => navigation!,
+    finishLoad: (url: string) => {
+      currentUrl = url;
+      didFinishLoad?.();
+    },
     closed: () => closed!,
     requestClose: () => {
       let prevented = false;
@@ -422,6 +442,274 @@ describe("Studio window controller", () => {
       apiToken: "paired-token"
     });
     expect(getAccess).toHaveBeenCalledTimes(3);
+    await controller.close();
+  });
+
+  it("retries a failed loopback load while keeping the gateway alive", async () => {
+    const fake = makeWindow();
+    const closeGateway = vi.fn(async () => undefined);
+    let attempts = 0;
+    fake.window.loadURL = vi.fn(async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("ERR_FAILED");
+    });
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49822",
+        close: closeGateway
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+
+    await expect(controller.open()).resolves.toBeUndefined();
+
+    expect(attempts).toBe(3);
+    expect(fake.window.show).toHaveBeenCalledOnce();
+    expect(closeGateway).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
+  it("shows a static retry page after bounded loopback failures", async () => {
+    const fake = makeWindow();
+    const closeGateway = vi.fn(async () => undefined);
+    const requestedUrls: string[] = [];
+    fake.window.loadURL = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      if (!url.startsWith("data:text/html")) {
+        throw new Error("ERR_CONNECTION_REFUSED");
+      }
+    });
+    const allowedRendererOrigins = new Set<string>();
+    const controller = createStudioWindowController({
+      allowedRendererOrigins,
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49822",
+        close: closeGateway
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+
+    await expect(controller.open()).resolves.toBeUndefined();
+
+    expect(requestedUrls).toHaveLength(4);
+    const recoveryUrl = requestedUrls.at(-1)!;
+    expect(recoveryUrl).toMatch(/^data:text\/html/);
+    const recoveryHtml = decodeURIComponent(recoveryUrl.split(",", 2)[1]!);
+    expect(recoveryHtml).toContain('href="http://127.0.0.1:49822"');
+    expect(recoveryHtml).not.toContain("secret");
+    let recoveryNavigationPrevented = false;
+    fake.navigation()(
+      {
+        preventDefault: () => {
+          recoveryNavigationPrevented = true;
+        }
+      },
+      recoveryUrl
+    );
+    expect(recoveryNavigationPrevented).toBe(false);
+    expect(fake.window.show).toHaveBeenCalledOnce();
+    expect(closeGateway).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
+  it("stops hanging loopback loads within the startup recovery budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeWindow();
+      const requestedUrls: string[] = [];
+      fake.window.loadURL = vi.fn(async (url: string) => {
+        requestedUrls.push(url);
+        if (!url.startsWith("data:text/html")) {
+          return new Promise<void>(() => undefined);
+        }
+      });
+      const controller = createStudioWindowController({
+        allowedRendererOrigins: new Set(),
+        createWindow: () => fake.window,
+        getAccess: async () => ({
+          apiOrigin: "http://127.0.0.1:43300",
+          apiToken: "secret"
+        }),
+        defaultApiOrigin: "http://127.0.0.1:43300",
+        getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+        startGateway: async () => ({
+          url: "http://127.0.0.1:49822",
+          close: async () => undefined
+        }),
+        listLocalSources: async () => [],
+        listProjects: async () => ({ ok: true, projects: [] }),
+        chooseProjectDirectory: async () => null,
+        registerProject: async () => ({ ok: true }),
+        collaboration: async () => undefined,
+        openExternal: async () => undefined
+      });
+
+      const opening = controller.open();
+      await vi.advanceTimersByTimeAsync(34_000);
+      await expect(opening).resolves.toBeUndefined();
+
+      expect(fake.window.webContents.stop).toHaveBeenCalledTimes(3);
+      expect(requestedUrls).toHaveLength(4);
+      expect(requestedUrls.at(-1)).toMatch(/^data:text\/html/);
+      await controller.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the failed window when the recovery page cannot load", async () => {
+    vi.useFakeTimers();
+    const fake = makeWindow();
+    const closeGateway = vi.fn(async () => undefined);
+    fake.window.loadURL = vi.fn(async (url: string) => {
+      if (url.startsWith("data:")) return new Promise<void>(() => undefined);
+      throw new Error("load failed");
+    });
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49822",
+        close: closeGateway
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined,
+      platform: "darwin"
+    });
+
+    try {
+      const opening = controller.open();
+      const rejected = expect(opening).rejects.toThrow(
+        "Studio recovery page failed to load."
+      );
+      await vi.advanceTimersByTimeAsync(4_000);
+      await rejected;
+
+      expect(fake.window.webContents.stop).toHaveBeenCalledOnce();
+      expect(fake.window.close).toHaveBeenCalledOnce();
+      expect(closeGateway).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves a newer same-origin navigation after the startup load is aborted", async () => {
+    const fake = makeWindow();
+    const requestedUrls: string[] = [];
+    fake.window.loadURL = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      if (requestedUrls.length === 1) {
+        fake.navigation()(
+          { preventDefault: () => undefined },
+          `${url}/settings`
+        );
+        throw new Error("ERR_ABORTED (-3)");
+      }
+    });
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49822",
+        close: async () => undefined
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+
+    await expect(controller.open()).resolves.toBeUndefined();
+
+    expect(requestedUrls).toEqual(["http://127.0.0.1:49822"]);
+    expect(fake.window.show).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
+  it("clears recovery state after a manual same-origin retry succeeds", async () => {
+    const fake = makeWindow();
+    const requestedUrls: string[] = [];
+    fake.window.loadURL = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      if (
+        url === "http://127.0.0.1:49822" &&
+        requestedUrls.filter((requestedUrl) => requestedUrl === url).length <= 3
+      ) {
+        throw new Error("ERR_FAILED");
+      }
+    });
+    const controller = createStudioWindowController({
+      allowedRendererOrigins: new Set(),
+      createWindow: () => fake.window,
+      getAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:43300",
+        apiToken: "secret"
+      }),
+      defaultApiOrigin: "http://127.0.0.1:43300",
+      getPaths: () => ({ gatewayPath: "/unused", staticDir: "/static" }),
+      startGateway: async () => ({
+        url: "http://127.0.0.1:49822",
+        close: async () => undefined
+      }),
+      listLocalSources: async () => [],
+      listProjects: async () => ({ ok: true, projects: [] }),
+      chooseProjectDirectory: async () => null,
+      registerProject: async () => ({ ok: true }),
+      collaboration: async () => undefined,
+      openExternal: async () => undefined
+    });
+
+    await controller.open();
+    await fake.window.loadURL("http://127.0.0.1:49822");
+    fake.finishLoad("http://127.0.0.1:49822");
+    const attemptsAfterRetry = requestedUrls.length;
+
+    await controller.open();
+
+    expect(requestedUrls).toHaveLength(attemptsAfterRetry);
     await controller.close();
   });
 

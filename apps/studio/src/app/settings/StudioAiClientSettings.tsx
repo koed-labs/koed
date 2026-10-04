@@ -1,19 +1,143 @@
 "use client";
 
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { LocalAiClientSettingsSection } from "../../../.desktop-ui/index.js";
-import "../../../../desktop/src/renderer/views/preferences/preferences.css";
+import type { LocalAiClientReadModel } from "../../../../desktop/src/ipc/local-ai-client-protocol.js";
 import { loadHostedLaunchOptions } from "@/lib/hosted-managed-chats";
-import { studioAuthenticatedRequest } from "@/lib/personal-agents-client";
 import {
   useStudioDesktopAvailability,
   useStudioSettingsComputer
 } from "./StudioSettingsComputerContext";
 
-export function StudioAiClientSettings() {
-  const desktopAvailability = useStudioDesktopAvailability();
+type ProviderRow = {
+  id: string;
+  provider: string;
+  client: string;
+  status: string;
+  driverId?: "codex" | "claude" | "pi";
+  instanceId?: string;
+  enabled?: boolean;
+  computer?: string | null;
+};
 
+type ProviderAction = "setup" | "repair" | "check";
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nonEmptyString(...values: unknown[]): string | null {
+  return (
+    values.find(
+      (value): value is string =>
+        typeof value === "string" && value.trim().length > 0
+    ) ?? null
+  );
+}
+
+function providerActionMessage(result: unknown, driverId: string): string {
+  const operation = record(result);
+  const status = record(operation?.status);
+  const operationReadiness = record(operation?.readiness);
+  const readinessMap =
+    record(status?.aiClientInstances) ?? record(status?.aiClients);
+  const readiness =
+    operationReadiness?.driverId === driverId
+      ? operationReadiness
+      : record(readinessMap?.[driverId]);
+  const profile = record(readiness?.profile);
+  const directStatus = record(
+    driverId === "claude" ? status?.claudeCode : status?.[driverId]
+  );
+  const diagnosis = nonEmptyString(
+    operation?.message,
+    operation?.error,
+    profile?.message,
+    directStatus?.message
+  );
+  const nextStep = nonEmptyString(
+    operation?.action,
+    profile?.action,
+    directStatus?.action
+  );
+  if (diagnosis && nextStep && diagnosis !== nextStep)
+    return `${diagnosis} Next step: ${nextStep}`;
+  return (
+    diagnosis ?? nextStep ?? "No additional diagnostic details were returned."
+  );
+}
+
+function claudeAuthenticationIsRequired(result: unknown): boolean {
+  const operation = record(result);
+  const status = record(operation?.status);
+  const operationReadiness = record(operation?.readiness);
+  const readinessMap =
+    record(status?.aiClientInstances) ?? record(status?.aiClients);
+  const readiness =
+    operationReadiness?.driverId === "claude"
+      ? operationReadiness
+      : record(readinessMap?.claude);
+  const profile = record(readiness?.profile);
+  const details = record(profile?.details);
+  return (
+    readiness?.authentication === "unauthenticated" ||
+    details?.authenticated === false ||
+    details?.authenticationState === "unauthenticated"
+  );
+}
+
+const providerNames: Record<string, string> = {
+  codex: "OpenAI",
+  claude: "Anthropic",
+  pi: "Pi"
+};
+const clientNames: Record<string, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  pi: "Pi"
+};
+
+function localProviders(model: LocalAiClientReadModel): ProviderRow[] {
+  return model.instances.map((instance) => {
+    const snapshot = model.capabilitySnapshots
+      .filter((item) =>
+        instance.hostedInstanceId
+          ? item.hostedInstanceId === instance.hostedInstanceId
+          : item.instanceId === instance.instanceId
+      )
+      .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))[0];
+    const status = !instance.enabled
+      ? "Disabled"
+      : !snapshot
+        ? "Configured · status not checked"
+        : snapshot.stale || Date.parse(snapshot.expiresAt) <= Date.now()
+          ? "Configured · status out of date"
+          : snapshot.authenticationState === "unauthenticated"
+            ? "Sign-in required"
+            : snapshot.healthState !== "healthy"
+              ? "Needs attention"
+              : snapshot.authenticationState === "authenticated"
+                ? "Ready"
+                : "Configured · sign-in not verified";
+    return {
+      id:
+        instance.hostedInstanceId ??
+        `${instance.driverId}:${instance.instanceId}`,
+      provider: providerNames[instance.driverId] ?? instance.driverId,
+      client: instance.displayName || clientNames[instance.driverId],
+      status,
+      driverId: instance.driverId,
+      instanceId: instance.hostedInstanceId ?? instance.instanceId,
+      enabled: instance.enabled,
+      computer: instance.sourceDeviceLabel
+    };
+  });
+}
+
+export function StudioAiClientSettings() {
+  const desktop = useStudioDesktopAvailability();
   return (
     <section
       className="mt-8 border-b border-border pb-8"
@@ -23,105 +147,515 @@ export function StudioAiClientSettings() {
         id="ai-clients-heading"
         className="text-sm font-medium text-foreground-secondary"
       >
-        AI Clients &amp; models
+        AI providers
       </h2>
       <p className="mt-1 text-xs leading-5 text-muted">
-        Choose the AI Client and model used for Koed Conversations and memory
-        services.
+        Configured AI providers. Choose models in your Agent or chat controls.
       </p>
-      {desktopAvailability === null ? (
+      {desktop === null ? (
         <p className="mt-4 text-xs text-muted">Checking Desktop connection…</p>
-      ) : desktopAvailability ? (
-        <div className="mt-4">
-          <LocalAiClientSettingsSection
-            localAiClients={window.koedDesktop?.localAiClients}
-          />
-        </div>
+      ) : desktop ? (
+        <LocalProviders />
       ) : (
-        <RemoteComputerCatalog />
+        <RemoteProviders />
       )}
     </section>
   );
 }
 
-function RemoteComputerCatalog() {
-  const [catalog, setCatalog] = useState<Awaited<
-    ReturnType<typeof loadHostedLaunchOptions>
-  > | null>(null);
-  const [settings, setSettings] = useState<Record<string, unknown> | null>(
-    null
-  );
-  const { selectedDeviceId, setSelectedDeviceId } = useStudioSettingsComputer();
-  const [loading, setLoading] = useState(true);
+function LocalProviders() {
+  const [providers, setProviders] = useState<ProviderRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [next, nextSettings] = await Promise.all([
-          loadHostedLaunchOptions(signal),
-          studioAuthenticatedRequest(
-            "/v1/memory/local-agent-settings",
-            {},
-            signal
-          )
-        ]);
-        if (signal?.aborted) return;
-        setCatalog(next);
-        setSettings(isRecord(nextSettings) ? nextSettings : null);
-        setSelectedDeviceId((current) =>
-          next.runners.some((runner) => runner.deviceId === current)
-            ? current
-            : (next.runners[0]?.deviceId ?? "")
-        );
-      } catch (cause) {
-        if (signal?.aborted) return;
+  const [notice, setNotice] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [configuring, setConfiguring] = useState<ProviderRow | null>(null);
+  const [claudeExecutablePath, setClaudeExecutablePath] = useState("");
+  const [busyAction, setBusyAction] = useState<{
+    driverId: string;
+    action: ProviderAction;
+  } | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{
+    providerId: string;
+    message: string;
+  } | null>(null);
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const clients = window.koedDesktop?.localAiClients;
+      if (!clients)
+        throw new Error("Desktop AI provider settings are unavailable.");
+      // Page entry only reads the saved catalog. Probing requires an explicit action.
+      const response = await clients.list();
+      if (!signal?.aborted) setProviders(localProviders(response.readModel));
+    } catch (cause) {
+      if (!signal?.aborted)
         setError(
           cause instanceof Error
             ? cause.message
-            : "Computer status could not be loaded."
+            : "AI providers could not be loaded."
         );
-      } finally {
-        if (!signal?.aborted) setLoading(false);
-      }
-    },
-    [setSelectedDeviceId]
-  );
-
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
     void Promise.resolve().then(() => refresh(controller.signal));
     return () => controller.abort();
   }, [refresh]);
 
-  const selected = catalog?.runners.find(
-    ({ deviceId }) => deviceId === selectedDeviceId
-  );
-  const instances =
-    catalog?.instances.filter(
-      (instance) => instance.runnerDeviceId === selectedDeviceId
-    ) ?? [];
+  async function runAction(
+    driverId: "codex" | "claude" | "pi",
+    action: ProviderAction
+  ) {
+    const bridge = window.koedDesktop;
+    if (!bridge?.localAiClients) return;
+    const provider = providers?.find((item) => item.driverId === driverId);
+    const providerId = provider?.id ?? `${driverId}:${driverId}.default`;
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    setActionFeedback(null);
+    setBusyAction({ driverId, action });
+    try {
+      const result = await bridge.invoke<unknown>(
+        `${action}_${driverId}`,
+        action === "check"
+          ? undefined
+          : {
+              operatorConsented: true,
+              ...(driverId === "claude" &&
+              action === "repair" &&
+              claudeExecutablePath.trim()
+                ? { executablePath: claudeExecutablePath.trim() }
+                : {})
+            }
+      );
+      let checkResult: unknown = null;
+      if (driverId === "claude" && action === "repair") {
+        setBusyAction({ driverId, action: "check" });
+        checkResult = await bridge.invoke<unknown>("check_claude");
+      }
+      const response = await bridge.localAiClients.list();
+      setProviders(localProviders(response.readModel));
+      const outcome = record(result);
+      const ok = outcome?.ok === true;
+      const actionSummary = providerActionMessage(result, driverId);
+      const summary =
+        actionSummary === "No additional diagnostic details were returned."
+          ? action === "check"
+            ? "Provider status checked."
+            : action === "repair"
+              ? "Provider integration repaired."
+              : "Provider integration configured."
+          : actionSummary;
+      if (driverId === "claude" && action === "repair") {
+        const checkOutcome = record(checkResult);
+        const checkSummary = providerActionMessage(checkResult, driverId);
+        const authGuidance = claudeAuthenticationIsRequired(checkResult)
+          ? " Run claude auth login in Terminal where Claude Code is available to sign in."
+          : "";
+        setActionFeedback({
+          providerId,
+          message: `Claude Code repair ${ok ? "finished" : "needs attention"}: ${summary} Status check ${checkOutcome?.ok === true ? "finished" : "needs attention"}: ${checkSummary}${authGuidance}`
+        });
+      } else {
+        const label = clientNames[driverId] ?? driverId;
+        const authGuidance =
+          driverId === "claude" && claudeAuthenticationIsRequired(result)
+            ? " Run claude auth login in Terminal where Claude Code is available to sign in."
+            : "";
+        setActionFeedback({
+          providerId,
+          message: `${label} ${action === "check" ? "status check" : action === "repair" ? "repair" : "setup"} ${ok ? "finished" : "needs attention"}: ${summary}${authGuidance}`
+        });
+      }
+      if (response.refreshError) setError(response.refreshError);
+      setAdding(false);
+    } catch (cause) {
+      const message =
+        cause instanceof Error ? cause.message : "Provider operation failed.";
+      setActionFeedback({
+        providerId,
+        message: `${clientNames[driverId] ?? driverId} ${action} failed: ${message}`
+      });
+    } finally {
+      setLoading(false);
+      setBusyAction(null);
+    }
+  }
+
+  async function toggle(provider: ProviderRow) {
+    const clients = window.koedDesktop?.localAiClients;
+    if (!clients || !provider.instanceId) return;
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await clients.setEnabled(
+        provider.instanceId,
+        !provider.enabled
+      );
+      setProviders(localProviders(response.readModel));
+      setNotice(
+        provider.enabled
+          ? "Provider disabled for future use. Running work can finish; installation, sign-in, and history are kept."
+          : "Provider enabled. Check status before starting new work."
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Provider availability could not be changed."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <div className="mt-4 rounded-lg border border-border bg-surface/40 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-medium">
-            Authorized execution computers
-          </h3>
-          <p className="mt-1 text-xs leading-5 text-muted">
-            Status and model choices come from each computer’s reported AI
-            Client capabilities. Stale reports are marked.
+    <>
+      <ProviderList
+        providers={providers}
+        loading={loading}
+        error={error}
+        refresh={() => void refresh()}
+        actions={(provider) => (
+          <div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setActionFeedback(null);
+                  setConfiguring(provider);
+                }}
+                className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+              >
+                Configure
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() =>
+                  provider.driverId &&
+                  void runAction(provider.driverId, "check")
+                }
+                className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+              >
+                {busyAction?.driverId === provider.driverId &&
+                busyAction?.action === "check"
+                  ? `Checking ${provider.client} status…`
+                  : "Check status"}
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void toggle(provider)}
+                className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+              >
+                {provider.enabled ? "Disable" : "Enable"}
+              </button>
+            </div>
+            {actionFeedback?.providerId === provider.id ? (
+              <p role="status" className="mt-2 text-xs leading-5 text-muted">
+                {actionFeedback.message}
+              </p>
+            ) : null}
+            {configuring?.id === provider.id ? (
+              <div className="mt-3 rounded-md border border-border bg-surface/50 p-4">
+                <h3 className="text-sm font-medium">
+                  Configure {provider.provider}
+                </h3>
+                <p className="mt-2 text-xs leading-5 text-muted">
+                  Repair updates Koed’s integration in the installed AI Client.
+                  It does not change the AI Client account or credentials.
+                </p>
+                {provider.driverId === "claude" ? (
+                  <div className="mt-3 space-y-2 text-xs leading-5 text-muted">
+                    <label className="block">
+                      Claude Code executable path (optional)
+                      <input
+                        type="text"
+                        value={claudeExecutablePath}
+                        onChange={(event) =>
+                          setClaudeExecutablePath(event.currentTarget.value)
+                        }
+                        placeholder="Auto-detect Claude Code"
+                        autoComplete="off"
+                        spellCheck={false}
+                        className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground"
+                      />
+                    </label>
+                    <p>
+                      Leave empty to detect automatically. Choose Claude Code,
+                      not the Claude Desktop application. Claude Code is
+                      installed separately or bundled as a CLI by Claude
+                      Desktop; its GUI application executable is not the CLI.
+                    </p>
+                    <p>
+                      1. Repair the Koed integration, then Studio checks Claude
+                      Code status automatically.
+                    </p>
+                    <p>
+                      2. If the check says sign-in is required, run{" "}
+                      <code>claude auth login</code> in Terminal where Claude
+                      Code is available. If it is installed only through Claude
+                      Desktop, use Claude Desktop’s Code sign-in or the full
+                      Claude Code executable path.
+                    </p>
+                    <p>
+                      Claude Desktop sign-in does not authenticate Claude Code.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="rounded bg-background px-2 py-1">
+                        claude auth login
+                      </code>
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={async () => {
+                          try {
+                            const clipboard = window.koedDesktop?.clipboard;
+                            if (!clipboard)
+                              throw new Error("Clipboard unavailable.");
+                            await clipboard.writeText("claude auth login");
+                            setActionFeedback({
+                              providerId: provider.id,
+                              message: "Copied claude auth login."
+                            });
+                          } catch {
+                            setActionFeedback({
+                              providerId: provider.id,
+                              message:
+                                "Could not copy the command. Select it and copy it manually."
+                            });
+                          }
+                        }}
+                        className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+                      >
+                        Copy command
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() =>
+                      provider.driverId &&
+                      void runAction(provider.driverId, "repair")
+                    }
+                    className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+                  >
+                    {busyAction?.driverId === provider.driverId &&
+                    busyAction?.action === "repair"
+                      ? `Repairing ${provider.client} integration…`
+                      : provider.driverId === "claude"
+                        ? "Repair and check status"
+                        : "Repair Koed integration"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => setConfiguring(null)}
+                    className="px-3 py-2 text-xs text-muted disabled:opacity-50"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      />
+      {notice ? (
+        <p role="status" className="mt-3 text-xs leading-5 text-muted">
+          {notice}
+        </p>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-subtle">
+        Koed reuses existing local AI Client installations and sign-in. Ready
+        means the last check succeeded.
+      </p>
+      <button
+        type="button"
+        disabled={loading}
+        onClick={() => {
+          setAdding(!adding);
+          setConfiguring(null);
+        }}
+        className="mt-3 rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+      >
+        Add AI provider
+      </button>
+      {adding ? (
+        <div className="mt-3 rounded-md border border-border bg-surface/50 p-4">
+          <h3 className="text-sm font-medium">Connect an AI provider</h3>
+          <p className="mt-2 text-xs leading-5 text-muted">
+            Use an installed AI Client on this Mac. Connecting or repairing
+            updates its Koed integration. To configure another computer, open
+            Studio Desktop there. Account sign-in and subscription settings
+            remain in that AI Client.
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(Object.keys(providerNames) as ("codex" | "claude" | "pi")[])
+              .filter(
+                (id) => !providers?.some((provider) => provider.driverId === id)
+              )
+              .map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void runAction(id, "setup")}
+                  className="rounded-md border border-border px-3 py-2 text-xs disabled:opacity-50"
+                >
+                  Connect {providerNames[id]} · {clientNames[id]}
+                </button>
+              ))}
+            {adding &&
+            Object.keys(providerNames).every((id) =>
+              providers?.some((provider) => provider.driverId === id)
+            ) ? (
+              <p className="text-xs text-muted">
+                All supported providers are configured. Use Configure or Enable
+                on an existing provider.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setAdding(false);
+                setConfiguring(null);
+              }}
+              className="px-3 py-2 text-xs text-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
+      ) : null}
+    </>
+  );
+}
+
+function RemoteProviders() {
+  const [catalog, setCatalog] = useState<Awaited<
+    ReturnType<typeof loadHostedLaunchOptions>
+  > | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { selectedDeviceId, setSelectedDeviceId } = useStudioSettingsComputer();
+  const refresh = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const next = await loadHostedLaunchOptions(signal);
+        if (signal?.aborted) return;
+        setCatalog(next);
+        setSelectedDeviceId((current) =>
+          next.runners.some((runner) => runner.deviceId === current)
+            ? current
+            : (next.runners[0]?.deviceId ?? "")
+        );
+      } catch (cause) {
+        if (!signal?.aborted)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "AI providers could not be loaded."
+          );
+      } finally {
+        if (!signal?.aborted) setLoading(false);
+      }
+    },
+    [setSelectedDeviceId]
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    void Promise.resolve().then(() => refresh(controller.signal));
+    return () => controller.abort();
+  }, [refresh]);
+  const providers =
+    catalog?.instances
+      .filter((instance) => instance.runnerDeviceId === selectedDeviceId)
+      .map((instance) => ({
+        id:
+          instance.hostedInstanceId ??
+          `${instance.driverId}:${instance.instanceId}`,
+        provider: providerNames[instance.driverId] ?? instance.driverId,
+        client: clientNames[instance.driverId] ?? instance.driverId,
+        status: instance.ready
+          ? "Ready"
+          : instance.readiness === "authentication_required"
+            ? "Sign-in required"
+            : instance.readiness === "stale"
+              ? "Configured · status out of date"
+              : instance.readiness === "disabled"
+                ? "Disabled"
+                : "Needs attention"
+      })) ?? null;
+  return (
+    <>
+      {catalog && catalog.runners.length > 0 ? (
+        <label className="mt-4 block max-w-sm text-xs text-muted">
+          Computer
+          <select
+            aria-label="Execution computer"
+            value={selectedDeviceId}
+            onChange={(event) => setSelectedDeviceId(event.currentTarget.value)}
+            className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+          >
+            {catalog.runners.map((runner) => (
+              <option key={runner.deviceId} value={runner.deviceId}>
+                {runner.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <ProviderList
+        providers={providers}
+        loading={loading}
+        error={error}
+        refresh={() => void refresh()}
+      />
+      <p className="mt-2 text-xs text-subtle">
+        Connect or repair providers in Studio Desktop on the selected computer.
+      </p>
+    </>
+  );
+}
+
+function ProviderList({
+  providers,
+  loading,
+  error,
+  refresh,
+  actions
+}: {
+  providers: ProviderRow[] | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+  actions?: (provider: ProviderRow) => React.ReactNode;
+}) {
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-subtle">Last reported provider status.</p>
         <button
           type="button"
-          onClick={() => void refresh()}
+          onClick={refresh}
           disabled={loading}
-          aria-label="Refresh computer AI Client status"
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs text-foreground-secondary hover:border-border-strong disabled:opacity-50"
+          aria-label="Refresh AI providers"
+          className="inline-flex min-h-9 items-center gap-2 rounded-md border border-border px-3 text-xs text-foreground-secondary hover:border-border-strong disabled:opacity-50"
         >
           <RefreshCw
             aria-hidden="true"
@@ -130,462 +664,49 @@ function RemoteComputerCatalog() {
           Refresh
         </button>
       </div>
-
-      {loading && !catalog ? (
-        <p className="mt-4 text-xs text-muted">
-          Checking authorized computers…
-        </p>
+      {loading && providers === null ? (
+        <p className="mt-3 text-xs text-muted">Loading configured providers…</p>
       ) : null}
-      {error ? (
-        <p
-          role="alert"
-          className="mt-4 flex items-start gap-2 text-xs text-warning"
-        >
-          <AlertTriangle
-            aria-hidden="true"
-            className="mt-0.5 h-4 w-4 shrink-0"
-          />
-          <span>{error}</span>
-        </p>
-      ) : null}
-      {catalog && catalog.runners.length > 0 ? (
-        <>
-          <label className="mt-4 block max-w-sm text-xs text-muted">
-            Computer
-            <select
-              aria-label="Execution computer"
-              value={selectedDeviceId}
-              onChange={(event) =>
-                setSelectedDeviceId(event.currentTarget.value)
-              }
-              className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
-            >
-              {catalog.runners.map((runner) => (
-                <option key={runner.deviceId} value={runner.deviceId}>
-                  {runner.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="mt-4 rounded-md border border-border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <strong className="text-sm">
-                {selected?.displayName ?? "Selected computer"}
-              </strong>
-              <span className="text-[11px] text-muted">
-                {instances.length
-                  ? "AI Client reports available"
-                  : "No AI Client report"}
-              </span>
-            </div>
-            {instances.length ? (
-              <ul className="mt-3 divide-y divide-border">
-                {instances.map((instance) => (
-                  <li
-                    key={
-                      instance.hostedInstanceId ??
-                      `${instance.runnerDeviceId}:${instance.instanceId}`
-                    }
-                    className="py-3 first:pt-0 last:pb-0"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <strong className="text-xs font-medium">
-                        {instance.driverId} ·{" "}
-                        {instance.sourceDeviceLabel ||
-                          selected?.displayName ||
-                          "Computer"}
-                      </strong>
-                      <span className="text-[11px] text-muted">
-                        {remoteReadinessLabel(
-                          instance.ready,
-                          instance.readiness
-                        )}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-subtle">
-                      {instance.models.length}{" "}
-                      {instance.readiness === "stale"
-                        ? "last-known"
-                        : "reported"}{" "}
-                      model{instance.models.length === 1 ? "" : "s"}
-                    </p>
-                    {instance.models.length ? (
-                      <ul className="mt-2 flex flex-wrap gap-1.5">
-                        {instance.models.map((model) => (
-                          <li
-                            key={`${instance.hostedInstanceId ?? instance.instanceId}:${model.id}`}
-                            className="rounded border border-border px-2 py-1 text-[11px] text-foreground-secondary"
-                          >
-                            {model.displayName || model.id}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-xs text-muted">
-                Open Koed Studio Desktop on this computer, finish local setup,
-                then refresh this list.
-              </p>
-            )}
-          </div>
-          <RemoteFlowDefaults
-            catalog={catalog}
-            selectedDeviceId={selectedDeviceId}
-            settingsPayload={settings}
-          />
-          <p className="mt-3 text-xs leading-5 text-muted">
-            Install, sign in, or repair an AI Client in Koed Studio Desktop on
-            the selected computer.
-          </p>
-        </>
-      ) : catalog && !loading ? (
-        <div className="mt-4 rounded-md border border-border p-4 text-xs leading-5 text-muted">
-          No authorized execution computer is connected. Open Koed Studio
-          Desktop on the computer you want to use, then choose Settings →
-          Devices → Manage devices to pair it.
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const remoteFlows = [
-  { key: "conversations", label: "Conversations" },
-  { key: "mcp_memory_answer", label: "Memory Answer" },
-  { key: "lcm_summary", label: "LCM Summary" },
-  { key: "session_title", label: "Session Title" },
-  { key: "curated_memory_review", label: "Curated Memory Review" }
-] as const;
-
-type RemoteFlowKey = (typeof remoteFlows)[number]["key"];
-type RemoteAssignment = {
-  provider: string;
-  ai_client_instance_id: string;
-  model: string;
-  reasoning_effort: string;
-  timeout_ms: number;
-  max_attempts: number;
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
-const existingAssignment = (
-  payload: Record<string, unknown> | null,
-  flowKey: RemoteFlowKey
-): RemoteAssignment | null => {
-  const setting = Array.isArray(payload?.settings)
-    ? payload.settings.find(
-        (value) => isRecord(value) && value.flowKey === flowKey
-      )
-    : null;
-  if (isRecord(setting)) {
-    const provider =
-      typeof setting.provider === "string" ? setting.provider : null;
-    const instance =
-      typeof setting.aiClientInstanceId === "string"
-        ? setting.aiClientInstanceId
-        : null;
-    const model = typeof setting.model === "string" ? setting.model : null;
-    if (provider && instance && model) {
-      return {
-        provider,
-        ai_client_instance_id: instance,
-        model,
-        reasoning_effort:
-          typeof setting.reasoningEffort === "string"
-            ? setting.reasoningEffort
-            : "medium",
-        timeout_ms:
-          typeof setting.timeoutMs === "number" ? setting.timeoutMs : 120_000,
-        max_attempts:
-          typeof setting.maxAttempts === "number" ? setting.maxAttempts : 3
-      };
-    }
-  }
-  const defaults = isRecord(payload?.defaults) ? payload.defaults : null;
-  const documented = isRecord(defaults?.[flowKey]) ? defaults[flowKey] : null;
-  const assignment = isRecord(documented?.assignment)
-    ? documented.assignment
-    : null;
-  if (!assignment) return null;
-  const provider =
-    typeof assignment.provider === "string" ? assignment.provider : null;
-  const instance =
-    typeof assignment.ai_client_instance_id === "string"
-      ? assignment.ai_client_instance_id
-      : null;
-  const model = typeof assignment.model === "string" ? assignment.model : null;
-  if (!provider || !instance || !model) return null;
-  return {
-    provider,
-    ai_client_instance_id: instance,
-    model,
-    reasoning_effort:
-      typeof assignment.reasoning_effort === "string"
-        ? assignment.reasoning_effort
-        : "medium",
-    timeout_ms:
-      typeof assignment.timeout_ms === "number"
-        ? assignment.timeout_ms
-        : 120_000,
-    max_attempts:
-      typeof assignment.max_attempts === "number" ? assignment.max_attempts : 3
-  };
-};
-
-function RemoteFlowDefaults({
-  catalog,
-  selectedDeviceId,
-  settingsPayload
-}: {
-  catalog: Awaited<ReturnType<typeof loadHostedLaunchOptions>>;
-  selectedDeviceId: string;
-  settingsPayload: Record<string, unknown> | null;
-}) {
-  const selectedInstances = catalog.instances.filter(
-    (instance) => instance.runnerDeviceId === selectedDeviceId && instance.ready
-  );
-  const allInstances = catalog.instances;
-  const ambiguousIds = new Set(
-    allInstances
-      .filter(
-        (instance, _index, items) =>
-          items.filter(
-            (candidate) =>
-              candidate.driverId === instance.driverId &&
-              candidate.instanceId === instance.instanceId
-          ).length > 1
-      )
-      .map((instance) => `${instance.driverId}:${instance.instanceId}`)
-  );
-  const [drafts, setDrafts] = useState<
-    Partial<Record<RemoteFlowKey, RemoteAssignment>>
-  >({});
-  const [saving, setSaving] = useState<RemoteFlowKey | null>(null);
-  const [saved, setSaved] = useState<RemoteFlowKey | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const update = (flowKey: RemoteFlowKey, value: RemoteAssignment) => {
-    setDrafts((current) => ({ ...current, [flowKey]: value }));
-    setSaved(null);
-    setError(null);
-  };
-  const save = async (flowKey: RemoteFlowKey, assignment: RemoteAssignment) => {
-    if (
-      ambiguousIds.has(
-        `${assignment.provider}:${assignment.ai_client_instance_id}`
-      )
-    )
-      return;
-    setSaving(flowKey);
-    setError(null);
-    setSaved(null);
-    try {
-      await studioAuthenticatedRequest(
-        `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
-        { method: "PUT", body: JSON.stringify(assignment) }
-      );
-      setSettingsPayloadAfterSave(flowKey, assignment);
-      setSaved(flowKey);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not save this default."
-      );
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const [savedAssignments, setSavedAssignments] = useState<
-    Partial<Record<RemoteFlowKey, RemoteAssignment>>
-  >({});
-  const setSettingsPayloadAfterSave = (
-    flowKey: RemoteFlowKey,
-    assignment: RemoteAssignment
-  ) => {
-    setSavedAssignments((current) => ({ ...current, [flowKey]: assignment }));
-  };
-
-  return (
-    <div className="mt-4 rounded-md border border-border p-4">
-      <h3 className="text-sm font-medium">Defaults for new work</h3>
-      <p className="mt-1 text-xs leading-5 text-muted">
-        These account defaults use each AI Client’s provider-local ID. If that
-        provider and Client ID are reported by more than one computer, the
-        choice is disabled because the saved assignment cannot name a computer.
-      </p>
-      {settingsPayload === null ? (
-        <p className="mt-3 text-xs text-muted">
-          Account AI Client defaults are unavailable.
-        </p>
-      ) : (
-        <div className="mt-4 space-y-4">
-          {remoteFlows.map(({ key, label }) => {
-            const options = selectedInstances.flatMap((instance) =>
-              instance.models
-                .filter((model) => model.supportedReasoningEfforts.length > 0)
-                .map((model) => ({ instance, model }))
-            );
-            const savedAssignment =
-              drafts[key] ??
-              savedAssignments[key] ??
-              existingAssignment(settingsPayload, key);
-            const initialOption = options[0];
-            const draft =
-              savedAssignment ??
-              (initialOption
-                ? {
-                    provider: initialOption.instance.driverId,
-                    ai_client_instance_id: initialOption.instance.instanceId,
-                    model: initialOption.model.id,
-                    reasoning_effort:
-                      initialOption.model.supportedReasoningEfforts[0] ??
-                      "medium",
-                    timeout_ms: 120_000,
-                    max_attempts: 3
-                  }
-                : null);
-            const matchingOption = options.find(
-              ({ instance, model }) =>
-                instance.instanceId === draft?.ai_client_instance_id &&
-                instance.driverId === draft?.provider &&
-                model.id === draft?.model
-            );
-            const value =
-              draft && matchingOption
-                ? `${matchingOption.instance.hostedInstanceId ?? matchingOption.instance.instanceId}\u0000${draft.model}`
-                : "";
-            return (
-              <div
-                key={key}
-                className="grid gap-2 border-t border-border pt-3 sm:grid-cols-[10rem_minmax(0,1fr)_auto] sm:items-end"
-              >
-                <div>
-                  <strong className="text-xs font-medium">{label}</strong>
-                  {savedAssignment ? (
-                    <p className="mt-1 text-[11px] text-subtle">
-                      Saved: {savedAssignment.provider} ·{" "}
-                      {savedAssignment.model}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-[11px] text-subtle">
-                      Choose an available default
-                    </p>
-                  )}
-                </div>
-                <label className="text-xs text-muted">
-                  Agent and model
-                  <select
-                    aria-label={`${label} default Agent and model`}
-                    value={value}
-                    onChange={(event) => {
-                      const [hostedInstanceId, modelId] =
-                        event.currentTarget.value.split("\u0000");
-                      const selected = options.find(
-                        ({ instance, model }) =>
-                          (instance.hostedInstanceId ?? instance.instanceId) ===
-                            hostedInstanceId && model.id === modelId
-                      );
-                      if (!selected || !draft) return;
-                      update(key, {
-                        ...draft,
-                        provider: selected.instance.driverId,
-                        ai_client_instance_id: selected.instance.instanceId,
-                        model: selected.model.id,
-                        reasoning_effort:
-                          selected.model.supportedReasoningEfforts.includes(
-                            draft.reasoning_effort
-                          )
-                            ? draft.reasoning_effort
-                            : (selected.model.supportedReasoningEfforts[0] ??
-                              "medium")
-                      });
-                    }}
-                    disabled={!draft || options.length === 0}
-                    className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground"
-                  >
-                    <option value="">Choose a verified Agent and model</option>
-                    {options.map(({ instance, model }) => (
-                      <option
-                        key={`${instance.hostedInstanceId ?? instance.instanceId}:${model.id}`}
-                        value={`${instance.hostedInstanceId ?? instance.instanceId}\u0000${model.id}`}
-                        disabled={ambiguousIds.has(
-                          `${instance.driverId}:${instance.instanceId}`
-                        )}
-                      >
-                        {instance.sourceDeviceLabel ?? "Computer"} ·{" "}
-                        {instance.driverId} · {model.displayName || model.id}
-                        {ambiguousIds.has(
-                          `${instance.driverId}:${instance.instanceId}`
-                        )
-                          ? " — choose is unavailable across computers"
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => draft && void save(key, draft)}
-                  disabled={
-                    !draft ||
-                    !matchingOption ||
-                    !matchingOption.model.supportedReasoningEfforts.includes(
-                      draft.reasoning_effort
-                    ) ||
-                    saving !== null ||
-                    ambiguousIds.has(
-                      `${draft.provider}:${draft.ai_client_instance_id}`
-                    )
-                  }
-                  className="min-h-9 rounded-md border border-border px-3 text-xs text-foreground-secondary hover:border-border-strong disabled:opacity-50"
-                >
-                  {saving === key
-                    ? "Saving…"
-                    : saved === key
-                      ? "Saved"
-                      : "Save default"}
-                </button>
-                {draft &&
-                matchingOption &&
-                !matchingOption.model.supportedReasoningEfforts.includes(
-                  draft.reasoning_effort
-                ) ? (
-                  <p className="text-[11px] text-warning sm:col-start-2">
-                    Choose a model with a supported reasoning effort before
-                    saving.
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
       {error ? (
         <p role="alert" className="mt-3 text-xs text-warning">
           {error}
         </p>
       ) : null}
+      {providers?.length ? (
+        <ul
+          aria-label="Configured AI providers"
+          className="mt-3 divide-y divide-border rounded-md border border-border"
+        >
+          {providers.map((provider) => (
+            <li
+              key={provider.id}
+              className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
+            >
+              <div>
+                <strong className="text-sm font-medium">
+                  {provider.provider}
+                </strong>
+                <span className="ml-2 text-xs text-muted">
+                  {provider.client}
+                </span>
+                {provider.computer ? (
+                  <span className="ml-2 text-xs text-subtle">
+                    {provider.computer}
+                  </span>
+                ) : null}
+              </div>
+              <span className="text-xs text-muted">{provider.status}</span>
+              {actions ? (
+                <div className="w-full pt-1">{actions(provider)}</div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : providers !== null && !loading ? (
+        <p className="mt-3 text-xs text-muted">
+          No AI providers are configured for this computer.
+        </p>
+      ) : null}
     </div>
   );
 }
-
-const remoteReadinessLabel = (ready: boolean, readiness: string): string => {
-  if (ready) return "Healthy and authenticated";
-  if (readiness === "authentication_required") return "Sign-in required";
-  if (readiness === "stale") return "Last report is stale";
-  if (readiness === "disabled") return "Client disabled";
-  if (readiness === "not_observed") return "No capability report yet";
-  if (
-    readiness === "unavailable" ||
-    readiness === "incompatible" ||
-    readiness === "error"
-  ) {
-    return `Client ${readiness}`;
-  }
-  return "Needs attention";
-};

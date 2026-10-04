@@ -206,6 +206,7 @@ describe("Personal Ask", () => {
       list: vi.fn(async () => settings),
       refresh: vi.fn(async () => settings),
       set: vi.fn(async () => settings),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => settings)
     };
 

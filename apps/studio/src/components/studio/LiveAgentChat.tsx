@@ -110,7 +110,12 @@ const terminalCommands = new Set([
   "canceled",
   "indeterminate"
 ]);
-const failedExecutions = new Set(["failed", "fenced", "stopped", "stopping"]);
+const failedExecutions = new Set([
+  "failed",
+  "fenced",
+  "stopping",
+  "reconciling"
+]);
 // Local Codex Move is exposed for review only after the runner transition passed service regression checks.
 const PROJECT_MOVE_UI_ENABLED = true;
 const isRegisteredProjectId = (value: string) =>
@@ -219,6 +224,8 @@ export function LiveAgentChat({
   const [selectedBuildJobId, setSelectedBuildJobId] = useState<string | null>(
     null
   );
+  const selectedBuildJobIdRef = useRef<string | null>(null);
+  const buildSelectionSequenceRef = useRef(0);
   const [jobMarkers, setJobMarkers] = useState<
     ReturnType<typeof managedAgentJobMarkers>
   >([]);
@@ -271,6 +278,7 @@ export function LiveAgentChat({
   } | null>(null);
   const [restoreSelection, setRestoreSelection] = useState<{
     key: string;
+    instanceId?: string;
     provider: string;
     model: string;
     effort: string | null;
@@ -615,11 +623,13 @@ export function LiveAgentChat({
           : []
       );
       const preferredJobId =
-        selectedBuildJobId && jobs.some((job) => job.id === selectedBuildJobId)
-          ? selectedBuildJobId
+        selectedBuildJobIdRef.current &&
+        jobs.some((job) => job.id === selectedBuildJobIdRef.current)
+          ? selectedBuildJobIdRef.current
           : (jobs.find((job) => job.state === "running")?.id ??
             jobs[0]?.id ??
             null);
+      selectedBuildJobIdRef.current = preferredJobId;
       setSelectedBuildJobId(preferredJobId);
       const projectName =
         registeredProjects.find(
@@ -644,20 +654,26 @@ export function LiveAgentChat({
           if (signal.aborted || sequence !== refreshSequence.current)
             return snapshot;
           const page = parseBuildProgressPage(progressPayload);
-          if (page) {
-            setActivity(
-              activityWithBuildProgress({
-                current: baseActivity,
-                page,
-                jobs,
-                projectName
-              })
-            );
-          } else {
-            setActivity(unavailableBuildProgress(baseActivity));
+          if (selectedBuildJobIdRef.current === preferredJobId) {
+            if (page) {
+              setActivity(
+                activityWithBuildProgress({
+                  current: baseActivity,
+                  page,
+                  jobs,
+                  projectName
+                })
+              );
+            } else {
+              setActivity(unavailableBuildProgress(baseActivity));
+            }
           }
         } catch {
-          if (!signal.aborted && sequence === refreshSequence.current)
+          if (
+            !signal.aborted &&
+            sequence === refreshSequence.current &&
+            selectedBuildJobIdRef.current === preferredJobId
+          )
             setActivity(unavailableBuildProgress(baseActivity));
         }
       }
@@ -695,6 +711,7 @@ export function LiveAgentChat({
         ) {
           setRestoreSelection({
             key: id,
+            instanceId: current.aiClientInstanceId,
             provider: current.provider,
             model: current.model,
             effort: current.reasoningEffort,
@@ -785,7 +802,9 @@ export function LiveAgentChat({
             ? "Partial response · outcome uncertain"
             : snapshot.execution.state === "starting"
               ? "Starting the AI Client"
-              : ""
+              : snapshot.execution.state === "stopped"
+                ? "Send a message to continue this conversation."
+                : ""
       );
       if (command && ["failed", "indeterminate"].includes(command.state))
         setError(
@@ -838,13 +857,7 @@ export function LiveAgentChat({
       }
       return snapshot;
     },
-    [
-      agents,
-      initialExecutionId,
-      registeredProjects,
-      selectedBuildJobId,
-      settleRecoveredSend
-    ]
+    [agents, initialExecutionId, registeredProjects, settleRecoveredSend]
   );
 
   const refreshRetainedWorkspaces = useCallback(
@@ -1176,6 +1189,9 @@ export function LiveAgentChat({
         runtimeRef.current?.execution.id === operationExecutionId
           ? runtimeRef.current.execution
           : null;
+      const resumeFromStopped =
+        recovered?.resumeFromStopped === true ||
+        knownExecution?.state === "stopped";
       const requestFingerprint = managedChatSendRequestFingerprint({
         kind: operationKind,
         projectId: projectId ?? null,
@@ -1259,6 +1275,7 @@ export function LiveAgentChat({
               }
             : {}),
           prompt: text,
+          ...(resumeFromStopped ? { resumeFromStopped: true as const } : {}),
           ...(selection.selectedResourceIds?.length
             ? { selectedResourceIds: selection.selectedResourceIds }
             : {}),
@@ -1391,7 +1408,7 @@ export function LiveAgentChat({
           userMessageId: request.messageId
         };
       }
-      if (snapshot.execution.state !== "running")
+      if (!["running", "stopped"].includes(snapshot.execution.state))
         throw new Error(
           "The AI Client is not ready. Your draft is retained; retry after it becomes available."
         );
@@ -1411,6 +1428,7 @@ export function LiveAgentChat({
         );
       }
       const current = snapshot.execution;
+      const shouldResume = resumeFromStopped || current.state === "stopped";
       const exactRequestFingerprint = managedChatSendRequestFingerprint({
         kind: "prompt",
         projectId: projectId ?? null,
@@ -1464,6 +1482,7 @@ export function LiveAgentChat({
           clientUserMessageId: request.messageId,
           executionGeneration: current.executionGeneration,
           prompt: text,
+          ...(shouldResume ? { resumeFromStopped: true as const } : {}),
           ...(selection.selectedResourceIds?.length
             ? { selectedResourceIds: selection.selectedResourceIds }
             : {}),
@@ -1488,6 +1507,7 @@ export function LiveAgentChat({
           clientUserMessageId: request.messageId,
           prompt: text,
           agentId: selected.id,
+          ...(shouldResume ? { resumeFromStopped: true } : {}),
           expectedAgentVersion: selected.currentVersion,
           ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
           ...(selection.selectedResourceIds?.length
@@ -2205,14 +2225,19 @@ export function LiveAgentChat({
           }
           activity={activity}
           onBuildJobSelect={(jobId) => {
+            selectedBuildJobIdRef.current = jobId;
+            const selectionSequence = ++buildSelectionSequenceRef.current;
             setSelectedBuildJobId(jobId);
-            if (!executionId || lifecycle.current?.signal.aborted) return;
-            void loadManagedBuildProgress(
-              executionId,
-              jobId,
-              lifecycle.current?.signal
-            )
+            const signal = lifecycle.current?.signal;
+            if (!executionId || !signal || signal.aborted) return;
+            void loadManagedBuildProgress(executionId, jobId, signal)
               .then((payload) => {
+                if (
+                  signal.aborted ||
+                  selectionSequence !== buildSelectionSequenceRef.current ||
+                  selectedBuildJobIdRef.current !== jobId
+                )
+                  return;
                 const page = parseBuildProgressPage(payload);
                 if (!page) return;
                 setActivity((current) =>
@@ -2227,6 +2252,12 @@ export function LiveAgentChat({
                 );
               })
               .catch(() => {
+                if (
+                  signal.aborted ||
+                  selectionSequence !== buildSelectionSequenceRef.current ||
+                  selectedBuildJobIdRef.current !== jobId
+                )
+                  return;
                 setActivity((current) =>
                   current ? unavailableBuildProgress(current) : current
                 );

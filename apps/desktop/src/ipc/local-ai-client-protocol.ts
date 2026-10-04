@@ -38,6 +38,13 @@ export const localAiClientCommandSchema = z.discriminatedUnion("operation", [
       assignment: localAiClientAssignmentSchema
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal("setEnabled"),
+      instanceId: z.string().min(1).max(128),
+      enabled: z.boolean()
+    })
+    .strict(),
   z.object({ operation: z.literal("reset"), flowKey: flowKeySchema }).strict()
 ]);
 export type LocalAiClientCommand = z.infer<typeof localAiClientCommandSchema>;
@@ -148,7 +155,7 @@ export type LocalAiClientReadModel = z.infer<
 
 export const localAiClientResponseSchema = z
   .object({
-    operation: z.enum(["list", "refresh", "set", "reset"]),
+    operation: z.enum(["list", "refresh", "set", "setEnabled", "reset"]),
     readModel: localAiClientReadModelSchema,
     refreshed: z.boolean().optional(),
     refreshError: z.string().nullable().optional()

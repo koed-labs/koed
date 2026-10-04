@@ -1,5 +1,35 @@
 # Studio internal release
 
+## Desktop shutdown correction
+
+During unlocked review, the User reported a Studio process that would neither
+show its window nor finish quitting. Restart restored the local UI server.
+The gateway shutdown path could wait indefinitely for active event streams;
+it now closes its HTTP connections when stopping. A regression test keeps an
+event stream open and verifies that shutdown completes and releases the
+subscription. This identifies a shutdown defect, not proof of the original
+window failure's cause. Native reopen and Quit still require review of the
+corrected package.
+
+The corrected package passed deep signature verification. On launch, a native
+process sample showed its main thread waiting inside macOS Keychain access
+(`SecItemCopyMatching`). Approval of the rebuilt app's Keychain prompt is
+needed before continuing that startup review; the app must not bypass it.
+
+A second report arrived after Keychain access had completed. The process had
+no remaining UI listener but still did not exit. Desktop now runs cleanup once,
+prevents activation from reopening Studio during Quit, and exits if cleanup
+rejects or exceeds 15 seconds. Existing cleanup runs normally before that
+deadline. Focused shutdown, startup and lifecycle checks passed (39 tests),
+as did Desktop compilation and linting for the changed files.
+
+The rebuilt `release/shutdown-recovery/mac-arm64/Koed.app` passed deep signature
+verification. Native main-process inspection confirmed one visible window,
+finished loading, and a responsive event loop. Calling Electron's `app.quit()`
+then exited the process successfully without Force Quit or the cleanup-deadline
+warning. This verifies that launch and Quit attempt; broader notification and
+feature acceptance remains separate.
+
 This delivery targets web and macOS Desktop for internal review. Public
 signing, notarization and distribution follow acceptance. Windows/Linux
 installers and feedback on Team-visible recalled answers remain follow-ups.

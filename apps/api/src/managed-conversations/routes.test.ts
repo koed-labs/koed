@@ -1259,6 +1259,7 @@ describe("managed Conversation capability admission", () => {
     };
     const input = {
       executionGeneration: 1,
+      resumeFromStopped: true,
       idempotencyKey: "settings-request-1",
       clientUserMessageId: randomUUID(),
       prompt: "Hello",
@@ -1280,7 +1281,10 @@ describe("managed Conversation capability admission", () => {
       expect(accepted.statusCode, accepted.body).toBe(202);
       expect(enqueue).toHaveBeenCalledWith(
         { userId },
-        expect.objectContaining({ settingsChange: input.settingsChange })
+        expect.objectContaining({
+          resumeFromStopped: true,
+          settingsChange: input.settingsChange
+        })
       );
       const unsupported = await app.inject({
         method: "POST",
@@ -4045,6 +4049,7 @@ describe("managed Conversation routes", () => {
       clientUserMessageId: string;
       state: string;
       attempts: number;
+      leaseExpiresAt: string | null;
       lastErrorCode: string | null;
       updatedAt: string;
     } = {
@@ -4055,6 +4060,7 @@ describe("managed Conversation routes", () => {
       clientUserMessageId: randomUUID(),
       state: "queued",
       attempts: 0,
+      leaseExpiresAt: null,
       lastErrorCode: null,
       updatedAt: now
     };
@@ -4187,6 +4193,7 @@ describe("managed Conversation routes", () => {
       latestCommand: {
         commandKind: "prompt",
         state: "queued",
+        leaseActive: false,
         canCancelBeforeClaim: true
       },
       hasIndeterminatePrompt: false,
@@ -4194,6 +4201,20 @@ describe("managed Conversation routes", () => {
     });
     expect(runtime.body).not.toContain("must-not-leak");
     expect(runtime.body).not.toContain("attempts");
+    latestCommand = {
+      ...latestCommand,
+      state: "dispatching",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    const activePromptRuntime = await app.inject({
+      method: "GET",
+      url: `/v1/managed-conversations/${executionId}/runtime`
+    });
+    expect(activePromptRuntime.json().latestCommand).toMatchObject({
+      state: "dispatching",
+      leaseActive: true
+    });
+    latestCommand = { ...latestCommand, state: "queued", leaseExpiresAt: null };
     hasIndeterminatePrompt = true;
     latestCommand = {
       ...latestCommand,

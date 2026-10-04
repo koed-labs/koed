@@ -68,6 +68,12 @@ import {
   studioChatRecoveryCommandChannel,
   type StudioChatRecoveryRequest
 } from "./studio-chat-recovery-protocol.js";
+import {
+  parseStudioPersonalCatalogCacheRequest,
+  parseStudioPersonalCatalogCacheResult,
+  studioPersonalCatalogCacheCommandChannel,
+  type StudioPersonalCatalogCacheRequest
+} from "./studio-personal-catalog-cache-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -158,6 +164,9 @@ export const registerDesktopCommandHandlers = (
     confirmStudioSetupRun?: (sender: WebContents) => Promise<boolean>;
     studioChatRecovery?: (
       request: StudioChatRecoveryRequest
+    ) => Promise<unknown>;
+    studioPersonalCatalogCache?: (
+      request: StudioPersonalCatalogCacheRequest
     ) => Promise<unknown>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
@@ -507,6 +516,27 @@ export const registerDesktopCommandHandlers = (
         throw new Error("Koed could not access Studio chat recovery data.");
       }
     });
+  }
+
+  if (options.studioRendererOrigins && options.studioPersonalCatalogCache) {
+    ipcMain.handle(
+      studioPersonalCatalogCacheCommandChannel,
+      async (event, value) => {
+        if (!trustedSender(event, options.studioRendererOrigins!)) {
+          throw new Error("Untrusted Studio IPC sender.");
+        }
+        const request = parseStudioPersonalCatalogCacheRequest(value);
+        try {
+          return parseStudioPersonalCatalogCacheResult(
+            await options.studioPersonalCatalogCache!(request)
+          );
+        } catch {
+          throw new Error(
+            "Koed could not access Studio Personal catalog cache data."
+          );
+        }
+      }
+    );
   }
 
   ipcMain.handle(managedProjectCommandChannel, async (event, value) => {

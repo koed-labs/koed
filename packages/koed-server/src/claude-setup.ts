@@ -7,12 +7,13 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -23,20 +24,153 @@ import {
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry,
+  resolveExecutablePath,
   resolveExecutablePathWithPlatformFallbacks
 } from "./ai-client-registry.js";
 
+type ClaudeExecutablePathDependencies = ExecutablePathDependencies & {
+  readdirSync?: typeof readdirSync;
+};
+
+const claudeDesktopVersion = (
+  name: string
+): [number, number, number] | null => {
+  const match = name.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+};
+
+const compareVersionsDescending = (left: string, right: string): number => {
+  const leftVersion = claudeDesktopVersion(left)!;
+  const rightVersion = claudeDesktopVersion(right)!;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = rightVersion[index]! - leftVersion[index]!;
+    if (difference !== 0) return difference;
+  }
+  return left.localeCompare(right);
+};
+
+const resolveClaudeDesktopExecutablePath = (
+  environment: NodeJS.ProcessEnv,
+  dependencies: ClaudeExecutablePathDependencies
+): string | undefined => {
+  const homeDirectory = environment.HOME?.trim() || homedir();
+  const installRoot = join(
+    homeDirectory,
+    "Library",
+    "Application Support",
+    "Claude",
+    "claude-code"
+  );
+  const readDirectories = dependencies.readdirSync ?? readdirSync;
+  let versionDirectories: string[];
+  try {
+    versionDirectories = readDirectories(installRoot, {
+      withFileTypes: true
+    })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => claudeDesktopVersion(name) !== null)
+      .sort(compareVersionsDescending);
+  } catch {
+    return undefined;
+  }
+
+  for (const version of versionDirectories) {
+    const executablePaths = [
+      join(installRoot, version, "claude.app", "Contents", "MacOS", "claude")
+    ];
+    try {
+      const versionEntries = readDirectories(join(installRoot, version), {
+        withFileTypes: true
+      });
+      executablePaths.push(
+        ...versionEntries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) =>
+            join(
+              installRoot,
+              version,
+              entry.name,
+              "claude.app",
+              "Contents",
+              "MacOS",
+              "claude"
+            )
+          )
+      );
+    } catch {
+      // A partially updated version directory is not a usable installation.
+    }
+
+    for (const candidate of executablePaths.sort()) {
+      try {
+        return resolveExecutablePath(candidate, environment, dependencies);
+      } catch {
+        // Skip stale, incomplete, or non-executable app bundles.
+      }
+    }
+  }
+  return undefined;
+};
+
 export const resolveClaudeExecutablePath = (
   environment: NodeJS.ProcessEnv,
-  dependencies: ExecutablePathDependencies = {},
+  dependencies: ClaudeExecutablePathDependencies = {},
   platform: NodeJS.Platform = process.platform
-): string =>
-  resolveExecutablePathWithPlatformFallbacks(
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude",
-    environment,
-    dependencies,
-    platform
-  );
+): string => {
+  const configured = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim();
+  if (configured) {
+    if (!isAbsolute(configured)) {
+      throw new Error("KOED_CLAUDE_CODE_EXECUTABLE must be an absolute path.");
+    }
+    if (isClaudeDesktopGuiExecutable(configured)) {
+      throw new Error(
+        "The selected executable is Claude Desktop, not the Claude Code CLI. Choose the Claude Code CLI executable."
+      );
+    }
+    const resolved = resolveExecutablePathWithPlatformFallbacks(
+      configured,
+      environment,
+      dependencies,
+      platform
+    );
+    if (isClaudeDesktopGuiExecutable(resolved)) {
+      throw new Error(
+        "The selected executable is Claude Desktop, not the Claude Code CLI. Choose the Claude Code CLI executable."
+      );
+    }
+    return resolved;
+  }
+
+  try {
+    const resolved = resolveExecutablePathWithPlatformFallbacks(
+      "claude",
+      environment,
+      dependencies,
+      platform
+    );
+    if (isClaudeDesktopGuiExecutable(resolved)) {
+      throw new Error(
+        "The selected executable is Claude Desktop, not the Claude Code CLI. Choose the Claude Code CLI executable."
+      );
+    }
+    return resolved;
+  } catch (pathError) {
+    if (platform !== "darwin") throw pathError;
+    const desktopExecutable = resolveClaudeDesktopExecutablePath(
+      environment,
+      dependencies
+    );
+    if (desktopExecutable) return desktopExecutable;
+    throw pathError;
+  }
+};
+
+const isClaudeDesktopGuiExecutable = (candidate: string): boolean =>
+  resolve(candidate)
+    .replaceAll("\\", "/")
+    .endsWith("/Claude.app/Contents/MacOS/Claude");
 
 export const MINIMUM_CLAUDE_CODE_VERSION = "2.1.227";
 export const CLAUDE_HOOK_EVENTS = [
@@ -226,6 +360,59 @@ const parseClaudeMcpEntry = (output: string): ClaudeMcpEntry | null => {
   };
 };
 
+const koedMcpPackageMetadataIsValid = (packageJsonPath: string): boolean => {
+  try {
+    const metadata = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      name?: unknown;
+      bin?: Record<string, unknown>;
+    };
+    return (
+      metadata.name === "@koed/mcp-server" &&
+      metadata.bin?.["koed-mcp"] === "dist/cli.js"
+    );
+  } catch {
+    return false;
+  }
+};
+
+const isVerifiedKoedMcpCli = (candidate: string): boolean => {
+  const absoluteCandidate = resolve(candidate);
+  const sourcePackageRoot = resolve(dirname(absoluteCandidate), "..");
+  if (
+    absoluteCandidate === resolve(sourcePackageRoot, "dist", "cli.js") &&
+    koedMcpPackageMetadataIsValid(resolve(sourcePackageRoot, "package.json"))
+  ) {
+    return true;
+  }
+
+  const runtimeRoot = resolve(dirname(absoluteCandidate), "..", "..");
+  const packagedCli = resolve(runtimeRoot, "mcp-server", "dist", "cli.js");
+  if (absoluteCandidate !== packagedCli) return false;
+
+  const metadataPath = resolve(
+    runtimeRoot,
+    "node_modules",
+    "@koed",
+    "mcp-server",
+    "package.json"
+  );
+  if (!koedMcpPackageMetadataIsValid(metadataPath)) return false;
+
+  const expectedWrapper = [
+    "#!/usr/bin/env node",
+    'import { fileURLToPath } from "node:url";',
+    'const entry = new URL("../../node_modules/@koed/mcp-server/dist/cli.js", import.meta.url);',
+    "process.argv[1] = fileURLToPath(entry);",
+    "await import(entry.href);",
+    ""
+  ].join("\n");
+  try {
+    return readFileSync(absoluteCandidate, "utf8") === expectedWrapper;
+  } catch {
+    return false;
+  }
+};
+
 export const claudeMcpEntryIsKoedOwned = (
   output: string,
   expectedMcpCli: string,
@@ -238,7 +425,8 @@ export const claudeMcpEntryIsKoedOwned = (
   return Boolean(
     entry?.args[0] &&
     koedHome &&
-    resolve(entry.args[0]) === resolve(expectedMcpCli) &&
+    (resolve(entry.args[0]) === resolve(expectedMcpCli) ||
+      isVerifiedKoedMcpCli(entry.args[0])) &&
     resolve(koedHome) === resolve(expectedKoedHome)
   );
 };

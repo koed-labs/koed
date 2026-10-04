@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { listLocalConversationSources } from "./local-conversation-catalog.js";
 
@@ -81,7 +81,21 @@ const createCodexStateDatabase = async (
   }
 };
 
+const writeCodexSession = async (
+  root: string,
+  id: string,
+  cwd = `/work/${id}`
+): Promise<string> => {
+  const filename = path.join(root, `${id}.jsonl`);
+  await writeFile(
+    filename,
+    `${JSON.stringify({ type: "session_meta", payload: { id, cwd } })}\n`
+  );
+  return filename;
+};
+
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -480,6 +494,182 @@ describe("listLocalConversationSources", () => {
     expect(JSON.stringify(page)).not.toContain(sourceCwd);
   });
 
+  it("uses canonical physical cwd identity and keeps existing project IDs stable across worktree discovery", async () => {
+    const home = await makeRoot();
+    const mainCwd = path.join(home, "workspace", "repo");
+    const worktreeCwd = path.join(home, "workspace", "repo-worktree");
+    const aliasCwd = path.join(home, "workspace", "repo-alias");
+    const piRoot = path.join(home, "pi", "sessions");
+    const env = {
+      ...process.env,
+      HOME: home,
+      PI_CODING_AGENT_DIR: path.join(home, "pi")
+    };
+    await Promise.all([
+      mkdir(path.join(mainCwd, ".git"), { recursive: true }),
+      mkdir(piRoot, { recursive: true })
+    ]);
+    await symlink(mainCwd, aliasCwd, "dir");
+    await writeFile(
+      path.join(piRoot, "main.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "main", cwd: mainCwd })}\n`
+    );
+    await writeFile(
+      path.join(piRoot, "alias.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "alias", cwd: aliasCwd })}\n`
+    );
+    await writeFile(
+      path.join(piRoot, "trailing.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "trailing", cwd: `${mainCwd}/` })}\n`
+    );
+    const beforeWorktree = await listLocalConversationSources({
+      provider: "pi",
+      env
+    });
+    const stableProjectId = beforeWorktree.items.find(
+      (item) => item.sourceId === "pi:main"
+    )?.projectId;
+    expect(
+      beforeWorktree.items.find((item) => item.sourceId === "pi:alias")
+        ?.projectId
+    ).toBe(stableProjectId);
+    expect(
+      beforeWorktree.items.find((item) => item.sourceId === "pi:trailing")
+        ?.projectId
+    ).toBe(stableProjectId);
+
+    const gitDirectory = path.join(mainCwd, ".git");
+    const worktreeGitDirectory = path.join(gitDirectory, "worktrees", "linked");
+    await mkdir(worktreeGitDirectory, { recursive: true });
+    await mkdir(worktreeCwd, { recursive: true });
+    await writeFile(
+      path.join(gitDirectory, "config"),
+      "[core]\n\trepositoryformatversion = 0\n"
+    );
+    await writeFile(path.join(worktreeGitDirectory, "commondir"), "../..\n");
+    await writeFile(
+      path.join(worktreeCwd, ".git"),
+      `gitdir: ${worktreeGitDirectory}\n`
+    );
+    await writeFile(
+      path.join(piRoot, "worktree.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "worktree", cwd: worktreeCwd })}\n`
+    );
+
+    const withWorktree = await listLocalConversationSources({
+      provider: "pi",
+      env,
+      refresh: true
+    });
+    const byId = new Map(
+      withWorktree.items.map((item) => [item.sourceId, item])
+    );
+    expect(byId.get("pi:main")?.projectId).toBe(stableProjectId);
+    expect(byId.get("pi:worktree")?.projectId).toBe(stableProjectId);
+
+    const koedHome = path.join(home, "koed");
+    await writeProjectRegistry(koedHome, [
+      {
+        localProjectId: "lp_registered_main",
+        displayName: "Registered main",
+        cwd: mainCwd
+      }
+    ]);
+    const registered = await listLocalConversationSources({
+      provider: "pi",
+      env: { ...env, KOED_HOME: koedHome },
+      refresh: true
+    });
+    const registeredById = new Map(
+      registered.items.map((item) => [item.sourceId, item])
+    );
+    expect(registeredById.get("pi:main")?.projectId).toBe("lp_registered_main");
+    expect(registeredById.get("pi:worktree")?.projectId).toBe(
+      "lp_registered_main"
+    );
+  });
+
+  it("maps deleted Codex worktrees only when repository metadata identifies one live checkout", async () => {
+    const home = await makeRoot();
+    const codexHome = path.join(home, "codex");
+    const codexRoot = path.join(codexHome, "sessions");
+    const archivedRoot = path.join(codexHome, "archived_sessions");
+    const mainCwd = path.join(home, "projects", "same-name");
+    const otherCwd = path.join(home, "other", "same-name");
+    const mainGit = path.join(mainCwd, ".git");
+    const otherGit = path.join(otherCwd, ".git");
+    const historicalRepoUrl = "https://example.test/team/repository.git";
+    const currentRepoUrl = "https://example.test/team/repository-renamed.git";
+    await Promise.all([
+      mkdir(codexRoot, { recursive: true }),
+      mkdir(archivedRoot, { recursive: true }),
+      mkdir(mainGit, { recursive: true }),
+      mkdir(otherGit, { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(mainGit, "config"),
+        `[remote "origin"]\n\turl = ${currentRepoUrl}\n`
+      ),
+      writeFile(
+        path.join(otherGit, "config"),
+        `[remote "origin"]\n\turl = https://example.test/team/another.git\n`
+      ),
+      writeFile(
+        path.join(codexRoot, "main.jsonl"),
+        `${JSON.stringify({ type: "session_meta", payload: { id: "main-repo", cwd: mainCwd, git: { repository_url: historicalRepoUrl } } })}\n`
+      ),
+      writeFile(
+        path.join(codexRoot, "other.jsonl"),
+        `${JSON.stringify({ type: "session_meta", payload: { id: "other-repo", cwd: otherCwd } })}\n`
+      ),
+      writeFile(
+        path.join(archivedRoot, "archived.jsonl"),
+        `${JSON.stringify({ type: "session_meta", payload: { id: "archived-worktree", cwd: path.join(codexHome, "worktrees", "project-id", "same-name"), git: { repository_url: historicalRepoUrl } } })}\n`
+      )
+    ]);
+
+    const page = await listLocalConversationSources({
+      provider: "codex",
+      env: { ...process.env, HOME: home, CODEX_HOME: codexHome }
+    });
+    const byId = new Map(page.items.map((item) => [item.sourceId, item]));
+    expect(byId.get("codex:archived-worktree")?.projectId).toBe(
+      byId.get("codex:main-repo")?.projectId
+    );
+    expect(byId.get("codex:archived-worktree")?.projectId).not.toBe(
+      byId.get("codex:other-repo")?.projectId
+    );
+
+    const secondMatchingCwd = path.join(home, "third", "same-name");
+    const secondMatchingGit = path.join(secondMatchingCwd, ".git");
+    await mkdir(secondMatchingGit, { recursive: true });
+    await Promise.all([
+      writeFile(
+        path.join(secondMatchingGit, "config"),
+        `[remote "origin"]\n\turl = ${currentRepoUrl}\n`
+      ),
+      writeFile(
+        path.join(codexRoot, "second-match.jsonl"),
+        `${JSON.stringify({ type: "session_meta", payload: { id: "second-match", cwd: secondMatchingCwd, git: { repository_url: historicalRepoUrl } } })}\n`
+      )
+    ]);
+    const ambiguousPage = await listLocalConversationSources({
+      provider: "codex",
+      env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
+      refresh: true
+    });
+    const ambiguousById = new Map(
+      ambiguousPage.items.map((item) => [item.sourceId, item])
+    );
+    expect(ambiguousById.get("codex:archived-worktree")?.projectId).not.toBe(
+      ambiguousById.get("codex:main-repo")?.projectId
+    );
+    expect(ambiguousById.get("codex:archived-worktree")?.projectId).not.toBe(
+      ambiguousById.get("codex:second-match")?.projectId
+    );
+  });
+
   it("falls back safely when unrelated registry roots share a local project ID", async () => {
     const home = await makeRoot();
     const koedHome = path.join(home, "koed");
@@ -526,6 +716,157 @@ describe("listLocalConversationSources", () => {
     expect(firstProjectId).not.toBe(secondProjectId);
     expect(firstProjectId).not.toBe("lp_conflicted_id");
     expect(JSON.stringify(page)).not.toContain(home);
+  });
+
+  it("reuses a completed scan across cursor pages and refreshes on request", async () => {
+    const home = await makeRoot();
+    const codexHome = path.join(home, "codex-home");
+    const root = path.join(codexHome, "sessions");
+    await mkdir(root, { recursive: true });
+    const env = { ...process.env, HOME: home, CODEX_HOME: codexHome };
+    const newest = await writeCodexSession(root, "newest");
+    const older = await writeCodexSession(root, "older");
+    await utimes(
+      newest,
+      new Date("2026-01-03T00:00:00Z"),
+      new Date("2026-01-03T00:00:00Z")
+    );
+    await utimes(
+      older,
+      new Date("2026-01-02T00:00:00Z"),
+      new Date("2026-01-02T00:00:00Z")
+    );
+
+    const firstPage = await listLocalConversationSources({
+      provider: "codex",
+      env,
+      limit: 1
+    });
+    expect(firstPage.items[0]?.sourceId).toBe("codex:newest");
+    expect(firstPage.nextCursor).not.toBeNull();
+
+    const newlyAdded = await writeCodexSession(root, "added-after-scan");
+    await utimes(
+      newlyAdded,
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:00:00Z")
+    );
+    const secondPage = await listLocalConversationSources({
+      provider: "codex",
+      env,
+      limit: 10,
+      cursor: firstPage.nextCursor ?? undefined
+    });
+    expect(secondPage.items.map((item) => item.sourceId)).toEqual([
+      "codex:older"
+    ]);
+    expect(secondPage.nextCursor).toBeNull();
+
+    const refreshed = await listLocalConversationSources({
+      provider: "codex",
+      env,
+      limit: 10,
+      refresh: true
+    });
+    expect(refreshed.items.map((item) => item.sourceId)).toContain(
+      "codex:added-after-scan"
+    );
+    expect(refreshed.items).toHaveLength(3);
+  });
+
+  it("expires completed scans after the short cache lifetime", async () => {
+    vi.useFakeTimers();
+    const home = await makeRoot();
+    const codexHome = path.join(home, "codex-home");
+    const root = path.join(codexHome, "sessions");
+    await mkdir(root, { recursive: true });
+    const env = { ...process.env, HOME: home, CODEX_HOME: codexHome };
+    await writeCodexSession(root, "before-expiry");
+    const initial = await listLocalConversationSources({
+      provider: "codex",
+      env
+    });
+    expect(initial.items).toHaveLength(1);
+
+    await writeCodexSession(root, "after-expiry");
+    const stillCached = await listLocalConversationSources({
+      provider: "codex",
+      env
+    });
+    expect(stillCached.items).toHaveLength(1);
+
+    vi.setSystemTime(Date.now() + 30_001);
+    const expired = await listLocalConversationSources({
+      provider: "codex",
+      env
+    });
+    expect(expired.items).toHaveLength(2);
+  });
+
+  it("isolates provider and filesystem scopes and evicts old scopes", async () => {
+    const firstHome = await makeRoot();
+    const firstCodexHome = path.join(firstHome, "codex-home");
+    const firstRoot = path.join(firstCodexHome, "sessions");
+    await mkdir(firstRoot, { recursive: true });
+    await writeCodexSession(firstRoot, "first-scope");
+    const firstEnv = {
+      ...process.env,
+      HOME: firstHome,
+      CODEX_HOME: firstCodexHome
+    };
+    await listLocalConversationSources({ provider: "codex", env: firstEnv });
+
+    const secondHome = await makeRoot();
+    const secondCodexHome = path.join(secondHome, "codex-home");
+    const secondRoot = path.join(secondCodexHome, "sessions");
+    await mkdir(secondRoot, { recursive: true });
+    await writeCodexSession(secondRoot, "second-scope");
+    const secondEnv = {
+      ...process.env,
+      HOME: secondHome,
+      CODEX_HOME: secondCodexHome
+    };
+    const secondScope = await listLocalConversationSources({
+      provider: "codex",
+      env: secondEnv
+    });
+    expect(secondScope.items.map((item) => item.sourceId)).toEqual([
+      "codex:second-scope"
+    ]);
+
+    const piHome = path.join(secondHome, "pi-home");
+    const piRoot = path.join(piHome, "sessions");
+    await mkdir(piRoot, { recursive: true });
+    await writeFile(
+      path.join(piRoot, "pi.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "pi-only" })}\n`
+    );
+    const piPage = await listLocalConversationSources({
+      provider: "pi",
+      env: { ...secondEnv, PI_CODING_AGENT_DIR: piHome }
+    });
+    expect(piPage.items.map((item) => item.sourceId)).toEqual(["pi:pi-only"]);
+    expect(piPage.providers.codex.status).toBe("not_requested");
+
+    const evictionHomes = [firstHome, secondHome];
+    while (evictionHomes.length < 7) evictionHomes.push(await makeRoot());
+    for (let index = 2; index < evictionHomes.length; index += 1) {
+      const home = evictionHomes[index]!;
+      const codexHome = path.join(home, "codex-home");
+      const root = path.join(codexHome, "sessions");
+      await mkdir(root, { recursive: true });
+      await writeCodexSession(root, `eviction-${index}`);
+      await listLocalConversationSources({
+        provider: "codex",
+        env: { ...process.env, HOME: home, CODEX_HOME: codexHome }
+      });
+    }
+    await writeCodexSession(firstRoot, "after-eviction");
+    const rescanned = await listLocalConversationSources({
+      provider: "codex",
+      env: firstEnv
+    });
+    expect(rescanned.items).toHaveLength(2);
   });
 
   it("uses recent-first cursor pages and includes old sessions without an age cutoff", async () => {

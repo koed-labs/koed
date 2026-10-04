@@ -20,7 +20,7 @@ import {
   parseManagedConversationSettings
 } from "@koed/shared/ai-client-contract";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -62,7 +62,9 @@ import {
   claudeAgentSdkTokenUsage,
   ClaudeManagedConversationCancelledError,
   ClaudeManagedConversationSession,
+  CodexAppServerRequestError,
   CodexManagedConversationIdentityError,
+  CodexManagedConversationThreadOpenError,
   CodexManagedConversationSession,
   PiManagedConversationSession,
   destroyManagedClaudeHome,
@@ -195,6 +197,151 @@ export const diffExecutionCheckpointsForCheckout = (input: {
 
 const sha256 = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
+
+const managedConversationUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+type ManagedConversationCodexHistoryMessage =
+  | {
+      kind: "user";
+      clientUserMessageId: string;
+      turnId: string;
+      textSha256: string;
+    }
+  | { kind: "assistant"; turnId: string; textSha256: string };
+
+export const managedConversationCodexHistoryProof = (
+  thread: Record<string, unknown>,
+  targetClientUserMessageId: string
+): {
+  providerHistorySha256: string;
+  canonicalHistorySha256: string;
+  turnIds: string[];
+  turnCount: number;
+  messageCount: number;
+  messages: ManagedConversationCodexHistoryMessage[];
+  terminal: true;
+  targetPromptAbsent: true;
+} => {
+  if (!managedConversationUuidPattern.test(targetClientUserMessageId)) {
+    throw managedConversationError("ManagedConversationSourceRebaseProofError");
+  }
+  const status = record(thread.status);
+  const turns = thread.turns;
+  if (
+    !managedConversationUuidPattern.test(String(thread.id ?? "")) ||
+    typeof status.type !== "string" ||
+    ["active", "inProgress", "running"].includes(status.type) ||
+    (typeof status.activeTurnId === "string" &&
+      status.activeTurnId.length > 0) ||
+    !Array.isArray(turns) ||
+    turns.length === 0
+  ) {
+    throw managedConversationError("ManagedConversationSourceRebaseProofError");
+  }
+  const terminalStatuses = new Set(["completed", "interrupted", "failed"]);
+  const turnIds: string[] = [];
+  const messages: ManagedConversationCodexHistoryMessage[] = [];
+  const seenUserMessageIds = new Set<string>();
+  const seenAssistantMessageKeys = new Set<string>();
+  for (const turnValue of turns) {
+    const turn = record(turnValue);
+    const turnId = typeof turn.id === "string" ? turn.id : "";
+    if (
+      !managedConversationUuidPattern.test(turnId) ||
+      !terminalStatuses.has(String(turn.status)) ||
+      !Array.isArray(turn.items)
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseProofError"
+      );
+    }
+    turnIds.push(turnId);
+    for (const itemValue of turn.items) {
+      const item = record(itemValue);
+      if (item.type === "userMessage") {
+        const clientId = typeof item.clientId === "string" ? item.clientId : "";
+        const prefix = "koed-user-message:";
+        const clientUserMessageId = clientId.startsWith(prefix)
+          ? clientId.slice(prefix.length)
+          : "";
+        const text = Array.isArray(item.content)
+          ? item.content
+              .map((partValue) => {
+                const part = record(partValue);
+                return typeof part.text === "string"
+                  ? part.text
+                  : typeof part.path === "string"
+                    ? part.path
+                    : "";
+              })
+              .filter(Boolean)
+              .join("\n")
+          : "";
+        if (
+          !managedConversationUuidPattern.test(clientUserMessageId) ||
+          clientUserMessageId === targetClientUserMessageId ||
+          seenUserMessageIds.has(clientUserMessageId) ||
+          !text.trim()
+        ) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseProofError"
+          );
+        }
+        seenUserMessageIds.add(clientUserMessageId);
+        messages.push({
+          kind: "user",
+          clientUserMessageId,
+          turnId,
+          textSha256: sha256(text.trim())
+        });
+      } else if (item.type === "agentMessage") {
+        const text = typeof item.text === "string" ? item.text.trim() : "";
+        const key = `${turnId}:${sha256(text)}`;
+        if (!text || seenAssistantMessageKeys.has(key)) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseProofError"
+          );
+        }
+        seenAssistantMessageKeys.add(key);
+        messages.push({ kind: "assistant", turnId, textSha256: sha256(text) });
+      }
+    }
+  }
+  const uniqueTurnIds = [...new Set(turnIds)];
+  if (
+    uniqueTurnIds.length !== turnIds.length ||
+    messages.length === 0 ||
+    seenUserMessageIds.size === 0 ||
+    new Set(messages.map((message) => message.turnId)).size !==
+      uniqueTurnIds.length
+  ) {
+    throw managedConversationError("ManagedConversationSourceRebaseProofError");
+  }
+  const orderedMessages = [...messages].sort((left, right) => {
+    const leftKey =
+      left.kind === "user"
+        ? `user:${left.clientUserMessageId}:${left.turnId}:${left.textSha256}`
+        : `assistant:${left.turnId}:${left.textSha256}`;
+    const rightKey =
+      right.kind === "user"
+        ? `user:${right.clientUserMessageId}:${right.turnId}:${right.textSha256}`
+        : `assistant:${right.turnId}:${right.textSha256}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+  return {
+    providerHistorySha256: sha256(JSON.stringify(turns)),
+    canonicalHistorySha256: sha256(
+      JSON.stringify({ version: 1, messages: orderedMessages })
+    ),
+    turnIds: uniqueTurnIds,
+    turnCount: uniqueTurnIds.length,
+    messageCount: orderedMessages.length,
+    messages: orderedMessages,
+    terminal: true,
+    targetPromptAbsent: true
+  };
+};
 
 export const gitWorkingTreeEditState = (
   path: string
@@ -437,6 +584,88 @@ const strictBase64 = (value: unknown): Buffer => {
     throw new Error("ManagedConversationSourceEncodingError");
   }
   return bytes;
+};
+
+type CodexTranscriptFrontier = {
+  bytes: Buffer;
+  offset: number;
+  line: number;
+  fileSize: number;
+  prefixSha256: string;
+  modifiedAt: string;
+  fileIdentity: string;
+};
+
+const captureCodexTranscriptFrontier = (
+  transcriptPath: string
+): CodexTranscriptFrontier => {
+  const before = statSync(transcriptPath, { bigint: true });
+  if (
+    !before.isFile() ||
+    before.size > BigInt(maximumSourceBytes) ||
+    before.size > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    throw managedConversationError(
+      "ManagedConversationSourceRebaseFrontierError"
+    );
+  }
+  const bytes = readFileSync(transcriptPath);
+  const after = statSync(transcriptPath, { bigint: true });
+  const identity = (value: typeof before): string =>
+    [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(":");
+  const beforeIdentity = identity(before);
+  const afterIdentity = identity(after);
+  if (
+    beforeIdentity !== afterIdentity ||
+    BigInt(bytes.byteLength) !== after.size ||
+    (bytes.byteLength > 0 && bytes[bytes.byteLength - 1] !== 0x0a)
+  ) {
+    throw managedConversationError(
+      "ManagedConversationSourceRebaseFrontierError"
+    );
+  }
+  let line = 0;
+  for (const byte of bytes) if (byte === 0x0a) line += 1;
+  return {
+    bytes,
+    offset: bytes.byteLength,
+    line,
+    fileSize: bytes.byteLength,
+    prefixSha256: sha256(bytes),
+    modifiedAt: new Date(Number(after.mtimeMs)).toISOString(),
+    fileIdentity: afterIdentity
+  };
+};
+
+export const managedConversationRebasedPrefixMatches = (
+  artifact: Record<string, unknown>,
+  rebaseProof: Record<string, unknown> | null,
+  transcriptBytes: Uint8Array
+): boolean => {
+  if (rebaseProof === null) return true;
+  const accepted = record(rebaseProof.acceptedFrontier);
+  const offset = accepted.offset;
+  const line = accepted.line;
+  if (
+    typeof rebaseProof.parentArtifactId !== "string" ||
+    typeof rebaseProof.parentSourceGenerationId !== "string" ||
+    !managedConversationUuidPattern.test(
+      rebaseProof.parentSourceGenerationId
+    ) ||
+    typeof offset !== "number" ||
+    typeof line !== "number" ||
+    accepted.fileSize !== offset ||
+    accepted.offset !== artifact.journalStartOffset ||
+    accepted.line !== artifact.journalStartLine ||
+    typeof accepted.prefixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/iu.test(accepted.prefixSha256) ||
+    typeof accepted.modifiedAt !== "string" ||
+    !Number.isFinite(Date.parse(accepted.modifiedAt))
+  ) {
+    throw managedConversationError("ManagedConversationSourceRebaseProofError");
+  }
+  if (transcriptBytes.byteLength < offset) return false;
+  return sha256(transcriptBytes.subarray(0, offset)) === accepted.prefixSha256;
 };
 
 type ForkSourceBoundary = {
@@ -778,6 +1007,86 @@ export const managedConversationFailureCode = (error: unknown): string => {
   return "ManagedConversationFailure";
 };
 
+const codexProviderRequestDiagnostics = (
+  error: unknown
+):
+  | {
+      provider_request_method: string;
+      provider_request_code?: number | string;
+      provider_request_message: string;
+    }
+  | undefined => {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof CodexAppServerRequestError) {
+      return {
+        provider_request_method: current.method,
+        ...(current.rpcCode !== undefined
+          ? { provider_request_code: current.rpcCode }
+          : {}),
+        provider_request_message: current.message
+          .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "[id]")
+          .replace(/(?:\b[a-zA-Z]:)?(?:\/[^\s:]+)+/g, "[path]")
+          .slice(0, 240)
+      };
+    }
+    current = current instanceof Error ? current.cause : record(current).cause;
+  }
+  return undefined;
+};
+
+const managedConversationFailureMessage = (
+  error: unknown
+): string | undefined => {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 5 && current !== undefined; depth += 1) {
+    if (seen.has(current)) return undefined;
+    seen.add(current);
+    const candidate = current instanceof Error ? current : record(current);
+    if (typeof candidate.message === "string" && candidate.message.trim()) {
+      return candidate.message
+        .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+        .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "[id]")
+        .replace(/(?:\b[a-zA-Z]:)?(?:\/[^\s:]+)+/g, "[path]")
+        .slice(0, 240);
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+};
+
+const transcriptIsAvailable = (path: string): boolean => {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
+export const managedConversationProviderHistoryAvailable = (
+  execution: Pick<
+    ManagedConversationExecutionRecord,
+    "state" | "providerThreadId"
+  >,
+  binding: Pick<
+    ManagedConversationRuntimeBindingRecord,
+    "localSessionId" | "providerThreadId" | "transcriptPath" | "managedHome"
+  >
+): boolean =>
+  execution.state !== "running" ||
+  Boolean(
+    binding.localSessionId?.trim() &&
+    binding.providerThreadId?.trim() &&
+    binding.providerThreadId === execution.providerThreadId &&
+    binding.transcriptPath?.trim() &&
+    transcriptIsAvailable(binding.transcriptPath) &&
+    binding.managedHome?.trim()
+  );
+
 export const managedPersonalAgentTurnDeclaredComplete = (
   payload: Record<string, unknown> | null | undefined,
   inMemoryStatus: PersonalAgentTurnStatus | undefined,
@@ -1092,6 +1401,7 @@ export const createManagedConversationService = (options: {
     NativeSkillInvocation[]
   >();
   const activePromptDispatches = new Map<string, string[]>();
+  const providerTurnDispatchAttempts = new Set<string>();
   const deferredInterruptTargets = new Map<string, string>();
   const awaitingPromptDispatchControls = new Map<string, Set<string>>();
   const activePromptDispatchId = (executionId: string): string | undefined =>
@@ -2983,7 +3293,20 @@ export const createManagedConversationService = (options: {
             startup_stage: timing.stage,
             startup_status: timing.status,
             duration_ms: timing.durationMs,
-            elapsed_ms: timing.elapsedMs
+            elapsed_ms: timing.elapsedMs,
+            ...(timing.providerRequestMethod
+              ? {
+                  provider_request_method: timing.providerRequestMethod,
+                  ...(timing.providerRequestCode !== undefined
+                    ? { provider_request_code: timing.providerRequestCode }
+                    : {}),
+                  ...(timing.providerRequestMessage
+                    ? {
+                        provider_request_message: timing.providerRequestMessage
+                      }
+                    : {})
+                }
+              : {})
           },
           "managed Conversation startup stage"
         ),
@@ -3956,6 +4279,280 @@ export const createManagedConversationService = (options: {
     return bindExecutionCheckout(execution, binding);
   };
 
+  const verifyCodexSourceJournalFrontier = async (input: {
+    artifact: Record<string, unknown>;
+    frontier: CodexTranscriptFrontier;
+  }): Promise<{
+    prefixMatches: boolean;
+    lastSegmentDigest: string | null;
+  }> => {
+    const { artifact, frontier } = input;
+    const artifactId = artifact.id;
+    const journalStartOffset = artifact.journalStartOffset;
+    const journalStartLine = artifact.journalStartLine;
+    const providerCursorOffset = artifact.providerCursorOffset;
+    const providerCursorLine = artifact.providerCursorLine;
+    if (
+      typeof artifactId !== "string" ||
+      typeof journalStartOffset !== "number" ||
+      typeof journalStartLine !== "number" ||
+      typeof providerCursorOffset !== "number" ||
+      typeof providerCursorLine !== "number" ||
+      journalStartOffset < 0 ||
+      journalStartLine < 0 ||
+      providerCursorOffset < journalStartOffset ||
+      providerCursorLine < journalStartLine
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseJournalError"
+      );
+    }
+    const canonicalCursorResponse =
+      await memoryClient.getConversationSourceCursor(
+        artifactId,
+        "canonical_live"
+      );
+    const canonicalCursor = record(canonicalCursorResponse.cursor);
+    if (
+      (canonicalCursor.sourceOffset !== providerCursorOffset ||
+        canonicalCursor.sourceLine !== providerCursorLine) &&
+      !(
+        canonicalCursorResponse.cursor === null &&
+        providerCursorOffset === journalStartOffset &&
+        providerCursorLine === journalStartLine
+      )
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseBacklogError"
+      );
+    }
+
+    let expectedOffset = journalStartOffset;
+    let expectedLine = journalStartLine;
+    let prefixMatches = frontier.bytes.byteLength >= providerCursorOffset;
+    let lastSegmentDigest: string | null = null;
+    let segmentCount = 0;
+    while (expectedOffset < providerCursorOffset) {
+      const page = await memoryClient.listConversationSourceSegments(
+        artifactId,
+        {
+          afterOffset: Math.max(0, expectedOffset - 1),
+          limit: 100
+        }
+      );
+      const segments = Array.isArray(page.segments) ? page.segments : [];
+      if (segments.length === 0) {
+        throw managedConversationError(
+          "ManagedConversationSourceRebaseJournalError"
+        );
+      }
+      let advanced = false;
+      for (const rawSegment of segments) {
+        const segment = record(rawSegment);
+        if (
+          typeof segment.id !== "string" ||
+          segment.sourceStartOffset !== expectedOffset ||
+          segment.sourceStartLine !== expectedLine ||
+          typeof segment.sourceEndOffset !== "number" ||
+          typeof segment.sourceEndLine !== "number" ||
+          segment.sourceEndOffset <= expectedOffset ||
+          segment.sourceEndOffset > providerCursorOffset ||
+          typeof segment.plaintextDigest !== "string" ||
+          typeof segment.contentDigest !== "string"
+        ) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseJournalError"
+          );
+        }
+        const content = await memoryClient.getConversationSourceSegmentContent(
+          artifactId,
+          segment.id
+        );
+        const persistedBytes = strictBase64(content.bytesBase64);
+        if (
+          persistedBytes.byteLength !==
+            segment.sourceEndOffset - segment.sourceStartOffset ||
+          sha256(persistedBytes) !== segment.plaintextDigest
+        ) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseJournalError"
+          );
+        }
+        const currentBytes = frontier.bytes.subarray(
+          segment.sourceStartOffset,
+          segment.sourceEndOffset
+        );
+        if (
+          currentBytes.byteLength !== persistedBytes.byteLength ||
+          !currentBytes.equals(persistedBytes)
+        ) {
+          prefixMatches = false;
+        }
+        const lineCount = persistedBytes.reduce(
+          (count, byte) => count + (byte === 0x0a ? 1 : 0),
+          0
+        );
+        if (lineCount !== segment.sourceEndLine - segment.sourceStartLine) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseJournalError"
+          );
+        }
+        expectedOffset = segment.sourceEndOffset;
+        expectedLine = segment.sourceEndLine;
+        lastSegmentDigest = segment.contentDigest;
+        segmentCount += 1;
+        advanced = true;
+        if (segmentCount > maximumSourceSegments) {
+          throw managedConversationError(
+            "ManagedConversationSourceRebaseJournalError"
+          );
+        }
+        if (expectedOffset === providerCursorOffset) break;
+      }
+      if (!advanced) {
+        throw managedConversationError(
+          "ManagedConversationSourceRebaseJournalError"
+        );
+      }
+    }
+    if (
+      expectedOffset !== providerCursorOffset ||
+      expectedLine !== providerCursorLine
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseJournalError"
+      );
+    }
+    return { prefixMatches, lastSegmentDigest };
+  };
+
+  const rebaseExplicitCodexSourceIfNeeded = async (input: {
+    command: ClaimedManagedConversationCommand;
+    binding: ManagedConversationRuntimeBindingRecord;
+    session: CodexManagedConversationSession;
+    transcriptPath: string;
+  }): Promise<string> => {
+    const { command, binding, session, transcriptPath } = input;
+    const execution = command.execution;
+    const sourceGenerationId = execution.sourceGenerationId;
+    const providerThreadId = execution.providerThreadId;
+    if (
+      !command.allowArchivedResume ||
+      execution.provider !== "codex" ||
+      !sourceGenerationId ||
+      !providerThreadId ||
+      !binding.sourceGenerationId ||
+      binding.sourceGenerationId !== sourceGenerationId ||
+      binding.providerThreadId !== providerThreadId ||
+      !binding.localSessionId
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseIdentityError"
+      );
+    }
+    const parentLookup =
+      await memoryClient.getConversationSourceArtifactByGeneration(
+        sourceGenerationId
+      );
+    const parent = record(parentLookup.artifact);
+    if (
+      parent.lifecycle !== "active" ||
+      parent.sourceGenerationId !== sourceGenerationId ||
+      parent.externalSessionId !== providerThreadId ||
+      parent.sessionId !== binding.localSessionId ||
+      parent.sourceKind !== "codex" ||
+      parent.sourceRuntime !== "codex" ||
+      typeof parent.id !== "string"
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseIdentityError"
+      );
+    }
+    const before = captureCodexTranscriptFrontier(transcriptPath);
+    const rawRebaseProof = parentLookup.rebaseProof;
+    const rebaseProof =
+      rawRebaseProof === null || rawRebaseProof === undefined
+        ? null
+        : record(rawRebaseProof);
+    const acceptedPrefixMatches = managedConversationRebasedPrefixMatches(
+      parent,
+      rebaseProof,
+      before.bytes
+    );
+    const journal = await verifyCodexSourceJournalFrontier({
+      artifact: parent,
+      frontier: before
+    });
+    if (journal.prefixMatches && acceptedPrefixMatches) {
+      return sourceGenerationId;
+    }
+
+    const thread = await session.readAuthoritativeThreadHistory();
+    if (thread.id !== providerThreadId) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseProofError"
+      );
+    }
+    const proof = managedConversationCodexHistoryProof(
+      thread,
+      command.clientUserMessageId ?? ""
+    );
+    const response =
+      await memoryClient.createConversationSourceRebaseSuccessorGeneration(
+        parent.id as string,
+        {
+          expectedParentFrontier: {
+            sourceGenerationId,
+            providerCursorOffset: parent.providerCursorOffset as number,
+            providerCursorLine: parent.providerCursorLine as number,
+            lastSegmentDigest: journal.lastSegmentDigest
+          },
+          successor: {
+            sourceGenerationId: randomUUID(),
+            sourceFrontier: {
+              offset: before.offset,
+              line: before.line,
+              fileSize: before.fileSize,
+              prefixSha256: before.prefixSha256,
+              modifiedAt: before.modifiedAt
+            }
+          },
+          commandProof: {
+            executionId: command.executionId,
+            executionGeneration: command.executionGeneration,
+            commandId: command.id,
+            clientUserMessageId: command.clientUserMessageId!,
+            providerThreadId,
+            ...proof
+          }
+        }
+      );
+    const after = captureCodexTranscriptFrontier(transcriptPath);
+    const acceptedFrontier = record(response.acceptedFrontier);
+    const child = record(response.artifact);
+    if (
+      before.fileIdentity !== after.fileIdentity ||
+      before.prefixSha256 !== after.prefixSha256 ||
+      before.fileSize !== after.fileSize ||
+      before.line !== after.line ||
+      acceptedFrontier.offset !== before.offset ||
+      acceptedFrontier.line !== before.line ||
+      acceptedFrontier.prefixSha256 !== before.prefixSha256 ||
+      typeof child.sourceGenerationId !== "string" ||
+      child.sourceGenerationId === sourceGenerationId ||
+      child.externalSessionId !== providerThreadId ||
+      child.sessionId !== binding.localSessionId ||
+      child.providerCursorOffset !== before.offset ||
+      child.providerCursorLine !== before.line ||
+      child.lifecycle !== "active"
+    ) {
+      throw managedConversationError(
+        "ManagedConversationSourceRebaseResponseError"
+      );
+    }
+    return child.sourceGenerationId as string;
+  };
+
   const assertManagedConversationProjectAvailable = async (
     execution: ManagedConversationExecutionRecord
   ): Promise<string | null> => {
@@ -4403,7 +5000,8 @@ export const createManagedConversationService = (options: {
       );
       await assertManagedConversationTurnSettings(
         options.repository,
-        execution
+        execution,
+        { deviceId: options.deviceId, deploymentId: options.deploymentId }
       );
 
       const preparedBinding = await runtimeBindingFor(
@@ -6170,7 +6768,9 @@ export const createManagedConversationService = (options: {
         ) {
           throw new Error("ManagedConversationRuntimeRecoveryPendingError");
         }
-        return createSession(execution, binding);
+        return createSession(execution, binding, {
+          projectPath: binding.projectPath
+        });
       }
     });
     return session;
@@ -6218,6 +6818,11 @@ export const createManagedConversationService = (options: {
           execution,
           execution.ownerUserId
         );
+        if (!managedConversationProviderHistoryAvailable(execution, binding)) {
+          throw managedConversationError(
+            "ManagedConversationRuntimeRecoveryPendingError"
+          );
+        }
         return createClaudeSession(execution, binding);
       }
     });
@@ -6266,6 +6871,11 @@ export const createManagedConversationService = (options: {
           execution,
           execution.ownerUserId
         );
+        if (!managedConversationProviderHistoryAvailable(execution, binding)) {
+          throw managedConversationError(
+            "ManagedConversationRuntimeRecoveryPendingError"
+          );
+        }
         if (!binding.providerThreadId || !binding.transcriptPath) {
           throw new Error("ManagedConversationRuntimeRecoveryPendingError");
         }
@@ -7284,7 +7894,8 @@ export const createManagedConversationService = (options: {
       if (!pendingCheckpointFor(command))
         await assertManagedConversationTurnSettings(
           options.repository,
-          command.execution
+          command.execution,
+          { deviceId: options.deviceId, deploymentId: options.deploymentId }
         );
     }
     if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
@@ -7390,7 +8001,8 @@ export const createManagedConversationService = (options: {
     if (command.commandKind === "start") {
       await assertManagedConversationTurnSettings(
         options.repository,
-        command.execution
+        command.execution,
+        { deviceId: options.deviceId, deploymentId: options.deploymentId }
       );
       const currentProjectPath =
         await assertManagedConversationProjectAvailable(command.execution);
@@ -7746,7 +8358,11 @@ export const createManagedConversationService = (options: {
             await withLease(
               command,
               async (ownedSession) => {
-                await ownedSession.start();
+                await ownedSession.start(
+                  command.allowArchivedResume
+                    ? { allowUnarchiveOnArchivedResume: true }
+                    : {}
+                );
                 await ownedSession.reconcileTranscript();
               },
               recoveredSession
@@ -7963,6 +8579,7 @@ export const createManagedConversationService = (options: {
           command,
           (session) => {
             assertPromptNotStopped(command);
+            providerTurnDispatchAttempts.add(command.id);
             return session.prompt(
               turnPrompt,
               nativeSkills.map((skill) => skill.name)
@@ -8075,16 +8692,52 @@ export const createManagedConversationService = (options: {
         );
       }
       selectedNativeSkillsByExecution.set(command.executionId, nativeSkills);
+      let explicitlyRebasedSourceGenerationId: string | undefined;
       let result;
       try {
         result = await withLease(
           command,
-          (session) => {
+          async (session) => {
             assertPromptNotStopped(command);
+            if (command.allowArchivedResume) {
+              try {
+                const resumed = await session.start({
+                  allowUnarchiveOnArchivedResume: true,
+                  deferTranscriptReconciliation: true
+                });
+                if (
+                  !checkpointBinding.transcriptPath ||
+                  resumed.transcriptPath !== checkpointBinding.transcriptPath
+                ) {
+                  throw managedConversationError(
+                    "ManagedConversationRuntimeBindingError"
+                  );
+                }
+                explicitlyRebasedSourceGenerationId =
+                  await rebaseExplicitCodexSourceIfNeeded({
+                    command,
+                    binding: checkpointBinding,
+                    session,
+                    transcriptPath: resumed.transcriptPath
+                  });
+                await session.completeDeferredTranscriptReconciliation();
+              } catch (error) {
+                runtimeSessions.delete("codex", command.executionId);
+                await session.closeAndWait().catch(() => undefined);
+                throw error;
+              }
+            }
             return session.runTurn(
               turnPrompt,
               turnTimeoutMs,
-              `koed-user-message:${clientUserMessageId}`
+              `koed-user-message:${clientUserMessageId}`,
+              {
+                ...(command.allowArchivedResume
+                  ? { allowUnarchiveOnArchivedResume: true }
+                  : {}),
+                onTurnStartAttempt: () =>
+                  providerTurnDispatchAttempts.add(command.id)
+              }
             );
           },
           providerRuntime.session
@@ -8117,6 +8770,8 @@ export const createManagedConversationService = (options: {
           sourceKind: "codex"
         }
       );
+      const effectiveSourceGenerationId =
+        explicitlyRebasedSourceGenerationId ?? sourceGenerationId;
       await options.repository.bindManagedConversationSourceGeneration(
         { userId: command.ownerUserId },
         {
@@ -8125,10 +8780,10 @@ export const createManagedConversationService = (options: {
           runnerId,
           ...(command.execution.sourceGenerationId
             ? {
-                expectedSourceGenerationId: command.execution.sourceGenerationId
+                expectedSourceGenerationId: effectiveSourceGenerationId
               }
             : {}),
-          sourceGenerationId
+          sourceGenerationId: effectiveSourceGenerationId
         }
       );
       await options.repository.bindManagedConversationLocalRuntime(
@@ -8145,7 +8800,7 @@ export const createManagedConversationService = (options: {
           ...(binding.providerCliVersion
             ? { providerCliVersion: binding.providerCliVersion }
             : {}),
-          sourceGenerationId
+          sourceGenerationId: effectiveSourceGenerationId
         }
       );
       const usage = managedConversationTokenUsageInput({
@@ -8167,13 +8822,13 @@ export const createManagedConversationService = (options: {
       await markCheckpointPending({
         command,
         providerTurnId: result.turnId ?? null,
-        sourceGenerationId
+        sourceGenerationId: effectiveSourceGenerationId
       });
       await captureTerminalExecutionCheckpoint({
         command,
         binding,
         providerTurnId: result.turnId ?? null,
-        sourceGenerationId
+        sourceGenerationId: effectiveSourceGenerationId
       });
       await withLease(
         command,
@@ -10549,6 +11204,26 @@ export const createManagedConversationService = (options: {
         limit: 8,
         leaseMs: commandLeaseMs
       });
+    } catch (error) {
+      // Claiming can commit a dispatch lease before repository payload
+      // decryption/mapping completes. Capture failures here because they
+      // happen before any per-command handler has a claim to log.
+      options.logger.error(
+        {
+          event: {
+            name: "worker.managed_conversation.command_claim_failed",
+            category: "managed_conversation"
+          },
+          error_name: errorCode(error),
+          raw_error_name: error instanceof Error ? error.name : typeof error,
+          ...(managedConversationFailureMessage(error)
+            ? { error_message: managedConversationFailureMessage(error) }
+            : {}),
+          ...codexProviderRequestDiagnostics(error)
+        },
+        "managed Conversation command claim failed before dispatch"
+      );
+      throw error;
     } finally {
       promptCommandClaimInProgress = false;
     }
@@ -10575,6 +11250,35 @@ export const createManagedConversationService = (options: {
         await withCommandHeartbeat(command, () => runCommand(command));
         completed += 1;
       } catch (error) {
+        // Capture the original failure before reconciliation and cleanup can
+        // throw and hide it. This contains identifiers and sanitized provider
+        // RPC diagnostics only; prompt and transcript content stay private.
+        options.logger.warn(
+          {
+            event: {
+              name: "worker.managed_conversation.command_error_captured",
+              category: "managed_conversation"
+            },
+            command_id: command.id,
+            execution_id: command.executionId,
+            execution_generation: command.executionGeneration,
+            command_kind: command.commandKind,
+            provider: command.execution.provider,
+            error_name: errorCode(error),
+            raw_error_name: error instanceof Error ? error.name : typeof error,
+            ...(managedConversationFailureMessage(error)
+              ? { error_message: managedConversationFailureMessage(error) }
+              : {}),
+            ...(tracksPromptDispatch
+              ? {
+                  provider_turn_dispatch_attempted:
+                    providerTurnDispatchAttempts.has(command.id)
+                }
+              : {}),
+            ...codexProviderRequestDiagnostics(error)
+          },
+          "managed Conversation captured command error before cleanup"
+        );
         if (
           error instanceof ManagedConversationSourceReplicaPendingError &&
           command.leaseToken
@@ -10709,6 +11413,14 @@ export const createManagedConversationService = (options: {
         const settingsRejected =
           isPrompt &&
           errorCode(error) === "ManagedConversationSettingsUnavailableError";
+        const providerThreadOpenFailedBeforeTurn =
+          isPrompt &&
+          command.execution.provider === "codex" &&
+          error instanceof CodexManagedConversationThreadOpenError;
+        const promptPreparationFailedBeforeTurn =
+          isPrompt &&
+          !acceptedPromptCheckpointPending &&
+          !providerTurnDispatchAttempts.has(command.id);
         const isForkCreate = command.commandKind === "fork_create";
         const isForkPrepare = command.commandKind === "fork_prepare";
         const isForkLifecycleCommand = isForkCreate || isForkPrepare;
@@ -10726,7 +11438,10 @@ export const createManagedConversationService = (options: {
         let preserveTransientOutputForUncertainPrompt = false;
         if (command.leaseToken) {
           const requestedFailureState =
-            settingsRejected || providerTurnInterrupted
+            settingsRejected ||
+            providerTurnInterrupted ||
+            providerThreadOpenFailedBeforeTurn ||
+            promptPreparationFailedBeforeTurn
               ? "failed"
               : isOneShot
                 ? "indeterminate"
@@ -10899,13 +11614,30 @@ export const createManagedConversationService = (options: {
               name: "worker.managed_conversation.command_failed",
               category: "managed_conversation"
             },
+            command_id: command.id,
+            execution_id: command.executionId,
+            execution_generation: command.executionGeneration,
             command_kind: command.commandKind,
-            error_name: errorCode(error)
+            provider: command.execution.provider,
+            error_name: errorCode(error),
+            raw_error_name: error instanceof Error ? error.name : typeof error,
+            ...(managedConversationFailureMessage(error)
+              ? { error_message: managedConversationFailureMessage(error) }
+              : {}),
+            error_code: failureCode,
+            ...(providerThreadOpenFailedBeforeTurn
+              ? { provider_thread_open_failed_before_turn: true }
+              : {}),
+            ...(promptPreparationFailedBeforeTurn
+              ? { prompt_preparation_failed_before_turn: true }
+              : {}),
+            ...codexProviderRequestDiagnostics(error)
           },
           "managed Conversation command failed"
         );
       } finally {
         if (tracksPromptDispatch) {
+          providerTurnDispatchAttempts.delete(command.id);
           const dispatches = activePromptDispatches.get(command.executionId);
           if (dispatches) {
             const remaining = dispatches.filter((id) => id !== command.id);

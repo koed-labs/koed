@@ -377,6 +377,51 @@ describe("Studio collaboration gateway", () => {
     assert.equal(unsubscribed, true);
   });
 
+  it("closes the gateway with an active event stream and releases its subscription", async () => {
+    let unsubscribed = false;
+    const service = await start({
+      loadStudioCollaborationSnapshot: snapshot,
+      subscribeStudioCollaborationEvents: () => () => {
+        unsubscribed = true;
+      }
+    });
+    const session = await (
+      await fetch(`${service.url}/studio-api/collaboration/studio-session`, {
+        headers: { origin: service.url }
+      })
+    ).json();
+    const abort = new AbortController();
+    const response = await fetch(
+      `${service.url}/studio-api/collaboration/events`,
+      {
+        headers: { origin: service.url, "x-studio-csrf": session.csrfToken },
+        signal: abort.signal
+      }
+    );
+    const reader = response.body.getReader();
+    await reader.read();
+    let deadline;
+    try {
+      await Promise.race([
+        service.close(),
+        new Promise((_, reject) => {
+          deadline = setTimeout(
+            () => reject(new Error("Gateway shutdown stalled")),
+            1000
+          );
+        })
+      ]);
+      for (let attempt = 0; attempt < 20 && !unsubscribed; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(unsubscribed, true);
+    } finally {
+      clearTimeout(deadline);
+      await reader.cancel().catch(() => undefined);
+      abort.abort();
+    }
+  });
+
   it("admits Origin-less browser event GETs with the session token and rejects supplied invalid origins", async () => {
     let unsubscribed = false;
     const service = await start({

@@ -5,6 +5,7 @@ import type {
   AgentModelCapability
 } from "./agentIdentityEditor";
 import type { AgentAvatar } from "./collab";
+import { loadStudioCsrfToken } from "./studio-csrf";
 
 const BASE_PATH = "/studio-api/personal-agents";
 const HOSTED_BASE_PATH = "/v1/personal-agents";
@@ -704,21 +705,6 @@ async function assertOk(
   return payload;
 }
 
-async function csrfToken(signal?: AbortSignal): Promise<string> {
-  const response = await fetch("/studio-api/github/session", {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-    redirect: "error",
-    signal
-  });
-  const payload = await assertOk(response, "Studio session is unavailable.");
-  if (!isRecord(payload) || typeof payload.csrfToken !== "string") {
-    throw new Error("Studio session is unavailable. Refresh and try again.");
-  }
-  return payload.csrfToken;
-}
-
 async function call(
   path: string,
   init: RequestInit = {},
@@ -730,7 +716,13 @@ async function call(
   headers.set("Accept", "application/json");
   if (method !== "GET") {
     headers.set("Content-Type", "application/json");
-    if (!hosted) headers.set("x-studio-csrf", await csrfToken(signal));
+    if (!hosted)
+      headers.set(
+        "x-studio-csrf",
+        await loadStudioCsrfToken(fetch, signal, (response) =>
+          assertOk(response, "Studio session is unavailable.")
+        )
+      );
   }
   const route =
     path.startsWith("/studio-api/") || path.startsWith("/v1/")

@@ -64,11 +64,6 @@ export function StudioSetupSettings() {
   }, [statusStore]);
 
   useEffect(() => {
-    if (desktopAvailability !== true) return;
-    void Promise.resolve().then(() => refresh());
-  }, [desktopAvailability, refresh]);
-
-  useEffect(() => {
     if (desktopAvailability !== false) return;
     const controller = new AbortController();
     void loadHostedLaunchOptions(controller.signal)
@@ -132,14 +127,14 @@ export function StudioSetupSettings() {
           type="button"
           onClick={() => void refresh()}
           disabled={checking}
-          aria-label="Refresh setup and health"
+          aria-label="Check setup and health"
           className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs text-foreground-secondary hover:border-border-strong disabled:opacity-50"
         >
           <RefreshCw
             aria-hidden="true"
             className={`h-3.5 w-3.5 ${checking ? "animate-spin" : ""}`}
           />
-          Refresh
+          Check status
         </button>
       </div>
 
@@ -148,11 +143,11 @@ export function StudioSetupSettings() {
       ) : !desktopAvailability ? (
         <div className="mt-4 rounded-lg border border-border bg-surface/50 p-4">
           <p className="text-xs leading-5 text-muted">
-            The selected computer’s verified Client and model status is shown
-            here and in AI Clients &amp; models. The web transport does not
-            publish its Koed package, runtime, service, or verification stages.
-            Open Koed Studio Desktop on that computer to inspect those stages or
-            run local setup and repair.
+            The selected computer’s reported AI provider status is shown here
+            and in AI providers. The web transport does not publish its Koed
+            package, runtime, service, or verification stages. Open Koed Studio
+            Desktop on that computer to inspect those stages or run local setup
+            and repair.
           </p>
           {remoteError ? (
             <p role="alert" className="mt-3 text-xs text-warning">
@@ -212,13 +207,6 @@ export function StudioSetupSettings() {
                             )}
                           </span>
                         </div>
-                        <p className="mt-1 text-[11px] text-subtle">
-                          {instance.models.length}{" "}
-                          {instance.readiness === "stale"
-                            ? "last-known"
-                            : "reported"}{" "}
-                          model{instance.models.length === 1 ? "" : "s"}
-                        </p>
                       </li>
                     ))}
                   </ul>
@@ -280,7 +268,7 @@ export function StudioSetupSettings() {
                 <p className="mt-3 text-xs text-muted">
                   {checking
                     ? "Checking local setup…"
-                    : "Setup details are unavailable."}
+                    : "Choose Check status to inspect local setup and services."}
                 </p>
               )}
               {status ? (

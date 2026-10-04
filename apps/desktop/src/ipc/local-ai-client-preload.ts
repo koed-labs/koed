@@ -48,6 +48,17 @@ export const createLocalAiClientPreloadApi = (
       });
       return invokeCommand(command);
     },
+    setEnabled: async (
+      instanceId: string,
+      enabled: boolean
+    ): Promise<LocalAiClientResponse> => {
+      const command = localAiClientCommandSchema.parse({
+        operation: "setEnabled",
+        instanceId,
+        enabled
+      });
+      return invokeCommand(command);
+    },
     reset: async (
       flowKey: Extract<LocalAiClientCommand, { operation: "reset" }>["flowKey"]
     ): Promise<LocalAiClientResponse> => {

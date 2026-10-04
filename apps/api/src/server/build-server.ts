@@ -85,6 +85,7 @@ import {
   type CollaborationSharedMemoryControl
 } from "../local-edge/collaboration-shared-memory-control.js";
 import { createCollaborationRealtimeBroker } from "../local-edge/collaboration-realtime-broker.js";
+import { registerPersonalStudioRemovalRoutes } from "../studio/personal-removals-routes.js";
 import {
   canReceiveGraphStreamPayload,
   createGraphStreamService,
@@ -1961,6 +1962,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);
   registerLocalAgentSettingsRoutes(app, routeContext);
+  registerPersonalStudioRemovalRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
   registerMemoryAnswerTaskRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);

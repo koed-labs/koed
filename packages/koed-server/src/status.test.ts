@@ -2225,11 +2225,118 @@ describe("Claude Code integration status", () => {
       } as never
     );
 
-    expect(resolvedEnvironments).toHaveLength(2);
-    expect(resolvedEnvironments[1]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(
+    expect(resolvedEnvironments).toHaveLength(1);
+    expect(resolvedEnvironments[0]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(
       executablePath
     );
     expect(status.details).toMatchObject({ executable: executablePath });
+  });
+
+  it("prefers a valid registered Claude executable over current PATH discovery", () => {
+    const root = tempDir();
+    const executablePath = "/registered/claude-code";
+    const environment = {
+      HOME: root,
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      PATH: "/path/with/another/claude"
+    };
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      aiClientRegistryPath(environment),
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath
+          }
+        ]
+      })
+    );
+    const resolvedEnvironments: NodeJS.ProcessEnv[] = [];
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: () => false,
+        readFileSync,
+        resolveClaudeExecutable: (input) => {
+          resolvedEnvironments.push(input);
+          return input.KOED_CLAUDE_CODE_EXECUTABLE ?? "/path/from/PATH/claude";
+        },
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.281 (Claude Code)\n")
+            : spawnResult("", 1)
+      } as never
+    );
+
+    expect(resolvedEnvironments).toHaveLength(1);
+    expect(resolvedEnvironments[0]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(
+      executablePath
+    );
+    expect(status.details).toMatchObject({ executable: executablePath });
+  });
+
+  it("falls back to discovery when the registered Claude executable is stale", () => {
+    const root = tempDir();
+    const staleExecutable = "/removed/claude-code";
+    const discoveredExecutable = "/current/claude-code";
+    const environment = {
+      HOME: root,
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      PATH: "/path/with/current/claude"
+    };
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      aiClientRegistryPath(environment),
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath: staleExecutable
+          }
+        ]
+      })
+    );
+    const resolvedEnvironments: NodeJS.ProcessEnv[] = [];
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: () => false,
+        readFileSync,
+        resolveClaudeExecutable: (input) => {
+          resolvedEnvironments.push(input);
+          if (input.KOED_CLAUDE_CODE_EXECUTABLE === staleExecutable) {
+            throw new Error("registered executable was removed");
+          }
+          return discoveredExecutable;
+        },
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.281 (Claude Code)\n")
+            : spawnResult("", 1)
+      } as never
+    );
+
+    expect(resolvedEnvironments).toHaveLength(2);
+    expect(resolvedEnvironments[0]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(
+      staleExecutable
+    );
+    expect(
+      resolvedEnvironments[1]?.KOED_CLAUDE_CODE_EXECUTABLE
+    ).toBeUndefined();
+    expect(status.details).toMatchObject({ executable: discoveredExecutable });
   });
 
   it("does not use a registered executable when an explicit override is invalid", () => {

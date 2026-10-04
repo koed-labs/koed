@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 import { installPullRequestsFixture } from "./fixtures/pull-requests-fixture";
 
+async function signInAndSelectAccount(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Sign in with GitHub" }).click();
+  const accountSelect = page.getByRole("combobox", {
+    name: /GitHub account/
+  });
+  await expect(accountSelect).toContainText("synthetic-owner");
+  await accountSelect.selectOption("synthetic-owner");
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+}
+
 test("GitHub PR inbox connects explicitly, separates authored and requested work, and opens bounded code details", async ({
   page
 }) => {
@@ -10,13 +20,19 @@ test("GitHub PR inbox connects explicitly, separates authored and requested work
   await expect(
     page.getByRole("button", { name: "Sign in with GitHub" })
   ).toBeVisible();
-  await page.getByRole("button", { name: "Sign in with GitHub" }).click();
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await signInAndSelectAccount(page);
   expect(
     api.requests.some(
       (request) =>
         (request.body as { payload?: { kind?: string } })?.payload?.kind ===
         "browser_sign_in"
+    )
+  ).toBeTruthy();
+  expect(
+    api.requests.some(
+      (request) =>
+        (request.body as { payload?: { kind?: string } })?.payload?.kind ===
+        "connect"
     )
   ).toBeTruthy();
 
@@ -91,13 +107,33 @@ test("GitHub PR inbox connects explicitly, separates authored and requested work
   ).toBeTruthy();
 });
 
+test("an existing authorized GitHub CLI account connects without browser sign-in", async ({
+  page
+}) => {
+  const api = await installPullRequestsFixture(page, { authorized: true });
+
+  await page.goto("/studio/plugins");
+  const connectButton = page.getByRole("button", {
+    name: "Connect as @synthetic-owner"
+  });
+  await expect(connectButton).toBeVisible();
+  await connectButton.click();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  expect(
+    api.requests.some(
+      (request) =>
+        (request.body as { payload?: { kind?: string } })?.payload?.kind ===
+        "browser_sign_in"
+    )
+  ).toBeFalsy();
+});
+
 test("a selected Agent gets a durable PR review Conversation with its normal runtime questions", async ({
   page
 }) => {
   const api = await installPullRequestsFixture(page);
   await page.goto("/studio/plugins");
-  await page.getByRole("button", { name: "Sign in with GitHub" }).click();
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await signInAndSelectAccount(page);
   await page.goto("/studio/pull-requests");
   await expect(
     page.getByRole("button", { name: "Review requested", exact: true })

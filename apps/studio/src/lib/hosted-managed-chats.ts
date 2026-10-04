@@ -1530,6 +1530,7 @@ export async function queueHostedConversationPrompt(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
   options: {
+    resumeFromStopped?: true;
     continueWithoutMemory?: true;
     purpose?: "team_summary_draft";
     teamSummary?: { teamId: string; requestId: string; jobId: string };
@@ -1547,6 +1548,7 @@ export async function queueHostedConversationPrompt(
         idempotencyKey: ids.idempotencyKey,
         clientUserMessageId: ids.clientUserMessageId,
         prompt,
+        ...(options.resumeFromStopped ? { resumeFromStopped: true } : {}),
         ...(ids.agentId
           ? {
               agentId: ids.agentId,

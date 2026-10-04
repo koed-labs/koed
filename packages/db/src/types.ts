@@ -126,6 +126,12 @@ export interface ActorContext {
   userId: string;
 }
 
+export interface PersonalStudioRemovalRecord {
+  kind: "project" | "conversation";
+  id: string;
+  aliases: string[];
+}
+
 export interface CreateUserInput {
   email: string;
   displayName?: string;
@@ -924,6 +930,49 @@ export interface ConversationSourceSegmentRecord {
   contentDigest: string;
   createdAt: string;
   sealedAt: string;
+}
+
+export interface ConversationSourceRebaseProofRecord {
+  parentArtifactId: string;
+  successorArtifactId: string;
+  parentClosureHash: string;
+  expectedParentFrontier: {
+    sourceGenerationId: string;
+    providerCursorOffset: number;
+    providerCursorLine: number;
+    lastSegmentDigest: string | null;
+  };
+  acceptedFrontier: {
+    offset: number;
+    line: number;
+    fileSize: number;
+    prefixSha256: string;
+    modifiedAt: string;
+  };
+  commandProof: {
+    executionId: string;
+    executionGeneration: number;
+    commandId: string;
+    clientUserMessageId: string;
+    providerThreadId: string;
+    providerHistorySha256: string;
+    canonicalHistorySha256: string;
+    turnIds: string[];
+    turnCount: number;
+    messageCount: number;
+    messages: Array<
+      | {
+          kind: "user";
+          clientUserMessageId: string;
+          turnId: string;
+          textSha256: string;
+        }
+      | { kind: "assistant"; turnId: string; textSha256: string }
+    >;
+    terminal: true;
+    targetPromptAbsent: true;
+  };
+  createdAt: string;
 }
 
 export interface PersonalSourceReplicationPolicyRecord {
@@ -1982,6 +2031,13 @@ export interface MemorySourceRepository
     TeamAgentRequestsRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
+  listPersonalStudioRemovals(
+    actor: ActorContext
+  ): Promise<PersonalStudioRemovalRecord[]>;
+  setPersonalStudioRemoval(
+    actor: ActorContext,
+    input: PersonalStudioRemovalRecord & { removed: boolean }
+  ): Promise<void>;
   countUsers(): Promise<number>;
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
@@ -2473,6 +2529,10 @@ export interface MemorySourceRepository
       enabled?: boolean;
     }
   ): Promise<AiClientInstanceRecord>;
+  setAiClientInstanceEnabled(
+    actor: ActorContext,
+    input: { hostedInstanceId: string; enabled: boolean }
+  ): Promise<AiClientInstanceRecord | null>;
   recordAiClientCapabilitySnapshot(
     actor: ActorContext,
     input: {

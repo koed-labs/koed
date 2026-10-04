@@ -231,6 +231,7 @@ describe("Agent Configuration selectors", () => {
       list: vi.fn(async () => value),
       refresh: vi.fn(async () => value),
       set: vi.fn(async () => value),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => value)
     };
     root = createRoot(container);
@@ -274,6 +275,7 @@ describe("Agent Configuration selectors", () => {
       ),
       refresh: vi.fn(async () => response()),
       set: vi.fn(async () => response()),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => response())
     };
     root = createRoot(container);
@@ -302,6 +304,7 @@ describe("Agent Configuration selectors", () => {
         refreshError: null
       })),
       set: vi.fn(async () => response()),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => response())
     };
     root = createRoot(container);
@@ -396,6 +399,7 @@ describe("Agent Configuration selectors", () => {
       list: vi.fn(async () => signedOut),
       refresh: vi.fn(async () => signedOut),
       set: vi.fn(async () => signedOut),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => signedOut)
     };
     await act(async () =>
@@ -438,6 +442,7 @@ describe("Agent Configuration selectors", () => {
       list: vi.fn(async () => current),
       refresh: vi.fn(async () => current),
       set: vi.fn(async () => current),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => current)
     };
     await act(async () =>
@@ -481,6 +486,7 @@ describe("Agent Configuration selectors", () => {
         refreshError: null
       })),
       set: vi.fn(async () => signedOut),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => signedOut)
     };
     root = createRoot(container);
@@ -533,6 +539,7 @@ describe("Agent Configuration selectors", () => {
         refreshError: null
       })),
       set: vi.fn(async () => response()),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => response())
     };
     root = createRoot(container);
@@ -578,6 +585,7 @@ describe("Agent Configuration selectors", () => {
       list: vi.fn(async () => legacy),
       refresh: vi.fn(async () => legacy),
       set: vi.fn(async () => legacy),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => legacy)
     };
     root = createRoot(container);
@@ -616,6 +624,7 @@ describe("Agent Configuration selectors", () => {
         return refreshCalls === 1 ? response() : newer;
       }),
       set: vi.fn(() => saveResponse),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => response())
     };
     root = createRoot(container);
@@ -660,6 +669,7 @@ describe("Agent Configuration selectors", () => {
         throw new Error("Capability refresh timed out");
       }),
       set: vi.fn(async () => response()),
+      setEnabled: vi.fn(),
       reset: vi.fn(async () => response())
     };
     root = createRoot(container);

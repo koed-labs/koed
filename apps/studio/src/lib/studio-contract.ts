@@ -9,6 +9,14 @@ export type HomeExecution = {
   state: string;
   updatedAt: string;
   error: string | null;
+  activity?:
+    | "running"
+    | "pending"
+    | "uncertain"
+    | "idle"
+    | "operation"
+    | "operation-pending"
+    | "unknown";
 };
 
 export type HomeRequest = {

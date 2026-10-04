@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   mkdir,
@@ -35,6 +35,9 @@ import {
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
+  managedConversationProviderHistoryAvailable,
+  managedConversationCodexHistoryProof,
+  managedConversationRebasedPrefixMatches,
   managedPersonalAgentTurnDeclaredComplete,
   managedPersonalAgentSignalThreadMatchesCurrentCommand,
   managedConversationOriginSourceGeneration,
@@ -56,6 +59,205 @@ import {
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
 import { ProjectMoveLocalJournal } from "./project-move-local-journal.js";
+
+describe("managed Conversation provider history recovery", () => {
+  it("checks the durable accepted prefix even when a rebased child has no segments", () => {
+    const parentArtifactId = randomUUID();
+    const parentSourceGenerationId = randomUUID();
+    const acceptedBytes = Buffer.from("old row\n");
+    const artifact = {
+      journalStartOffset: acceptedBytes.byteLength,
+      journalStartLine: 1
+    };
+    const rebaseProof = {
+      parentArtifactId,
+      parentSourceGenerationId,
+      acceptedFrontier: {
+        offset: acceptedBytes.byteLength,
+        line: 1,
+        fileSize: acceptedBytes.byteLength,
+        prefixSha256: createHash("sha256").update(acceptedBytes).digest("hex"),
+        modifiedAt: new Date().toISOString()
+      }
+    };
+
+    expect(
+      managedConversationRebasedPrefixMatches(
+        artifact,
+        rebaseProof,
+        Buffer.concat([acceptedBytes, Buffer.from("new row\n")])
+      )
+    ).toBe(true);
+    const rewritten = Buffer.from(acceptedBytes);
+    rewritten[0] = 0x4e;
+    expect(
+      managedConversationRebasedPrefixMatches(artifact, rebaseProof, rewritten)
+    ).toBe(false);
+    expect(
+      managedConversationRebasedPrefixMatches(
+        artifact,
+        rebaseProof,
+        Buffer.from("short\n")
+      )
+    ).toBe(false);
+  });
+
+  it("proves only complete same-thread terminal Codex history with stable user identities", () => {
+    const target = randomUUID();
+    const userId = randomUUID();
+    const turnId = randomUUID();
+    const proof = managedConversationCodexHistoryProof(
+      {
+        id: randomUUID(),
+        status: { type: "notLoaded" },
+        turns: [
+          {
+            id: turnId,
+            status: "completed",
+            items: [
+              {
+                id: randomUUID(),
+                type: "userMessage",
+                clientId: `koed-user-message:${userId}`,
+                content: [{ type: "text", text: "Prior prompt" }]
+              },
+              {
+                id: randomUUID(),
+                type: "agentMessage",
+                text: "Prior answer"
+              }
+            ]
+          }
+        ]
+      },
+      target
+    );
+
+    expect(proof).toMatchObject({
+      turnCount: 1,
+      messageCount: 2,
+      terminal: true,
+      targetPromptAbsent: true
+    });
+    expect(proof.providerHistorySha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(proof.canonicalHistorySha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(proof.messages.map((message) => message.kind).sort()).toEqual([
+      "assistant",
+      "user"
+    ]);
+  });
+
+  it.each([
+    [
+      "target message present",
+      (target: string, user: string, turn: string) => ({
+        id: randomUUID(),
+        status: { type: "notLoaded" },
+        turns: [
+          {
+            id: turn,
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                clientId: `koed-user-message:${target}`,
+                content: [{ text: "old" }]
+              }
+            ]
+          }
+        ]
+      })
+    ],
+    [
+      "active turn",
+      (_target: string, user: string, turn: string) => ({
+        id: randomUUID(),
+        status: { type: "notLoaded" },
+        turns: [
+          {
+            id: turn,
+            status: "inProgress",
+            items: [
+              {
+                type: "userMessage",
+                clientId: `koed-user-message:${user}`,
+                content: [{ text: "old" }]
+              }
+            ]
+          }
+        ]
+      })
+    ],
+    [
+      "missing user identity",
+      (_target: string, _user: string, turn: string) => ({
+        id: randomUUID(),
+        status: { type: "notLoaded" },
+        turns: [
+          {
+            id: turn,
+            status: "completed",
+            items: [{ type: "userMessage", content: [{ text: "old" }] }]
+          }
+        ]
+      })
+    ]
+  ])("rejects unprovable Codex history (%s)", (_name, build) => {
+    const target = randomUUID();
+    const user = randomUUID();
+    const turn = randomUUID();
+    expect(() =>
+      managedConversationCodexHistoryProof(build(target, user, turn), target)
+    ).toThrow("ManagedConversationSourceRebaseProofError");
+  });
+
+  it("requires an existing transcript for a running provider session", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-provider-history-"));
+    try {
+      const transcriptPath = resolve(root, "missing-transcript.jsonl");
+      const execution = {
+        state: "running",
+        providerThreadId: "provider-thread-id"
+      } as Pick<
+        ManagedConversationExecutionRecord,
+        "state" | "providerThreadId"
+      >;
+      const binding = {
+        localSessionId: "local-session-id",
+        providerThreadId: "provider-thread-id",
+        transcriptPath,
+        managedHome: root
+      } as Pick<
+        ManagedConversationRuntimeBindingRecord,
+        "localSessionId" | "providerThreadId" | "transcriptPath" | "managedHome"
+      >;
+
+      expect(
+        managedConversationProviderHistoryAvailable(execution, binding)
+      ).toBe(false);
+      await writeFile(transcriptPath, "provider history\n");
+      expect(
+        managedConversationProviderHistoryAvailable(execution, binding)
+      ).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not require provider history before the initial start is bound", () => {
+    expect(
+      managedConversationProviderHistoryAvailable(
+        { state: "starting", providerThreadId: null },
+        {
+          localSessionId: null,
+          providerThreadId: null,
+          transcriptPath: null,
+          managedHome: null
+        }
+      )
+    ).toBe(true);
+  });
+});
 
 describe("managed Personal Agent turn status recovery", () => {
   it("uses a persisted completion only for the successful provider turn it names", () => {
@@ -2661,25 +2863,33 @@ describe("Managed Conversation service lifecycle", () => {
       const turnId = randomUUID();
       const runTurn = vi
         .spyOn(CodexManagedConversationSession.prototype, "runTurn")
-        .mockRejectedValueOnce(
-          Object.assign(new Error("private turn detail"), {
-            name: "CodexAppServerTurnError",
-            threadId: providerThreadId,
-            turnId,
-            rawEvents: [
-              {
-                method: "turn/completed",
-                params: {
-                  threadId: providerThreadId,
-                  turn: { id: turnId, status: terminalStatus }
-                },
-                observedAt: new Date().toISOString(),
-                sequence: 1
-              }
-            ]
-          })
+        .mockImplementationOnce(
+          async (_prompt, _timeout, _clientMessageId, runOptions) => {
+            runOptions?.onTurnStartAttempt?.();
+            throw Object.assign(new Error("private turn detail"), {
+              name: "CodexAppServerTurnError",
+              threadId: providerThreadId,
+              turnId,
+              rawEvents: [
+                {
+                  method: "turn/completed",
+                  params: {
+                    threadId: providerThreadId,
+                    turn: { id: turnId, status: terminalStatus }
+                  },
+                  observedAt: new Date().toISOString(),
+                  sequence: 1
+                }
+              ]
+            });
+          }
         )
-        .mockRejectedValueOnce(new Error("stop after follow-up dispatch"));
+        .mockImplementationOnce(
+          async (_prompt, _timeout, _clientMessageId, runOptions) => {
+            runOptions?.onTurnStartAttempt?.();
+            throw new Error("stop after follow-up dispatch");
+          }
+        );
       const close = vi
         .spyOn(CodexManagedConversationSession.prototype, "closeAndWait")
         .mockResolvedValue();
@@ -2735,7 +2945,10 @@ describe("Managed Conversation service lifecycle", () => {
         expect(runTurn).toHaveBeenCalledWith(
           "Continue from the hosted chat.",
           expect.any(Number),
-          `koed-user-message:${clientUserMessageId}`
+          `koed-user-message:${clientUserMessageId}`,
+          expect.objectContaining({
+            onTurnStartAttempt: expect.any(Function)
+          })
         );
         expect(start).toHaveBeenCalledOnce();
         expect(repository.failManagedConversationCommand).toHaveBeenCalledWith(
@@ -2760,7 +2973,10 @@ describe("Managed Conversation service lifecycle", () => {
           expect(runTurn).toHaveBeenLastCalledWith(
             "Follow up after the interrupted turn.",
             expect.any(Number),
-            `koed-user-message:${followUpMessageId}`
+            `koed-user-message:${followUpMessageId}`,
+            expect.objectContaining({
+              onTurnStartAttempt: expect.any(Function)
+            })
           );
           expect(start).toHaveBeenCalledOnce();
         } else {

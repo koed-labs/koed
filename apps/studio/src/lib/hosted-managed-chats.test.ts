@@ -1327,6 +1327,42 @@ test("attributes hosted follow-up prompts to the verified active Agent version",
   );
 });
 
+test("resumes a stopped hosted chat through its existing prompt identity", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const execution = { id, executionGeneration: 3 };
+  const identity = {
+    idempotencyKey: "stopped-follow-up",
+    clientUserMessageId: "existing-message-identity"
+  };
+  const fetcher = async (_input: unknown, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return json({ command: { id: commandId, state: "queued" } }, 202);
+  };
+  await queueHostedConversationPrompt(
+    execution,
+    "Continue",
+    identity,
+    undefined,
+    fetcher,
+    { resumeFromStopped: true }
+  );
+  await queueHostedConversationPrompt(
+    execution,
+    "Continue",
+    identity,
+    undefined,
+    fetcher,
+    { resumeFromStopped: true }
+  );
+  assert.deepEqual(sent[0], {
+    executionGeneration: 3,
+    ...identity,
+    prompt: "Continue",
+    resumeFromStopped: true
+  });
+  assert.deepEqual(sent[1], sent[0]);
+});
+
 test("sends the one-shot Continue without Memory flag only with the accepted prompt", async () => {
   const sent: Record<string, unknown>[] = [];
   await queueHostedConversationPrompt(

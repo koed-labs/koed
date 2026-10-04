@@ -386,20 +386,18 @@ const resolveStatusClaudeExecutable = (
   environment: NodeJS.ProcessEnv,
   deps: Required<KoedServerStatusDependencies>
 ): string => {
-  try {
+  // An explicit environment override has priority. Do not silently run a
+  // different registered installation when that override is invalid.
+  if (environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim()) {
     return deps.resolveClaudeExecutable(environment);
-  } catch (discoveryError) {
-    // An explicit environment override has priority. Do not silently run a
-    // different registered installation when that override is invalid.
-    if (environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim()) {
-      throw discoveryError;
-    }
   }
 
+  let registeredExecutable: string | undefined;
   try {
     const target = aiClientRegistryPath(environment);
-    if (lstatSync(target).isSymbolicLink())
-      return deps.resolveClaudeExecutable(environment);
+    if (lstatSync(target).isSymbolicLink()) {
+      throw new Error("Claude instance registry must not be a symbolic link.");
+    }
     const registry = JSON.parse(String(deps.readFileSync(target, "utf8"))) as {
       version?: unknown;
       instances?: unknown;
@@ -424,10 +422,24 @@ const resolveStatusClaudeExecutable = (
           "string"
     );
     if (!instance) throw new Error("Claude instance is not registered.");
-    return deps.resolveClaudeExecutable({
-      ...environment,
-      KOED_CLAUDE_CODE_EXECUTABLE: instance.executablePath
-    });
+    registeredExecutable = instance.executablePath;
+  } catch {
+    // A missing or malformed registry should fall back to normal discovery.
+  }
+
+  if (registeredExecutable) {
+    try {
+      return deps.resolveClaudeExecutable({
+        ...environment,
+        KOED_CLAUDE_CODE_EXECUTABLE: registeredExecutable
+      });
+    } catch {
+      // A stale registered path should not block discovery of an installation.
+    }
+  }
+
+  try {
+    return deps.resolveClaudeExecutable(environment);
   } catch {
     throw new Error("Claude Code executable was not found.");
   }

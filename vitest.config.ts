@@ -77,6 +77,10 @@ export default defineConfig({
       {
         find: /^@koed\/shared$/,
         replacement: `${root}packages/shared/src/index.ts`
+      },
+      {
+        find: /^@\//,
+        replacement: `${root}apps/studio/src/`
       }
     ]
   },

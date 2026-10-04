@@ -22,6 +22,9 @@ import { filterHomeCollections, homeProjects } from "@/lib/studio-home";
 import type { HomeItem } from "@koed/shared/home";
 import type { HomeFeedController } from "@/lib/use-home-feed";
 import { StudioSidebar } from "./StudioSidebar";
+import { usePersonalRemovals } from "./usePersonalRemovals";
+import { useVerifiedPersonalScope } from "./useVerifiedPersonalScope";
+import type { PersonalRemovalTarget } from "@/lib/personal-removals-client";
 import { HomeAttentionView } from "./HomeAttentionView";
 import { OwnedConversationShareDialog } from "./OwnedConversationShareDialog";
 import { ChatComposer, type ChatComposerSelection } from "../ChatComposer";
@@ -29,15 +32,23 @@ import { SharedChatUI } from "../SharedChatUI";
 import {
   indexShareablePersonalConversations,
   indexShareableConversationRows,
+  isSyntheticIndependentProject,
   matchLocalConversationToHome,
   matchManagedExecutionForCapturedSession,
   managedConversationSourceIds,
+  managedConversationActivityLabel,
+  managedProviderSourceIdsByExecution,
   normalizeConversationProvider,
   ownerSnapshotMaySurviveRefresh,
   ownerMemoryLoadMayApply,
   shareDialogSourceMayRemainOpen,
   type ShareablePersonalConversation
 } from "./LocalConversationBrowser.match";
+import {
+  hasConversationRemoval,
+  hasProjectRemoval,
+  managedConversationRemovalTarget
+} from "./personal-removals-view";
 
 type LoadState = "loading" | "offline" | "snapshot";
 type LocalRunnerAvailability =
@@ -60,6 +71,16 @@ function validSnapshot(value: unknown): value is HomeSnapshot {
       typeof (candidate as HomeExecution).provider === "string" &&
       typeof (candidate as HomeExecution).state === "string" &&
       typeof (candidate as HomeExecution).updatedAt === "string" &&
+      ((candidate as HomeExecution).activity === undefined ||
+        [
+          "running",
+          "pending",
+          "uncertain",
+          "idle",
+          "operation",
+          "operation-pending",
+          "unknown"
+        ].includes(String((candidate as HomeExecution).activity))) &&
       nullable((candidate as HomeExecution).projectId) &&
       nullable((candidate as HomeExecution).sessionId) &&
       nullable((candidate as HomeExecution).error)
@@ -184,6 +205,10 @@ export function PersonalHome({
     snapshot && (snapshot.state === "ready" || snapshot.state === "partial")
   );
   const homeScopeKey = usable ? (snapshot?.scopeKey ?? null) : null;
+  const personalScopeKey = useVerifiedPersonalScope(homeScopeKey);
+  const personalRemovalState = usePersonalRemovals({
+    scopeKey: personalScopeKey
+  });
   const sharingSessionKey =
     homeScopeKey === null ? null : `${homeScopeKey}:${sharingReloadKey}`;
   const ownerSharingSession =
@@ -420,34 +445,121 @@ export function PersonalHome({
     },
     null
   ).recents;
-  const coveredExecutions =
-    usable && snapshot?.coverage.executions ? snapshot.executions : [];
+  const coveredExecutions = useMemo(
+    () => (usable && snapshot?.coverage.executions ? snapshot.executions : []),
+    [usable, snapshot]
+  );
+  const providerSourceIdsByExecution = useMemo(() => {
+    return managedProviderSourceIdsByExecution({
+      recents: allRecents,
+      executions: coveredExecutions
+    });
+  }, [allRecents, coveredExecutions]);
+  const browseRecents = personalRemovalState.ready
+    ? allRecents.filter((recent) => {
+        if (
+          hasProjectRemoval(
+            personalRemovalState.removals,
+            recent.projectId ?? ""
+          )
+        )
+          return false;
+        const provider = normalizeConversationProvider(recent.provider);
+        const sourceId = provider
+          ? `${provider}:${encodeURIComponent(recent.id)}`
+          : null;
+        const executionId =
+          (provider
+            ? matchManagedExecutionForCapturedSession({
+                sessionId: recent.sessionId,
+                provider,
+                executions: coveredExecutions
+              })
+            : null) ??
+          coveredExecutions.find(
+            (execution) => execution.sessionId === recent.sessionId
+          )?.id ??
+          null;
+        return !hasConversationRemoval(personalRemovalState.removals, [
+          sourceId,
+          executionId ? `managed:${executionId}` : null
+        ]);
+      })
+    : [];
+  const browseExecutions = personalRemovalState.ready
+    ? coveredExecutions.filter(
+        (execution) =>
+          !hasProjectRemoval(
+            personalRemovalState.removals,
+            execution.projectId ?? ""
+          ) &&
+          !hasConversationRemoval(personalRemovalState.removals, [
+            `managed:${execution.id}`
+          ])
+      )
+    : [];
+  const removePersonalItem = useCallback(
+    async (target: PersonalRemovalTarget) => {
+      let resolvedTarget = target;
+      if (target.kind === "project") {
+        if (filter === target.projectId) setFilter(null);
+      } else {
+        const executionId = target.sourceId.startsWith("managed:")
+          ? target.sourceId.slice("managed:".length)
+          : Object.entries(providerSourceIdsByExecution).find(([, sourceIds]) =>
+              sourceIds.includes(target.sourceId)
+            )?.[0];
+        if (executionId) {
+          resolvedTarget = managedConversationRemovalTarget({
+            executionId,
+            providerSourceIds: providerSourceIdsByExecution[executionId]
+          });
+        }
+      }
+      await personalRemovalState.remove(resolvedTarget);
+    },
+    [filter, personalRemovalState, providerSourceIdsByExecution]
+  );
   const collections = filterHomeCollections(
     {
-      executions: coveredExecutions,
+      executions: browseExecutions,
       requests: usable && snapshot?.coverage.requests ? snapshot.requests : [],
-      recents: allRecents
+      recents: browseRecents
     },
     filter
   );
   const recents = collections.recents;
   const executions = collections.executions;
+  const executionForRecent = (recent: HomeRecent) => {
+    const provider = normalizeConversationProvider(recent.provider);
+    const executionId = provider
+      ? matchManagedExecutionForCapturedSession({
+          sessionId: recent.sessionId,
+          provider,
+          executions
+        })
+      : null;
+    return executions.find((candidate) => candidate.id === executionId);
+  };
   const resumableRecents = recents.flatMap((recent) => {
-    const execution = executions.find(
-      (candidate) => candidate.sessionId === recent.sessionId
-    );
+    const execution = executionForRecent(recent);
     return execution ? [{ recent, executionId: execution.id }] : [];
   });
   const displayedConversationRecents = recents.flatMap((recent) => {
-    const execution = executions.find(
-      (candidate) => candidate.sessionId === recent.sessionId
-    );
+    const execution = executionForRecent(recent);
     const memory = ownerMemoryBySessionId.get(recent.sessionId);
     return execution || memory
-      ? [{ recent, executionId: execution?.id ?? null, memory: memory ?? null }]
+      ? [
+          {
+            recent,
+            executionId: execution?.id ?? null,
+            execution,
+            memory: memory ?? null
+          }
+        ]
       : [];
   });
-  const projects = homeProjects(allRecents, coveredExecutions);
+  const projects = homeProjects(browseRecents, browseExecutions);
   const firstModelOption = modelOptions[0];
   const firstModelEffort =
     firstModelOption?.supportedReasoningEfforts.find(
@@ -470,12 +582,30 @@ export function PersonalHome({
     <div className="flex h-full min-h-0 w-full">
       <StudioSidebar
         projects={projects}
+        personalScopeKey={personalScopeKey}
         homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         showLocalCatalog
         managedConversations={executions}
         managedSourceIds={[
-          ...managedConversationSourceIds({ recents: allRecents, executions })
+          ...managedConversationSourceIds({
+            recents: allRecents,
+            executions: coveredExecutions
+          })
         ]}
+        personalRemovals={personalRemovalState.removals}
+        personalRemovalsReady={personalRemovalState.ready}
+        personalRemovalError={personalRemovalState.error}
+        onRetryPersonalRemovals={() =>
+          void personalRemovalState.load().catch(() => undefined)
+        }
+        onRemovePersonalItem={
+          personalRemovalState.ready ? removePersonalItem : undefined
+        }
+        lastRemovedPersonalItem={personalRemovalState.lastRemoved}
+        onUndoPersonalRemoval={
+          personalRemovalState.ready ? personalRemovalState.undoLast : undefined
+        }
+        managedProviderSourceIds={providerSourceIdsByExecution}
         canShareLocalSource={(sourceId, provider) =>
           ownerMemoryForLocalSource.has(
             `${provider}:${encodeURIComponent(sourceId)}`
@@ -850,7 +980,7 @@ export function PersonalHome({
                       ) : (
                         <ul className="divide-y divide-border overflow-hidden rounded-md border border-border bg-surface/30">
                           {displayedConversationRecents.map(
-                            ({ recent, executionId, memory }) => (
+                            ({ recent, executionId, execution, memory }) => (
                               <li
                                 key={recent.id}
                                 className="flex items-center gap-1 pr-2"
@@ -868,8 +998,19 @@ export function PersonalHome({
                                       {recent.title}
                                     </span>
                                     <span className="block truncate text-xs text-muted">
-                                      {recent.projectName} ·{" "}
-                                      {recent.provider ?? "AI client"}
+                                      {isSyntheticIndependentProject(
+                                        recent.projectId,
+                                        recent.projectName
+                                      ) || !recent.projectId
+                                        ? "No Project"
+                                        : recent.projectName}{" "}
+                                      · {recent.provider ?? "AI client"}
+                                      {execution &&
+                                      ["stopped", "failed", "fenced"].includes(
+                                        execution.state
+                                      )
+                                        ? ` · ${managedConversationActivityLabel(execution.activity, execution.state)}`
+                                        : ""}
                                       {executionId
                                         ? ""
                                         : " · captured, cannot continue here"}

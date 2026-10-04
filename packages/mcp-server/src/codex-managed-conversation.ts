@@ -6,6 +6,7 @@ import { managedKoedMcpServer } from "./managed-koed-mcp.js";
 import {
   CodexAppServerClient,
   CodexAppServerCapacityError,
+  CodexAppServerRequestError,
   codexAppServerRawEventByteLength,
   resolveCodexHome,
   type CodexAppServerExit,
@@ -44,7 +45,30 @@ export interface CodexConversationStartupTiming {
   status: "completed" | "failed";
   durationMs: number;
   elapsedMs: number;
+  providerRequestMethod?: string;
+  providerRequestCode?: number | string;
+  providerRequestMessage?: string;
 }
+
+/** A Codex thread could not be opened before any turn dispatch was attempted. */
+export class CodexManagedConversationThreadOpenError extends Error {
+  constructor(cause: unknown) {
+    super("ManagedConversationThreadOpenError", { cause });
+    this.name = "ManagedConversationThreadOpenError";
+  }
+}
+
+export type CodexManagedConversationStartOptions = {
+  allowUnarchiveOnArchivedResume?: boolean;
+  /** Defer resume/fork transcript ingestion until an explicit source recovery completes. */
+  deferTranscriptReconciliation?: boolean;
+};
+
+export type CodexManagedConversationRunOptions =
+  CodexManagedConversationStartOptions & {
+    /** Called immediately before issuing thread/turn/start. */
+    onTurnStartAttempt?: () => void;
+  };
 
 export interface CodexManagedConversationConfig {
   memoryClient: MemoryApiClient;
@@ -289,12 +313,24 @@ export class CodexManagedConversationSession {
   private codexHome: string | null = null;
   private terminalError: Error | null = null;
   private started = false;
+  private transcriptReconciliationPending = false;
   private closed = false;
 
   constructor(private readonly config: CodexManagedConversationConfig) {}
 
-  async start(): Promise<CodexManagedConversationStartResult> {
+  async start(
+    options: CodexManagedConversationStartOptions = {}
+  ): Promise<CodexManagedConversationStartResult> {
     if (this.started && this.client && !this.client.isClosed()) {
+      if (
+        this.transcriptReconciliationPending &&
+        !options.deferTranscriptReconciliation
+      ) {
+        throw new Error("CodexTranscriptReconciliationPendingError");
+      }
+      if (options.deferTranscriptReconciliation) {
+        this.transcriptReconciliationPending = true;
+      }
       return this.startResult();
     }
     if (this.started) {
@@ -308,7 +344,7 @@ export class CodexManagedConversationSession {
       );
     }
     if (!this.startPromise) {
-      const startPromise = this.startInternal();
+      const startPromise = this.startInternal(options);
       this.startPromise = startPromise;
       const clearStartPromise = () => {
         if (this.startPromise === startPromise) {
@@ -320,18 +356,37 @@ export class CodexManagedConversationSession {
     return this.startPromise;
   }
 
-  private async startInternal(): Promise<CodexManagedConversationStartResult> {
+  private async startInternal(
+    options: CodexManagedConversationStartOptions
+  ): Promise<CodexManagedConversationStartResult> {
     const startedAt = performance.now();
     let stageStartedAt = startedAt;
     let stage: CodexConversationStartupTiming["stage"] = "prepare";
-    const reportStage = (status: CodexConversationStartupTiming["status"]) => {
+    let threadOpenInProgress = false;
+    const reportStage = (
+      status: CodexConversationStartupTiming["status"],
+      error?: unknown
+    ) => {
       const now = performance.now();
       try {
         this.config.onStartupTiming?.({
           stage,
           status,
           durationMs: Math.round(now - stageStartedAt),
-          elapsedMs: Math.round(now - startedAt)
+          elapsedMs: Math.round(now - startedAt),
+          ...(stage === "thread_open" &&
+          error instanceof CodexAppServerRequestError
+            ? {
+                providerRequestMethod: error.method,
+                ...(error.rpcCode !== undefined
+                  ? { providerRequestCode: error.rpcCode }
+                  : {}),
+                providerRequestMessage: error.message
+                  .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "[id]")
+                  .replace(/(?:\/[^\s:]+)+/g, "[path]")
+                  .slice(0, 240)
+              }
+            : {})
         });
       } catch {
         // Diagnostics must not change startup or recovery behavior.
@@ -340,6 +395,7 @@ export class CodexManagedConversationSession {
     const nextStage = (next: CodexConversationStartupTiming["stage"]) => {
       reportStage("completed");
       stage = next;
+      threadOpenInProgress = next === "thread_open";
       stageStartedAt = performance.now();
     };
     const previousThread = this.thread;
@@ -419,23 +475,48 @@ export class CodexManagedConversationSession {
         );
       }
       nextStage("thread_open");
-      let thread = resumeTarget
-        ? await client.resumeThread(
+      let thread;
+      if (resumeTarget) {
+        try {
+          thread = await client.resumeThread(
             resumeTarget.threadId,
             this.config.appServer
-          )
-        : forkTarget
-          ? await client.forkThread(
-              forkTarget.parentThreadId,
-              forkTarget.sourceTranscriptPath,
-              this.config.appServer
-            )
-          : await client.startThread(this.config.appServer, {
-              ephemeral: false,
-              historyMode: "legacy",
-              threadSource: "user",
-              minimalContext: false
-            });
+          );
+        } catch (error) {
+          const escapedThreadId = resumeTarget.threadId.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+          const archivedError =
+            error instanceof CodexAppServerRequestError &&
+            error.method === "thread/resume" &&
+            error.rpcCode === -32600 &&
+            new RegExp(`^session ${escapedThreadId} is archived(?:\\.|$)`).test(
+              error.message
+            );
+          if (!options.allowUnarchiveOnArchivedResume || !archivedError) {
+            throw error;
+          }
+          await client.unarchiveThread(resumeTarget.threadId);
+          thread = await client.resumeThread(
+            resumeTarget.threadId,
+            this.config.appServer
+          );
+        }
+      } else if (forkTarget) {
+        thread = await client.forkThread(
+          forkTarget.parentThreadId,
+          forkTarget.sourceTranscriptPath,
+          this.config.appServer
+        );
+      } else {
+        thread = await client.startThread(this.config.appServer, {
+          ephemeral: false,
+          historyMode: "legacy",
+          threadSource: "user",
+          minimalContext: false
+        });
+      }
       nextStage("event_flush");
       await client.flushRawEventHandler();
       thread = mergeStartedThreadInfo(thread, this.bufferedEvents);
@@ -544,14 +625,21 @@ export class CodexManagedConversationSession {
       }
       this.started = true;
       if (resumeTarget || forkTarget) {
-        nextStage("transcript_reconciliation");
-        await this.reconcileTranscript();
+        if (options.deferTranscriptReconciliation) {
+          this.transcriptReconciliationPending = true;
+        } else {
+          nextStage("transcript_reconciliation");
+          await this.reconcileTranscript();
+        }
       }
       this.throwIdentityIssues();
       reportStage("completed");
       return this.startResult();
-    } catch (error) {
-      reportStage("failed");
+    } catch (caughtError) {
+      const error = threadOpenInProgress
+        ? new CodexManagedConversationThreadOpenError(caughtError)
+        : caughtError;
+      reportStage("failed", caughtError);
       this.started = false;
       this.thread = previousThread;
       this.sessionId = previousSessionId;
@@ -590,10 +678,11 @@ export class CodexManagedConversationSession {
   async runTurn(
     prompt: string,
     timeoutMs: number,
-    clientUserMessageId?: string
+    clientUserMessageId?: string,
+    options: CodexManagedConversationRunOptions = {}
   ): Promise<CodexAppServerRunResult> {
     const operation = this.turnQueue.then(() =>
-      this.runTurnSerialized(prompt, timeoutMs, clientUserMessageId)
+      this.runTurnSerialized(prompt, timeoutMs, clientUserMessageId, options)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -619,9 +708,14 @@ export class CodexManagedConversationSession {
   private async runTurnSerialized(
     prompt: string,
     timeoutMs: number,
-    requestedClientUserMessageId?: string
+    requestedClientUserMessageId?: string,
+    options: CodexManagedConversationRunOptions = {}
   ): Promise<CodexAppServerRunResult> {
-    await this.start();
+    await this.start({
+      ...(options.allowUnarchiveOnArchivedResume
+        ? { allowUnarchiveOnArchivedResume: true }
+        : {})
+    });
     const client = this.appServerClient();
     const thread = this.thread!;
     await client.flushRawEventHandler();
@@ -649,6 +743,7 @@ export class CodexManagedConversationSession {
       }, effectiveTimeoutMs);
     });
     try {
+      options.onTurnStartAttempt?.();
       turnId = await Promise.race([
         client.startTurn(
           thread.id,
@@ -810,7 +905,28 @@ export class CodexManagedConversationSession {
   }
 
   async reconcileTranscript(): Promise<number> {
+    if (this.transcriptReconciliationPending) {
+      throw new Error("CodexTranscriptReconciliationPendingError");
+    }
     return this.reconcileTranscriptInternal(true);
+  }
+
+  async readAuthoritativeThreadHistory(): Promise<Record<string, unknown>> {
+    if (!this.started || !this.thread) {
+      throw new Error("CodexManagedConversationThreadNotStartedError");
+    }
+    return this.appServerClient().readThread(this.thread.id, true);
+  }
+
+  async completeDeferredTranscriptReconciliation(): Promise<number> {
+    if (!this.transcriptReconciliationPending) {
+      throw new Error("CodexTranscriptReconciliationNotPendingError");
+    }
+    await this.appServerClient().flushRawEventHandler();
+    await this.persistBufferedEvents();
+    const reconciled = await this.reconcileTranscriptInternal(true);
+    this.transcriptReconciliationPending = false;
+    return reconciled;
   }
 
   private async reconcileTranscriptInternal(
@@ -990,6 +1106,7 @@ export class CodexManagedConversationSession {
       }
     }
     if (
+      !this.transcriptReconciliationPending &&
       this.thread?.path &&
       this.sessionId &&
       fs.existsSync(this.thread.path)
@@ -1012,6 +1129,7 @@ export class CodexManagedConversationSession {
     }
     if (
       !closeError &&
+      !this.transcriptReconciliationPending &&
       this.thread?.path &&
       this.sessionId &&
       fs.existsSync(this.thread.path)

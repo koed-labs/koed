@@ -97,6 +97,10 @@ const writeManagedFakeAppServer = (
     primaryParentThreadId?: string;
     providerRequestKind?: "command_approval" | "user_input";
     requireExistingThreadOnResume?: boolean;
+    resumeRpcError?: { code: number; message: string };
+    archivedOnResume?: boolean;
+    unarchiveLifecyclePath?: string;
+    archivedThreadIdOverride?: string;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "managed-fake-app-server.mjs");
@@ -177,10 +181,15 @@ if (process.argv.includes("generate-json-schema")) {
   process.exit(0);
 }
 
-if (!process.argv.includes("app-server") || !process.argv.includes("stdio://")) process.exit(3);
 const transcriptPath = ${JSON.stringify(transcriptPath)};
 const childTranscriptPath = transcriptPath + ".child.jsonl";
 const options = ${JSON.stringify(options)};
+if (process.argv[2] === "unarchive") {
+  if (!options.unarchiveLifecyclePath || !process.argv[3]) process.exit(19);
+  fs.appendFileSync(options.unarchiveLifecyclePath, "unarchive:" + process.argv[3] + "\\n");
+  process.exit(0);
+}
+if (!process.argv.includes("app-server") || !process.argv.includes("stdio://")) process.exit(3);
 const threadId = "managed-thread-1";
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 const append = (records) => fs.appendFileSync(transcriptPath, records.map((record) => JSON.stringify(record)).join("\\n") + "\\n");
@@ -283,11 +292,20 @@ reader.on("line", (line) => {
     return;
   }
   if (message.method === "thread/resume") {
+    if (options.resumeRpcError) {
+      send({ id: message.id, error: options.resumeRpcError });
+      return;
+    }
     if (options.requireExistingThreadOnResume) {
       if (message.params.threadId !== threadId || !fs.existsSync(transcriptPath)) process.exit(17);
       const priorTranscript = fs.readFileSync(transcriptPath, "utf8");
       if (!priorTranscript.includes('"message":"First project prompt"')) process.exit(18);
       lifecycle("resume:" + JSON.stringify({ threadId: message.params.threadId, cwd: message.params.cwd }));
+    }
+    if (options.archivedOnResume && !fs.existsSync(options.unarchiveLifecyclePath)) {
+      const archivedThreadId = options.archivedThreadIdOverride ?? message.params.threadId;
+      send({ id: message.id, error: { code: -32600, message: "session " + archivedThreadId + " is archived. Run codex unarchive first." } });
+      return;
     }
     send({ id: message.id, result: { thread: { id: message.params.threadId, sessionId: "session-tree-1", path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     return;
@@ -929,6 +947,254 @@ describe("Codex managed conversation coordinator", () => {
       }
     }
   );
+
+  it("reports the safe JSON-RPC error for a failed resume request", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-resume-rpc-error-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const timings: CodexConversationStartupTiming[] = [];
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath,
+      {
+        resumeRpcError: {
+          code: -32001,
+          message:
+            "thread not found at /private/user/data/01a0e2bd-9952-7712-8033-afca14a53032"
+        }
+      }
+    );
+    const config = configFor(
+      new FakeMemoryClient(),
+      appServerBinary,
+      directory,
+      {
+        threadId: "01a0e2bd-9952-7712-8033-afca14a53032",
+        sessionId: "session-tree-1",
+        transcriptPath
+      }
+    );
+    config.onStartupTiming = (timing) => timings.push(timing);
+    const session = new CodexManagedConversationSession(config);
+
+    try {
+      await expect(session.start()).rejects.toMatchObject({
+        name: "ManagedConversationThreadOpenError",
+        message: "ManagedConversationThreadOpenError"
+      });
+      expect(timings.at(-1)).toMatchObject({
+        stage: "thread_open",
+        status: "failed",
+        providerRequestMethod: "thread/resume",
+        providerRequestCode: -32001,
+        providerRequestMessage: "thread not found at [path]"
+      });
+    } finally {
+      await session.closeAndWait();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { allowUnarchive: true, archivedThreadMatches: true, succeeds: true },
+    { allowUnarchive: false, archivedThreadMatches: true, succeeds: false },
+    { allowUnarchive: true, archivedThreadMatches: false, succeeds: false }
+  ])(
+    "unarchives only the explicitly resumed provider thread ($allowUnarchive, matching id: $archivedThreadMatches)",
+    async ({ allowUnarchive, archivedThreadMatches, succeeds }) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-managed-archived-resume-")
+      );
+      const transcriptPath = path.join(directory, "rollout.jsonl");
+      const lifecyclePath = path.join(directory, "unarchive.log");
+      const providerThreadId = "01a0e2bd-9952-7712-8033-afca14a53032";
+      const archivedThreadId = archivedThreadMatches
+        ? providerThreadId
+        : "02a0e2bd-9952-7712-8033-afca14a53032";
+      fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+      const appServerBinary = writeManagedFakeAppServer(
+        directory,
+        transcriptPath,
+        {
+          archivedOnResume: true,
+          archivedThreadIdOverride: archivedThreadId,
+          unarchiveLifecyclePath: lifecyclePath
+        }
+      );
+      const config = configFor(
+        new FakeMemoryClient(`koed-session:${providerThreadId}`),
+        appServerBinary,
+        directory,
+        {
+          threadId: providerThreadId,
+          sessionId: `koed-session:${providerThreadId}`,
+          transcriptPath
+        }
+      );
+      const session = new CodexManagedConversationSession(config);
+
+      try {
+        if (succeeds) {
+          await expect(
+            session.start({
+              allowUnarchiveOnArchivedResume: allowUnarchive
+            })
+          ).resolves.toMatchObject({
+            thread: { id: providerThreadId, path: transcriptPath },
+            sessionId: `koed-session:${providerThreadId}`
+          });
+          expect(fs.readFileSync(lifecyclePath, "utf8")).toBe(
+            `unarchive:${providerThreadId}\n`
+          );
+        } else {
+          await expect(
+            session.start({
+              allowUnarchiveOnArchivedResume: allowUnarchive
+            })
+          ).rejects.toMatchObject({
+            name: "ManagedConversationThreadOpenError"
+          });
+          expect(fs.existsSync(lifecyclePath)).toBe(false);
+        }
+      } finally {
+        await session.closeAndWait();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("scopes archived-thread unarchive permission to each start call", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-archived-per-call-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    const lifecyclePath = path.join(directory, "unarchive.log");
+    const providerThreadId = "01a0e2bd-9952-7712-8033-afca14a53032";
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath,
+      {
+        archivedOnResume: true,
+        unarchiveLifecyclePath: lifecyclePath
+      }
+    );
+    const createSession = () =>
+      new CodexManagedConversationSession(
+        configFor(
+          new FakeMemoryClient(`koed-session:${providerThreadId}`),
+          appServerBinary,
+          directory,
+          {
+            threadId: providerThreadId,
+            sessionId: `koed-session:${providerThreadId}`,
+            transcriptPath
+          }
+        )
+      );
+    const session = createSession();
+    let backgroundSession: CodexManagedConversationSession | undefined;
+
+    try {
+      await expect(session.start()).rejects.toMatchObject({
+        name: "ManagedConversationThreadOpenError"
+      });
+      expect(fs.existsSync(lifecyclePath)).toBe(false);
+
+      await expect(
+        session.start({ allowUnarchiveOnArchivedResume: true })
+      ).resolves.toMatchObject({
+        thread: { id: providerThreadId, path: transcriptPath },
+        sessionId: `koed-session:${providerThreadId}`
+      });
+      expect(fs.readFileSync(lifecyclePath, "utf8")).toBe(
+        `unarchive:${providerThreadId}\n`
+      );
+
+      await session.closeAndWait();
+      fs.rmSync(lifecyclePath, { force: true });
+      backgroundSession = createSession();
+      await expect(backgroundSession.start()).rejects.toMatchObject({
+        name: "ManagedConversationThreadOpenError"
+      });
+      expect(fs.existsSync(lifecyclePath)).toBe(false);
+    } finally {
+      await session.closeAndWait();
+      await backgroundSession?.closeAndWait();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("marks provider dispatch only after transcript preflight succeeds", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-turn-dispatch-boundary-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath
+    );
+    const memoryClient = new FakeMemoryClient();
+    const session = new CodexManagedConversationSession(
+      configFor(memoryClient, appServerBinary, directory)
+    );
+
+    try {
+      await session.start();
+      await session.runTurn("First turn", 2_000);
+      const original = fs.readFileSync(transcriptPath);
+      original[0] = original[0] === 0x5b ? 0x7b : 0x5b;
+      fs.writeFileSync(transcriptPath, original);
+      let dispatchAttempted = false;
+
+      await expect(
+        session.runTurn("Retry after preflight", 2_000, undefined, {
+          onTurnStartAttempt: () => {
+            dispatchAttempted = true;
+          }
+        })
+      ).rejects.toThrow("transcript_prefix_mutated");
+      expect(dispatchAttempted).toBe(false);
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the provider dispatch marker immediately before thread/turn/start", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-turn-dispatch-marker-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    const lifecyclePath = path.join(directory, "lifecycle.log");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath,
+      { lifecyclePath }
+    );
+    const session = new CodexManagedConversationSession(
+      configFor(new FakeMemoryClient(), appServerBinary, directory)
+    );
+
+    try {
+      await session.runTurn("Dispatch boundary", 2_000, undefined, {
+        onTurnStartAttempt: () =>
+          fs.appendFileSync(lifecyclePath, "dispatch-marker\n")
+      });
+      const lifecycle = fs.readFileSync(lifecyclePath, "utf8");
+      expect(lifecycle.indexOf("dispatch-marker\n")).toBeGreaterThanOrEqual(0);
+      expect(lifecycle.indexOf("dispatch-marker\n")).toBeLessThan(
+        lifecycle.indexOf("turn-accepted\n")
+      );
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it("batches startup capture without losing provider items or their order", async () => {
     const directory = fs.mkdtempSync(
@@ -2355,6 +2621,75 @@ describe("Codex managed conversation coordinator", () => {
         await resumed.closeAndWait();
       }
     } finally {
+      await first.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a deferred explicit source-recovery session unusable until reconciliation completes", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-deferred-source-recovery-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    const lifecyclePath = path.join(directory, "lifecycle.log");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      transcriptPath,
+      { lifecyclePath }
+    );
+    const first = new CodexManagedConversationSession(
+      configFor(memoryClient, appServerBinary, directory)
+    );
+    let resumed: CodexManagedConversationSession | undefined;
+
+    try {
+      const started = await first.start();
+      await first.runTurn("Original history", 2_000);
+      await first.start({ deferTranscriptReconciliation: true });
+      await expect(
+        first.runTurn("Cached session must wait for verification", 2_000)
+      ).rejects.toThrow("CodexTranscriptReconciliationPendingError");
+      expect(
+        fs.readFileSync(lifecyclePath, "utf8").match(/turn-accepted/g)
+      ).toHaveLength(1);
+      await first.closeAndWait();
+      const transcriptObservationCount = memoryClient.observations.filter(
+        (item) => item.sourceTransport === "transcript"
+      ).length;
+      const resumedConfig = configFor(
+        memoryClient,
+        appServerBinary,
+        directory,
+        {
+          threadId: started.thread.id,
+          sessionId: started.sessionId,
+          transcriptPath: started.transcriptPath,
+          codexHome: started.codexHome
+        }
+      );
+      resumedConfig.onStartupTiming = () => undefined;
+      resumed = new CodexManagedConversationSession(resumedConfig);
+
+      await resumed.start({ deferTranscriptReconciliation: true });
+      await expect(
+        resumed.runTurn("Must wait for verified recovery", 2_000)
+      ).rejects.toThrow("CodexTranscriptReconciliationPendingError");
+      expect(
+        fs.readFileSync(lifecyclePath, "utf8").match(/turn-accepted/g)
+      ).toHaveLength(1);
+      const changedPrefix = fs.readFileSync(transcriptPath);
+      changedPrefix[0] = changedPrefix[0] === 0x5b ? 0x7b : 0x5b;
+      fs.writeFileSync(transcriptPath, changedPrefix);
+      await resumed.closeAndWait();
+      expect(
+        memoryClient.observations.filter(
+          (item) => item.sourceTransport === "transcript"
+        )
+      ).toHaveLength(transcriptObservationCount);
+    } finally {
+      await resumed?.closeAndWait().catch(() => undefined);
       await first.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });
     }

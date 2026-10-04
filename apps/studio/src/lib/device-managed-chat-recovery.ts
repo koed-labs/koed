@@ -11,6 +11,7 @@ export type DeviceManagedChatPendingOperation = Readonly<{
   promptIdempotencyKey: string;
   clientUserMessageId: string;
   executionGeneration?: number;
+  resumeFromStopped?: true;
   prompt: string;
   selectedResourceIds?: readonly string[];
   requestFingerprint?: string;
@@ -286,6 +287,8 @@ export function parseRecoveryRecord(
           !Number.isSafeInteger(candidate.executionGeneration) ||
           candidate.executionGeneration < 0)) ||
       typeof candidate.prompt !== "string" ||
+      (candidate.resumeFromStopped !== undefined &&
+        candidate.resumeFromStopped !== true) ||
       (candidate.selectedResourceIds !== undefined &&
         (!Array.isArray(candidate.selectedResourceIds) ||
           candidate.selectedResourceIds.length > 8 ||
@@ -316,6 +319,9 @@ export function parseRecoveryRecord(
           ? { executionGeneration: candidate.executionGeneration }
           : {}),
         prompt: candidate.prompt,
+        ...(candidate.resumeFromStopped === true
+          ? { resumeFromStopped: true as const }
+          : {}),
         ...(Array.isArray(candidate.selectedResourceIds)
           ? { selectedResourceIds: candidate.selectedResourceIds as string[] }
           : {}),

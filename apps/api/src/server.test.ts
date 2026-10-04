@@ -4292,6 +4292,17 @@ const createFakeRepository = () => {
       aiClientInstances.set(key, instance);
       return instance;
     },
+    async setAiClientInstanceEnabled(actor, input) {
+      const instance = [...aiClientInstances.values()].find(
+        (candidate) =>
+          candidate.ownerUserId === actor.userId &&
+          (candidate.hostedInstanceId ?? candidate.instanceId) ===
+            input.hostedInstanceId
+      );
+      if (!instance) return null;
+      instance.enabled = input.enabled;
+      return instance;
+    },
     async recordAiClientCapabilitySnapshot(actor, input) {
       const snapshot: AiClientCapabilitySnapshotRecord = {
         id: randomUUID(),

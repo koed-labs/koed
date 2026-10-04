@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { createStudioChatRecoveryPreloadApi } from "./ipc/studio-chat-recovery-preload.js";
+import { createStudioPersonalCatalogCachePreloadApi } from "./ipc/studio-personal-catalog-cache-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import { createStudioNotificationsPreloadApi } from "./ipc/studio-notifications-preload.js";
@@ -66,6 +67,12 @@ contextBridge.exposeInMainWorld("koedDesktop", {
 contextBridge.exposeInMainWorld(
   "koedStudioChatRecovery",
   createStudioChatRecoveryPreloadApi((channel, value) =>
+    ipcRenderer.invoke(channel, value)
+  )
+);
+contextBridge.exposeInMainWorld(
+  "koedStudioPersonalCatalogCache",
+  createStudioPersonalCatalogCachePreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)
   )
 );

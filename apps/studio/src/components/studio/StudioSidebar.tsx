@@ -38,6 +38,15 @@ import {
 } from "./StudioSidebar.helpers";
 import { isSyntheticIndependentProject } from "./LocalConversationBrowser.match";
 import { useHomeFeed } from "@/lib/use-home-feed";
+import type { PersonalRemovalTarget } from "@/lib/personal-removals-client";
+import { usePersonalRemovals } from "./usePersonalRemovals";
+import { useVerifiedPersonalScope } from "./useVerifiedPersonalScope";
+import { PersonalRemovalControl } from "./PersonalRemovalControl";
+import {
+  hasConversationRemoval,
+  hasProjectRemoval,
+  managedConversationRemovalTarget
+} from "./personal-removals-view";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "koed:studio:sidebar-width";
 const isManagedExecution = (
@@ -88,9 +97,18 @@ type StudioSidebarProps = {
   ) => void;
   managedConversations?: HomeExecution[];
   managedSourceIds?: readonly string[];
+  personalScopeKey?: string | null;
   onSelectManagedExecution?: (executionId: string) => void;
   registeredProjectIds?: readonly string[];
   homeBadgeCount?: number;
+  personalRemovals?: PersonalRemovalTarget[];
+  personalRemovalsReady?: boolean;
+  personalRemovalError?: string | null;
+  onRetryPersonalRemovals?: () => void;
+  onRemovePersonalItem?: (target: PersonalRemovalTarget) => Promise<void>;
+  lastRemovedPersonalItem?: PersonalRemovalTarget | null;
+  onUndoPersonalRemoval?: () => Promise<void>;
+  managedProviderSourceIds?: Readonly<Record<string, readonly string[]>>;
 };
 const unavailable = "This destination will be connected in a later integration";
 
@@ -120,8 +138,30 @@ export function StudioSidebar({
   managedSourceIds = [],
   onSelectManagedExecution,
   registeredProjectIds = [],
-  homeBadgeCount: providedHomeBadgeCount
+  homeBadgeCount: providedHomeBadgeCount,
+  personalRemovals: suppliedPersonalRemovals,
+  personalRemovalsReady: suppliedPersonalRemovalsReady,
+  personalRemovalError: suppliedPersonalRemovalError,
+  onRetryPersonalRemovals: suppliedOnRetryPersonalRemovals,
+  onRemovePersonalItem: suppliedOnRemovePersonalItem,
+  lastRemovedPersonalItem: suppliedLastRemovedPersonalItem,
+  onUndoPersonalRemoval: suppliedOnUndoPersonalRemoval,
+  managedProviderSourceIds,
+  personalScopeKey: suppliedPersonalScopeKey
 }: StudioSidebarProps) {
+  const needsPersonalScope =
+    showLocalCatalog ||
+    projects.length > 0 ||
+    chats.length > 0 ||
+    managedConversations.length > 0;
+  const fallbackPersonalScopeKey = useVerifiedPersonalScope(
+    undefined,
+    suppliedPersonalScopeKey === undefined && needsPersonalScope
+  );
+  const personalScopeKey =
+    suppliedPersonalScopeKey === undefined
+      ? fallbackPersonalScopeKey
+      : suppliedPersonalScopeKey;
   const sidebarHomeFeed = useHomeFeed({
     transport: "studio",
     identityKey: providedHomeBadgeCount === undefined ? "personal" : null,
@@ -133,6 +173,46 @@ export function StudioSidebar({
   const capabilityFromGateway = useCanCreateLocalProject();
   const canCreateLocalProject =
     canCreateLocalProjectProp ?? capabilityFromGateway;
+  const hasProvidedRemovalState = suppliedPersonalRemovals !== undefined;
+  const fallbackRemovalEnabled =
+    !hasProvidedRemovalState &&
+    (showLocalCatalog ||
+      projects.length > 0 ||
+      chats.length > 0 ||
+      managedConversations.length > 0);
+  const fallbackRemovalState = usePersonalRemovals({
+    enabled: fallbackRemovalEnabled,
+    scopeKey: personalScopeKey
+  });
+  const personalRemovals =
+    suppliedPersonalRemovals ?? fallbackRemovalState.removals;
+  const personalRemovalsReady =
+    suppliedPersonalRemovalsReady ?? fallbackRemovalState.ready;
+  const personalRemovalError =
+    suppliedPersonalRemovalError ?? fallbackRemovalState.error;
+  const onRemovePersonalItem =
+    suppliedOnRemovePersonalItem ??
+    (fallbackRemovalEnabled
+      ? async (target: PersonalRemovalTarget) => {
+          if (target.kind === "project" && selectedProject === target.projectId)
+            onProjectSelect("");
+          await fallbackRemovalState.remove(target);
+        }
+      : undefined);
+  const lastRemovedPersonalItem = hasProvidedRemovalState
+    ? suppliedLastRemovedPersonalItem
+    : fallbackRemovalEnabled
+      ? fallbackRemovalState.lastRemoved
+      : null;
+  const onUndoPersonalRemoval =
+    suppliedOnUndoPersonalRemoval ??
+    (fallbackRemovalEnabled ? fallbackRemovalState.undoLast : undefined);
+  const onRetryPersonalRemovals =
+    suppliedPersonalRemovalsReady !== undefined
+      ? suppliedOnRetryPersonalRemovals
+      : fallbackRemovalEnabled
+        ? () => void fallbackRemovalState.load().catch(() => undefined)
+        : undefined;
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [projectSearchOpen, setProjectSearchOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
@@ -147,6 +227,11 @@ export function StudioSidebar({
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [undoPersonalRemovalPending, setUndoPersonalRemovalPending] =
+    useState(false);
+  const [undoPersonalRemovalError, setUndoPersonalRemovalError] = useState<
+    string | null
+  >(null);
   const navRef = useRef<HTMLElement>(null);
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(
     null
@@ -177,14 +262,22 @@ export function StudioSidebar({
   }, [projectSearchOpen]);
 
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
-  const filteredProjects = projects.filter(
-    (project) =>
-      !isSyntheticIndependentProject(project.id, project.name) &&
-      project.name.toLocaleLowerCase().includes(normalizedProjectSearch)
-  );
-  const activeManagedConversations = managedConversations.filter((chat) =>
-    ["running", "ready", "starting"].includes(chat.state.toLowerCase())
-  );
+  const filteredProjects = personalRemovalsReady
+    ? projects.filter(
+        (project) =>
+          !hasProjectRemoval(personalRemovals, project.id) &&
+          !isSyntheticIndependentProject(project.id, project.name) &&
+          project.name.toLocaleLowerCase().includes(normalizedProjectSearch)
+      )
+    : [];
+  const activeManagedConversations = personalRemovalsReady
+    ? managedConversations.filter(
+        (chat) =>
+          ["running", "ready", "starting"].includes(chat.state.toLowerCase()) &&
+          !hasProjectRemoval(personalRemovals, chat.projectId ?? "") &&
+          !hasConversationRemoval(personalRemovals, [`managed:${chat.id}`])
+      )
+    : [];
   const registeredProjectIdSet = new Set(registeredProjectIds);
   const managedByProject = new Map<string, HomeExecution[]>();
   for (const chat of activeManagedConversations) {
@@ -200,6 +293,40 @@ export function StudioSidebar({
       isSyntheticIndependentProject(chat.projectId) ||
       !registeredProjectIdSet.has(chat.projectId)
   );
+  const visibleSidebarChats = personalRemovalsReady
+    ? [
+        ...chats.filter(
+          (chat) =>
+            !managedConversations.some((managed) => managed.id === chat.id)
+        ),
+        ...standaloneManagedConversations
+      ].filter((chat) => {
+        const sourceId = isManagedExecution(chat)
+          ? `managed:${chat.id}`
+          : chat.id;
+        const projectId = isManagedExecution(chat) ? chat.projectId : null;
+        return (
+          !hasConversationRemoval(personalRemovals, [sourceId]) &&
+          !hasProjectRemoval(personalRemovals, projectId ?? "")
+        );
+      })
+    : [];
+  const undoPersonalRemoval = async () => {
+    if (!onUndoPersonalRemoval || undoPersonalRemovalPending) return;
+    setUndoPersonalRemovalPending(true);
+    setUndoPersonalRemovalError(null);
+    try {
+      await onUndoPersonalRemoval();
+    } catch (reason) {
+      setUndoPersonalRemovalError(
+        reason instanceof Error
+          ? reason.message
+          : "Undo could not be saved. Try again."
+      );
+    } finally {
+      setUndoPersonalRemovalPending(false);
+    }
+  };
   const acceptManagedDrop = (
     event: React.DragEvent<HTMLElement>,
     destinationProjectId: string
@@ -393,7 +520,8 @@ export function StudioSidebar({
             onClick={onHome}
             aria-label="Personal Workspace"
             title="Personal Workspace"
-            className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-surface-hover text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar transition-colors hover:bg-surface-active"
+            aria-current={!settingsMode ? "page" : undefined}
+            className={`relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors no-drag ${!settingsMode ? "bg-surface-hover text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar hover:bg-surface-active" : "text-muted hover:bg-surface-hover hover:text-foreground"}`}
           >
             <User className="h-5 w-5" />
             {homeBadgeCount > 0 && (
@@ -425,7 +553,7 @@ export function StudioSidebar({
               aria-label="Open workspace navigation"
               aria-controls="workspace-navigation"
               aria-expanded={false}
-              className="mt-3 flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-surface-hover hover:text-foreground"
+              className="mt-3 flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-surface-hover hover:text-foreground no-drag"
             >
               <PanelLeftOpen className="h-5 w-5" />
             </button>
@@ -435,8 +563,9 @@ export function StudioSidebar({
           <Tooltip content="Settings" side="right">
             <Link
               href="/settings"
+              aria-label="Settings"
               aria-current={settingsMode ? "page" : undefined}
-              className={`flex h-10 w-10 items-center justify-center rounded-xl ${settingsMode ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface-hover hover:text-foreground"}`}
+              className={`flex h-10 w-10 items-center justify-center rounded-xl no-drag ${settingsMode ? "bg-surface-hover text-foreground ring-2 ring-accent ring-offset-2 ring-offset-sidebar" : "text-muted hover:bg-surface-hover hover:text-foreground"}`}
             >
               <Settings className="h-5 w-5" />
             </Link>
@@ -639,6 +768,11 @@ export function StudioSidebar({
                     <LocalConversationBrowser
                       onNavigateAway={closeMobileNavigation}
                       onSourceSelect={onLocalSourceSelect}
+                      onProjectSelect={
+                        activeSection === "new-chat"
+                          ? onProjectSelect
+                          : undefined
+                      }
                       canShareSource={canShareLocalSource}
                       onShareSource={onShareLocalSource}
                       canShareManagedExecution={canShareManagedExecution}
@@ -647,12 +781,67 @@ export function StudioSidebar({
                       onSelectManagedExecution={onSelectManagedExecution}
                       managedConversations={managedConversations}
                       managedSourceIds={managedSourceIds}
+                      personalRemovals={personalRemovals}
+                      personalRemovalsReady={personalRemovalsReady}
+                      personalRemovalError={personalRemovalError}
+                      onRetryPersonalRemovals={onRetryPersonalRemovals}
+                      onRemovePersonalItem={onRemovePersonalItem}
+                      lastRemovedPersonalItem={lastRemovedPersonalItem}
+                      onUndoPersonalRemoval={onUndoPersonalRemoval}
+                      managedProviderSourceIds={managedProviderSourceIds}
+                      personalScopeKey={personalScopeKey}
                       onNewProject={openNewProject}
                       canCreateProject={canCreateLocalProject}
                     />
                   </div>
                 ) : (
                   <>
+                    {!personalRemovalsReady ? (
+                      <div
+                        role={personalRemovalError ? "alert" : "status"}
+                        className="mx-3 mt-3 rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted no-drag"
+                      >
+                        <p>
+                          {personalRemovalError
+                            ? "Your Personal Studio list is unavailable, so saved removals cannot be applied."
+                            : "Loading your Personal Studio list…"}
+                        </p>
+                        {personalRemovalError && onRetryPersonalRemovals ? (
+                          <button
+                            type="button"
+                            onClick={onRetryPersonalRemovals}
+                            className="mt-2 font-medium text-foreground-secondary hover:text-foreground"
+                          >
+                            Retry
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {lastRemovedPersonalItem && personalRemovalsReady ? (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        className="mx-3 mt-3 flex items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-2 text-xs text-muted no-drag"
+                      >
+                        <span>
+                          Removed from Studio. Files and history are still
+                          available.
+                        </span>
+                        <button
+                          type="button"
+                          disabled={undoPersonalRemovalPending}
+                          onClick={() => void undoPersonalRemoval()}
+                          className="shrink-0 rounded px-1.5 py-1 font-medium text-foreground-secondary hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+                        >
+                          {undoPersonalRemovalPending ? "Restoring…" : "Undo"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {lastRemovedPersonalItem && undoPersonalRemovalError ? (
+                      <p role="alert" className="mx-3 mt-2 text-xs text-danger">
+                        {undoPersonalRemovalError}
+                      </p>
+                    ) : null}
                     <div className="mt-4 flex items-center justify-between px-4 py-1.5 no-drag">
                       <button
                         type="button"
@@ -733,6 +922,7 @@ export function StudioSidebar({
                     )}
                     <div className="flex-1 overflow-y-auto px-2 pt-0.5 pb-2 no-drag">
                       {projectsExpanded &&
+                        personalRemovalsReady &&
                         (filteredProjects.length === 0 ? (
                           <p className="px-2 py-2 text-xs text-subtle">
                             {projects.length === 0
@@ -741,71 +931,107 @@ export function StudioSidebar({
                           </p>
                         ) : (
                           filteredProjects.map((project) => (
-                            <div key={project.id}>
-                              <button
-                                type="button"
-                                aria-pressed={selectedProject === project.id}
-                                title={project.id}
-                                onDragOver={(event) => {
-                                  if (
-                                    /^lp_[0-9a-f]{32}$/iu.test(project.id) &&
-                                    registeredProjectIdSet.has(project.id) &&
-                                    Array.from(
-                                      event.dataTransfer.types
-                                    ).includes(
-                                      "application/x-koed-managed-execution"
+                            <div key={project.id} className="group">
+                              <div className="flex items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  aria-pressed={selectedProject === project.id}
+                                  title={project.id}
+                                  onDragOver={(event) => {
+                                    if (
+                                      /^lp_[0-9a-f]{32}$/iu.test(project.id) &&
+                                      registeredProjectIdSet.has(project.id) &&
+                                      Array.from(
+                                        event.dataTransfer.types
+                                      ).includes(
+                                        "application/x-koed-managed-execution"
+                                      )
                                     )
-                                  )
-                                    event.preventDefault();
-                                }}
-                                onDrop={(event) =>
-                                  acceptManagedDrop(event, project.id)
-                                }
-                                onClick={() => {
-                                  onProjectSelect(
-                                    selectedProject === project.id
-                                      ? ""
-                                      : project.id
-                                  );
-                                  closeMobileNavigation();
-                                }}
-                                className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm ${selectedProject === project.id ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"}`}
-                              >
-                                <Folder className="mr-2 h-3.5 w-3.5" />
-                                {project.name}
-                              </button>
+                                      event.preventDefault();
+                                  }}
+                                  onDrop={(event) =>
+                                    acceptManagedDrop(event, project.id)
+                                  }
+                                  onClick={() => {
+                                    onProjectSelect(
+                                      selectedProject === project.id
+                                        ? ""
+                                        : project.id
+                                    );
+                                    closeMobileNavigation();
+                                  }}
+                                  className={`flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm ${selectedProject === project.id ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"}`}
+                                >
+                                  <Folder className="mr-2 h-3.5 w-3.5" />
+                                  {project.name}
+                                </button>
+                                {onRemovePersonalItem ? (
+                                  <PersonalRemovalControl
+                                    kind="project"
+                                    name={project.name}
+                                    onRemove={() =>
+                                      onRemovePersonalItem({
+                                        kind: "project",
+                                        projectId: project.id
+                                      })
+                                    }
+                                  />
+                                ) : null}
+                              </div>
                               {(managedByProject.get(project.id) ?? []).map(
                                 (chat) => (
-                                  <button
+                                  <div
                                     key={chat.id}
-                                    type="button"
-                                    draggable={
-                                      chat.provider === "codex" &&
-                                      chat.state.toLowerCase() === "running"
-                                    }
-                                    onDragStart={(event) => {
-                                      if (
-                                        chat.provider !== "codex" ||
-                                        chat.state.toLowerCase() !== "running"
-                                      )
-                                        return;
-                                      event.dataTransfer.setData(
-                                        "application/x-koed-managed-execution",
-                                        chat.id
-                                      );
-                                      event.dataTransfer.effectAllowed = "move";
-                                    }}
-                                    onClick={() => {
-                                      onChatSelect?.(chat.id);
-                                      closeMobileNavigation();
-                                    }}
-                                    className="flex w-full items-center rounded-md py-1.5 pl-7 pr-2 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+                                    className="group flex items-center gap-0.5"
                                   >
-                                    <MessageSquare className="mr-2 h-3 w-3 shrink-0" />
-                                    <span className="truncate">
-                                      {chat.title}
-                                    </span>
-                                  </button>
+                                    <button
+                                      type="button"
+                                      draggable={
+                                        chat.provider === "codex" &&
+                                        chat.state.toLowerCase() === "running"
+                                      }
+                                      onDragStart={(event) => {
+                                        if (
+                                          chat.provider !== "codex" ||
+                                          chat.state.toLowerCase() !== "running"
+                                        )
+                                          return;
+                                        event.dataTransfer.setData(
+                                          "application/x-koed-managed-execution",
+                                          chat.id
+                                        );
+                                        event.dataTransfer.effectAllowed =
+                                          "move";
+                                      }}
+                                      onClick={() => {
+                                        onChatSelect?.(chat.id);
+                                        closeMobileNavigation();
+                                      }}
+                                      className="flex min-w-0 flex-1 items-center rounded-md py-1.5 pl-7 pr-2 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+                                    >
+                                      <MessageSquare className="mr-2 h-3 w-3 shrink-0" />
+                                      <span className="truncate">
+                                        {chat.title}
+                                      </span>
+                                    </button>
+                                    {onRemovePersonalItem ? (
+                                      <PersonalRemovalControl
+                                        kind="conversation"
+                                        name={chat.title}
+                                        onRemove={() =>
+                                          onRemovePersonalItem(
+                                            managedConversationRemovalTarget({
+                                              executionId: chat.id,
+                                              providerSourceIds:
+                                                managedProviderSourceIds?.[
+                                                  chat.id
+                                                ]
+                                            })
+                                          )
+                                        }
+                                      />
+                                    ) : null}
+                                  </div>
                                 )
                               )}
                             </div>
@@ -825,52 +1051,69 @@ export function StudioSidebar({
                           )}
                         </button>
                         {chatsExpanded &&
-                          (chats.length +
-                            standaloneManagedConversations.length ===
-                          0 ? (
+                          personalRemovalsReady &&
+                          (visibleSidebarChats.length === 0 ? (
                             <p className="px-2 py-2 text-xs text-subtle">
                               No active chats are connected.
                             </p>
                           ) : (
-                            [
-                              ...chats.filter(
-                                (chat) =>
-                                  !activeManagedConversations.some(
-                                    (managed) => managed.id === chat.id
-                                  )
-                              ),
-                              ...standaloneManagedConversations
-                            ].map((chat) => (
-                              <button
+                            visibleSidebarChats.map((chat) => (
+                              <div
                                 key={chat.id}
-                                type="button"
-                                draggable={
-                                  isManagedExecution(chat) &&
-                                  chat.provider === "codex" &&
-                                  chat.state.toLowerCase() === "running"
-                                }
-                                onDragStart={(event) => {
-                                  if (
-                                    !isManagedExecution(chat) ||
-                                    chat.provider !== "codex" ||
-                                    chat.state.toLowerCase() !== "running"
-                                  )
-                                    return;
-                                  event.dataTransfer.setData(
-                                    "application/x-koed-managed-execution",
-                                    chat.id
-                                  );
-                                  event.dataTransfer.effectAllowed = "move";
-                                }}
-                                onClick={() => {
-                                  onChatSelect?.(chat.id);
-                                  closeMobileNavigation();
-                                }}
-                                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+                                className="group flex items-center gap-0.5"
                               >
-                                <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
-                                <span className="truncate">{chat.title}</span>
-                              </button>
+                                <button
+                                  type="button"
+                                  draggable={
+                                    isManagedExecution(chat) &&
+                                    chat.provider === "codex" &&
+                                    chat.state.toLowerCase() === "running"
+                                  }
+                                  onDragStart={(event) => {
+                                    if (
+                                      !isManagedExecution(chat) ||
+                                      chat.provider !== "codex" ||
+                                      chat.state.toLowerCase() !== "running"
+                                    )
+                                      return;
+                                    event.dataTransfer.setData(
+                                      "application/x-koed-managed-execution",
+                                      chat.id
+                                    );
+                                    event.dataTransfer.effectAllowed = "move";
+                                  }}
+                                  onClick={() => {
+                                    onChatSelect?.(chat.id);
+                                    closeMobileNavigation();
+                                  }}
+                                  className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+                                >
+                                  <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">{chat.title}</span>
+                                </button>
+                                {onRemovePersonalItem ? (
+                                  <PersonalRemovalControl
+                                    kind="conversation"
+                                    name={chat.title}
+                                    onRemove={() =>
+                                      onRemovePersonalItem(
+                                        isManagedExecution(chat)
+                                          ? managedConversationRemovalTarget({
+                                              executionId: chat.id,
+                                              providerSourceIds:
+                                                managedProviderSourceIds?.[
+                                                  chat.id
+                                                ]
+                                            })
+                                          : {
+                                              kind: "conversation",
+                                              sourceId: chat.id
+                                            }
+                                      )
+                                    }
+                                  />
+                                ) : null}
+                              </div>
                             ))
                           ))}
                       </div>

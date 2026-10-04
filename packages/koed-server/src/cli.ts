@@ -11,7 +11,7 @@ import {
   realpathSync,
   writeFileSync
 } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
 import { capSupervisorLog } from "./supervisor-log.js";
@@ -307,6 +307,23 @@ const requireFlagValue = (args: string[], name: string): string => {
     throw new Error(`${name} is required.`);
   }
   return value;
+};
+
+const optionalAbsolutePathFlag = (
+  args: string[],
+  name: string
+): string | undefined => {
+  const index = args.indexOf(name);
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  const path = value?.trim();
+  if (!path || path.startsWith("--")) {
+    throw new Error(`${name} requires a path.`);
+  }
+  if (!isAbsolute(path)) {
+    throw new Error(`${name} must be an absolute path.`);
+  }
+  return path;
 };
 
 const packageTrustPolicy = (
@@ -634,6 +651,18 @@ export const runKoedServerCli = async (
   const modelKind = (
     kindFlagIndex >= 0 ? args[kindFlagIndex + 1] : "embedding"
   ) as LocalModelKind | "privacy" | undefined;
+  const setupClaudeFromArgs = (operationArgs: string[]) => {
+    const executablePath = optionalAbsolutePathFlag(
+      operationArgs,
+      "--executable"
+    );
+    return executablePath
+      ? setupClaudeIntegration({
+          ...process.env,
+          KOED_CLAUDE_CODE_EXECUTABLE: executablePath
+        })
+      : setupClaudeIntegration();
+  };
 
   try {
     if (wantsHelp || !command) {
@@ -879,7 +908,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = setupClaudeIntegration();
+      const result = setupClaudeFromArgs(args);
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -941,7 +970,7 @@ export const runKoedServerCli = async (
         subcommand === "codex"
           ? repairCodex()
           : subcommand === "claude"
-            ? setupClaudeIntegration()
+            ? setupClaudeFromArgs(args)
             : subcommand === "pi"
               ? setupPiIntegration()
               : null;

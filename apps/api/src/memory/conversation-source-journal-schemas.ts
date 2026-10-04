@@ -193,6 +193,117 @@ export const conversationSourceSuccessorGenerationSchema = z
   })
   .strict();
 
+export const conversationSourceRebaseSuccessorSchema = z
+  .object({
+    expectedParentFrontier: z
+      .object({
+        sourceGenerationId: z.string().uuid(),
+        providerCursorOffset: boundedOffset,
+        providerCursorLine: boundedLine,
+        lastSegmentDigest: digest.nullable()
+      })
+      .strict(),
+    successor: z
+      .object({
+        sourceGenerationId: z.string().uuid(),
+        sourceFrontier: z
+          .object({
+            offset: boundedOffset,
+            line: boundedLine,
+            fileSize: boundedOffset,
+            prefixSha256: digest,
+            modifiedAt: z.string().datetime({ offset: true })
+          })
+          .strict()
+      })
+      .strict(),
+    commandProof: z
+      .object({
+        executionId: z.string().uuid(),
+        executionGeneration: z.number().int().positive(),
+        commandId: z.string().uuid(),
+        clientUserMessageId: z.string().uuid(),
+        providerThreadId: z.string().min(1).max(512),
+        providerHistorySha256: digest,
+        canonicalHistorySha256: digest,
+        turnIds: z.array(z.string().uuid()).min(1).max(10000),
+        turnCount: z.number().int().positive().max(10000),
+        messageCount: z.number().int().positive().max(100000),
+        messages: z
+          .array(
+            z.discriminatedUnion("kind", [
+              z
+                .object({
+                  kind: z.literal("user"),
+                  clientUserMessageId: z.string().uuid(),
+                  turnId: z.string().uuid(),
+                  textSha256: digest
+                })
+                .strict(),
+              z
+                .object({
+                  kind: z.literal("assistant"),
+                  turnId: z.string().uuid(),
+                  textSha256: digest
+                })
+                .strict()
+            ])
+          )
+          .min(1)
+          .max(100000),
+        terminal: z.literal(true),
+        targetPromptAbsent: z.literal(true)
+      })
+      .strict()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.successor.sourceFrontier.offset !==
+      value.successor.sourceFrontier.fileSize
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["successor", "sourceFrontier", "offset"],
+        message: "A source rebase must start at the verified end of the file"
+      });
+    }
+    if (
+      value.commandProof.turnCount !== value.commandProof.turnIds.length ||
+      new Set(value.commandProof.turnIds).size !==
+        value.commandProof.turnIds.length ||
+      value.commandProof.messageCount < value.commandProof.turnCount ||
+      value.commandProof.messageCount !== value.commandProof.messages.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["commandProof"],
+        message: "Conversation source history proof counts are inconsistent"
+      });
+    }
+    const userIds = value.commandProof.messages
+      .filter((message) => message.kind === "user")
+      .map((message) => message.clientUserMessageId);
+    const messageKeys = value.commandProof.messages.map((message) =>
+      message.kind === "user"
+        ? `user:${message.clientUserMessageId}`
+        : `assistant:${message.turnId}:${message.textSha256}`
+    );
+    if (
+      userIds.length === 0 ||
+      userIds.includes(value.commandProof.clientUserMessageId) ||
+      new Set(userIds).size !== userIds.length ||
+      new Set(messageKeys).size !== messageKeys.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["commandProof", "messages"],
+        message:
+          "Conversation source history identities are not unique or exclude the target prompt"
+      });
+    }
+  });
+
 export const conversationSourceCursorSchema = z
   .object({
     consumerKind: z.enum([

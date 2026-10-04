@@ -20,6 +20,7 @@ import {
   capturePolicies,
   deviceCredentials,
   localMemoryAgentSettings,
+  personalStudioRemovals,
   sessions
 } from "./schema.js";
 import type {
@@ -33,6 +34,7 @@ import type {
   EffectiveCapturePolicy,
   LocalMemoryAgentSettingRecord,
   LocalMemoryAgentSettingsFlowKey,
+  PersonalStudioRemovalRecord,
   UpsertCapturePolicyInput,
   Visibility
 } from "./types.js";
@@ -243,6 +245,58 @@ const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
 });
 
 export const createSettingsRepository = (db: KoedDb) => ({
+  async listPersonalStudioRemovals(
+    actor: ActorContext
+  ): Promise<PersonalStudioRemovalRecord[]> {
+    const rows = await db
+      .select()
+      .from(personalStudioRemovals)
+      .where(eq(personalStudioRemovals.ownerUserId, actor.userId))
+      .orderBy(
+        asc(personalStudioRemovals.targetKind),
+        asc(personalStudioRemovals.targetId)
+      );
+    return rows.map((row) => ({
+      kind: row.targetKind as PersonalStudioRemovalRecord["kind"],
+      id: row.targetId,
+      aliases: row.aliases
+    }));
+  },
+
+  async setPersonalStudioRemoval(
+    actor: ActorContext,
+    input: PersonalStudioRemovalRecord & { removed: boolean }
+  ): Promise<void> {
+    if (!input.removed) {
+      await db
+        .delete(personalStudioRemovals)
+        .where(
+          and(
+            eq(personalStudioRemovals.ownerUserId, actor.userId),
+            eq(personalStudioRemovals.targetKind, input.kind),
+            eq(personalStudioRemovals.targetId, input.id)
+          )
+        );
+      return;
+    }
+    await db
+      .insert(personalStudioRemovals)
+      .values({
+        ownerUserId: actor.userId,
+        targetKind: input.kind,
+        targetId: input.id,
+        aliases: input.aliases
+      })
+      .onConflictDoUpdate({
+        target: [
+          personalStudioRemovals.ownerUserId,
+          personalStudioRemovals.targetKind,
+          personalStudioRemovals.targetId
+        ],
+        set: { aliases: input.aliases, removedAt: new Date() }
+      });
+  },
+
   async listAiClientInstances(
     actor: ActorContext
   ): Promise<AiClientInstanceRecord[]> {
@@ -313,6 +367,46 @@ export const createSettingsRepository = (db: KoedDb) => ({
       })
       .returning();
     return mapAiClientInstanceRecord(row!);
+  },
+
+  async setAiClientInstanceEnabled(
+    actor: ActorContext,
+    input: { hostedInstanceId: string; enabled: boolean }
+  ): Promise<AiClientInstanceRecord | null> {
+    const matches = await db
+      .select()
+      .from(aiClientInstances)
+      .where(
+        and(
+          eq(aiClientInstances.ownerUserId, actor.userId),
+          activeAiClientDeviceSource(
+            db,
+            aiClientInstances.ownerUserId,
+            aiClientInstances.sourceDeviceCredentialId
+          )
+        )
+      );
+    const target = matches.find(
+      (row) =>
+        hostedInstanceIdFor(row.instanceId, row.sourceDeviceCredentialId) ===
+        input.hostedInstanceId
+    );
+    if (!target) return null;
+    const [updated] = await db
+      .update(aiClientInstances)
+      .set({ enabled: input.enabled, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(aiClientInstances.ownerUserId, actor.userId),
+          eq(aiClientInstances.instanceId, target.instanceId),
+          eq(
+            aiClientInstances.sourceDeviceCredentialId,
+            target.sourceDeviceCredentialId
+          )
+        )
+      )
+      .returning();
+    return updated ? mapAiClientInstanceRecord(updated) : null;
   },
 
   async recordAiClientCapabilitySnapshot(
@@ -468,7 +562,8 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const now = Date.now();
     return latest
       .filter(
-        (row) => options.includeExpired === true || row.expiresAt.getTime() > now
+        (row) =>
+          options.includeExpired === true || row.expiresAt.getTime() > now
       )
       .map(mapAiClientCapabilitySnapshotRecord);
   },

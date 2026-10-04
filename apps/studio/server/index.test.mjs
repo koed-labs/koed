@@ -98,6 +98,46 @@ describe("Studio Home gateway", () => {
     staticDir = undefined;
   });
 
+  it("verifies Personal cache scope without reading the conversation catalog", async () => {
+    staticDir = await mkdtemp(join(tmpdir(), "koed-studio-scope-test-"));
+    await writeFile(join(staticDir, "index.html"), "Studio");
+    const calls = [];
+    let owner = "first-owner";
+    started = await startStudioServer({
+      port: 0,
+      staticDir,
+      resolveAccess: async () => ({
+        apiOrigin: "http://127.0.0.1:59451",
+        apiToken: "private-scope-token"
+      }),
+      fetchImpl: async (url, init) => {
+        calls.push(new URL(url).pathname);
+        assert.equal(init.headers.authorization, "Bearer private-scope-token");
+        return owner
+          ? response({ user: { id: owner } })
+          : response({ error: "unauthorized" }, 401);
+      }
+    });
+    const url = `${started.url}/studio-api/personal-scope`;
+    const first = await get(url);
+    assert.equal(first.status, 200);
+    assert.deepEqual(JSON.parse(first.body), {
+      scopeKey: "http://127.0.0.1:59451|first-owner"
+    });
+    assert.equal(first.body.includes("private-scope-token"), false);
+    owner = "second-owner";
+    assert.deepEqual(JSON.parse((await get(url)).body), {
+      scopeKey: "http://127.0.0.1:59451|second-owner"
+    });
+    owner = "";
+    const denied = await get(url);
+    assert.equal(denied.status, 401);
+    assert.equal(denied.body.includes("first-owner"), false);
+    assert.equal((await get(`${url}?owner=first-owner`)).status, 400);
+    assert.equal((await get(url, {}, "POST")).status, 405);
+    assert.deepEqual(calls, Array(3).fill("/v1/managed-conversations/access"));
+  });
+
   it("returns an honest empty Personal snapshot without leaking the token", async () => {
     const snapshot = await readHomeSnapshot({
       fetchImpl: homeFetch({ executions: [], threads: [] }),
@@ -205,6 +245,45 @@ describe("Studio Home gateway", () => {
     assert.deepEqual(
       snapshot.requests.map((item) => item.id),
       ["pending-approval", "pending-file"]
+    );
+  });
+
+  it("reports turn activity from the latest command lease, not execution lifecycle", async () => {
+    const activity = async (latestCommand) => {
+      const snapshot = await readHomeSnapshot({
+        fetchImpl: homeFetch({ runtime: { latestCommand, items: [] } }),
+        token: "test-secret"
+      });
+      return snapshot.executions[0]?.activity;
+    };
+
+    assert.equal(
+      await activity({ commandKind: "prompt", state: "completed" }),
+      "idle"
+    );
+    assert.equal(
+      await activity({ commandKind: "respond", state: "completed" }),
+      "unknown"
+    );
+    assert.equal(
+      await activity({
+        commandKind: "prompt",
+        state: "dispatching",
+        leaseActive: true
+      }),
+      "running"
+    );
+    assert.equal(
+      await activity({ commandKind: "prompt", state: "queued" }),
+      "pending"
+    );
+    assert.equal(
+      await activity({
+        commandKind: "prompt",
+        state: "dispatching",
+        leaseActive: false
+      }),
+      "uncertain"
     );
   });
 
@@ -783,6 +862,22 @@ describe("Studio Home gateway", () => {
     ]);
     assert.equal(JSON.parse(listed.body).items[0].sourceId, "codex:old");
     assert.equal(
+      (await get(`${started.url}/studio-api/local-conversations?refresh=1`))
+        .status,
+      200
+    );
+    assert.deepEqual(calls[1], {
+      limit: 50,
+      cursor: undefined,
+      provider: undefined,
+      refresh: true
+    });
+    assert.equal(
+      (await get(`${started.url}/studio-api/local-conversations?refresh=0`))
+        .status,
+      400
+    );
+    assert.equal(
       (await get(`${started.url}/studio-api/local-conversations?limit=101`))
         .status,
       400
@@ -800,7 +895,7 @@ describe("Studio Home gateway", () => {
         .status,
       405
     );
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
   });
 
   it("serves local Projects and conversation summaries when Koed is offline, then recovers Home", async () => {
@@ -1140,7 +1235,11 @@ describe("Studio Home gateway", () => {
     });
 
     assert.equal((await get(`${started.url}/`)).body, "Studio is ready");
-    assert.equal(requests.length, 0, "static routes do not require backend access");
+    assert.equal(
+      requests.length,
+      0,
+      "static routes do not require backend access"
+    );
 
     const unavailable = await get(
       `${started.url}/studio-api/managed-conversations`
@@ -1166,6 +1265,10 @@ describe("Studio Home gateway", () => {
       `${started.url}/studio-api/managed-conversations`
     );
     assert.equal(invalid.status, 503);
-    assert.equal(requests.length, 1, "invalid origins must not receive the token");
+    assert.equal(
+      requests.length,
+      1,
+      "invalid origins must not receive the token"
+    );
   });
 });

@@ -11,9 +11,12 @@ import {
 export async function assertManagedConversationTurnSettings(
   repository: Pick<
     MemorySourceRepository,
-    "listAiClientInstances" | "listCurrentAiClientCapabilitySnapshots"
+    | "listAiClientInstances"
+    | "listCurrentAiClientCapabilitySnapshots"
+    | "listDeviceCredentials"
   >,
-  execution: ManagedConversationExecutionRecord
+  execution: ManagedConversationExecutionRecord,
+  runner: { deviceId: string; deploymentId: string }
 ): Promise<void> {
   const [instances, snapshots] = await Promise.all([
     repository.listAiClientInstances({ userId: execution.ownerUserId }),
@@ -21,12 +24,44 @@ export async function assertManagedConversationTurnSettings(
       userId: execution.ownerUserId
     })
   ]);
-  const instance = instances.find(
-    (item) => item.instanceId === execution.aiClientInstanceId
-  );
-  const snapshot = snapshots.find(
-    (item) => item.instanceId === execution.aiClientInstanceId
-  );
+  const runnerMatchesExecution =
+    execution.runnerDeviceId === runner.deviceId &&
+    execution.runnerDeploymentId === runner.deploymentId;
+  const candidates = runnerMatchesExecution
+    ? instances.filter(
+        (item) =>
+          item.instanceId === execution.aiClientInstanceId &&
+          item.driverId === execution.provider
+      )
+    : [];
+  let matchingInstances = candidates;
+  if (candidates.length > 1) {
+    const credentials = await repository.listDeviceCredentials({
+      userId: execution.ownerUserId
+    });
+    matchingInstances = candidates.filter((candidate) => {
+      if (candidate.sourceDeviceCredentialId === null) return true;
+      const credential = credentials.find(
+        (item) => item.id === candidate.sourceDeviceCredentialId
+      );
+      return (
+        credential?.deviceInstanceId === runner.deviceId &&
+        credential.metadata.protocolDeploymentId === runner.deploymentId &&
+        credential.revokedAt === null &&
+        (credential.expiresAt === null ||
+          Date.parse(credential.expiresAt) > Date.now())
+      );
+    });
+  }
+  const instance = matchingInstances.length === 1 ? matchingInstances[0] : null;
+  const matchingSnapshots = instance
+    ? snapshots.filter(
+        (item) =>
+          item.instanceId === execution.aiClientInstanceId &&
+          item.hostedInstanceId === instance.hostedInstanceId
+      )
+    : [];
+  const snapshot = matchingSnapshots.length === 1 ? matchingSnapshots[0] : null;
   const descriptors = snapshot?.capabilities?.descriptors;
   const descriptor =
     descriptors && typeof descriptors === "object"

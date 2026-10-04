@@ -79,6 +79,28 @@ test("uncertain publication outcomes fail closed for reconciliation", async () =
   );
 });
 
+test("a stalled GitHub operation request has a bounded, recognizable outcome", async () => {
+  const observed: { signal?: AbortSignal } = {};
+  const client = createPullRequestsClient({
+    hosted: true,
+    requestTimeoutMs: 5,
+    fetcher: async (_input, init) => {
+      observed.signal = init?.signal ?? undefined;
+      return await new Promise<Response>(() => {});
+    }
+  });
+
+  await assert.rejects(
+    client.runOperation({ kind: "accounts" }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message ===
+        "The GitHub request timed out. Refresh status before trying again." &&
+      (error as { code?: string }).code === "pull_request_request_timeout"
+  );
+  assert.equal(observed.signal?.aborted, true);
+});
+
 test("review recovery can query the selected repository and PR instead of the latest global page", async () => {
   const calls: string[] = [];
   const client = createPullRequestsClient({

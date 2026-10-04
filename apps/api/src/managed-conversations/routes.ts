@@ -392,6 +392,7 @@ const cleanupExecutionSchema = z
 const promptSchema = z
   .object({
     executionGeneration: z.number().int().safe().positive(),
+    resumeFromStopped: z.literal(true).optional(),
     idempotencyKey: idempotencyKeySchema,
     clientUserMessageId: z.uuid(),
     prompt: z.string().trim().min(1).max(256_000),
@@ -3393,6 +3394,9 @@ export const registerManagedConversationRoutes = (
         {
           executionId,
           executionGeneration: input.executionGeneration,
+          ...(input.resumeFromStopped
+            ? { resumeFromStopped: true as const }
+            : {}),
           idempotencyKey: input.idempotencyKey,
           clientUserMessageId: input.clientUserMessageId,
           prompt,
@@ -4892,6 +4896,11 @@ export const registerManagedConversationRoutes = (
               commandKind: latestCommand.commandKind,
               clientUserMessageId: latestCommand.clientUserMessageId,
               state: latestCommand.state,
+              leaseActive: Boolean(
+                latestCommand.state === "dispatching" &&
+                latestCommand.leaseExpiresAt &&
+                Date.parse(latestCommand.leaseExpiresAt) > Date.now()
+              ),
               canCancelBeforeClaim:
                 latestCommand.commandKind === "prompt" &&
                 latestCommand.state === "queued" &&

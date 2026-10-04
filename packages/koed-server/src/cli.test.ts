@@ -1499,6 +1499,76 @@ describe("JSON command output", () => {
     });
   });
 
+  it.each(["setup", "repair"] as const)(
+    "passes a trimmed absolute executable path through Claude %s --json",
+    async (operation) => {
+      const stdout = writer();
+      const environments: NodeJS.ProcessEnv[] = [];
+      const executablePath = "/Applications/Claude Code/cli";
+
+      const exitCode = await runKoedServerCli(
+        [
+          operation,
+          "claude",
+          "--executable",
+          `  ${executablePath}  `,
+          "--json"
+        ],
+        {
+          stdout: stdout.stream,
+          setupClaude: (environment) => {
+            environments.push(environment);
+            return {
+              ok: true,
+              state: "healthy",
+              koedHome: "/tmp/koed",
+              checkedAt: "2026-01-01T00:00:00.000Z",
+              command: "claude mcp add --scope user koed",
+              settingsPath: "/tmp/.claude/settings.json"
+            };
+          }
+        }
+      );
+
+      expect(exitCode).toBe(0);
+      expect(environments).toHaveLength(1);
+      expect(environments[0]?.KOED_CLAUDE_CODE_EXECUTABLE).toBe(executablePath);
+      expect(JSON.parse(stdout.text())).toMatchObject({ ok: true });
+    }
+  );
+
+  it.each(["setup", "repair"] as const)(
+    "rejects a relative executable path for Claude %s before setup",
+    async (operation) => {
+      const stdout = writer();
+      let setupCalled = false;
+      const exitCode = await runKoedServerCli(
+        [operation, "claude", "--executable", "./claude", "--json"],
+        {
+          stdout: stdout.stream,
+          setupClaude: () => {
+            setupCalled = true;
+            return {
+              ok: true,
+              state: "healthy",
+              koedHome: "/tmp/koed",
+              checkedAt: "2026-01-01T00:00:00.000Z",
+              command: "claude mcp add --scope user koed",
+              settingsPath: "/tmp/.claude/settings.json"
+            };
+          }
+        }
+      );
+
+      expect(exitCode).toBe(1);
+      expect(setupCalled).toBe(false);
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        ok: false,
+        error: "--executable must be an absolute path."
+      });
+    }
+  );
+
   it("dispatches check, repair, and remove for every AI Client with exit status", async () => {
     const capabilityIds = [
       "automatic_capture",

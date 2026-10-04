@@ -172,6 +172,17 @@ journal cursors advance only after canonical persistence and Projection
 succeed, so retries are idempotent. Hook absence, duplication, delay, or
 reordering cannot gap or duplicate canonical rows.
 
+If a managed Codex rollout file is rewritten while its original provider thread
+continues, Koed can rebase only after the runner reads the complete provider
+thread and proves that every retained user and assistant message matches the
+owner's canonical Conversation Items. The proof binds user messages by their
+client message ids and text digests, and assistant messages by provider turn
+ids and text digests. The API also checks the active owner, execution, runner
+device, provider thread, claimed prompt, and source origin. It seals the old
+journal at its existing verified cursor, preserves its segments and consumer
+cursors, and starts a new source generation at the rewritten file's verified
+end offset. It does not replay the rewritten prefix into Memory.
+
 App-server `thread/started` events for subagents create linked child Captured
 Sessions. Child lifecycle items and child rollout JSONL reconcile through the
 same identity, hold, terminal-evidence, Projection, embedding, and LCM paths as

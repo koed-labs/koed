@@ -482,6 +482,16 @@ export class SyntheticStudioApi {
       await route.fulfill({ json: { canCreateLocalProject: false } });
       return;
     }
+    if (path === "/studio-api/personal-scope" && method === "GET") {
+      await route.fulfill({
+        json: { scopeKey: `${url.origin}|${ids.user}` }
+      });
+      return;
+    }
+    if (path === "/studio-api/personal-removals" && method === "GET") {
+      await route.fulfill({ json: { removals: [] } });
+      return;
+    }
     if (path === "/studio-api/projects" && method === "GET") {
       await route.fulfill({ json: { projects: [] } });
       return;

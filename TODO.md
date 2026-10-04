@@ -104,3 +104,13 @@ automatic verified current-work summary. See `docs/studio-personal-agents-plan.m
 - Implemented: bounded owner-scoped bulk activity reads preserve lease/generation verification, explicit unknown states and compact Working now context.
 - Implemented: cursor-based older Job history preserves original attribution and already loaded pages, with guarded retry and refresh.
 - Implemented: reusable synthetic Studio browser regression tests and a focused GitHub Actions workflow. See `apps/studio/tests/ui/README.md` for commands, coverage and limits.
+
+
+## Personal Studio QA follow-ups — 2026-10-04
+
+- Complete the live rewritten-transcript continuation check after macOS
+  Keychain approval; verify a reply in the same provider thread and retained
+  history/drafts. See `docs/studio-personal-qa.md`.
+- Resolve ESLint 10 / React plugin compatibility and triage the touched-file
+  ESLint 9 findings (262 errors); distinguish existing configuration/test
+  issues from new source issues before claiming lint passes.

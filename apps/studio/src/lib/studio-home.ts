@@ -1,4 +1,7 @@
 import type { HomeExecution, HomeRecent, HomeRequest } from "./studio-contract";
+// Node 24's native TypeScript runner requires the source extension here.
+// @ts-expect-error -- Next's app compiler does not enable TS extension imports.
+import { isSyntheticIndependentProject } from "./project-identity.ts";
 
 export type HomeProject = {
   id: string;
@@ -117,7 +120,8 @@ export function filterHomeCollections(
 
 export function homeProjects(
   recents: HomeRecent[],
-  executions: HomeExecution[]
+  executions: HomeExecution[],
+  registeredProjects: HomeProject[] = []
 ): HomeProject[] {
   const names = new Map<string, string>();
   const projects: HomeProject[] = [];
@@ -127,13 +131,30 @@ export function homeProjects(
   };
 
   for (const recent of uniqueById(recents)) {
-    if (!recent.projectId) continue;
-    names.set(recent.projectId, recent.projectName);
+    const name = recent.projectName.trim();
+    if (
+      !recent.projectId ||
+      !name ||
+      isSyntheticIndependentProject(recent.projectId, name)
+    )
+      continue;
+    names.set(recent.projectId, name);
     add(recent.projectId, recent.projectName);
   }
+  for (const project of registeredProjects) {
+    if (!project.id || isSyntheticIndependentProject(project.id, project.name))
+      continue;
+    names.set(project.id, project.name.trim());
+    add(project.id, project.name);
+  }
   for (const execution of uniqueById(executions)) {
-    if (!execution.projectId) continue;
-    add(execution.projectId, execution.projectId);
+    if (
+      !execution.projectId ||
+      isSyntheticIndependentProject(execution.projectId) ||
+      !names.has(execution.projectId)
+    )
+      continue;
+    add(execution.projectId, names.get(execution.projectId) ?? "Project");
   }
 
   return projects.map((project) => ({
@@ -156,8 +177,10 @@ function isFailedExecution(item: HomeExecution) {
 }
 
 function isCurrentExecution(item: HomeExecution) {
-  return ["current", "running", "in_progress", "queued", "starting"].includes(
-    normalizedState(item.state)
+  return (
+    ["current", "running", "in_progress", "queued", "starting"].includes(
+      normalizedState(item.state)
+    ) && item.activity !== "idle"
   );
 }
 
@@ -171,6 +194,43 @@ function displayTime(value: string) {
         hour: "numeric",
         minute: "2-digit"
       }).format(date);
+}
+
+function executionActivityPresentation(item: HomeExecution) {
+  switch (item.activity ?? "unknown") {
+    case "running":
+      return {
+        kicker: "Agent review · Active turn",
+        detail: `${item.provider} · A prompt is actively running. Updated ${displayTime(item.updatedAt)}.`
+      };
+    case "pending":
+      return {
+        kicker: "Agent review · Pending",
+        detail: `${item.provider} · A prompt is queued and has not started.`
+      };
+    case "uncertain":
+      return {
+        kicker: "Agent review · Status uncertain",
+        detail: `${item.provider} · The latest prompt has no confirmed active lease. Open the conversation to check.`
+      };
+    case "operation":
+      return {
+        kicker: "Execution · Operation active",
+        detail: `${item.provider} · A managed operation is active; this does not confirm an active prompt turn.`
+      };
+    case "operation-pending":
+      return {
+        kicker: "Execution · Operation pending",
+        detail: `${item.provider} · A managed operation is queued.`
+      };
+    case "idle":
+      return null;
+    default:
+      return {
+        kicker: "Agent review · Activity unverified",
+        detail: `${item.provider} · Saved execution state is ${item.state}; current activity could not be verified.`
+      };
+  }
 }
 
 /**
@@ -242,17 +302,21 @@ export function buildHomeViewModel(
     });
   }
 
-  for (const execution of executions.filter(isCurrentExecution)) {
+  for (const execution of executions.filter(
+    (item) => isCurrentExecution(item) && !requested.has(item.id)
+  )) {
+    const activity = executionActivityPresentation(execution);
+    if (!activity) continue;
     const destination: HomeWorkflowDestination = {
       type: "agent-review",
       executionId: execution.id
     };
     const classification = classifyHomeDestination(destination);
     items.push({
-      id: `running-${execution.id}`,
+      id: `execution-${execution.id}`,
       title: execution.title,
-      detail: `${execution.provider} · Updated ${displayTime(execution.updatedAt)}.`,
-      kicker: "Agent review · Moving",
+      detail: activity.detail,
+      kicker: activity.kicker,
       action: "Unavailable",
       urgency: "soon",
       projectId: execution.projectId,

@@ -512,6 +512,20 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/studio/personal-removals",
+    "session_or_api_token",
+    "personal_memory",
+    "List owner-scoped Studio browsing removals."
+  ),
+  route(
+    "PUT",
+    "/v1/studio/personal-removals",
+    "session_or_api_token",
+    "personal_memory",
+    "Set or restore one owner-scoped Studio browsing removal."
+  ),
+  route(
+    "GET",
     "/v1/personal-agents/capabilities",
     "session_or_api_token_or_device_credential",
     "personal_memory",
@@ -822,6 +836,16 @@ export const routeIdentityContracts = [
     "api_token",
     "capture",
     "Create the next device-bound generation after a finalized source.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/conversation-source-artifacts/{artifactId}/rebase-successor",
+    "api_token",
+    "capture",
+    "Rebase a verified active source frontier after owner-bound provider history proof.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -1224,6 +1248,13 @@ export const routeIdentityContracts = [
     "session_or_api_token_or_device_credential",
     "local_synthesis",
     "Register or update a local AI Client instance."
+  ),
+  route(
+    "PATCH",
+    "/v1/memory/ai-client-instances/{instanceId}/enabled",
+    "session_or_api_token",
+    "local_synthesis",
+    "Enable or disable a registered AI Client instance for managed execution."
   ),
   route(
     "POST",

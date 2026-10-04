@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error -- Node's native TypeScript runner requires the source extension.
 import {
   shouldEmitStudioNotification,
   studioNotificationDedupeKey,
   trimStudioNotificationSeen
+  // @ts-expect-error -- Node's native TypeScript runner requires the source extension.
 } from "./studio-notification-state.ts";
 import type { StudioNotificationIntent } from "@koed/shared/studio-notifications";
 

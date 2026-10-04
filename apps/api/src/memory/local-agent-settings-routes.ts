@@ -311,6 +311,40 @@ const registerInstanceWriteRoute = (
   );
 };
 
+const registerInstanceEnabledRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
+  app.patch(
+    "/v1/memory/ai-client-instances/:instanceId/enabled",
+    { preHandler: rateLimit.aiClientControl },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const params = aiClientInstanceParamsSchema.parse(request.params);
+      const input = parseRequestBody(
+        z.object({ enabled: z.boolean() }).strict(),
+        request.body
+      );
+      const instance = await repo.setAiClientInstanceEnabled(
+        { userId: user.id },
+        { hostedInstanceId: params.instanceId, enabled: input.enabled }
+      );
+      if (!instance) {
+        throw Object.assign(new Error("AI Client instance was not found"), {
+          statusCode: 404
+        });
+      }
+      return { instance: publicAiClientInstance(instance) };
+    }
+  );
+};
+
 const registerCapabilitySnapshotRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -473,6 +507,7 @@ export const registerLocalAgentSettingsRoutes = (
 ) => {
   registerInstanceListRoute(app, context);
   registerInstanceWriteRoute(app, context);
+  registerInstanceEnabledRoute(app, context);
   registerCapabilitySnapshotRoute(app, context);
   registerSettingsListRoute(app, context);
   registerSettingsWriteRoute(app, context);

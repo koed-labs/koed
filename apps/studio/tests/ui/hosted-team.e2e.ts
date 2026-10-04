@@ -594,6 +594,7 @@ test("human @ mentions send selected Team user IDs and edits preserve them", asy
     rootMessageId: ids.root,
     mentionUserIds: [ids.teammate]
   });
+  await expect.poll(() => sentMessageId).not.toBe("");
   const sentRow = page.locator(`[data-thread-message-id="${sentMessageId}"]`);
   await expect(sentRow.getByText(submittedText, { exact: true })).toBeVisible();
   await sentRow.hover();

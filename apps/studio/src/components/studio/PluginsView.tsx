@@ -215,6 +215,7 @@ export function PluginsView({
     mode === "demo" ? DISCONNECTED_STATUS : DISCONNECTED_STATUS
   );
   const [accounts, setAccounts] = useState<GitHubAccount[]>([]);
+  const [accountLoadFailed, setAccountLoadFailed] = useState(false);
   const [runners, setRunners] = useState<PullRequestRunner[]>([]);
   const [runnerId, setRunnerId] = useState("");
   const [accountLoading, setAccountLoading] = useState(false);
@@ -233,7 +234,7 @@ export function PluginsView({
 
   const refreshAccounts = useCallback(
     async (targetOverride?: { deviceId: string; deploymentId: string }) => {
-      if (mode === "demo") return;
+      if (mode === "demo") return [];
       setAccountLoading(true);
       try {
         const operation = await pullRequestsClient.runOperation(
@@ -246,25 +247,28 @@ export function PluginsView({
           : Array.isArray(data)
             ? data
             : [];
-        setAccounts(
-          values.flatMap((value) => {
-            if (!value || typeof value !== "object") return [];
-            const account = value as Record<string, unknown>;
-            return typeof account.login === "string"
-              ? [
-                  {
-                    login: account.login,
-                    active: account.active === true,
-                    ...(typeof account.state === "string"
-                      ? { state: account.state }
-                      : {})
-                  }
-                ]
-              : [];
-          })
-        );
+        const discovered = values.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const account = value as Record<string, unknown>;
+          return typeof account.login === "string" && account.state !== "error"
+            ? [
+                {
+                  login: account.login,
+                  active: account.active === true,
+                  ...(typeof account.state === "string"
+                    ? { state: account.state }
+                    : {})
+                }
+              ]
+            : [];
+        });
+        setAccounts(discovered);
+        setAccountLoadFailed(false);
+        return discovered;
       } catch {
         setAccounts([]);
+        setAccountLoadFailed(true);
+        return null;
       } finally {
         setAccountLoading(false);
       }
@@ -361,10 +365,17 @@ export function PluginsView({
     };
   }, [mode]);
 
-  const connect = useCallback(async () => {
+  const beginSignIn = useCallback(async () => {
     if (mode === "demo") {
       setStatus(DEMO_CONNECTED_STATUS);
       setError(null);
+      return;
+    }
+    if (accountLoading) return;
+    if (accountLoadFailed) {
+      setError(
+        "GitHub accounts could not be checked. Refresh before signing in."
+      );
       return;
     }
     setMutating(true);
@@ -374,8 +385,15 @@ export function PluginsView({
         { kind: "browser_sign_in" },
         { target: targetOption }
       );
-      await refreshAccounts();
+      const discoveredAccounts = await refreshAccounts();
       await loadStatus();
+      if (discoveredAccounts === null) {
+        setError("Sign-in finished, but GitHub accounts could not be checked.");
+      } else if (discoveredAccounts.length === 0) {
+        setError(
+          "Sign-in finished, but no authorized GitHub account was found."
+        );
+      }
     } catch (reason) {
       const message = sanitizeMessage(
         reason instanceof Error ? reason.message : null,
@@ -386,7 +404,14 @@ export function PluginsView({
     } finally {
       setMutating(false);
     }
-  }, [loadStatus, mode, refreshAccounts, targetOption]);
+  }, [
+    accountLoadFailed,
+    accountLoading,
+    loadStatus,
+    mode,
+    refreshAccounts,
+    targetOption
+  ]);
 
   const disconnect = useCallback(async () => {
     if (mode === "demo") {
@@ -403,7 +428,7 @@ export function PluginsView({
     setMutating(true);
     setError(null);
     try {
-      await pullRequestsClient.runOperation(
+      const operation = await pullRequestsClient.runOperation(
         {
           kind: "disconnect",
           account: { id: status.accountId, login: status.login },
@@ -411,8 +436,11 @@ export function PluginsView({
         },
         { target: targetOption }
       );
+      const result = statusFromOperation(pullRequestOperationData(operation));
+      if (!result || result.state !== "disconnected")
+        throw new Error("GitHub disconnect was not confirmed.");
+      setStatus(result);
       await refreshAccounts();
-      await loadStatus();
     } catch (reason) {
       const message = sanitizeMessage(
         reason instanceof Error ? reason.message : null,
@@ -422,7 +450,7 @@ export function PluginsView({
     } finally {
       setMutating(false);
     }
-  }, [loadStatus, mode, refreshAccounts, status, targetOption]);
+  }, [mode, refreshAccounts, status, targetOption]);
 
   const selectAccount = useCallback(
     async (login: string) => {
@@ -430,12 +458,16 @@ export function PluginsView({
       setMutating(true);
       setError(null);
       try {
-        await pullRequestsClient.runOperation(
+        const operation = await pullRequestsClient.runOperation(
           { kind: "connect", login },
           { target: targetOption }
         );
+        const result = statusFromOperation(pullRequestOperationData(operation));
+        if (!result || result.state !== "connected" || result.login !== login)
+          throw new Error("GitHub account selection was not confirmed.");
+        setStatus(result);
+        setError(null);
         await refreshAccounts();
-        await loadStatus();
       } catch (reason) {
         setError(
           sanitizeMessage(
@@ -447,7 +479,7 @@ export function PluginsView({
         setMutating(false);
       }
     },
-    [loadStatus, mode, refreshAccounts, targetOption]
+    [mode, refreshAccounts, targetOption]
   );
 
   const connected = status.state === "connected";
@@ -464,9 +496,11 @@ export function PluginsView({
     "validate your local github identity".includes(normalizedQuery);
   const visibleError =
     error ??
-    (status.state === "error"
-      ? sanitizeMessage(status.message, "GitHub status could not be loaded.")
-      : null);
+    (accountLoadFailed
+      ? "GitHub accounts could not be loaded. Refresh before signing in."
+      : status.state === "error"
+        ? sanitizeMessage(status.message, "GitHub status could not be loaded.")
+        : null);
   const statusLabel = useMemo(() => {
     if (loading) return "Checking connection";
     if (connected)
@@ -603,7 +637,10 @@ export function PluginsView({
                     {mode === "live" && (
                       <button
                         type="button"
-                        onClick={() => void loadStatus()}
+                        onClick={() => {
+                          void loadStatus();
+                          void refreshAccounts();
+                        }}
                         disabled={loading || mutating}
                         className="rounded-md p-1.5 text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
                         aria-label="Refresh GitHub status"
@@ -645,7 +682,11 @@ export function PluginsView({
                               ? "Synthetic account · no GitHub access"
                               : connected && status.login
                                 ? `Signed in as @${status.login}`
-                                : "Use your local GitHub connection for read-only pull request browsing."}
+                                : accountLoadFailed
+                                  ? "GitHub account discovery failed. Refresh before signing in."
+                                  : accounts.length > 0
+                                    ? "Choose an authorized account below to reuse its local GitHub connection."
+                                    : "Use your local GitHub connection for read-only pull request browsing."}
                           </p>
                         </div>
                       </div>
@@ -665,8 +706,23 @@ export function PluginsView({
                       ) : (
                         <button
                           type="button"
-                          onClick={() => void connect()}
-                          disabled={loading || mutating}
+                          onClick={() => {
+                            if (mode === "demo") void beginSignIn();
+                            else if (accounts.length === 1)
+                              void selectAccount(accounts[0]!.login);
+                            else
+                              setError(
+                                "Choose an authorized GitHub account below to connect."
+                              );
+                          }}
+                          disabled={
+                            loading ||
+                            mutating ||
+                            (mode === "live" &&
+                              (accountLoading ||
+                                accountLoadFailed ||
+                                accounts.length !== 1))
+                          }
                           className="inline-flex items-center gap-1.5 rounded-md bg-chip px-3 py-1.5 text-sm font-medium text-chip-foreground disabled:opacity-50"
                         >
                           {mutating && (
@@ -676,7 +732,9 @@ export function PluginsView({
                             ? "Connecting…"
                             : mode === "demo"
                               ? "Simulate connection"
-                              : "Connect GitHub"}
+                              : accounts.length === 1
+                                ? `Connect as @${accounts[0]!.login}`
+                                : "Select an account below"}
                         </button>
                       )}
                     </div>
@@ -758,8 +816,13 @@ export function PluginsView({
                         </label>
                         <button
                           type="button"
-                          onClick={() => void connect()}
-                          disabled={mutating || loading}
+                          onClick={() => void beginSignIn()}
+                          disabled={
+                            mutating ||
+                            loading ||
+                            accountLoading ||
+                            accountLoadFailed
+                          }
                           className="rounded-md border border-border px-3 py-2 text-sm text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
                         >
                           {mutating
@@ -795,10 +858,14 @@ export function PluginsView({
                           </button>
                           <button
                             type="button"
-                            onClick={() => void connect()}
+                            onClick={() =>
+                              status.login
+                                ? void selectAccount(status.login)
+                                : void loadStatus()
+                            }
                             disabled={loading || mutating}
                             className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted disabled:opacity-50"
-                            title="Revalidate the active GitHub CLI account"
+                            title="Revalidate the selected GitHub CLI account"
                           >
                             <RefreshCw className="h-4 w-4" /> Reconnect
                           </button>

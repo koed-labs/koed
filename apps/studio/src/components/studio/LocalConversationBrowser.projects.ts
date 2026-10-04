@@ -1,3 +1,7 @@
+// Node 24's native TypeScript runner requires the source extension here.
+// @ts-expect-error -- Next's app compiler does not enable TS extension imports.
+import { isSyntheticIndependentProject } from "../../lib/project-identity.ts";
+
 export type LocalConversationProvider = "codex" | "claude-code" | "pi";
 export type ProjectProviderFilter = LocalConversationProvider | "all";
 
@@ -18,7 +22,18 @@ type ManagedConversation = {
   state: string;
 };
 
-/** Derive the sidebar Projects and active managed rows for the selected client. */
+export function hasExplainableProjectAssociation(
+  item: ProjectSource,
+  registeredProjectIds: ReadonlySet<string>
+) {
+  return Boolean(
+    item.projectId &&
+    !isSyntheticIndependentProject(item.projectId, item.projectName) &&
+    (registeredProjectIds.has(item.projectId) || item.projectName?.trim())
+  );
+}
+
+/** Derive the sidebar Projects and managed rows, including terminal history. */
 export function deriveProjectBrowserView<TManaged extends ManagedConversation>({
   items,
   registeredProjects,
@@ -38,11 +53,17 @@ export function deriveProjectBrowserView<TManaged extends ManagedConversation>({
   activeManagedConversations: TManaged[];
 } {
   const activeManagedConversations = managedConversations.filter((item) => {
-    const active = ["running", "ready", "starting"].includes(
-      item.state.toLowerCase()
-    );
+    const state = item.state.toLowerCase();
+    const listed = [
+      "running",
+      "ready",
+      "starting",
+      "stopped",
+      "failed",
+      "fenced"
+    ].includes(state);
     return (
-      active &&
+      listed &&
       (provider === "all" || normalizeProvider(item.provider) === provider)
     );
   });

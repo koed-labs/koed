@@ -41,6 +41,7 @@ const pullRequest = (
 
 export class PullRequestsFixture {
   connected = false;
+  authorized = false;
   readonly requests: Array<{ method: string; path: string; body: unknown }> =
     [];
   private readonly operations = new Map<string, Record<string, unknown>>();
@@ -547,22 +548,40 @@ export class PullRequestsFixture {
             };
       case "accounts":
         return {
-          accounts: [
-            {
-              host: "github.com",
-              ...account,
-              active: this.connected,
-              state: this.connected ? "connected" : "available"
-            }
-          ]
+          accounts: this.authorized
+            ? [
+                {
+                  host: "github.com",
+                  ...account,
+                  active: false,
+                  state: "success"
+                }
+              ]
+            : []
         };
       case "browser_sign_in":
+        this.authorized = true;
+        return {
+          accounts: [
+            { host: "github.com", ...account, active: false, state: "success" }
+          ]
+        };
+      case "connect":
         this.connected = true;
+        this.authorized = true;
         return {
           state: "connected",
           account,
           connectionGeneration: 4,
           capabilities: { readPullRequests: true, publishReviews: true }
+        };
+      case "disconnect":
+        this.connected = false;
+        return {
+          state: "disconnected",
+          account: null,
+          connectionGeneration: 5,
+          capabilities: { readPullRequests: false, publishReviews: false }
         };
       case "repositories":
         return { repositories: [repository], hasMore: false, nextCursor: null };
@@ -669,6 +688,11 @@ export class PullRequestsFixture {
   }
 }
 
-export async function installPullRequestsFixture(page: Page) {
-  return new PullRequestsFixture().install(page);
+export async function installPullRequestsFixture(
+  page: Page,
+  options: { authorized?: boolean } = {}
+) {
+  const fixture = new PullRequestsFixture();
+  fixture.authorized = options.authorized === true;
+  return fixture.install(page);
 }

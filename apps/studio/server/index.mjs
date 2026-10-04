@@ -359,6 +359,7 @@ const dedupeBy = (items, key) => {
 
 const scanRuntime = async ({ executions, fetchApi, warnings }) => {
   const requests = [];
+  const activityByExecution = new Map();
   let failed = false;
   let capped = false;
   let cursor = 0;
@@ -373,6 +374,35 @@ const scanRuntime = async ({ executions, fetchApi, warnings }) => {
             signal
           )
         );
+        const latestCommand = isRecord(payload?.latestCommand)
+          ? payload.latestCommand
+          : null;
+        const commandKind = asText(latestCommand?.commandKind, "");
+        const commandState = asText(latestCommand?.state, "");
+        const isTurnCommand =
+          commandKind === "start" || commandKind === "prompt";
+        let activity = "unknown";
+        if (latestCommand) {
+          if (["queued", "blocked"].includes(commandState)) {
+            activity = isTurnCommand ? "pending" : "operation-pending";
+          } else if (commandState === "dispatching") {
+            activity =
+              latestCommand.leaseActive === true
+                ? isTurnCommand
+                  ? "running"
+                  : "operation"
+                : "uncertain";
+          } else if (commandState === "indeterminate") {
+            activity = "uncertain";
+          } else if (
+            ["completed", "failed", "canceled"].includes(commandState)
+          ) {
+            activity = isTurnCommand ? "idle" : "unknown";
+          }
+        } else if (["stopped", "failed", "fenced"].includes(execution.state)) {
+          activity = "idle";
+        }
+        activityByExecution.set(execution.id, activity);
         const allItems = Array.isArray(payload?.items) ? payload.items : [];
         const items = allItems.slice(0, MAX_REQUESTS_PER_EXECUTION);
         if (allItems.length > items.length) {
@@ -393,6 +423,7 @@ const scanRuntime = async ({ executions, fetchApi, warnings }) => {
         }
       } catch (error) {
         failed = true;
+        activityByExecution.set(execution.id, "unknown");
         const failure = mapApiFailure(error, error?.status);
         warnings.push(
           failure.unauthorized
@@ -415,6 +446,7 @@ const scanRuntime = async ({ executions, fetchApi, warnings }) => {
   }
   return {
     requests: ordered.slice(0, MAX_TOTAL_REQUESTS),
+    activityByExecution,
     failed,
     capped
   };
@@ -564,12 +596,20 @@ export const readHomeSnapshot = async ({
     );
   }
 
-  const mappedExecutions = executions.map((execution) =>
-    executionMap(execution, threadBySession)
-  );
   const runtimeResult = executionFailed
-    ? { requests: [], failed: true, capped: false }
+    ? {
+        requests: [],
+        activityByExecution: new Map(),
+        failed: true,
+        capped: false
+      }
     : await scanRuntime({ executions, fetchApi, warnings });
+  const mappedExecutions = executions.map((execution) => ({
+    ...executionMap(execution, threadBySession),
+    activity: executionFailed
+      ? "unknown"
+      : (runtimeResult.activityByExecution.get(execution.id) ?? "unknown")
+  }));
   if (executionCapped) warnings.push("Managed execution coverage is capped.");
   if (recentsCapped) warnings.push("Recent conversation coverage is capped.");
   const coverage = {
@@ -1871,6 +1911,10 @@ export const createStudioServer = ({
         (await handleClientResources(localApiOptions)) ||
         (await handleHomeFeed(localApiOptions)) ||
         (await handlePersonalAgents(localApiOptions)) ||
+        (await handlePersonalAgents({
+          ...localApiOptions,
+          routeFamily: "personal-removals"
+        })) ||
         (await handleTeamAgentRequests(localApiOptions)) ||
         (await handlePublicSquare(localApiOptions)) ||
         (await handlePersonalAgentRoleTemplates(localApiOptions)) ||
@@ -2086,6 +2130,41 @@ export const createStudioServer = ({
           return;
         }
       }
+      if (requestUrlObject.pathname === "/studio-api/personal-scope") {
+        if (request.method !== "GET") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (requestUrlObject.search) {
+          sendJson(response, 400, { error: "query_not_allowed" });
+          return;
+        }
+        try {
+          const localAccess = providedResolveAccess
+            ? validatePairedLocalApiAccess(await resolveAccess())
+            : { apiOrigin: apiBase, apiToken: await resolveToken() };
+          if (!localAccess.apiToken) throw new Error("not_authorized");
+          const fetchApi = makeFetch({
+            fetchImpl,
+            apiBase: localAccess.apiOrigin,
+            token: localAccess.apiToken
+          });
+          const access = await withTimeout((signal) =>
+            fetchApi("/v1/managed-conversations/access", undefined, signal)
+          );
+          if (typeof access?.user?.id !== "string" || !access.user.id)
+            throw new Error("identity_unavailable");
+          sendJson(response, 200, {
+            scopeKey: scopeKeyFor(localAccess.apiOrigin, access.user.id)
+          });
+        } catch (error) {
+          const failure = mapApiFailure(error, error?.status);
+          sendJson(response, failure.unauthorized ? 401 : 503, {
+            error: "personal_scope_unavailable"
+          });
+        }
+        return;
+      }
       if (
         request.method === "GET" &&
         requestUrlObject.pathname === "/studio-api/home"
@@ -2121,7 +2200,7 @@ export const createStudioServer = ({
           sendJson(response, 503, { error: "local_discovery_unavailable" });
           return;
         }
-        const allowed = new Set(["limit", "cursor", "provider"]);
+        const allowed = new Set(["limit", "cursor", "provider", "refresh"]);
         for (const [key, value] of requestUrlObject.searchParams) {
           if (
             !allowed.has(key) ||
@@ -2137,13 +2216,15 @@ export const createStudioServer = ({
         const cursor = requestUrlObject.searchParams.get("cursor") ?? undefined;
         const provider =
           requestUrlObject.searchParams.get("provider") ?? undefined;
+        const refresh = requestUrlObject.searchParams.get("refresh");
         if (
           !Number.isSafeInteger(limit) ||
           limit < 1 ||
           limit > 100 ||
           (cursor !== undefined && cursor.length > 2048) ||
           (provider !== undefined &&
-            !["codex", "claude-code", "pi"].includes(provider))
+            !["codex", "claude-code", "pi"].includes(provider)) ||
+          (refresh !== null && refresh !== "1")
         ) {
           sendJson(response, 400, { error: "invalid_query" });
           return;
@@ -2152,7 +2233,12 @@ export const createStudioServer = ({
           sendJson(
             response,
             200,
-            await listLocalSources({ limit, cursor, provider })
+            await listLocalSources({
+              limit,
+              cursor,
+              provider,
+              ...(refresh === "1" ? { refresh: true } : {})
+            })
           );
         } catch (error) {
           sendJson(
@@ -2253,11 +2339,14 @@ export const createStudioServer = ({
           server,
           url: `http://${host}:${activePort}`,
           close: () =>
-            new Promise((resolveClose) =>
+            new Promise((resolveClose) => {
               server.close(() => {
                 resolveClose();
-              })
-            )
+              });
+              // Event streams remain open while Studio runs. Shutdown must
+              // release them even if the renderer does not disconnect first.
+              server.closeAllConnections();
+            })
         });
       };
       server.once("error", onError);

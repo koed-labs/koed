@@ -1449,7 +1449,7 @@ export function HostedManagedChats({
   );
   const canSend =
     recoveryScope !== null &&
-    selectedRuntime?.execution.state === "running" &&
+    ["running", "stopped"].includes(selectedRuntime?.execution.state ?? "") &&
     !activePrompt &&
     !(
       latestCommand?.commandKind === "prompt" &&
@@ -1714,8 +1714,10 @@ export function HostedManagedChats({
     let agentAttribution:
       | { agentId: string; expectedAgentVersion: number }
       | undefined;
+    let resumeFromStopped = selectedRuntime.execution.state === "stopped";
     try {
       const ownerState = await loadHostedManagedConversation(selected.id);
+      resumeFromStopped ||= ownerState.runtime.execution.state === "stopped";
       if (
         embeddedReview &&
         ownerState.state.activeAgentId !== embeddedReview.agentId
@@ -1747,6 +1749,7 @@ export function HostedManagedChats({
       clientUserMessageId: crypto.randomUUID(),
       executionGeneration: selectedRuntime.execution.executionGeneration,
       prompt,
+      ...(resumeFromStopped ? { resumeFromStopped: true as const } : {}),
       ...(selectedResourceIds.length ? { selectedResourceIds } : {}),
       state: "pending"
     };
@@ -1779,6 +1782,9 @@ export function HostedManagedChats({
         undefined,
         fetch,
         {
+          ...(operation.resumeFromStopped
+            ? { resumeFromStopped: true as const }
+            : {}),
           ...(continueWithoutMemory
             ? { continueWithoutMemory: true as const }
             : {}),

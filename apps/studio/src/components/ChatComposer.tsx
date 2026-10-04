@@ -104,6 +104,8 @@ export type ChatComposerSelection = Readonly<{
 
 export type ChatComposerRestoreSelection = Readonly<{
   key: string;
+  instanceId?: string;
+  hostedInstanceId?: string;
   provider: string;
   model: string;
   effort: string | null;
@@ -230,7 +232,7 @@ export function ChatComposer({
   const [internalDraft, setInternalDraft] = useState("");
   const [model, setModel] = useState<string>(
     restoreSelection
-      ? `${restoreSelection.provider}:${restoreSelection.model}`
+      ? `${restoreSelection.provider}:${restoreSelection.model}${restoreSelection.hostedInstanceId || restoreSelection.instanceId ? `:${restoreSelection.hostedInstanceId ?? restoreSelection.instanceId}` : ""}`
       : initialAgent?.defaultProvider && initialAgent.defaultModel
         ? `${initialAgent.defaultProvider}:${initialAgent.defaultModel}`
         : (initialModel ?? initialAgent?.defaultModel ?? DEFAULT_MODEL)
@@ -406,7 +408,12 @@ export function ChatComposer({
   const selectedCandidates = modelOptions.filter(
     (option) =>
       capabilityKey(option) === model ||
-      `${option.provider}:${option.id}` === model
+      `${option.provider}:${option.id}` === model ||
+      [option.hostedInstanceId, option.instanceId].some(
+        (instanceId) =>
+          Boolean(instanceId) &&
+          `${option.provider}:${option.id}:${instanceId}` === model
+      )
   );
   const selectedCapability =
     selectedCandidates.length === 1 ? selectedCandidates[0] : undefined;
@@ -721,8 +728,13 @@ export function ChatComposer({
   useEffect(() => {
     if (!openMenu) return;
 
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!composerRef.current?.contains(event.target as Node)) {
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target;
+      const menu =
+        target instanceof Element
+          ? target.closest(`[data-composer-menu="${openMenu}"]`)
+          : null;
+      if (!menu || !composerRef.current?.contains(menu)) {
         setOpenMenu(null);
         setIsModelListOpen(false);
       }
@@ -734,10 +746,10 @@ export function ChatComposer({
       }
     };
 
-    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("pointerdown", closeOnOutsideClick);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [openMenu]);
@@ -978,7 +990,7 @@ export function ChatComposer({
                 <Icon className="h-3.5 w-3.5" />
               </button>
             ))}
-            <div className="relative">
+            <div className="relative" data-composer-menu="emoji">
               <button
                 type="button"
                 aria-label="Insert emoji"
@@ -1154,7 +1166,7 @@ export function ChatComposer({
                   </Tooltip>
                 )}
 
-                <div className="relative">
+                <div className="relative" data-composer-menu="access">
                   <button
                     type="button"
                     className={`flex min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium transition-colors ${
@@ -1236,7 +1248,7 @@ export function ChatComposer({
 
           <div className="ml-auto flex min-w-0 max-w-full flex-shrink-0 items-center gap-1">
             {executionControlsVisible && (
-              <div className="relative">
+              <div className="relative" data-composer-menu="model">
                 <button
                   type="button"
                   className="flex min-w-0 max-w-[12rem] items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-hover"
@@ -1299,6 +1311,8 @@ export function ChatComposer({
                         setEffortIndex(index);
                         setUnavailableEffort(null);
                         setUnsupportedDefaultEffortFor(null);
+                        setOpenMenu(null);
+                        setIsModelListOpen(false);
                       }}
                       disabled={Boolean(executionPreset)}
                       supportedIndices={
@@ -1334,6 +1348,7 @@ export function ChatComposer({
                                   selectedAgent?.id ?? null
                                 );
                                 setIsModelListOpen(false);
+                                setOpenMenu(null);
                               }}
                               title={
                                 disabled

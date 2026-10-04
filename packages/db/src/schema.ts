@@ -1401,6 +1401,64 @@ export const conversationSourceSegments = pgTable(
   ]
 );
 
+export const conversationSourceRebaseProofs = pgTable(
+  "conversation_source_rebase_proofs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    parentArtifactId: uuid("parent_artifact_id").notNull(),
+    successorArtifactId: uuid("successor_artifact_id").notNull(),
+    parentClosureHash: text("parent_closure_hash").notNull(),
+    expectedParentFrontier: jsonb("expected_parent_frontier")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    acceptedFrontier: jsonb("accepted_frontier")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    commandProof: jsonb("command_proof")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.parentArtifactId, table.ownerUserId],
+      foreignColumns: [
+        conversationSourceArtifacts.id,
+        conversationSourceArtifacts.ownerUserId
+      ],
+      name: "conversation_source_rebase_proofs_parent_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.successorArtifactId, table.ownerUserId],
+      foreignColumns: [
+        conversationSourceArtifacts.id,
+        conversationSourceArtifacts.ownerUserId
+      ],
+      name: "conversation_source_rebase_proofs_successor_owner_fk"
+    }).onDelete("restrict"),
+    unique("conversation_source_rebase_proofs_parent_unique").on(
+      table.parentArtifactId
+    ),
+    unique("conversation_source_rebase_proofs_successor_unique").on(
+      table.successorArtifactId
+    ),
+    index("conversation_source_rebase_proofs_owner_created_idx").on(
+      table.ownerUserId,
+      table.createdAt.desc()
+    ),
+    check(
+      "conversation_source_rebase_proofs_hash_check",
+      sql`${table.parentClosureHash} ~ '^[0-9a-f]{64}$'
+        and jsonb_typeof(${table.expectedParentFrontier}) = 'object'
+        and jsonb_typeof(${table.acceptedFrontier}) = 'object'
+        and jsonb_typeof(${table.commandProof}) = 'object'`
+    )
+  ]
+);
+
 export const personalSourceReplicationPolicies = pgTable(
   "personal_source_replication_policies",
   {
@@ -4982,6 +5040,9 @@ export const managedConversationCommands = pgTable(
     requestDigest: text("request_digest").notNull(),
     clientUserMessageId: uuid("client_user_message_id"),
     executionGeneration: integer("execution_generation").notNull(),
+    allowArchivedResume: boolean("allow_archived_resume")
+      .notNull()
+      .default(false),
     encryptedPayload:
       jsonb("encrypted_payload").$type<Record<string, unknown>>(),
     state: text("state").notNull().default("queued"),
@@ -15641,6 +15702,40 @@ export const homeReminderStates = pgTable(
     check(
       "home_reminder_source_event_id_check",
       sql`${table.sourceEventId} ~ '^[A-Za-z0-9._:-]+$'`
+    )
+  ]
+);
+
+/** Owner-scoped Studio browsing removals. These rows do not delete source data. */
+export const personalStudioRemovals = pgTable(
+  "personal_studio_removals",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id").notNull(),
+    aliases: text("aliases")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    removedAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.targetKind, table.targetId]
+    }),
+    check(
+      "personal_studio_removals_target_kind_check",
+      sql`${table.targetKind} in ('project', 'conversation')`
+    ),
+    check(
+      "personal_studio_removals_target_id_check",
+      sql`length(${table.targetId}) between 1 and 512`
+    ),
+    index("personal_studio_removals_owner_removed_idx").on(
+      table.ownerUserId,
+      table.removedAt.desc()
     )
   ]
 );

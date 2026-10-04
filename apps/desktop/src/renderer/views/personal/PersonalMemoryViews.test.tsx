@@ -1204,6 +1204,7 @@ describe("PersonalMemoryWorkspace", () => {
             })),
             refresh: vi.fn(),
             set: vi.fn(),
+            setEnabled: vi.fn(),
             reset: vi.fn()
           }
         : undefined;

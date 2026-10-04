@@ -49,6 +49,67 @@ test("agent proxy forwards only to local owner-authenticated API", async () => {
   });
   assert.equal(result.status, 201);
 });
+
+test("Personal removal proxy enforces CSRF and forwards the owner-scoped API route", async () => {
+  const invoke = async ({
+    validCsrf = () => true,
+    fetchImpl = async () => Response.json({ removals: [] }),
+    method = "GET"
+  } = {}) => {
+    let result;
+    const request = Readable.from(
+      method === "PUT"
+        ? [Buffer.from('{"kind":"project","id":"project-1","removed":true}')]
+        : []
+    );
+    request.method = method;
+    request.headers = {
+      "content-type": "application/json",
+      "x-studio-csrf": "token"
+    };
+    await handlePersonalAgents({
+      request,
+      url: new URL("http://localhost/studio-api/personal-removals"),
+      routeFamily: "personal-removals",
+      validCsrf,
+      resolveToken: async () => "secret",
+      apiBase: "http://127.0.0.1:43300",
+      fetchImpl,
+      send: (status, body) => {
+        result = { status, body };
+      }
+    });
+    return result;
+  };
+
+  assert.equal(
+    (
+      await invoke({
+        method: "PUT",
+        validCsrf: () => false,
+        fetchImpl: () => assert.fail("must not fetch")
+      })
+    ).status,
+    403
+  );
+  const forwarded = await invoke({
+    method: "PUT",
+    fetchImpl: async (url, init) => {
+      assert.equal(
+        url.href,
+        "http://127.0.0.1:43300/v1/studio/personal-removals"
+      );
+      assert.equal(init.method, "PUT");
+      assert.equal(init.headers.authorization, "Bearer secret");
+      assert.equal(
+        init.body,
+        '{"kind":"project","id":"project-1","removed":true}'
+      );
+      return Response.json({ ok: true });
+    }
+  });
+  assert.equal(forwarded.status, 200);
+});
 test("rejects non-local upstream and missing credential", async () => {
   assert.equal((await call({ apiBase: "https://evil.example" })).status, 503);
   assert.equal((await call({ resolveToken: async () => null })).status, 401);

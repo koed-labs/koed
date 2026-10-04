@@ -1,7 +1,5 @@
 "use client";
 
-import { Blocks, ChevronRight } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useBuildView } from "@/components/BuildViewProvider";
@@ -109,8 +107,8 @@ export default function SettingsPage() {
         onPlugins={() => router.push("/plugins")}
         activeSection="settings"
       />
-      <main className="flex h-full min-h-0 min-w-0 flex-1 overflow-y-auto bg-background text-foreground drag-region">
-        <div className="mx-auto w-full max-w-3xl px-5 py-8 sm:px-8 sm:py-10 no-drag">
+      <main className="h-full min-h-0 min-w-0 flex-1 overflow-y-auto bg-background text-foreground no-drag">
+        <div className="mx-auto w-full max-w-3xl px-5 pt-8 pb-16 sm:px-8 sm:pt-10 sm:pb-20 no-drag">
           <header>
             <h1 className="text-2xl font-semibold">Settings</h1>
             <p className="mt-2 text-sm text-muted">
@@ -195,42 +193,6 @@ export default function SettingsPage() {
           <BackendConnectionSettings />
 
           <TeamMemorySettings />
-
-          <section className="mt-8" aria-labelledby="plugins-heading">
-            <h2
-              id="plugins-heading"
-              className="text-sm font-medium text-foreground-secondary"
-            >
-              Plugins
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-muted">
-              View the Plugins and Skills configured in your AI Clients.
-            </p>
-            <Link
-              href="/plugins"
-              className="mt-4 flex min-h-16 items-center justify-between gap-4 rounded-lg border border-border bg-surface/50 p-4 transition-colors hover:border-border-strong hover:bg-surface-hover"
-            >
-              <span className="flex min-w-0 items-center gap-3">
-                <Blocks
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-subtle"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-foreground">
-                    Manage plugins
-                  </span>
-                  <span className="mt-1 block text-xs text-subtle">
-                    Manage installation and connections in the original AI
-                    Client.
-                  </span>
-                </span>
-              </span>
-              <ChevronRight
-                aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-subtle"
-              />
-            </Link>
-          </section>
         </div>
       </main>
     </div>

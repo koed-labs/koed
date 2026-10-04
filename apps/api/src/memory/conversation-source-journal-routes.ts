@@ -33,6 +33,7 @@ import {
   conversationSourceSegmentAppendSchema,
   conversationSourceSegmentListSchema,
   conversationSourceSegmentParamsSchema,
+  conversationSourceRebaseSuccessorSchema,
   conversationSourceSuccessorGenerationSchema
 } from "./conversation-source-journal-schemas.js";
 import {
@@ -389,10 +390,11 @@ export const registerConversationSourceJournalRoutes = (
         conversationSourceGenerationParamsSchema.parse(request.params);
       const { source_component_id: sourceComponentId } =
         conversationSourceGenerationLookupSchema.parse(request.query);
-      const artifact = await context
-        .requireRepository()
-        .getConversationSourceArtifactByGeneration(
-          { userId: user.id },
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const artifact =
+        await repository.getConversationSourceArtifactByGeneration(
+          actor,
           sourceGenerationId,
           sourceComponentId
         );
@@ -402,7 +404,23 @@ export const registerConversationSourceJournalRoutes = (
           { statusCode: 404 }
         );
       }
-      return { artifact };
+      const rebaseProof =
+        sourceComponentId === "main"
+          ? await repository.getConversationSourceRebaseProofBySuccessorGeneration(
+              actor,
+              sourceGenerationId
+            )
+          : null;
+      return {
+        artifact,
+        rebaseProof: rebaseProof
+          ? {
+              parentArtifactId: rebaseProof.parentArtifactId,
+              parentSourceGenerationId: rebaseProof.parentSourceGenerationId,
+              acceptedFrontier: rebaseProof.acceptedFrontier
+            }
+          : null
+      };
     }
   );
 
@@ -832,6 +850,171 @@ export const registerConversationSourceJournalRoutes = (
             storagePrefix
           }
         );
+    }
+  );
+
+  app.post(
+    "/v1/conversation-source-artifacts/:artifactId/rebase-successor",
+    { preHandler: context.rateLimit.sourceJournal },
+    async (request) => {
+      requireLocalJournalSurface(context);
+      const user = await context.auth.authenticateApiToken(request);
+      const { artifactId } = conversationSourceArtifactParamsSchema.parse(
+        request.params
+      );
+      const input = conversationSourceRebaseSuccessorSchema.parse(request.body);
+      const repository = context.requireRepository();
+      const actor = { userId: user.id };
+      const parent = await repository.getConversationSourceArtifact(
+        actor,
+        artifactId
+      );
+      if (!parent) {
+        throw Object.assign(
+          new Error("Conversation source artifact not found"),
+          {
+            statusCode: 404
+          }
+        );
+      }
+      const expectedFrontier = input.expectedParentFrontier;
+      if (
+        parent.lifecycle !== "active" ||
+        parent.replicaRole !== "origin_local" ||
+        parent.sourceGenerationId !== expectedFrontier.sourceGenerationId ||
+        parent.providerCursorOffset !== expectedFrontier.providerCursorOffset ||
+        parent.providerCursorLine !== expectedFrontier.providerCursorLine
+      ) {
+        throw Object.assign(
+          new Error("Conversation source parent frontier changed"),
+          { statusCode: 409 }
+        );
+      }
+      const segments: ConversationSourceSegmentRecord[] = [];
+      let afterSegmentIndex = -1;
+      while (true) {
+        const page = await repository.listConversationSourceSegmentsByIndex(
+          actor,
+          {
+            artifactId,
+            afterSegmentIndex,
+            throughSegmentIndex: parent.currentJournalSequence,
+            limit: 100
+          }
+        );
+        segments.push(...page);
+        if (
+          page.length === 0 ||
+          page.at(-1)!.segmentIndex >= parent.currentJournalSequence
+        ) {
+          break;
+        }
+        afterSegmentIndex = page.at(-1)!.segmentIndex;
+      }
+      const lastSegmentDigest = segments.at(-1)?.contentDigest ?? null;
+      if (lastSegmentDigest !== expectedFrontier.lastSegmentDigest) {
+        throw Object.assign(
+          new Error("Conversation source parent segment frontier changed"),
+          { statusCode: 409 }
+        );
+      }
+      const sourceSigner = sourceSignerFactory({
+        koedHome: context.config.koedHome,
+        sourceGenerationId: parent.sourceGenerationId,
+        originKeyId: parent.originKeyId
+      });
+      if (
+        parent.originKeyStatus !== "active" ||
+        sourceSigner.publicKey !== parent.originPublicKey
+      ) {
+        throw Object.assign(
+          new Error("Conversation source signing authority is unavailable"),
+          { statusCode: 409 }
+        );
+      }
+      const closedAt = new Date().toISOString();
+      const closureManifest: ConversationSourceClosureManifest = {
+        protocol: "koed.conversation-source-replication/v1",
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: parent.sourceComponentId,
+        sourceComponentRole: parent.sourceComponentRole,
+        parentSourceComponentId: parent.parentSourceComponentId,
+        contentFraming: parent.contentFraming,
+        logicalSourceId: parent.logicalSourceId,
+        sourceGenerationId: parent.sourceGenerationId,
+        originKeyId: parent.originKeyId,
+        segmentCount: segments.length,
+        endByteCursor: parent.providerCursorOffset,
+        endItemCursor: parent.providerCursorLine,
+        chainHeadDigest: lastSegmentDigest,
+        sourceRootDigest: calculateConversationSourceRootDigest(
+          segments.map((segment) => segment.contentDigest)
+        ),
+        sourceCreatedAt: parent.sourceCreatedAt,
+        closedAt,
+        priorGenerationClosure:
+          parent.priorGenerationClosure as ConversationSourceClosureManifest["priorGenerationClosure"]
+      };
+      const signedParentClosure = {
+        manifest: closureManifest,
+        signature: sourceSigner.sign(
+          Buffer.from(
+            canonicalizeConversationSourceClosureManifest(closureManifest),
+            "utf8"
+          )
+        )
+      };
+      const originKeyId = randomUUID();
+      const successorSigner = sourceSignerFactory({
+        koedHome: context.config.koedHome,
+        sourceGenerationId: input.successor.sourceGenerationId,
+        originKeyId
+      });
+      if (
+        successorSigner.deploymentId !== parent.originDeploymentId ||
+        successorSigner.deviceInstanceId !== parent.originDeviceId
+      ) {
+        throw Object.assign(
+          new Error("Conversation source rebase origin is not authorized"),
+          { statusCode: 403 }
+        );
+      }
+      const storagePrefix = createHash("sha256")
+        .update(
+          `${user.id}:${artifactId}:${input.successor.sourceGenerationId}:${originKeyId}`
+        )
+        .digest("hex")
+        .slice(0, 24);
+      const result =
+        await repository.createConversationSourceRebaseSuccessorGeneration(
+          actor,
+          {
+            parentArtifactId: artifactId,
+            expectedParentFrontier: expectedFrontier,
+            successor: {
+              sourceGenerationId: input.successor.sourceGenerationId,
+              sourceFrontier: input.successor.sourceFrontier,
+              sourceCreatedAt: new Date().toISOString(),
+              originDeploymentId: successorSigner.deploymentId,
+              originDeviceId: successorSigner.deviceInstanceId,
+              originKeyId,
+              originPublicKey: successorSigner.publicKey,
+              storageProvider: storage.provider,
+              storagePrefix
+            },
+            commandProof: input.commandProof,
+            signedParentClosure
+          }
+        );
+      return {
+        artifact: result.artifact,
+        replayed: result.replayed,
+        acceptedFrontier: {
+          offset: result.acceptedFrontier.offset,
+          line: result.acceptedFrontier.line,
+          prefixSha256: result.acceptedFrontier.prefixSha256
+        }
+      };
     }
   );
 

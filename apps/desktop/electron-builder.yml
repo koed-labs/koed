@@ -4,6 +4,7 @@ copyright: Copyright © 2026 Koed
 
 asar: true
 npmRebuild: false
+beforePack: scripts/before-pack.mjs
 afterPack: scripts/after-pack.mjs
 
 files:

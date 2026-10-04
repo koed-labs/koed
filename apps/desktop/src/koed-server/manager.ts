@@ -74,7 +74,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type {
   ComponentState,
   ComponentStatus,
@@ -142,6 +142,10 @@ import type {
   StudioChatRecoveryRequest,
   StudioChatRecoveryResult
 } from "../ipc/studio-chat-recovery-protocol.js";
+import type {
+  StudioPersonalCatalogCacheRequest,
+  StudioPersonalCatalogCacheResult
+} from "../ipc/studio-personal-catalog-cache-protocol.js";
 import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 
 export interface DesktopCommandContext {
@@ -258,6 +262,9 @@ export interface KoedServerManager {
   studioChatRecovery: (
     request: StudioChatRecoveryRequest
   ) => Promise<StudioChatRecoveryResult>;
+  studioPersonalCatalogCache: (
+    request: StudioPersonalCatalogCacheRequest
+  ) => Promise<StudioPersonalCatalogCacheResult>;
   managedProject: ManagedProjectDesktopHandler;
   discoverProject: (cwd: string, name?: string) => Promise<unknown>;
   listProjects: () => Promise<unknown>;
@@ -3221,6 +3228,49 @@ export const createKoedServerManager = ({
     return { operation: "delete", ok: true };
   };
 
+  const studioPersonalCatalogCache = async (
+    request: StudioPersonalCatalogCacheRequest
+  ): Promise<StudioPersonalCatalogCacheResult> => {
+    if (!managedConversationDraftStore) {
+      throw new PersonalMemoryBoundaryError("not_ready", false);
+    }
+    const access = await personalMemoryAccess();
+    const identity = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL("/v1/managed-conversations/access", apiOrigin),
+        init: { method: "GET" }
+      }),
+      64 * 1_024
+    );
+    const user = objectValue(identity.user);
+    if (typeof user?.id !== "string" || user.id !== request.ownerId) {
+      throw new PersonalMemoryBoundaryError("not_found", false);
+    }
+    const verifiedScopeKey = `${new URL(access.apiOrigin).origin}|${user.id}`;
+    if (request.scopeKey !== verifiedScopeKey) {
+      throw new PersonalMemoryBoundaryError("not_found", false);
+    }
+    const reference = `studio-personal-catalog-${createHash("sha256")
+      .update(
+        JSON.stringify({
+          scope: "studio-personal-catalog-cache",
+          backend: new URL(access.apiOrigin).origin,
+          ownerUserId: user.id
+        })
+      )
+      .digest("hex")}`;
+    if (request.operation === "read") {
+      const value = await managedConversationDraftStore.get(reference);
+      return { operation: "read", value };
+    }
+    if (request.operation === "write") {
+      await managedConversationDraftStore.put(reference, request.value);
+      return { operation: "write", ok: true };
+    }
+    await managedConversationDraftStore.delete(reference);
+    return { operation: "delete", ok: true };
+  };
+
   const managedConversation: ManagedConversationDesktopHandler = async (
     request
   ) => {
@@ -4684,6 +4734,8 @@ export const createKoedServerManager = ({
       }
     } else if (request.operation === "set") {
       await saveLocalAiClientSetting(request);
+    } else if (request.operation === "setEnabled") {
+      await setLocalAiClientEnabled(request);
     } else if (request.operation === "reset") {
       await resetLocalAiClientSetting(request.flowKey);
     }
@@ -4707,6 +4759,25 @@ export const createKoedServerManager = ({
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(request.assignment)
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+  };
+
+  const setLocalAiClientEnabled = async (
+    request: Extract<LocalAiClientCommand, { operation: "setEnabled" }>
+  ) => {
+    await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/ai-client-instances/${encodeURIComponent(request.instanceId)}/enabled`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled: request.enabled })
         }
       }),
       1 * 1_024 * 1_024
@@ -5383,7 +5454,7 @@ export const createKoedServerManager = ({
 
   const runMutatingAiClient = async (
     client: "Codex" | "Claude Code" | "Pi",
-    args: ["setup" | "repair" | "remove", "codex" | "claude" | "pi"]
+    args: string[]
   ) => {
     const result = await runJson(args, 120_000);
     if (!resultOk(result)) {
@@ -5408,6 +5479,28 @@ export const createKoedServerManager = ({
         }
       };
     }
+  };
+
+  const runClaudeIntegrationMutation = (
+    operation: "setup" | "repair",
+    args?: Record<string, unknown>
+  ) => {
+    if (args?.executablePath === undefined) {
+      return runMutatingAiClient("Claude Code", [operation, "claude"]);
+    }
+    if (typeof args.executablePath !== "string") {
+      throw new Error("Claude executable path must be a string.");
+    }
+    const executablePath = args.executablePath.trim();
+    if (!executablePath || !isAbsolute(executablePath)) {
+      throw new Error("Claude executable path must be an absolute path.");
+    }
+    return runMutatingAiClient("Claude Code", [
+      operation,
+      "claude",
+      "--executable",
+      executablePath
+    ]);
   };
 
   const runAiClientCheck = async (
@@ -5590,6 +5683,7 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     studioChatRecovery,
+    studioPersonalCatalogCache,
     managedProject,
     discoverProject: (cwd, name) =>
       runJson(
@@ -5690,11 +5784,9 @@ export const createKoedServerManager = ({
       check_pi: () => runAiClientCheck("Pi", ["check", "pi"]),
       repair_pi: () => runMutatingAiClient("Pi", ["repair", "pi"]),
       remove_pi: () => runMutatingAiClient("Pi", ["remove", "pi"]),
-      setup_claude: () =>
-        runMutatingAiClient("Claude Code", ["setup", "claude"]),
+      setup_claude: (args) => runClaudeIntegrationMutation("setup", args),
       check_claude: () => runAiClientCheck("Claude Code", ["check", "claude"]),
-      repair_claude: () =>
-        runMutatingAiClient("Claude Code", ["repair", "claude"]),
+      repair_claude: (args) => runClaudeIntegrationMutation("repair", args),
       remove_claude: () =>
         runMutatingAiClient("Claude Code", ["remove", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),

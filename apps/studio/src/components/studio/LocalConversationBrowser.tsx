@@ -14,9 +14,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HomeExecution } from "@/lib/studio-contract";
 import {
   isSyntheticIndependentProject,
+  managedConversationActivityLabel,
   normalizeConversationProvider
 } from "./LocalConversationBrowser.match";
-import { deriveProjectBrowserView } from "./LocalConversationBrowser.projects";
+import {
+  deriveProjectBrowserView,
+  hasExplainableProjectAssociation
+} from "./LocalConversationBrowser.projects";
+import { PersonalRemovalControl } from "./PersonalRemovalControl";
+import type { PersonalRemovalTarget } from "@/lib/personal-removals-client";
+import {
+  hasConversationRemoval,
+  hasProjectRemoval,
+  managedConversationRemovalTarget
+} from "./personal-removals-view";
+import {
+  createPersonalCatalogCacheStore,
+  personalCatalogOwnerId,
+  persistPersonalCatalogSnapshot,
+  type PersonalCatalogCacheSnapshot
+} from "./personal-catalog-cache";
 
 type Provider = "codex" | "claude-code" | "pi";
 type LocalSource = {
@@ -57,7 +74,14 @@ const LOCAL_SOURCE_DRAG_TYPE = "application/x-koed-local-source";
 const MANAGED_EXECUTION_DRAG_TYPE = "application/x-koed-managed-execution";
 type ManagedConversation = Pick<
   HomeExecution,
-  "id" | "title" | "projectId" | "provider" | "state" | "updatedAt" | "sessionId"
+  | "id"
+  | "title"
+  | "projectId"
+  | "provider"
+  | "state"
+  | "updatedAt"
+  | "sessionId"
+  | "activity"
 >;
 const PROJECT_CONVERSATION_PAGE_SIZE = 5;
 const MAX_CATALOG_PAGES_PER_PROJECT_LOAD = 3;
@@ -172,6 +196,7 @@ function SourceRow({
   onSelect,
   canShare,
   onShare,
+  onRemove,
   onDragStart
 }: {
   item: LocalSource;
@@ -181,6 +206,7 @@ function SourceRow({
   onSelect: () => void;
   canShare: boolean;
   onShare: () => void;
+  onRemove?: () => Promise<void>;
   onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   const providerName = PROVIDER_LABEL[item.provider];
@@ -204,43 +230,54 @@ function SourceRow({
     .join(" · ");
   return (
     <div>
-    <div className="group flex items-center gap-0.5">
-      <button
-        type="button"
-        disabled={disabled}
-        draggable={item.provider === "codex" && !disabled}
-        onDragStart={onDragStart}
-        aria-busy={pending}
-        aria-label={rowDescription}
-        onClick={onSelect}
-        className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary disabled:opacity-60"
-        title={rowDescription}
-      >
-        <span
-          aria-hidden="true"
-          title={providerName}
-          className="mr-2 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border border-border px-0.5 text-[9px] font-semibold leading-none text-subtle"
+      <div className="group flex items-center gap-0.5">
+        <button
+          type="button"
+          disabled={disabled}
+          draggable={item.provider === "codex" && !disabled}
+          onDragStart={onDragStart}
+          aria-busy={pending}
+          aria-label={rowDescription}
+          onClick={onSelect}
+          className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary disabled:opacity-60"
+          title={rowDescription}
         >
-          {providerMark}
-        </span>
-        <span className="min-w-0 flex-1 truncate">
-          {pending ? "Checking source…" : item.title}
-        </span>
-      </button>
-      <button
-        type="button"
-        disabled={!canShare}
-        onClick={(event) => {
-          event.stopPropagation();
-          onShare();
-        }}
-        aria-label={`Share ${item.title} with a Team`}
-        title={canShare ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
-        className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-      >
-        <Share2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
+          <span
+            aria-hidden="true"
+            title={providerName}
+            className="mr-2 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border border-border px-0.5 text-[9px] font-semibold leading-none text-subtle"
+          >
+            {providerMark}
+          </span>
+          <span className="min-w-0 flex-1 truncate">
+            {pending ? "Checking source…" : item.title}
+          </span>
+        </button>
+        {onRemove ? (
+          <PersonalRemovalControl
+            kind="conversation"
+            name={item.title}
+            onRemove={onRemove}
+          />
+        ) : null}
+        <button
+          type="button"
+          disabled={!canShare}
+          onClick={(event) => {
+            event.stopPropagation();
+            onShare();
+          }}
+          aria-label={`Share ${item.title} with a Team`}
+          title={
+            canShare
+              ? "Share processed Personal Memory"
+              : "This conversation has no verified Personal Memory source yet"
+          }
+          className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          <Share2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
       {unavailableMessage ? (
         <div
           role="status"
@@ -258,56 +295,77 @@ function ManagedExecutionRow({
   conversation,
   onSelect,
   canShare,
-  onShare
+  onShare,
+  onRemove
 }: {
   conversation: ManagedConversation;
   onSelect: () => void;
   canShare: boolean;
   onShare: () => void;
+  onRemove?: () => Promise<void>;
 }) {
+  const activityLabel = managedConversationActivityLabel(
+    conversation.activity,
+    conversation.state
+  );
   const draggable =
     conversation.provider === "codex" &&
     conversation.state.toLowerCase() === "running";
   return (
     <div className="group flex items-center gap-0.5">
-    <button
-      type="button"
-      draggable={draggable}
-      onDragStart={(event) => {
-        if (!draggable) return;
-        event.dataTransfer.setData(
-          MANAGED_EXECUTION_DRAG_TYPE,
-          conversation.id
-        );
-        event.dataTransfer.effectAllowed = "move";
-      }}
-      onClick={onSelect}
-      aria-label={`${conversation.title} · ${conversation.provider} · ${conversation.state}`}
-      title={`${conversation.title} · ${conversation.provider} · ${conversation.state}`}
-      className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
-    >
-      <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
-      <span className="ml-2 shrink-0 text-[10px] text-subtle">
-        {conversation.state}
-      </span>
-    </button>
-    <button
-      type="button"
-      disabled={!canShare}
-      onClick={(event) => { event.stopPropagation(); onShare(); }}
-      aria-label={`Share ${conversation.title} with a Team`}
-      title={canShare ? "Share processed Personal Memory" : "This conversation has no verified Personal Memory source yet"}
-      className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-    >
-      <Share2 className="h-3.5 w-3.5" />
-    </button>
+      <button
+        type="button"
+        draggable={draggable}
+        onDragStart={(event) => {
+          if (!draggable) return;
+          event.dataTransfer.setData(
+            MANAGED_EXECUTION_DRAG_TYPE,
+            conversation.id
+          );
+          event.dataTransfer.effectAllowed = "move";
+        }}
+        onClick={onSelect}
+        aria-label={`${conversation.title} · ${conversation.provider} · ${activityLabel}`}
+        title={`${conversation.title} · ${conversation.provider} · ${activityLabel}`}
+        className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+      >
+        <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
+        <span className="ml-2 shrink-0 text-[10px] text-subtle">
+          {activityLabel}
+        </span>
+      </button>
+      {onRemove ? (
+        <PersonalRemovalControl
+          kind="conversation"
+          name={conversation.title}
+          onRemove={onRemove}
+        />
+      ) : null}
+      <button
+        type="button"
+        disabled={!canShare}
+        onClick={(event) => {
+          event.stopPropagation();
+          onShare();
+        }}
+        aria-label={`Share ${conversation.title} with a Team`}
+        title={
+          canShare
+            ? "Share processed Personal Memory"
+            : "This conversation has no verified Personal Memory source yet"
+        }
+        className="shrink-0 rounded-md p-1.5 text-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground-secondary focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <Share2 className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
 
 export function LocalConversationBrowser({
   onNavigateAway,
+  onProjectSelect,
   onSourceSelect,
   canShareSource,
   onShareSource,
@@ -318,10 +376,29 @@ export function LocalConversationBrowser({
   managedConversations = [],
   managedSourceIds = [],
   onNewProject,
-  canCreateProject = false
+  canCreateProject = false,
+  personalRemovals = [],
+  personalRemovalsReady = true,
+  personalRemovalError = null,
+  onRetryPersonalRemovals,
+  onRemovePersonalItem,
+  lastRemovedPersonalItem,
+  onUndoPersonalRemoval,
+  managedProviderSourceIds = {},
+  personalScopeKey = null
 }: {
   onNavigateAway?: () => void;
+  onProjectSelect?: (projectId: string) => void;
   canCreateProject?: boolean;
+  personalRemovals?: PersonalRemovalTarget[];
+  personalRemovalsReady?: boolean;
+  personalRemovalError?: string | null;
+  onRetryPersonalRemovals?: () => void;
+  onRemovePersonalItem?: (target: PersonalRemovalTarget) => Promise<void>;
+  lastRemovedPersonalItem?: PersonalRemovalTarget | null;
+  onUndoPersonalRemoval?: () => Promise<void>;
+  managedProviderSourceIds?: Readonly<Record<string, readonly string[]>>;
+  personalScopeKey?: string | null;
   onNewProject?: () => void;
   onSourceSelect?: (
     sourceId: string,
@@ -379,6 +456,24 @@ export function LocalConversationBrowser({
     message: string;
   } | null>(null);
   const [pendingSourceId, setPendingSourceId] = useState<string | null>(null);
+  const [undoPending, setUndoPending] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
+  const undoRemoval = async () => {
+    if (!onUndoPersonalRemoval || undoPending) return;
+    setUndoPending(true);
+    setUndoError(null);
+    try {
+      await onUndoPersonalRemoval();
+    } catch (reason) {
+      setUndoError(
+        reason instanceof Error
+          ? reason.message
+          : "Undo could not be saved. Try again."
+      );
+    } finally {
+      setUndoPending(false);
+    }
+  };
   const catalogControllerRef = useRef<AbortController | null>(null);
   const paginationInFlightRef = useRef(false);
   const catalogSequenceRef = useRef(0);
@@ -387,6 +482,63 @@ export function LocalConversationBrowser({
   const projectsControllerRef = useRef<AbortController | null>(null);
   const projectsSequenceRef = useRef(0);
   const projectSearchRef = useRef<HTMLInputElement>(null);
+  const cacheStore = useMemo(() => {
+    const ownerId = personalCatalogOwnerId(personalScopeKey);
+    return ownerId && personalScopeKey
+      ? createPersonalCatalogCacheStore({ ownerId, scopeKey: personalScopeKey })
+      : null;
+  }, [personalScopeKey]);
+  const catalogCacheStateRef = useRef({
+    items,
+    registeredProjects,
+    personalRemovals,
+    provider,
+    providerStatuses,
+    truncated
+  });
+  catalogCacheStateRef.current = {
+    items,
+    registeredProjects,
+    personalRemovals,
+    provider,
+    providerStatuses,
+    truncated
+  };
+  const writeCatalogCache = useCallback(
+    async (page?: CatalogPage) => {
+      if (!cacheStore || !personalScopeKey) return;
+      const current = catalogCacheStateRef.current;
+      if (current.provider !== "all") {
+        const cached = await cacheStore.read();
+        if (
+          cached?.scopeKey === personalScopeKey &&
+          cached.provider === "all"
+        ) {
+          await persistPersonalCatalogSnapshot(cacheStore, {
+            ...cached,
+            projects: current.registeredProjects,
+            removals: current.personalRemovals
+          });
+        }
+        return;
+      }
+      const snapshot: PersonalCatalogCacheSnapshot = {
+        schemaVersion: 1,
+        scopeKey: personalScopeKey,
+        cachedAt: Date.now(),
+        provider: current.provider,
+        catalog: {
+          items: page?.items ?? current.items,
+          providers: page?.providers ?? current.providerStatuses,
+          truncated: page?.truncated ?? current.truncated
+        },
+        projects: current.registeredProjects,
+        removals: current.personalRemovals
+      };
+      await persistPersonalCatalogSnapshot(cacheStore, snapshot);
+    },
+    [cacheStore, personalScopeKey]
+  );
 
   useEffect(() => {
     if (projectSearchOpen) projectSearchRef.current?.focus();
@@ -412,6 +564,7 @@ export function LocalConversationBrowser({
         const query = new URLSearchParams({ limit: "50" });
         if (cursor) query.set("cursor", cursor);
         if (provider !== "all") query.set("provider", provider);
+        if (!append) query.set("refresh", "1");
         const response = await fetch(
           `/studio-api/local-conversations?${query}`,
           {
@@ -438,6 +591,7 @@ export function LocalConversationBrowser({
         setProviderStatuses(page.providers);
         setNextCursor(page.nextCursor);
         setTruncated(page.truncated);
+        if (!append) void writeCatalogCache(page);
         return page;
       } catch (reason) {
         if (
@@ -457,7 +611,7 @@ export function LocalConversationBrowser({
         }
       }
     },
-    [provider]
+    [provider, writeCatalogCache]
   );
 
   const loadMoreProjectConversations = useCallback(
@@ -533,6 +687,14 @@ export function LocalConversationBrowser({
         !controller.signal.aborted
       ) {
         setRegisteredProjects(projects);
+        const cached = await cacheStore?.read();
+        if (cacheStore && cached?.scopeKey === personalScopeKey) {
+          await persistPersonalCatalogSnapshot(cacheStore, {
+            ...cached,
+            projects,
+            removals: catalogCacheStateRef.current.personalRemovals
+          });
+        }
       }
     } catch (reason) {
       if (
@@ -547,7 +709,7 @@ export function LocalConversationBrowser({
         setLoadingRegisteredProjects(false);
       }
     }
-  }, []);
+  }, [cacheStore, personalScopeKey, provider]);
 
   const selectSource = useCallback(
     async (source: LocalSource) => {
@@ -631,6 +793,7 @@ export function LocalConversationBrowser({
           return;
         }
         if (
+          !hasProjectRemoval(personalRemovals, destinationProjectId) &&
           !registeredProjects.some(
             (project) => project.id === destinationProjectId
           )
@@ -663,6 +826,7 @@ export function LocalConversationBrowser({
       );
       if (!source || source.projectId === destinationProjectId) return;
       if (
+        hasProjectRemoval(personalRemovals, destinationProjectId) ||
         !registeredProjects.some(
           (project) => project.id === destinationProjectId
         )
@@ -678,7 +842,8 @@ export function LocalConversationBrowser({
       managedConversations,
       onMoveManagedExecution,
       registeredProjects,
-      selectSource
+      selectSource,
+      personalRemovals
     ]
   );
 
@@ -695,10 +860,61 @@ export function LocalConversationBrowser({
   );
 
   useEffect(() => {
-    // Fetching synchronizes this view with the local Studio gateway.
+    const sequence = ++catalogSequenceRef.current;
+    const projectSequence = projectsSequenceRef.current;
+    let active = true;
+    // Scope and provider changes must not leave the previous cache visible.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void fetchPage();
-  }, [fetchPage]);
+    setItems([]);
+    setProviderStatuses({});
+    setNextCursor(null);
+    setTruncated(false);
+    setError(null);
+    setLoadMoreError(null);
+    setLoading(true);
+    const loadCachedThenRefresh = async () => {
+      if (cacheStore && personalScopeKey) {
+        const cached = await cacheStore.read();
+        if (
+          active &&
+          sequence === catalogSequenceRef.current &&
+          cached?.scopeKey === personalScopeKey &&
+          cached.provider === provider
+        ) {
+          try {
+            const page = parsePage({
+              ...cached.catalog,
+              nextCursor: null
+            });
+            const projects = parseRegisteredProjects({
+              projects: cached.projects
+            });
+            if (active && sequence === catalogSequenceRef.current) {
+              setItems(page.items);
+              setProviderStatuses(page.providers);
+              setNextCursor(null);
+              setTruncated(page.truncated);
+              if (projectsSequenceRef.current === projectSequence) {
+                setRegisteredProjects(projects);
+              }
+              setLoading(false);
+            }
+          } catch {
+            await cacheStore.clear();
+          }
+        }
+      }
+      if (active && sequence === catalogSequenceRef.current) {
+        // Refresh first-page discovery after cached rows are already usable.
+        void fetchPage();
+      }
+    };
+    void loadCachedThenRefresh();
+    return () => {
+      active = false;
+      catalogSequenceRef.current += 1;
+    };
+  }, [cacheStore, fetchPage, personalScopeKey, provider]);
 
   useEffect(() => {
     const refreshProjects = () => void fetchRegisteredProjects();
@@ -712,44 +928,112 @@ export function LocalConversationBrowser({
     };
   }, [fetchRegisteredProjects]);
 
+  useEffect(() => {
+    if (!cacheStore || !personalScopeKey) return;
+    let active = true;
+    void cacheStore.read().then((cached) => {
+      if (!active || cached?.scopeKey !== personalScopeKey) return;
+      void persistPersonalCatalogSnapshot(cacheStore, {
+        ...cached,
+        removals: personalRemovals
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [cacheStore, personalRemovals, personalScopeKey, provider]);
+
+  const removedProjectIds = useMemo(
+    () =>
+      new Set(
+        personalRemovals.flatMap((target) =>
+          target.kind === "project" ? [target.projectId] : []
+        )
+      ),
+    [personalRemovals]
+  );
+  const visibleRegisteredProjects = useMemo(
+    () =>
+      personalRemovalsReady
+        ? registeredProjects.filter(
+            (project) => !removedProjectIds.has(project.id)
+          )
+        : [],
+    [registeredProjects, removedProjectIds, personalRemovalsReady]
+  );
+  const registeredProjectIds = useMemo(
+    () => new Set(visibleRegisteredProjects.map((project) => project.id)),
+    [visibleRegisteredProjects]
+  );
+  const managedSourceIdSet = useMemo(
+    () => new Set(managedSourceIds),
+    [managedSourceIds]
+  );
   const projectSources = useMemo(
     () =>
-      items.filter(
-        (item) =>
-          item.projectId &&
-          !isSyntheticIndependentProject(item.projectId, item.projectName)
-      ),
-    [items]
+      items.filter((item) => {
+        return (
+          hasExplainableProjectAssociation(item, registeredProjectIds) &&
+          !managedSourceIdSet.has(item.sourceId)
+        );
+      }),
+    [items, managedSourceIdSet, registeredProjectIds]
+  );
+  const visibleProjectSources = useMemo(
+    () =>
+      personalRemovalsReady
+        ? projectSources.filter(
+            (item) =>
+              !removedProjectIds.has(item.projectId ?? "") &&
+              !hasConversationRemoval(personalRemovals, [item.sourceId])
+          )
+        : [],
+    [projectSources, removedProjectIds, personalRemovals, personalRemovalsReady]
+  );
+  const visibleManagedConversations = useMemo(
+    () =>
+      personalRemovalsReady
+        ? managedConversations.filter(
+            (conversation) =>
+              !removedProjectIds.has(conversation.projectId ?? "") &&
+              !hasConversationRemoval(personalRemovals, [
+                `managed:${conversation.id}`
+              ])
+          )
+        : [],
+    [
+      managedConversations,
+      removedProjectIds,
+      personalRemovals,
+      personalRemovalsReady
+    ]
   );
   const { projects, activeManagedConversations } = useMemo(
     () =>
       deriveProjectBrowserView({
-        items: projectSources,
-        registeredProjects,
-        managedConversations,
+        items: visibleProjectSources,
+        registeredProjects: visibleRegisteredProjects,
+        managedConversations: visibleManagedConversations,
         provider,
         normalizeProvider: normalizeConversationProvider
       }),
-    [projectSources, registeredProjects, managedConversations, provider]
+    [
+      visibleProjectSources,
+      visibleRegisteredProjects,
+      visibleManagedConversations,
+      provider
+    ]
   );
   const projectItems = useMemo(() => {
     const grouped = new Map<string, LocalSource[]>();
-    for (const item of projectSources) {
+    for (const item of visibleProjectSources) {
       if (!item.projectId) continue;
       const group = grouped.get(item.projectId) ?? [];
       group.push(item);
       grouped.set(item.projectId, group);
     }
     return grouped;
-  }, [projectSources]);
-  const registeredProjectIds = useMemo(
-    () => new Set(registeredProjects.map((project) => project.id)),
-    [registeredProjects]
-  );
-  const managedSourceIdSet = useMemo(
-    () => new Set(managedSourceIds),
-    [managedSourceIds]
-  );
+  }, [visibleProjectSources]);
   const managedByProject = useMemo(() => {
     const grouped = new Map<string, ManagedConversation[]>();
     for (const item of activeManagedConversations) {
@@ -769,9 +1053,14 @@ export function LocalConversationBrowser({
   );
   const standaloneItems = items.filter(
     (item) =>
+      personalRemovalsReady &&
       (!item.projectId ||
-        isSyntheticIndependentProject(item.projectId, item.projectName)) &&
-      !managedSourceIdSet.has(item.sourceId)
+        isSyntheticIndependentProject(item.projectId, item.projectName) ||
+        (!registeredProjectIds.has(item.projectId) &&
+          !item.projectName?.trim())) &&
+      !managedSourceIdSet.has(item.sourceId) &&
+      !hasProjectRemoval(personalRemovals, item.projectId ?? "") &&
+      !hasConversationRemoval(personalRemovals, [item.sourceId])
   );
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
   const filteredProjects = projects.filter((project) =>
@@ -787,6 +1076,30 @@ export function LocalConversationBrowser({
 
   return (
     <div className="px-2 pb-2 text-sm no-drag">
+      {lastRemovedPersonalItem ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mb-2 flex items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-2 text-xs text-muted"
+        >
+          <span>
+            Removed from Studio. Files and history are still available.
+          </span>
+          <button
+            type="button"
+            onClick={() => void undoRemoval()}
+            disabled={undoPending}
+            className="shrink-0 rounded px-1.5 py-1 font-medium text-foreground-secondary hover:bg-surface-hover hover:text-foreground"
+          >
+            {undoPending ? "Restoring…" : "Undo"}
+          </button>
+        </div>
+      ) : null}
+      {lastRemovedPersonalItem && undoError ? (
+        <p role="alert" className="mb-2 px-2 text-xs text-danger">
+          {undoError}
+        </p>
+      ) : null}
       <div className="flex items-center justify-between px-2 py-1.5">
         <button
           type="button"
@@ -866,6 +1179,27 @@ export function LocalConversationBrowser({
           </button>
         </div>
       </div>
+      {!personalRemovalsReady ? (
+        <div
+          role={personalRemovalError ? "alert" : "status"}
+          className="mx-1 mb-2 rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted"
+        >
+          <p>
+            {personalRemovalError
+              ? "Your Personal Studio list is unavailable, so saved removals cannot be applied."
+              : "Loading your Personal Studio list…"}
+          </p>
+          {personalRemovalError && onRetryPersonalRemovals ? (
+            <button
+              type="button"
+              onClick={onRetryPersonalRemovals}
+              className="mt-2 font-medium text-foreground-secondary hover:text-foreground"
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {projectSearchOpen && (
         <div className="px-2 pb-1">
           <input
@@ -911,6 +1245,7 @@ export function LocalConversationBrowser({
           {!loading &&
           !loadingRegisteredProjects &&
           !error &&
+          personalRemovalsReady &&
           projects.length === 0 ? (
             <p className="px-3 py-2 text-xs text-subtle">
               No local projects found.
@@ -939,55 +1274,81 @@ export function LocalConversationBrowser({
               visibleCatalogSources.length > visibleSources.length ||
               Boolean(nextCursor);
             return (
-              <div key={project.id}>
-                <button
-                  type="button"
-                  onDragOver={(event) => {
-                    if (
-                      registeredProjects.some(
-                        (candidate) => candidate.id === project.id
-                      ) &&
-                      /^lp_[0-9a-f]{32}$/iu.test(project.id) &&
-                      (Array.from(event.dataTransfer.types).includes(
-                        LOCAL_SOURCE_DRAG_TYPE
-                      ) ||
-                        Array.from(event.dataTransfer.types).includes(
-                          MANAGED_EXECUTION_DRAG_TYPE
-                        ))
-                    ) {
-                      event.preventDefault();
-                      setDropTargetProjectId(project.id);
-                    }
-                  }}
-                  onDragLeave={(event) => {
-                    if (
-                      !event.currentTarget.contains(event.relatedTarget as Node)
-                    ) {
-                      if (dropTargetProjectId === project.id)
-                        setDropTargetProjectId(null);
-                    }
-                  }}
-                  onDrop={(event) => void acceptSourceDrop(event, project.id)}
-                  aria-expanded={projectExpanded}
-                  title={project.name}
-                  onClick={() =>
-                    setExpandedProjectIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(project.id)) next.delete(project.id);
-                      else next.add(project.id);
-                      return next;
-                    })
-                  }
-                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary ${dropTargetProjectId === project.id ? "bg-surface-hover ring-1 ring-accent" : ""}`}
-                >
-                  {projectExpanded ? (
-                    <ChevronDown className="mr-1 h-3.5 w-3.5 shrink-0" />
-                  ) : (
-                    <ChevronRight className="mr-1 h-3.5 w-3.5 shrink-0" />
-                  )}
-                  <Folder className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{project.name}</span>
-                </button>
+              <div key={project.id} className="group">
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onDragOver={(event) => {
+                      if (
+                        registeredProjects.some(
+                          (candidate) => candidate.id === project.id
+                        ) &&
+                        !hasProjectRemoval(personalRemovals, project.id) &&
+                        /^lp_[0-9a-f]{32}$/iu.test(project.id) &&
+                        (Array.from(event.dataTransfer.types).includes(
+                          LOCAL_SOURCE_DRAG_TYPE
+                        ) ||
+                          Array.from(event.dataTransfer.types).includes(
+                            MANAGED_EXECUTION_DRAG_TYPE
+                          ))
+                      ) {
+                        event.preventDefault();
+                        setDropTargetProjectId(project.id);
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      if (
+                        !event.currentTarget.contains(
+                          event.relatedTarget as Node
+                        )
+                      ) {
+                        if (dropTargetProjectId === project.id)
+                          setDropTargetProjectId(null);
+                      }
+                    }}
+                    onDrop={(event) => void acceptSourceDrop(event, project.id)}
+                    aria-expanded={projectExpanded}
+                    title={project.name}
+                    onClick={() => {
+                      setExpandedProjectIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(project.id)) next.delete(project.id);
+                        else next.add(project.id);
+                        return next;
+                      });
+                      if (!projectExpanded) {
+                        onProjectSelect?.(project.id);
+                        if (
+                          sources.length < PROJECT_CONVERSATION_PAGE_SIZE &&
+                          nextCursor
+                        ) {
+                          void loadMoreProjectConversations(project.id, 0);
+                        }
+                      }
+                    }}
+                    className={`flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-sm text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary ${dropTargetProjectId === project.id ? "bg-surface-hover ring-1 ring-accent" : ""}`}
+                  >
+                    {projectExpanded ? (
+                      <ChevronDown className="mr-1 h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <ChevronRight className="mr-1 h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <Folder className="mr-2 h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{project.name}</span>
+                  </button>
+                  {onRemovePersonalItem ? (
+                    <PersonalRemovalControl
+                      kind="project"
+                      name={project.name}
+                      onRemove={() =>
+                        onRemovePersonalItem({
+                          kind: "project",
+                          projectId: project.id
+                        })
+                      }
+                    />
+                  ) : null}
+                </div>
                 {projectExpanded && (
                   <div className="ml-3 border-l border-border pl-2">
                     {managedSources.map((conversation) => (
@@ -997,8 +1358,24 @@ export function LocalConversationBrowser({
                         onSelect={() =>
                           onSelectManagedExecution?.(conversation.id)
                         }
-                        canShare={canShareManagedExecution?.(conversation.id) ?? false}
-                        onShare={() => onShareManagedExecution?.(conversation.id)}
+                        canShare={
+                          canShareManagedExecution?.(conversation.id) ?? false
+                        }
+                        onShare={() =>
+                          onShareManagedExecution?.(conversation.id)
+                        }
+                        onRemove={
+                          onRemovePersonalItem
+                            ? () =>
+                                onRemovePersonalItem({
+                                  ...managedConversationRemovalTarget({
+                                    executionId: conversation.id,
+                                    providerSourceIds:
+                                      managedProviderSourceIds[conversation.id]
+                                  })
+                                })
+                            : undefined
+                        }
                       />
                     ))}
                     {visibleCatalogSources.length === 0 &&
@@ -1022,8 +1399,22 @@ export function LocalConversationBrowser({
                               : undefined
                           }
                           onSelect={() => void selectSource(item)}
-                          canShare={canShareSource?.(item.sourceId, item.provider) ?? false}
-                          onShare={() => onShareSource?.(item.sourceId, item.provider)}
+                          canShare={
+                            canShareSource?.(item.sourceId, item.provider) ??
+                            false
+                          }
+                          onShare={() =>
+                            onShareSource?.(item.sourceId, item.provider)
+                          }
+                          onRemove={
+                            onRemovePersonalItem
+                              ? () =>
+                                  onRemovePersonalItem({
+                                    kind: "conversation",
+                                    sourceId: item.sourceId
+                                  })
+                              : undefined
+                          }
                           onDragStart={(event) => {
                             if (item.provider !== "codex") return;
                             event.dataTransfer.setData(
@@ -1077,6 +1468,18 @@ export function LocalConversationBrowser({
             <ChevronRight className="ml-1 h-3.5 w-3.5" />
           )}
         </button>
+        <button
+          type="button"
+          aria-label="Refresh local conversations"
+          title="Refresh local conversations"
+          disabled={loading}
+          onClick={() => void fetchPage()}
+          className="rounded-md p-1 text-muted hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+        >
+          <RotateCw
+            className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+          />
+        </button>
       </div>
       {expandedChats && (
         <div>
@@ -1097,7 +1500,10 @@ export function LocalConversationBrowser({
               Checking local conversations…
             </p>
           ) : null}
-          {!loading && !error && standaloneItems.length === 0 ? (
+          {!loading &&
+          personalRemovalsReady &&
+          !error &&
+          standaloneItems.length === 0 ? (
             standaloneManaged.length === 0 ? (
               <p className="px-2 py-2 text-xs text-subtle">
                 No projectless local conversations found.
@@ -1116,6 +1522,18 @@ export function LocalConversationBrowser({
               onSelect={() => onSelectManagedExecution?.(conversation.id)}
               canShare={canShareManagedExecution?.(conversation.id) ?? false}
               onShare={() => onShareManagedExecution?.(conversation.id)}
+              onRemove={
+                onRemovePersonalItem
+                  ? () =>
+                      onRemovePersonalItem({
+                        ...managedConversationRemovalTarget({
+                          executionId: conversation.id,
+                          providerSourceIds:
+                            managedProviderSourceIds[conversation.id]
+                        })
+                      })
+                  : undefined
+              }
             />
           ))}
           {standaloneItems.map((item) => (
@@ -1132,6 +1550,15 @@ export function LocalConversationBrowser({
               onSelect={() => void selectSource(item)}
               canShare={canShareSource?.(item.sourceId, item.provider) ?? false}
               onShare={() => onShareSource?.(item.sourceId, item.provider)}
+              onRemove={
+                onRemovePersonalItem
+                  ? () =>
+                      onRemovePersonalItem({
+                        kind: "conversation",
+                        sourceId: item.sourceId
+                      })
+                  : undefined
+              }
               onDragStart={(event) => {
                 if (item.provider !== "codex") return;
                 event.dataTransfer.setData(

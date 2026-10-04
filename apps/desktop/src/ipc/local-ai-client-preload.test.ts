@@ -76,7 +76,7 @@ const readModel = {
 };
 
 describe("Local AI Client preload bridge", () => {
-  it("uses strict list, set, and reset commands without exposing authority", async () => {
+  it("uses strict list, set, enabled, and reset commands without exposing authority", async () => {
     const invoke = vi.fn().mockResolvedValue({ operation: "list", readModel });
     const api = createLocalAiClientPreloadApi(invoke);
     await api.list();
@@ -87,7 +87,8 @@ describe("Local AI Client preload bridge", () => {
       "list",
       "refresh",
       "reset",
-      "set"
+      "set",
+      "setEnabled"
     ]);
     expect(Object.isFrozen(api)).toBe(true);
   });
@@ -125,5 +126,19 @@ describe("Local AI Client preload bridge", () => {
       flowKey: "mcp_memory_answer"
     });
     await expect(api.reset("manual_memory_answer" as never)).rejects.toThrow();
+  });
+
+  it("validates and sends per-instance enabled updates", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValue({ operation: "setEnabled", readModel });
+    const api = createLocalAiClientPreloadApi(invoke);
+    await api.setEnabled("runner.0123456789", false);
+    expect(invoke).toHaveBeenCalledWith(localAiClientCommandChannel, {
+      operation: "setEnabled",
+      instanceId: "runner.0123456789",
+      enabled: false
+    });
+    await expect(api.setEnabled("", true)).rejects.toThrow();
   });
 });

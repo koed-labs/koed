@@ -47,6 +47,8 @@ export interface StudioLocalAccess {
 
 export interface StudioWindowLike {
   webContents: {
+    stop(): void;
+    getURL(): string;
     setWindowOpenHandler(
       handler: (details: { url: string }) => { action: "allow" | "deny" }
     ): void;
@@ -54,6 +56,7 @@ export interface StudioWindowLike {
       event: "will-navigate",
       listener: (event: { preventDefault(): void }, url: string) => void
     ): void;
+    on(event: "did-finish-load", listener: () => void): void;
     send(channel: string, value: unknown): void;
   };
   on(
@@ -70,6 +73,91 @@ export interface StudioWindowLike {
   close(): void;
   isDestroyed(): boolean;
 }
+
+const studioNavigationRetryDelaysMs = [250, 750] as const;
+const studioNavigationAttemptTimeoutMs = 10_000;
+const studioRecoveryNavigationTimeoutMs = 3_000;
+
+const escapeHtmlAttribute = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
+const studioRecoveryDocumentUrl = (studioUrl: string): string => {
+  const retryUrl = escapeHtmlAttribute(studioUrl);
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Koed Studio</title><style>body{font:16px system-ui,sans-serif;background:#111;color:#eee;display:grid;min-height:100vh;place-items:center;margin:0}main{max-width:32rem;padding:2rem}a{color:#9db8ff}</style><main><h1>Koed Studio is still starting</h1><p>The local window could not load yet. Retry when the local service is available.</p><p><a href="${retryUrl}">Retry Koed Studio</a></p></main>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+};
+
+const loadUrlWithTimeout = async (
+  window: StudioWindowLike,
+  url: string,
+  timeoutMs: number
+): Promise<"loaded" | "failed" | "timed_out"> => {
+  let navigation: Promise<void>;
+  try {
+    navigation = window.loadURL(url);
+  } catch (error) {
+    navigation = Promise.reject(error);
+  }
+  // Attach rejection handling immediately so a late rejection after timeout is
+  // still consumed once stop() cancels the navigation.
+  const navigationResult = navigation.then(
+    () => "loaded" as const,
+    () => "failed" as const
+  );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutResult = new Promise<"timed_out">((resolveTimeout) => {
+    timeoutHandle = setTimeout(() => resolveTimeout("timed_out"), timeoutMs);
+  });
+  const result = await Promise.race([navigationResult, timeoutResult]);
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  if (result === "timed_out") window.webContents.stop();
+  return result;
+};
+
+const loadStudioWithRecovery = async (
+  window: StudioWindowLike,
+  studioUrl: string,
+  allowRecoveryUrl: (url: string) => void,
+  isSuperseded: () => boolean
+): Promise<boolean> => {
+  for (const retryDelayMs of [0, ...studioNavigationRetryDelaysMs]) {
+    if (retryDelayMs > 0) {
+      await new Promise<void>((resolveDelay) =>
+        setTimeout(resolveDelay, retryDelayMs)
+      );
+    }
+    if (window.isDestroyed()) return false;
+    const result = await loadUrlWithTimeout(
+      window,
+      studioUrl,
+      studioNavigationAttemptTimeoutMs
+    );
+    if (result === "loaded") {
+      return true;
+    }
+    if (result === "failed") {
+      if (isSuperseded()) return true;
+    }
+    // A timeout calls webContents.stop() before the next bounded attempt.
+  }
+
+  if (window.isDestroyed()) return false;
+  const recoveryUrl = studioRecoveryDocumentUrl(studioUrl);
+  allowRecoveryUrl(recoveryUrl);
+  const recoveryResult = await loadUrlWithTimeout(
+    window,
+    recoveryUrl,
+    studioRecoveryNavigationTimeoutMs
+  );
+  if (recoveryResult !== "loaded") {
+    throw new Error("Studio recovery page failed to load.");
+  }
+  return false;
+};
 
 export interface StudioGateway {
   url: string;
@@ -217,6 +305,9 @@ export const createStudioWindowController = (input: {
   let opening: Promise<void> | null = null;
   let closing: Promise<void> | null = null;
   let studioOrigin: string | null = null;
+  let recoveryDocumentUrl: string | null = null;
+  let studioLoadFailed = false;
+  let supersedingNavigationObserved = false;
   const forceClosingWindows = new WeakSet<StudioWindowLike>();
   let collaborationLifecycle: AbortController | null = null;
   let collaborationOwnerId: string | null = null;
@@ -971,6 +1062,8 @@ export const createStudioWindowController = (input: {
       await opening?.catch(() => undefined);
       const currentWindow = window;
       window = null;
+      studioLoadFailed = false;
+      recoveryDocumentUrl = null;
       if (currentWindow && !currentWindow.isDestroyed()) {
         forceClosingWindows.add(currentWindow);
         currentWindow.close();
@@ -987,6 +1080,17 @@ export const createStudioWindowController = (input: {
     if (opening) return opening;
     if (window && !window.isDestroyed()) {
       if (!hidden) {
+        if (studioLoadFailed && gateway) {
+          supersedingNavigationObserved = false;
+          studioLoadFailed = !(await loadStudioWithRecovery(
+            window,
+            gateway.url,
+            (url) => {
+              recoveryDocumentUrl = url;
+            },
+            () => supersedingNavigationObserved
+          ));
+        }
         window.show();
         window.focus();
       }
@@ -1068,6 +1172,7 @@ export const createStudioWindowController = (input: {
         studioOrigin = origin;
         input.allowedRendererOrigins.add(origin);
         input.studioRendererOrigins?.add(origin);
+        supersedingNavigationObserved = false;
         const createdWindow = input.createWindow();
         window = createdWindow;
         createdWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -1077,10 +1182,27 @@ export const createStudioWindowController = (input: {
           return { action: "deny" };
         });
         createdWindow.webContents.on("will-navigate", (event, url) => {
+          if (url === recoveryDocumentUrl) return;
           try {
-            if (desktopRendererOrigin(url) !== origin) event.preventDefault();
+            if (desktopRendererOrigin(url) !== origin) {
+              event.preventDefault();
+            } else if (url !== started.url) {
+              supersedingNavigationObserved = true;
+            }
           } catch {
             event.preventDefault();
+          }
+        });
+        createdWindow.webContents.on("did-finish-load", () => {
+          try {
+            if (
+              desktopRendererOrigin(createdWindow.webContents.getURL()) ===
+              origin
+            ) {
+              studioLoadFailed = false;
+            }
+          } catch {
+            // Recovery documents use data: and do not make the app ready.
           }
         });
         createdWindow.on("close", (event) => {
@@ -1096,12 +1218,24 @@ export const createStudioWindowController = (input: {
           if (window === createdWindow) window = null;
           void disposeGateway();
         });
-        await createdWindow.loadURL(started.url);
+        studioLoadFailed = !(await loadStudioWithRecovery(
+          createdWindow,
+          started.url,
+          (url) => {
+            recoveryDocumentUrl = url;
+          },
+          () => supersedingNavigationObserved
+        ));
         if (!createdWindow.isDestroyed() && !hidden) createdWindow.show();
       } catch (error) {
         const failedWindow = window;
         window = null;
-        if (failedWindow && !failedWindow.isDestroyed()) failedWindow.close();
+        studioLoadFailed = false;
+        recoveryDocumentUrl = null;
+        if (failedWindow && !failedWindow.isDestroyed()) {
+          forceClosingWindows.add(failedWindow);
+          failedWindow.close();
+        }
         await disposeGateway();
         throw error;
       }

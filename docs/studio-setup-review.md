@@ -11,22 +11,47 @@ is unavailable. Both flows keep the optional Codex, Claude Code, and Pi setup
 flow. Completion is saved through the existing onboarding state commands.
 Setup inspection and progress use the existing desktop setup bridge.
 
-Settings now has stable **AI Clients & models**, **Setup & health**, and
-**Devices** sections. Desktop uses the existing local AI Client settings and
-pairing APIs. Browser Studio reads authorized computer and model readiness over
-the hosted launch-options route, and saves account flow defaults through the
-existing authenticated local-agent-settings routes. Desktop remains the place
-to install, sign in to, and repair clients on an execution computer.
+Settings has **AI providers**, **Setup & health**, and **Devices** sections.
+Desktop reads the saved local AI Client catalog and uses the existing pairing
+APIs. Browser Studio reads authorized computers and provider readiness over
+the hosted launch-options route. Settings lists providers rather than every
+model; model selection remains in Agent and chat controls. Full Desktop setup
+inspection starts with **Check status**, rather than automatically on page open.
+Desktop exposes Add AI provider, Configure, Check status, and Enable/Disable.
+Add and Configure reuse the existing client setup and repair commands. Account
+sign-in and subscriptions stay in the original AI Client. Opening Settings reads
+the saved catalog; discovery runs only when a check or integration operation is
+requested. Disabling a provider preserves its installation and history, allows
+running work to finish, and blocks future managed starts and sends. Desktop
+remains the place to install, sign in to, and repair clients on an execution
+computer.
+
+## Claude Code configuration
+
+Open Settings → AI providers → Anthropic → Configure. The setup controls open
+beside that provider. Leave the optional executable field blank for automatic
+detection, or enter an absolute Claude Code executable path. The Claude Desktop
+GUI executable is not a Claude Code executable. Connect or repair Claude Code,
+then read its status check
+and next step in the same place. Checks show progress and completion explicitly.
+Koed uses the existing installation and sign-in; it does not ask for an Anthropic
+API key. If sign-in is required, authenticate Claude Code and check again.
+Signing into Claude Desktop alone is not proof that its Code executable is
+signed in.
+
+On macOS, discovery also supports Claude Desktop's bundled Code executable when
+no regular Claude Code installation is available on PATH. Repair updates Koed's
+registered executable after Claude Desktop changes the installed version.
 
 ## Identity and scope limits
 
 The read model retains `hostedInstanceId` and `sourceDeviceLabel`, but never
 exposes `sourceDeviceCredentialId`. Lists use the hosted instance ID so two
 computers with the same provider-local instance ID remain separate. Existing
-settings assignments still store the provider and provider-local ID. Browser
-choices with a provider and Client ID duplicated across computers are disabled
-because the persisted assignment cannot identify a computer. Identical
-provider-local IDs under different providers remain separate choices.
+settings assignments still store the provider and provider-local ID. Provider
+availability changes target the hosted instance ID when available, so another
+computer’s client is not changed accidentally. Browser provider status is
+read-only; configuration stays on the selected execution computer.
 
 Hosted launch options publish verified client/model readiness, not the remote
 computer's Koed package, runtime, model download, services, integration, doctor,

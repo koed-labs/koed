@@ -677,3 +677,55 @@ test("browser send identity persistence reports storage failure before submit", 
   assert.doesNotThrow(() => store.write(record));
   assert.throws(() => store.writeDurably?.(record), /quota unavailable/);
 });
+
+test("keeps stopped-session resume intent and the original prompt identity across restart", () => {
+  const storage = new MemoryStorage();
+  const scope = {
+    ownerId: "owner",
+    backendId: "backend",
+    executionId: "stopped-chat",
+    storage
+  };
+  const store = createDeviceManagedChatRecoveryStore(scope);
+  assert.ok(store);
+  const operation = {
+    kind: "prompt" as const,
+    startIdempotencyKey: "unused-start",
+    promptIdempotencyKey: "same-prompt",
+    clientUserMessageId: "same-message",
+    executionGeneration: 4,
+    prompt: "Continue our discussion",
+    resumeFromStopped: true as const,
+    requestFingerprint: "unchanged-settings",
+    state: "pending" as const
+  };
+  store.write({
+    schemaVersion: 1,
+    draft: operation.prompt,
+    pendingOperation: operation
+  });
+  const restored = createDeviceManagedChatRecoveryStore(scope)?.read();
+  assert.deepEqual(restored?.pendingOperation, operation);
+  assert.deepEqual(
+    reusableManagedChatSendIdentity(
+      restored ?? null,
+      operation.prompt,
+      operation.requestFingerprint
+    ),
+    {
+      startIdempotencyKey: operation.startIdempotencyKey,
+      promptIdempotencyKey: operation.promptIdempotencyKey,
+      clientUserMessageId: operation.clientUserMessageId
+    }
+  );
+  const [key] = storage.values.keys();
+  storage.values.set(
+    key!,
+    JSON.stringify({
+      schemaVersion: 1,
+      draft: "unsent",
+      pendingOperation: { ...operation, resumeFromStopped: "yes" }
+    })
+  );
+  assert.equal(createDeviceManagedChatRecoveryStore(scope)?.read(), null);
+});

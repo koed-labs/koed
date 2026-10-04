@@ -43,10 +43,14 @@ export interface ListLocalConversationSourcesOptions {
   cursor?: string;
   provider?: LocalConversationSource["provider"];
   env?: NodeJS.ProcessEnv;
+  /** Bypass the process-local completed scan cache and refresh it on success. */
+  refresh?: boolean;
 }
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 50;
+const CATALOG_CACHE_TTL_MS = 30_000;
+const MAX_CATALOG_CACHE_SCOPES = 6;
 const MAX_DISCOVERED_ENTRIES = 50_000;
 const MAX_DISCOVERED_FILES = 20_000;
 const MAX_HEADER_BYTES = 64 * 1024;
@@ -55,8 +59,22 @@ const CLAUDE_IDENTITY_MAX_RECORDS = 2_000;
 const CLAUDE_SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+type CatalogSnapshot = {
+  items: LocalConversationSource[];
+  providers: LocalConversationCatalogPage["providers"];
+  truncated: boolean;
+};
+type CatalogCacheEntry = { snapshot: CatalogSnapshot; expiresAt: number };
+
+const completedCatalogScans = new Map<string, CatalogCacheEntry>();
+const inFlightCatalogScans = new Map<string, Promise<CatalogSnapshot>>();
+
 type Provider = LocalConversationSource["provider"];
-type Candidate = LocalConversationSource & { privatePath: string };
+type Candidate = LocalConversationSource & {
+  privatePath: string;
+  privateCwd?: string;
+  privateRepositoryUrl?: string;
+};
 type HeaderRecord = { record: Record<string, unknown>; stats: Stats };
 type Cursor = { activityAt: string; sourceId: string; version: 1 };
 type RootSpec = { provider: Provider; paths: string[]; extensions: string[] };
@@ -65,11 +83,107 @@ type RegisteredProjectIdentity = {
   displayName: string;
 };
 
+type LocalGitIdentity = {
+  commonDirectory: string;
+  projectRoot?: string;
+  originUrl?: string;
+};
+
 const homeDirectory = (env: NodeJS.ProcessEnv): string =>
   path.resolve(env.HOME?.trim() || os.homedir());
 
 const hash = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
+
+const normalizedAbsolutePath = (value: string): string =>
+  path.resolve(value.trim());
+
+const canonicalProjectPath = async (value: string): Promise<string> => {
+  const resolved = normalizedAbsolutePath(value);
+  try {
+    return await realpath(resolved);
+  } catch {
+    return resolved;
+  }
+};
+
+const readSmallRegularFile = async (
+  filename: string,
+  maxBytes: number
+): Promise<string | undefined> => {
+  try {
+    const details = await lstat(filename);
+    if (
+      details.isSymbolicLink() ||
+      !details.isFile() ||
+      details.size > maxBytes
+    )
+      return undefined;
+    return await readFile(filename, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Return the shared Git directory for a real local checkout. Reading only
+ * bounded Git metadata lets linked worktrees share identity without invoking
+ * Git for every transcript or trusting the checkout's basename.
+ */
+const readLocalGitIdentity = async (
+  cwd: string
+): Promise<LocalGitIdentity | undefined> => {
+  try {
+    const resolvedCwd = await realpath(normalizedAbsolutePath(cwd));
+    const cwdStats = await lstat(resolvedCwd);
+    if (cwdStats.isSymbolicLink() || !cwdStats.isDirectory()) return undefined;
+    const gitEntry = path.join(resolvedCwd, ".git");
+    const gitStats = await lstat(gitEntry);
+    if (gitStats.isSymbolicLink()) return undefined;
+
+    let gitDirectory: string;
+    if (gitStats.isDirectory()) gitDirectory = await realpath(gitEntry);
+    else if (gitStats.isFile()) {
+      const pointer = await readSmallRegularFile(gitEntry, 4_096);
+      const match = pointer?.match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!match) return undefined;
+      gitDirectory = await realpath(path.resolve(resolvedCwd, match[1]!));
+    } else return undefined;
+
+    const commonDirectoryFile = path.join(gitDirectory, "commondir");
+    const commonDirectoryValue = await readSmallRegularFile(
+      commonDirectoryFile,
+      4_096
+    );
+    const commonDirectory = commonDirectoryValue
+      ? await realpath(path.resolve(gitDirectory, commonDirectoryValue.trim()))
+      : gitDirectory;
+    const config = await readSmallRegularFile(
+      path.join(commonDirectory, "config"),
+      64 * 1024
+    );
+    let inOriginSection = false;
+    let originUrl: string | undefined;
+    for (const line of config?.split(/\r?\n/) ?? []) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/)?.[1];
+      if (section) {
+        inOriginSection = /^remote\s+"origin"$/i.test(section);
+        continue;
+      }
+      if (!originUrl && inOriginSection)
+        originUrl = line.match(/^\s*url\s*=\s*(\S.*?)\s*$/i)?.[1];
+    }
+    return {
+      commonDirectory,
+      ...(path.basename(commonDirectory) === ".git"
+        ? { projectRoot: path.dirname(commonDirectory) }
+        : {}),
+      ...(originUrl ? { originUrl } : {})
+    };
+  } catch {
+    return undefined;
+  }
+};
 
 /** Read project identities without invoking the metadata store's migration/write path. */
 const readRegisteredProjectIdentities = async (
@@ -118,7 +232,7 @@ const readRegisteredProjectIdentities = async (
           !path.isAbsolute(registeredPath)
         )
           continue;
-        registeredPaths.add(path.resolve(registeredPath));
+        registeredPaths.add(await canonicalProjectPath(registeredPath));
       }
       if (registeredPaths.size)
         records.push({ identity, paths: registeredPaths });
@@ -308,6 +422,44 @@ const rootsFor = (env: NodeJS.ProcessEnv): RootSpec[] => {
       extensions: [".jsonl"]
     }
   ];
+};
+
+const catalogScopeKey = (
+  provider: Provider | undefined,
+  env: NodeJS.ProcessEnv
+): string => {
+  const codexHome = path.resolve(
+    env.CODEX_HOME?.trim() || path.join(homeDirectory(env), ".codex")
+  );
+  return hash(
+    JSON.stringify({
+      provider: provider ?? null,
+      roots: rootsFor(env)
+        .filter((root) => !provider || root.provider === provider)
+        .map((root) => [root.provider, root.paths, root.extensions]),
+      projectRegistryPath: resolveKoedServerPaths(env).projectMetadataPath,
+      codexStatePath:
+        !provider || provider === "codex"
+          ? path.join(codexHome, "state_5.sqlite")
+          : null
+    })
+  );
+};
+
+const rememberCatalogSnapshot = (
+  key: string,
+  snapshot: CatalogSnapshot
+): void => {
+  completedCatalogScans.delete(key);
+  completedCatalogScans.set(key, {
+    snapshot,
+    expiresAt: Date.now() + CATALOG_CACHE_TTL_MS
+  });
+  while (completedCatalogScans.size > MAX_CATALOG_CACHE_SCOPES) {
+    const oldestKey = completedCatalogScans.keys().next().value;
+    if (oldestKey === undefined) break;
+    completedCatalogScans.delete(oldestKey);
+  }
 };
 
 const sourceId = (provider: Provider, externalId: string): string =>
@@ -596,6 +748,7 @@ const metadataFor = async (
       title?: string;
       projectKey?: string;
       projectName?: string;
+      repositoryUrl?: string;
       stats: Stats;
     }
   | undefined
@@ -692,10 +845,18 @@ const metadataFor = async (
   title = codexTitles.get(id) ?? title;
   const rawCwd = stringField(payload, "cwd");
   const cwd = rawCwd && path.isAbsolute(rawCwd) ? rawCwd : undefined;
+  const git =
+    payload?.git &&
+    typeof payload.git === "object" &&
+    !Array.isArray(payload.git)
+      ? (payload.git as Record<string, unknown>)
+      : undefined;
+  const repositoryUrl = stringField(git, "repository_url");
   return {
     externalId: id,
     stats: header.stats,
     title,
+    ...(repositoryUrl ? { repositoryUrl: repositoryUrl.slice(0, 2_048) } : {}),
     ...(cwd
       ? {
           projectKey: `cwd:${cwd}`,
@@ -755,17 +916,15 @@ const isAfterCursor = (
  * follows no symlinks, reads bounded identity and early display-title records,
  * and never performs Koed ingestion. Cursor pages are recent-first with no age filter.
  */
-export const listLocalConversationSources = async (
-  options: ListLocalConversationSourcesOptions = {}
-): Promise<LocalConversationCatalogPage> => {
+const scanLocalConversationCatalog = async (
+  options: Pick<ListLocalConversationSourcesOptions, "provider" | "env">
+): Promise<CatalogSnapshot> => {
   const env = options.env ?? process.env;
   const registeredProjects = await readRegisteredProjectIdentities(env);
   const codexTitles =
     !options.provider || options.provider === "codex"
       ? await readCodexThreadTitles(env)
       : new Map<string, string>();
-  const cursor = parseCursor(options.cursor);
-  const limit = normalizedLimit(options.limit);
   const statuses: LocalConversationCatalogPage["providers"] = {
     codex: { status: "unavailable", code: "source_root_missing" },
     "claude-code": { status: "unavailable", code: "source_root_missing" },
@@ -969,13 +1128,6 @@ export const listLocalConversationSources = async (
             const sourceCwd = identity.projectKey?.startsWith("cwd:")
               ? identity.projectKey.slice("cwd:".length)
               : undefined;
-            const registeredProject = sourceCwd
-              ? registeredProjects.get(path.resolve(sourceCwd))
-              : undefined;
-            const projectId = identity.projectKey
-              ? (registeredProject?.localProjectId ??
-                `${sourceCwd ? "local" : rootSpec.provider}-project:${hash(identity.projectKey)}`)
-              : undefined;
             const activityAt = details.mtime.toISOString();
             candidates.push({
               sourceId: sourceId(rootSpec.provider, identity.externalId),
@@ -988,20 +1140,12 @@ export const listLocalConversationSources = async (
                   activityAt
                 ),
               activityAt,
-              ...(projectId
-                ? {
-                    projectId,
-                    ...(registeredProject
-                      ? {
-                          projectName: registeredProject.displayName.slice(
-                            0,
-                            100
-                          )
-                        }
-                      : identity.projectName
-                        ? { projectName: identity.projectName.slice(0, 100) }
-                        : {})
-                  }
+              ...(identity.projectName
+                ? { projectName: identity.projectName.slice(0, 100) }
+                : {}),
+              ...(sourceCwd ? { privateCwd: sourceCwd } : {}),
+              ...(identity.repositoryUrl
+                ? { privateRepositoryUrl: identity.repositoryUrl }
                 : {}),
               privatePath: ranked.target
             });
@@ -1017,6 +1161,116 @@ export const listLocalConversationSources = async (
     }
   }
 
+  const codexHome = path.resolve(
+    env.CODEX_HOME?.trim() || path.join(homeDirectory(env), ".codex")
+  );
+  const trustedCodexWorktree = (cwd: string): boolean => {
+    const relative = path.relative(path.join(codexHome, "worktrees"), cwd);
+    const parts = relative.split(path.sep);
+    return (
+      relative !== "" &&
+      !relative.startsWith(`..${path.sep}`) &&
+      relative !== ".." &&
+      !path.isAbsolute(relative) &&
+      parts.length === 2 &&
+      /^[a-z0-9_-]{1,64}$/i.test(parts[0]!) &&
+      parts[1] !== "." &&
+      parts[1] !== ".."
+    );
+  };
+  const cwdInfo = new Map<
+    string,
+    { canonicalPath: string; git?: LocalGitIdentity }
+  >();
+  for (const cwd of new Set([
+    ...candidates.flatMap((candidate) =>
+      candidate.privateCwd ? [candidate.privateCwd] : []
+    ),
+    ...registeredProjects.keys()
+  ])) {
+    const normalized = normalizedAbsolutePath(cwd);
+    const git = await readLocalGitIdentity(cwd);
+    cwdInfo.set(normalized, {
+      canonicalPath: await canonicalProjectPath(cwd),
+      ...(git ? { git } : {})
+    });
+  }
+
+  // Archived Codex sessions retain the old worktree cwd after Codex deletes
+  // that checkout. Its repository URL can alias it to one unambiguous live
+  // checkout with the same origin and worktree name. The special directory
+  // layout and origin proof prevent basename-only merging.
+  const codexRepositoryUrlsByProjectRoot = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    if (candidate.provider !== "codex" || !candidate.privateRepositoryUrl)
+      continue;
+    const info = candidate.privateCwd
+      ? cwdInfo.get(normalizedAbsolutePath(candidate.privateCwd))
+      : undefined;
+    const projectRoot = info?.git?.projectRoot;
+    if (!projectRoot) continue;
+    const urls = codexRepositoryUrlsByProjectRoot.get(projectRoot) ?? new Set();
+    urls.add(candidate.privateRepositoryUrl);
+    codexRepositoryUrlsByProjectRoot.set(projectRoot, urls);
+  }
+  for (const info of cwdInfo.values()) {
+    if (!info.git?.projectRoot || !info.git.originUrl) continue;
+    const urls =
+      codexRepositoryUrlsByProjectRoot.get(info.git.projectRoot) ?? new Set();
+    urls.add(info.git.originUrl);
+    codexRepositoryUrlsByProjectRoot.set(info.git.projectRoot, urls);
+  }
+  const archivedWorktreeAliases = new Map<string, string>();
+  for (const candidate of candidates) {
+    const cwd = candidate.privateCwd;
+    const originUrl = candidate.privateRepositoryUrl;
+    if (
+      candidate.provider !== "codex" ||
+      !cwd ||
+      !originUrl ||
+      !trustedCodexWorktree(normalizedAbsolutePath(cwd))
+    )
+      continue;
+    const info = cwdInfo.get(normalizedAbsolutePath(cwd));
+    if (info?.git) continue;
+    const matchingProjectRoots = new Set<string>();
+    for (const [
+      projectRoot,
+      repositoryUrls
+    ] of codexRepositoryUrlsByProjectRoot) {
+      if (
+        repositoryUrls.has(originUrl) &&
+        path.basename(projectRoot) === path.basename(cwd)
+      )
+        matchingProjectRoots.add(projectRoot);
+    }
+    if (matchingProjectRoots.size === 1)
+      archivedWorktreeAliases.set(
+        normalizedAbsolutePath(cwd),
+        [...matchingProjectRoots][0]!
+      );
+  }
+
+  for (const candidate of candidates) {
+    const cwd = candidate.privateCwd;
+    if (!cwd) continue;
+    const normalized = normalizedAbsolutePath(cwd);
+    const info = cwdInfo.get(normalized);
+    const canonicalPath =
+      info?.canonicalPath ?? (await canonicalProjectPath(cwd));
+    const projectRoot =
+      info?.git?.projectRoot ?? archivedWorktreeAliases.get(normalized);
+    const registeredProject =
+      registeredProjects.get(canonicalPath) ??
+      (projectRoot ? registeredProjects.get(projectRoot) : undefined);
+    const projectIdentity = `cwd:${projectRoot ?? canonicalPath}`;
+    candidate.projectId =
+      registeredProject?.localProjectId ??
+      `local-project:${hash(projectIdentity)}`;
+    if (registeredProject)
+      candidate.projectName = registeredProject.displayName.slice(0, 100);
+  }
+
   const candidatesBySourceId = new Map<string, Candidate>();
   for (const candidate of candidates) {
     const existing = candidatesBySourceId.get(candidate.sourceId);
@@ -1030,7 +1284,61 @@ export const listLocalConversationSources = async (
   }
   const uniqueCandidates = [...candidatesBySourceId.values()];
   uniqueCandidates.sort(compareRecent);
-  const ordered = uniqueCandidates.filter(
+  const items = uniqueCandidates.map(
+    ({ sourceId, provider, title, activityAt, projectId, projectName }) => ({
+      sourceId,
+      provider,
+      title,
+      activityAt,
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(projectName === undefined ? {} : { projectName })
+    })
+  );
+  return { items, providers: statuses, truncated };
+};
+
+const getCatalogSnapshot = async (
+  options: Pick<
+    ListLocalConversationSourcesOptions,
+    "provider" | "env" | "refresh"
+  >
+): Promise<CatalogSnapshot> => {
+  const env = options.env ?? process.env;
+  const key = catalogScopeKey(options.provider, env);
+  const pending = inFlightCatalogScans.get(key);
+  if (pending) return pending;
+
+  const cached = completedCatalogScans.get(key);
+  if (!options.refresh && cached && cached.expiresAt > Date.now()) {
+    completedCatalogScans.delete(key);
+    completedCatalogScans.set(key, cached);
+    return cached.snapshot;
+  }
+
+  let scan: Promise<CatalogSnapshot>;
+  scan = Promise.resolve()
+    .then(() =>
+      scanLocalConversationCatalog({ provider: options.provider, env })
+    )
+    .then((snapshot) => {
+      rememberCatalogSnapshot(key, snapshot);
+      return snapshot;
+    })
+    .finally(() => {
+      if (inFlightCatalogScans.get(key) === scan)
+        inFlightCatalogScans.delete(key);
+    });
+  inFlightCatalogScans.set(key, scan);
+  return scan;
+};
+
+export const listLocalConversationSources = async (
+  options: ListLocalConversationSourcesOptions = {}
+): Promise<LocalConversationCatalogPage> => {
+  const cursor = parseCursor(options.cursor);
+  const limit = normalizedLimit(options.limit);
+  const snapshot = await getCatalogSnapshot(options);
+  const ordered = snapshot.items.filter(
     (item) => !cursor || isAfterCursor(item, cursor)
   );
   const selected = ordered.slice(0, limit);
@@ -1039,21 +1347,16 @@ export const listLocalConversationSources = async (
   // `truncated` tell the caller that coverage is incomplete.
   const hasMore = ordered.length > selected.length;
   return {
-    items: selected.map(
-      ({ sourceId, provider, title, activityAt, projectId, projectName }) => ({
-        sourceId,
-        provider,
-        title,
-        activityAt,
-        ...(projectId === undefined ? {} : { projectId }),
-        ...(projectName === undefined ? {} : { projectName })
-      })
-    ),
+    items: selected.map((item) => ({ ...item })),
     nextCursor:
       hasMore && selected.length > 0
         ? makeCursor(selected[selected.length - 1]!)
         : null,
-    providers: statuses,
-    truncated
+    providers: {
+      codex: { ...snapshot.providers.codex },
+      "claude-code": { ...snapshot.providers["claude-code"] },
+      pi: { ...snapshot.providers.pi }
+    },
+    truncated: snapshot.truncated
   };
 };

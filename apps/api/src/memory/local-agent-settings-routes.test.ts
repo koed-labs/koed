@@ -29,16 +29,32 @@ describe("AI Client instance publication routes", () => {
         { userId }: { userId: string },
         input: Record<string, unknown>
       ) => {
+        const key = `${userId}:${input.instanceId}:${input.sourceDeviceCredentialId ?? "local"}`;
+        const previous = instances.get(key);
         const instance = {
           ownerUserId: userId,
           ...input,
+          enabled:
+            input.enabled !== undefined
+              ? input.enabled
+              : (previous?.enabled ?? true),
           hostedInstanceId: `runner.${String(input.sourceDeviceCredentialId).replaceAll("-", "")}`
         };
-        instances.set(
-          `${userId}:${input.instanceId}:${input.sourceDeviceCredentialId ?? "local"}`,
-          instance
-        );
+        instances.set(key, instance);
         return instance;
+      },
+      setAiClientInstanceEnabled: async (
+        { userId }: { userId: string },
+        input: { hostedInstanceId: string; enabled: boolean }
+      ) => {
+        const target = [...instances.values()].find(
+          (instance) =>
+            instance.ownerUserId === userId &&
+            instance.hostedInstanceId === input.hostedInstanceId
+        );
+        if (!target) return null;
+        Object.assign(target, { enabled: input.enabled });
+        return target;
       },
       recordAiClientCapabilitySnapshot: async (
         { userId }: { userId: string },
@@ -172,6 +188,29 @@ describe("AI Client instance publication routes", () => {
       ])
     );
 
+    const disableInstance = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/ai-client-instances/runner.${deviceA.replaceAll("-", "")}/enabled`,
+      headers: { authorization: "Bearer ignored" },
+      payload: { enabled: false }
+    });
+    expect(disableInstance.statusCode).toBe(200);
+    expect(disableInstance.json().instance).toMatchObject({ enabled: false });
+    const missingInstance = await app.inject({
+      method: "PATCH",
+      url: "/v1/memory/ai-client-instances/codex.unknown/enabled",
+      headers: { authorization: "Bearer ignored" },
+      payload: { enabled: false }
+    });
+    expect(missingInstance.statusCode).toBe(404);
+    const invalidToggle = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/ai-client-instances/runner.${deviceA.replaceAll("-", "")}/enabled`,
+      headers: { authorization: "Bearer ignored" },
+      payload: { enabled: "false", source_device_credential_id: deviceB }
+    });
+    expect(invalidToggle.statusCode).toBe(400);
+
     const changedIdentity = "d".repeat(64);
     expect(
       (
@@ -199,6 +238,7 @@ describe("AI Client instance publication routes", () => {
     const boundInstance = instances.get(
       `${ownerId}:${"codex.default"}:${deviceA}`
     );
+    expect(boundInstance?.enabled).toBe(false);
     const boundSnapshot = snapshots.find(
       (snapshot) => snapshot.sourceDeviceCredentialId === deviceA
     );

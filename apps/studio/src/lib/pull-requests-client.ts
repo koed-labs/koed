@@ -37,6 +37,7 @@ type ClientOptions = {
   hosted?: boolean;
   pollIntervalMs?: number;
   maxPollMs?: number;
+  requestTimeoutMs?: number;
 };
 
 type DraftWrite = {
@@ -193,9 +194,60 @@ export function createPullRequestsClient({
   fetcher = fetch,
   hosted = hostedPathname(),
   pollIntervalMs = 650,
-  maxPollMs = 180_000
+  maxPollMs = 180_000,
+  requestTimeoutMs = 20_000
 }: ClientOptions = {}) {
   const basePath = hosted ? "/v1/pull-requests" : "/studio-api/pull-requests";
+
+  const fetchWithTimeout = async (
+    input: RequestInfo | URL,
+    init: RequestInit = {}
+  ) => {
+    const controller = new AbortController();
+    const callerSignal = init.signal;
+    let timedOut = false;
+    let rejectTimeout: ((reason: Error) => void) | undefined;
+    let rejectAbort: ((reason: unknown) => void) | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectTimeout = reject;
+    });
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const onAbort = () => {
+      controller.abort(callerSignal?.reason);
+      rejectAbort?.(
+        callerSignal?.reason ??
+          new DOMException("The request was aborted.", "AbortError")
+      );
+    };
+    if (callerSignal?.aborted) onAbort();
+    else callerSignal?.addEventListener("abort", onAbort, { once: true });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      rejectTimeout?.(new Error("request timed out"));
+    }, requestTimeoutMs);
+    try {
+      return await Promise.race([
+        fetcher(input, { ...init, signal: controller.signal }),
+        deadline,
+        aborted
+      ]);
+    } catch (error) {
+      if (timedOut) {
+        throw new PullRequestsHttpError(
+          "The GitHub request timed out. Refresh status before trying again.",
+          408,
+          "pull_request_request_timeout"
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      callerSignal?.removeEventListener("abort", onAbort);
+    }
+  };
 
   const request = async (
     path: string,
@@ -210,7 +262,7 @@ export function createPullRequestsClient({
     if (input.body !== undefined) {
       headers["content-type"] = "application/json";
       if (!hosted) {
-        const session = await fetcher("/studio-api/github/session", {
+        const session = await fetchWithTimeout("/studio-api/github/session", {
           headers: { accept: "application/json" },
           credentials: "include",
           cache: "no-store",
@@ -231,7 +283,7 @@ export function createPullRequestsClient({
         headers["x-studio-csrf"] = csrfToken;
       }
     }
-    const response = await fetcher(`${basePath}${path}`, {
+    const response = await fetchWithTimeout(`${basePath}${path}`, {
       method,
       headers,
       ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),

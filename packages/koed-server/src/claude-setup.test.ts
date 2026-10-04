@@ -16,6 +16,7 @@ import {
   claudeAuthenticationState,
   claudeMcpEntryIsKoedOwned,
   removeClaude,
+  resolveClaudeExecutablePath,
   setupClaude
 } from "./claude-setup.js";
 
@@ -32,6 +33,148 @@ afterEach(() => {
 });
 
 describe("Claude Code setup", () => {
+  it("discovers the newest valid Claude Desktop bundled executable on macOS", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-desktop-"));
+    temporaryDirectories.push(root);
+    const installRoot = resolve(
+      root,
+      "Library/Application Support/Claude/claude-code"
+    );
+    const oldExecutable = resolve(
+      installRoot,
+      "2.1.286/old-hash/claude.app/Contents/MacOS/claude"
+    );
+    const latestNonExecutable = resolve(
+      installRoot,
+      "2.1.287/aaa-invalid/claude.app/Contents/MacOS/claude"
+    );
+    const latestExecutable = resolve(
+      installRoot,
+      "2.1.287/f2326db61802/claude.app/Contents/MacOS/claude"
+    );
+    for (const path of [oldExecutable, latestNonExecutable, latestExecutable]) {
+      mkdirSync(resolve(path, ".."), { recursive: true });
+      writeFileSync(path, "#!/bin/sh\nexit 0\n");
+    }
+    chmodSync(oldExecutable, 0o755);
+    chmodSync(latestExecutable, 0o755);
+
+    expect(
+      resolveClaudeExecutablePath(
+        { HOME: root, PATH: "/usr/bin:/bin" },
+        {},
+        "darwin"
+      )
+    ).toBe(latestExecutable);
+  });
+
+  it("prefers a valid PATH Claude executable to the bundled app", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-path-"));
+    temporaryDirectories.push(root);
+    const pathExecutable = resolve(root, "bin/claude");
+    const desktopExecutable = resolve(
+      root,
+      "Library/Application Support/Claude/claude-code/2.1.999/hash/claude.app/Contents/MacOS/claude"
+    );
+    for (const path of [pathExecutable, desktopExecutable]) {
+      mkdirSync(resolve(path, ".."), { recursive: true });
+      writeFileSync(path, "#!/bin/sh\nexit 0\n");
+      chmodSync(path, 0o755);
+    }
+
+    expect(
+      resolveClaudeExecutablePath(
+        { HOME: root, PATH: resolve(root, "bin") },
+        {},
+        "darwin"
+      )
+    ).toBe(pathExecutable);
+  });
+
+  it("keeps an explicit Claude executable override fail-closed", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-override-"));
+    temporaryDirectories.push(root);
+    const desktopExecutable = resolve(
+      root,
+      "Library/Application Support/Claude/claude-code/2.1.999/hash/claude.app/Contents/MacOS/claude"
+    );
+    mkdirSync(resolve(desktopExecutable, ".."), { recursive: true });
+    writeFileSync(desktopExecutable, "#!/bin/sh\nexit 0\n");
+    chmodSync(desktopExecutable, 0o755);
+
+    expect(() =>
+      resolveClaudeExecutablePath(
+        {
+          HOME: root,
+          PATH: "/usr/bin:/bin",
+          KOED_CLAUDE_CODE_EXECUTABLE: resolve(root, "missing/claude")
+        },
+        {},
+        "darwin"
+      )
+    ).toThrow("AI Client executable was not found");
+  });
+
+  it("does not search Claude Desktop app bundles off macOS", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-platform-"));
+    temporaryDirectories.push(root);
+    const desktopExecutable = resolve(
+      root,
+      "Library/Application Support/Claude/claude-code/2.1.999/hash/claude.app/Contents/MacOS/claude"
+    );
+    mkdirSync(resolve(desktopExecutable, ".."), { recursive: true });
+    writeFileSync(desktopExecutable, "#!/bin/sh\nexit 0\n");
+    chmodSync(desktopExecutable, 0o755);
+
+    expect(() =>
+      resolveClaudeExecutablePath(
+        { HOME: root, PATH: "/usr/bin:/bin" },
+        {},
+        "linux"
+      )
+    ).toThrow("AI Client executable was not found");
+  });
+
+  it("rejects a Claude Desktop GUI executable before launching it", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-gui-path-"));
+    temporaryDirectories.push(root);
+    const guiExecutable = resolve(
+      root,
+      "Applications/Claude.app/Contents/MacOS/Claude"
+    );
+    const spawnCalls: string[][] = [];
+
+    const result = setupClaude(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_CLAUDE_CODE_EXECUTABLE: guiExecutable
+      },
+      ((_command: string, args: string[]) => {
+        spawnCalls.push(args);
+        return spawnResult();
+      }) as never
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Claude Desktop, not the Claude Code CLI");
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it("requires explicit Claude executable paths to be absolute", () => {
+    expect(() =>
+      resolveClaudeExecutablePath(
+        {
+          HOME: "/tmp",
+          KOED_CLAUDE_CODE_EXECUTABLE: "./claude"
+        },
+        {},
+        "darwin"
+      )
+    ).toThrow("KOED_CLAUDE_CODE_EXECUTABLE must be an absolute path");
+  });
+
   it("requires a successful explicit logged-in auth probe", () => {
     expect(claudeAuthenticationState(spawnResult('{"loggedIn":true}', 1))).toBe(
       "unknown"
@@ -63,6 +206,128 @@ describe("Claude Code setup", () => {
         "/other/koed"
       )
     ).toBe(false);
+  });
+
+  it("recognizes a verified source MCP package during migration to packaged runtime", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-mcp-migration-"));
+    temporaryDirectories.push(root);
+    const sourcePackage = resolve(root, "checkout/packages/mcp-server");
+    const sourceCli = resolve(sourcePackage, "dist/cli.js");
+    const packagedCli = resolve(root, "koed-runtime/mcp-server/dist/cli.js");
+    const koedHome = resolve(root, "koed-home");
+    mkdirSync(resolve(sourceCli, ".."), { recursive: true });
+    writeFileSync(
+      resolve(sourcePackage, "package.json"),
+      JSON.stringify({
+        name: "@koed/mcp-server",
+        bin: { "koed-mcp": "dist/cli.js" }
+      })
+    );
+    writeFileSync(sourceCli, "// source Koed MCP entry\n");
+    const output = `koed:\n  Command: node\n  Args: ${sourceCli}\n  Environment:\n    KOED_HOME=${koedHome}\n`;
+
+    expect(claudeMcpEntryIsKoedOwned(output, packagedCli, koedHome)).toBe(true);
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        packagedCli,
+        resolve(root, "other-home")
+      )
+    ).toBe(false);
+  });
+
+  it("requires Koed package metadata and its declared CLI entry for migration", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-mcp-untrusted-"));
+    temporaryDirectories.push(root);
+    const packageRoot = resolve(root, "checkout/packages/mcp-server");
+    const candidateCli = resolve(packageRoot, "dist/cli.js");
+    const koedHome = resolve(root, "koed-home");
+    mkdirSync(resolve(candidateCli, ".."), { recursive: true });
+    writeFileSync(
+      resolve(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@someone-else/mcp-server",
+        bin: { "koed-mcp": "dist/cli.js" }
+      })
+    );
+    writeFileSync(candidateCli, "// unrelated CLI\n");
+    const output = `koed:\n  Command: node\n  Args: ${candidateCli}\n  Environment:\n    KOED_HOME=${koedHome}\n`;
+
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        "/new/koed-runtime/mcp-server/dist/cli.js",
+        koedHome
+      )
+    ).toBe(false);
+
+    writeFileSync(
+      resolve(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@koed/mcp-server",
+        bin: { "koed-mcp": "other.js" }
+      })
+    );
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        "/new/koed-runtime/mcp-server/dist/cli.js",
+        koedHome
+      )
+    ).toBe(false);
+
+    const unrelatedCli = resolve(root, "unrelated/package/dist/cli.js");
+    mkdirSync(resolve(unrelatedCli, ".."), { recursive: true });
+    writeFileSync(unrelatedCli, "// same filename, unverified owner\n");
+    const unrelatedOutput = output.replace(candidateCli, unrelatedCli);
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        unrelatedOutput,
+        "/new/koed-runtime/mcp-server/dist/cli.js",
+        koedHome
+      )
+    ).toBe(false);
+  });
+
+  it("verifies packaged MCP wrappers through staged @koed/mcp-server metadata", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-mcp-packaged-"));
+    temporaryDirectories.push(root);
+    const runtimeRoot = resolve(root, "koed-runtime");
+    const packagedCli = resolve(runtimeRoot, "mcp-server/dist/cli.js");
+    const stagedPackage = resolve(
+      runtimeRoot,
+      "node_modules/@koed/mcp-server/package.json"
+    );
+    const koedHome = resolve(root, "koed-home");
+    mkdirSync(resolve(packagedCli, ".."), { recursive: true });
+    mkdirSync(resolve(stagedPackage, ".."), { recursive: true });
+    writeFileSync(
+      stagedPackage,
+      JSON.stringify({
+        name: "@koed/mcp-server",
+        bin: { "koed-mcp": "dist/cli.js" }
+      })
+    );
+    writeFileSync(
+      packagedCli,
+      [
+        "#!/usr/bin/env node",
+        'import { fileURLToPath } from "node:url";',
+        'const entry = new URL("../../node_modules/@koed/mcp-server/dist/cli.js", import.meta.url);',
+        "process.argv[1] = fileURLToPath(entry);",
+        "await import(entry.href);",
+        ""
+      ].join("\n")
+    );
+    const output = `koed:\n  Command: node\n  Args: ${packagedCli}\n  Environment:\n    KOED_HOME=${koedHome}\n`;
+
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        "/new/runtime/mcp-server/dist/cli.js",
+        koedHome
+      )
+    ).toBe(true);
   });
 
   it("preserves unrelated settings and configures credential-free MCP and hooks", () => {
@@ -283,7 +548,13 @@ describe("Claude Code setup", () => {
         )
       )
     ).toMatchObject({
-      instances: [{ instanceId: "claude.default", driverId: "claude" }]
+      instances: [
+        {
+          instanceId: "claude.default",
+          driverId: "claude",
+          executablePath: "/bin/sh"
+        }
+      ]
     });
   });
 

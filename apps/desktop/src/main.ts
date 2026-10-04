@@ -68,6 +68,7 @@ import {
   studioWindowOptions
 } from "./window/studio-window.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
+import { createDesktopShutdown } from "./window/shutdown.js";
 import {
   createLaunchAtStartupController,
   isBackgroundLaunch
@@ -167,7 +168,7 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
         argument.startsWith("koed-pair://")
       );
       if (deepLink) void showPairingDeepLink(deepLink);
-      else void showPrimaryWindow();
+      else void showPrimaryWindow().catch(reportStudioOpenFailure);
     });
   }
 }
@@ -475,13 +476,22 @@ const createWindow = async () => {
 };
 
 const showStudioWindow = async (): Promise<void> => {
+  if (desktopQuitRequested) return;
   await bootstrapPromise;
+  if (desktopQuitRequested) return;
   backgroundLaunchPending = false;
   if (process.platform === "darwin") await app.dock?.show();
   await studioWindowController.open();
 };
 
 const showPrimaryWindow = showStudioWindow;
+const reportStudioOpenFailure = () => {
+  if (desktopQuitRequested) return;
+  dialog.showErrorBox(
+    "Koed Studio could not open",
+    "Try opening Studio again from the Dock or the Koed menu."
+  );
+};
 
 async function navigateToStudioPairingSettings(): Promise<void> {
   const window = studioBrowserWindow;
@@ -516,12 +526,7 @@ const bootstrap = async () => {
             label: "Open Koed Studio",
             accelerator: "CmdOrCtrl+Shift+S",
             click: () => {
-              void studioWindowController.open().catch(() => {
-                dialog.showErrorBox(
-                  "Koed Studio could not open",
-                  "Koed Studio could not start. Check that local services are available and try again."
-                );
-              });
+              void showPrimaryWindow().catch(reportStudioOpenFailure);
             }
           },
           { type: "separator" },
@@ -764,6 +769,7 @@ const bootstrap = async () => {
       return response === 1;
     },
     studioChatRecovery: server.studioChatRecovery,
+    studioPersonalCatalogCache: server.studioPersonalCatalogCache,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,
@@ -878,15 +884,22 @@ const bootstrap = async () => {
       }
     }
   });
-  if (
-    backgroundLaunchPending &&
-    !pairingNavigationPending &&
-    process.platform === "darwin"
-  ) {
-    await studioWindowController.openHidden();
-  } else if (!backgroundLaunchPending || pairingNavigationPending) {
-    await studioWindowController.open();
-    if (pairingNavigationPending) await navigateToStudioPairingSettings();
+  if (desktopQuitRequested) return;
+  // Setup can complete even when the first window load fails. Keep activation
+  // available so a later retry is not chained to a permanently rejected bootstrap.
+  try {
+    if (
+      backgroundLaunchPending &&
+      !pairingNavigationPending &&
+      process.platform === "darwin"
+    ) {
+      await studioWindowController.openHidden();
+    } else if (!backgroundLaunchPending || pairingNavigationPending) {
+      await studioWindowController.open();
+      if (pairingNavigationPending) await navigateToStudioPairingSettings();
+    }
+  } catch {
+    reportStudioOpenFailure();
   }
 };
 
@@ -899,6 +912,8 @@ if (ownsDesktopInstance) {
   }
 }
 const bootstrapPromise = ownsDesktopInstance ? bootstrap() : Promise.resolve();
+// Attach the handler immediately; startup can wait on native credential access.
+void bootstrapPromise.catch(reportStudioOpenFailure);
 
 app.on("window-all-closed", () => {
   if (shouldQuitAfterAllWindowsClosed(process.platform)) {
@@ -909,15 +924,12 @@ app.on("activate", () => {
   const activation = consumeDesktopActivation(backgroundLaunchPending);
   backgroundLaunchPending = activation.backgroundLaunchPending;
   if (!activation.openWindow) return;
-  void showPrimaryWindow();
+  void showPrimaryWindow().catch(reportStudioOpenFailure);
 });
+let desktopQuitRequested = false;
 let koedServerStoppedForQuit = false;
-app.on("before-quit", (event) => {
-  if (koedServerStoppedForQuit) {
-    return;
-  }
-  event.preventDefault();
-  void (async () => {
+const shutdownDesktop = createDesktopShutdown({
+  cleanup: async () => {
     await managedPreviewController.close();
     nativeStudioNotifications?.dispose();
     nativeStudioNotifications = null;
@@ -925,7 +937,22 @@ app.on("before-quit", (event) => {
     await koedServer?.stop();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
+  },
+  finish: (forced) => {
     koedServerStoppedForQuit = true;
-    app.quit();
-  })();
+    if (forced) {
+      console.warn("Desktop cleanup failed or exceeded its shutdown deadline.");
+      app.exit(0);
+    } else {
+      app.quit();
+    }
+  }
+});
+app.on("before-quit", (event) => {
+  if (koedServerStoppedForQuit) {
+    return;
+  }
+  event.preventDefault();
+  desktopQuitRequested = true;
+  void shutdownDesktop();
 });

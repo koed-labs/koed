@@ -191,6 +191,10 @@ export interface DesktopApi {
       }
     ) => Promise<LocalAiClientResponse>;
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
+    setEnabled: (
+      instanceId: string,
+      enabled: boolean
+    ) => Promise<LocalAiClientResponse>;
   };
   managedProject?: ManagedProjectDesktopApi;
   clipboard?: {

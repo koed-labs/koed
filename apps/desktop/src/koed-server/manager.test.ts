@@ -770,6 +770,82 @@ describe("Koed server desktop manager", () => {
     ]);
   });
 
+  it("passes a trimmed Claude executable as one CLI argument for setup and repair", async () => {
+    const invocations: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/repo/.koed" },
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.setup_claude!({
+      executablePath: "  /Applications/Claude Code/cli  ",
+      operatorConsented: true
+    });
+    await manager.handlers.repair_claude!({
+      executablePath: " /opt/claude-code/bin/claude "
+    });
+
+    expect(invocations).toEqual([
+      [
+        "setup",
+        "claude",
+        "--executable",
+        "/Applications/Claude Code/cli",
+        "--json"
+      ],
+      [
+        "repair",
+        "claude",
+        "--executable",
+        "/opt/claude-code/bin/claude",
+        "--json"
+      ]
+    ]);
+  });
+
+  it("rejects relative Claude executable paths before invoking Koed Server", async () => {
+    const invocations: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/repo/.koed" },
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    expect(() =>
+      manager.handlers.repair_claude!({ executablePath: "./claude" })
+    ).toThrow("Claude executable path must be an absolute path.");
+    expect(invocations).toEqual([]);
+  });
+
   it("requires explicit healthy result from AI Client check handlers", async () => {
     vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
       refreshed: true,
@@ -4873,6 +4949,39 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         })
       ).rejects.toThrow();
 
+      const verifiedPersonalScope =
+        "http://127.0.0.1:4170|00000000-0000-4000-8000-000000000001";
+      const catalogCacheValue = JSON.stringify({
+        schemaVersion: 1,
+        scopeKey: verifiedPersonalScope,
+        cachedAt: 10,
+        catalog: { items: [], providers: {}, truncated: false },
+        projects: [],
+        removals: []
+      });
+      await expect(
+        manager.studioPersonalCatalogCache({
+          operation: "write",
+          ownerId: recoveryOwnerId,
+          scopeKey: verifiedPersonalScope,
+          value: catalogCacheValue
+        })
+      ).resolves.toEqual({ operation: "write", ok: true });
+      await expect(
+        manager.studioPersonalCatalogCache({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          scopeKey: verifiedPersonalScope
+        })
+      ).resolves.toEqual({ operation: "read", value: catalogCacheValue });
+      await expect(
+        manager.studioPersonalCatalogCache({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          scopeKey: "http://127.0.0.1:4170|another-owner"
+        })
+      ).rejects.toThrow();
+
       const feedbackDraftExecutionId =
         "feedback-draft:11111111-1111-4111-8111-111111111111:provider:22222222-2222-4222-8222-222222222222";
 
@@ -4961,6 +5070,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       // Verifying a different account invalidates the offline feedback-write scope.
       activeOwnerId = "00000000-0000-4000-8000-000000000002";
       await expect(
+        manager.studioPersonalCatalogCache({
+          operation: "read",
+          ownerId: recoveryOwnerId,
+          scopeKey: verifiedPersonalScope
+        })
+      ).rejects.toThrow();
+      await expect(
         manager.studioChatRecovery({
           operation: "read",
           ownerId: activeOwnerId,
@@ -4983,18 +5099,19 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         ...draftStore.get.mock.calls.map(([reference]) => reference),
         ...draftStore.delete.mock.calls.map(([reference]) => reference)
       ];
-      expect(new Set(references).size).toBe(7);
+      expect(new Set(references).size).toBe(8);
       expect(references).toEqual(
         expect.arrayContaining([
           expect.stringMatching(/^managed-draft-[0-9a-f]{64}$/),
           expect.stringMatching(/^managed-recovery-[0-9a-f]{64}$/),
-          expect.stringMatching(/^studio-chat-recovery-[0-9a-f]{64}$/)
+          expect.stringMatching(/^studio-chat-recovery-[0-9a-f]{64}$/),
+          expect.stringMatching(/^studio-personal-catalog-[0-9a-f]{64}$/)
         ])
       );
       expect(
         references.every((reference) => !reference.includes(identity.projectId))
       ).toBe(true);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(28);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(32);
       const reads = draftStore.get.mock.calls.length;
       personalMemoryFetch.mockResolvedValueOnce(
         new Response(
@@ -5006,7 +5123,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         manager.managedConversation({ operation: "draft_read", ...identity })
       ).rejects.toThrow("Koed is busy. Try again in 30 seconds.");
       expect(draftStore.get).toHaveBeenCalledTimes(reads);
-      expect(personalMemoryFetch).toHaveBeenCalledTimes(29);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(33);
     } finally {
       rmSync(koedHome, { recursive: true, force: true });
     }

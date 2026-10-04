@@ -259,6 +259,7 @@ export interface ManagedConversationCommandRecord {
   requestDigest: string;
   clientUserMessageId: string | null;
   executionGeneration: number;
+  allowArchivedResume: boolean;
   state: ManagedConversationCommandState;
   blockedOnKind:
     | "source_replica"
@@ -478,6 +479,8 @@ export interface ManagedConversationRepository {
     input: {
       executionId: string;
       executionGeneration: number;
+      /** Explicitly resume an existing cleanly stopped execution for this prompt. */
+      resumeFromStopped?: true;
       idempotencyKey: string;
       clientUserMessageId: string;
       prompt: string;
@@ -1058,6 +1061,7 @@ type CommandRow = {
   request_digest: string;
   client_user_message_id: string | null;
   execution_generation: number;
+  allow_archived_resume: boolean;
   encrypted_payload: Record<string, unknown> | null;
   state: ManagedConversationCommandState;
   blocked_on_kind:
@@ -1163,7 +1167,7 @@ const RUNTIME_BINDING_COLUMNS = `
 const COMMAND_COLUMNS = `
   id, owner_user_id, execution_id, idempotency_key, sequence, command_kind,
   target_deployment_id, target_device_id, request_digest, client_user_message_id, execution_generation,
-  encrypted_payload, state, attempts, lease_token, lease_expires_at, result,
+  allow_archived_resume, encrypted_payload, state, attempts, lease_token, lease_expires_at, result,
   blocked_on_kind, blocked_on_id, last_error_code, created_at, updated_at,
   dispatching_at, completed_at
 `;
@@ -1299,6 +1303,7 @@ const mapCommand = (
   requestDigest: row.request_digest,
   clientUserMessageId: row.client_user_message_id,
   executionGeneration: row.execution_generation,
+  allowArchivedResume: row.allow_archived_resume === true,
   state: row.state,
   blockedOnKind: row.blocked_on_kind,
   blockedOnId: row.blocked_on_id,
@@ -3790,14 +3795,16 @@ export const createManagedConversationRepository = (
             for update`,
           [actor.userId, input.executionId]
         );
-        const current = execution.rows[0];
+        let current = execution.rows[0];
         if (
           !current ||
-          !["starting", "running"].includes(current.state) ||
-          current.execution_generation !== input.executionGeneration
+          current.execution_generation !== input.executionGeneration ||
+          (!["starting", "running"].includes(current.state) &&
+            !(current.state === "stopped" && input.resumeFromStopped === true))
         ) {
           throw statusError("Managed Conversation is not writable", 409);
         }
+        const allowArchivedResume = true;
         const personalMemoryContext = input.personalMemoryContext
           ? personalMemoryTurnContextSchema.parse(input.personalMemoryContext)
           : undefined;
@@ -3911,7 +3918,21 @@ export const createManagedConversationRepository = (
               409
             );
           }
-          const replayPayload = await decryptPayload(existing.rows[0]);
+          let replayCommand = existing.rows[0];
+          if (
+            replayCommand.command_kind === "prompt" &&
+            !replayCommand.allow_archived_resume
+          ) {
+            const updated = await client.query<CommandRow>(
+              `update managed_conversation_commands
+                  set allow_archived_resume = true
+                where owner_user_id = $1 and id = $2
+                returning ${COMMAND_COLUMNS}`,
+              [actor.userId, replayCommand.id]
+            );
+            replayCommand = updated.rows[0] ?? replayCommand;
+          }
+          const replayPayload = await decryptPayload(replayCommand);
           const savedAgent = replayPayload?.personalAgent;
           const replayedAgent =
             savedAgent &&
@@ -3935,9 +3956,110 @@ export const createManagedConversationRepository = (
               : undefined;
           await client.query("commit");
           return {
-            ...mapCommand(existing.rows[0], replayPayload),
+            ...mapCommand(replayCommand, replayPayload),
             ...(replayedAgent ? { personalAgent: replayedAgent } : {})
           };
+        }
+        if (current.state === "stopped") {
+          // A stopped execution may only be resumed by a new, explicit user
+          // prompt when its original provider session and checkout are still
+          // bound to this exact execution generation and runner. Do not infer
+          // a provider thread from local history or silently create one.
+          if (
+            !current.logical_session_id ||
+            !current.provider_thread_id ||
+            current.last_error_code !== null
+          ) {
+            throw statusError(
+              "Stopped Managed Conversation cannot be safely resumed",
+              409
+            );
+          }
+          const bindingResult = await client.query<{
+            execution_id: string;
+            owner_user_id: string;
+            deployment_id: string;
+            device_id: string;
+            execution_generation: number;
+            checkout_id: string | null;
+            local_session_id: string | null;
+            provider_thread_id: string | null;
+            transcript_path: string | null;
+            managed_home: string | null;
+            checkout_lifecycle: string;
+            cleanup_state: string;
+          }>(
+            `select execution_id, owner_user_id, deployment_id, device_id,
+                    execution_generation, checkout_id, local_session_id, provider_thread_id,
+                    transcript_path, managed_home, checkout_lifecycle,
+                    cleanup_state
+               from managed_conversation_runtime_bindings
+              where owner_user_id = $1 and execution_id = $2
+              for share`,
+            [actor.userId, input.executionId]
+          );
+          const binding = bindingResult.rows[0];
+          if (
+            !binding ||
+            binding.owner_user_id !== actor.userId ||
+            binding.execution_id !== input.executionId ||
+            binding.execution_generation !== input.executionGeneration ||
+            binding.deployment_id !== current.runner_deployment_id ||
+            binding.device_id !== current.runner_device_id ||
+            !binding.local_session_id?.trim() ||
+            binding.provider_thread_id !== current.provider_thread_id ||
+            !binding.transcript_path?.trim() ||
+            !binding.managed_home?.trim() ||
+            (current.project_id === null
+              ? !["pending", "ready"].includes(binding.checkout_lifecycle)
+              : binding.checkout_lifecycle !== "ready" ||
+                binding.checkout_id === null) ||
+            binding.cleanup_state !== "not_requested"
+          ) {
+            throw statusError(
+              "Stopped Managed Conversation provider history is unavailable",
+              409
+            );
+          }
+          const unsettledCommands = await client.query<{ id: string }>(
+            `select id
+               from managed_conversation_commands
+              where owner_user_id = $1
+                and execution_id = $2
+                and execution_generation = $3
+                and state not in ('completed', 'failed', 'canceled')
+              limit 1`,
+            [actor.userId, input.executionId, input.executionGeneration]
+          );
+          if (unsettledCommands.rows.length > 0) {
+            throw statusError(
+              "Stopped Managed Conversation has an unresolved operation",
+              409
+            );
+          }
+          const resumed = await client.query<ExecutionRow>(
+            `update managed_conversation_executions
+                set state = 'running',
+                    state_version = state_version + 1,
+                    last_error_code = null,
+                    stopped_at = null,
+                    updated_at = now()
+              where owner_user_id = $1
+                and id = $2
+                and execution_generation = $3
+                and state = 'stopped'
+            returning ${EXECUTION_COLUMNS}`,
+            [actor.userId, input.executionId, input.executionGeneration]
+          );
+          if (!resumed.rows[0]) {
+            throw statusError("Managed Conversation resume conflicted", 409);
+          }
+          current = resumed.rows[0];
+          await appendManagedConversationEvent(client, {
+            ownerUserId: actor.userId,
+            executionId: input.executionId,
+            mutationId: `managed-conversation:${input.executionId}:state:${current.state_version}`
+          });
         }
         let personalAgentContext: PersonalAgentExecutionContext | undefined;
         let personalAgent:
@@ -4124,8 +4246,8 @@ export const createManagedConversationRepository = (
           `insert into managed_conversation_commands (
              id, owner_user_id, execution_id, idempotency_key, sequence,
              command_kind, request_digest, client_user_message_id,
-             execution_generation, encrypted_payload
-           ) values ($1, $2, $3, $4, $5, 'prompt', $6, $7, $8, $9::jsonb)
+             execution_generation, allow_archived_resume, encrypted_payload
+           ) values ($1, $2, $3, $4, $5, 'prompt', $6, $7, $8, $9, $10::jsonb)
            returning ${COMMAND_COLUMNS}`,
           [
             commandId,
@@ -4136,6 +4258,7 @@ export const createManagedConversationRepository = (
             requestDigest,
             input.clientUserMessageId,
             input.executionGeneration,
+            allowArchivedResume,
             encryptedPayload
           ]
         );

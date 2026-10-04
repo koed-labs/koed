@@ -106,12 +106,19 @@ export type {
   CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 export {
+  CodexAppServerClient,
+  CodexAppServerRequestError
+} from "./codex-app-server-runner.js";
+export {
   CodexManagedConversationIdentityError,
+  CodexManagedConversationThreadOpenError,
   CodexManagedConversationSession
 } from "./codex-managed-conversation.js";
 export type {
   CodexManagedConversationConfig,
+  CodexManagedConversationRunOptions,
   CodexManagedConversationSealedSource,
+  CodexManagedConversationStartOptions,
   CodexManagedConversationStartResult
 } from "./codex-managed-conversation.js";
 export {
@@ -648,6 +655,57 @@ export class MemoryApiClient {
     return this.request(
       "POST",
       `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/successor`,
+      input
+    );
+  }
+
+  async createConversationSourceRebaseSuccessorGeneration(
+    artifactId: string,
+    input: {
+      expectedParentFrontier: {
+        sourceGenerationId: string;
+        providerCursorOffset: number;
+        providerCursorLine: number;
+        lastSegmentDigest: string | null;
+      };
+      successor: {
+        sourceGenerationId: string;
+        sourceFrontier: {
+          offset: number;
+          line: number;
+          fileSize: number;
+          prefixSha256: string;
+          modifiedAt: string;
+        };
+      };
+      commandProof: {
+        executionId: string;
+        executionGeneration: number;
+        commandId: string;
+        clientUserMessageId: string;
+        providerThreadId: string;
+        providerHistorySha256: string;
+        canonicalHistorySha256: string;
+        turnIds: string[];
+        turnCount: number;
+        messageCount: number;
+        messages: Array<
+          | {
+              kind: "user";
+              clientUserMessageId: string;
+              turnId: string;
+              textSha256: string;
+            }
+          | { kind: "assistant"; turnId: string; textSha256: string }
+        >;
+        terminal: true;
+        targetPromptAbsent: true;
+      };
+    }
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/rebase-successor`,
       input
     );
   }

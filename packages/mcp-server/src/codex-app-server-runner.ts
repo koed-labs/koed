@@ -225,6 +225,47 @@ interface JsonRpcMessage {
   };
 }
 
+export class CodexAppServerRequestError extends Error {
+  constructor(
+    readonly method: string,
+    message: string,
+    readonly rpcCode?: number | string
+  ) {
+    super(message);
+    this.name = "CodexAppServerRequestError";
+  }
+}
+
+const unarchiveCodexThread = async (
+  binary: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  threadId: string
+): Promise<void> => {
+  const invocation = nodeCliInvocation(binary, ["unarchive", threadId]);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(invocation.command, invocation.args, {
+      cwd,
+      env: nodeCliProcessEnvironment(invocation, env, env),
+      stdio: ["ignore", "ignore", "ignore"],
+      shell: process.platform === "win32",
+      windowsHide: true
+    });
+    child.once("error", () =>
+      reject(new Error("Codex session unarchive failed"))
+    );
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `Codex session unarchive failed (exit ${code ?? "unknown"})`
+          )
+        );
+    });
+  });
+};
+
 export interface CodexAppServerClientOptions {
   configOverrides?: string[];
   requestTimeoutMs?: number;
@@ -865,6 +906,38 @@ export class CodexAppServerClient {
     return threadInfoFromResponse("thread/resume", response.result);
   }
 
+  async readThread(
+    threadId: string,
+    includeTurns = true
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request("thread/read", {
+      threadId,
+      includeTurns
+    });
+    const thread = asRecord(asRecord(response.result).thread);
+    if (
+      thread.id !== threadId ||
+      (includeTurns && !Array.isArray(thread.turns)) ||
+      !asRecord(thread.status)
+    ) {
+      throw new Error(
+        "Codex app-server thread/read response did not preserve the requested thread history"
+      );
+    }
+    return thread;
+  }
+
+  async unarchiveThread(threadId: string): Promise<void> {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        threadId
+      )
+    ) {
+      throw new Error("Codex session unarchive requires a provider thread id");
+    }
+    await unarchiveCodexThread(this.binary, this.cwd, this.env, threadId);
+  }
+
   async forkThread(
     threadId: string,
     sourcePath: string,
@@ -1252,7 +1325,14 @@ export class CodexAppServerClient {
       clearTimeout(pending.timeout);
       if (message.error) {
         pending.reject(
-          new Error(message.error.message ?? "Codex app-server error")
+          new CodexAppServerRequestError(
+            pending.method,
+            message.error.message ?? "Codex app-server error",
+            typeof message.error.code === "number" ||
+              typeof message.error.code === "string"
+              ? message.error.code
+              : undefined
+          )
         );
       } else {
         if (

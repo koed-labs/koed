@@ -34,6 +34,7 @@ const writeFakeAppServer = (
       response: Record<string, unknown>;
     }>;
     accountResponse?: Record<string, unknown>;
+    threadReadResponse?: Record<string, unknown>;
     turnStatus?: "completed" | "failed" | "interrupted" | "running";
     turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
     transientErrorBeforeCompletion?: boolean;
@@ -120,6 +121,11 @@ const accountResponse = ${JSON.stringify(
         requiresOpenaiAuth: true
       }
     )};
+const threadReadResponse = ${JSON.stringify(
+      options.threadReadResponse ?? {
+        thread: { id: "thread-test", status: { type: "notLoaded" }, turns: [] }
+      }
+    )};
 const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
 const turnStatuses = ${JSON.stringify(options.turnStatuses ?? [])};
 const transientErrorBeforeCompletion = ${JSON.stringify(
@@ -174,6 +180,14 @@ lineReader.on("line", (line) => {
       process.exit(52);
     }
     send({ id: message.id, result: accountResponse });
+    return;
+  }
+  if (message.method === "thread/read") {
+    if (message.params.includeTurns !== true) {
+      console.error("expected thread/read includeTurns true");
+      process.exit(54);
+    }
+    send({ id: message.id, result: threadReadResponse });
     return;
   }
   if (message.method === "thread/start") {
@@ -262,6 +276,74 @@ reader.on("line", (line) => {
 };
 
 describe("Codex app-server runner", () => {
+  it("reads complete stored thread history without resuming the thread", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-thread-read-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    const isolatedCodexHome = path.join(tempDirectory, "isolated-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    fs.mkdirSync(isolatedCodexHome, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(isolatedCodexHome, "config.toml"),
+      [
+        "include_permissions_instructions = false",
+        "include_apps_instructions = false",
+        "include_collaboration_mode_instructions = false",
+        "include_environment_context = false",
+        "project_doc_max_bytes = 0",
+        'web_search = "disabled"',
+        "[tools.experimental_request_user_input]",
+        "enabled = false",
+        "[skills]",
+        "include_instructions = false"
+      ].join("\n"),
+      { mode: 0o600 }
+    );
+    const clientUserMessageId =
+      "koed-user-message:10000000-0000-4000-8000-000000000001";
+    const appServerBinary = writeFakeAppServer(tempDirectory, {
+      threadReadResponse: {
+        thread: {
+          id: "thread-test",
+          status: { type: "notLoaded" },
+          turns: [
+            {
+              id: "turn-1",
+              status: "completed",
+              items: [{ type: "userMessage", clientId: clientUserMessageId }]
+            }
+          ]
+        }
+      }
+    });
+    const client = new CodexAppServerClient(appServerBinary, tempDirectory, {
+      ...process.env,
+      CODEX_HOME: isolatedCodexHome,
+      FAKE_REAL_CODEX_HOME: realCodexHome
+    });
+
+    try {
+      await client.initialize("koed-thread-read-test");
+      const thread = await client.readThread("thread-test", true);
+
+      expect(thread).toMatchObject({
+        id: "thread-test",
+        status: { type: "notLoaded" },
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [{ clientId: clientUserMessageId }]
+          }
+        ]
+      });
+    } finally {
+      await client.closeAndWait(200).catch(() => undefined);
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("uses legacy binary env names only as app-server binary aliases", () => {
     expect(
       resolveCodexAppServerBinary(

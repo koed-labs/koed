@@ -1,4 +1,7 @@
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
+// Node 24's native TypeScript runner requires the source extension here.
+// @ts-expect-error -- Next's app compiler does not enable TS extension imports.
+export { isSyntheticIndependentProject } from "../../lib/project-identity.ts";
 import type { PersonalMemoryEntry } from "@koed/shared/collaboration";
 
 export type LocalConversationProvider = "codex" | "claude-code" | "pi";
@@ -7,13 +10,39 @@ export type LocalConversationMatch =
   | { type: "managed"; executionId: string }
   | { type: "captured"; recent: HomeRecent };
 
+export function managedConversationActivityLabel(
+  activity: HomeExecution["activity"],
+  state?: string | null
+): string {
+  switch (state?.toLowerCase()) {
+    case "stopped":
+      return "Stopped";
+    case "failed":
+      return "Failed";
+    case "fenced":
+      return "Disconnected";
+  }
+  switch (activity) {
+    case "running":
+      return "Working";
+    case "pending":
+      return "Queued";
+    case "uncertain":
+      return "Status uncertain";
+    case "idle":
+      return "Idle";
+    case "operation":
+      return "Operation active";
+    case "operation-pending":
+      return "Operation queued";
+    default:
+      return "Activity unverified";
+  }
+}
+
 export type ShareablePersonalConversation = Pick<
   PersonalMemoryEntry,
-  | "id"
-  | "logicalMemoryId"
-  | "title"
-  | "syncState"
-  | "hasSynchronizedRevision"
+  "id" | "logicalMemoryId" | "title" | "syncState" | "hasSynchronizedRevision"
 >;
 
 /**
@@ -72,10 +101,7 @@ export function indexShareableConversationRows(input: {
       entriesBySessionId: input.entriesBySessionId
     });
     if (!memory) continue;
-    byLocalSourceId.set(
-      `${provider}:${encodeURIComponent(recent.id)}`,
-      memory
-    );
+    byLocalSourceId.set(`${provider}:${encodeURIComponent(recent.id)}`, memory);
   }
 
   return { byExecutionId, byLocalSourceId };
@@ -103,9 +129,11 @@ export function shareDialogSourceMayRemainOpen(input: {
   sourceLogicalMemoryId: string | null;
   currentLogicalMemoryId: string | null;
 }): boolean {
-  return input.sourceHomeScopeKey === input.currentHomeScopeKey &&
+  return (
+    input.sourceHomeScopeKey === input.currentHomeScopeKey &&
     input.sourceAuthorityKey === input.currentAuthorityKey &&
-    input.sourceLogicalMemoryId === input.currentLogicalMemoryId;
+    input.sourceLogicalMemoryId === input.currentLogicalMemoryId
+  );
 }
 
 export function ownerSnapshotMaySurviveRefresh(input: {
@@ -133,18 +161,28 @@ export function matchManagedExecutionForCapturedSession({
   provider: LocalConversationProvider;
   executions: HomeExecution[];
 }): string | null {
-  const active = executions.filter((execution) => {
+  const matching = executions.filter((execution) => {
     const state = execution.state.toLowerCase();
     return (
       execution.sessionId === sessionId &&
       normalizeConversationProvider(execution.provider) === provider &&
-      (state === "running" || state === "ready")
+      ["running", "ready", "starting", "stopped", "failed", "fenced"].includes(
+        state
+      )
     );
   });
-  return active.length === 1 ? active[0].id : null;
+  const active = matching.filter((execution) =>
+    ["running", "ready", "starting"].includes(execution.state.toLowerCase())
+  );
+  if (active.length > 0) return active.length === 1 ? active[0].id : null;
+
+  const history = matching.filter((execution) =>
+    ["stopped", "failed", "fenced"].includes(execution.state.toLowerCase())
+  );
+  return history.length === 1 ? history[0].id : null;
 }
 
-/** Source IDs that already represent a listed managed execution. */
+/** Source IDs that already represent a listed managed execution or history row. */
 export function managedConversationSourceIds({
   recents,
   executions
@@ -166,19 +204,34 @@ export function managedConversationSourceIds({
   return ids;
 }
 
-export function isSyntheticIndependentProject(
-  projectId: string | null | undefined,
-  projectName?: string | null
-): boolean {
-  const isRuntimeUuid = (value: string | null | undefined) =>
-    Boolean(
-      value &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
-          value.trim()
-        )
-    );
-  if (/^lp_[0-9a-f]{32}$/iu.test(projectId ?? "")) return false;
-  return isRuntimeUuid(projectId) || isRuntimeUuid(projectName);
+/** Provider source IDs associated with each uniquely resolved managed row. */
+export function managedProviderSourceIdsByExecution({
+  recents,
+  executions
+}: {
+  recents: HomeRecent[];
+  executions: HomeExecution[];
+}): Record<string, string[]> {
+  const byExecution = new Map<string, Set<string>>();
+  for (const recent of recents) {
+    const provider = normalizeConversationProvider(recent.provider);
+    if (!provider) continue;
+    const executionId = matchManagedExecutionForCapturedSession({
+      sessionId: recent.sessionId,
+      provider,
+      executions
+    });
+    if (!executionId) continue;
+    const sources = byExecution.get(executionId) ?? new Set<string>();
+    sources.add(`${provider}:${encodeURIComponent(recent.id)}`);
+    byExecution.set(executionId, sources);
+  }
+  return Object.fromEntries(
+    Array.from(byExecution, ([executionId, sources]) => [
+      executionId,
+      Array.from(sources)
+    ])
+  );
 }
 
 export function matchLocalConversationToHome({

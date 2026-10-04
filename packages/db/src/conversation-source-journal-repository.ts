@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   calculateConversationSourceClosureDigest,
   calculateConversationSourceSetClosureDigest,
@@ -38,6 +38,7 @@ import type {
   ConversationSourceOriginKeyStatus,
   ConversationSourceReplicaRole,
   ConversationSourceReplicaSegmentAcceptance,
+  ConversationSourceRebaseProofRecord,
   ConversationSourceReplicationOutboxClaimRecord,
   ConversationSourceReplicationOutboxRecord,
   ConversationSourceReplicationAuthorizationBasis,
@@ -129,6 +130,35 @@ export interface AcceptConversationSourceReplicaSegmentInput {
 export interface FinalizeConversationSourceArtifactInput {
   artifactId: string;
   signedClosure: SignedConversationSourceClosureManifest;
+}
+
+export interface CreateConversationSourceRebaseSuccessorInput {
+  parentArtifactId: string;
+  expectedParentFrontier: {
+    sourceGenerationId: string;
+    providerCursorOffset: number;
+    providerCursorLine: number;
+    lastSegmentDigest: string | null;
+  };
+  successor: {
+    sourceGenerationId: string;
+    sourceFrontier: {
+      offset: number;
+      line: number;
+      fileSize: number;
+      prefixSha256: string;
+      modifiedAt: string;
+    };
+    sourceCreatedAt: string;
+    originDeploymentId: string;
+    originDeviceId: string;
+    originKeyId: string;
+    originPublicKey: string;
+    storageProvider: string;
+    storagePrefix: string;
+  };
+  commandProof: ConversationSourceRebaseProofRecord["commandProof"];
+  signedParentClosure: SignedConversationSourceClosureManifest;
 }
 
 export interface FinalizeConversationSourceSetInput {
@@ -1128,6 +1158,23 @@ export interface ConversationSourceJournalRepository {
     artifact: ConversationSourceArtifactRecord;
     replayed: boolean;
   }>;
+  createConversationSourceRebaseSuccessorGeneration(
+    actor: ActorContext,
+    input: CreateConversationSourceRebaseSuccessorInput
+  ): Promise<{
+    artifact: ConversationSourceArtifactRecord;
+    replayed: boolean;
+    parentClosureHash: string;
+    acceptedFrontier: ConversationSourceRebaseProofRecord["acceptedFrontier"];
+  }>;
+  getConversationSourceRebaseProofBySuccessorGeneration(
+    actor: ActorContext,
+    sourceGenerationId: string
+  ): Promise<{
+    parentArtifactId: string;
+    parentSourceGenerationId: string;
+    acceptedFrontier: ConversationSourceRebaseProofRecord["acceptedFrontier"];
+  } | null>;
   getConversationSourceArtifact(
     actor: ActorContext,
     artifactId: string
@@ -1591,6 +1638,689 @@ export const createConversationSourceJournalRepository = (
     }
   },
 
+  async createConversationSourceRebaseSuccessorGeneration(actor, input) {
+    const client = await pool.connect();
+    let committed = false;
+    try {
+      await client.query("begin");
+      const parentResult = await client.query<ArtifactRow>(
+        `select ${ARTIFACT_COLUMNS}
+           from conversation_source_artifacts
+          where id = $2 and owner_user_id = $1
+          for update`,
+        [actor.userId, input.parentArtifactId]
+      );
+      const parent = parentResult.rows[0];
+      if (!parent) {
+        throw statusError("Conversation source artifact not found", 404);
+      }
+
+      const replayResult = await client.query<{
+        artifact_id: string;
+        parent_closure_hash: string;
+        expected_parent_frontier: Record<string, unknown>;
+        accepted_frontier: ConversationSourceRebaseProofRecord["acceptedFrontier"];
+        command_proof: Record<string, unknown>;
+        successor_artifact_id: string;
+      }>(
+        `select proof.parent_closure_hash,
+                proof.expected_parent_frontier,
+                proof.accepted_frontier,
+                proof.command_proof,
+                proof.successor_artifact_id as artifact_id,
+                proof.successor_artifact_id
+           from conversation_source_rebase_proofs proof
+          where proof.owner_user_id = $1
+            and proof.parent_artifact_id = $2`,
+        [actor.userId, parent.id]
+      );
+      if (replayResult.rows[0]) {
+        const proof = replayResult.rows[0];
+        const expectedParent = {
+          sourceGenerationId: input.expectedParentFrontier.sourceGenerationId,
+          providerCursorOffset:
+            input.expectedParentFrontier.providerCursorOffset,
+          providerCursorLine: input.expectedParentFrontier.providerCursorLine,
+          lastSegmentDigest: input.expectedParentFrontier.lastSegmentDigest
+        };
+        const accepted = proof.accepted_frontier;
+        const expectedAccepted = {
+          offset: input.successor.sourceFrontier.offset,
+          line: input.successor.sourceFrontier.line,
+          fileSize: input.successor.sourceFrontier.fileSize,
+          prefixSha256: input.successor.sourceFrontier.prefixSha256,
+          modifiedAt: input.successor.sourceFrontier.modifiedAt
+        };
+        if (
+          parent.source_generation_id !==
+            input.expectedParentFrontier.sourceGenerationId ||
+          !isDeepStrictEqual(proof.expected_parent_frontier, expectedParent) ||
+          !isDeepStrictEqual(accepted, expectedAccepted) ||
+          !isDeepStrictEqual(proof.command_proof, input.commandProof)
+        ) {
+          throw statusError(
+            "Conversation source rebase already exists",
+            409,
+            "conversation_source_rebase_conflict"
+          );
+        }
+        const childResult = await client.query<ArtifactRow>(
+          `select ${ARTIFACT_COLUMNS}
+             from conversation_source_artifacts
+            where id = $2 and owner_user_id = $1`,
+          [actor.userId, proof.successor_artifact_id]
+        );
+        if (!childResult.rows[0]) {
+          throw statusError(
+            "Conversation source rebase successor is missing",
+            409,
+            "conversation_source_rebase_successor_missing"
+          );
+        }
+        if (
+          childResult.rows[0].source_generation_id !==
+            input.successor.sourceGenerationId ||
+          childResult.rows[0].source_fingerprint !== parent.source_fingerprint
+        ) {
+          throw statusError(
+            "Conversation source rebase successor identity conflicts",
+            409,
+            "conversation_source_rebase_successor_conflict"
+          );
+        }
+        await client.query("commit");
+        committed = true;
+        return {
+          artifact: mapArtifact(childResult.rows[0]),
+          replayed: true,
+          parentClosureHash: proof.parent_closure_hash,
+          acceptedFrontier: accepted
+        };
+      }
+
+      const expected = input.expectedParentFrontier;
+      const frontier = input.successor.sourceFrontier;
+      const proof = input.commandProof;
+      if (
+        parent.lifecycle !== "active" ||
+        parent.replica_role !== "origin_local" ||
+        parent.source_kind !== "codex" ||
+        parent.source_runtime !== "codex" ||
+        parent.artifact_format !== "codex_rollout_jsonl" ||
+        parent.source_component_id !== "main" ||
+        parent.source_component_role !== "primary" ||
+        parent.source_generation_id !== expected.sourceGenerationId ||
+        parent.external_session_id !== proof.providerThreadId ||
+        Number(parent.provider_cursor_offset) !==
+          expected.providerCursorOffset ||
+        parent.provider_cursor_line !== expected.providerCursorLine ||
+        parent.origin_key_status !== "active" ||
+        frontier.offset !== frontier.fileSize ||
+        !Number.isSafeInteger(frontier.offset) ||
+        !Number.isSafeInteger(frontier.fileSize) ||
+        !Number.isSafeInteger(frontier.line) ||
+        frontier.line < 0 ||
+        frontier.fileSize < 0 ||
+        !/^[0-9a-f]{64}$/.test(frontier.prefixSha256) ||
+        !/^[0-9a-f]{64}$/.test(proof.providerHistorySha256) ||
+        !/^[0-9a-f]{64}$/.test(proof.canonicalHistorySha256) ||
+        proof.turnCount <= 0 ||
+        proof.messages.length === 0 ||
+        !proof.messages.some((message) => message.kind === "user") ||
+        proof.turnCount !== proof.turnIds.length ||
+        proof.messageCount !== proof.messages.length ||
+        new Set(proof.turnIds).size !== proof.turnIds.length ||
+        !isDeepStrictEqual(
+          [...new Set(proof.messages.map((message) => message.turnId))].sort(),
+          [...proof.turnIds].sort()
+        ) ||
+        proof.messages.some(
+          (message) => !/^[0-9a-f]{64}$/.test(message.textSha256)
+        ) ||
+        proof.messages.some(
+          (message) =>
+            message.kind === "user" &&
+            message.clientUserMessageId === proof.clientUserMessageId
+        ) ||
+        input.successor.originDeploymentId !== parent.origin_deployment_id ||
+        input.successor.originDeviceId !== parent.origin_device_id
+      ) {
+        throw statusError(
+          "Conversation source parent frontier or origin is invalid",
+          409,
+          "conversation_source_rebase_frontier_conflict"
+        );
+      }
+
+      const segmentsResult = await client.query<SegmentRow>(
+        `select *
+           from conversation_source_segments
+          where artifact_id = $1
+          order by segment_index`,
+        [parent.id]
+      );
+      const segments = segmentsResult.rows;
+      const lastSegment = segments.at(-1);
+      const lastSegmentDigest = lastSegment?.content_digest ?? null;
+      const expectedSegmentCount = parent.current_journal_sequence + 1;
+      if (
+        lastSegmentDigest !== expected.lastSegmentDigest ||
+        segments.length !== expectedSegmentCount ||
+        segments.some((segment, index) => segment.segment_index !== index) ||
+        (lastSegment &&
+          (Number(lastSegment.source_end_offset) !==
+            expected.providerCursorOffset ||
+            lastSegment.source_end_line !== expected.providerCursorLine)) ||
+        (!lastSegment &&
+          (expected.providerCursorOffset !== parent.journal_start_offset ||
+            expected.providerCursorLine !== parent.journal_start_line))
+      ) {
+        throw statusError(
+          "Conversation source parent journal frontier is invalid",
+          409,
+          "conversation_source_rebase_journal_conflict"
+        );
+      }
+
+      const signedClosure = parseSignedConversationSourceClosureManifest(
+        input.signedParentClosure
+      );
+      const closureHash =
+        calculateConversationSourceClosureDigest(signedClosure);
+      const closure = signedClosure.manifest;
+      if (
+        closure.logicalSourceId !== parent.logical_source_id ||
+        closure.sourceGenerationId !== parent.source_generation_id ||
+        closure.originKeyId !== parent.origin_key_id ||
+        closure.sourceComponentId !== parent.source_component_id ||
+        closure.sourceComponentRole !== parent.source_component_role ||
+        closure.parentSourceComponentId !== parent.parent_source_component_id ||
+        closure.contentFraming !== parent.content_framing ||
+        closure.sourceCreatedAt !== parent.source_created_at.toISOString() ||
+        !isDeepStrictEqual(
+          closure.priorGenerationClosure,
+          parent.prior_generation_closure
+        ) ||
+        closure.segmentCount !== segments.length ||
+        closure.endByteCursor !== expected.providerCursorOffset ||
+        closure.endItemCursor !== expected.providerCursorLine ||
+        closure.chainHeadDigest !== lastSegmentDigest ||
+        closure.sourceRootDigest !==
+          calculateConversationSourceRootDigest(
+            segments.map((segment) => segment.content_digest)
+          ) ||
+        parent.origin_key_status !== "active" ||
+        !verifyConversationSourceClosureManifestSignature(
+          signedClosure,
+          parent.origin_public_key
+        )
+      ) {
+        throw statusError(
+          "Conversation source parent closure is invalid",
+          409,
+          "conversation_source_rebase_closure_invalid"
+        );
+      }
+
+      const commandResult = await client.query<{
+        command_id: string;
+        client_user_message_id: string;
+        execution_generation: number;
+        state: string;
+        provider: string;
+        execution_state: string;
+        execution_generation_current: number;
+        runner_deployment_id: string;
+        runner_device_id: string;
+        logical_session_id: string | null;
+        provider_thread_id: string | null;
+        source_generation_id: string | null;
+        binding_deployment_id: string;
+        binding_device_id: string;
+        binding_generation: number;
+        binding_session_id: string | null;
+        binding_thread_id: string | null;
+        binding_source_generation_id: string | null;
+        session_logical_id: string | null;
+      }>(
+        `select command.id as command_id,
+                command.client_user_message_id,
+                command.execution_generation,
+                command.state,
+                execution.provider,
+                execution.state as execution_state,
+                execution.execution_generation as execution_generation_current,
+                execution.runner_deployment_id::text as runner_deployment_id,
+                execution.runner_device_id::text as runner_device_id,
+                execution.logical_session_id::text as logical_session_id,
+                execution.provider_thread_id,
+                execution.source_generation_id::text as source_generation_id,
+                binding.deployment_id::text as binding_deployment_id,
+                binding.device_id::text as binding_device_id,
+                binding.execution_generation as binding_generation,
+                binding.local_session_id::text as binding_session_id,
+                binding.provider_thread_id as binding_thread_id,
+                binding.source_generation_id::text as binding_source_generation_id,
+                session.logical_session_id::text as session_logical_id
+           from managed_conversation_commands command
+           join managed_conversation_executions execution
+             on execution.id = command.execution_id
+            and execution.owner_user_id = command.owner_user_id
+           join managed_conversation_runtime_bindings binding
+             on binding.execution_id = execution.id
+            and binding.owner_user_id = execution.owner_user_id
+          left join sessions session
+             on session.id = $10
+            and session.owner_user_id = execution.owner_user_id
+            and session.external_thread_id = $6
+          where command.owner_user_id = $1
+            and command.id = $2
+            and command.execution_id = $3
+            and command.execution_generation = $4
+            and command.command_kind = 'prompt'
+            and command.client_user_message_id = $5
+            and command.allow_archived_resume = true
+            and command.state = 'dispatching'
+            and command.lease_token is not null
+            and command.lease_expires_at > now()
+            and execution.provider = 'codex'
+            and execution.execution_generation = $4
+            and execution.state = 'running'
+            and execution.provider_thread_id = $6
+            and execution.source_generation_id = $7
+            and execution.runner_deployment_id::text = $8
+            and execution.runner_device_id::text = $9
+            and binding.execution_generation = $4
+            and binding.provider_thread_id = $6
+            and binding.source_generation_id = $7
+            and binding.deployment_id::text = $8
+            and binding.device_id::text = $9
+            and execution.logical_session_id::text in (
+              session.id::text,
+              session.logical_session_id::text
+            )
+            and binding.local_session_id::text in (
+              session.id::text,
+              session.logical_session_id::text
+            )
+          for update of command, execution, binding`,
+        [
+          actor.userId,
+          proof.commandId,
+          proof.executionId,
+          proof.executionGeneration,
+          proof.clientUserMessageId,
+          proof.providerThreadId,
+          parent.source_generation_id,
+          parent.origin_deployment_id,
+          parent.origin_device_id,
+          parent.session_id
+        ]
+      );
+      if (commandResult.rows.length !== 1) {
+        throw statusError(
+          "Conversation source rebase command is not authorized",
+          409,
+          "conversation_source_rebase_command_invalid"
+        );
+      }
+      const unsettledResult = await client.query(
+        `select command.id
+           from managed_conversation_commands command
+          where command.owner_user_id = $1
+            and command.execution_id = $2
+            and command.execution_generation = $3
+            and command.id <> $4
+            and command.state not in ('completed','failed','canceled')
+          limit 1`,
+        [
+          actor.userId,
+          proof.executionId,
+          proof.executionGeneration,
+          proof.commandId
+        ]
+      );
+      const pendingCheckpointResult = await client.query(
+        `select checkpoint.id
+           from managed_conversation_execution_checkpoints checkpoint
+          where checkpoint.owner_user_id = $1
+            and checkpoint.execution_id = $2
+            and checkpoint.execution_generation = $3
+            and checkpoint.checkpoint_status = 'pending'
+            and checkpoint.command_id <> $4
+          limit 1`,
+        [
+          actor.userId,
+          proof.executionId,
+          proof.executionGeneration,
+          proof.commandId
+        ]
+      );
+      if (
+        unsettledResult.rows.length > 0 ||
+        pendingCheckpointResult.rows.length > 0
+      ) {
+        throw statusError(
+          "Conversation source rebase has unsettled execution work",
+          409,
+          "conversation_source_rebase_execution_unsettled"
+        );
+      }
+
+      const canonicalRows = await client.query<{
+        canonical_stable_item_id: string | null;
+        external_turn_id: string | null;
+        raw_text: string | null;
+        app_server_item_type: string;
+      }>(
+        `select item.canonical_stable_item_id,
+                item.external_turn_id,
+                item.raw_text,
+                item.metadata ->> 'appServerItemType' as app_server_item_type
+           from conversation_items item
+          where item.owner_user_id = $1
+            and item.external_thread_id = $2
+            and item.source_kind = 'codex'
+            and item.source_transport = 'app_server'
+            and item.source_record_type = 'app_server_notification'
+            and item.source_event_type = 'item/completed'
+            and item.metadata ->> 'managedConversation' = 'true'
+            and item.metadata ->> 'canonicalIdentityBasis' = 'provider_ids'
+            and item.metadata ->> 'appServerItemType' in ('userMessage','agentMessage')
+          order by item.observed_at, item.id`,
+        [actor.userId, proof.providerThreadId]
+      );
+      const canonicalMessages = canonicalRows.rows.map((row) => {
+        const textSha256 = createHash("sha256")
+          .update((row.raw_text ?? "").trim(), "utf8")
+          .digest("hex");
+        if (
+          row.app_server_item_type === "userMessage" &&
+          row.canonical_stable_item_id?.startsWith("koed-user-message:") &&
+          row.external_turn_id
+        ) {
+          return {
+            kind: "user" as const,
+            clientUserMessageId: row.canonical_stable_item_id.slice(
+              "koed-user-message:".length
+            ),
+            turnId: row.external_turn_id,
+            textSha256
+          };
+        }
+        if (
+          row.app_server_item_type === "agentMessage" &&
+          row.external_turn_id
+        ) {
+          return {
+            kind: "assistant" as const,
+            turnId: row.external_turn_id,
+            textSha256
+          };
+        }
+        return null;
+      });
+      const submittedMessages = proof.messages.map((message) => ({
+        ...message
+      }));
+      const canonicalKey = (
+        message: NonNullable<(typeof canonicalMessages)[number]>
+      ) =>
+        message.kind === "user"
+          ? `user:${message.clientUserMessageId}:${message.turnId}:${message.textSha256}`
+          : `assistant:${message.turnId}:${message.textSha256}`;
+      const canonicalHistoryMessages = [...submittedMessages].sort(
+        (left, right) => {
+          const leftKey = canonicalKey(left);
+          const rightKey = canonicalKey(right);
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        }
+      );
+      const canonicalHistorySha256 = createHash("sha256")
+        .update(
+          JSON.stringify({ version: 1, messages: canonicalHistoryMessages }),
+          "utf8"
+        )
+        .digest("hex");
+      const submittedKeys = submittedMessages.map(canonicalKey).sort();
+      const canonicalKeys = canonicalMessages
+        .filter(
+          (message): message is NonNullable<typeof message> => message !== null
+        )
+        .map(canonicalKey)
+        .sort();
+      const allTurns = new Set(
+        submittedMessages.map((message) => message.turnId)
+      );
+      const suppliedTurnIds = [...proof.turnIds].sort();
+      if (
+        canonicalMessages.some((message) => message === null) ||
+        canonicalKeys.length !== canonicalMessages.length ||
+        !isDeepStrictEqual(submittedKeys, canonicalKeys) ||
+        canonicalHistorySha256 !== proof.canonicalHistorySha256 ||
+        !isDeepStrictEqual([...allTurns].sort(), suppliedTurnIds) ||
+        proof.messages.some(
+          (message) =>
+            message.kind === "user" &&
+            message.clientUserMessageId === proof.clientUserMessageId
+        )
+      ) {
+        throw statusError(
+          "Conversation source rebase history does not match canonical history",
+          409,
+          "conversation_source_rebase_history_mismatch"
+        );
+      }
+
+      const liveLeaseResult = await client.query(
+        `select command.id
+           from managed_conversation_commands command
+          where command.owner_user_id = $1
+            and command.id = $2
+            and command.execution_id = $3
+            and command.execution_generation = $4
+            and command.command_kind = 'prompt'
+            and command.client_user_message_id = $5
+            and command.allow_archived_resume = true
+            and command.state = 'dispatching'
+            and command.lease_token is not null
+            and command.lease_expires_at > now()
+          for update`,
+        [
+          actor.userId,
+          proof.commandId,
+          proof.executionId,
+          proof.executionGeneration,
+          proof.clientUserMessageId
+        ]
+      );
+      if (liveLeaseResult.rows.length !== 1) {
+        throw statusError(
+          "Conversation source rebase prompt lease expired",
+          409,
+          "conversation_source_rebase_command_lease_expired"
+        );
+      }
+
+      const finalized = await client.query<ArtifactRow>(
+        `update conversation_source_artifacts
+            set lifecycle = 'finalized',
+                closure_hash = $3,
+                closure_manifest = $4::jsonb,
+                closure_signature = $5,
+                finalized_at = $6,
+                updated_at = now()
+          where id = $2 and owner_user_id = $1 and lifecycle = 'active'
+          returning ${ARTIFACT_COLUMNS}`,
+        [
+          actor.userId,
+          parent.id,
+          closureHash,
+          closure,
+          signedClosure.signature,
+          closure.closedAt
+        ]
+      );
+      if (!finalized.rows[0]) {
+        throw statusError(
+          "Conversation source parent changed during rebase",
+          409,
+          "conversation_source_rebase_parent_conflict"
+        );
+      }
+      await client.query(
+        `insert into conversation_source_replication_outbox (
+           owner_user_id, artifact_id, operation_kind, segment_id,
+           target_upstream_id, mode
+         )
+         select $1, $2, 'closure', null, policy.target_upstream_id, policy.mode
+           from personal_source_replication_policies policy
+          where policy.owner_user_id = $1
+            and policy.enabled = true
+            and policy.target_upstream_id is not null
+            and policy.effective_from <= now()
+            and exists (
+              select 1
+                from conversation_source_artifacts artifact
+               where artifact.id = $2
+                 and artifact.owner_user_id = $1
+                 and artifact.source_created_at >= policy.effective_from
+            )
+         on conflict do nothing`,
+        [actor.userId, parent.id]
+      );
+      await notifyConversationSourceReplication(
+        client,
+        "upload",
+        parent.source_generation_id,
+        parent.logical_source_id
+      );
+
+      const priorGenerationClosure = {
+        sourceGenerationId: parent.source_generation_id,
+        contentDigest: closureHash,
+        closedAt: closure.closedAt
+      };
+      const artifact = await ensureConversationSourceArtifactWithClient(
+        client,
+        actor,
+        {
+          sessionId: parent.session_id,
+          logicalSourceId: parent.logical_source_id,
+          sourceGenerationId: input.successor.sourceGenerationId,
+          sourceComponentId: parent.source_component_id,
+          sourceComponentRole: parent.source_component_role,
+          parentSourceComponentId: parent.parent_source_component_id,
+          contentFraming: parent.content_framing,
+          replicaRole: "origin_local",
+          sourceKind: parent.source_kind,
+          sourceRuntime: parent.source_runtime,
+          externalSessionId: parent.external_session_id,
+          sourceFingerprint: parent.source_fingerprint,
+          artifactFormat: parent.artifact_format,
+          artifactFormatVersion: parent.artifact_format_version,
+          sourceAdapterVersion: parent.source_adapter_version,
+          journalStartOffset: frontier.offset,
+          journalStartLine: frontier.line,
+          liveStartOffset: frontier.offset,
+          liveStartLine: frontier.line,
+          currentSourceLength: frontier.fileSize,
+          sourceCreatedAt: input.successor.sourceCreatedAt,
+          sourceModifiedAt: frontier.modifiedAt,
+          storageProvider: input.successor.storageProvider,
+          storagePrefix: input.successor.storagePrefix,
+          originDeploymentId: input.successor.originDeploymentId,
+          originDeviceId: input.successor.originDeviceId,
+          originKeyId: input.successor.originKeyId,
+          originPublicKey: input.successor.originPublicKey,
+          priorGenerationClosure,
+          redactedSourceLabel: parent.redacted_source_label
+        }
+      );
+      const executionBinding = await client.query(
+        `update managed_conversation_executions
+            set source_generation_id = $5,
+                updated_at = now()
+          where owner_user_id = $1
+            and id = $2
+            and execution_generation = $3
+            and source_generation_id = $4
+            and provider_thread_id = $6
+            and runner_deployment_id::text = $7
+            and runner_device_id::text = $8
+            and state = 'running'`,
+        [
+          actor.userId,
+          proof.executionId,
+          proof.executionGeneration,
+          parent.source_generation_id,
+          artifact.sourceGenerationId,
+          proof.providerThreadId,
+          parent.origin_deployment_id,
+          parent.origin_device_id
+        ]
+      );
+      const runtimeBinding = await client.query(
+        `update managed_conversation_runtime_bindings
+            set source_generation_id = $5,
+                updated_at = now()
+          where owner_user_id = $1
+            and execution_id = $2
+            and execution_generation = $3
+            and source_generation_id = $4
+            and provider_thread_id = $6
+            and deployment_id::text = $7
+            and device_id::text = $8`,
+        [
+          actor.userId,
+          proof.executionId,
+          proof.executionGeneration,
+          parent.source_generation_id,
+          artifact.sourceGenerationId,
+          proof.providerThreadId,
+          parent.origin_deployment_id,
+          parent.origin_device_id
+        ]
+      );
+      if (executionBinding.rowCount !== 1 || runtimeBinding.rowCount !== 1) {
+        throw statusError(
+          "Conversation source rebase execution binding changed",
+          409,
+          "conversation_source_rebase_binding_conflict"
+        );
+      }
+      await client.query(
+        `insert into conversation_source_rebase_proofs (
+           owner_user_id, parent_artifact_id, successor_artifact_id,
+           parent_closure_hash, expected_parent_frontier, accepted_frontier,
+           command_proof
+         ) values ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb)`,
+        [
+          actor.userId,
+          parent.id,
+          artifact.id,
+          closureHash,
+          expected,
+          frontier,
+          proof
+        ]
+      );
+      await client.query("commit");
+      committed = true;
+      return {
+        artifact,
+        replayed: false,
+        parentClosureHash: closureHash,
+        acceptedFrontier: frontier
+      };
+    } catch (error) {
+      if (!committed) await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
   async getConversationSourceArtifact(actor, artifactId) {
     const result = await pool.query<ArtifactRow>(
       `select ${ARTIFACT_COLUMNS}
@@ -1661,6 +2391,42 @@ export const createConversationSourceJournalRepository = (
       [actor.userId, sourceGenerationId, sourceComponentId]
     );
     return result.rows[0] ? mapArtifact(result.rows[0]) : null;
+  },
+
+  async getConversationSourceRebaseProofBySuccessorGeneration(
+    actor,
+    sourceGenerationId
+  ) {
+    const result = await pool.query<{
+      parent_artifact_id: string;
+      parent_source_generation_id: string;
+      accepted_frontier: ConversationSourceRebaseProofRecord["acceptedFrontier"];
+    }>(
+      `select proof.parent_artifact_id,
+              parent.source_generation_id as parent_source_generation_id,
+              proof.accepted_frontier
+         from conversation_source_rebase_proofs proof
+         join conversation_source_artifacts successor
+           on successor.id = proof.successor_artifact_id
+          and successor.owner_user_id = proof.owner_user_id
+         join conversation_source_artifacts parent
+           on parent.id = proof.parent_artifact_id
+          and parent.owner_user_id = proof.owner_user_id
+        where proof.owner_user_id = $1
+          and successor.source_generation_id = $2
+          and successor.source_component_id = 'main'
+          and successor.lifecycle <> 'deleted'
+        limit 1`,
+      [actor.userId, sourceGenerationId]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          parentArtifactId: row.parent_artifact_id,
+          parentSourceGenerationId: row.parent_source_generation_id,
+          acceptedFrontier: row.accepted_frontier
+        }
+      : null;
   },
 
   async listConversationSourceArtifactsByGeneration(actor, sourceGenerationId) {

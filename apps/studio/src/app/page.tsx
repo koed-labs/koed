@@ -21,11 +21,13 @@ import {
   useLocalProjectCapabilities
 } from "@/lib/local-projects";
 import type { HomeExecution, HomeRecent } from "@/lib/studio-contract";
+import { managedProviderSourceIdsByExecution } from "@/components/studio/LocalConversationBrowser.match";
 import type { HomeItem } from "@koed/shared/home";
 import { useHomeFeed } from "@/lib/use-home-feed";
 import { homeProjects, type HomeProject } from "@/lib/studio-home";
 import { HostedStudio } from "@/components/hosted/HostedStudio";
 import { personalAgentsHttpAdapter } from "@/lib/personal-agents-client";
+import { useVerifiedPersonalScope } from "@/components/studio/useVerifiedPersonalScope";
 
 function LiveHome({
   onPlugins,
@@ -77,9 +79,13 @@ function LiveHome({
       : null;
   const [resumeId, setResumeId] = useState(executionId);
   const [projects, setProjects] = useState<HomeProject[]>([]);
+  const [homeScopeKey, setHomeScopeKey] = useState<string | null>(null);
   const [managedConversations, setManagedConversations] = useState<
     HomeExecution[]
   >([]);
+  const [managedProviderSources, setManagedProviderSources] = useState<
+    Record<string, string[]>
+  >({});
   const [registeredProjects, setRegisteredProjects] = useState<HomeProject[]>(
     []
   );
@@ -104,6 +110,7 @@ function LiveHome({
     transport: "studio",
     identityKey: "personal"
   });
+  const personalScopeKey = useVerifiedPersonalScope(homeScopeKey);
   const allProjects = useMemo(() => {
     const byId = new Map(projects.map((project) => [project.id, project]));
     for (const project of registeredProjects) byId.set(project.id, project);
@@ -222,6 +229,7 @@ function LiveHome({
 
   useEffect(() => {
     const controller = new AbortController();
+    setHomeScopeKey(null);
     fetch("/studio-api/home", {
       headers: { Accept: "application/json" },
       cache: "no-store",
@@ -242,11 +250,14 @@ function LiveHome({
           !Array.isArray(snapshot.executions) ||
           !Array.isArray(snapshot.recents)
         ) {
+          setHomeScopeKey(null);
           setProjects([]);
           setManagedConversations([]);
+          setManagedProviderSources({});
           setSelectedProject(null);
           return;
         }
+        setHomeScopeKey(snapshot.scopeKey);
 
         const executions = snapshot.executions.filter(
           (item): item is HomeExecution =>
@@ -269,7 +280,14 @@ function LiveHome({
           )
         );
         setManagedConversations(executions);
-        const verifiedProjects = homeProjects(recents, executions);
+        setManagedProviderSources(
+          managedProviderSourceIdsByExecution({ recents, executions })
+        );
+        const verifiedProjects = homeProjects(
+          recents,
+          executions,
+          registeredProjects
+        );
         setProjects(verifiedProjects);
 
         const candidate = executionId
@@ -286,8 +304,10 @@ function LiveHome({
       })
       .catch(() => {
         if (!controller.signal.aborted) {
+          setHomeScopeKey(null);
           setProjects([]);
           setManagedConversations([]);
+          setManagedProviderSources({});
           setSelectedProject(null);
         }
       });
@@ -407,11 +427,16 @@ function LiveHome({
       <div className="flex h-full min-h-0 w-full">
         <StudioSidebar
           projects={allProjects}
+          personalScopeKey={personalScopeKey}
           managedConversations={managedConversations}
+          managedProviderSourceIds={managedProviderSources}
           registeredProjectIds={registeredProjects
             .map((project) => project.id)
             .filter((id) => /^lp_[0-9a-f]{32}$/iu.test(id))}
           onChatSelect={resumeChat}
+          showLocalCatalog
+          onSelectManagedExecution={resumeChat}
+          managedSourceIds={Object.values(managedProviderSources).flat()}
           onMoveManagedExecution={moveManagedExecutionToProject}
           collapsed={collapsed}
           selectedProject={selectedProject}
