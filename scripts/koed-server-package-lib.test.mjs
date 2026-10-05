@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import {
   readFileSync,
   chmodSync,
@@ -13,12 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import {
+  buildComponentManifest,
   buildPackageManifest,
   buildPackageProvenance,
+  canonicalComponentManifestBytes,
   normalizeDeployedWorkspaceDependencies,
   pruneStandalonePackageMetadata,
   prunePnpmWorkspaceVirtualStorePaths,
   sha256File,
+  signComponentManifest,
   validatePackageRoot,
   writePackageManifest
 } from "./koed-server-package-lib.mjs";
@@ -106,6 +110,57 @@ test("validates a standalone koed-server package root", () => {
   assert.equal(
     manifest.database.migrationSet.latestMigrationTimestamp,
     20260708000000
+  );
+});
+
+test("builds canonical signed component manifests with interoperable Ed25519 domain", () => {
+  const root = tempDir();
+  const componentRoot = resolve(root, "component");
+  writeFile(resolve(componentRoot, "entry.js"), "export {}\n");
+  const archivePath = resolve(root, "base.tar.gz");
+  writeFile(archivePath, "fixture archive\n");
+  const manifest = buildComponentManifest({
+    componentRoot,
+    archivePath,
+    component: "base",
+    productVersion: "0.8.1",
+    target: { platform: "linux", architecture: "x64" },
+    runtimes: [
+      {
+        kind: "node",
+        runtimeRange: ">=24 <25",
+        nodeRange: ">=24 <25",
+        modulesAbi: "137",
+        minimumNapi: 10
+      }
+    ],
+    requiredFiles: ["entry.js"]
+  });
+  const pair = generateKeyPairSync("ed25519");
+  const signed = signComponentManifest({
+    manifest,
+    keyId: "package-builder-test",
+    privateKey: pair.privateKey.export({ type: "pkcs8", format: "pem" })
+  });
+
+  assert.deepEqual(JSON.parse(signed.manifestBytes.toString("utf8")), manifest);
+  assert.deepEqual(
+    signed.manifestBytes,
+    canonicalComponentManifestBytes(manifest)
+  );
+  assert.equal(signed.signature.algorithm, "ed25519");
+  assert.equal(signed.signature.keyId, "package-builder-test");
+  assert.equal(
+    cryptoVerify(
+      null,
+      Buffer.concat([
+        Buffer.from("koed-component-manifest-v1\n"),
+        signed.manifestBytes
+      ]),
+      pair.publicKey,
+      Buffer.from(signed.signature.signature, "base64")
+    ),
+    true
   );
 });
 

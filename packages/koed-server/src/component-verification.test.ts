@@ -1,0 +1,345 @@
+import { mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  verifyComponent,
+  verifyExtractedComponent
+} from "./component-verification.js";
+import { productionComponentTrustRoots } from "./component-trust-roots.js";
+import type { ComponentManifest } from "./component-contract.js";
+import {
+  buildComponentManifest,
+  signComponentManifest
+} from "../../../scripts/koed-server-package-lib.mjs";
+
+const fixtures: Awaited<ReturnType<typeof signedComponentFixture>>[] = [];
+const fixture = async () => {
+  const created = await signedComponentFixture();
+  fixtures.push(created);
+  return created;
+};
+const digest = (bytes: Buffer) =>
+  createHash("sha256").update(bytes).digest("hex");
+const fixtureManifest = (bytes: Buffer): ComponentManifest => {
+  const parsed: unknown = JSON.parse(bytes.toString());
+  return parsed as ComponentManifest;
+};
+
+afterEach(() => {
+  for (const item of fixtures.splice(0)) item.dispose();
+});
+
+describe("signed component verification", () => {
+  it("accepts real Ed25519 fixture signature and rejects signed component mismatch", async () => {
+    const sample = await fixture();
+    await expect(verifyComponent(sample.input)).resolves.toBeDefined();
+    await expect(
+      verifyComponent({ ...sample.input, expectedComponent: "privacy" })
+    ).rejects.toThrow("component mismatch");
+  });
+
+  it("fails closed with empty production trust roots", async () => {
+    const sample = await fixture();
+    expect(productionComponentTrustRoots.size).toBe(0);
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        trustedKeys: productionComponentTrustRoots
+      })
+    ).rejects.toThrow("untrusted component signing key");
+  });
+
+  it.each([
+    ["version", { expectedVersion: "0.8.2" }, "product version mismatch"],
+    [
+      "target",
+      { target: { platform: "macos", architecture: "arm64" } },
+      "component target mismatch"
+    ],
+    [
+      "Node version",
+      {
+        runtime: {
+          kind: "node",
+          version: "26.0.0",
+          nodeVersion: "26.0.0",
+          modulesAbi: "137",
+          napiVersion: 10,
+          platform: "linux",
+          architecture: "x64"
+        }
+      },
+      "runtime version is incompatible"
+    ],
+    [
+      "Electron runtime",
+      {
+        runtime: {
+          kind: "electron",
+          version: "40.0.0",
+          nodeVersion: "24.0.0",
+          modulesAbi: "137",
+          napiVersion: 10,
+          platform: "linux",
+          architecture: "x64"
+        }
+      },
+      "runtime version is incompatible"
+    ],
+    [
+      "runtime ABI",
+      {
+        runtime: {
+          kind: "node",
+          version: "24.13.1",
+          nodeVersion: "24.13.1",
+          modulesAbi: "999",
+          napiVersion: 10,
+          platform: "linux",
+          architecture: "x64"
+        }
+      },
+      "runtime ABI mismatch"
+    ],
+    [
+      "N-API",
+      {
+        runtime: {
+          kind: "node",
+          version: "24.13.1",
+          nodeVersion: "24.13.1",
+          modulesAbi: "137",
+          napiVersion: 1,
+          platform: "linux",
+          architecture: "x64"
+        }
+      },
+      "runtime N-API version is incompatible"
+    ]
+  ] as const)("rejects incompatible %s", async (_name, override, reason) => {
+    const sample = await fixture();
+    await expect(
+      verifyComponent({ ...sample.input, ...override })
+    ).rejects.toThrow(reason);
+  });
+
+  it("rejects noncanonical metadata and signatures signed over different bytes", async () => {
+    const sample = await fixture();
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        manifestBytes: Buffer.from(
+          JSON.stringify(
+            JSON.parse(sample.input.manifestBytes.toString()),
+            null,
+            2
+          )
+        )
+      })
+    ).rejects.toThrow("not canonical");
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        signature: {
+          ...sample.input.signature,
+          signature: Buffer.alloc(64).toString("base64")
+        }
+      })
+    ).rejects.toThrow("signature is invalid");
+  });
+
+  it("rejects signed archive file hash corruption", async () => {
+    const sample = await signedComponentFixture({
+      files: [{ path: "entry.js", sha256: "0".repeat(64) }]
+    });
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(
+      "component archive file hash mismatch: entry.js"
+    );
+  });
+
+  it("rejects archive size and hash mismatches", async () => {
+    const sample = await fixture();
+    writeFileSync(sample.input.archivePath, "tampered");
+    await expect(verifyComponent(sample.input)).rejects.toThrow(
+      /archive (size|SHA-256) mismatch/
+    );
+  });
+
+  it("verifies extracted required-file hashes and rejects links or corruption", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    mkdirSync(resolve(sample.root, "nested"));
+    writeFileSync(resolve(sample.root, "nested/file.js"), "nested");
+    manifest.files.push({
+      path: "nested/file.js",
+      sha256: digest(Buffer.from("nested"))
+    });
+    manifest.requiredFiles.push("nested/file.js");
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).resolves.toBeUndefined();
+    writeFileSync(resolve(sample.root, "entry.js"), "corrupt");
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow("component file hash mismatch");
+    unlinkSync(resolve(sample.root, "entry.js"));
+    symlinkSync("/etc/passwd", resolve(sample.root, "entry.js"));
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow("component files must not contain links");
+  });
+
+  it.each([
+    ["traversal", "../escape", "0", "component archive path is unsafe"],
+    ["absolute path", "/escape", "0", "component archive path is unsafe"],
+    ["hard link", "entry.js", "1", "hard links"],
+    ["symbolic link", "entry.js", "2", "symbolic links"],
+    ["special entry", "entry.js", "3", "unsupported component tar entry type"]
+  ])("rejects archive %s", async (_name, path, type, reason) => {
+    const sample = await signedComponentFixture({}, [{ path, type }]);
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(reason);
+  });
+
+  it("rejects file path conflicts that cannot be extracted", async () => {
+    const sample = await signedComponentFixture({}, [
+      { path: "entry.js" },
+      { path: "entry.js/child" }
+    ]);
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(
+      "component archive file path conflict: entry.js"
+    );
+  });
+
+  it("rejects duplicate archive paths", async () => {
+    const sample = await signedComponentFixture({}, [
+      { path: "entry.js" },
+      { path: "entry.js" }
+    ]);
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(
+      "duplicate component archive path"
+    );
+  });
+
+  it("rejects duplicate and unsafe manifest file paths", async () => {
+    const sample = await signedComponentFixture({
+      files: [{ path: "../escape", sha256: "0".repeat(64) }]
+    });
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(
+      "component file path is unsafe"
+    );
+    const duplicate = await signedComponentFixture({
+      files: [
+        { path: "entry.js", sha256: "0".repeat(64) },
+        { path: "entry.js", sha256: "0".repeat(64) }
+      ]
+    });
+    fixtures.push(duplicate);
+    await expect(verifyComponent(duplicate.input)).rejects.toThrow(
+      "component file inventory is invalid or duplicate"
+    );
+  });
+
+  it("checks glibc minimum and unsupported target", async () => {
+    const linux = await signedComponentFixture({
+      target: {
+        platform: "linux",
+        architecture: "x64",
+        libc: { family: "glibc", minimumVersion: "2.28" }
+      }
+    });
+    fixtures.push(linux);
+    await expect(
+      verifyComponent({
+        ...linux.input,
+        runtime: { ...linux.input.runtime, libcVersion: "2.17" }
+      })
+    ).rejects.toThrow("runtime libc version is incompatible");
+    await expect(
+      verifyComponent({
+        ...linux.input,
+        runtime: { ...linux.input.runtime, libcVersion: "invalid" }
+      })
+    ).rejects.toThrow("runtime libc version is incompatible");
+    const unsupported = await signedComponentFixture({
+      target: { platform: "windows", architecture: "x64" } as never
+    });
+    fixtures.push(unsupported);
+    await expect(verifyComponent(unsupported.input)).rejects.toThrow(
+      "unsupported component target"
+    );
+  });
+
+  it("rejects unsigned placeholders and unsupported signature algorithms", async () => {
+    const sample = await fixture();
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        signature: {
+          ...sample.input.signature,
+          algorithm: "unsigned-placeholder" as never
+        }
+      })
+    ).rejects.toThrow("unsupported component signature");
+  });
+
+  it("rejects unknown signing keys before archive use", async () => {
+    const sample = await fixture();
+    await expect(
+      verifyComponent({ ...sample.input, trustedKeys: new Map() })
+    ).rejects.toThrow("untrusted component signing key");
+  });
+
+  it("interoperates with canonical JS package builder and signer", async () => {
+    const sample = await fixture();
+    const original = fixtureManifest(sample.input.manifestBytes);
+    const manifest = buildComponentManifest({
+      componentRoot: sample.root,
+      archivePath: sample.input.archivePath,
+      component: original.component,
+      productVersion: original.productVersion,
+      target: original.target,
+      runtimes: original.runtimes,
+      requiredFiles: original.requiredFiles
+    });
+    const pair = generateKeyPairSync("ed25519");
+    const signed = signComponentManifest({
+      manifest,
+      keyId: "builder-test-key",
+      privateKey: pair.privateKey
+        .export({ type: "pkcs8", format: "pem" })
+        .toString()
+    });
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        manifestBytes: signed.manifestBytes,
+        signature: signed.signature,
+        trustedKeys: new Map([
+          [
+            "builder-test-key",
+            pair.publicKey.export({ type: "spki", format: "pem" }).toString()
+          ]
+        ])
+      })
+    ).resolves.toEqual(manifest);
+  });
+
+  it("exposes archive digest as bound signed metadata", async () => {
+    const sample = await fixture();
+    const actual = digest(
+      await import("node:fs").then(({ readFileSync }) =>
+        readFileSync(sample.input.archivePath)
+      )
+    );
+    expect(fixtureManifest(sample.input.manifestBytes).archive.sha256).toBe(
+      actual
+    );
+  });
+});

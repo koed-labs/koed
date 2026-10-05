@@ -384,6 +384,24 @@ Signature/provenance rules:
   or Desktop configuration opts into stricter policy.
 - Native runtime archives keep their own manifest/SHA-256 verification.
 
+Component bundle manifests use canonical JSON and an Ed25519 signature over
+`koed-component-manifest-v1\n` plus canonical UTF-8 manifest bytes. The signed
+fields bind product/component identity, target, Node/Electron and Node ABI or
+N-API compatibility, optional Linux glibc minimum, required files, archive size
+and SHA-256, and every archived file hash. Archive verification rejects unsafe
+or duplicate paths, links, unsupported tar entries, and configured size-limit
+violations before an archive is accepted; extracted trees are checked again
+against signed file hashes.
+
+Component verification is not wired into package installation yet. Production
+component trust roots are intentionally empty, so component verification fails
+closed and official component promotion remains blocked pending explicit
+Operator approval of a production signing key. Fixture keys exist only in test
+source and are excluded from the built package. No component-key environment,
+CLI, or per-user override exists. This component trust gate is distinct from
+existing standalone package provenance trust-policy options above; those options
+do not populate component trust roots.
+
 Downgrade and rollback rules:
 
 - Automatic downgrade is not allowed.
