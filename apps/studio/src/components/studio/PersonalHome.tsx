@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  AlertTriangle,
-  ChevronRight,
-  CircleAlert,
-  LoaderCircle,
-  Share2
-} from "lucide-react";
+import { AlertTriangle, CircleAlert, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   personalAgentsHttpAdapter,
@@ -43,11 +37,9 @@ import { SharedChatUI } from "../SharedChatUI";
 import {
   indexShareablePersonalConversations,
   indexShareableConversationRows,
-  isSyntheticIndependentProject,
   matchLocalConversationToHome,
   matchManagedExecutionForCapturedSession,
   managedConversationSourceIds,
-  managedConversationActivityLabel,
   managedProviderSourceIdsByExecution,
   normalizeConversationProvider,
   ownerSnapshotMaySurviveRefresh,
@@ -215,7 +207,6 @@ export function PersonalHome({
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [localRunnerAvailability, setLocalRunnerAvailability] =
     useState<LocalRunnerAvailability>("checking");
-  const [recentsOpen, setRecentsOpen] = useState(false);
   const collaborationClient = useMemo(
     () => new StudioCollaborationClient(),
     []
@@ -630,20 +621,6 @@ export function PersonalHome({
     const execution = executionForRecent(recent);
     return execution ? [{ recent, executionId: execution.id }] : [];
   });
-  const displayedConversationRecents = recents.flatMap((recent) => {
-    const execution = executionForRecent(recent);
-    const memory = ownerMemoryBySessionId.get(recent.sessionId);
-    return execution || memory
-      ? [
-          {
-            recent,
-            executionId: execution?.id ?? null,
-            execution,
-            memory: memory ?? null
-          }
-        ]
-      : [];
-  });
   const projects = homeProjects(browseRecents, browseExecutions);
   const composerProject =
     chatProject === undefined
@@ -1042,7 +1019,7 @@ export function PersonalHome({
                     key={prompt}
                     type="button"
                     onClick={() => setDraft(prompt)}
-                    className="rounded-full px-2.5 py-1 text-xs text-subtle transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
+                    className="rounded-full border border-border bg-surface px-3 py-1.5 text-left text-xs text-foreground-secondary transition-colors hover:border-border-strong hover:text-foreground"
                   >
                     {prompt}
                   </button>
@@ -1107,109 +1084,6 @@ export function PersonalHome({
               }
               onLoadMore={(source) => void homeFeed.loadMore(source)}
             />
-            {usable && snapshot && (
-              <>
-                <section className="border-t border-border pt-5">
-                  <button
-                    type="button"
-                    aria-expanded={recentsOpen}
-                    aria-controls="home-recents"
-                    onClick={() => setRecentsOpen((value) => !value)}
-                    className="flex items-center gap-2 px-1 text-sm font-medium text-foreground"
-                  >
-                    <ChevronRight
-                      className={`h-3.5 w-3.5 text-subtle transition-transform ${recentsOpen ? "rotate-90" : ""}`}
-                    />
-                    Pick up where you left off
-                    {displayedConversationRecents.length > 0 && (
-                      <span className="text-[11px] text-faint">
-                        {displayedConversationRecents.length}
-                      </span>
-                    )}
-                  </button>
-                  {recentsOpen && (
-                    <div id="home-recents" className="mt-3">
-                      {displayedConversationRecents.length === 0 ? (
-                        <p className="px-1 text-sm text-subtle">
-                          Your resumable chats will appear here.
-                        </p>
-                      ) : (
-                        <ul className="divide-y divide-border overflow-hidden rounded-md border border-border bg-surface/30">
-                          {displayedConversationRecents.map(
-                            ({ recent, executionId, execution, memory }) => (
-                              <li
-                                key={recent.id}
-                                className="flex items-center gap-1 pr-2"
-                              >
-                                <button
-                                  type="button"
-                                  disabled={!executionId}
-                                  onClick={() =>
-                                    executionId && onResumeChat(executionId)
-                                  }
-                                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-hover/50 disabled:cursor-not-allowed"
-                                >
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block truncate text-sm text-foreground">
-                                      {recent.title}
-                                    </span>
-                                    <span className="block truncate text-xs text-muted">
-                                      {isSyntheticIndependentProject(
-                                        recent.projectId,
-                                        recent.projectName
-                                      ) || !recent.projectId
-                                        ? "No Project"
-                                        : recent.projectName}{" "}
-                                      · {recent.provider ?? "AI client"}
-                                      {execution &&
-                                      ["stopped", "failed", "fenced"].includes(
-                                        execution.state
-                                      )
-                                        ? ` · ${managedConversationActivityLabel(execution.activity, execution.state)}`
-                                        : ""}
-                                      {executionId
-                                        ? ""
-                                        : " · captured, cannot continue here"}
-                                    </span>
-                                  </span>
-                                  <span className="flex-shrink-0 text-xs text-faint">
-                                    {formatHomeTime(recent.updatedAt)}
-                                  </span>
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={!memory}
-                                  onClick={() =>
-                                    memory &&
-                                    ownerSharingAuthorityKey &&
-                                    homeScopeKey &&
-                                    setShareConversation({
-                                      sessionId: memory.id,
-                                      memory,
-                                      authorityKey: ownerSharingAuthorityKey,
-                                      homeScopeKey
-                                    })
-                                  }
-                                  aria-label={`Share ${recent.title} with a Team`}
-                                  title={
-                                    memory
-                                      ? "Share processed Personal Memory"
-                                      : "This conversation has no verified Personal Memory source yet"
-                                  }
-                                  className="shrink-0 rounded-md p-1.5 text-faint hover:bg-surface-hover hover:text-foreground-secondary disabled:cursor-not-allowed disabled:opacity-30"
-                                >
-                                  <Share2 className="h-3.5 w-3.5" />
-                                </button>
-                              </li>
-                            )
-                          )}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                </section>
-              </>
-            )}
           </div>
         </main>
       </div>
@@ -1226,16 +1100,4 @@ export function PersonalHome({
       ) : null}
     </div>
   );
-}
-
-function formatHomeTime(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "Unknown time"
-    : new Intl.DateTimeFormat(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-      }).format(date);
 }
