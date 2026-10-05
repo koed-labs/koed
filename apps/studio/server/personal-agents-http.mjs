@@ -67,21 +67,23 @@ export async function handlePersonalAgents({
   routeFamily = "personal-agents"
 }) {
   const routePrefix =
-    routeFamily === "ai-client-resources"
-      ? "/studio-api/ai-client-resources"
-      : routeFamily === "home"
-        ? "/studio-api/home-feed"
-        : routeFamily === "public-square"
-          ? "/studio-api/public-square"
-          : routeFamily === "managed-conversations"
-            ? "/studio-api/managed-conversations"
-            : routeFamily === "team-agent-requests"
-              ? "/studio-api/collaboration"
-              : routeFamily === "personal-agent-role-templates"
-                ? "/studio-api/personal-agent-role-templates"
-                : routeFamily === "personal-removals"
-                  ? "/studio-api/personal-removals"
-                  : prefix;
+    routeFamily === "conversation-titles"
+      ? "/studio-api/conversation-titles"
+      : routeFamily === "ai-client-resources"
+        ? "/studio-api/ai-client-resources"
+        : routeFamily === "home"
+          ? "/studio-api/home-feed"
+          : routeFamily === "public-square"
+            ? "/studio-api/public-square"
+            : routeFamily === "managed-conversations"
+              ? "/studio-api/managed-conversations"
+              : routeFamily === "team-agent-requests"
+                ? "/studio-api/collaboration"
+                : routeFamily === "personal-agent-role-templates"
+                  ? "/studio-api/personal-agent-role-templates"
+                  : routeFamily === "personal-removals"
+                    ? "/studio-api/personal-removals"
+                    : prefix;
   if (
     url.pathname !== routePrefix &&
     !url.pathname.startsWith(`${routePrefix}/`)
@@ -99,41 +101,45 @@ export async function handlePersonalAgents({
       ? teamAgentRequestsRoute(suffix)
       : null;
   const methods =
-    routeFamily === "ai-client-resources"
-      ? suffix === "/instances"
-        ? ["GET"]
-        : suffix === "/discover"
-          ? ["POST"]
-          : new RegExp(`^/discover/${uuid}$`).test(suffix)
-            ? ["GET"]
-            : []
-      : routeFamily === "home"
-        ? homeMethods(suffix)
-        : routeFamily === "team-agent-requests"
-          ? (teamAgentRequestRoute?.methods ?? [])
-          : routeFamily === "public-square"
-            ? (squareRoute?.methods ?? [])
-            : routeFamily === "personal-agent-role-templates"
-              ? suffix === ""
-                ? ["GET"]
-                : []
-              : routeFamily === "personal-removals"
+    routeFamily === "conversation-titles"
+      ? new RegExp(`^/${uuid}$`).test(suffix)
+        ? ["PATCH"]
+        : []
+      : routeFamily === "ai-client-resources"
+        ? suffix === "/instances"
+          ? ["GET"]
+          : suffix === "/discover"
+            ? ["POST"]
+            : new RegExp(`^/discover/${uuid}$`).test(suffix)
+              ? ["GET"]
+              : []
+        : routeFamily === "home"
+          ? homeMethods(suffix)
+          : routeFamily === "team-agent-requests"
+            ? (teamAgentRequestRoute?.methods ?? [])
+            : routeFamily === "public-square"
+              ? (squareRoute?.methods ?? [])
+              : routeFamily === "personal-agent-role-templates"
                 ? suffix === ""
-                  ? ["GET", "PUT"]
+                  ? ["GET"]
                   : []
-                : routeFamily === "managed-conversations"
-                  ? managedMethods(suffix)
-                  : suffix === ""
-                    ? ["GET", "POST"]
-                    : activityRoute || historyMatch
-                      ? ["GET"]
-                      : suffix === "/capabilities"
+                : routeFamily === "personal-removals"
+                  ? suffix === ""
+                    ? ["GET", "PUT"]
+                    : []
+                  : routeFamily === "managed-conversations"
+                    ? managedMethods(suffix)
+                    : suffix === ""
+                      ? ["GET", "POST"]
+                      : activityRoute || historyMatch
                         ? ["GET"]
-                        : match
-                          ? match[2]
-                            ? ["POST"]
-                            : ["GET", "PATCH"]
-                          : [];
+                        : suffix === "/capabilities"
+                          ? ["GET"]
+                          : match
+                            ? match[2]
+                              ? ["POST"]
+                              : ["GET", "PATCH"]
+                            : [];
   if (!methods.length) {
     send(404, { error: "not_found" });
     return true;
@@ -275,15 +281,17 @@ export async function handlePersonalAgents({
     }
     const upstream = await fetchImpl(
       new URL(
-        routeFamily === "personal-removals"
-          ? "/v1/studio/personal-removals"
-          : routeFamily === "ai-client-resources" && suffix === "/instances"
-            ? "/v1/memory/local-agent-settings"
-            : teamAgentRequestRoute
-              ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
-              : squareRoute
-                ? `${squareRoute.path}${squareList ? url.search : ""}`
-                : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
+        routeFamily === "conversation-titles"
+          ? `/v1/memory/graph/sessions${suffix}/title`
+          : routeFamily === "personal-removals"
+            ? "/v1/studio/personal-removals"
+            : routeFamily === "ai-client-resources" && suffix === "/instances"
+              ? "/v1/memory/local-agent-settings"
+              : teamAgentRequestRoute
+                ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
+                : squareRoute
+                  ? `${squareRoute.path}${squareList ? url.search : ""}`
+                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
         base
       ),
       {

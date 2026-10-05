@@ -113,3 +113,9 @@ automatic verified current-work summary. See `docs/studio-personal-agents-plan.m
 - Resolve ESLint 10 / React plugin compatibility and triage the touched-file
   ESLint 9 findings (262 errors); distinguish existing configuration/test
   issues from new source issues before claiming lint passes.
+
+## Personal Studio folder runtime follow-up — 2026-10-05
+
+- Fixed: explicit folder selection and new runtime checkout selection preserve the exact directory. A folder inheriting Git from an ancestor is a plain-folder Project with explicitly unsupported checkpoints, rather than granting scope over the ancestor repository. Selecting a repository root retains Git checkpoint guarantees. Regression coverage includes an unborn parent repository containing an unrelated embedded repository without a commit.
+
+- Studio synthetic Team QA: update and verify launch-option fixtures and composer expectations for human chat versus Agent activation. The 14 Team/Team-responsive failures are present both on `69252ab9` and in the Personal-fix pre-push run; see `docs/studio-personal-qa.md` for verification limits.

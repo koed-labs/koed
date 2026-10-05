@@ -94,6 +94,12 @@ function LiveHome({
       ? (agentSelectionResult.error ?? null)
       : null;
   const [resumeId, setResumeId] = useState(executionId);
+  const [selectedExecutionId, setSelectedExecutionId] = useState(executionId);
+  useEffect(() => {
+    // Route recovery can arrive without the first-send callback.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (executionId) setSelectedExecutionId(executionId);
+  }, [executionId]);
   const [projects, setProjects] = useState<HomeProject[]>([]);
   const [homeScopeKey, setHomeScopeKey] = useState<string | null>(null);
   const [managedConversations, setManagedConversations] = useState<
@@ -247,6 +253,16 @@ function LiveHome({
   }, [loadRegisteredProjects]);
 
   useEffect(() => {
+    const updateTitles = () => setHomeRefreshRevision((value) => value + 1);
+    window.addEventListener("koed:conversation-titles-changed", updateTitles);
+    return () =>
+      window.removeEventListener(
+        "koed:conversation-titles-changed",
+        updateTitles
+      );
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     // Clear protected sidebar data before verifying a replacement scope.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -303,7 +319,16 @@ function LiveHome({
             typeof (item as HomeRecent).projectName === "string"
           )
         );
-        setManagedConversations(executions);
+        setManagedConversations((current) =>
+          executions.map((item) => {
+            const previous = current.find(
+              (candidate) => candidate.id === item.id
+            );
+            return item.title === "Untitled conversation" && previous
+              ? { ...item, title: previous.title }
+              : item;
+          })
+        );
         setManagedProviderSources(
           managedProviderSourceIdsByExecution({ recents, executions })
         );
@@ -349,6 +374,7 @@ function LiveHome({
     selection?: ChatComposerSelection
   ) => {
     setResumeId(undefined);
+    setSelectedExecutionId(undefined);
     setInitialChatDraft(prompt);
     setInitialChatSelection(selection);
     setInitialSubmission(
@@ -371,6 +397,7 @@ function LiveHome({
   };
   const resumeChat = (id: string) => {
     setResumeId(id);
+    setSelectedExecutionId(id);
     setSelectedProject(null);
     setInitialChatDraft("");
     setInitialChatSelection(undefined);
@@ -507,7 +534,8 @@ function LiveHome({
           canCreateLocalProject={canCreateLocalProject}
           onPullRequests={onPullRequests}
           onPlugins={onPlugins}
-          activeSection="new-chat"
+          activeSection={selectedExecutionId ? "conversation" : "new-chat"}
+          selectedExecutionId={selectedExecutionId}
           homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -558,7 +586,20 @@ function LiveHome({
               <>
                 <LiveAgentChat
                   key={chatKey}
+                  conversationTitle={
+                    managedConversations.find(
+                      (item) => item.id === selectedExecutionId
+                    )?.title
+                  }
                   initialDraft={initialChatDraft}
+                  onConversationStarted={(conversation) => {
+                    setSelectedExecutionId(conversation.id);
+                    setSelectedProject(conversation.projectId);
+                    setManagedConversations((current) => [
+                      conversation,
+                      ...current.filter((item) => item.id !== conversation.id)
+                    ]);
+                  }}
                   initialSubmission={initialSubmission}
                   claimInitialSubmission={claimInitialSubmission}
                   initialSelection={initialChatSelection}

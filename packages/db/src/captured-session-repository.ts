@@ -554,7 +554,7 @@ export const createCapturedSessionRepository = (
               metadata =
                 metadata || $5::jsonb ||
                 case
-                  when metadata ->> 'threadNameSource' = 'manual'
+                  when metadata ->> 'threadNameSource' in ('manual', 'provisional')
                   then jsonb_strip_nulls(jsonb_build_object(
                     'threadName', metadata ->> 'threadName',
                     'threadNameSource', metadata ->> 'threadNameSource',
@@ -717,7 +717,7 @@ export const createCapturedSessionRepository = (
             sessions.metadata ||
             excluded.metadata ||
             case
-              when sessions.metadata ->> 'threadNameSource' = 'manual'
+              when sessions.metadata ->> 'threadNameSource' in ('manual', 'provisional')
               then jsonb_strip_nulls(jsonb_build_object(
                 'threadName', sessions.metadata ->> 'threadName',
                 'threadNameSource', sessions.metadata ->> 'threadNameSource',

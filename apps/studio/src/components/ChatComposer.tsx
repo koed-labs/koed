@@ -7,6 +7,10 @@ import {
   useState,
   type ReactNode
 } from "react";
+import {
+  loadChatModelPreference,
+  saveChatModelPreference
+} from "@/lib/chat-model-preferences";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import {
@@ -174,6 +178,7 @@ type ChatComposerProps = {
   onSelectedResourceIdsChange?: (resourceIds: string[]) => void;
   restoreSelection?: ChatComposerRestoreSelection;
   initialPermissionMode?: AccessMode;
+  preferRememberedDefaults?: boolean;
   initialModel?: string;
   initialEffort?: string;
   showFormattingToolbar?: boolean;
@@ -219,6 +224,7 @@ export function ChatComposer({
   restoreSelection,
   initialPermissionMode = "full",
   initialModel,
+  preferRememberedDefaults = false,
   initialEffort,
   showFormattingToolbar = false,
   showContinueWithoutMemory = true,
@@ -285,6 +291,34 @@ export function ChatComposer({
       return preferred && effortIndexFor(preferred) < 0 ? preferred : null;
     }
   );
+  const modelSettingsTouched = useRef(false);
+  useEffect(() => {
+    // Explicit handoffs, resumed Conversations and selected Agents take priority.
+    if (
+      restoreSelection ||
+      (!preferRememberedDefaults &&
+        (initialModel !== undefined || initialEffort !== undefined)) ||
+      initialAgent
+    )
+      return;
+    let cancelled = false;
+    void loadChatModelPreference().then((saved) => {
+      if (cancelled || modelSettingsTouched.current || !saved) return;
+      const index = saved.effort ? effortIndexFor(saved.effort) : -1;
+      setModel(saved.modelKey);
+      setEffortIndex(index >= 0 ? index : null);
+      setUnavailableEffort(saved.effort && index < 0 ? saved.effort : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    restoreSelection,
+    initialModel,
+    initialEffort,
+    initialAgent,
+    preferRememberedDefaults
+  ]);
   const [confirmedAgentModelFor, setConfirmedAgentModelFor] = useState<
     string | null
   >(initialModel && initialAgent ? initialAgent.id : null);
@@ -654,6 +688,7 @@ export function ChatComposer({
   const submitDraft = async (continueWithoutMemory = false) => {
     const trimmed = draft.trim();
     if (!trimmed || !canSend) return;
+    modelSettingsTouched.current = true;
     const selection: ChatComposerSelection = Object.freeze({
       agentId: activeAgentId,
       mentionUserIds: Array.from(
@@ -699,6 +734,13 @@ export function ChatComposer({
       );
       // A deferred send (for example, choosing a recipient) retains the draft.
       if (accepted === false) return;
+      if (executionControlsVisible && selection.provider && onSend) {
+        const clientId = selection.hostedInstanceId ?? selection.instanceId;
+        saveChatModelPreference({
+          modelKey: `${selection.provider}:${selection.model}${clientId ? `:${clientId}` : ""}`,
+          effort: selection.effort
+        });
+      }
       if (draftVersionRef.current === submittedDraftVersion) {
         setDraft("");
         setSelectedSkills(null);
@@ -779,6 +821,7 @@ export function ChatComposer({
       return;
     }
     if (agent.defaultProvider && agent.defaultModel) {
+      modelSettingsTouched.current = true;
       setModel(`${agent.defaultProvider}:${agent.defaultModel}`);
     } else if (agent.defaultModel) {
       setModel(agent.defaultModel);
@@ -1433,6 +1476,7 @@ export function ChatComposer({
                       <EffortSlider
                         effortIndex={presetEffortIndex}
                         onChange={(index) => {
+                          modelSettingsTouched.current = true;
                           setEffortIndex(index);
                           setUnavailableEffort(null);
                           setUnsupportedDefaultEffortFor(null);
@@ -1469,6 +1513,7 @@ export function ChatComposer({
                               }`}
                               onClick={() => {
                                 if (disabled) return;
+                                modelSettingsTouched.current = true;
                                 setModel(option.id);
                                 setConfirmedAgentModelFor(
                                   selectedAgent?.id ?? null

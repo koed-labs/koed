@@ -795,3 +795,37 @@ test("managed transport forwards scoped Project Move status and cancellation", a
     assert.equal(result.status, method === "GET" ? 200 : 202);
   }
 });
+
+test("conversation renames use the existing owner-authenticated title API and require CSRF", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const request = Readable.from([
+    Buffer.from('{"title":"My renamed conversation"}')
+  ]);
+  request.method = "PATCH";
+  request.headers = { "content-type": "application/json" };
+  const url = new URL(`http://localhost/studio-api/conversation-titles/${id}`);
+  const result = await call({
+    request,
+    url,
+    routeFamily: "conversation-titles",
+    fetchImpl: async (url, init) => {
+      assert.equal(url.pathname, `/v1/memory/graph/sessions/${id}/title`);
+      assert.equal(init.method, "PATCH");
+      assert.equal(init.headers.authorization, "Bearer secret");
+      return Response.json({ session: { id } });
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(
+    (
+      await call({
+        request,
+        url,
+        routeFamily: "conversation-titles",
+        validCsrf: () => false,
+        fetchImpl: () => assert.fail("must not fetch")
+      })
+    ).status,
+    403
+  );
+});

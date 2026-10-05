@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
+  conversationTitleFromPrompt,
   decryptEnvelopeToUtf8,
   decideConversationItemPresentation,
   managedConversationFileOperationResultSchema,
@@ -4260,6 +4261,33 @@ export const createManagedConversationRepository = (
             input.executionGeneration,
             allowArchivedResume,
             encryptedPayload
+          ]
+        );
+        // Give the first accepted prompt a stable title before capture/title workers run.
+        // Owner checks and the metadata source guard preserve manual renames.
+        await client.query(
+          `update sessions s
+              set metadata = s.metadata || jsonb_build_object(
+                    'threadName', $3::text, 'threadNameSource', 'provisional'),
+                  updated_at = now()
+             from managed_conversation_runtime_bindings b
+            where b.owner_user_id = $1 and b.execution_id = $2
+              and s.id = b.local_session_id and s.owner_user_id = $1
+              and s.visibility = 'personal' and s.invalidated_at is null
+              and coalesce(s.metadata ->> 'threadNameSource', '') = ''
+              and (s.metadata ->> 'threadName' is null
+                or btrim(s.metadata ->> 'threadName') = ''
+                or s.metadata ->> 'threadName' = coalesce(s.external_session_id, '')
+                or s.metadata ->> 'threadName' = s.id::text)
+              and not exists (
+                select 1 from managed_conversation_commands c
+                 where c.owner_user_id = $1 and c.execution_id = $2
+                   and c.command_kind = 'prompt' and c.id <> $4)`,
+          [
+            actor.userId,
+            input.executionId,
+            conversationTitleFromPrompt(prompt),
+            commandId
           ]
         );
         if (personalAgent?.jobId && personalAgentContext) {

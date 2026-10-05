@@ -1770,6 +1770,7 @@ const deferredStartRepository = (input: {
   const repositoryType = repository as unknown as MemorySourceRepository;
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return {
+    checkoutDriver,
     repository,
     logger,
     setAssignedExecutions: (
@@ -1862,6 +1863,12 @@ describe("deferred Managed Conversation runner starts", () => {
           deviceId,
           executionGeneration: 1,
           projectPath: await realpath(resolve(root, "project"))
+        })
+      );
+      expect(harness.checkoutDriver.select).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: await realpath(resolve(root, "project")),
+          preserveDirectory: true
         })
       );
       expect(

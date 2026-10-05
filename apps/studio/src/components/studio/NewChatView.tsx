@@ -101,6 +101,7 @@ export type NewChatRuntime = Readonly<{
 export type NewChatViewProps = {
   mode: NewChatMode;
   onBack?: () => void;
+  conversationTitle?: string;
   projectName?: string;
   projectSelector?: ReactNode;
   branch?: string;
@@ -149,6 +150,7 @@ const DEFAULT_SUGGESTIONS: NewChatSuggestion[] = [
 type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
 
 export function NewChatView({
+  conversationTitle,
   mode,
   projectName = "Standalone chat",
   projectSelector,
@@ -278,7 +280,7 @@ export function NewChatView({
           className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 xl:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}
         >
           <p className="min-w-0 flex-1 truncate text-sm text-foreground no-drag">
-            Personal / New chat
+            Personal / {conversationTitle ?? "New chat"}
           </p>
           {runtime?.onEndSession ? (
             <div className="relative no-drag">

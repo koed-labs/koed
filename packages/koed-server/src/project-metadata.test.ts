@@ -375,3 +375,41 @@ describe("Project metadata discovery", () => {
     expect(listProjectMetadata(paths).projects).toHaveLength(1);
   });
 });
+
+it("keeps an explicitly selected nested folder distinct from its parent Git project", async () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-selected-folder-")
+  );
+  const parent = path.join(directory, "Coding");
+  const child = path.join(parent, "testing-the-ui");
+  fs.mkdirSync(child, { recursive: true });
+  const paths = pathsFor(directory);
+  const deps = { execFile: execFileFor(parent), randomId: () => "device-salt" };
+  const rootProject = await discoverProjectMetadata(
+    paths,
+    { cwd: parent },
+    deps
+  );
+  const childProject = await discoverProjectMetadata(
+    paths,
+    { cwd: child, selectedDirectory: true },
+    deps
+  );
+  expect(childProject.project?.path.cwd).toBe(child);
+  expect(childProject.project?.path.projectRoot).toBe(child);
+  expect(childProject.project?.displayName).toBe("testing-the-ui");
+  expect(childProject.project?.localProjectId).not.toBe(
+    rootProject.project?.localProjectId
+  );
+  expect(childProject.project?.git?.rootHash).toBe(
+    rootProject.project?.git?.rootHash
+  );
+  const repeated = await discoverProjectMetadata(
+    paths,
+    { cwd: child, selectedDirectory: true },
+    deps
+  );
+  expect(repeated.project?.localProjectId).toBe(
+    childProject.project?.localProjectId
+  );
+});

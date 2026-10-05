@@ -2033,7 +2033,8 @@ export const createManagedConversationService = (options: {
     );
     const checkout = await driver.select({
       operationId,
-      path: binding.sourceProjectPath
+      path: binding.sourceProjectPath,
+      preserveDirectory: true
     });
     return bindSelectedExecutionCheckout(
       execution,

@@ -1,3 +1,4 @@
+import { handleChatModelPreferences } from "./chat-model-preferences-http.mjs";
 import { createServer as createHttpServer } from "node:http";
 import { Buffer } from "node:buffer";
 import { promises as fs } from "node:fs";
@@ -1917,10 +1918,18 @@ export const createStudioServer = ({
       )
         return;
       if (
+        (await handleChatModelPreferences({
+          ...localApiOptions,
+          koedHome: resolveKoedServerPaths(environment).koedHome
+        })) ||
         (await handlePullRequests({ ...localApiOptions, environment })) ||
         (await handleClientResources(localApiOptions)) ||
         (await handleHomeFeed(localApiOptions)) ||
         (await handlePersonalAgents(localApiOptions)) ||
+        (await handlePersonalAgents({
+          ...localApiOptions,
+          routeFamily: "conversation-titles"
+        })) ||
         (await handlePersonalAgents({
           ...localApiOptions,
           routeFamily: "personal-removals"

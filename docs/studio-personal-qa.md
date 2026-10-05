@@ -408,3 +408,19 @@ focused build/test results above remain the verification evidence.
 
 The User requested pushing all pending changes with these limitations
 recorded. Final native continuation verification remains pending.
+
+### Selected-folder checkpoint fix (2026-10-05)
+
+Fresh managed chats preserve the selected directory. A folder that inherits Git only from an ancestor uses the existing plain-folder checkpoint state (`unsupported`), so checkpoint staging cannot scan unrelated sibling Projects. Actual repository roots retain Git checkpoints. Existing execution-generation checkout bindings remain immutable.
+
+The focused checkout, checkpoint and managed-conversation suite passed 126 tests; shared and Worker builds, targeted formatting and diff whitespace checks passed. Shared checkout code and the checkpoint regression test pass targeted lint. Worker service/test lint still reports seven pre-existing findings; no full lint-green claim is made.
+
+Installed the changed shared driver in both the desktop archive and runtime package, and the Worker in both packaged launch and module locations. A live Home send with `testing-the-ui` selected returned `CHECKPOINT-FIX-OK`; a follow-up in the same conversation returned `FOLLOWUP-OK`. The packaged driver confirmed that the runtime path was the selected child directory rather than its parent. No repository repair or Git history change was required.
+
+### Personal fixes pre-push validation (2026-10-05)
+
+The combined focused suite passed 246 tests across 14 files, and the gateway suite passed 24 tests. Studio production build, Worker typecheck, DB build and Electron typecheck passed. Targeted formatting of every pending file and diff whitespace checks passed. The full formatting command was stopped after it scanned generated `.studio-stage/out` bundles and unrelated existing formatting failures; those files were not changed.
+
+The installed root ESLint 10 crashes in `react/display-name`. ESLint 9 completes, but existing root configuration, server globals, promise-handling and Worker findings remain. New preference route/helper/tests and shared title/checkout code were checked; the new Node globals and test-only unused parameters were corrected. This is not a repository-wide lint-green claim.
+
+The synthetic Studio UI suite passed 21 tests and failed 14 Team/Team-responsive tests. The same 14 test names failed on the previous pushed head `69252ab9` in [Studio UI regression run 37295970791](https://github.com/koed-labs/koed/actions/runs/37295970791). Failures include unmocked Team launch-option reads and stale model-control expectations before Agent mention activation. No all-UI-green claim is made; the Personal fixes retain their focused tests and live native verification above.

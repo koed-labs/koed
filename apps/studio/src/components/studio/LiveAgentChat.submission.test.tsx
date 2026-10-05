@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
   view: vi.fn(),
   records: new Map<string, DeviceManagedChatRecoveryRecord>(),
   fail: false,
-  prompted: false
+  prompted: false,
+  started: vi.fn()
 }));
 const router = { replace: vi.fn(), push: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
@@ -97,6 +98,7 @@ afterEach(async () => {
   container?.remove();
   mocks.request.mockReset();
   mocks.view.mockClear();
+  mocks.started.mockClear();
   mocks.records.clear();
   mocks.fail = false;
   mocks.prompted = false;
@@ -165,6 +167,7 @@ async function mount(turnSelection = selection) {
     root.render(
       <StrictMode>
         <LiveAgentChat
+          onConversationStarted={mocks.started}
           initialDraft="Home question"
           initialSelection={turnSelection}
           initialSubmission={{
@@ -198,10 +201,19 @@ it("submits the Home question once, displays the conversation, and continues the
     agentId: "agent-a",
     expectedAgentVersion: 2
   });
+  expect(mocks.started).toHaveBeenCalledTimes(1);
+  expect(mocks.started).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Home question", projectId: null })
+  );
   expect(container.textContent).toContain("Home question");
   expect(container.textContent).toContain("Agent response");
   expect(container.querySelector("textarea")?.value).toBe("");
   const runtime = mocks.view.mock.lastCall?.[0].runtime as NewChatRuntime;
+  expect(runtime.restoreSelection).toMatchObject({
+    model: "chosen-model",
+    effort: "high",
+    instanceId: "chosen-client"
+  });
   await act(async () => {
     await runtime.onSend("Follow-up question", selection);
   });

@@ -4,6 +4,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   writeFile
 } from "node:fs/promises";
@@ -75,6 +76,65 @@ afterEach(async () => {
 });
 
 describe("execution checkpoints", () => {
+  it("keeps a selected child folder out of an ancestor repository checkpoint", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-folder-checkpoint-"));
+    roots.push(root);
+    const parent = resolve(root, "Coding");
+    const selectedPath = resolve(parent, "testing-the-ui");
+    const unrelated = resolve(parent, "unborn-repository");
+    await mkdir(selectedPath, { recursive: true });
+    await mkdir(unrelated);
+    git(parent, "init", "--initial-branch=main");
+    git(unrelated, "init", "--initial-branch=main");
+    await writeFile(resolve(selectedPath, "context.txt"), "selected project\n");
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: resolve(root, "managed")
+    });
+    // Repository-oriented callers retain the established root behaviour.
+    expect((await driver.inspect(selectedPath)).canonicalPath).toBe(
+      await realpath(parent)
+    );
+    const checkout = await driver.select({
+      operationId: "0f42d55a-f40e-46a9-ba54-454869ace13e",
+      path: selectedPath,
+      preserveDirectory: true
+    });
+    expect(checkout).toMatchObject({
+      canonicalPath: await realpath(selectedPath),
+      ownership: "non_vcs_directory",
+      vcsDriver: null
+    });
+    expect((await driver.verify(checkout)).canonicalPath).toBe(
+      await realpath(selectedPath)
+    );
+    const commands: unknown[] = [];
+    expect(
+      await capture(checkout, 0, "baseline", (args) => commands.push(args))
+    ).toMatchObject({ status: "unsupported", vcsDriver: null });
+    expect(commands).toEqual([]);
+    expect(git(parent, "ls-files")).toBe("");
+    expect(await readFile(resolve(selectedPath, "context.txt"), "utf8")).toBe(
+      "selected project\n"
+    );
+  });
+
+  it("still checkpoints an explicitly selected repository root", async () => {
+    const { root, source } = await fixture();
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: resolve(root, "second-managed")
+    });
+    const checkout = await driver.select({
+      operationId: "0f42d55a-f40e-46a9-ba54-454869ace13e",
+      path: source,
+      preserveDirectory: true
+    });
+    expect(checkout.vcsDriver).toBe("git");
+    expect(await capture(checkout, 0, "baseline")).toMatchObject({
+      status: "ready",
+      vcsDriver: "git"
+    });
+  });
+
   it("withholds denied content from both sides of patches, including renamed files", async () => {
     const { source, checkout } = await fixture();
     const privateMaterial = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");

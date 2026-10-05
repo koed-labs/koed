@@ -309,6 +309,15 @@ describe("managed Conversation clean stopped continuation", () => {
     expect(first.allowArchivedResume).toBe(true);
     expect(replay.allowArchivedResume).toBe(true);
     expect(commands).toHaveLength(1);
+    const titleWrites = query.mock.calls.filter(([sql]) =>
+      sql.includes("update sessions s")
+    );
+    expect(titleWrites).toHaveLength(1);
+    expect(titleWrites[0]![0]).toContain("s.owner_user_id = $1");
+    expect(titleWrites[0]![0]).toContain("'threadNameSource', '') = ''");
+    expect(titleWrites[0]![0]).toContain(
+      "c.command_kind = 'prompt' and c.id <> $4"
+    );
     expect(first.payload).toMatchObject({ prompt: promptInput.prompt });
     expect(replay.payload).toMatchObject({ prompt: promptInput.prompt });
     expect(first.payload).not.toHaveProperty("resumeFromStopped");

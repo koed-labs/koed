@@ -1291,6 +1291,9 @@ export const runKoedServerCli = async (
           ? await discoverProject(paths, {
               cwd: flagValue(args, "--cwd") ?? process.cwd(),
               displayNameOverride: projectName,
+              ...(args.includes("--selected-directory")
+                ? { selectedDirectory: true }
+                : {}),
               aiClientSource: args.includes("--codex") ? "codex" : undefined
             })
           : projectCommand === "list"

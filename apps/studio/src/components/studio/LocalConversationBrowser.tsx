@@ -5,12 +5,14 @@ import {
   ChevronRight,
   Folder,
   MessageSquare,
+  Pencil,
   Plus,
   RotateCw,
   Search,
   Share2
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadStudioCsrfToken } from "@/lib/studio-csrf";
 import type { HomeExecution } from "@/lib/studio-contract";
 import {
   isSyntheticIndependentProject,
@@ -296,14 +298,93 @@ function ManagedExecutionRow({
   onSelect,
   canShare,
   onShare,
-  onRemove
+  onRemove,
+  selected = false
 }: {
+  selected?: boolean;
   conversation: ManagedConversation;
   onSelect: () => void;
   canShare: boolean;
   onShare: () => void;
   onRemove?: () => Promise<void>;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(conversation.title);
+  const [savedName, setSavedName] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const rename = async () => {
+    const title = name.trim();
+    if (!title || title.length > 120 || !conversation.sessionId || saving)
+      return;
+    setSaving(true);
+    setRenameError(null);
+    try {
+      const csrfToken = await loadStudioCsrfToken();
+      const response = await fetch(
+        `/studio-api/conversation-titles/${encodeURIComponent(conversation.sessionId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "x-studio-csrf": csrfToken
+          },
+          body: JSON.stringify({ title }),
+          credentials: "include",
+          redirect: "error"
+        }
+      );
+      if (!response.ok)
+        throw new Error("The conversation could not be renamed. Retry.");
+      setSavedName(title);
+      setRenaming(false);
+      window.dispatchEvent(new Event("koed:conversation-titles-changed"));
+    } catch (error) {
+      setRenameError(
+        error instanceof Error
+          ? error.message
+          : "Unable to rename the conversation."
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (renaming)
+    return (
+      <form
+        className="px-2 py-1"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void rename();
+        }}
+      >
+        <input
+          aria-label="Conversation name"
+          autoFocus
+          maxLength={120}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          className="w-full rounded border border-border bg-surface px-2 py-1 text-xs"
+        />
+        <div className="flex gap-2 text-xs">
+          <button type="submit" disabled={saving || !name.trim()}>
+            Save
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => setRenaming(false)}
+          >
+            Cancel
+          </button>
+        </div>
+        {renameError ? (
+          <p role="alert" className="text-xs text-danger">
+            {renameError}
+          </p>
+        ) : null}
+      </form>
+    );
   const activityLabel = managedConversationActivityLabel(
     conversation.activity,
     conversation.state
@@ -312,7 +393,7 @@ function ManagedExecutionRow({
     conversation.provider === "codex" &&
     conversation.state.toLowerCase() === "running";
   return (
-    <div className="group flex items-center gap-0.5">
+    <div className="group @container flex items-center gap-0.5">
       <button
         type="button"
         draggable={draggable}
@@ -325,16 +406,32 @@ function ManagedExecutionRow({
           event.dataTransfer.effectAllowed = "move";
         }}
         onClick={onSelect}
+        aria-current={selected ? "page" : undefined}
         aria-label={`${conversation.title} · ${conversation.provider} · ${activityLabel}`}
         title={`${conversation.title} · ${conversation.provider} · ${activityLabel}`}
-        className="flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"
+        className={`flex min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-xs ${selected ? "bg-surface-hover text-foreground" : "text-muted hover:bg-surface-hover/50 hover:text-foreground-secondary"}`}
       >
         <MessageSquare className="mr-2 h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
-        <span className="ml-2 shrink-0 text-[10px] text-subtle">
+        <span className="min-w-0 flex-1 truncate">
+          {savedName ?? conversation.title}
+        </span>
+        <span className="ml-2 hidden max-w-24 shrink-0 truncate text-[10px] text-subtle @[260px]:inline">
           {activityLabel}
         </span>
       </button>
+      {conversation.sessionId ? (
+        <button
+          type="button"
+          aria-label={`Rename ${savedName ?? conversation.title}`}
+          onClick={() => {
+            setName(savedName ?? conversation.title);
+            setRenaming(true);
+          }}
+          className="rounded-md p-1 text-faint opacity-0 hover:bg-surface-hover focus:opacity-100 group-hover:opacity-100"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      ) : null}
       {onRemove ? (
         <PersonalRemovalControl
           kind="conversation"
@@ -374,6 +471,7 @@ export function LocalConversationBrowser({
   canShareManagedExecution,
   onShareManagedExecution,
   managedConversations = [],
+  selectedExecutionId,
   managedSourceIds = [],
   onNewProject,
   canCreateProject = false,
@@ -414,6 +512,7 @@ export function LocalConversationBrowser({
   onSelectManagedExecution?: (executionId: string) => void;
   canShareManagedExecution?: (executionId: string) => boolean;
   onShareManagedExecution?: (executionId: string) => void;
+  selectedExecutionId?: string;
   managedConversations?: ManagedConversation[];
   managedSourceIds?: readonly string[];
 }) {
@@ -451,6 +550,23 @@ export function LocalConversationBrowser({
     visibleProjectConversationCounts,
     setVisibleProjectConversationCounts
   ] = useState<Record<string, number>>({});
+  const selectedProjectId = managedConversations.find(
+    (item) => item.id === selectedExecutionId
+  )?.projectId;
+  /* eslint-disable react-hooks/set-state-in-effect -- Reveal a conversation selected by the parent. */
+  useEffect(() => {
+    if (!selectedExecutionId) return;
+    // Reveal the selected row without closing projects the user opened.
+    if (selectedProjectId) {
+      setExpandedProjects(true);
+      setExpandedProjectIds(
+        (current) => new Set([...current, selectedProjectId])
+      );
+    } else {
+      setExpandedChats(true);
+    }
+  }, [selectedExecutionId, selectedProjectId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const [selectedUnavailable, setSelectedUnavailable] = useState<{
     source: LocalSource;
     message: string;
@@ -1355,6 +1471,7 @@ export function LocalConversationBrowser({
                       <ManagedExecutionRow
                         key={conversation.id}
                         conversation={conversation}
+                        selected={conversation.id === selectedExecutionId}
                         onSelect={() =>
                           onSelectManagedExecution?.(conversation.id)
                         }
@@ -1519,6 +1636,7 @@ export function LocalConversationBrowser({
             <ManagedExecutionRow
               key={conversation.id}
               conversation={conversation}
+              selected={conversation.id === selectedExecutionId}
               onSelect={() => onSelectManagedExecution?.(conversation.id)}
               canShare={canShareManagedExecution?.(conversation.id) ?? false}
               onShare={() => onShareManagedExecution?.(conversation.id)}

@@ -1013,6 +1013,7 @@ export function PersonalHome({
                       projectId: composerProject?.id ?? null
                     }}
                     modelOptions={modelOptions}
+                    preferRememberedDefaults
                     initialModel={
                       firstModelOption
                         ? `${firstModelOption.provider}:${firstModelOption.id}`

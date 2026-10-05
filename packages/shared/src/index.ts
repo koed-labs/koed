@@ -2159,3 +2159,5 @@ export type {
   StudioNotificationNavigation,
   StudioNotificationSource
 } from "./studio-notifications.js";
+
+export { conversationTitleFromPrompt } from "./conversation-title.js";

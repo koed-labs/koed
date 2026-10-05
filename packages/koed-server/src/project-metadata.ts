@@ -278,6 +278,7 @@ export const discoverProjectMetadata = async (
     cwd: string;
     aiClientSource?: "codex";
     displayNameOverride?: string;
+    selectedDirectory?: boolean;
   },
   depsInput: ProjectMetadataDeps = {}
 ): Promise<ProjectMetadataResult> => {
@@ -291,11 +292,12 @@ export const discoverProjectMetadata = async (
   const cwd = resolve(input.cwd);
   const projectRoot = await git(cwd, ["rev-parse", "--show-toplevel"], deps);
   const gitRoot = projectRoot ? resolve(projectRoot) : null;
+  const contextRoot = input.selectedDirectory ? cwd : gitRoot;
   const remotes = gitRoot ? await readGitRemotes(gitRoot, deps) : [];
   const packages = discoverPackages(gitRoot, cwd, deps);
   const localProjectId = deriveLocalProjectId({
     salt: store.deviceSaltId,
-    projectRoot: gitRoot,
+    projectRoot: contextRoot,
     cwd
   });
   const previousProject = store.projects.find(
@@ -328,10 +330,13 @@ export const discoverProjectMetadata = async (
     requestedDisplayNameOverride ?? previousProject?.displayNameOverride;
   const displayName =
     displayNameOverride ??
+    (input.selectedDirectory && cwd !== gitRoot
+      ? path.basename(cwd)
+      : undefined) ??
     normalizeProjectDisplayName({
       cwd,
-      projectRoot: gitRoot,
-      packages,
+      projectRoot: contextRoot,
+      packages: input.selectedDirectory && cwd !== gitRoot ? [] : packages,
       remotes
     });
   const project: ProjectMetadataV1 = {
@@ -343,9 +348,9 @@ export const discoverProjectMetadata = async (
     ...(displayNameOverride ? { displayNameOverride } : {}),
     path: {
       cwd,
-      projectRoot: gitRoot,
-      basename: path.basename(gitRoot ?? cwd),
-      localPathHash: hmacProjectValue(store.deviceSaltId, gitRoot ?? cwd)
+      projectRoot: contextRoot,
+      basename: path.basename(contextRoot ?? cwd),
+      localPathHash: hmacProjectValue(store.deviceSaltId, contextRoot ?? cwd)
     },
     ...(gitRoot
       ? {

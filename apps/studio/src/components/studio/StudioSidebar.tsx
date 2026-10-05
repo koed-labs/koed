@@ -66,6 +66,7 @@ type StudioSidebarProps = {
   onPullRequests?: () => void;
   onPlugins?: () => void;
   activeSection?:
+    | "conversation"
     | "home"
     | "new-chat"
     | "pull-requests"
@@ -73,6 +74,7 @@ type StudioSidebarProps = {
     | "agents"
     | "settings"
     | "memory-inbox";
+  selectedExecutionId?: string;
   onChatSelect?: (chatId: string) => void;
   showLocalCatalog?: boolean;
   canCreateLocalProject?: boolean;
@@ -126,6 +128,7 @@ export function StudioSidebar({
   onPlugins,
   activeSection = "home",
   onChatSelect,
+  selectedExecutionId,
   showLocalCatalog = false,
   canCreateLocalProject: canCreateLocalProjectProp,
   onLocalSourceSelect,
@@ -779,6 +782,7 @@ export function StudioSidebar({
                       onShareManagedExecution={onShareManagedExecution}
                       onMoveManagedExecution={onMoveManagedExecution}
                       onSelectManagedExecution={onSelectManagedExecution}
+                      selectedExecutionId={selectedExecutionId}
                       managedConversations={managedConversations}
                       managedSourceIds={managedSourceIds}
                       personalRemovals={personalRemovals}

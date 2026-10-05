@@ -1,5 +1,7 @@
 "use client";
 
+import { conversationTitleFromPrompt } from "@koed/shared/conversation-title";
+import type { HomeExecution } from "@/lib/studio-contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -173,6 +175,8 @@ export function LiveAgentChat({
   initialDraft = "",
   initialSelection,
   initialSubmission,
+  conversationTitle,
+  onConversationStarted,
   claimInitialSubmission,
   projectId: initialProjectId,
   projectName: initialProjectName,
@@ -189,6 +193,8 @@ export function LiveAgentChat({
   teamRequestExpectedReviewVersion?: number;
   initialDraft?: string;
   initialSelection?: ChatComposerSelection;
+  conversationTitle?: string;
+  onConversationStarted?: (conversation: HomeExecution) => void;
   initialSubmission?: InitialChatSubmission;
   claimInitialSubmission?: (id: string) => boolean;
   projectId?: string;
@@ -727,11 +733,7 @@ export function LiveAgentChat({
           state.activeAgentId === null)
       )
         setActiveAgentId(state.activeAgentId);
-      if (
-        restoredExecution.current !== id &&
-        !selectionDirty.current &&
-        initialExecutionId === id
-      ) {
+      if (restoredExecution.current !== id && !selectionDirty.current) {
         restoredExecution.current = id;
         const current = snapshot.execution;
         if (
@@ -1413,6 +1415,17 @@ export function LiveAgentChat({
             `The previous continuation ${snapshot.latestCommand.state}. Its draft is retained.`
           );
         }
+        if (startedNewExecution)
+          onConversationStarted?.({
+            id,
+            sessionId: null,
+            projectId: snapshot.execution.projectId,
+            title: conversationTitleFromPrompt(text),
+            provider: snapshot.execution.provider,
+            state: snapshot.execution.state,
+            updatedAt: new Date().toISOString(),
+            error: null
+          });
         pending.current = null;
         settleRecoveredSend(text);
         setError(null);
@@ -1565,6 +1578,18 @@ export function LiveAgentChat({
         throw new Error(
           "The task was not confirmed. Retry with the same draft."
         );
+      if (startedNewExecution) {
+        onConversationStarted?.({
+          id,
+          sessionId: null,
+          projectId: snapshot.execution.projectId,
+          title: conversationTitleFromPrompt(text),
+          provider: snapshot.execution.provider,
+          state: snapshot.execution.state,
+          updatedAt: new Date().toISOString(),
+          error: null
+        });
+      }
       pending.current = null;
       settleRecoveredSend(text);
       setError(null);
@@ -2281,6 +2306,7 @@ export function LiveAgentChat({
       ) : null}
       <div className="min-h-0 flex-1">
         <NewChatView
+          conversationTitle={executionId ? conversationTitle : undefined}
           mode="live"
           initialDraft={initialDraft}
           initialSelection={initialSelection}

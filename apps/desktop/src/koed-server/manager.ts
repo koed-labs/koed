@@ -5690,6 +5690,7 @@ export const createKoedServerManager = ({
         [
           "project",
           "discover",
+          "--selected-directory",
           "--cwd",
           cwd,
           ...(name === undefined ? [] : ["--name", name])

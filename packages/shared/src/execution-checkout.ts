@@ -37,6 +37,7 @@ export interface GitExecutionCheckoutDriver {
   select(input: {
     operationId: string;
     path: string;
+    preserveDirectory?: boolean;
     expectedRepositoryIdentityHash?: string;
   }): Promise<ExecutionCheckoutIdentity>;
   create(input: {
@@ -317,7 +318,10 @@ export const createGitExecutionCheckoutDriver = async (input: {
     };
   };
 
-  const inspect = async (path: string): Promise<ExecutionCheckoutIdentity> => {
+  const inspect = async (
+    path: string,
+    preserveDirectory = false
+  ): Promise<ExecutionCheckoutIdentity> => {
     const canonicalPath = await canonicalDirectory(path);
     const isGit = await git(
       canonicalPath,
@@ -326,7 +330,15 @@ export const createGitExecutionCheckoutDriver = async (input: {
         allowFailure: true
       }
     );
-    if (isGit !== "true") {
+    // An explicitly selected folder does not grant repository-wide scope to
+    // an ancestor checkout. Keep it as a directory unless it is itself a root.
+    const gitRoot =
+      isGit === "true" && preserveDirectory
+        ? await git(canonicalPath, ["rev-parse", "--show-toplevel"])
+        : null;
+    const ancestorRepository =
+      gitRoot !== null && (await canonicalDirectory(gitRoot)) !== canonicalPath;
+    if (isGit !== "true" || ancestorRepository) {
       return {
         checkoutId: randomUUID(),
         vcsDriver: null,
@@ -361,7 +373,7 @@ export const createGitExecutionCheckoutDriver = async (input: {
     checkout: ExecutionCheckoutIdentity
   ): Promise<ExecutionCheckoutIdentity> => {
     if (checkout.vcsDriver !== "git") {
-      const current = await inspect(checkout.canonicalPath);
+      const current = await inspect(checkout.canonicalPath, true);
       if (
         current.vcsDriver !== null ||
         current.canonicalPath !== checkout.canonicalPath ||
@@ -425,7 +437,10 @@ export const createGitExecutionCheckoutDriver = async (input: {
         selectInput.operationId,
         "Checkout operation id"
       );
-      const selected = await inspect(selectInput.path);
+      const selected = await inspect(
+        selectInput.path,
+        selectInput.preserveDirectory
+      );
       if (
         selectInput.expectedRepositoryIdentityHash &&
         selected.repositoryIdentityHash !==

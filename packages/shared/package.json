@@ -106,6 +106,10 @@
     "./build-progress": {
       "types": "./dist/build-progress.d.ts",
       "import": "./dist/build-progress.js"
+    },
+    "./conversation-title": {
+      "types": "./dist/conversation-title.d.ts",
+      "import": "./dist/conversation-title.js"
     }
   },
   "files": [

@@ -1282,6 +1282,35 @@ describe("JSON command output", () => {
     });
   });
 
+  it("preserves the explicit-directory discovery flag used by the desktop picker", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+    await runKoedServerCli(
+      [
+        "project",
+        "discover",
+        "--cwd",
+        "/repo/child",
+        "--selected-directory",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        discoverProjectMetadata: async (_paths, input) => {
+          seen.push(input);
+          return {
+            ok: true,
+            state: "discovered",
+            message: "Project metadata discovered.",
+            project: null
+          } as never;
+        }
+      }
+    );
+    expect(seen).toEqual([{ cwd: "/repo/child", selectedDirectory: true }]);
+  });
+
   it("passes a supplied project display name to project discovery", async () => {
     const stdout = writer();
     const seen: unknown[] = [];
