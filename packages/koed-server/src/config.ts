@@ -138,6 +138,12 @@ const readConfig = (
         throw new Error(`${field} must be a boolean`);
       }
     }
+    if (record.hardwareAcceleration !== undefined) {
+      hardwareAccelerationPreference(
+        record.hardwareAcceleration,
+        "server.json hardwareAcceleration"
+      );
+    }
     if (
       record.external !== undefined &&
       (!record.external ||

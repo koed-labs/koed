@@ -225,16 +225,23 @@ describe("koed-server config", () => {
     ).toThrow("runtimeMode must be local-personal, external, or developer");
   });
 
-  it("rejects malformed persisted hardware acceleration", () => {
+  it("rejects malformed persisted hardware acceleration even with environment override", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
+    const serverConfigPath = resolve(root, "config/server.json");
     writeFileSync(
-      resolve(root, "config/server.json"),
+      serverConfigPath,
       JSON.stringify({ hardwareAcceleration: "fastest" })
     );
 
-    expect(() => resolveKoedServerConfig(paths(root), {})).toThrow(
-      "server.json hardwareAcceleration must be auto or cpu"
+    expect(() =>
+      resolveKoedServerConfig(
+        paths(root),
+        { KOED_HARDWARE_ACCELERATION: "cpu" },
+        { strict: true }
+      )
+    ).toThrow(
+      `Cannot read ${serverConfigPath}: server.json hardwareAcceleration must be auto or cpu`
     );
   });
 

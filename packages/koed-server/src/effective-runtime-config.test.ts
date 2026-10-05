@@ -82,54 +82,41 @@ describe("effective runtime requirements", () => {
     });
   });
 
-  it.each([
-    [
-      "local-personal",
-      "external",
-      false,
-      ["api", "worker", "local-ai-runtime"]
-    ],
-    ["developer", "external", true, ["api", "worker", "local-ai-runtime"]],
-    ["external", "external", true, ["api", "worker"]],
-    [
-      "local-personal",
-      "bundled-local",
-      false,
-      ["api", "worker", "local-ai-runtime", "postgres", "embedding-service"]
-    ],
-    [
-      "developer",
-      "bundled-local",
-      true,
-      [
+  it.each(
+    (["local-personal", "developer", "external"] as const).flatMap((runtime) =>
+      (["external", "bundled-local"] as const).flatMap((dependencies) =>
+        ([false, true] as const).map(
+          (teamEnabled) => [runtime, dependencies, teamEnabled] as const
+        )
+      )
+    )
+  )("calculates %s/%s Team=%s requirements", (runtime, dependencies, team) => {
+    const result = calculateRuntimeRequirements(
+      effective(runtime, dependencies, team)
+    );
+    const localPrivacy = dependencies === "bundled-local" && team;
+    expect(result).toEqual({
+      components: localPrivacy ? ["base", "privacy"] : ["base"],
+      processes: [
         "api",
         "worker",
-        "local-ai-runtime",
-        "postgres",
-        "embedding-service",
-        "privacy-service"
-      ]
-    ],
-    [
-      "external",
-      "bundled-local",
-      false,
-      ["api", "worker", "postgres", "embedding-service"]
-    ]
-  ] as const)(
-    "calculates %s/%s Team=%s process set",
-    (runtime, dependencies, team, processes) => {
-      const result = calculateRuntimeRequirements(
-        effective(runtime, dependencies, team)
-      );
-      expect(result.processes).toEqual(processes);
-      expect(result.components).toEqual(
-        dependencies === "bundled-local" && team
-          ? ["base", "privacy"]
-          : ["base"]
-      );
-    }
-  );
+        ...(runtime === "external" ? [] : ["local-ai-runtime"]),
+        ...(dependencies === "bundled-local"
+          ? ["postgres", "embedding-service"]
+          : []),
+        ...(localPrivacy ? ["privacy-service"] : [])
+      ],
+      queue: dependencies === "bundled-local" ? "local" : "bullmq",
+      native:
+        dependencies === "bundled-local" ? ["postgres", "llama-server"] : [],
+      models:
+        dependencies === "bundled-local"
+          ? localPrivacy
+            ? ["embedding", "privacy"]
+            : ["embedding"]
+          : []
+    });
+  });
 
   it.each([
     ["bundled-local", undefined, "local"],
@@ -177,6 +164,55 @@ describe("effective runtime requirements", () => {
       dependencyMode: "external"
     });
     expect(resolved.teamEnabled).toBe(false);
+  });
+
+  it("discovers .env only in source execution and derives Team from layered environment", () => {
+    const paths = makePaths();
+    writeFileSync(
+      resolve(paths.repoRoot, ".env"),
+      "KOED_RUNTIME_MODE=external\nKOED_DEPENDENCY_MODE=bundled-local\nKOED_TEAM_COLLABORATION_ENABLED=true\n"
+    );
+
+    const source = resolveEffectiveRuntimeConfig(paths, {}, "source");
+    expect(source.teamEnabled).toBe(true);
+    expect(calculateRuntimeRequirements(source)).toMatchObject({
+      components: ["base", "privacy"],
+      processes: [
+        "api",
+        "worker",
+        "postgres",
+        "embedding-service",
+        "privacy-service"
+      ]
+    });
+
+    const packaged = resolveEffectiveRuntimeConfig(paths, {}, "packaged");
+    expect(packaged.teamEnabled).toBe(false);
+    expect(packaged.config.runtimeMode).toBe("local-personal");
+  });
+
+  it("rejects malformed explicit environment input with path and line", () => {
+    const paths = makePaths();
+    const explicitEnv = resolve(paths.repoRoot, "explicit.env");
+    writeFileSync(explicitEnv, 'VALUE="one" garbage "two"\n');
+
+    expect(() =>
+      resolveEffectiveRuntimeConfig(
+        paths,
+        { KOED_ENV_PATH: explicitEnv },
+        "packaged"
+      )
+    ).toThrow(`${explicitEnv}:1: unexpected text after quoted value for VALUE`);
+  });
+
+  it("rejects invalid queue values without changing external endpoint requirements", () => {
+    expect(() =>
+      calculateRuntimeRequirements(
+        effective("external", "external", false, {
+          WORK_QUEUE_BACKEND: "sidekiq"
+        })
+      )
+    ).toThrow('WORK_QUEUE_BACKEND must be "local" or "bullmq"');
   });
 
   it("preserves external service endpoints from server config", () => {

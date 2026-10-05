@@ -29,10 +29,28 @@ export const parseEnvFile = (
     const key = trimmed.slice(0, equals).trim();
     let value = trimmed.slice(equals + 1).trim();
     const quoted = value.startsWith('"') || value.startsWith("'");
-    if (quoted) {
+    if (quoted && options.strict) {
+      const quote = value[0];
+      let closingQuote = -1;
+      for (let position = 1; position < value.length; position += 1) {
+        if (value[position] === "\\") {
+          position += 1;
+        } else if (value[position] === quote) {
+          closingQuote = position;
+          break;
+        }
+      }
+      if (closingQuote < 0) {
+        fail(index + 1, `unterminated quoted value for ${key}`);
+      }
+      const trailing = value.slice(closingQuote + 1).trim();
+      if (trailing && !trailing.startsWith("#")) {
+        fail(index + 1, `unexpected text after quoted value for ${key}`);
+      }
+      value = value.slice(1, closingQuote);
+    } else if (quoted) {
       if (value.length < 2 || value.at(-1) !== value[0]) {
-        if (options.strict)
-          fail(index + 1, `unterminated quoted value for ${key}`);
+        // Keep legacy parsing unchanged for implicitly discovered source env.
       } else {
         value = value.slice(1, -1);
       }

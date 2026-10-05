@@ -35,7 +35,7 @@ describe("repo env loading", () => {
   it("keeps quoted, commented, CRLF, empty and unquoted values", () => {
     expect(
       parseEnvFile(
-        "# comment\r\nA=\"quoted value\"\r\nB='also quoted'\r\nEMPTY=\r\nPLAIN=value # tail\r\n",
+        "# comment\r\nA=\"quoted value\" # comment\r\nB='also quoted' # comment\r\nEMPTY=\r\nPLAIN=value # tail\r\n",
         {
           strict: true,
           source: "valid.env"
@@ -47,6 +47,15 @@ describe("repo env loading", () => {
       EMPTY: "",
       PLAIN: "value # tail"
     });
+  });
+
+  it("rejects non-comment text after a closing quote", () => {
+    expect(() =>
+      parseEnvFile('VALUE="one" garbage "two"', {
+        strict: true,
+        source: "broken.env"
+      })
+    ).toThrow("broken.env:1: unexpected text after quoted value for VALUE");
   });
   it("uses KOED_ENV_PATH when set", () => {
     const root = tempDir();
