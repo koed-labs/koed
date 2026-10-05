@@ -1,6 +1,7 @@
 import {
   linkSync,
   mkdirSync,
+  renameSync,
   writeFileSync,
   symlinkSync,
   truncateSync,
@@ -12,7 +13,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { signedComponentFixture } from "./component-test-fixtures.js";
 import {
   verifyComponent,
-  verifyExtractedComponent
+  verifyExtractedComponent,
+  verifyExtractedComponentWithTestSeams
 } from "./component-verification.js";
 import { productionComponentTrustRoots } from "./component-trust-roots.js";
 import type { ComponentManifest } from "./component-contract.js";
@@ -309,6 +311,48 @@ describe("signed component verification", () => {
     unlinkSync(oversized);
   });
 
+  it("rejects aggregate extracted bytes across individually valid files", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    writeFileSync(resolve(sample.root, "second.js"), "12345");
+    manifest.files.push({
+      path: "second.js",
+      sha256: digest(Buffer.from("12345"))
+    });
+    await expect(
+      verifyExtractedComponentWithTestSeams(sample.root, manifest, {
+        limits: { maxFileBytes: 10, maxExpandedBytes: 14 }
+      })
+    ).rejects.toThrow("component tree exceeds expanded size limit");
+  });
+
+  it("rejects extracted file and directory entry count limits", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    writeFileSync(resolve(sample.root, "second.js"), "x");
+    manifest.files.push({
+      path: "second.js",
+      sha256: digest(Buffer.from("x"))
+    });
+    await expect(
+      verifyExtractedComponentWithTestSeams(sample.root, manifest, {
+        limits: { maxEntries: 1 }
+      })
+    ).rejects.toThrow("component tree exceeds entry count limit");
+    await expect(
+      verifyExtractedComponentWithTestSeams(sample.root, manifest, {
+        limits: { maxFiles: 1 }
+      })
+    ).rejects.toThrow("component tree exceeds file count limit");
+
+    mkdirSync(resolve(sample.root, "nested"));
+    await expect(
+      verifyExtractedComponentWithTestSeams(sample.root, manifest, {
+        limits: { maxDirectories: 0 }
+      })
+    ).rejects.toThrow("component tree exceeds directory count limit");
+  });
+
   it("rejects extracted trees exceeding directory depth limit", async () => {
     const sample = await fixture();
     const manifest = fixtureManifest(sample.input.manifestBytes);
@@ -343,6 +387,54 @@ describe("signed component verification", () => {
     await expect(verifyComponent(sample.input)).rejects.toThrow(
       "component archive file path conflict: entry.js"
     );
+  });
+
+  it("rejects a persistent file replacement before no-follow open", async () => {
+    const sample = await fixture();
+    const file = resolve(sample.root, "entry.js");
+    const moved = resolve(sample.root, "moved.js");
+    let replaced = false;
+    await expect(
+      verifyExtractedComponentWithTestSeams(
+        sample.root,
+        fixtureManifest(sample.input.manifestBytes),
+        {
+          beforeOpenFile(path) {
+            if (path !== file || replaced) return;
+            replaced = true;
+            renameSync(path, moved);
+            writeFileSync(path, "replacement");
+          }
+        }
+      )
+    ).rejects.toThrow("component file changed during verification");
+    expect(replaced).toBe(true);
+  });
+
+  it("rejects a persistent directory replacement during traversal", async () => {
+    const sample = await fixture();
+    const nested = resolve(sample.root, "nested");
+    mkdirSync(nested);
+    writeFileSync(resolve(nested, "entry.js"), "nested");
+    const moved = resolve(sample.root, "moved");
+    let replaced = false;
+    await expect(
+      verifyExtractedComponentWithTestSeams(
+        sample.root,
+        fixtureManifest(sample.input.manifestBytes),
+        {
+          beforeReadDirectory(path) {
+            if (path !== nested || replaced) return;
+            replaced = true;
+            renameSync(path, moved);
+            mkdirSync(path);
+          }
+        }
+      )
+    ).rejects.toThrow(
+      "component directory ancestry changed during verification"
+    );
+    expect(replaced).toBe(true);
   });
 
   it.each([

@@ -587,9 +587,34 @@ function sameArchiveState(
   );
 }
 
+interface ExtractedTreeLimits {
+  maxFileBytes: number;
+  maxExpandedBytes: number;
+  maxFiles: number;
+  maxDirectories: number;
+  maxDepth: number;
+  maxEntries: number;
+}
+
+const EXTRACTED_TREE_LIMITS: ExtractedTreeLimits = {
+  maxFileBytes: MAX_FILE_BYTES,
+  maxExpandedBytes: MAX_EXPANDED_BYTES,
+  maxFiles: MAX_FILES,
+  maxDirectories: MAX_DIRECTORIES,
+  maxDepth: MAX_DEPTH,
+  maxEntries: MAX_FILES + MAX_DIRECTORIES
+};
+
+interface ExtractedTreeTestSeams {
+  limits?: Partial<ExtractedTreeLimits>;
+  beforeReadDirectory?: (path: string) => void;
+  beforeOpenFile?: (path: string) => void;
+}
+
 function verifyExtractedComponentSync(
   root: string,
-  manifest: ComponentManifest
+  manifest: ComponentManifest,
+  seams: ExtractedTreeTestSeams = {}
 ): void {
   validateManifest(manifest);
   const canonicalRoot = resolve(root);
@@ -597,8 +622,13 @@ function verifyExtractedComponentSync(
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
     throw new Error("component root is not a regular directory");
   const observed = new Set<string>();
+  const expectedFiles = new Map(
+    manifest.files.map((file) => [file.path, file.sha256])
+  );
+  const limits = { ...EXTRACTED_TREE_LIMITS, ...seams.limits };
   const stack = [canonicalRoot];
   let directories = 0;
+  let entries = 0;
   let totalBytes = 0;
   while (stack.length) {
     const current = stack.pop()!;
@@ -607,8 +637,11 @@ function verifyExtractedComponentSync(
       throw new Error(
         "component directory ancestry changed during verification"
       );
-    const entries = readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
+    seams.beforeReadDirectory?.(current);
+    const directoryEntries = readdirSync(current, { withFileTypes: true });
+    for (const entry of directoryEntries) {
+      if (++entries > limits.maxEntries)
+        throw new Error("component tree exceeds entry count limit");
       const path = resolve(current, entry.name);
       const relativePath = relative(canonicalRoot, path).split(sep).join("/");
       safeRelativePath(relativePath, "extracted component path");
@@ -618,10 +651,10 @@ function verifyExtractedComponentSync(
           "component files must not contain links or special files"
         );
       if (stat.isDirectory()) {
-        if (++directories > MAX_DIRECTORIES)
+        if (++directories > limits.maxDirectories)
           throw new Error("component tree exceeds directory count limit");
         const depth = relativePath.split("/").length;
-        if (depth > MAX_DEPTH)
+        if (depth > limits.maxDepth)
           throw new Error("component tree exceeds directory depth limit");
         stack.push(path);
         continue;
@@ -630,17 +663,16 @@ function verifyExtractedComponentSync(
         throw new Error(
           "component files must not contain links or special files"
         );
-      if (stat.size > MAX_FILE_BYTES)
+      if (stat.size > limits.maxFileBytes)
         throw new Error("component file exceeds individual file limit");
       totalBytes += stat.size;
-      if (totalBytes > MAX_EXPANDED_BYTES)
+      if (totalBytes > limits.maxExpandedBytes)
         throw new Error("component tree exceeds expanded size limit");
-      if (observed.size >= MAX_FILES)
+      if (observed.size >= limits.maxFiles)
         throw new Error("component tree exceeds file count limit");
       observed.add(relativePath);
-      const expected = manifest.files.find(
-        (file) => file.path === relativePath
-      );
+      const expectedHash = expectedFiles.get(relativePath);
+      seams.beforeOpenFile?.(path);
       if (constants.O_NOFOLLOW === undefined)
         throw new Error("component file no-follow access is unavailable");
       const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -656,7 +688,7 @@ function verifyExtractedComponentSync(
           !sameArchiveState(after, afterPath)
         )
           throw new Error("component file changed during verification");
-        if (!expected || fileHash !== expected.sha256)
+        if (!expectedHash || fileHash !== expectedHash)
           throw new Error(`component file hash mismatch: ${relativePath}`);
       } finally {
         closeSync(fd);
@@ -682,3 +714,12 @@ export const verifyExtractedComponent = (
   manifest: ComponentManifest
 ): Promise<void> =>
   Promise.resolve().then(() => verifyExtractedComponentSync(root, manifest));
+
+export const verifyExtractedComponentWithTestSeams = (
+  root: string,
+  manifest: ComponentManifest,
+  seams: ExtractedTreeTestSeams
+): Promise<void> =>
+  Promise.resolve().then(() =>
+    verifyExtractedComponentSync(root, manifest, seams)
+  );
