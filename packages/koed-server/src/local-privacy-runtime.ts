@@ -59,13 +59,17 @@ const runtimePaths = (
   const runtime = selectedRuntime ?? resolveKoedAppRuntime(paths, environment);
   const entry =
     runtime.kind === "packaged"
-      ? resolve(runtime.root, "privacy-service", "dist", "index.js")
+      ? runtime.privacyServiceEntry
       : resolve(paths.repoRoot, "apps", "privacy-service", "dist", "index.js");
   const bootstrap = resolve(
     dirname(import.meta.filename),
     "privacy-service-bootstrap.js"
   );
-  return { entry, bootstrap, appDir: dirname(dirname(entry)) };
+  return {
+    entry,
+    bootstrap,
+    appDir: entry ? dirname(dirname(entry)) : runtime.root
+  };
 };
 
 const collectLocalPrivacyHealth = async (
@@ -82,9 +86,10 @@ const collectLocalPrivacyHealth = async (
   const exists = dependencies.existsSync ?? existsSync;
   const env = localPrivacyEnv(paths, environment);
   const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
-  const missing = [runtime.entry, runtime.bootstrap].filter(
-    (path) => !exists(path)
-  );
+  const missing = [
+    ...(runtime.entry ? [runtime.entry] : ["authenticated privacy generation"]),
+    runtime.bootstrap
+  ].filter((path) => path.startsWith("authenticated ") || !exists(path));
   if (missing.length > 0) {
     return {
       runtime: "native-privacy",
@@ -174,9 +179,10 @@ export const collectLocalPrivacyRuntimeStatus = async (
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
-  const missing = [runtime.entry, runtime.bootstrap].filter(
-    (path) => !exists(path)
-  );
+  const missing = [
+    ...(runtime.entry ? [runtime.entry] : ["authenticated privacy generation"]),
+    runtime.bootstrap
+  ].filter((path) => path.startsWith("authenticated ") || !exists(path));
   if (missing.length > 0) {
     return {
       runtime: "native-privacy",
@@ -216,7 +222,7 @@ export const startLocalPrivacyRuntime = async (
   const env = { ...environment, ...localPrivacyEnv(paths, environment) };
   const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const exists = dependencies.existsSync ?? existsSync;
-  if (!exists(runtime.entry) || !exists(runtime.bootstrap)) {
+  if (!runtime.entry || !exists(runtime.entry) || !exists(runtime.bootstrap)) {
     const status = await collectLocalPrivacyRuntimeStatus(paths, env, {
       existsSync: exists,
       appRuntime: dependencies.appRuntime

@@ -255,6 +255,15 @@ export async function readCurrentGeneration(
   return readStagedGeneration(paths, id);
 }
 
+export async function readCurrentGenerationForOwner(
+  paths: KoedServerPaths,
+  requester: RuntimeOwner
+): Promise<VerifiedGeneration> {
+  const generation = await readCurrentGeneration(paths);
+  assertOwner(generation, requester);
+  return generation;
+}
+
 const persistPinState = (
   paths: KoedServerPaths,
   generation: VerifiedGeneration,

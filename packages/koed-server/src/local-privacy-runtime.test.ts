@@ -5,6 +5,7 @@ import {
   localPrivacyEnv
 } from "./local-privacy-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
+import type { KoedAppRuntime } from "./app-runtime.js";
 
 describe("native Privacy Filter Service runtime", () => {
   it("wires a credential-free local URL and KOED_HOME model cache", () => {
@@ -70,6 +71,39 @@ describe("native Privacy Filter Service runtime", () => {
       state: "healthy",
       details: { healthUrl: "http://127.0.0.1:48092/health" }
     });
+  });
+
+  it("uses privacy service entry from selected generation instead of base root", async () => {
+    const paths = {
+      koedHome: "/koed",
+      modelsDir: "/koed/models",
+      repoRoot: "/repo"
+    } as KoedServerPaths;
+    const checkedPaths: string[] = [];
+    const runtime = {
+      kind: "packaged",
+      root: "/generation/base",
+      privacyServiceEntry: "/generation/privacy/privacy-service/dist/index.js"
+    } as KoedAppRuntime;
+
+    await collectLocalPrivacyRuntimeHealthStatus(
+      paths,
+      {},
+      {
+        appRuntime: runtime,
+        existsSync: (path) => {
+          checkedPaths.push(path);
+          return true;
+        },
+        fetch: async () =>
+          new Response(JSON.stringify({ status: "ok" }), { status: 200 })
+      }
+    );
+
+    expect(checkedPaths).toContain(runtime.privacyServiceEntry);
+    expect(checkedPaths).not.toContain(
+      "/generation/base/privacy-service/dist/index.js"
+    );
   });
 
   it("does not request accelerator diagnostics during startup health polling", async () => {

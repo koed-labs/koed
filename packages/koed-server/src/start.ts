@@ -930,27 +930,41 @@ export const startKoedServer = async ({
     supervisorLockReleased = true;
     releaseKoedServerSupervisorLock(supervisorLock);
   };
-  await ensureDeviceIdentity(paths, { environment });
+  const initializeUnderSupervisorLock = async <T>(
+    initialize: () => T | Promise<T>
+  ): Promise<T> => {
+    try {
+      return await initialize();
+    } catch (error) {
+      releaseSupervisorLock();
+      throw error;
+    }
+  };
+  await initializeUnderSupervisorLock(() =>
+    ensureDeviceIdentity(paths, { environment })
+  );
   const supervisorStartedAt = new Date().toISOString();
-  const effectiveRuntimeConfig = resolveEffectiveRuntimeConfig(
-    paths,
-    requestedEnvironment,
-    execution
+  const effectiveRuntimeConfig = await initializeUnderSupervisorLock(() =>
+    resolveEffectiveRuntimeConfig(paths, requestedEnvironment, execution)
   );
   environment = effectiveRuntimeConfig.environment;
-  const requiredRuntime = calculateRuntimeRequirements(effectiveRuntimeConfig);
+  const requiredRuntime = await initializeUnderSupervisorLock(() =>
+    calculateRuntimeRequirements(effectiveRuntimeConfig)
+  );
   environment = {
     ...environment,
     WORK_QUEUE_BACKEND: requiredRuntime.queue
   };
   const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
   const startupConfig = effectiveRuntimeConfig.config;
-  environment = ensurePackagedLocalServiceSecrets(
-    paths,
-    execution === "packaged" ||
-      (startupConfig.runtimeMode === "local-personal" &&
-        startupConfig.dependencyMode === "bundled-local"),
-    environment
+  environment = await initializeUnderSupervisorLock(() =>
+    ensurePackagedLocalServiceSecrets(
+      paths,
+      execution === "packaged" ||
+        (startupConfig.runtimeMode === "local-personal" &&
+          startupConfig.dependencyMode === "bundled-local"),
+      environment
+    )
   );
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
   if (
@@ -980,9 +994,8 @@ export const startKoedServer = async ({
         ...portAllocationEnvironment
       }
     : portAllocationEnvironment;
-  const allocatedPortEnvironment = await allocateAndPersistLocalPorts(
-    paths,
-    allocatedPortEnvironmentForStart
+  const allocatedPortEnvironment = await initializeUnderSupervisorLock(() =>
+    allocateAndPersistLocalPorts(paths, allocatedPortEnvironmentForStart)
   );
   environment = {
     ...environment,
@@ -1052,7 +1065,11 @@ export const startKoedServer = async ({
     );
   }
 
-  const refreshedRepoEnv = loadRepoEnv(paths.repoRoot, environment);
+  const refreshedRepoEnv = await initializeUnderSupervisorLock(() =>
+    execution === "source" || environment.KOED_ENV_PATH?.trim()
+      ? loadRepoEnv(paths.repoRoot, environment)
+      : {}
+  );
   const refreshedApiToken = desktopManagedLocal
     ? null
     : resolveLocalApiToken(environment, refreshedRepoEnv);
@@ -1118,6 +1135,7 @@ export const startKoedServer = async ({
     | Awaited<ReturnType<typeof startDeviceRequestService>>
     | undefined;
   let cleanupPromise: Promise<void> | undefined;
+  let cleanupCompleted = false;
   const cleanupStartedResources = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
@@ -1167,6 +1185,7 @@ export const startKoedServer = async ({
       if (cleanupErrors.length > 0) {
         throw new Error(cleanupErrors.join("; "));
       }
+      cleanupCompleted = true;
     })();
     return cleanupPromise;
   };
@@ -1619,10 +1638,16 @@ export const startKoedServer = async ({
         );
       }
     }
-    try {
-      await generationPin?.release();
-    } finally {
-      releaseSupervisorLock();
+    if (cleanupCompleted) {
+      try {
+        await generationPin?.release();
+      } finally {
+        releaseSupervisorLock();
+      }
+    } else {
+      console.error(
+        "Supervisor cleanup could not confirm all managed children exited; retaining runtime generation pin and supervisor lock."
+      );
     }
   }
 };

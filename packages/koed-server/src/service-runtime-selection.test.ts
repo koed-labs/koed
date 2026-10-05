@@ -34,6 +34,7 @@ import {
 import { resolveKoedServerPaths } from "./paths.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
 import { readCurrentGeneration } from "./generation-lifecycle.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 
 const roots: string[] = [];
 const tempDir = () => {
@@ -120,6 +121,19 @@ afterEach(() => {
 });
 
 describe("packaged service runtime selection", () => {
+  it("resolves authenticated runtime without creating a generation pin", async () => {
+    const root = tempDir();
+    const paths = await makeGeneration(root, resolveKoedControlPlaneVersion());
+    const runtime = await resolveVerifiedPackagedRuntime(
+      paths,
+      {},
+      requirements
+    );
+
+    expect(runtime.apiEntry).toBe(resolve(runtime.root, "api/dist/index.js"));
+    expect(() => readFileSync(paths.generationStatePath!, "utf8")).toThrow();
+  });
+
   it("pins a verified generation until supervisor releases it", async () => {
     const root = tempDir();
     const paths = await makeGeneration(root, resolveKoedControlPlaneVersion());

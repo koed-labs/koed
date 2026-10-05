@@ -34,7 +34,10 @@ import {
   stopChildProcess,
   waitForManagedProcessExits
 } from "./start.js";
-import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
 vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
@@ -940,6 +943,12 @@ describe("start supervisor", () => {
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
+    const retryLock = acquireKoedServerSupervisorLock(
+      resolveKoedServerPaths({ KOED_HOME: root })
+    );
+    expect(retryLock.acquired).toBe(true);
+    releaseKoedServerSupervisorLock(retryLock);
   });
 
   it("lets one-shot port overrides win over repo .env URLs when starting external mode", async () => {

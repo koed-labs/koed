@@ -36,7 +36,11 @@ import {
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -923,11 +927,30 @@ export const setupCore = async (
     command: "provision local API Token"
   };
   try {
-    const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-      context.paths,
-      context.childEnv,
-      options.existsSync ?? nodeExistsSync
-    );
+    const runtime = options.resolveRuntime
+      ? options.resolveRuntime(
+          context.paths,
+          context.childEnv,
+          options.existsSync ?? nodeExistsSync
+        )
+      : resolveKoedAppRuntimeExecution() === "packaged"
+        ? await resolveVerifiedPackagedRuntime(
+            context.paths,
+            context.childEnv,
+            {
+              components: ["base"],
+              processes: ["api"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            options.existsSync ?? nodeExistsSync
+          )
+        : resolveKoedAppRuntime(
+            context.paths,
+            context.childEnv,
+            options.existsSync ?? nodeExistsSync
+          );
     if (runtime.missing.length > 0) {
       throw new Error(
         `Koed runtime artifacts are missing: ${runtime.missing.join(", ")}.`
@@ -1007,11 +1030,30 @@ export const setupCodex = async (
       }
     );
   }
-  const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-    paths,
-    environment,
-    options.existsSync ?? nodeExistsSync
-  );
+  const runtime = options.resolveRuntime
+    ? options.resolveRuntime(
+        paths,
+        environment,
+        options.existsSync ?? nodeExistsSync
+      )
+    : resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          environment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          options.existsSync ?? nodeExistsSync
+        )
+      : resolveKoedAppRuntime(
+          paths,
+          environment,
+          options.existsSync ?? nodeExistsSync
+        );
   if (runtime.kind === "packaged") {
     return repairCodexIntegration({
       environment,

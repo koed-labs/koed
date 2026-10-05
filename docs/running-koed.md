@@ -135,12 +135,16 @@ relevant `$KOED_HOME/run/generation-lifecycle.lock` or
 `$KOED_HOME/runtime/components.lock`, then retry. Never use an `O_EXCL` check
 followed by rename to reclaim a lock.
 
-Packaged standalone startup now resolves effective configuration before
-calculating component requirements, verifies and pins the active signed
-component generation before starting app services, and holds that pin until the
-supervisor stops or startup fails. API, Worker, MCP Server, Capture Hook,
-Embedding Service, and optional Privacy Service paths come only from selected
-component roots. The generation version must match the control-plane version.
+`resolveKoedAppRuntime` maps a supplied generation selection to component
+paths; it is not an authentication boundary and does not verify or pin a
+selection. Packaged service launch uses the asynchronous verified selection
+flow: resolve effective configuration, calculate component requirements,
+verify owner and control-plane version, pin the active signed generation, then
+resolve paths from the verified generation before starting app services. The
+supervisor holds that pin until stop or confirmed startup cleanup. API, Worker,
+MCP Server, Capture Hook, Embedding Service, and optional Privacy Service paths
+come only from selected component roots. Read-only diagnostics may resolve a
+verified generation without pinning; they never spawn service entrypoints.
 Missing or mismatched generations fail startup; startup never downloads a
 replacement or falls back to checkout, package, sibling, or legacy runtime
 paths. Source-checkout development retains source paths. Desktop-owned
@@ -149,6 +153,35 @@ supervisor channel; environment flags cannot assert Desktop ownership.
 
 Empty production component trust roots remain blocked, and staging a verified
 generation does not activate it.
+
+Task 7 focused evidence (Node `v24.13.1`):
+
+```sh
+/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin/node --version
+# v24.13.1
+/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin/node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server exec vitest run src/start.test.ts src/service-runtime-selection.test.ts src/local-privacy-runtime.test.ts
+```
+
+Task 7 evidence (Node `v24.13.1`; `pnpm` resolves to
+`/opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js`;
+`/opt/homebrew/lib/node_modules/pnpm/bin/pnpm.cjs` is absent):
+
+```sh
+export PATH=/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server exec vitest run src/app-runtime.test.ts src/paths.test.ts src/local-privacy-runtime.test.ts src/start.test.ts src/stop.test.ts src/status.test.ts
+# 6 files / 163 tests passed
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server test
+# 51 files / 722 tests passed
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server typecheck
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server build
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js lint
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js exec prettier --check packages/koed-server/src/generation-lifecycle.ts packages/koed-server/src/local-privacy-runtime.test.ts packages/koed-server/src/local-privacy-runtime.ts packages/koed-server/src/service-runtime-selection.test.ts packages/koed-server/src/service-runtime-selection.ts packages/koed-server/src/setup.ts packages/koed-server/src/start.ts packages/koed-server/src/start.test.ts packages/koed-server/src/status.ts docs/running-koed.md
+```
+
+Typecheck, build, lint, and targeted formatting passed. Full
+`pnpm fmt:prettier:check` remains blocked by eight pre-existing untracked
+`.superpowers/sdd/2026-10-05-publish-koed-labs-server/` planning files; they were
+not reformatted as unrelated material.
 
 On a normal foreground launch, Desktop creates and loads its main window before
 it resumes the managed local `koed-server`. Platform secret-provider

@@ -8,7 +8,11 @@ import {
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import {
@@ -1218,12 +1222,35 @@ const inspectCaptureHook = (
   });
 };
 
-const inspectMcp = (
+const inspectMcp = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
-  const appRuntime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let appRuntime;
+  try {
+    appRuntime =
+      resolveKoedAppRuntimeExecution() === "packaged"
+        ? await resolveVerifiedPackagedRuntime(
+            paths,
+            environment,
+            {
+              components: ["base"],
+              processes: ["local-ai-runtime"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            deps.existsSync
+          )
+        : resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  } catch (error) {
+    return notConfigured(
+      "No compatible authenticated Koed app-runtime generation is available.",
+      "Install and activate a compatible signed Koed app-runtime generation; status does not execute checkout or current-directory artifacts.",
+      { selectionError: error instanceof Error ? error.message : String(error) }
+    );
+  }
   const cliPath = appRuntime.mcpCli;
   if (!deps.existsSync(cliPath)) {
     const authenticatedGenerationMissing = appRuntime.missing.some((entry) =>
@@ -2701,10 +2728,13 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning,
     deps
   );
-  const mcpServer = inspectSafely(
-    "MCP Server",
-    () => inspectMcp(runtimeEnvironment, paths, deps),
-    { state: "needs_attention" }
+  const mcpServer = await inspectMcp(runtimeEnvironment, paths, deps).catch(
+    () =>
+      needsAttention(
+        "MCP Server status could not be inspected.",
+        "Repair MCP Server integration, then refresh status.",
+        { kind: "inspection_error" }
+      )
   );
   const claudeTranscriptWatcher = inspectClaudeTranscriptWatcher(
     serverConfig.claudeTranscriptWatcherEnabled,
