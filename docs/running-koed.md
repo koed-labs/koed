@@ -115,6 +115,22 @@ change source Desktop or standalone
 runtime layout; their consumers remain on existing staging until component
 resolution is integrated.
 
+### Verified runtime lifecycle boundary
+
+The verified component store now has lifecycle primitives for selecting one
+whole generation, pinning it to a live runtime process, and cleaning only
+verified inactive generations. Lifecycle mutations are serialized across
+processes; activation is blocked while a runtime pin is live or its process
+identity cannot be confirmed. Activation also requires the generation owner to
+match the validated requester. Cleanup never removes User data or installed
+models. A current pointer is replaced atomically only after candidate
+verification succeeds. Downgrades remain blocked when migration rollback
+safety is unknown or disallowed.
+
+These primitives are not yet used by source, Desktop, or standalone startup;
+that integration belongs to the next task. Empty production component trust
+roots remain blocked, and staging a verified generation does not activate it.
+
 On a normal foreground launch, Desktop creates and loads its main window before
 it resumes the managed local `koed-server`. Platform secret-provider
 initialization runs after the window exists and before the runtime resumes. A

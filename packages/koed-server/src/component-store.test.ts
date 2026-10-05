@@ -687,6 +687,31 @@ describe("immutable component and generation store", () => {
     await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
   });
 
+  it("requires privacy reference presence to match component reference presence", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const baseItem = await fixture();
+    const privacyItem = await fixture({ component: "privacy" });
+    const base = await stageFixture(paths, baseItem);
+    const privacy = await stageFixture(paths, privacyItem);
+    testKeys.current.clear();
+    for (const item of [baseItem, privacyItem])
+      for (const [key, value] of item.input.trustedKeys)
+        testKeys.current.set(key, value);
+    const generation = await stageGeneration(paths, { base, privacy, owner });
+    const recordPath = resolve(
+      paths.generationsDir,
+      generation.id,
+      "generation.json"
+    );
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    delete record.privacy;
+    writeFileSync(recordPath, JSON.stringify(record));
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
+  });
+
   it("rejects noncanonical generation record JSON", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const base = await stageFixture(paths, await fixture());

@@ -896,6 +896,8 @@ export async function readStagedGeneration(
     !isPlainRecord(record.base) ||
     !exactKeys(record.base, ["manifestDigest", "root"]) ||
     !isPlainRecord(record.components) ||
+    Object.hasOwn(record, "privacy") !==
+      Object.hasOwn(record.components, "privacy") ||
     !exactKeys(record.components, [
       "base",
       ...(Object.hasOwn(record.components, "privacy") ? ["privacy"] : [])

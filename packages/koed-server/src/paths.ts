@@ -21,6 +21,7 @@ export interface KoedServerPaths {
   postgresRunDir: string;
   postgresLogPath: string;
   runtimeStatePath: string;
+  generationStatePath?: string;
   lastVerificationPath: string;
   serverConfigPath: string;
   localPortsPath: string;
@@ -103,6 +104,7 @@ export const resolveKoedServerPaths = (
     postgresRunDir: resolve(koedHome, "run", "postgres"),
     postgresLogPath: resolve(koedHome, "logs", "postgres.log"),
     runtimeStatePath: resolve(koedHome, "run", "koed-server.json"),
+    generationStatePath: resolve(koedHome, "run", "runtime-generation.json"),
     lastVerificationPath: resolve(koedHome, "run", "last-verification.json"),
     serverConfigPath: resolve(koedHome, "config", "server.json"),
     localPortsPath: resolve(koedHome, "config", "local-ports.json"),
