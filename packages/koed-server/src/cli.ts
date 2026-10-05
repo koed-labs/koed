@@ -545,9 +545,7 @@ const runApplicationSecretProviderCli = async (
     !reference ||
     args.length !== 3
   ) {
-    stdout.write(
-      "Usage: koed-server secret-provider <get|put|delete> <reference>\n"
-    );
+    stdout.write("Usage: koed secret-provider <get|put|delete> <reference>\n");
     return 1;
   }
   const value = operation === "put" ? readSecretStdin() : undefined;

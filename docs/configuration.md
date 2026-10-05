@@ -310,14 +310,14 @@ passwords, or `env://` PDS secret values.
 
 ### Secret provider CLI
 
-The bundled `koed-server secret-provider` command is the internal runtime
-provider that services invoke to retrieve PDS secrets. It is not a general-purpose
+The bundled `koed secret-provider` command is the internal runtime provider
+that services invoke to retrieve PDS secrets. It is not a general-purpose
 secret manager. Usage is strictly three arguments:
 
 ```bash
-koed-server secret-provider get <reference>
-koed-server secret-provider put <reference>
-koed-server secret-provider delete <reference>
+koed secret-provider get <reference>
+koed secret-provider put <reference>
+koed secret-provider delete <reference>
 ```
 
 `get` reads from the store and writes the plaintext value to stdout.

@@ -137,6 +137,17 @@ describe("koed executable help", () => {
     expect(general.text()).toContain("Usage: koed <command> [options]");
     expect(general.text()).not.toContain("Usage: koed-server");
 
+    const secretProvider = writer();
+    expect(
+      await runKoedServerCli(["secret-provider"], {
+        stdout: secretProvider.stream
+      })
+    ).toBe(1);
+    expect(secretProvider.text()).toContain(
+      "Usage: koed secret-provider <get|put|delete> <reference>"
+    );
+    expect(secretProvider.text()).not.toContain("koed-server");
+
     expect(
       await runKoedServerCli(["personal-sync", "--help"], {
         stdout: personalSync.stream

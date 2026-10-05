@@ -643,7 +643,7 @@ export const collectServerPackageStatus = (
     ...(state === "missing"
       ? {
           action:
-            "Run koed-server package install --source <artifact> --sha256 <sha256>."
+            "Run koed package install --source <artifact> --sha256 <sha256>."
         }
       : {}),
     ...(invalid.length > 0
