@@ -15,6 +15,8 @@ export interface KoedServerPaths {
   dataDir: string;
   modelsDir: string;
   cacheDir: string;
+  componentsDir: string;
+  generationsDir: string;
   postgresDataDir: string;
   postgresRunDir: string;
   postgresLogPath: string;
@@ -95,6 +97,8 @@ export const resolveKoedServerPaths = (
     dataDir: resolve(koedHome, "data"),
     modelsDir,
     cacheDir: resolve(koedHome, "cache"),
+    componentsDir: resolve(koedHome, "runtime", "components"),
+    generationsDir: resolve(koedHome, "runtime", "generations"),
     postgresDataDir: resolve(koedHome, "data", "postgres"),
     postgresRunDir: resolve(koedHome, "run", "postgres"),
     postgresLogPath: resolve(koedHome, "logs", "postgres.log"),

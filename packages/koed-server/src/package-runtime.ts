@@ -660,6 +660,11 @@ const readExpectedSha256 = (options: ServerPackageInstallOptions): string => {
   throw new Error("--sha256 or --sha256-file is required.");
 };
 
+export const extractVerifiedPackageArchive = (
+  archivePath: string,
+  destination: string
+): Promise<void> => extractTarGz(archivePath, destination);
+
 const adjacentProvenancePath = (archivePath: string): string | undefined => {
   const archiveName = basename(archivePath);
   const releaseName = archiveName
