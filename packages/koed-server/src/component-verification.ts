@@ -33,9 +33,9 @@ export interface ComponentVerificationInput {
   manifestBytes: Buffer;
   signature: ComponentSignature;
   archivePath: string;
-  expectedComponent: ComponentId;
-  expectedVersion: string;
-  target: ArtifactTarget;
+  expectedComponent?: ComponentId;
+  expectedVersion?: string;
+  target?: ArtifactTarget;
   runtime: RuntimeIdentity;
   trustedKeys: ReadonlyMap<string, string>;
 }
@@ -265,11 +265,17 @@ function verifyCompatibility(
   manifest: ComponentManifest,
   input: ComponentVerificationInput
 ): void {
-  if (manifest.component !== input.expectedComponent)
+  if (input.expectedComponent && manifest.component !== input.expectedComponent)
     throw new Error("component mismatch");
-  if (manifest.productVersion !== input.expectedVersion)
+  if (
+    input.expectedVersion &&
+    manifest.productVersion !== input.expectedVersion
+  )
     throw new Error("product version mismatch");
-  if (canonicalJson(manifest.target) !== canonicalJson(input.target))
+  if (
+    input.target &&
+    canonicalJson(manifest.target) !== canonicalJson(input.target)
+  )
     throw new Error("component target mismatch");
   if (
     manifest.target.platform !== input.runtime.platform ||

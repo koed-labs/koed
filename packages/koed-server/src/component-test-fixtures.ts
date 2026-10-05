@@ -61,7 +61,8 @@ function createSignedComponentFixture(
   archiveOptions: {
     terminatorBlocks?: number;
     tail?: Buffer;
-  } = {}
+  } = {},
+  includeArchiveInventory = false
 ): {
   input: ComponentVerificationInput;
   root: string;
@@ -88,7 +89,11 @@ function createSignedComponentFixture(
     ],
     archive: { name: "base.tar.gz", bytes: 0, sha256: "0".repeat(64) },
     requiredFiles: ["entry.js"],
-    files: [{ path: "entry.js", sha256: hash(payload) }],
+    files: includeArchiveInventory
+      ? archiveEntries
+          .filter(({ type }) => type === undefined || type === "0")
+          .map(({ path }) => ({ path, sha256: hash(payload) }))
+      : [{ path: "entry.js", sha256: hash(payload) }],
     ...overrides
   };
   const archive = gzipSync(
@@ -107,7 +112,9 @@ function createSignedComponentFixture(
   mkdirSync(dirname(archivePath), { recursive: true });
   writeFileSync(archivePath, archive);
   const pair = generateKeyPairSync("ed25519");
-  const keyId = "ephemeral-fixture-key";
+  const keyId = hash(
+    pair.publicKey.export({ type: "spki", format: "der" })
+  ).slice(0, 32);
   const manifestBytes = canonicalComponentManifestBytes(manifest);
   const signature = sign(
     null,
@@ -149,12 +156,18 @@ export const signedComponentFixture = (
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
   ],
-  archiveOptions: { terminatorBlocks?: number; tail?: Buffer } = {}
+  archiveOptions: { terminatorBlocks?: number; tail?: Buffer } = {},
+  includeArchiveInventory = false
 ): Promise<{
   input: ComponentVerificationInput;
   root: string;
   dispose(): void;
 }> =>
   Promise.resolve().then(() =>
-    createSignedComponentFixture(overrides, archiveEntries, archiveOptions)
+    createSignedComponentFixture(
+      overrides,
+      archiveEntries,
+      archiveOptions,
+      includeArchiveInventory
+    )
   );
