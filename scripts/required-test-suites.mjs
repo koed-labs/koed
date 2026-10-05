@@ -87,6 +87,19 @@ const suites = [
   }
 ];
 
+const nodeSuites = [
+  {
+    name: "runtime-component-assembly",
+    files: [
+      "scripts/component-assembly.test.mjs",
+      "scripts/app-runtime-staging.test.mjs",
+      "scripts/privacy-runtime-package-policy.test.mjs",
+      "scripts/provider-runtime-package-policy.test.mjs",
+      "scripts/terminal-runtime-package-policy.test.mjs"
+    ]
+  }
+];
+
 for (const suite of suites) {
   process.stdout.write(`\nRequired ${suite.name} suite\n`);
   let totalPassedTests = 0;
@@ -155,4 +168,17 @@ for (const suite of suites) {
     );
     process.exit(1);
   }
+}
+
+for (const suite of nodeSuites) {
+  process.stdout.write(`\nRequired ${suite.name} suite\n`);
+  const result = spawnSync(process.execPath, ["--test", ...suite.files], {
+    cwd: new URL("..", import.meta.url),
+    encoding: "utf8",
+    env: { ...process.env, FORCE_COLOR: "0" }
+  });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
 }

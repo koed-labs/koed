@@ -78,6 +78,16 @@ Preparation fails instead of changing stale outputs that a live supervisor
 uses. Stop that supervisor before you prepare the stale runtime. Packaged
 Desktop and standalone `koed-server` packages do not use this fingerprint.
 
+Release assembly uses one `@koed/app-runtime-stage` production deployment as
+source for base and optional privacy payloads. `scripts/component-assembly.mjs`
+projects manifest dependency closures into independent component roots; shared
+packages are copied into both trees when needed, and each tree carries its own
+third-party notice inventory. Target pruning remains governed by the reviewed
+privacy native-package policy, including ONNX Runtime, Sharp, and Argon2 target
+files. Runtime closure does not use package-count or size-based deletion. This
+build step does not change source Desktop or standalone runtime layout; their
+consumers remain on existing staging until component resolution is integrated.
+
 On a normal foreground launch, Desktop creates and loads its main window before
 it resumes the managed local `koed-server`. Platform secret-provider
 initialization runs after the window exists and before the runtime resumes. A
