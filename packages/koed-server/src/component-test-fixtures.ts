@@ -57,7 +57,11 @@ function createSignedComponentFixture(
   overrides: Partial<ComponentManifest> = {},
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
-  ]
+  ],
+  archiveOptions: {
+    terminatorBlocks?: number;
+    tail?: Buffer;
+  } = {}
 ): {
   input: ComponentVerificationInput;
   root: string;
@@ -90,7 +94,8 @@ function createSignedComponentFixture(
   const archive = gzipSync(
     Buffer.concat([
       ...archiveEntries.map(({ path, type }) => tarFile(path, payload, type)),
-      Buffer.alloc(1024)
+      Buffer.alloc(512 * (archiveOptions.terminatorBlocks ?? 2)),
+      archiveOptions.tail ?? Buffer.alloc(0)
     ])
   );
   manifest.archive = {
@@ -143,12 +148,13 @@ export const signedComponentFixture = (
   overrides: Partial<ComponentManifest> = {},
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
-  ]
+  ],
+  archiveOptions: { terminatorBlocks?: number; tail?: Buffer } = {}
 ): Promise<{
   input: ComponentVerificationInput;
   root: string;
   dispose(): void;
 }> =>
   Promise.resolve().then(() =>
-    createSignedComponentFixture(overrides, archiveEntries)
+    createSignedComponentFixture(overrides, archiveEntries, archiveOptions)
   );

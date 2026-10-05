@@ -1,4 +1,11 @@
-import { mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+  truncateSync,
+  unlinkSync
+} from "node:fs";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -125,6 +132,80 @@ describe("signed component verification", () => {
     ).rejects.toThrow(reason);
   });
 
+  it("accepts compatible Electron tuple and rejects mismatched Node ABI", async () => {
+    const sample = await signedComponentFixture({
+      runtimes: [
+        {
+          kind: "electron",
+          runtimeRange: ">=40 <41",
+          nodeRange: ">=24 <25",
+          modulesAbi: "137",
+          minimumNapi: 10
+        }
+      ]
+    });
+    fixtures.push(sample);
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        runtime: {
+          ...sample.input.runtime,
+          kind: "electron",
+          version: "40.1.0"
+        }
+      })
+    ).resolves.toBeDefined();
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        runtime: {
+          ...sample.input.runtime,
+          kind: "electron",
+          version: "40.1.0",
+          modulesAbi: "999"
+        }
+      })
+    ).rejects.toThrow("runtime ABI mismatch");
+  });
+
+  it("matches complete ABI tuples across overlapping compatibility entries", async () => {
+    const sample = await signedComponentFixture({
+      runtimes: [
+        {
+          kind: "node",
+          runtimeRange: ">=24 <25",
+          nodeRange: ">=24 <25",
+          modulesAbi: "999",
+          minimumNapi: 20
+        },
+        {
+          kind: "node",
+          runtimeRange: ">=24 <25",
+          nodeRange: ">=24 <25",
+          modulesAbi: "137",
+          minimumNapi: 10
+        }
+      ]
+    });
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).resolves.toBeDefined();
+  });
+
+  it("rejects duplicate-key manifest JSON before signature acceptance", async () => {
+    const sample = await fixture();
+    const source = sample.input.manifestBytes.toString("utf8");
+    const duplicated = source.replace(
+      '{"archive":',
+      '{"schemaVersion":1,"archive":'
+    );
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        manifestBytes: Buffer.from(duplicated)
+      })
+    ).rejects.toThrow("component manifest is not canonical");
+  });
+
   it("rejects noncanonical metadata and signatures signed over different bytes", async () => {
     const sample = await fixture();
     await expect(
@@ -192,6 +273,55 @@ describe("signed component verification", () => {
     ).rejects.toThrow("component files must not contain links");
   });
 
+  it("rejects extracted hard links, extra files, and missing files", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    const extra = resolve(sample.root, "extra.js");
+    linkSync(resolve(sample.root, "entry.js"), extra);
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow(
+      "component files must not contain links or special files"
+    );
+    unlinkSync(extra);
+    writeFileSync(extra, "extra");
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow("component file hash mismatch: extra.js");
+    unlinkSync(extra);
+    unlinkSync(resolve(sample.root, "entry.js"));
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow(
+      "required component file is missing or incomplete: entry.js"
+    );
+  });
+
+  it("rejects extracted individual and aggregate byte limits", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    const oversized = resolve(sample.root, "oversized.js");
+    writeFileSync(oversized, "");
+    truncateSync(oversized, 1024 * 1024 * 1024 + 1);
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow("component file exceeds individual file limit");
+    unlinkSync(oversized);
+  });
+
+  it("rejects extracted trees exceeding directory depth limit", async () => {
+    const sample = await fixture();
+    const manifest = fixtureManifest(sample.input.manifestBytes);
+    let nested = sample.root;
+    for (let index = 0; index < 129; index++) {
+      nested = resolve(nested, "d");
+      mkdirSync(nested);
+    }
+    await expect(
+      verifyExtractedComponent(sample.root, manifest)
+    ).rejects.toThrow("component tree exceeds directory depth limit");
+  });
+
   it.each([
     ["traversal", "../escape", "0", "component archive path is unsafe"],
     ["absolute path", "/escape", "0", "component archive path is unsafe"],
@@ -213,6 +343,25 @@ describe("signed component verification", () => {
     await expect(verifyComponent(sample.input)).rejects.toThrow(
       "component archive file path conflict: entry.js"
     );
+  });
+
+  it.each([
+    [
+      "missing two-block terminator",
+      { terminatorBlocks: 0 },
+      "missing tar terminator"
+    ],
+    ["single zero record", { terminatorBlocks: 1 }, "missing tar terminator"],
+    [
+      "archive concatenation",
+      { tail: Buffer.alloc(512, 1) },
+      "data after tar terminator"
+    ],
+    ["partial block tail", { tail: Buffer.from([1]) }, "partial tar block"]
+  ])("rejects %s", async (_name, options, reason) => {
+    const sample = await signedComponentFixture({}, undefined, options);
+    fixtures.push(sample);
+    await expect(verifyComponent(sample.input)).rejects.toThrow(reason);
   });
 
   it("rejects duplicate archive paths", async () => {
@@ -244,6 +393,38 @@ describe("signed component verification", () => {
     await expect(verifyComponent(duplicate.input)).rejects.toThrow(
       "component file inventory is invalid or duplicate"
     );
+  });
+
+  it("rejects malformed numeric glibc versions instead of passing NaN comparisons", async () => {
+    const linux = await signedComponentFixture({
+      target: {
+        platform: "linux",
+        architecture: "x64",
+        libc: { family: "glibc", minimumVersion: "2.28.1" }
+      }
+    });
+    fixtures.push(linux);
+    for (const libcVersion of [
+      "2.28.0",
+      "2.28.1.0",
+      "2.28.x",
+      "2.28.1-evil",
+      "02.28.1",
+      "2.028.1"
+    ]) {
+      await expect(
+        verifyComponent({
+          ...linux.input,
+          runtime: { ...linux.input.runtime, libcVersion }
+        })
+      ).rejects.toThrow("runtime libc version is incompatible");
+    }
+    await expect(
+      verifyComponent({
+        ...linux.input,
+        runtime: { ...linux.input.runtime, libcVersion: "2.28.2" }
+      })
+    ).resolves.toBeDefined();
   });
 
   it("checks glibc minimum and unsupported target", async () => {

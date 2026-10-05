@@ -1,7 +1,16 @@
 import { createHash, verify as cryptoVerify } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readSync
+} from "node:fs";
+import { Readable } from "node:stream";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { createGunzip } from "node:zlib";
 import type {
   ArtifactTarget,
   ComponentId,
@@ -16,8 +25,9 @@ const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const MAX_FILES = 100_000;
-const hash = (value: Buffer | string) =>
-  createHash("sha256").update(value).digest("hex");
+const MAX_DEPTH = 128;
+const MAX_DIRECTORIES = 100_000;
+const MAX_TAR_BYTES = MAX_EXPANDED_BYTES + MAX_FILES * 1024 + 1024;
 
 export interface ComponentVerificationInput {
   manifestBytes: Buffer;
@@ -195,15 +205,23 @@ function validateManifest(value: unknown): asserts value is ComponentManifest {
 const isHash = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const isVersion = (value: unknown): value is string =>
-  typeof value === "string" && /^\d+(?:\.\d+){1,2}$/.test(value);
+  typeof value === "string" &&
+  /^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){1,2}$/.test(value) &&
+  value.split(".").every((part) => Number.isSafeInteger(Number(part)));
 function versionParts(value: string): number[] | undefined {
-  if (!/^\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.-]+)?$/.test(value)) return;
-  return [...value.split(/[.-]/).slice(0, 3), "0", "0"].slice(0, 3).map(Number);
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,2}$/.test(value)
+  )
+    return;
+  const parts = value.split(".").map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part))) return;
+  return [...parts, 0, 0].slice(0, 3);
 }
-function compareVersions(a: string, b: string): number {
+function compareVersions(a: string, b: string): number | undefined {
   const left = versionParts(a);
   const right = versionParts(b);
-  if (!left || !right) return Number.NaN;
+  if (!left || !right) return;
   for (let i = 0; i < 3; i++)
     if (left[i] !== right[i]) return left[i]! - right[i]!;
   return 0;
@@ -212,16 +230,22 @@ function validRange(range: unknown): range is string {
   return (
     typeof range === "string" &&
     range.trim().length > 0 &&
-    range
-      .split(/\s+/)
-      .every((part) => /^(?:>=|>|<=|<|=)?\d+(?:\.\d+){0,2}$/.test(part))
+    range.split(/\s+/).every((part) => {
+      const match =
+        /^(?:>=|>|<=|<|=)?((?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,2})$/.exec(
+          part
+        );
+      return Boolean(match && versionParts(match[1]!));
+    })
   );
 }
 function satisfies(version: string, range: string): boolean {
   return range.split(/\s+/).every((part) => {
-    const match = /^(>=|>|<=|<|=)?(\d+(?:\.\d+){0,2})$/.exec(part);
+    const match =
+      /^(>=|>|<=|<|=)?((?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,2})$/.exec(part);
     if (!match) return false;
     const comparison = compareVersions(version, match[2]!);
+    if (comparison === undefined) return false;
     switch (match[1]) {
       case ">=":
         return comparison >= 0;
@@ -261,31 +285,34 @@ function verifyCompatibility(
     input.runtime.napiVersion < 0
   )
     throw new Error("runtime identity is invalid");
-  const compatibility = manifest.runtimes.find(
+  const versionMatches = manifest.runtimes.filter(
     (item) =>
       item.kind === input.runtime.kind &&
       satisfies(input.runtime.version, item.runtimeRange) &&
       satisfies(input.runtime.nodeVersion, item.nodeRange)
   );
-  if (!compatibility) throw new Error("runtime version is incompatible");
-  if (
-    compatibility.modulesAbi !== undefined &&
-    compatibility.modulesAbi !== input.runtime.modulesAbi
-  )
-    throw new Error("runtime ABI mismatch");
-  if (
-    compatibility.minimumNapi !== undefined &&
-    input.runtime.napiVersion < compatibility.minimumNapi
-  )
-    throw new Error("runtime N-API version is incompatible");
+  if (!versionMatches.length)
+    throw new Error("runtime version is incompatible");
+  const abiMatches = versionMatches.filter(
+    (item) =>
+      item.modulesAbi === undefined ||
+      item.modulesAbi === input.runtime.modulesAbi
+  );
+  if (!abiMatches.length) throw new Error("runtime ABI mismatch");
+  const compatibility = abiMatches.find(
+    (item) =>
+      item.minimumNapi === undefined ||
+      input.runtime.napiVersion >= item.minimumNapi
+  );
+  if (!compatibility) throw new Error("runtime N-API version is incompatible");
   if (manifest.target.libc) {
-    if (
-      !isVersion(input.runtime.libcVersion) ||
-      compareVersions(
-        input.runtime.libcVersion,
-        `${manifest.target.libc.minimumVersion}.0`
-      ) < 0
-    )
+    const comparison = isVersion(input.runtime.libcVersion)
+      ? compareVersions(
+          input.runtime.libcVersion,
+          manifest.target.libc.minimumVersion
+        )
+      : undefined;
+    if (comparison === undefined || comparison < 0)
       throw new Error("runtime libc version is incompatible");
   }
 }
@@ -304,57 +331,114 @@ function tarNumber(header: Buffer, offset: number, length: number): number {
     throw new Error("component tar field exceeds safe integer range");
   return number;
 }
-function verifyTarArchive(archive: Buffer, manifest: ComponentManifest): void {
-  const expanded = gunzipSync(archive, { maxOutputLength: MAX_EXPANDED_BYTES });
-  const contents = new Map<string, Buffer>();
-  const seenPaths = new Set<string>();
-  let offset = 0;
-  let expandedBytes = 0;
-  while (offset + 512 <= expanded.length) {
-    const header = expanded.subarray(offset, offset + 512);
-    offset += 512;
-    if (header.every((byte) => byte === 0)) break;
-    const storedChecksum = tarNumber(header, 148, 8);
-    const check = Buffer.from(header);
-    check.fill(0x20, 148, 156);
-    if (storedChecksum !== check.reduce((sum, byte) => sum + byte, 0))
-      throw new Error("malformed component tar header checksum");
-    const type = tarString(header, 156, 1) || "0";
-    if (type === "1")
-      throw new Error("component archives must not contain hard links");
-    if (type === "2")
-      throw new Error("component archives must not contain symbolic links");
-    if (type !== "0" && type !== "5")
-      throw new Error(`unsupported component tar entry type: ${type}`);
-    const name = tarString(header, 0, 100);
-    const prefix = tarString(header, 345, 155);
-    const path = prefix ? `${prefix}/${name}` : name;
-    const cleanPath = path.replace(/\/$/, "");
-    safeRelativePath(cleanPath, "component archive path");
-    const size = tarNumber(header, 124, 12);
-    if (type === "5" && size !== 0)
-      throw new Error("component directory tar entry must be empty");
-    if (size > MAX_FILE_BYTES)
-      throw new Error("component archive entry exceeds individual file limit");
-    expandedBytes += size;
-    if (expandedBytes > MAX_EXPANDED_BYTES)
-      throw new Error("component archive exceeds expanded size limit");
-    if (seenPaths.has(cleanPath))
-      throw new Error(`duplicate component archive path: ${cleanPath}`);
-    seenPaths.add(cleanPath);
-    if (seenPaths.size > MAX_FILES)
-      throw new Error("component archive exceeds file count limit");
-    const padded = Math.ceil(size / 512) * 512;
-    if (offset + padded > expanded.length)
-      throw new Error("component archive is truncated");
-    if (type === "0")
-      contents.set(path, expanded.subarray(offset, offset + size));
-    offset += padded;
-    if (contents.size > MAX_FILES)
-      throw new Error("component archive exceeds file count limit");
+function* archiveChunks(archiveFd: number): Generator<Buffer> {
+  let position = 0;
+  while (true) {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const bytesRead = readSync(archiveFd, buffer, 0, buffer.length, position);
+    if (bytesRead === 0) return;
+    position += bytesRead;
+    yield buffer.subarray(0, bytesRead);
   }
-  const filePaths = [...contents.keys()];
-  for (const path of filePaths) {
+}
+
+async function* tarBlocks(
+  stream: AsyncIterable<Buffer>
+): AsyncGenerator<Buffer> {
+  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  let totalBytes = 0;
+  for await (const chunk of stream) {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+    while (pending.length >= 512) {
+      totalBytes += 512;
+      if (totalBytes > MAX_TAR_BYTES)
+        throw new Error("component archive exceeds expanded size limit");
+      yield pending.subarray(0, 512);
+      pending = pending.subarray(512);
+    }
+  }
+  if (pending.length)
+    throw new Error("component archive has partial tar block");
+}
+
+async function verifyTarArchive(
+  archiveFd: number,
+  manifest: ComponentManifest
+): Promise<void> {
+  const contents = new Map<string, string>();
+  const seenPaths = new Set<string>();
+  let expandedBytes = 0;
+  let zeroBlocks = 0;
+  let ended = false;
+  const gunzip = createGunzip();
+  const archiveSource = Readable.from(archiveChunks(archiveFd));
+  const blocks = tarBlocks(archiveSource.pipe(gunzip));
+  try {
+    for await (const header of blocks) {
+      if (ended) {
+        if (!header.every((byte) => byte === 0))
+          throw new Error(
+            "component archive contains data after tar terminator"
+          );
+        continue;
+      }
+      if (header.every((byte) => byte === 0)) {
+        zeroBlocks++;
+        if (zeroBlocks === 2) ended = true;
+        continue;
+      }
+      if (zeroBlocks)
+        throw new Error("component archive has incomplete tar terminator");
+      const storedChecksum = tarNumber(header, 148, 8);
+      const check = Buffer.from(header);
+      check.fill(0x20, 148, 156);
+      if (storedChecksum !== check.reduce((sum, byte) => sum + byte, 0))
+        throw new Error("malformed component tar header checksum");
+      const type = tarString(header, 156, 1) || "0";
+      if (type === "1")
+        throw new Error("component archives must not contain hard links");
+      if (type === "2")
+        throw new Error("component archives must not contain symbolic links");
+      if (type !== "0" && type !== "5")
+        throw new Error(`unsupported component tar entry type: ${type}`);
+      const name = tarString(header, 0, 100);
+      const prefix = tarString(header, 345, 155);
+      const rawPath = prefix ? `${prefix}/${name}` : name;
+      const path = rawPath.replace(/\/$/, "");
+      safeRelativePath(path, "component archive path");
+      const size = tarNumber(header, 124, 12);
+      if (type === "5" && size !== 0)
+        throw new Error("component directory tar entry must be empty");
+      if (size > MAX_FILE_BYTES)
+        throw new Error(
+          "component archive entry exceeds individual file limit"
+        );
+      expandedBytes += size;
+      if (expandedBytes > MAX_EXPANDED_BYTES)
+        throw new Error("component archive exceeds expanded size limit");
+      if (seenPaths.has(path))
+        throw new Error(`duplicate component archive path: ${path}`);
+      seenPaths.add(path);
+      if (seenPaths.size > MAX_FILES)
+        throw new Error("component archive exceeds file count limit");
+      if (type === "5") continue;
+      const digest = createHash("sha256");
+      let remaining = size;
+      while (remaining > 0) {
+        const data = await blocks.next();
+        if (data.done) throw new Error("component archive is truncated");
+        const count = Math.min(remaining, 512);
+        digest.update(data.value.subarray(0, count));
+        remaining -= count;
+      }
+      contents.set(path, digest.digest("hex"));
+    }
+  } finally {
+    archiveSource.destroy();
+    gunzip.destroy();
+  }
+  if (!ended) throw new Error("component archive is missing tar terminator");
+  for (const path of contents.keys()) {
     const parents = path.split("/").slice(0, -1);
     for (let index = 1; index <= parents.length; index++) {
       const parentPath = parents.slice(0, index).join("/");
@@ -367,18 +451,17 @@ function verifyTarArchive(archive: Buffer, manifest: ComponentManifest): void {
   );
   if (contents.size !== expected.size)
     throw new Error("component archive file inventory mismatch");
-  for (const [path, bytes] of contents) {
-    if (!expected.has(path) || hash(bytes) !== expected.get(path))
+  for (const [path, digest] of contents)
+    if (!expected.has(path) || digest !== expected.get(path))
       throw new Error(`component archive file hash mismatch: ${path}`);
-  }
   for (const required of manifest.requiredFiles)
     if (!contents.has(required))
       throw new Error(`required component file is missing: ${required}`);
 }
 
-function verifyComponentSync(
+async function verifyComponentSync(
   input: ComponentVerificationInput
-): ComponentManifest {
+): Promise<ComponentManifest> {
   assertRecord(input.signature, "component signature", [
     "schemaVersion",
     "keyId",
@@ -432,17 +515,77 @@ function verifyComponentSync(
     throw new Error("component archive name mismatch");
   if (stat.size !== manifest.archive.bytes)
     throw new Error("component archive size mismatch");
-  const archive = readFileSync(input.archivePath);
-  if (hash(archive) !== manifest.archive.sha256)
-    throw new Error("component archive SHA-256 mismatch");
-  verifyTarArchive(archive, manifest);
+  if (constants.O_NOFOLLOW === undefined)
+    throw new Error("component archive no-follow access is unavailable");
+  const archiveFd = openSync(
+    input.archivePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW
+  );
+  try {
+    const opened = fstatSync(archiveFd);
+    if (!opened.isFile() || !sameObject(stat, opened))
+      throw new Error("component archive changed during verification");
+    const archiveHash = createHash("sha256");
+    for (const chunk of archiveChunks(archiveFd)) archiveHash.update(chunk);
+    if (!sameArchiveState(opened, fstatSync(archiveFd)))
+      throw new Error("component archive changed during verification");
+    if (archiveHash.digest("hex") !== manifest.archive.sha256)
+      throw new Error("component archive SHA-256 mismatch");
+    await verifyTarArchive(archiveFd, manifest);
+    if (!sameArchiveState(opened, fstatSync(archiveFd)))
+      throw new Error("component archive changed during verification");
+  } finally {
+    closeSync(archiveFd);
+  }
   return manifest;
 }
 
 export const verifyComponent = (
   input: ComponentVerificationInput
-): Promise<ComponentManifest> =>
-  Promise.resolve().then(() => verifyComponentSync(input));
+): Promise<ComponentManifest> => verifyComponentSync(input);
+
+function hashFileDescriptor(fd: number): string {
+  const digest = createHash("sha256");
+  let position = 0;
+  while (true) {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, position);
+    if (bytesRead === 0) return digest.digest("hex");
+    digest.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+}
+
+function sameObject(
+  left: { dev: number; ino: number },
+  right: { dev: number; ino: number }
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameArchiveState(
+  left: {
+    dev: number;
+    ino: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+  },
+  right: {
+    dev: number;
+    ino: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+  }
+): boolean {
+  return (
+    sameObject(left, right) &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
 
 function verifyExtractedComponentSync(
   root: string,
@@ -450,41 +593,80 @@ function verifyExtractedComponentSync(
 ): void {
   validateManifest(manifest);
   const canonicalRoot = resolve(root);
-  if (
-    !existsSync(canonicalRoot) ||
-    lstatSync(canonicalRoot).isSymbolicLink() ||
-    !lstatSync(canonicalRoot).isDirectory()
-  )
+  const rootStat = lstatSync(canonicalRoot);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
     throw new Error("component root is not a regular directory");
   const observed = new Set<string>();
-  const visit = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = resolve(directory, entry.name);
+  const stack = [canonicalRoot];
+  let directories = 0;
+  let totalBytes = 0;
+  while (stack.length) {
+    const current = stack.pop()!;
+    const beforeDirectory = lstatSync(current);
+    if (!beforeDirectory.isDirectory() || beforeDirectory.isSymbolicLink())
+      throw new Error(
+        "component directory ancestry changed during verification"
+      );
+    const entries = readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = resolve(current, entry.name);
       const relativePath = relative(canonicalRoot, path).split(sep).join("/");
       safeRelativePath(relativePath, "extracted component path");
       const stat = lstatSync(path);
-      if (
-        stat.isSymbolicLink() ||
-        (!stat.isFile() && !stat.isDirectory()) ||
-        (stat.isFile() && stat.nlink > 1)
-      )
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()))
         throw new Error(
           "component files must not contain links or special files"
         );
-      if (stat.isDirectory()) visit(path);
-      else {
-        if (stat.size > MAX_FILE_BYTES)
-          throw new Error("component file exceeds individual file limit");
-        observed.add(relativePath);
-        const expected = manifest.files.find(
-          (file) => file.path === relativePath
+      if (stat.isDirectory()) {
+        if (++directories > MAX_DIRECTORIES)
+          throw new Error("component tree exceeds directory count limit");
+        const depth = relativePath.split("/").length;
+        if (depth > MAX_DEPTH)
+          throw new Error("component tree exceeds directory depth limit");
+        stack.push(path);
+        continue;
+      }
+      if (stat.nlink > 1)
+        throw new Error(
+          "component files must not contain links or special files"
         );
-        if (!expected || hash(readFileSync(path)) !== expected.sha256)
+      if (stat.size > MAX_FILE_BYTES)
+        throw new Error("component file exceeds individual file limit");
+      totalBytes += stat.size;
+      if (totalBytes > MAX_EXPANDED_BYTES)
+        throw new Error("component tree exceeds expanded size limit");
+      if (observed.size >= MAX_FILES)
+        throw new Error("component tree exceeds file count limit");
+      observed.add(relativePath);
+      const expected = manifest.files.find(
+        (file) => file.path === relativePath
+      );
+      if (constants.O_NOFOLLOW === undefined)
+        throw new Error("component file no-follow access is unavailable");
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd);
+        if (!opened.isFile() || !sameObject(stat, opened))
+          throw new Error("component file changed during verification");
+        const fileHash = hashFileDescriptor(fd);
+        const after = fstatSync(fd);
+        const afterPath = lstatSync(path);
+        if (
+          !sameArchiveState(opened, after) ||
+          !sameArchiveState(after, afterPath)
+        )
+          throw new Error("component file changed during verification");
+        if (!expected || fileHash !== expected.sha256)
           throw new Error(`component file hash mismatch: ${relativePath}`);
+      } finally {
+        closeSync(fd);
       }
     }
-  };
-  visit(canonicalRoot);
+    if (!sameObject(beforeDirectory, lstatSync(current)))
+      throw new Error(
+        "component directory ancestry changed during verification"
+      );
+  }
   for (const file of manifest.files)
     if (!observed.has(file.path))
       throw new Error(
