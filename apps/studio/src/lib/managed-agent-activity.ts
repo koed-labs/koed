@@ -1,3 +1,5 @@
+import { pendingChatRequests } from "./managed-chat-requests";
+import type { RuntimeSnapshot } from "./managed-agent-chat";
 import { record } from "./managed-agent-chat";
 import type {
   BuildActivity,
@@ -78,5 +80,94 @@ export function managedAgentActivity(
     // The API returns newest first; the panel renders chronological events.
     events: events.reverse(),
     ...(Number.isFinite(timestamp) ? { updatedAt: timestamp } : {})
+  };
+}
+
+/** Direct AI Client chats have prompt commands but do not require a named Agent Job. */
+export function managedConversationActivity(
+  payload: Record<string, unknown>,
+  runtime: RuntimeSnapshot
+): BuildActivity {
+  if (payload.executionGeneration !== runtime.execution.executionGeneration)
+    return { source: "live", state: "unknown", events: [] };
+  const activity = managedAgentActivity(payload);
+  if (activity.events.length) return activity;
+  const command = runtime.latestCommand;
+  if (!command) return activity;
+  const state: BuildActivityState =
+    command.state === "completed" && command.commandKind === "prompt"
+      ? "completed"
+      : command.state === "failed" || runtime.execution.state === "failed"
+        ? "failed"
+        : command.state === "indeterminate" || runtime.hasIndeterminatePrompt
+          ? "unknown"
+          : pendingChatRequests(runtime).length
+            ? "blocked"
+            : ["dispatching", "running"].includes(command.state)
+              ? "running"
+              : "idle";
+  const title =
+    state === "completed"
+      ? "Task completed"
+      : state === "failed"
+        ? "Task failed"
+        : state === "blocked"
+          ? "Waiting for your input"
+          : state === "unknown"
+            ? "Task status needs verification"
+            : state === "running"
+              ? "Working on your request"
+              : command.state === "canceled"
+                ? "Task canceled"
+                : command.commandKind === "stop" ||
+                    command.commandKind === "interrupt"
+                  ? "Task stopped"
+                  : "Task queued";
+  const prompts = (Array.isArray(payload.messages) ? payload.messages : [])
+    .filter(record)
+    .filter(
+      (message) =>
+        message.role === "user" && typeof message.content === "string"
+    );
+  const prompt = prompts.find(
+    (message) =>
+      message.id === command.clientUserMessageId || message.id === command.id
+  )?.content;
+  const at = Date.parse(command.updatedAt ?? "");
+  return {
+    source: "live",
+    state,
+    events: [
+      {
+        id: `command:${command.id}`,
+        ...(Number.isFinite(at) ? { at } : {}),
+        kind:
+          state === "completed"
+            ? "completed"
+            : state === "failed"
+              ? "failed"
+              : state === "blocked"
+                ? "blocked"
+                : "progress",
+        state,
+        story: {
+          title,
+          detail:
+            typeof prompt === "string"
+              ? `Request: ${prompt.slice(0, 1000)}`
+              : "Status reported by the execution service."
+        },
+        technical: {
+          status: command.state,
+          execution: {
+            client: runtime.execution.provider,
+            model: runtime.execution.model,
+            reasoning: runtime.execution.reasoningEffort,
+            access: runtime.execution.permissionMode
+          }
+        }
+      }
+    ],
+    ...(Number.isFinite(at) ? { updatedAt: at } : {})
   };
 }

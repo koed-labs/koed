@@ -43,6 +43,7 @@ export type RuntimeSnapshot = {
     commandKind: string;
     canCancelBeforeClaim?: boolean;
     clientUserMessageId?: string | null;
+    updatedAt?: string;
     lastErrorCode: string | null;
   } | null;
 };
@@ -525,6 +526,9 @@ export function parseRuntime(
           state: command.state,
           commandKind: command.commandKind,
           canCancelBeforeClaim: command.canCancelBeforeClaim === true,
+          ...(typeof command.updatedAt === "string"
+            ? { updatedAt: command.updatedAt }
+            : {}),
           ...(typeof command.clientUserMessageId === "string"
             ? { clientUserMessageId: command.clientUserMessageId }
             : {}),

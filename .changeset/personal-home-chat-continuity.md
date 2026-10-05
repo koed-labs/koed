@@ -11,3 +11,5 @@ Select newly started conversations in the sidebar, give them a short title from 
 Preserve explicitly selected project folders even inside a parent Git repository. Run those folder-scoped chats at the chosen directory with the existing plain-folder capabilities; retain normal Git checkpoint guarantees for repository roots.
 
 Match Home suggestions to the rounded chips in New chat. Simplify Home activity to Needs you, Ongoing work, and Cleared, with five items per page and navigation to the remaining items.
+
+Show subtle Agent progress across AI chats, including current task status, elapsed wait time and reported activity without exposing private reasoning. Populate the activity panel for direct chats without a named Agent Job, show verified execution settings and command results in Advanced, remember the panel state and Simple/Advanced preference after refresh, and keep its minimized summary visible with the desktop sidebar open.

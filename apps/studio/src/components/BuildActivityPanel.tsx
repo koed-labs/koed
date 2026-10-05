@@ -21,9 +21,16 @@ import {
   type BuildActivity,
   type BuildActivityEvent
 } from "@/lib/studio-build-activity";
-import type { BuildViewMode } from "@/lib/buildView";
+import { useBuildView } from "./BuildViewProvider";
+import {
+  BUILD_PANEL_MODE_STORAGE_KEY,
+  readBuildPanelMode,
+  type BuildPanelMode,
+  type BuildViewMode
+} from "@/lib/buildView";
 import {
   boundBuildPanelWidth,
+  canShowCompactBuildCard,
   BUILD_PANEL_DIVIDER_WIDTH,
   BUILD_PANEL_MARGIN_RIGHT,
   BUILD_PANEL_WIDTH_STEP,
@@ -31,7 +38,7 @@ import {
   MIN_BUILD_PANEL_WIDTH
 } from "./BuildActivityPanel.helpers";
 
-export type BuildPanelMode = "compact" | "expanded" | "hidden";
+export type { BuildPanelMode } from "@/lib/buildView";
 
 export type BuildActivityPanelProps = {
   activity?: BuildActivity | null;
@@ -59,8 +66,10 @@ export function BuildActivityPanel({
   onJobSelect,
   onAttention
 }: BuildActivityPanelProps) {
-  const [mode, setModeState] = useState<BuildPanelMode>(initialMode);
-  const [view, setView] = useState<BuildViewMode>("story");
+  const [mode, setModeState] = useState<BuildPanelMode>(() =>
+    readBuildPanelMode(initialMode)
+  );
+  const { view, setView } = useBuildView();
   const [expandedWidth, setExpandedWidth] = useState(390);
   const [availablePanelWidth, setAvailablePanelWidth] = useState(
     Number.POSITIVE_INFINITY
@@ -80,6 +89,11 @@ export function BuildActivityPanel({
 
   const setMode = (next: BuildPanelMode) => {
     setModeState(next);
+    try {
+      window.localStorage.setItem(BUILD_PANEL_MODE_STORAGE_KEY, next);
+    } catch {
+      // Keep controls usable when browser storage is unavailable.
+    }
     onModeChange?.(next);
   };
 
@@ -169,7 +183,9 @@ export function BuildActivityPanel({
     const host = panelAnchorRef.current?.parentElement;
     if (!host) return;
     const syncCompactMode = () =>
-      setShowCompactCard(window.innerWidth >= 1280 && host.clientWidth >= 1280);
+      setShowCompactCard(
+        window.innerWidth >= 1280 && canShowCompactBuildCard(host.clientWidth)
+      );
     syncCompactMode();
     const observer = new ResizeObserver(syncCompactMode);
     observer.observe(host);
@@ -420,7 +436,7 @@ function BuildViewToggle({
               : "text-subtle hover:text-foreground-secondary"
           }`}
         >
-          {option}
+          {option === "story" ? "Simple" : "Advanced"}
         </button>
       ))}
     </div>
@@ -690,6 +706,31 @@ function AdvancedEvent({ event }: { event: BuildActivityEvent }) {
               Status observed: {technical.status}
             </p>
           )}
+          {technical.execution && (
+            <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
+              <dt className="text-subtle">AI Client</dt>
+              <dd className="break-words text-foreground-secondary">
+                {technical.execution.client}
+              </dd>
+              <dt className="text-subtle">Model</dt>
+              <dd className="break-words text-foreground-secondary">
+                {technical.execution.model}
+              </dd>
+              <dt className="text-subtle">Reasoning</dt>
+              <dd className="text-foreground-secondary">
+                {technical.execution.reasoning ?? "Default"}
+              </dd>
+              <dt className="text-subtle">Access</dt>
+              <dd className="text-foreground-secondary">
+                {technical.execution.access.replaceAll("_", " ")}
+              </dd>
+            </dl>
+          )}
+          {technical.result && (
+            <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-muted">
+              {technical.result}
+            </pre>
+          )}
           {technical.command && (
             <code className="mt-1 block break-all text-[11px] text-muted">
               $ {technical.command}
@@ -711,7 +752,7 @@ function AdvancedEvent({ event }: { event: BuildActivityEvent }) {
             </ul>
           ) : (
             <p className="mt-1 text-[11px] text-subtle">
-              No file paths reported for this event.
+              No file changes were reported for this event.
             </p>
           )}
         </div>

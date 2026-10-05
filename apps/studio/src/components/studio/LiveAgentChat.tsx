@@ -19,7 +19,8 @@ import {
   type PersonalAgent
 } from "@/lib/personal-agents-client";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
-import { managedAgentActivity } from "@/lib/managed-agent-activity";
+import { managedChatProgress } from "@/lib/agent-chat-progress";
+import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import {
   activityWithBuildProgress,
   buildProgressJobState,
@@ -640,7 +641,7 @@ export function LiveAgentChat({
         return snapshot;
       if (state.executionGeneration !== snapshot.execution.executionGeneration)
         return snapshot;
-      const baseActivity = managedAgentActivity(state);
+      const baseActivity = managedConversationActivity(state, snapshot);
       const rawJobs = Array.isArray(state.jobs)
         ? state.jobs.filter(record).slice(0, 20)
         : [];
@@ -673,6 +674,7 @@ export function LiveAgentChat({
         (snapshot.execution.projectId ? "Project" : "Standalone chat");
       setActivity({
         ...baseActivity,
+        project: { name: projectName },
         jobs,
         ...(preferredJobId ? { selectedJobId: preferredJobId } : {}),
         availability: snapshot.execution.projectId
@@ -2455,6 +2457,7 @@ export function LiveAgentChat({
             messages: displayedMessages,
             jobMarkers,
             isSending: sending,
+            progress: managedChatProgress(runtime, sending, activity),
             error,
             memoryRecallFailure,
             feedbackAccess:

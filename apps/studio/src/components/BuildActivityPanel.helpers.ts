@@ -5,13 +5,15 @@ export const BUILD_PANEL_WIDTH_STEP = 24;
 export const BUILD_PANEL_DIVIDER_WIDTH = 8;
 export const BUILD_PANEL_MARGIN_RIGHT = 12;
 
+export function canShowCompactBuildCard(availableWidth: number) {
+  return availableWidth >= MIN_CHAT_CONTENT_WIDTH + MIN_BUILD_PANEL_WIDTH;
+}
+
 export function boundBuildPanelWidth(
   value: number,
   availableWidth = Number.POSITIVE_INFINITY
 ) {
-  const safeValue = Number.isFinite(value)
-    ? value
-    : MIN_BUILD_PANEL_WIDTH;
+  const safeValue = Number.isFinite(value) ? value : MIN_BUILD_PANEL_WIDTH;
   const safeAvailableWidth = Number.isFinite(availableWidth)
     ? availableWidth
     : Number.POSITIVE_INFINITY;

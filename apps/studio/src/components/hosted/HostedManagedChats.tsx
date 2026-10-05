@@ -53,7 +53,8 @@ import {
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
-import { managedAgentActivity } from "@/lib/managed-agent-activity";
+import { managedChatProgress } from "@/lib/agent-chat-progress";
+import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import {
   activityWithBuildProgress,
   buildProgressJobState,
@@ -1125,6 +1126,7 @@ export function HostedManagedChats({
       generation: number,
       projectId: string | null,
       state: HostedConversationState,
+      runtimeSnapshot: RuntimeSnapshot,
       signal?: AbortSignal
     ) => {
       const rawJobs = (state.jobs ?? []).filter(record).slice(0, 20);
@@ -1150,12 +1152,14 @@ export function HostedManagedChats({
       const projectName =
         launchOptions?.projects.find((project) => project.id === projectId)
           ?.name ?? (projectId ? "Project" : "Managed runtime");
-      const base = managedAgentActivity(
-        state as unknown as Record<string, unknown>
+      const base = managedConversationActivity(
+        state as unknown as Record<string, unknown>,
+        runtimeSnapshot
       );
       setSelectedBuildJobId(selectedJobId);
       setBuildActivity({
         ...base,
+        project: { name: projectName },
         jobs,
         ...(selectedJobId ? { selectedJobId } : {}),
         availability: projectId ? "unavailable" : "no_project"
@@ -1229,6 +1233,7 @@ export function HostedManagedChats({
           value.runtime.execution.executionGeneration,
           value.runtime.execution.projectId,
           value.state,
+          value.runtime,
           controller.signal
         );
         setError(null);
@@ -1569,7 +1574,8 @@ export function HostedManagedChats({
             id,
             value.runtime.execution.executionGeneration,
             value.runtime.execution.projectId,
-            value.state
+            value.state,
+            value.runtime
           );
           await refreshProjectMove(id);
         }
@@ -3053,6 +3059,11 @@ export function HostedManagedChats({
                 mode={{ kind: "agent", controls: "limited" }}
                 scopeKey={`${recoveryScope?.backendId ?? "unknown-backend"}:${recoveryScope?.ownerId ?? "unknown-owner"}:${selectedId ?? "new"}`}
                 messages={displayMessages}
+                progress={managedChatProgress(
+                  selectedRuntime,
+                  sending,
+                  selectedRuntime ? buildActivity : null
+                )}
                 className="min-h-0 flex-1"
                 viewportClassName="p-3"
                 listClassName="space-y-3"

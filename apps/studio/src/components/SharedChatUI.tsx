@@ -11,6 +11,8 @@ import {
   type PointerEvent,
   type ReactNode
 } from "react";
+import { AgentThinkingIndicator } from "./AgentThinkingIndicator";
+import type { AgentChatProgress } from "@/lib/agent-chat-progress";
 import { AgentAvatarView } from "./AgentAvatarView";
 import { MarkdownContent } from "./MarkdownContent";
 import {
@@ -39,6 +41,8 @@ type SharedChatUIProps<T extends SharedChatMessage> = {
   listClassName?: string;
   renderMessage?: (message: T) => ReactNode;
   composerOnly?: boolean;
+  progress?: AgentChatProgress | null;
+  progressClassName?: string;
 };
 
 /**
@@ -63,7 +67,9 @@ function SharedChatUIContents<T extends SharedChatMessage>({
   viewportClassName = "",
   listClassName = "",
   renderMessage,
-  composerOnly = false
+  composerOnly = false,
+  progress,
+  progressClassName = ""
 }: SharedChatUIProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -244,6 +250,11 @@ function SharedChatUIContents<T extends SharedChatMessage>({
                 </div>
               ) : (
                 emptyState
+              )}
+              {progress && (
+                <div className={progressClassName}>
+                  <AgentThinkingIndicator progress={progress} />
+                </div>
               )}
               {childrenAfter}
             </div>

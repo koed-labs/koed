@@ -89,3 +89,19 @@ Desktop/web checks passed Agents Cards/List views, lifecycle filters, retire/res
 Draft checks covered channel switching, reload, offline edits and returning to a thread. The web offline reply check verified one accepted message after reconnect, preservation of later unsent text after receipt settlement and reload, and encrypted edit-draft recovery. Recovery tests wait for asynchronous hydration rather than assuming a fixed delay. Independent review checked revoked-Team cache cleanup and account/backend-scoped read state; delayed cleanup is guarded against a newer authority or authorization snapshot. Synthetic message writes used the isolated review Team only. No Agent execution, production data or backend contract was changed.
 
 The final runtime review source digest was `bc76b2444585c8115b27a7efcfad5265c120c0b5cc729aa48d6b08cb5932a305`, based on `a9ed7a5a`. The additional web account-switch check passed draft isolation and channel-pane reset. Release bookkeeping remains deferred to the combined epic review, as previously agreed. Private credentials and review artifacts remain outside Git.
+
+## Live Agent progress
+
+`SharedChatUI` renders `AgentThinkingIndicator` beneath the transcript when a controller supplies `AgentChatProgress`. Native New Chat, standalone and Project Conversations, hosted Conversations, private Team Agent chats and real PR chats adapt their existing managed runtime through `managedChatProgress`. Home hands the submitted message to that live Conversation. Team channel and thread request cards use the same indicator with shared assignment status only; ordinary human chats have no Agent indicator.
+
+The quiet progress line distinguishes sending, queued work, active work, streaming replies, required input and uncertain task status. An elapsed wait timer starts when the current indicator appears, resets for a new command and stops while waiting for input or checking an uncertain outcome. It is not an estimate of completion or server execution time. Motion respects reduced-motion settings, and timer updates are excluded from live-region announcements.
+
+Only explicit user-facing phase signals from an active selected Job appear in the collapsed Agent activity details, capped at five bounded entries. Raw provider reasoning, hidden runtime items and previous-generation output are never displayed. Completion, failure, cancellation and stopped executions remove the indicator; existing error, approval, Stop and cancellation controls retain their behavior. This presentation reuses the existing runtime and progress refresh cadence without new network polling or backend contracts.
+
+## Conversation activity panel
+
+Native and hosted managed Conversations populate the Build panel from named Agent Jobs when available. Direct chats without a Job use the matching execution generation and latest runtime command instead, displaying its verified status and matching user request. Advanced adds the execution client, model, reasoning setting and access policy, and retains reported command results. File changes are shown only when supplied by activity events; assistant replies are not treated as evidence of file edits.
+
+The panel labels its plain-language view Simple and shares the saved Simple/Advanced preference through `BuildViewProvider`. Its expanded, compact or closed state is also saved per device and restored on reload; the native chat header uses the same restored state for layout. Invalid or unavailable storage falls back to compact mode with a visible expand control. This fallback reuses existing conversation and runtime reads without adding polling or backend contracts.
+
+On desktop, minimizing retains the 300px summary card when the chat area has at least 660px available, allowing room for both the card and chat content with the sidebar open. Narrow windows retain the compact expand button.

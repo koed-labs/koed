@@ -52,6 +52,12 @@ export type BuildActivityEvent = {
     outcome?: string;
   };
   technical?: {
+    execution?: {
+      client: string;
+      model: string;
+      reasoning: string | null;
+      access: string;
+    };
     branch?: string;
     status?: string;
     command?: string;

@@ -7,3 +7,19 @@
 export const BUILD_VIEW_STORAGE_KEY = "memory-layer.build-view";
 
 export type BuildViewMode = "story" | "advanced";
+
+export type BuildPanelMode = "compact" | "expanded" | "hidden";
+export const BUILD_PANEL_MODE_STORAGE_KEY = "memory-layer.build-panel-mode";
+
+export function readBuildPanelMode(
+  fallback: BuildPanelMode = "compact"
+): BuildPanelMode {
+  try {
+    const stored = window.localStorage.getItem(BUILD_PANEL_MODE_STORAGE_KEY);
+    return stored === "expanded" || stored === "compact" || stored === "hidden"
+      ? stored
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}

@@ -7,12 +7,14 @@ import {
   type BuildActivity
 } from "@/lib/studio-build-activity";
 import { BuildActivityPanel, type BuildPanelMode } from "../BuildActivityPanel";
+import { readBuildPanelMode } from "@/lib/buildView";
 import {
   ChatComposer,
   type ChatComposerRestoreSelection,
   type ChatComposerSelection,
   type ChatMentionAgent
 } from "../ChatComposer";
+import type { AgentChatProgress } from "@/lib/agent-chat-progress";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import type { ManagedChatMemoryAttribution } from "@/lib/managed-agent-chat";
 import type { RecallFeedbackAccess } from "./RecallFeedbackControls";
@@ -76,6 +78,7 @@ export type NewChatRuntime = Readonly<{
   messages: readonly NewChatRuntimeMessage[];
   jobMarkers?: readonly ManagedAgentJobMarker[];
   isSending: boolean;
+  progress?: AgentChatProgress | null;
   error?: string | null;
   memoryRecallFailure?: string | null;
   feedbackAccess?: RecallFeedbackAccess;
@@ -185,8 +188,9 @@ export function NewChatView({
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   const [endSessionConfirmOpen, setEndSessionConfirmOpen] = useState(false);
-  const [buildPanelMode, setBuildPanelMode] =
-    useState<BuildPanelMode>("compact");
+  const [buildPanelMode, setBuildPanelMode] = useState<BuildPanelMode>(() =>
+    readBuildPanelMode()
+  );
   const visibleMessages = runtime?.messages ?? messages;
   const activeAgent = agents?.find((agent) => agent.id === activeAgentId);
   const activeAgentAvailable = Boolean(
@@ -325,6 +329,8 @@ export function NewChatView({
             conversationScopeKey ?? runtime?.restoreSelection?.key ?? "new-chat"
           }
           messages={sharedMessages}
+          progress={mode === "live" ? runtime?.progress : null}
+          progressClassName="ml-0 w-full max-w-3xl lg:ml-10 lg:w-[calc(100%-2.5rem)]"
           className="min-h-0 flex-1"
           viewportClassName="px-4"
           listClassName="ml-0 mb-8 mt-8 flex w-full max-w-3xl flex-col space-y-6 lg:ml-10 lg:w-[calc(100%-2.5rem)]"
@@ -500,19 +506,23 @@ export function NewChatView({
                   </div>
                 )}
 
-                {(runtime?.status ||
+                {((runtime?.status && !runtime.progress) ||
                   runtime?.error ||
-                  runtime?.isSending ||
+                  (runtime?.isSending && !runtime.progress) ||
+                  (runtime?.progress &&
+                    (runtime.canInterrupt || runtime.canCancelPendingPrompt)) ||
                   agentGateMessage) && (
                   <div
                     className="mb-2 flex items-center justify-between gap-3 text-xs text-warning"
                     role="status"
                   >
                     <span>
-                      {runtime?.error ??
-                        (runtime?.isSending
-                          ? "Waiting for the chat runtime…"
-                          : (agentGateMessage ?? runtime?.status))}
+                      {runtime?.progress && !runtime.error && !agentGateMessage
+                        ? null
+                        : (runtime?.error ??
+                          (runtime?.isSending
+                            ? "Waiting for the chat runtime…"
+                            : (agentGateMessage ?? runtime?.status)))}
                     </span>
                     {runtime?.canCancelPendingPrompt &&
                     runtime.onCancelPendingPrompt ? (

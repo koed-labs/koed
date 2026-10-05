@@ -7,6 +7,8 @@ import {
   TeamAgentRequestError,
   TeamAgentRequestsClient
 } from "@/lib/team-agent-requests-client";
+import { AgentThinkingIndicator } from "./AgentThinkingIndicator";
+import { teamRequestProgress } from "@/lib/agent-chat-progress";
 import { teamAgentRequestCardActions } from "@/lib/team-agent-request-view-state";
 
 type RequestState = "loading" | "ready" | "unavailable" | "access-lost";
@@ -982,6 +984,7 @@ function RequestCard({
   pending?: boolean;
 }) {
   const actions = teamAgentRequestCardActions(request, viewerId);
+  const progress = teamRequestProgress(request);
   const status =
     request.status === "awaiting_owner"
       ? "Awaiting owner"
@@ -1002,6 +1005,7 @@ function RequestCard({
         <p className="mt-1 text-[11px] text-subtle">
           {request.requesterName} · {status}
         </p>
+        {progress && <AgentThinkingIndicator progress={progress} />}
       </div>
       <div className="flex items-center gap-2">
         {actions.canReview && (
