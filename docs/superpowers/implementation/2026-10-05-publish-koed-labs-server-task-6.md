@@ -7,7 +7,7 @@ Implemented lifecycle primitives for verified runtime generations, without wirin
 ## Implementation
 
 - Added `packages/koed-server/src/generation-lifecycle.ts`: `readCurrentGeneration`, `pinGenerationForStart`, `activateGeneration`, and `cleanupGenerations`.
-- Lifecycle exclusion uses atomic lock-directory creation, process start identity, and a random 256-bit token. Unreadable/malformed ownership and uncertain liveness fail closed; confirmed dead/PID-reused ownership can be reclaimed. Lock order is lifecycle exclusion → `proper-lockfile` store lock → supervisor state inspection.
+- Lifecycle exclusion uses atomic lock-directory creation, process start identity, and a random 256-bit token. Unreadable/malformed ownership and uncertain liveness fail closed. **Superseded by Task 6 round 1 follow-up below:** lifecycle and component-store locks now fail closed on any existing lock; no automatic stale-lock reclamation. Lock order is lifecycle exclusion → component-store directory lock → supervisor state inspection.
 - Startup pin verifies selected generation and owner, writes strict process/owner/token state atomically, and retains exclusion until matching-token `release()`. Activation/cleanup cannot mutate pinned runtime files. Activation checks legacy supervisor state too; malformed/live/uncertain lock blocks mutation.
 - `components/current.json` switches with same-directory temp-file rename only after candidate re-verification, owner match, stopped-runtime checks, and package migration compatibility check. Cleanup deletes only verified inactive generations for matching owner; active/newest generations stay. User data and model roots are untouched.
 - Exported existing package migration guard as `assertPackageMigrationCompatible` and reused it for activation. Unknown migration rollback policy conservatively blocks downgrade; existing `allowsRollback: false` regression remains covered by package-runtime tests.
@@ -25,6 +25,14 @@ Final Node 24 verification using `/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_mo
 - `pnpm --filter @koed-labs/server build` — passed.
 - Targeted ESLint over changed TypeScript files — passed.
 - Targeted Prettier check over changed TypeScript and `docs/running-koed.md` — passed.
+
+## Task 6 round 1 follow-up — stale lock reclamation
+
+- Root cause: lifecycle lock reclaim read dead owner metadata, then used `renameSync(path, stalePath)`. Concurrent reclaimers could both observe the same dead record; one could acquire a fresh lock before the other's rename, letting the latter move the new live lock. Token-checked release did not make reclamation safe.
+- Added deterministic regression using concurrent real `activateGeneration` and `cleanupGenerations` API calls against a dead-owner lifecycle lock. RED observed before fix: at least one call succeeded, so `results.every((result) => result.status === "rejected")` was false.
+- Removed lifecycle automatic reclaim; any pre-existing lock now blocks, including dead-owner and malformed/unknown-owner locks. Added `directory-lock.ts` and switched both `generation-lifecycle.ts` and component-store `acquireLock` away from `proper-lockfile` stale lockdir reclamation, which had the equivalent stat-then-rmdir race. Atomic mkdir is the only acquisition; no check-then-rename recovery.
+- Operator recovery: stop every Koed process using the `KOED_HOME`, then remove only `$KOED_HOME/run/generation-lifecycle.lock` or `$KOED_HOME/runtime/components.lock` as applicable. Never delete while any Koed process may be live. Documented in `docs/running-koed.md`.
+- Node 24.13.1 verification: `pnpm --filter @koed-labs/server test` — 50 files, 721 tests passed; `typecheck` and `build` passed; targeted ESLint and Prettier checks passed. The installed Homebrew Node 24 binary could not launch because `libsimdjson.30.dylib` was missing, so validation used `/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin/node` with Corepack pnpm 11.1.2.
 
 ## Limits
 

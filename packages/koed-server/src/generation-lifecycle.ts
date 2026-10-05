@@ -24,6 +24,7 @@ import {
 } from "./runtime-state.js";
 import { assertPackageMigrationCompatible } from "./package-runtime.js";
 import { renameAtomically } from "./generation-lifecycle-filesystem.js";
+import { acquireDirectoryLock } from "./directory-lock.js";
 
 interface LifecycleLockRecord {
   pid: number;
@@ -100,58 +101,34 @@ const readLockRecord = (path: string): LifecycleLockRecord | null => {
     return null;
   }
 };
-const removeDefinitelyStaleLock = (path: string): boolean => {
-  const record = readLockRecord(path);
-  if (!record) return false;
-  const actualIdentity = resolveProcessIdentity(record.pid);
-  if (
-    actualIdentity === record.processIdentity ||
-    (!actualIdentity && processIsRunning(record.pid))
-  )
-    return false;
-  const stalePath = `${path}.stale-${randomBytes(8).toString("hex")}`;
-  try {
-    renameSync(path, stalePath);
-    rmSync(stalePath, { recursive: true, force: true });
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-    throw error;
-  }
-};
 const acquireLifecycleLock = (paths: KoedServerPaths): LifecycleLockRecord => {
   assertDirectoryChain(paths.koedHome, paths.runDir);
   mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
   assertDirectoryChain(paths.koedHome, paths.runDir);
   const path = lockPath(paths);
   assertDirectoryChain(paths.koedHome, path);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const identity = resolveProcessIdentity(process.pid);
-    if (!identity) throw new Error("runtime process identity is unavailable");
-    const record = {
-      pid: process.pid,
-      processIdentity: identity,
-      token: randomBytes(32).toString("hex")
-    };
-    try {
-      mkdirSync(path, { mode: 0o700 });
-      assertDirectoryChain(paths.koedHome, path);
-      writeFileSync(
-        resolve(path, "owner.json"),
-        `${JSON.stringify(record)}\n`,
-        { flag: "wx", mode: 0o600 }
-      );
-      return record;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (attempt === 0 && removeDefinitelyStaleLock(path)) continue;
-      throw new Error(
-        "runtime lifecycle is locked or owner liveness is uncertain",
-        { cause: error }
-      );
-    }
+  const identity = resolveProcessIdentity(process.pid);
+  if (!identity) throw new Error("runtime process identity is unavailable");
+  const record = {
+    pid: process.pid,
+    processIdentity: identity,
+    token: randomBytes(32).toString("hex")
+  };
+  try {
+    mkdirSync(path, { mode: 0o700 });
+    assertDirectoryChain(paths.koedHome, path);
+    writeFileSync(resolve(path, "owner.json"), `${JSON.stringify(record)}\n`, {
+      flag: "wx",
+      mode: 0o600
+    });
+    return record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    throw new Error(
+      "runtime lifecycle is locked; stale locks require stopped-runtime operator recovery",
+      { cause: error }
+    );
   }
-  throw new Error("runtime lifecycle lock acquisition failed");
 };
 const releaseLifecycleLock = (
   paths: KoedServerPaths,
@@ -172,18 +149,16 @@ const withStoreLock = async <T>(
   paths: KoedServerPaths,
   action: () => Promise<T>
 ): Promise<T> => {
-  const lockfile = await import("proper-lockfile");
   assertDirectoryChain(paths.koedHome, paths.componentsDir);
   mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
   assertDirectoryChain(paths.koedHome, paths.componentsDir);
-  const release = await lockfile.default.lock(paths.componentsDir, {
-    realpath: false,
-    retries: 0
-  });
+  const lockPath = `${paths.componentsDir}.lock`;
+  assertDirectoryChain(paths.koedHome, lockPath);
+  const release = acquireDirectoryLock(lockPath);
   try {
     return await action();
   } finally {
-    await release();
+    release();
   }
 };
 const readCurrentId = (paths: KoedServerPaths): string | null => {

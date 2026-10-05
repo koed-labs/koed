@@ -125,7 +125,15 @@ identity cannot be confirmed. Activation also requires the generation owner to
 match the validated requester. Cleanup never removes User data or installed
 models. A current pointer is replaced atomically only after candidate
 verification succeeds. Downgrades remain blocked when migration rollback
-safety is unknown or disallowed.
+safety is unknown or disallowed. Lifecycle and component-store lock directories
+use atomic creation and never reclaim a lock automatically: observing owner data
+or elapsed time cannot prove no concurrent process is between inspection and
+replacement. A stale lock requires Operator recovery only after all Koed
+processes using that `KOED_HOME` are stopped. Never delete a lock while any
+Koed process may be live; after stopping all such processes, remove only the
+relevant `$KOED_HOME/run/generation-lifecycle.lock` or
+`$KOED_HOME/runtime/components.lock`, then retry. Never use an `O_EXCL` check
+followed by rename to reclaim a lock.
 
 These primitives are not yet used by source, Desktop, or standalone startup;
 that integration belongs to the next task. Empty production component trust

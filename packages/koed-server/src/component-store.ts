@@ -28,7 +28,6 @@ import {
 import { Readable, Transform } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { pipeline } from "node:stream/promises";
-import properLockfile from "proper-lockfile";
 import type {
   ArtifactTarget,
   ComponentId,
@@ -40,6 +39,7 @@ import type {
   VerifiedGeneration
 } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
+import { acquireDirectoryLock } from "./directory-lock.js";
 import { extractVerifiedPackageArchive } from "./package-runtime.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
 import { productionComponentTrustRoots } from "./component-trust-roots.js";
@@ -367,15 +367,12 @@ async function acquireLock<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   ensureSecureDirectory(home, root);
-  let release: (() => Promise<void>) | undefined;
+  let release: (() => void) | undefined;
   for (let attempt = 0; !release; attempt++) {
     aborted(signal);
     assertDirectoryChain(home, root);
     try {
-      release = await properLockfile.lock(root, {
-        realpath: false,
-        retries: 0
-      });
+      release = acquireDirectoryLock(`${root}.lock`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || attempt >= 20)
         throw error;
@@ -400,7 +397,7 @@ async function acquireLock<T>(
     assertDirectoryChain(home, root);
     return await fn();
   } finally {
-    await release();
+    release();
   }
 }
 

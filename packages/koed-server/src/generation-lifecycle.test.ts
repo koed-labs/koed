@@ -181,6 +181,29 @@ describe("generation lifecycle", () => {
     expect(readFileSync(modelFile, "utf8")).toBe("preserve-model");
   });
 
+  it("fails closed for concurrent lifecycle API calls against a dead-owner lock", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    const lifecycleLock = resolve(paths.runDir, "generation-lifecycle.lock");
+    mkdirSync(lifecycleLock, { recursive: true });
+    const ownerRecord = JSON.stringify({
+      pid: 2147483647,
+      processIdentity: "dead-process-identity",
+      token: "d".repeat(64)
+    });
+    writeFileSync(resolve(lifecycleLock, "owner.json"), ownerRecord);
+
+    const results = await Promise.allSettled([
+      activateGeneration(paths, generation.id, owner),
+      cleanupGenerations(paths, 1, owner)
+    ]);
+
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(readFileSync(resolve(lifecycleLock, "owner.json"), "utf8")).toBe(
+      ownerRecord
+    );
+  });
+
   it("reclaims pin from conclusively dead PID before activation", async () => {
     const paths = pathsForTest();
     const generation = await stage(paths, "0.9.0");
