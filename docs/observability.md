@@ -116,7 +116,7 @@ Share Grants, Cross-Identity Sync, and enrollment.
 Durable `audit_events` are the source for authorization and lifecycle history.
 Current collaboration-related action names include:
 
-`koed-server personal-sync status --json`, `credential status`, `key-epoch
+`koed personal-sync status --json`, `credential status`, `key-epoch
 status`, and `replica status` use same redaction boundary. They show only
 policy, epoch, device lifecycle, freshness, processing, failure, conflict,
 revocation, and tombstone counters. They never show secret-provider references,

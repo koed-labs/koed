@@ -478,8 +478,8 @@ unsigned-placeholder provenance only for non-default/test channels.
 Recommended command shape after a bootstrap entrypoint is available:
 
 ```bash
-koed-server package status --json
-koed-server package install \
+koed package status --json
+koed package install \
   --source https://downloads.koed.local/koed-server-<version>-linux-x64.tar.gz \
   --sha256 <sha256> \
   --provenance-file /path/to/koed-server-app-runtime-<version>-linux-x64.provenance.json \
@@ -503,7 +503,7 @@ Token and never provisions one implicitly.
 Offline install should use a local artifact path:
 
 ```bash
-koed-server package install \
+koed package install \
   --source /path/to/koed-server-<version>-linux-x64.tar.gz \
   --sha256-file /path/to/koed-server-<version>-linux-x64.tar.gz.sha256 \
   --json
@@ -540,7 +540,7 @@ KOED_HOME/runtime/koed-server/versions/<current>
 A cleanup command should remove inactive versions and stale cached archives:
 
 ```bash
-koed-server package cleanup --keep 1 --json
+koed package cleanup --keep 1 --json
 ```
 
 Desktop should expose cleanup only as an advanced repair/storage action.

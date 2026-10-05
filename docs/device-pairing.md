@@ -118,13 +118,13 @@ for that installation, also used by the device selector; edits do not rename the
 remote computer or change its cryptographic identity. Nicknames are stored under
 `KOED_HOME/config/personal-device-names.json` and survive restarts.
 
-On a running local Personal installation, `koed-server personal-sync status --json`
+On a running local Personal installation, `koed personal-sync status --json`
 uses its scoped local credential automatically, including over SSH. No browser
 session descriptor is required. An explicit control URL must match the running
 installation's loopback API; local credentials are never forwarded elsewhere.
 
 Normal CLI help focuses on `pair`, `pair status`, `pair cancel`, and Personal Sync
-status. `koed-server personal-sync --help --advanced` lists retained low-level
+status. `koed personal-sync --help --advanced` lists retained low-level
 protocol and recovery operations, which require their own authentication and
 signed inputs. Previously advertised commands without implementations are no
 longer listed. The setup wizard's AI Client selection step keeps its integration

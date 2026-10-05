@@ -126,6 +126,30 @@ const runtimeBinaries = () => ({
   }
 });
 
+describe("koed executable help", () => {
+  it("uses koed command names in general and Personal Sync help", async () => {
+    const general = writer();
+    const personalSync = writer();
+
+    expect(await runKoedServerCli(["--help"], { stdout: general.stream })).toBe(
+      0
+    );
+    expect(general.text()).toContain("Usage: koed <command> [options]");
+    expect(general.text()).not.toContain("Usage: koed-server");
+
+    expect(
+      await runKoedServerCli(["personal-sync", "--help"], {
+        stdout: personalSync.stream
+      })
+    ).toBe(0);
+    expect(personalSync.text()).toContain("koed personal-sync status --json");
+    expect(personalSync.text()).toContain(
+      "koed personal-sync --help --advanced"
+    );
+    expect(personalSync.text()).not.toContain("koed-server personal-sync");
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =

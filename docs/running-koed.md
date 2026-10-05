@@ -332,7 +332,7 @@ model prerequisites still apply; unavailable resources produce setup guidance.
 
 ### Personal Sync control commands
 
-`koed-server personal-sync` is a bounded control-plane client; Authority owns
+`koed personal-sync` is a bounded control-plane client; Authority owns
 group, policy, membership, current head, activation, relay, and worker outcome.
 Commands never report local enable/revoke success. The ordinary control commands
 use `PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session

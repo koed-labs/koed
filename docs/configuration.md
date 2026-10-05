@@ -253,8 +253,8 @@ with permission remediation.
 Inspect or explicitly repair identity with machine-readable output:
 
 ```bash
-koed-server identity status --json
-koed-server identity rotate --json
+koed identity status --json
+koed identity rotate --json
 ```
 
 `identity rotate` preserves verified deployment ID, creates a fresh device ID
@@ -356,8 +356,8 @@ invitation limit. Final client retry uses up to three fresh encrypted message
 IDs; reusing one message ID is rejected.
 
 ```bash
-koed-server personal-sync join redeem --link-stdin --device-label studio
-koed-server personal-sync join redeem --link-fd 3 --device-label studio
+koed personal-sync join redeem --link-stdin --device-label studio
+koed personal-sync join redeem --link-fd 3 --device-label studio
 ```
 
 Desktop paste or QR scan is preferred. A registered `koed-pair://` deep link

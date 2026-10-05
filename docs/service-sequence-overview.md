@@ -254,7 +254,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     configuration and managed global memory guidance. Setup applies persisted
     auto-allocated local ports before
     resolving the API URL, so Desktop-managed ports and direct CLI
-    setup write the same target URL/token. `koed-server repair codex --json` is
+    setup write the same target URL/token. `koed repair codex --json` is
     the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
     block for the active Local AI Runtime, the credential-free Hook command, and
     the Koed-managed section of `CODEX_HOME/AGENTS.md` without

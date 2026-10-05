@@ -98,13 +98,13 @@ export const personalSyncUsageText = `Personal Sync
   koed pair                   Connect this device using a request link
   koed pair status            Show pending pairing progress
   koed pair cancel            Cancel a waiting request
-  koed-server personal-sync status --json
+  koed personal-sync status --json
                                      Show this installation’s group and members
 
 Create your first group and manage devices in Electron → Devices.
 Status uses the local Personal installation automatically; no browser session is needed.
 
-  koed-server personal-sync --help --advanced
+  koed personal-sync --help --advanced
                                      Show retained low-level recovery commands
 `;
 
@@ -130,7 +130,7 @@ Only status configures local authentication automatically. Existing scripts rema
 supported; use pair and Electron for ordinary enrollment and device management.
 `;
 
-export const usageText = `Usage: koed-server <command> [options]
+export const usageText = `Usage: koed <command> [options]
 
 Commands:
   start                  Start and supervise local Koed services

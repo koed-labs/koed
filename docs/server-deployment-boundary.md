@@ -31,7 +31,7 @@ identity keeps opaque deployment/device IDs plus non-secret metadata in
 `KOED_HOME`. API, Worker, MCP Server, Capture Hook, ordinary config,
 and diagnostics never receive raw proof. Local capture and Recall do not depend
 on proof health; local-edge remote, Team, enrollment, and sync paths evaluate
-identity health and fail closed. Explicit `koed-server identity rotate --json`
+identity health and fail closed. Explicit `koed identity rotate --json`
 creates a replacement identity, preserves local Memory, and disables local
 upstream enrollment references for re-enrollment. Dependencies may be native services,
 managed infrastructure, systemd units, containers, or Docker Compose examples,
