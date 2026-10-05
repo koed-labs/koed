@@ -934,6 +934,73 @@ test("rejects relative, absolute, and package-import targets outside copied owne
   }
 });
 
+test("rejects #imports directory targets even when index.js exists", () => {
+  const workspace = mkdtempSync(
+    resolve(tmpdir(), "koed-component-imports-directory-")
+  );
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  minimalGraph(
+    sourceRoot,
+    'import "#entry";',
+    {},
+    {
+      imports: { "#entry": "./directory" }
+    }
+  );
+  packageFixture(
+    sourceRoot,
+    "@koed/privacy-service",
+    {},
+    {
+      "dist/index.js": 'import "#entry";\n',
+      "directory/index.js": "export {};\n"
+    },
+    { imports: { "#entry": "./directory" } }
+  );
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      }),
+    /unresolved runtime edges.*#entry/s
+  );
+});
+
+test("audits conditional exports beneath module subtree", () => {
+  const workspace = mkdtempSync(
+    resolve(tmpdir(), "koed-component-module-subtree-")
+  );
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  minimalGraph(sourceRoot, 'import "conditional-subtree";', {
+    "conditional-subtree": "1.0.0"
+  });
+  packageFixture(
+    sourceRoot,
+    "conditional-subtree",
+    {},
+    {
+      "main.js": "export {};\n",
+      "module/index.js": 'import "missing-from-module-subtree";\n'
+    },
+    {
+      main: "./main.js",
+      module: "./module/index.js",
+      exports: { ".": { import: "./module/index.js", default: "./main.js" } }
+    }
+  );
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      }),
+    /unresolved runtime edges.*missing-from-module-subtree/s
+  );
+});
+
 test("accepts #imports into declared dependency ownership and rejects dependency escapes", async (t) => {
   for (const [name, target, dependencies, shouldReject] of [
     [
@@ -980,7 +1047,7 @@ test("accepts #imports into declared dependency ownership and rejects dependency
       if (shouldReject)
         assert.throws(
           run,
-          /unresolved runtime edges.*(?:outside|ownership|escapes)/s
+          /unresolved runtime edges.*(?:outside|ownership|escapes|unavailable or ambiguous target)/s
         );
       else assert.doesNotThrow(run);
     });

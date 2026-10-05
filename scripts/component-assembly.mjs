@@ -340,38 +340,202 @@ const hasClosureOwnedOptionalNativePackage = (closure) => {
   );
 };
 
-const sourceAuditExclusion = (packageName, file, manifest) => {
-  const basename = file.split("/").at(-1);
-  const moduleRoot =
-    typeof manifest.module === "string"
-      ? dirname(manifest.module.replace(/^\.\//, ""))
-      : undefined;
-  const mainRoot =
-    typeof manifest.main === "string"
-      ? dirname(manifest.main.replace(/^\.\//, ""))
-      : undefined;
-  const typesRoot =
-    typeof manifest.types === "string"
-      ? dirname(manifest.types.replace(/^\.\//, ""))
-      : undefined;
+const sourceAuditExclusion = (packageName, file) => {
   if (
-    moduleRoot &&
-    moduleRoot !== mainRoot &&
-    file.startsWith(`${moduleRoot}/`)
+    [
+      "@fastify/cookie",
+      "fastify-plugin",
+      "@fastify/cors",
+      "@fastify/websocket",
+      "fastify",
+      "@fastify/ajv-compiler",
+      "fast-uri",
+      "@fastify/error",
+      "@fastify/fast-json-stringify-compiler",
+      "fast-json-stringify",
+      "@fastify/merge-json-schemas",
+      "json-schema-ref-resolver",
+      "@fastify/proxy-addr",
+      "avvio",
+      "fastq",
+      "reusify",
+      "safe-regex2",
+      "light-my-request",
+      "process-warning",
+      "pino",
+      "@pinojs/redact",
+      "pino-std-serializers",
+      "thread-stream",
+      "secure-json-parse",
+      "qs",
+      "es-define-property",
+      "side-channel",
+      "es-errors",
+      "object-inspect",
+      "side-channel-list",
+      "side-channel-map",
+      "call-bound",
+      "call-bind-apply-helpers",
+      "function-bind",
+      "get-intrinsic",
+      "es-object-atoms",
+      "get-proto",
+      "dunder-proto",
+      "gopd",
+      "has-symbols",
+      "hasown",
+      "globalthis",
+      "define-data-property",
+      "has-property-descriptors",
+      "object-keys",
+      "json-stringify-safe",
+      "semver-compare"
+    ].includes(packageName) &&
+    /^eslint\.config\.[cm]?js$/.test(file)
   )
-    return "unselected bundler module field; Node resolution selects main field";
-  if (typesRoot && typesRoot !== mainRoot && file.startsWith(`${typesRoot}/`))
-    return "type declaration support output; Node resolution selects main field";
+    return "package-local ESLint configuration, not a runtime entrypoint";
+  if (
+    [
+      ["pg-types", "test/index.js"],
+      ["isexe", "test/basic.js"],
+      ["fastify", "test/build-certificate.js"],
+      ["fastify", "test/input-validation.js"],
+      ["fastify", "examples/parser.js"],
+      ["fastq", "test/promise.js"],
+      ["rfdc", "test/index.js"],
+      ["node-abort-controller", "__tests__/node-fetch.js"],
+      ["node-abort-controller", "__tests__/whatwg-fetch.js"],
+      ["pino", "test/fixtures/syntax-error-esm.mjs"],
+      ["pino", "test/fixtures/ts/transpile.cjs"],
+      ["pino", "test/helper.js"],
+      ["sonic-boom", "test/helper.js"],
+      ["thread-stream", "test/syntax-error.mjs"],
+      ["qs", "test/parse.js"],
+      ["duplexify", "test.js"],
+      ["stream-shift", "test.js"],
+      ["xtend", "test.js"],
+      ["split2", "test.js"],
+      ["node-gyp-build", "build-test.js"],
+      ["node-gyp-build-optional-packages", "build-test.js"],
+      ["msgpackr", "dist/test.js"],
+      ["pg-protocol", "dist/inbound-parser.test.js"],
+      ["pg-protocol", "dist/outbound-serializer.test.js"],
+      ["@fastify/cookie", "benchmark/signer-multi.js"],
+      ["@fastify/cookie", "benchmark/signer.js"],
+      ["@fastify/cors", "benchmark/vary.js"],
+      ["fastify", "examples/benchmark/parser.js"],
+      ["@fastify/ajv-compiler", "benchmark/small-object.mjs"],
+      ["fast-uri", "benchmark/benchmark.mjs"],
+      ["fast-uri", "benchmark/equal.mjs"],
+      ["fast-uri", "benchmark/non-simple-domain.mjs"],
+      ["fast-uri", "benchmark/string-array-to-hex-stripped.mjs"],
+      ["fast-uri", "benchmark/ws-is-secure.mjs"],
+      ["@fastify/error", "benchmarks/create.js"],
+      ["@fastify/error", "benchmarks/instantiate.js"],
+      ["@fastify/error", "benchmarks/no-stack.js"],
+      ["@fastify/error", "benchmarks/toString.js"],
+      ["fast-json-stringify", "benchmark/bench-cmp-branch.js"],
+      ["fastq", "bench.js"],
+      ["reusify", "test.js"],
+      ["find-my-way", "benchmark/bench-thread.js"],
+      ["find-my-way", "benchmark/compare-branches.js"],
+      ["find-my-way", "benchmark/uri-decoding.js"],
+      ["@fastify/proxy-addr", "benchmark/compiling.js"],
+      ["@fastify/proxy-addr", "benchmark/kind.js"],
+      ["@fastify/proxy-addr", "benchmark/matching.js"],
+      ["fast-decode-uri-component", "bench.js"],
+      ["fast-decode-uri-component", "test.js"],
+      ["light-my-request", "benchmark/benchmark.js"],
+      ["process-warning", "benchmarks/warn.js"],
+      ["pino", "benchmarks/basic.bench.js"],
+      ["pino", "benchmarks/child-child.bench.js"],
+      ["pino", "benchmarks/child-creation.bench.js"],
+      ["pino", "benchmarks/child.bench.js"],
+      ["@pinojs/redact", "benchmarks/basic.js"],
+      ["quick-format-unescaped", "benchmark.js"],
+      ["sonic-boom", "bench.js"],
+      ["thread-stream", "bench.js"],
+      ["atomic-sleep", "test.js"],
+      ["node-pty", "lib/windowsTerminal.test.js"],
+      ["@stablelib/base64", "lib/base64.bench.js"],
+      ["object-inspect", "test-core-js.js"]
+    ].some(([name, path]) => packageName === name && file === path) ||
+    ([
+      "qs",
+      "object-inspect",
+      "es-define-property",
+      "side-channel",
+      "es-errors",
+      "side-channel-list",
+      "side-channel-map",
+      "call-bound",
+      "call-bind-apply-helpers",
+      "function-bind",
+      "get-intrinsic",
+      "es-object-atoms",
+      "get-proto",
+      "dunder-proto",
+      "gopd",
+      "has-symbols",
+      "math-intrinsics",
+      "side-channel-weakmap",
+      "retry",
+      "globalthis",
+      "define-data-property",
+      "has-property-descriptors",
+      "object-keys",
+      "json-stringify-safe",
+      "semver-compare",
+      "@fastify/cookie",
+      "fastify-plugin",
+      "@fastify/cors",
+      "fastify",
+      "@fastify/ajv-compiler",
+      "fast-uri",
+      "@fastify/fast-json-stringify-compiler",
+      "fast-json-stringify",
+      "fastq",
+      "find-my-way",
+      "light-my-request",
+      "process-warning",
+      "pino",
+      "@pinojs/redact",
+      "on-exit-leak-free",
+      "pino-abstract-transport",
+      "pino-std-serializers",
+      "sonic-boom",
+      "thread-stream",
+      "atomic-sleep",
+      "secure-json-parse",
+      "object-inspect"
+    ].includes(packageName) &&
+      file.startsWith("test/")) ||
+    (packageName === "secure-json-parse" && file.startsWith("benchmarks/")) ||
+    ([
+      "fast-uri",
+      "fast-json-stringify",
+      "@fastify/proxy-addr",
+      "find-my-way",
+      "light-my-request"
+    ].includes(packageName) &&
+      file.startsWith("benchmark/")) ||
+    (packageName === "process-warning" && file.startsWith("benchmarks/")) ||
+    (["pino", "@pinojs/redact"].includes(packageName) &&
+      file.startsWith("benchmarks/")) ||
+    (packageName === "@fastify/error" && file.startsWith("benchmarks/"))
+  )
+    return "package test, example, or benchmark fixture, not a runtime entrypoint";
+  if (
+    packageName === "json-schema-to-ts" &&
+    /^(?:lib\/esm|lib\/types)\//.test(file)
+  )
+    return "type-level JSON Schema utility distribution; no runtime module consumers in component graph";
+  if (packageName === "bullmq" && file.startsWith("dist/esm/"))
+    return "BullMQ package has no exports map; Node main selects dist/cjs/index.js, while dist/esm is bundler-only module output";
   if (packageName === "json-canonicalize" && /^(?:esm5|esm2015)\//.test(file))
     return "unselected bundler module entrypoint; Node main selects bundles";
   if (packageName === "ts-algebra" && file.startsWith("lib/"))
     return "type-level library entrypoint; no Node runtime consumers in component graph";
-  if (
-    /^(?:example|benchmark|bench)\.[cm]?js$/.test(basename) ||
-    /(?:^|\/)(?:example|benchmark|benchmarks?)(?:\/|$)/.test(file) ||
-    /\.bench\.[cm]?js$/.test(file)
-  )
-    return "example-or-benchmark-entrypoint";
   if (packageName === "safer-buffer" && file === "tests.js")
     return "test-entrypoint";
   if (
@@ -433,13 +597,7 @@ const sourceFiles = (root) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = resolve(directory, entry.name);
       if (entry.isDirectory() && entry.name !== "node_modules") visit(path);
-      else if (
-        entry.isFile() &&
-        /\.(?:[cm]?js)$/.test(entry.name) &&
-        !/(?:^|[.-])(?:test|spec)\.[cm]?js$/.test(entry.name) &&
-        !/^test(?:s|-).*\.[cm]?js$/.test(entry.name) &&
-        entry.name !== "test.js"
-      )
+      else if (entry.isFile() && /\.(?:[cm]?js)$/.test(entry.name))
         files.push(path);
     }
   };
@@ -721,21 +879,7 @@ const resolveNodeEdge = (sourceRoot, packageRoot, path, edge, included) => {
     try {
       target = nodeResolver(edge.loader)(dirname(path), specifier);
     } catch {
-      if (!isPackageImport) return null;
-      const imports = readManifest(
-        resolve(packageRoot, "package.json")
-      ).imports;
-      const importTarget = imports?.[specifier];
-      if (typeof importTarget !== "string") return null;
-      try {
-        if (importTarget.startsWith(".")) {
-          target = resolve(packageRoot, importTarget);
-        } else {
-          target = nodeResolver(edge.loader)(dirname(path), importTarget);
-        }
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
   if (!target) return null;
@@ -775,23 +919,7 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
   for (const { packageRoot, manifest } of closure) {
     for (const path of sourceFiles(packageRoot)) {
       const file = relative(packageRoot, path).replaceAll("\\", "/");
-      const directoryExclusion =
-        /(?:^|\/)(?:test|tests|__tests__|benchmark|benchmarks|examples|docs|scripts)(?:\/|$)/.test(
-          file
-        )
-          ? "non-runtime test, benchmark, example, documentation, or package script source"
-          : /^(?:eslint|vitest|jest)\.config\./.test(file)
-            ? "package-local test or lint configuration"
-            : null;
-      if (directoryExclusion) {
-        excludedSourceFiles.push({
-          package: manifest.name,
-          file,
-          reason: directoryExclusion
-        });
-        continue;
-      }
-      const exclusion = sourceAuditExclusion(manifest.name, file, manifest);
+      const exclusion = sourceAuditExclusion(manifest.name, file);
       if (exclusion) {
         excludedSourceFiles.push({
           package: manifest.name,

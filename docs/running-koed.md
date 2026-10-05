@@ -92,7 +92,14 @@ package-count or size-based deletion. A TypeScript JavaScript AST audit checks
 `import()`, `require()`, `require.resolve()`, `import.meta.resolve()`, `require.apply()` calls, and
 `new URL(literal, import.meta.url)` references. Parser
 errors, unresolved literal targets, ambiguous targets, and unowned dynamic
-loader edges fail assembly. Inventory records each maintained runtime edge's
+loader edges fail assembly. Package imports such as `#imports` must resolve to
+Node's exact loader-selected target; failed resolution does not fall back to
+manifest-string path joining or directory index inference. `module` and `types`
+metadata alone do not exclude source files: files beneath those paths remain
+audited, including targets selected by conditional exports. Non-runtime source
+exclusions are maintained against explicit package/file ownership and record a
+rationale in the inventory; generic directory-name and manifest-subtree
+heuristics are not used. Inventory records each maintained runtime edge's
 package/file/expression, rationale, and limits, plus excluded non-runtime source
 files with reasons. Pino's caller-selected transport resolver is not a promise
 to bundle arbitrary transports; any configured target must be separately
