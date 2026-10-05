@@ -2742,7 +2742,7 @@ describe("status and doctor JSON contracts", () => {
     expect(status.embeddingService.details?.artifactSource).toBe(
       "packaged-resource"
     );
-    expect(status.mcpServer.details?.artifactSource).toBe("packaged-resource");
+    expect(status.mcpServer.details?.artifactSource).toBe("source-checkout");
     expect(
       doctor.checks.find((check) => check.id === "database")?.details
         ?.artifactSource

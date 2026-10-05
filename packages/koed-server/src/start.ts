@@ -18,8 +18,15 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   assertKoedAppRuntimeAvailable,
-  resolveKoedAppRuntime
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
 } from "./app-runtime.js";
+import type { KoedAppRuntime } from "./app-runtime.js";
+import {
+  calculateRuntimeRequirements,
+  resolveEffectiveRuntimeConfig
+} from "./effective-runtime-config.js";
+import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveActiveIntegrationApiToken,
@@ -67,7 +74,6 @@ import {
   provisionLocalApiToken
 } from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
-import { resolveTeamCollaborationEnabled } from "@koed/shared";
 import { bundledPdsSecretProviderEnvironment } from "./application-secret-provider.js";
 export {
   provisionDesktopApiToken,
@@ -876,6 +882,7 @@ export const startKoedServer = async ({
     provisionLocalApiTokenDependency = provisionLocalApiToken,
   signal
 }: KoedServerStartOptions = {}): Promise<void> => {
+  const requestedEnvironment = environment;
   const startupId = randomBytes(12).toString("hex");
   const startupStartedAt = process.hrtime.bigint();
   const emitStartupMilestone = (milestone: string): void => {
@@ -890,11 +897,12 @@ export const startKoedServer = async ({
     );
   };
   emitStartupMilestone("supervisor_entry");
+  const execution = resolveKoedAppRuntimeExecution();
   const bootstrapPaths = resolveKoedServerPaths(environment);
-  const bootstrapEnvironment = environmentWithRepoEnv(
-    bootstrapPaths.repoRoot,
-    environment
-  );
+  const bootstrapEnvironment =
+    execution === "source"
+      ? environmentWithRepoEnv(bootstrapPaths.repoRoot, environment)
+      : environment;
   const paths = resolveKoedServerPaths(bootstrapEnvironment);
   ensureKoedHome(paths);
   const supervisorLock = acquireKoedServerSupervisorLock(paths);
@@ -916,15 +924,30 @@ export const startKoedServer = async ({
     );
     return;
   }
+  let supervisorLockReleased = false;
+  const releaseSupervisorLock = (): void => {
+    if (supervisorLockReleased) return;
+    supervisorLockReleased = true;
+    releaseKoedServerSupervisorLock(supervisorLock);
+  };
   await ensureDeviceIdentity(paths, { environment });
   const supervisorStartedAt = new Date().toISOString();
-  const appRuntime = resolveKoedAppRuntime(paths, environment);
-  assertKoedAppRuntimeAvailable(appRuntime, paths);
+  const effectiveRuntimeConfig = resolveEffectiveRuntimeConfig(
+    paths,
+    requestedEnvironment,
+    execution
+  );
+  environment = effectiveRuntimeConfig.environment;
+  const requiredRuntime = calculateRuntimeRequirements(effectiveRuntimeConfig);
+  environment = {
+    ...environment,
+    WORK_QUEUE_BACKEND: requiredRuntime.queue
+  };
   const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
-  const startupConfig = resolveKoedServerConfig(paths, environment);
+  const startupConfig = effectiveRuntimeConfig.config;
   environment = ensurePackagedLocalServiceSecrets(
     paths,
-    appRuntime.kind === "packaged" ||
+    execution === "packaged" ||
       (startupConfig.runtimeMode === "local-personal" &&
         startupConfig.dependencyMode === "bundled-local"),
     environment
@@ -937,12 +960,29 @@ export const startKoedServer = async ({
   ) {
     environment = { ...environment, KOED_AUTO_PORTS: "1" };
   }
-  const portAllocationEnvironment = environment.KOED_ENV_PATH?.trim()
-    ? environmentWithRepoEnv(paths.repoRoot, environment)
-    : environment;
+  const portAllocationEnvironment = { ...environment };
+  if (environment.KOED_AUTO_PORTS === "1") {
+    for (const key of [
+      "API_HOST_PORT",
+      "POSTGRES_HOST_PORT",
+      "EMBEDDING_SERVICE_HOST_PORT",
+      "PRIVACY_SERVICE_PORT",
+      "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
+      "EMBEDDING_LLAMA_RERANKER_SERVER_PORT"
+    ]) {
+      if (!requestedEnvironment[key]?.trim())
+        delete portAllocationEnvironment[key];
+    }
+  }
+  const allocatedPortEnvironmentForStart = environment.KOED_ENV_PATH?.trim()
+    ? {
+        ...environmentWithRepoEnv(paths.repoRoot, environment),
+        ...portAllocationEnvironment
+      }
+    : portAllocationEnvironment;
   const allocatedPortEnvironment = await allocateAndPersistLocalPorts(
     paths,
-    portAllocationEnvironment
+    allocatedPortEnvironmentForStart
   );
   environment = {
     ...environment,
@@ -957,7 +997,10 @@ export const startKoedServer = async ({
       allocatedPortEnvironment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT
   };
 
-  const repoEnv = loadRepoEnv(paths.repoRoot, environment);
+  const repoEnv =
+    execution === "source" || environment.KOED_ENV_PATH?.trim()
+      ? loadRepoEnv(paths.repoRoot, environment)
+      : {};
   const migration = migrateKoedOwnedCodexRegistrationBestEffort({
     environment: { ...repoEnv, ...environment, KOED_HOME: paths.koedHome }
   });
@@ -974,10 +1017,7 @@ export const startKoedServer = async ({
       source: apiToken.source
     });
   }
-  const config = resolveKoedServerConfig(
-    paths,
-    koedServerConfigEnvironment(environment, repoEnv)
-  );
+  const config = startupConfig;
   const initialServiceEnv = localServiceEnv(
     environment,
     repoEnv,
@@ -985,10 +1025,7 @@ export const startKoedServer = async ({
     paths
   );
   const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
-  const teamCollaborationEnabled = resolveTeamCollaborationEnabled({
-    ...repoEnv,
-    ...environment
-  });
+  const teamCollaborationEnabled = effectiveRuntimeConfig.teamEnabled;
   const localAiRuntimeEnabled = config.runtimeMode !== "external";
   const runtimeServices = useBundledLocalDependencies
     ? [
@@ -1004,7 +1041,7 @@ export const startKoedServer = async ({
   ];
   const childEnv = initialServiceEnv;
 
-  if (appRuntime.kind === "source") {
+  if (execution === "source") {
     runCommand(
       paths,
       "Prepare Koed environment",
@@ -1032,8 +1069,20 @@ export const startKoedServer = async ({
     refreshedApiToken,
     paths
   );
-  const apiUrl = resolveApiUrl(environment, refreshedRepoEnv);
+  refreshedEnv.WORK_QUEUE_BACKEND = requiredRuntime.queue;
+  const apiUrlEnvironment = { ...environment };
+  if (
+    requestedEnvironment.API_HOST_PORT?.trim() &&
+    !requestedEnvironment.MEMORY_API_URL?.trim()
+  ) {
+    delete apiUrlEnvironment.MEMORY_API_URL;
+  }
+  const apiUrl = resolveApiUrl(apiUrlEnvironment, refreshedRepoEnv);
 
+  let appRuntime: KoedAppRuntime;
+  let generationPin:
+    | Awaited<ReturnType<typeof pinAndResolvePackagedRuntime>>["pin"]
+    | undefined;
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
   let nativePrivacyProcess: ChildProcess | undefined;
@@ -1135,6 +1184,24 @@ export const startKoedServer = async ({
   let sourceRuntimeLeaseAcquired = false;
   let startupReady = false;
   try {
+    if (execution === "packaged") {
+      const selected = await pinAndResolvePackagedRuntime(
+        paths,
+        environment,
+        requiredRuntime
+      );
+      generationPin = selected.pin;
+      appRuntime = selected.runtime;
+    } else {
+      appRuntime = resolveKoedAppRuntime(
+        paths,
+        environment,
+        existsSync,
+        undefined,
+        requiredRuntime
+      );
+      assertKoedAppRuntimeAvailable(appRuntime, paths);
+    }
     if (appRuntime.kind === "source") {
       runCommand(
         paths,
@@ -1154,9 +1221,7 @@ export const startKoedServer = async ({
     }
 
     if (config.dependencyMode === "external") {
-      const queueBackend = resolveWorkQueueBackend(
-        refreshedEnv.WORK_QUEUE_BACKEND
-      );
+      const queueBackend = requiredRuntime.queue;
       const requiredExternalServices: Array<[string, string | undefined]> = [
         ["DATABASE_URL", refreshedEnv.DATABASE_URL],
         ...(queueBackend === "bullmq"
@@ -1188,9 +1253,7 @@ export const startKoedServer = async ({
         );
       }
     } else {
-      const queueBackend = resolveWorkQueueBackend(
-        refreshedEnv.WORK_QUEUE_BACKEND
-      );
+      const queueBackend = requiredRuntime.queue;
       if (queueBackend === "bullmq" && !refreshedEnv.REDIS_URL?.trim()) {
         throw new Error(
           "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL. Set REDIS_URL or use WORK_QUEUE_BACKEND=local."
@@ -1214,7 +1277,8 @@ export const startKoedServer = async ({
 
     if (useBundledLocalDependencies && teamCollaborationEnabled) {
       const result = await startLocalPrivacyRuntime(paths, refreshedEnv, {
-        spawn
+        spawn,
+        appRuntime
       });
       Object.assign(refreshedEnv, result.env);
       nativePrivacyProcess = result.process;
@@ -1233,7 +1297,7 @@ export const startKoedServer = async ({
       const result = startLocalEmbeddingRuntime(
         paths,
         appProcessEnvironment(refreshedEnv),
-        { spawn }
+        { spawn, appRuntime }
       );
       Object.assign(refreshedEnv, result.env);
       nativeEmbeddingProcess = result.process;
@@ -1555,6 +1619,10 @@ export const startKoedServer = async ({
         );
       }
     }
-    releaseKoedServerSupervisorLock(supervisorLock);
+    try {
+      await generationPin?.release();
+    } finally {
+      releaseSupervisorLock();
+    }
   }
 };

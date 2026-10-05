@@ -51,8 +51,11 @@ from `KOED_TEAM_COLLABORATION_ENABLED` (including explicit env-file values),
 not a `server.json` field.
 
 Effective requirements default queue to `local` for `bundled-local` and
-`bullmq` for `external`; `WORK_QUEUE_BACKEND=local|bullmq` overrides either
-default. `bundled-local` requires Postgres and Embedding Service processes and
+`bullmq` for `external`. An explicit process-environment
+`WORK_QUEUE_BACKEND=local|bullmq` overrides either default. A value inherited
+only from a source `.env` file does not change the bundled-local default; to
+select BullMQ there, set it in the launching process and provide Operator-managed
+`REDIS_URL`. `bundled-local` requires Postgres and Embedding Service processes and
 embedding model/native runtime assets. Team adds local Privacy Filter Service
 and privacy model only with `bundled-local`. External dependencies retain
 Operator-managed database, queue, embedding, and (when Team enabled) privacy

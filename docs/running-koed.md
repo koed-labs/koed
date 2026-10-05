@@ -135,9 +135,20 @@ relevant `$KOED_HOME/run/generation-lifecycle.lock` or
 `$KOED_HOME/runtime/components.lock`, then retry. Never use an `O_EXCL` check
 followed by rename to reclaim a lock.
 
-These primitives are not yet used by source, Desktop, or standalone startup;
-that integration belongs to the next task. Empty production component trust
-roots remain blocked, and staging a verified generation does not activate it.
+Packaged standalone startup now resolves effective configuration before
+calculating component requirements, verifies and pins the active signed
+component generation before starting app services, and holds that pin until the
+supervisor stops or startup fails. API, Worker, MCP Server, Capture Hook,
+Embedding Service, and optional Privacy Service paths come only from selected
+component roots. The generation version must match the control-plane version.
+Missing or mismatched generations fail startup; startup never downloads a
+replacement or falls back to checkout, package, sibling, or legacy runtime
+paths. Source-checkout development retains source paths. Desktop-owned
+activation remains fail-closed until Desktop uses its validated private
+supervisor channel; environment flags cannot assert Desktop ownership.
+
+Empty production component trust roots remain blocked, and staging a verified
+generation does not activate it.
 
 On a normal foreground launch, Desktop creates and loads its main window before
 it resumes the managed local `koed-server`. Platform secret-provider

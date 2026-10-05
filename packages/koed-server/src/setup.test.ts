@@ -122,11 +122,13 @@ afterEach(() => {
 describe("Codex setup wrapper", () => {
   it("removes only valid Koed-owned Codex block and preserves unrelated profile", () => {
     const root = tempDir();
-    const runtimeRoot = resolve(root, "runtime");
     const codexHome = resolve(root, "codex");
-    const mcpCli = resolve(runtimeRoot, "mcp-server/dist/cli.js");
-    const captureHook = resolve(runtimeRoot, "mcp-server/dist/capture-hook.js");
-    mkdirSync(resolve(runtimeRoot, "mcp-server/dist"), { recursive: true });
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "packages/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
     const configPath = resolve(root, "codex/config.toml");
@@ -157,7 +159,6 @@ describe("Codex setup wrapper", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_JS_RUNTIME_ROOT: runtimeRoot,
         CODEX_HOME: codexHome,
         CODEX_CONFIG_PATH: configPath,
         MEMORY_NODE_COMMAND: "node"

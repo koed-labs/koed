@@ -70,68 +70,75 @@ describe("Pi setup", () => {
     "koed-home",
     "server-package",
     "legacy-flat"
-  ])("installs Pi from the selected %s packaged runtime", (layout) => {
-    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-"));
-    temporaryDirectories.push(root);
-    const koedHome = resolve(root, "koed");
-    const runtimeRoot =
-      layout === "koed-home"
-        ? resolve(koedHome, "runtime/koed-runtime")
-        : layout === "server-package"
-          ? resolve(koedHome, "runtime/koed-server/current/koed-runtime")
-          : resolve(root, "resources/koed-runtime");
-    const source = resolve(
-      runtimeRoot,
-      layout === "legacy-flat"
-        ? "mcp-server/integrations/pi"
-        : "node_modules/@koed/mcp-server/integrations/pi"
-    );
-    mkdirSync(resolve(source, "extensions"), { recursive: true });
-    writeFileSync(resolve(source, "package.json"), "{}\n");
-    writeFileSync(
-      resolve(source, "extensions/koed.mjs"),
-      "// selected runtime\n"
-    );
-    // A checkout package must not supersede the selected packaged runtime.
-    const decoy = resolve(root, "checkout/packages/mcp-server/integrations/pi");
-    mkdirSync(resolve(decoy, "extensions"), { recursive: true });
-    writeFileSync(resolve(decoy, "package.json"), "{}\n");
-    writeFileSync(resolve(decoy, "extensions/koed.mjs"), "// wrong checkout\n");
-    const result = setupPi(
-      {
-        HOME: root,
-        KOED_HOME: koedHome,
-        KOED_REPO_ROOT: resolve(root, "checkout"),
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: resolve(root, "resources"),
-        ...(layout === "explicit" ? { KOED_JS_RUNTIME_ROOT: runtimeRoot } : {}),
-        KOED_PI_EXECUTABLE: "/bin/sh"
-      },
-      ((_command: string, args: string[]) =>
-        args[0] === "--version"
-          ? spawnResult("0.84.2\n")
-          : args[0] === "--list-models"
-            ? spawnResult("No models available.\n")
-            : args[0] === "list"
-              ? spawnResult(`${resolve(koedHome, "integrations/pi")}\n`)
-              : spawnResult()) as never
-    );
-    expect(result.ok).toBe(true);
-    expect(
-      readFileSync(
-        resolve(koedHome, "integrations/pi/extensions/koed.mjs"),
-        "utf8"
-      )
-    ).toBe("// selected runtime\n");
-  });
+  ])(
+    "uses the explicit source checkout despite %s packaged flags",
+    (layout) => {
+      const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-"));
+      temporaryDirectories.push(root);
+      const koedHome = resolve(root, "koed");
+      const runtimeRoot =
+        layout === "koed-home"
+          ? resolve(koedHome, "runtime/koed-runtime")
+          : layout === "server-package"
+            ? resolve(koedHome, "runtime/koed-server/current/koed-runtime")
+            : resolve(root, "resources/koed-runtime");
+      const source = resolve(
+        runtimeRoot,
+        layout === "legacy-flat"
+          ? "mcp-server/integrations/pi"
+          : "node_modules/@koed/mcp-server/integrations/pi"
+      );
+      mkdirSync(resolve(source, "extensions"), { recursive: true });
+      writeFileSync(resolve(source, "package.json"), "{}\n");
+      writeFileSync(
+        resolve(source, "extensions/koed.mjs"),
+        "// selected runtime\n"
+      );
+      // A checkout package must not supersede the selected packaged runtime.
+      const decoy = resolve(
+        root,
+        "checkout/packages/mcp-server/integrations/pi"
+      );
+      mkdirSync(resolve(decoy, "extensions"), { recursive: true });
+      writeFileSync(resolve(decoy, "package.json"), "{}\n");
+      writeFileSync(
+        resolve(decoy, "extensions/koed.mjs"),
+        "// wrong checkout\n"
+      );
+      const result = setupPi(
+        {
+          HOME: root,
+          KOED_HOME: koedHome,
+          KOED_REPO_ROOT: resolve(root, "checkout"),
+          KOED_PACKAGED_DESKTOP: "1",
+          KOED_PACKAGED_RESOURCES_PATH: resolve(root, "resources"),
+          ...(layout === "explicit"
+            ? { KOED_JS_RUNTIME_ROOT: runtimeRoot }
+            : {}),
+          KOED_PI_EXECUTABLE: "/bin/sh"
+        },
+        ((_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("No models available.\n")
+              : args[0] === "list"
+                ? spawnResult(`${resolve(koedHome, "integrations/pi")}\n`)
+                : spawnResult()) as never
+      );
+      expect(result.ok).toBe(true);
+      expect(
+        readFileSync(
+          resolve(koedHome, "integrations/pi/extensions/koed.mjs"),
+          "utf8"
+        )
+      ).toBe("// wrong checkout\n");
+    }
+  );
 
-  it("does not fall back to checkout files when an explicit runtime lacks Pi", () => {
-    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-missing-"));
+  it("fails when explicit source checkout lacks Pi and ignores packaged runtime roots", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-source-missing-"));
     temporaryDirectories.push(root);
-    const source = resolve(root, "packages/mcp-server/integrations/pi");
-    mkdirSync(resolve(source, "extensions"), { recursive: true });
-    writeFileSync(resolve(source, "package.json"), "{}\n");
-    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
     const spawn = vi.fn();
     const result = setupPi(
       {

@@ -1226,13 +1226,20 @@ const inspectMcp = (
   const appRuntime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const cliPath = appRuntime.mcpCli;
   if (!deps.existsSync(cliPath)) {
+    const authenticatedGenerationMissing = appRuntime.missing.some((entry) =>
+      entry.startsWith("authenticated ")
+    );
     return notConfigured(
-      appRuntime.kind === "packaged"
-        ? "Packaged MCP Server artifact was not found."
-        : "MCP Server build output was not found.",
-      appRuntime.kind === "packaged"
-        ? "Rebuild Koed Desktop packaging so koed-runtime includes the MCP Server and Supported Capture Hook artifacts."
-        : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
+      authenticatedGenerationMissing
+        ? "No active authenticated Koed app-runtime generation is available."
+        : appRuntime.kind === "packaged"
+          ? "Packaged MCP Server artifact was not found."
+          : "MCP Server build output was not found.",
+      authenticatedGenerationMissing
+        ? "Install and activate a compatible signed Koed app-runtime generation; status does not install or activate components."
+        : appRuntime.kind === "packaged"
+          ? "Install a compatible signed Koed app-runtime generation containing MCP Server and Supported Capture Hook artifacts."
+          : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
       {
         artifactSource: appRuntime.artifactSource,
         runtimeRoot: appRuntime.root,

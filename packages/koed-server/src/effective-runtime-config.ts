@@ -10,6 +10,7 @@ export interface EffectiveRuntimeConfig {
   config: KoedServerConfig;
   environment: NodeJS.ProcessEnv;
   teamEnabled: boolean;
+  explicitWorkQueueBackend?: string | null;
 }
 
 export function resolveEffectiveRuntimeConfig(
@@ -43,7 +44,8 @@ export function resolveEffectiveRuntimeConfig(
   return {
     config,
     environment: effectiveEnvironment,
-    teamEnabled: resolveTeamCollaborationEnabled(effectiveEnvironment)
+    teamEnabled: resolveTeamCollaborationEnabled(effectiveEnvironment),
+    explicitWorkQueueBackend: environment.WORK_QUEUE_BACKEND?.trim() || null
   };
 }
 
@@ -66,7 +68,14 @@ export function calculateRuntimeRequirements(
     processes.push("postgres", "embedding-service");
     if (localPrivacy) processes.push("privacy-service");
   }
-  const queueValue = effective.environment.WORK_QUEUE_BACKEND?.trim();
+  const bundled = effective.config.dependencyMode === "bundled-local";
+  const queueValue =
+    effective.explicitWorkQueueBackend === null
+      ? bundled
+        ? undefined
+        : effective.environment.WORK_QUEUE_BACKEND?.trim()
+      : (effective.explicitWorkQueueBackend ??
+        effective.environment.WORK_QUEUE_BACKEND?.trim());
   if (queueValue && queueValue !== "local" && queueValue !== "bullmq") {
     throw new Error('WORK_QUEUE_BACKEND must be "local" or "bullmq"');
   }
@@ -76,7 +85,6 @@ export function calculateRuntimeRequirements(
       : effective.config.dependencyMode === "bundled-local"
         ? "local"
         : "bullmq";
-  const bundled = effective.config.dependencyMode === "bundled-local";
   return {
     components,
     processes,

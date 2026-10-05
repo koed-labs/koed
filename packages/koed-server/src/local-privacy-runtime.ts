@@ -8,6 +8,7 @@ import {
   resolvePrivacyModelPaths
 } from "./privacy-model-runtime.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
+import type { KoedAppRuntime } from "./app-runtime.js";
 
 type SpawnLike = (
   command: string,
@@ -52,9 +53,10 @@ export const localPrivacyEnv = (
 
 const runtimePaths = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  selectedRuntime?: KoedAppRuntime
 ) => {
-  const runtime = resolveKoedAppRuntime(paths, environment);
+  const runtime = selectedRuntime ?? resolveKoedAppRuntime(paths, environment);
   const entry =
     runtime.kind === "packaged"
       ? resolve(runtime.root, "privacy-service", "dist", "index.js")
@@ -69,13 +71,17 @@ const runtimePaths = (
 const collectLocalPrivacyHealth = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {},
+  dependencies: {
+    existsSync?: typeof existsSync;
+    fetch?: typeof fetch;
+    appRuntime?: KoedAppRuntime;
+  } = {},
   modelPath?: string,
   includeDiagnostics = true
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const env = localPrivacyEnv(paths, environment);
-  const runtime = runtimePaths(paths, environment);
+  const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const missing = [runtime.entry, runtime.bootstrap].filter(
     (path) => !exists(path)
   );
@@ -149,17 +155,25 @@ const collectLocalPrivacyHealth = async (
 export const collectLocalPrivacyRuntimeHealthStatus = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
+  dependencies: {
+    existsSync?: typeof existsSync;
+    fetch?: typeof fetch;
+    appRuntime?: KoedAppRuntime;
+  } = {}
 ): Promise<LocalPrivacyRuntimeStatus> =>
   collectLocalPrivacyHealth(paths, environment, dependencies, undefined, false);
 
 export const collectLocalPrivacyRuntimeStatus = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
+  dependencies: {
+    existsSync?: typeof existsSync;
+    fetch?: typeof fetch;
+    appRuntime?: KoedAppRuntime;
+  } = {}
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
-  const runtime = runtimePaths(paths, environment);
+  const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const missing = [runtime.entry, runtime.bootstrap].filter(
     (path) => !exists(path)
   );
@@ -193,14 +207,19 @@ export const collectLocalPrivacyRuntimeStatus = async (
 export const startLocalPrivacyRuntime = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: { existsSync?: typeof existsSync; spawn?: SpawnLike } = {}
+  dependencies: {
+    existsSync?: typeof existsSync;
+    spawn?: SpawnLike;
+    appRuntime?: KoedAppRuntime;
+  } = {}
 ): Promise<LocalPrivacyRuntimeStartResult> => {
   const env = { ...environment, ...localPrivacyEnv(paths, environment) };
-  const runtime = runtimePaths(paths, environment);
+  const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const exists = dependencies.existsSync ?? existsSync;
   if (!exists(runtime.entry) || !exists(runtime.bootstrap)) {
     const status = await collectLocalPrivacyRuntimeStatus(paths, env, {
-      existsSync: exists
+      existsSync: exists,
+      appRuntime: dependencies.appRuntime
     });
     return { ok: false, status, env };
   }

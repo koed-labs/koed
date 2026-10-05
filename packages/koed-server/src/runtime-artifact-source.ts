@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 export type RuntimeArtifactSource =
+  | "verified-generation"
   | "explicit-override"
   | "koed-home-runtime"
   | "packaged-resource"

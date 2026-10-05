@@ -1,365 +1,229 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeIdentity } from "./component-contract.js";
+
+const fixtureRuntime = vi.hoisted(() => ({
+  value: undefined as RuntimeIdentity | undefined
+}));
+const fixtureKeys = vi.hoisted(() => ({ value: new Map<string, string>() }));
+vi.mock("./component-runtime-identity.js", () => ({
+  discoverActualRuntimeIdentity: () => {
+    if (!fixtureRuntime.value) throw new Error("fixture runtime missing");
+    return fixtureRuntime.value;
+  }
+}));
+vi.mock("./component-trust-roots.js", () => ({
+  productionComponentTrustRoots: fixtureKeys.value
+}));
+
+import type { RuntimeRequirements } from "./component-contract.js";
 import {
   assertKoedAppRuntimeAvailable,
-  resolveKoedAppRuntime
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeForExecution
 } from "./app-runtime.js";
+import { signedComponentFixture } from "./component-test-fixtures.js";
+import { stageComponent, stageGeneration } from "./component-store.js";
 import type { KoedServerPaths } from "./paths.js";
+import { resolveKoedServerPaths } from "./paths.js";
 
 const temps: string[] = [];
 const tempDir = () => {
-  const path = mkdtempSync(resolve(tmpdir(), "koed-app-runtime-"));
-  temps.push(path);
+  const root = mkdtempSync(resolve(process.cwd(), ".koed-app-runtime-"));
+  temps.push(root);
+  return root;
+};
+const owner = { kind: "standalone" as const, installationId: "runtime-test" };
+const packagedRuntime = (
+  rootPaths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  selection?: Parameters<typeof resolveKoedAppRuntimeForExecution>[3],
+  requirements?: RuntimeRequirements
+) =>
+  resolveKoedAppRuntimeForExecution(
+    rootPaths,
+    environment,
+    existsSync,
+    selection,
+    requirements,
+    "packaged"
+  );
+const paths = (root: string): KoedServerPaths =>
+  resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root });
+const baseEntries = [
+  "api/dist/index.js",
+  "worker/dist/index.js",
+  "embedding-service/dist/index.js",
+  "mcp-server/dist/cli.js",
+  "mcp-server/dist/local-runtime-cli.js",
+  "mcp-server/dist/capture-hook.js",
+  "node_modules/@koed/db/dist/index.js",
+  "node_modules/@koed/db/dist/connection.js",
+  "node_modules/@koed/db/dist/user-api-token-repository.js",
+  "node_modules/@koed/db/drizzle/meta/_journal.json"
+];
+const baseRequirements: RuntimeRequirements = {
+  components: ["base"],
+  processes: ["api", "worker", "local-ai-runtime", "embedding-service"],
+  queue: "local",
+  native: [],
+  models: []
+};
+const temporaryMetadata = (root: string, bytes: Buffer): string => {
+  const path = resolve(root, `metadata-${Math.random()}.json`);
+  writeFileSync(path, bytes, { mode: 0o600 });
   return path;
 };
-
-const paths = (root: string): KoedServerPaths => ({
-  koedHome: root,
-  configDir: resolve(root, "config"),
-  logsDir: resolve(root, "logs"),
-  runDir: resolve(root, "run"),
-  dataDir: resolve(root, "data"),
-  modelsDir: resolve(root, "models"),
-  cacheDir: resolve(root, "cache"),
-  postgresDataDir: resolve(root, "data", "postgres"),
-  postgresRunDir: resolve(root, "run", "postgres"),
-  postgresLogPath: resolve(root, "logs", "postgres.log"),
-  runtimeStatePath: resolve(root, "run", "koed-server.json"),
-  lastVerificationPath: resolve(root, "run", "last-verification.json"),
-  serverConfigPath: resolve(root, "config", "server.json"),
-  localPortsPath: resolve(root, "config", "local-ports.json"),
-  localAppCredentialPath: resolve(root, "config", "local-app-credential.json"),
-  upstreamBackendsPath: resolve(root, "config", "upstream-backends.json"),
-  projectMetadataPath: resolve(root, "config", "projects.json"),
-  projectTeamWorkspaceLinksPath: resolve(
-    root,
-    "config",
-    "project-team-workspaces.json"
-  ),
-  upstreamEnrollmentsPath: resolve(root, "run", "upstream-enrollments.json"),
-  upstreamDisconnectCleanupPath: resolve(
-    root,
-    "run",
-    "upstream-disconnect-cleanup.json"
-  ),
-  repoRoot: root
-});
-
-const touch = (path: string) => {
-  mkdirSync(resolve(path, ".."), { recursive: true });
-  writeFileSync(path, "");
-};
-
-const createPackagedRuntime = (root: string) => {
-  for (const entry of [
-    "koed-runtime/api/dist/index.js",
-    "koed-runtime/worker/dist/index.js",
-    "koed-runtime/embedding-service/dist/index.js",
-    "koed-runtime/privacy-service/dist/index.js",
-    "koed-runtime/mcp-server/dist/cli.js",
-    "koed-runtime/mcp-server/dist/local-runtime-cli.js",
-    "koed-runtime/mcp-server/dist/capture-hook.js",
-    "koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "koed-runtime/node_modules/@koed/db/dist/index.js",
-    "koed-runtime/node_modules/@koed/db/dist/connection.js",
-    "koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
-  ]) {
-    touch(resolve(root, entry));
-  }
-};
-
-const createKoedHomeRuntime = (root: string) => {
-  for (const entry of [
-    "runtime/koed-runtime/api/dist/index.js",
-    "runtime/koed-runtime/worker/dist/index.js",
-    "runtime/koed-runtime/embedding-service/dist/index.js",
-    "runtime/koed-runtime/privacy-service/dist/index.js",
-    "runtime/koed-runtime/mcp-server/dist/cli.js",
-    "runtime/koed-runtime/mcp-server/dist/local-runtime-cli.js",
-    "runtime/koed-runtime/mcp-server/dist/capture-hook.js",
-    "runtime/koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "runtime/koed-runtime/node_modules/@koed/db/dist/index.js",
-    "runtime/koed-runtime/node_modules/@koed/db/dist/connection.js",
-    "runtime/koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "runtime/koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
-  ]) {
-    touch(resolve(root, entry));
-  }
-};
-
-const createKoedHomeServerPackageRuntime = (root: string) => {
-  for (const entry of [
-    "runtime/koed-server/current/koed-runtime/api/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/worker/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/embedding-service/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/privacy-service/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/mcp-server/dist/cli.js",
-    "runtime/koed-server/current/koed-runtime/mcp-server/dist/local-runtime-cli.js",
-    "runtime/koed-server/current/koed-runtime/mcp-server/dist/capture-hook.js",
-    "runtime/koed-server/current/koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/connection.js",
-    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
-  ]) {
-    touch(resolve(root, entry));
-  }
-};
-
-const createSourceCheckout = (root: string) => {
-  for (const entry of [
-    "scripts/setup-env.mjs",
-    "apps/api/package.json",
-    "apps/worker/package.json",
-    "apps/embedding-service/package.json",
-    "apps/privacy-service/package.json",
-    "packages/db/package.json",
-    "packages/mcp-server/package.json"
-  ]) {
-    touch(resolve(root, entry));
-  }
+const verifiedGeneration = async (root: string, includePrivacy = false) => {
+  mkdirSync(paths(root).componentsDir, { recursive: true, mode: 0o700 });
+  const stage = async (
+    component: "base" | "privacy",
+    requiredFiles: string[]
+  ) => {
+    const fixture = await signedComponentFixture(
+      { component, requiredFiles },
+      requiredFiles.map((path) => ({ path })),
+      {},
+      true
+    );
+    fixtureRuntime.value = fixture.input.runtime;
+    for (const [key, value] of fixture.input.trustedKeys)
+      fixtureKeys.value.set(key, value);
+    const staged = await stageComponent(
+      paths(root),
+      {
+        kind: "offline",
+        archivePath: fixture.input.archivePath,
+        manifestPath: temporaryMetadata(root, fixture.input.manifestBytes),
+        signaturePath: temporaryMetadata(
+          root,
+          Buffer.from(JSON.stringify(fixture.input.signature))
+        )
+      },
+      {
+        expectedComponent: component,
+        expectedVersion: fixture.input.expectedVersion,
+        target: fixture.input.target,
+        runtime: fixture.input.runtime
+      }
+    );
+    return staged;
+  };
+  const base = await stage("base", baseEntries);
+  const privacy = includePrivacy
+    ? await stage("privacy", ["privacy-service/dist/index.js"])
+    : undefined;
+  const generation = await stageGeneration(paths(root), {
+    base,
+    ...(privacy ? { privacy } : {}),
+    owner
+  });
+  return { generation };
 };
 
 afterEach(() => {
-  for (const path of temps.splice(0)) {
+  for (const path of temps.splice(0))
     rmSync(path, { recursive: true, force: true });
-  }
+  fixtureRuntime.value = undefined;
+  fixtureKeys.value.clear();
+  vi.restoreAllMocks();
 });
 
 describe("Koed app runtime resolution", () => {
-  it("resolves packaged Desktop JS runtime artifacts from resources with KOED_REPO_ROOT unset", () => {
+  it.each([
+    ["KOED_JS_RUNTIME_ROOT", "/tmp/untrusted"],
+    ["KOED_REPO_ROOT", "/tmp/untrusted"],
+    ["KOED_PACKAGED_RESOURCES_PATH", "/tmp/untrusted"],
+    ["KOED_ALLOW_PACKAGED_SOURCE_FALLBACK", "1"]
+  ])("rejects packaged resolution with caller override %s", (name, value) => {
     const root = tempDir();
-    createPackagedRuntime(root);
-    const appPaths = { ...paths(root), repoRoot: resolve(root, "app.asar") };
+    expect(() =>
+      packagedRuntime(paths(root), {
+        KOED_PACKAGED_EXECUTION: "1",
+        KOED_SERVER_PACKAGE_ROOT: "/tmp/control",
+        [name]: value
+      })
+    ).toThrow(/unsupported packaged runtime override/i);
+  });
 
-    const runtime = resolveKoedAppRuntime(appPaths, {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
+  it("fails closed when no verified generation is selected", () => {
+    const root = tempDir();
+    const runtime = packagedRuntime(
+      paths(root),
+      {
+        KOED_PACKAGED_EXECUTION: "1",
+        KOED_SERVER_PACKAGE_ROOT: "/tmp/control"
+      },
+      undefined,
+      baseRequirements
+    );
     expect(runtime.kind).toBe("packaged");
-    expect(runtime.artifactSource).toBe("packaged-resource");
-    expect(runtime.missing).toEqual([]);
+    expect(runtime.missing).toContain("authenticated base generation");
+    expect(() => assertKoedAppRuntimeAvailable(runtime, paths(root))).toThrow(
+      /authenticated base generation/
+    );
+  });
+
+  it("resolves services only from authenticated component roots", async () => {
+    const root = tempDir();
+    const { generation } = await verifiedGeneration(root, true);
+    const runtime = packagedRuntime(
+      paths(root),
+      { KOED_SERVER_PACKAGE_ROOT: "/tmp/control" },
+      generation,
+      {
+        ...baseRequirements,
+        components: ["base", "privacy"],
+        processes: [...baseRequirements.processes, "privacy-service"]
+      }
+    );
+    expect(runtime.root).toBe(generation.base.root);
     expect(runtime.apiEntry).toBe(
-      resolve(root, "koed-runtime/api/dist/index.js")
+      resolve(generation.base.root, "api/dist/index.js")
     );
-    expect(runtime.mcpCli).toBe(
-      resolve(root, "koed-runtime/mcp-server/dist/cli.js")
+    expect(runtime.privacyServiceEntry).toBe(
+      resolve(generation.privacy!.root, "privacy-service/dist/index.js")
     );
-    expect(runtime.embeddingServiceEntry).toBe(
-      resolve(root, "koed-runtime/embedding-service/dist/index.js")
-    );
-  });
-
-  it("prefers KOED_SERVER_PACKAGE_ROOT before KOED_JS_RUNTIME_ROOT", () => {
-    const root = tempDir();
-    const packageRoot = resolve(root, "server-package");
-    const runtimeRoot = resolve(root, "js-runtime");
-    createPackagedRuntime(packageRoot);
-    createPackagedRuntime(runtimeRoot);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_SERVER_PACKAGE_ROOT: packageRoot,
-      KOED_JS_RUNTIME_ROOT: resolve(runtimeRoot, "koed-runtime")
-    });
-
-    expect(runtime.kind).toBe("packaged");
-    expect(runtime.artifactSource).toBe("explicit-override");
-    expect(runtime.root).toBe(resolve(packageRoot, "koed-runtime"));
-  });
-
-  it("uses explicit KOED_JS_RUNTIME_ROOT before KOED_HOME runtimes", () => {
-    const root = tempDir();
-    const runtimeRoot = resolve(root, "js-runtime");
-    createPackagedRuntime(runtimeRoot);
-    createKoedHomeServerPackageRuntime(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_JS_RUNTIME_ROOT: resolve(runtimeRoot, "koed-runtime")
-    });
-
-    expect(runtime.artifactSource).toBe("explicit-override");
-    expect(runtime.root).toBe(resolve(runtimeRoot, "koed-runtime"));
-  });
-
-  it("requires packaged Embedding Service entry", () => {
-    const root = tempDir();
-    createPackagedRuntime(root);
-    rmSync(resolve(root, "koed-runtime", "embedding-service"), {
-      recursive: true,
-      force: true
-    });
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
-    expect(runtime.kind).toBe("packaged");
-    expect(runtime.missing).toContain(
-      resolve(root, "koed-runtime/embedding-service/dist/index.js")
-    );
-    expect(() => assertKoedAppRuntimeAvailable(runtime, paths(root))).toThrow(
-      "Embedding Service"
-    );
-  });
-
-  it("reports actionable missing packaged resources", () => {
-    const root = tempDir();
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
-    expect(() => assertKoedAppRuntimeAvailable(runtime, paths(root))).toThrow(
-      "Packaged Koed JS runtime artifacts are missing."
-    );
-    expect(runtime.missing).toContain(
-      resolve(root, "koed-runtime/api/dist/index.js")
-    );
-  });
-
-  it("prefers standalone KOED_HOME server package runtime before legacy KOED_HOME runtime and packaged resources", () => {
-    const root = tempDir();
-    createKoedHomeServerPackageRuntime(root);
-    createKoedHomeRuntime(root);
-    createPackagedRuntime(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
-    expect(runtime.artifactSource).toBe("koed-home-runtime");
-    expect(runtime.root).toBe(
-      resolve(root, "runtime", "koed-server", "current", "koed-runtime")
-    );
-  });
-
-  it("uses legacy KOED_HOME JS runtime before packaged resources when standalone current is missing", () => {
-    const root = tempDir();
-    createKoedHomeRuntime(root);
-    createPackagedRuntime(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
-    expect(runtime.artifactSource).toBe("koed-home-runtime");
-    expect(runtime.root).toBe(resolve(root, "runtime", "koed-runtime"));
-  });
-
-  it("uses legacy KOED_HOME JS runtime when standalone current is missing the Embedding Service entry", () => {
-    const root = tempDir();
-    createKoedHomeServerPackageRuntime(root);
-    rmSync(
-      resolve(
-        root,
-        "runtime",
-        "koed-server",
-        "current",
-        "koed-runtime",
-        "embedding-service"
-      ),
-      { recursive: true, force: true }
-    );
-    createKoedHomeRuntime(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1"
-    });
-
-    expect(runtime.artifactSource).toBe("koed-home-runtime");
-    expect(runtime.root).toBe(resolve(root, "runtime", "koed-runtime"));
     expect(runtime.missing).toEqual([]);
   });
 
-  it("reports broken standalone current before source checkout in packaged mode", () => {
+  it("does not require privacy files for Personal base-only configuration", async () => {
     const root = tempDir();
-    createKoedHomeServerPackageRuntime(root);
-    rmSync(
-      resolve(
-        root,
-        "runtime",
-        "koed-server",
-        "current",
-        "koed-runtime",
-        "embedding-service"
-      ),
-      { recursive: true, force: true }
+    const { generation } = await verifiedGeneration(root, false);
+    const runtime = packagedRuntime(
+      paths(root),
+      {},
+      generation,
+      baseRequirements
     );
-    createSourceCheckout(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1"
-    });
-
-    expect(runtime.kind).toBe("packaged");
-    expect(runtime.artifactSource).toBe("koed-home-runtime");
-    expect(runtime.root).toBe(
-      resolve(root, "runtime", "koed-server", "current", "koed-runtime")
-    );
-    expect(runtime.missing).toContain(
-      resolve(
-        root,
-        "runtime",
-        "koed-server",
-        "current",
-        "koed-runtime",
-        "embedding-service",
-        "dist",
-        "index.js"
-      )
-    );
-  });
-
-  it("keeps source checkout fallback for development", () => {
-    const root = tempDir();
-    createSourceCheckout(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {});
-
-    expect(runtime.kind).toBe("source");
+    expect(runtime.privacyServiceEntry).toBeUndefined();
     expect(runtime.missing).toEqual([]);
-    expect(runtime.workerEntry).toBe(
-      resolve(root, "apps/worker/dist/index.js")
-    );
-    expect(runtime.embeddingServiceEntry).toBe(
-      resolve(root, "apps/embedding-service/dist/index.js")
-    );
   });
 
-  it("rejects packaged source checkout fallback without developer override", () => {
+  it("keeps source runtime available only through explicit source execution", () => {
     const root = tempDir();
-    createSourceCheckout(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
-    expect(runtime.kind).toBe("packaged");
-    expect(runtime.artifactSource).toBe("packaged-resource");
-    expect(runtime.missing).toContain(
-      resolve(root, "koed-runtime/api/dist/index.js")
-    );
-  });
-
-  it("allows packaged source checkout fallback with explicit developer override", () => {
-    const root = tempDir();
-    createSourceCheckout(root);
-
-    const runtime = resolveKoedAppRuntime(paths(root), {
-      KOED_PACKAGED_DESKTOP: "1",
-      KOED_ALLOW_PACKAGED_SOURCE_FALLBACK: "1",
-      KOED_PACKAGED_RESOURCES_PATH: root
-    });
-
+    for (const entry of [
+      "scripts/setup-env.mjs",
+      "apps/api/package.json",
+      "apps/worker/package.json",
+      "apps/privacy-service/package.json",
+      "packages/db/package.json",
+      "packages/mcp-server/package.json"
+    ]) {
+      const path = resolve(root, entry);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "{}");
+    }
+    const runtime = resolveKoedAppRuntime(paths(root));
     expect(runtime.kind).toBe("source");
-    expect(runtime.artifactSource).toBe("source-checkout");
+    expect(runtime.root).toBe(root);
+    expect(runtime.missing).toEqual([]);
   });
 });
