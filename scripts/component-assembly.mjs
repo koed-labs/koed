@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  realpathSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -10,8 +11,9 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { builtinModules } from "node:module";
+import enhancedResolve from "enhanced-resolve";
 import ts from "typescript";
 import {
   assertNoClaudeAgentSdkPlatformRuntimes,
@@ -188,6 +190,37 @@ const componentFiles = (root) => {
 };
 
 const dynamicImportOwnership = (packageName, file, edge) => {
+  if (
+    packageName === "node-gyp-build-optional-packages" &&
+    file === "node-gyp-build.js" &&
+    edge.loader === "require.resolve" &&
+    edge.call ===
+      "require('module').createRequire(url.pathToFileURL(path.join(dir, 'package.json'))).resolve" &&
+    edge.argumentText === "platformPackage"
+  )
+    return "optional-native-platform-package-probe";
+  if (
+    packageName === "pino" &&
+    file === "lib/transport.js" &&
+    ((edge.loader === "createRequire" &&
+      edge.call === "createRequire" &&
+      edge.argumentText === "context") ||
+      (edge.loader === "require.resolve" &&
+        edge.call === "createRequire(context).resolve" &&
+        edge.argumentText === "origin"))
+  )
+    return "pino-caller-selected-transport-resolver";
+  if (
+    packageName === "@anthropic-ai/claude-agent-sdk" &&
+    file === "sdk.mjs" &&
+    ((edge.loader === "createRequire" &&
+      edge.call === "IMe" &&
+      edge.argumentText === "yr") ||
+      (edge.loader === "require.resolve" &&
+        edge.call === "Xr.resolve" &&
+        edge.argumentText === "mi"))
+  )
+    return "claude-sdk-optional-platform-cli-probe";
   if (/(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/.test(file))
     return "excluded-test-file";
   if (packageName === "bullmq" && /classes\/child-processor\.js$/.test(file))
@@ -259,6 +292,44 @@ const dynamicImportOwnership = (packageName, file, edge) => {
   if (packageName === "fast-json-stringify" && file === "lib/standalone.js")
     return "runtime-generated-standalone-requires";
   return null;
+};
+
+const maintainedRuntimeEdgeMetadata = (owner) => {
+  if (owner === "optional-native-platform-package-probe")
+    return {
+      rationale:
+        "node-gyp-build-optional-packages derives one platform/architecture package name and resolves it as an optional native prebuild fallback.",
+      limit:
+        "The selected @msgpackr-extract package is accepted only when msgpackr-extract declares it optional and closure includes a declared platform package; other computed targets remain unresolved."
+    };
+  if (owner === "pino-caller-selected-transport-resolver")
+    return {
+      rationale:
+        "Pino resolves configured transport origins relative to caller paths with createRequire(context). No transport is configured by Koed logger; target is caller-owned, not bundled.",
+      limit:
+        "If Koed configures a Pino transport, its selected target must be separately declared and verified in component closure before use. This owner does not include arbitrary caller targets."
+    };
+  if (owner === "claude-sdk-optional-platform-cli-probe")
+    return {
+      rationale:
+        "Claude Agent SDK derives its own module-relative require and resolves only fixed platform/architecture CLI package candidates before existsSync checks.",
+      limit:
+        "Only sdk.mjs expressions IMe(yr) and Xr.resolve(mi) are owned. Platform CLI runtime packages are deliberately removed and asserted absent; arbitrary require targets remain unresolved."
+    };
+  return {};
+};
+
+const hasClosureOwnedOptionalNativePackage = (closure) => {
+  const addon = closure.find(
+    ({ manifest }) => manifest.name === "msgpackr-extract"
+  );
+  if (!addon) return false;
+  const declared = Object.keys(
+    addon.manifest.optionalDependencies ?? {}
+  ).filter((name) => name.startsWith("@msgpackr-extract/msgpackr-extract-"));
+  return declared.some((name) =>
+    closure.some((entry) => entry.manifest.name === name)
+  );
 };
 
 const sourceAuditExclusion = (packageName, file) => {
@@ -353,6 +424,68 @@ const referenceEdges = (source) => {
     ts.ScriptKind.TS
   );
   const edges = [];
+  const createRequireBindings = new Set();
+  const createRequireNamespaces = new Set();
+  const requireBindings = new Set(["require"]);
+  const isImportMetaUrl = (node) =>
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "url" &&
+    ts.isMetaProperty(node.expression) &&
+    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    node.expression.name.text === "meta";
+  const moduleRequire = (node) =>
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "require" &&
+    node.arguments[0] &&
+    ts.isStringLiteral(node.arguments[0]) &&
+    ["module", "node:module"].includes(node.arguments[0].text);
+  for (const statement of file.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      ["module", "node:module"].includes(statement.moduleSpecifier.text)
+    ) {
+      if (ts.isImportClause(statement.importClause)) {
+        const bindings = statement.importClause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements)
+            if ((element.propertyName ?? element.name).text === "createRequire")
+              createRequireBindings.add(element.name.text);
+        } else if (bindings && ts.isNamespaceImport(bindings)) {
+          createRequireNamespaces.add(bindings.name.text);
+        }
+      }
+    }
+  }
+  const isCreateRequireFactory = (expression) =>
+    (ts.isIdentifier(expression) &&
+      createRequireBindings.has(expression.text)) ||
+    (ts.isPropertyAccessExpression(expression) &&
+      expression.name.text === "createRequire" &&
+      ((ts.isIdentifier(expression.expression) &&
+        createRequireNamespaces.has(expression.expression.text)) ||
+        moduleRequire(expression.expression)));
+  const collectBindings = (node) => {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const initializer = node.initializer;
+      const isFactory =
+        ts.isCallExpression(initializer) &&
+        isCreateRequireFactory(initializer.expression);
+      if (isFactory && ts.isIdentifier(node.name))
+        requireBindings.add(node.name.text);
+      if (moduleRequire(initializer) && ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements)
+          if (
+            (element.propertyName ?? element.name).getText(file) ===
+            "createRequire"
+          )
+            createRequireBindings.add(element.name.getText(file));
+      }
+    }
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(file);
   const literalValue = (node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
       return node.text;
@@ -368,9 +501,14 @@ const referenceEdges = (source) => {
     }
     return null;
   };
-  const specifier = (node, kind = "literal", loader = null, call = null) => {
+  const specifier = (
+    node,
+    kind = "literal",
+    loader = "import",
+    call = null
+  ) => {
     const literal = node && literalValue(node);
-    if (literal !== null) edges.push({ kind, specifier: literal });
+    if (literal !== null) edges.push({ kind, specifier: literal, loader });
     else
       edges.push({
         kind: kind === "literal" ? "dynamic" : kind,
@@ -379,57 +517,94 @@ const referenceEdges = (source) => {
         argumentText: node?.getText(file)
       });
   };
-  const isImportMetaUrl = (node) =>
-    ts.isPropertyAccessExpression(node) &&
-    node.name.text === "url" &&
-    ts.isMetaProperty(node.expression) &&
-    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
-    node.expression.name.text === "meta";
   const visit = (node) => {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
       node.moduleSpecifier
     ) {
-      specifier(node.moduleSpecifier);
+      specifier(node.moduleSpecifier, "literal", "import");
     } else if (ts.isCallExpression(node)) {
       const expression = node.expression;
-      const loader =
-        ts.isIdentifier(expression) && expression.text === "require"
-          ? "require"
-          : ts.isPropertyAccessExpression(expression) &&
-              ts.isIdentifier(expression.expression) &&
-              expression.expression.text === "require" &&
-              expression.name.text === "resolve"
-            ? "require.resolve"
-            : ts.isMetaProperty(expression) &&
-                expression.keywordToken === ts.SyntaxKind.ImportKeyword
-              ? "import.meta"
-              : null;
+      const directCreateRequire =
+        ts.isCallExpression(expression) &&
+        isCreateRequireFactory(expression.expression) &&
+        expression.arguments.length === 1 &&
+        isImportMetaUrl(expression.arguments[0]);
+      const directCreateRequireResolve =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "resolve" &&
+        ts.isCallExpression(expression.expression) &&
+        isCreateRequireFactory(expression.expression.expression) &&
+        expression.expression.arguments.length === 1 &&
+        isImportMetaUrl(expression.expression.arguments[0]);
+      const callerCreateRequireResolve =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "resolve" &&
+        ts.isCallExpression(expression.expression) &&
+        isCreateRequireFactory(expression.expression.expression) &&
+        expression.expression.arguments.length === 1 &&
+        !isImportMetaUrl(expression.expression.arguments[0]);
+      const aliasRequire =
+        ts.isIdentifier(expression) && requireBindings.has(expression.text);
+      const loader = aliasRequire
+        ? "require"
+        : ts.isPropertyAccessExpression(expression) &&
+            ts.isIdentifier(expression.expression) &&
+            requireBindings.has(expression.expression.text) &&
+            expression.name.text === "resolve"
+          ? "require.resolve"
+          : ts.isMetaProperty(expression) &&
+              expression.keywordToken === ts.SyntaxKind.ImportKeyword
+            ? "import.meta"
+            : null;
       const isImport = expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequireApply =
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "apply" &&
         ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "require";
+        requireBindings.has(expression.expression.text);
       const isMetaResolve =
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "resolve" &&
         expression.expression.getText(file) === "import.meta";
-      if (isImport || loader || isMetaResolve || isRequireApply) {
-        const argument = isRequireApply ? node.arguments[1] : node.arguments[0];
-        const callLoader = isRequireApply
-          ? "require.apply"
-          : isImport
-            ? "import"
-            : (loader ?? "import.meta.resolve");
-        const kind = "literal";
+      if (
+        isImport ||
+        loader ||
+        directCreateRequireResolve ||
+        callerCreateRequireResolve ||
+        isMetaResolve ||
+        isRequireApply ||
+        directCreateRequire
+      ) {
+        const argument = directCreateRequire
+          ? node.arguments[0]
+          : isRequireApply
+            ? node.arguments[1]
+            : node.arguments[0];
+        const callLoader = directCreateRequire
+          ? "require"
+          : directCreateRequireResolve || callerCreateRequireResolve
+            ? "require.resolve"
+            : isRequireApply
+              ? "require.apply"
+              : isImport
+                ? "import"
+                : (loader ?? "import.meta.resolve");
         if (argument)
-          specifier(argument, kind, callLoader, expression.getText(file));
-        else
-          edges.push({
-            kind: "dynamic",
-            loader: isImport ? "import" : (loader ?? "import.meta.resolve")
-          });
+          specifier(argument, "literal", callLoader, expression.getText(file));
+        else edges.push({ kind: "dynamic", loader: callLoader });
+      } else if (
+        ts.isIdentifier(expression) &&
+        createRequireBindings.has(expression.text) &&
+        node.arguments.length &&
+        !isImportMetaUrl(node.arguments[0])
+      ) {
+        edges.push({
+          kind: "dynamic",
+          loader: "createRequire",
+          call: expression.getText(file),
+          argumentText: node.arguments[0].getText(file)
+        });
       }
     } else if (
       ts.isNewExpression(node) &&
@@ -438,7 +613,7 @@ const referenceEdges = (source) => {
       node.arguments?.length === 2 &&
       isImportMetaUrl(node.arguments[1])
     ) {
-      specifier(node.arguments[0], "asset");
+      specifier(node.arguments[0], "asset", "asset");
     }
     ts.forEachChild(node, visit);
   };
@@ -446,100 +621,84 @@ const referenceEdges = (source) => {
   return { edges, diagnostics: file.parseDiagnostics };
 };
 
-const resolveFileReference = (root, specifier) => {
-  const rootIsDirectory = existsSync(root) && lstatSync(root).isDirectory();
-  const directoryEntries = rootIsDirectory
-    ? ["index.js", "index.mjs", "index.cjs", "index.json", "index.node"].map(
-        (name) => resolve(root, name)
-      )
-    : [];
-  const candidates = [
-    ...(!rootIsDirectory ? [root] : []),
-    ...[".js", ".mjs", ".cjs", ".json", ".node"].map((ext) => `${root}${ext}`),
-    ...directoryEntries,
-    ...(rootIsDirectory &&
-    specifier.endsWith("/") &&
-    directoryEntries.every((candidate) => !existsSync(candidate))
-      ? [root]
-      : [])
-  ];
-  const matches = candidates.filter((candidate) => {
-    if (!existsSync(candidate)) return false;
-    const stat = lstatSync(candidate);
-    return (
-      stat.isFile() ||
-      (candidate === root && specifier.endsWith("/") && stat.isDirectory())
+const nodeResolvers = new Map();
+const nodeResolver = (loader) => {
+  const kind =
+    loader === "require" ||
+    loader === "require.resolve" ||
+    loader === "require.apply"
+      ? "require"
+      : "import";
+  if (!nodeResolvers.has(kind)) {
+    nodeResolvers.set(
+      kind,
+      enhancedResolve.create.sync({
+        conditionNames: ["node", "node-addons", kind, "default"],
+        extensions: [".js", ".mjs", ".cjs", ".json", ".node"],
+        mainFields: ["main"],
+        exportsFields: ["exports"],
+        importsFields: ["imports"]
+      })
     );
-  });
-  if (matches.length !== 1) return null;
-  return matches[0];
+  }
+  return nodeResolvers.get(kind);
 };
 
-const selectExportTarget = (entry) => {
-  if (typeof entry === "string") return entry;
-  if (Array.isArray(entry))
-    return entry.map(selectExportTarget).find(Boolean) ?? null;
-  if (!entry || typeof entry !== "object") return null;
-  for (const condition of ["import", "node", "require", "default"]) {
-    if (condition in entry) {
-      const target = selectExportTarget(entry[condition]);
-      if (target) return target;
-    }
-  }
-  return null;
-};
-
-const packageImportRoot = (sourceRoot, packageRoot, specifier) => {
-  const parts = specifier.split("/");
-  const name = specifier.startsWith("@")
-    ? parts.slice(0, 2).join("/")
-    : parts[0];
-  let dependencyRoot;
-  try {
-    dependencyRoot = resolveDependency(sourceRoot, packageRoot, name);
-  } catch {
-    return null;
-  }
-  const subpath = specifier.slice(name.length) || ".";
-  const manifest = readManifest(resolve(dependencyRoot, "package.json"));
-  const fallback =
-    subpath === "." ? (manifest.main ?? "index.js") : `.${subpath}`;
-  const exportKey = subpath === "." ? "." : `.${subpath}`;
-  let exported = manifest.exports?.[exportKey];
-  if (!exported && typeof manifest.exports === "object") {
-    const wildcard = Object.entries(manifest.exports).find(([key]) => {
-      const [prefix, suffix] = key.split("*");
-      return (
-        key.includes("*") &&
-        exportKey.startsWith(prefix) &&
-        exportKey.endsWith(suffix)
-      );
-    });
-    if (wildcard) {
-      const [key, value] = wildcard;
-      const [prefix, suffix] = key.split("*");
-      const capture = exportKey.slice(
-        prefix.length,
-        exportKey.length - suffix.length || undefined
-      );
-      const wildcardTarget = selectExportTarget(value?.["."] ?? value);
-      exported = wildcardTarget?.replace("*", capture);
-    }
-  }
-  const target = selectExportTarget(exported?.["."] ?? exported) ?? fallback;
-  if (
-    typeof target !== "string" ||
-    target.startsWith("../") ||
-    target.startsWith("/")
-  )
-    return null;
-  const resolvedTarget = resolveFileReference(
-    resolve(dependencyRoot, target),
-    specifier
+const isWithin = (root, path) => {
+  const canonicalRoot = realpathSync(root);
+  const canonicalPath = realpathSync(path);
+  const relativePath = relative(canonicalRoot, canonicalPath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith(`..${sep}`) && relativePath !== "..")
   );
-  return resolvedTarget
-    ? { packageRoot: dependencyRoot, target: resolvedTarget }
-    : null;
+};
+
+const resolveNodeEdge = (sourceRoot, packageRoot, path, edge) => {
+  const specifier = edge.specifier;
+  if (isAbsolute(specifier))
+    return { error: "absolute source target is nonportable" };
+  const packageEdge = !specifier.startsWith(".") && !specifier.startsWith("#");
+  const isPackageImport = specifier.startsWith("#");
+  let expectedPackageRoot = packageRoot;
+  if (packageEdge) {
+    const parts = specifier.split("/");
+    const name = specifier.startsWith("@")
+      ? parts.slice(0, 2).join("/")
+      : parts[0];
+    try {
+      expectedPackageRoot = resolveDependency(sourceRoot, packageRoot, name);
+    } catch {
+      return null;
+    }
+  }
+  let target;
+  const directoryTarget = resolve(dirname(path), specifier);
+  if (
+    edge.kind === "asset" &&
+    specifier.endsWith("/") &&
+    existsSync(directoryTarget) &&
+    lstatSync(directoryTarget).isDirectory()
+  ) {
+    target = directoryTarget;
+  } else {
+    try {
+      target = nodeResolver(edge.loader)(dirname(path), specifier);
+    } catch {
+      return null;
+    }
+  }
+  if (!target) return null;
+  if (!isWithin(sourceRoot, target))
+    return { error: "resolved source target escapes shared runtime root" };
+  if (!isWithin(expectedPackageRoot, target))
+    return { error: "resolved source target escapes copied package ownership" };
+  return {
+    packageRoot: packageEdge ? expectedPackageRoot : packageRoot,
+    target,
+    packageEdge,
+    isPackageImport
+  };
 };
 
 const unresolvedRuntimeEdges = (sourceRoot, closure) => {
@@ -555,13 +714,22 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
   for (const { packageRoot, manifest } of closure) {
     for (const path of sourceFiles(packageRoot)) {
       const file = relative(packageRoot, path).replaceAll("\\", "/");
-      if (
+      const directoryExclusion =
         /(?:^|\/)(?:test|tests|__tests__|benchmark|benchmarks|examples|docs|scripts)(?:\/|$)/.test(
           file
         )
-      )
+          ? "non-runtime test, benchmark, example, documentation, or package script source"
+          : /^(?:eslint|vitest|jest)\.config\./.test(file)
+            ? "package-local test or lint configuration"
+            : null;
+      if (directoryExclusion) {
+        excludedSourceFiles.push({
+          package: manifest.name,
+          file,
+          reason: directoryExclusion
+        });
         continue;
-      if (/^(?:eslint|vitest|jest)\.config\./.test(file)) continue;
+      }
       const exclusion = sourceAuditExclusion(manifest.name, file);
       if (exclusion) {
         excludedSourceFiles.push({
@@ -585,8 +753,22 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
         const detail = `${manifest.name}:${file}: ${edge.specifier ?? `${edge.loader ?? edge.kind}(${edge.argumentText ?? ""}) non-literal edge`}`;
         if (!edge.specifier) {
           const owner = dynamicImportOwnership(manifest.name, file, edge);
-          if (owner && ["dynamic", "asset"].includes(edge.kind))
-            known.push({ detail, owner });
+          if (
+            owner === "optional-native-platform-package-probe" &&
+            !hasClosureOwnedOptionalNativePackage(closure)
+          ) {
+            unresolved.push(
+              `${detail}: no declared msgpackr-extract platform package in closure`
+            );
+          } else if (owner && ["dynamic", "asset"].includes(edge.kind))
+            known.push({
+              detail,
+              owner,
+              loader: edge.loader,
+              call: edge.call,
+              argumentText: edge.argumentText,
+              ...maintainedRuntimeEdgeMetadata(owner)
+            });
           else unresolved.push(detail);
           continue;
         }
@@ -594,25 +776,13 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
         if (builtins.has(edgeSpecifier)) continue;
         const packageEdge =
           !edgeSpecifier.startsWith(".") &&
-          !edgeSpecifier.startsWith("/") &&
+          !isAbsolute(edgeSpecifier) &&
           !edgeSpecifier.startsWith("#");
-        const isPackageImport = edgeSpecifier.startsWith("#");
-        const specifier = isPackageImport
-          ? selectExportTarget(manifest.imports?.[edgeSpecifier])
-          : edgeSpecifier;
-        const resolved = !specifier
-          ? null
-          : specifier.startsWith(".") || specifier.startsWith("/")
-            ? {
-                target: resolveFileReference(
-                  resolve(
-                    isPackageImport ? packageRoot : dirname(path),
-                    specifier
-                  ),
-                  specifier
-                )
-              }
-            : packageImportRoot(sourceRoot, packageRoot, specifier);
+        const resolved = resolveNodeEdge(sourceRoot, packageRoot, path, edge);
+        if (resolved?.error) {
+          unresolved.push(`${detail}: ${resolved.error}`);
+          continue;
+        }
         if (!resolved?.target) {
           const alternativeRuntimeOwner =
             edge.kind === "asset" &&
@@ -670,7 +840,10 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
           }
           continue;
         }
-        if (packageEdge && !included.has(resolve(resolved.packageRoot))) {
+        if (
+          resolved.packageEdge &&
+          !included.has(resolve(resolved.packageRoot))
+        ) {
           unresolved.push(`${detail}: package is outside declared closure`);
         }
       }
@@ -743,7 +916,7 @@ const projectComponent = (
   const required = componentFiles(componentRoot);
   writeFileSync(
     resolve(componentRoot, "component-assembly-inventory.json"),
-    `${JSON.stringify({ schemaVersion: 2, excludedPackages, verifiedLiteralEdges: true, maintainedRuntimeEdges: runtimeEdges.known, unresolvedRuntimeEdges: runtimeEdges.unresolved, excludedSourceFiles: runtimeEdges.excludedSourceFiles, auditScope: "TypeScript JavaScript AST audit of .js, .cjs, and .mjs files in declared package closures; parser errors fail assembly.", scanLimits: ["Static import/export, import(), require(), require.resolve(), import.meta.resolve(), require.apply(), and new URL(literal, import.meta.url) references are checked.", "Dynamic loader and optional asset edges require named maintainedRuntimeEdges ownership; excluded source files are listed with reasons.", "Computed paths, arbitrary loaders, native addon internals, and behavior assembled through arbitrary control flow are not fully inferable statically; successful loader smoke tests validate only selected host-target entries."], required }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 2, excludedPackages, verifiedLiteralEdges: true, maintainedRuntimeEdges: runtimeEdges.known, unresolvedRuntimeEdges: runtimeEdges.unresolved, excludedSourceFiles: runtimeEdges.excludedSourceFiles, auditScope: "TypeScript JavaScript AST audit of .js, .cjs, and .mjs files in declared package closures; parser errors fail assembly.", scanLimits: ["Static import/export, import(), require(), require.resolve(), import.meta.resolve(), require.apply(), and new URL(literal, import.meta.url) references are checked.", "Dynamic loader and optional asset edges require named package/file/expression-constrained maintainedRuntimeEdges ownership; inventory entries state rationale and limits.", "Pino caller-selected transport targets are not bundled by this exception; configured targets require separate closure ownership and verification.", "Claude SDK platform CLI package probes are optional existence checks; platform runtime packages are removed and asserted absent.", "The node-gyp-build-optional-packages probe is owned only with a declared msgpackr-extract optional platform package in closure.", "Computed paths outside named owners, arbitrary loaders, native addon internals, and behavior assembled through arbitrary control flow are not fully inferable statically; successful loader smoke tests validate only selected host-target entries."], required }, null, 2)}\n`
   );
   assertSafeTree(componentRoot);
   return { root: componentRoot, required, closure };

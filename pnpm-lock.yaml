@@ -26,6 +26,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.0.2
         version: 6.0.2(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.1)(yaml@2.9.0))
+      enhanced-resolve:
+        specifier: ^5.22.2
+        version: 5.22.2
       eslint:
         specifier: ^10.4.0
         version: 10.4.0(jiti@2.7.0)

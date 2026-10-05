@@ -92,11 +92,18 @@ package-count or size-based deletion. A TypeScript JavaScript AST audit checks
 `import()`, `require()`, `require.resolve()`, `import.meta.resolve()`, `require.apply()` calls, and
 `new URL(literal, import.meta.url)` references. Parser
 errors, unresolved literal targets, ambiguous targets, and unowned dynamic
-loader edges fail assembly. Inventory lists named maintained runtime edges and
-excluded non-runtime source files with reasons; an empty unowned-edge list is
-not proof of arbitrary computed filesystem paths, native addon internals, or
-loader behavior assembled through arbitrary control flow. Selected host-target
-native modules are loader-smoke-tested separately. This build step does not
+loader edges fail assembly. Inventory records each maintained runtime edge's
+package/file/expression, rationale, and limits, plus excluded non-runtime source
+files with reasons. Pino's caller-selected transport resolver is not a promise
+to bundle arbitrary transports; any configured target must be separately
+included and verified. Claude Agent SDK's exact module-relative resolver is
+owned only for fixed platform CLI candidates guarded by existence checks; its
+platform executables are removed and asserted absent. The native addon loader's
+computed platform package is owned only when a declared `msgpackr-extract`
+optional platform package is present in closure. An empty unowned-edge list
+is not proof of arbitrary computed filesystem paths, native addon
+internals, or loader behavior assembled through arbitrary control flow. Selected
+host-target native modules are loader-smoke-tested separately. This build step does not
 change source Desktop or standalone
 runtime layout; their consumers remain on existing staging until component
 resolution is integrated.
