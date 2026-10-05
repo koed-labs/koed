@@ -69,6 +69,7 @@ test("projects hermetic base and privacy closures from shared production graph",
     {
       "index.js":
         'import { load } from "shared-fixture";\nimport { suffix } from "@fixture/nested-only";\nconst shared = await load();\nexport const value = `${shared.value}:privacy:${suffix}`;\n',
+      "dist/relative.js": 'import "../..//privacy-only/index.js";\n',
       "native-loader.js":
         'export const nativePath = new URL("./native.node", import.meta.url);\n',
       "native.node": "fixture native loader bytes\n",
@@ -76,7 +77,11 @@ test("projects hermetic base and privacy closures from shared production graph",
         name: "@fixture/nested-only",
         version: "1.0.0",
         type: "module",
-        exports: { ".": "./index.js" }
+        exports: {
+          ".": {
+            node: { import: "./index.js", default: "./index.js" }
+          }
+        }
       }),
       "node_modules/@fixture/nested-only/LICENSE":
         "nested dependency licence\n",
@@ -93,7 +98,7 @@ test("projects hermetic base and privacy closures from shared production graph",
     },
     {
       "dist/index.js":
-        'import { value } from "privacy-only";\nprocess.stdout.write(`${value}-closure-ok\\n`);\n'
+        'import { value } from "privacy-only";\nprocess.stdout.write(`${value}-closure-ok\n`);\n'
     }
   );
   packageFixture(
@@ -121,7 +126,7 @@ test("projects hermetic base and privacy closures from shared production graph",
   write(resolve(sourceRoot, "api/dist/index.js"), 'import "base-only";\n');
   write(
     resolve(sourceRoot, "privacy-service/dist/index.js"),
-    'import { value } from "privacy-only";\nprocess.stdout.write(`${value}-closure-ok\\n`);\n'
+    'import { value } from "privacy-only";\nprocess.stdout.write(`${value}-closure-ok\n`);\n'
   );
   write(resolve(sourceRoot, "api/prompts/runtime.md"), "base prompt\n");
   write(
@@ -189,10 +194,147 @@ test("projects hermetic base and privacy closures from shared production graph",
     assert.ok(
       inventory.packages.every((entry) => entry.files.includes("LICENSE"))
     );
+    const graph = JSON.parse(
+      readFileSync(
+        resolve(componentRoot, "component-assembly-inventory.json"),
+        "utf8"
+      )
+    );
+    assert.equal(graph.verifiedLiteralEdges, true);
+    assert.match(graph.auditScope, /TypeScript JavaScript AST/);
+    assert.deepEqual(graph.unresolvedRuntimeEdges, []);
+    assert.ok(graph.maintainedRuntimeEdges.every((edge) => edge.owner));
+    assert.ok(graph.scanLimits.length > 0);
   }
 });
 
 const assertSorted = (items) => [...items].sort();
+
+test("rejects missing literal imports and package edges", () => {
+  const workspace = mkdtempSync(
+    resolve(tmpdir(), "koed-component-missing-import-")
+  );
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  for (const [service, packageName] of [
+    ["api", "@koed/api"],
+    ["worker", "@koed/worker"],
+    ["embedding-service", "@koed/embedding-service"],
+    ["mcp-server", "@koed/mcp-server"],
+    ["koed-server", "@koed-labs/server"],
+    ["privacy-service", "@koed/privacy-service"]
+  ]) {
+    packageFixture(
+      sourceRoot,
+      packageName,
+      {},
+      {
+        "dist/index.js":
+          service === "privacy-service"
+            ? 'import "missing-runtime-edge";\nimport "./missing-relative.js";\nrequire("missing-" + "computed");\n'
+            : "export {};\n"
+      }
+    );
+    write(resolve(sourceRoot, service, "dist/index.js"), "export {};\n");
+  }
+
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      }),
+    /unresolved runtime edges[\s\S]*missing-runtime-edge/
+  );
+});
+
+test("rejects template dynamic imports and unresolved native/assets", () => {
+  const workspace = mkdtempSync(
+    resolve(tmpdir(), "koed-component-unknown-edge-")
+  );
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  for (const [service, packageName] of [
+    ["api", "@koed/api"],
+    ["worker", "@koed/worker"],
+    ["embedding-service", "@koed/embedding-service"],
+    ["mcp-server", "@koed/mcp-server"],
+    ["koed-server", "@koed-labs/server"],
+    ["privacy-service", "@koed/privacy-service"]
+  ]) {
+    packageFixture(
+      sourceRoot,
+      packageName,
+      {},
+      {
+        "dist/index.js":
+          service === "privacy-service"
+            ? 'const ext = ".js"; await import(`./unknown${ext}`);\n' +
+              'const { createRequire } = await import("node:module");\n' +
+              'createRequire(import.meta.url)("./missing.node");\n' +
+              'new URL("./missing.prompt", import.meta.url);\n'
+            : "export {};\n"
+      }
+    );
+    write(resolve(sourceRoot, service, "dist/index.js"), "export {};\n");
+  }
+
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      }),
+    /unresolved runtime edges.*(?:non-literal|asset)/is
+  );
+});
+
+test("rejects symlinked source root and scoped package ancestors", () => {
+  const workspace = mkdtempSync(
+    resolve(tmpdir(), "koed-component-ancestor-link-")
+  );
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  const realRoot = resolve(workspace, "real-runtime");
+  packageFixture(
+    realRoot,
+    "@koed/api",
+    {},
+    { "dist/index.js": "export {};\n" }
+  );
+  symlinkSync(realRoot, sourceRoot);
+
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      }),
+    /unsupported entries/i
+  );
+
+  const scopedSource = resolve(workspace, "scoped-runtime");
+  const externalScope = resolve(workspace, "external-scope");
+  packageFixture(
+    externalScope,
+    "@koed/api",
+    {},
+    { "dist/index.js": "export {};\n" }
+  );
+  mkdirSync(resolve(scopedSource, "node_modules"), { recursive: true });
+  symlinkSync(
+    resolve(externalScope, "node_modules/@koed"),
+    resolve(scopedSource, "node_modules/@koed")
+  );
+  assert.throws(
+    () =>
+      projectRuntimeComponents({
+        sourceRoot: scopedSource,
+        outputDir: resolve(workspace, "scoped-components")
+      }),
+    /unsupported entries/i
+  );
+});
 
 test("fails closed on unowned non-literal dynamic imports", () => {
   const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-dynamic-"));
@@ -213,11 +355,11 @@ test("fails closed on unowned non-literal dynamic imports", () => {
       {
         "dist/index.js":
           service === "privacy-service"
-            ? "import(moduleName);\\n"
-            : "export {};\\n"
+            ? "import(moduleName);\n"
+            : "export {};\n"
       }
     );
-    write(resolve(sourceRoot, service, "dist/index.js"), "export {};\\n");
+    write(resolve(sourceRoot, service, "dist/index.js"), "export {};\n");
   }
 
   assert.throws(
@@ -226,7 +368,7 @@ test("fails closed on unowned non-literal dynamic imports", () => {
         sourceRoot,
         outputDir: resolve(workspace, "components")
       }),
-    /unresolved dynamic imports.*privacy-service/s
+    /unresolved runtime edges.*privacy-service/s
   );
 });
 

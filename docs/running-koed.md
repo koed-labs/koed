@@ -84,9 +84,22 @@ projects manifest dependency closures into independent component roots; shared
 packages are copied into both trees when needed, and each tree carries its own
 third-party notice inventory. Target pruning remains governed by the reviewed
 privacy native-package policy, including ONNX Runtime, Sharp, and Argon2 target
-files. Runtime closure does not use package-count or size-based deletion. This
-build step does not change source Desktop or standalone runtime layout; their
-consumers remain on existing staging until component resolution is integrated.
+files. Assembly removes verified Claude Agent SDK platform executables and
+prunes node-pty to reviewed target before projecting either component; assembly
+asserts those target boundaries afterward. Runtime closure does not use
+package-count or size-based deletion. A TypeScript JavaScript AST audit checks
+`.js`, `.cjs`, and `.mjs` files in declared package closures for import/export,
+`import()`, `require()`, `require.resolve()`, `import.meta.resolve()`, `require.apply()` calls, and
+`new URL(literal, import.meta.url)` references. Parser
+errors, unresolved literal targets, ambiguous targets, and unowned dynamic
+loader edges fail assembly. Inventory lists named maintained runtime edges and
+excluded non-runtime source files with reasons; an empty unowned-edge list is
+not proof of arbitrary computed filesystem paths, native addon internals, or
+loader behavior assembled through arbitrary control flow. Selected host-target
+native modules are loader-smoke-tested separately. This build step does not
+change source Desktop or standalone
+runtime layout; their consumers remain on existing staging until component
+resolution is integrated.
 
 On a normal foreground launch, Desktop creates and loads its main window before
 it resumes the managed local `koed-server`. Platform secret-provider

@@ -8,7 +8,7 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const appRuntimePackages = [
@@ -288,7 +288,16 @@ export const stageSharedAppRuntime = ({ repoRoot, runtimeRoot }) => {
       "--prod",
       runtimeRoot
     ],
-    { cwd: repoRoot, stdio: "inherit" }
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        PATH: [dirname(process.execPath), process.env.PATH]
+          .filter(Boolean)
+          .join(delimiter)
+      }
+    }
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
