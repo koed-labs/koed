@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import { useEffect, useState } from "react";
 
@@ -13,24 +13,44 @@ export type SelectedLocalProjectFolder = {
   selectionId: string;
 };
 
-export async function listRegisteredLocalProjects(): Promise<RegisteredLocalProject[]> {
+export async function listRegisteredLocalProjects(): Promise<
+  RegisteredLocalProject[]
+> {
   const response = await fetch("/studio-api/projects", {
     headers: { accept: "application/json" },
     cache: "no-store",
     credentials: "same-origin"
   });
   const body: unknown = await response.json().catch(() => null);
-  if (!response.ok || !body || typeof body !== "object" || !Array.isArray((body as { projects?: unknown }).projects)) {
+  if (
+    !response.ok ||
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray((body as { projects?: unknown }).projects)
+  ) {
     throw new Error("The local Project list is unavailable.");
   }
-  const projects = (body as { projects: unknown[] }).projects.flatMap((value): RegisteredLocalProject[] => {
-    if (!value || typeof value !== "object") return [];
-    const project = value as { id?: unknown; name?: unknown; lastSeenAt?: unknown };
-    return typeof project.id === "string" && typeof project.name === "string" &&
-      (project.lastSeenAt === null || typeof project.lastSeenAt === "string")
-      ? [{ id: project.id, name: project.name, lastSeenAt: project.lastSeenAt }]
-      : [];
-  });
+  const projects = (body as { projects: unknown[] }).projects.flatMap(
+    (value): RegisteredLocalProject[] => {
+      if (!value || typeof value !== "object") return [];
+      const project = value as {
+        id?: unknown;
+        name?: unknown;
+        lastSeenAt?: unknown;
+      };
+      return typeof project.id === "string" &&
+        typeof project.name === "string" &&
+        (project.lastSeenAt === null || typeof project.lastSeenAt === "string")
+        ? [
+            {
+              id: project.id,
+              name: project.name,
+              lastSeenAt: project.lastSeenAt
+            }
+          ]
+        : [];
+    }
+  );
   return projects;
 }
 
@@ -55,9 +75,9 @@ export function useLocalProjectCapabilities(): {
         const payload: unknown = await response.json().catch(() => null);
         return Boolean(
           payload &&
-            typeof payload === "object" &&
-            (payload as { canCreateLocalProject?: unknown })
-              .canCreateLocalProject === true
+          typeof payload === "object" &&
+          (payload as { canCreateLocalProject?: unknown })
+            .canCreateLocalProject === true
         );
       })
       .then((allowed) => {
@@ -107,7 +127,8 @@ async function projectWrite(path: string, body: Record<string, string>) {
     throw new Error(
       response.status === 501
         ? "The native project folder picker is available in Koed Studio for Electron."
-        : response.status === 400 && result?.error === "folder_selection_expired"
+        : response.status === 400 &&
+            result?.error === "folder_selection_expired"
           ? "The folder selection expired. Choose the folder again."
           : "Koed could not register this project. Try again."
     );
@@ -124,20 +145,25 @@ export async function chooseLocalProjectFolder(): Promise<SelectedLocalProjectFo
     !result.path ||
     typeof result.selectionId !== "string" ||
     !result.selectionId
-  ) throw new Error("Koed returned an invalid folder selection.");
+  )
+    throw new Error("Koed returned an invalid folder selection.");
   return { path: result.path, selectionId: result.selectionId };
 }
 
 export async function registerLocalProject(input: {
-  name: string;
+  name?: string;
   selectionId: string;
 }): Promise<RegisteredLocalProject> {
-  const result = await projectWrite("/studio-api/projects", input);
+  const result = await projectWrite("/studio-api/projects", {
+    selectionId: input.selectionId,
+    ...(input.name === undefined ? {} : { name: input.name })
+  });
   const project = result?.project;
   if (
     typeof project?.id !== "string" ||
     typeof project?.name !== "string" ||
     (project.lastSeenAt !== null && typeof project.lastSeenAt !== "string")
-  ) throw new Error("Koed returned an invalid Project record.");
+  )
+    throw new Error("Koed returned an invalid Project record.");
   return project;
 }

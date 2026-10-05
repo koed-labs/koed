@@ -847,16 +847,19 @@ const readProjectCreateBody = async (request) => {
   }
   if (
     !isRecord(parsed) ||
-    Object.keys(parsed).sort().join(",") !== "name,selectionId" ||
-    typeof parsed.name !== "string" ||
-    parsed.name.trim().length < 1 ||
-    parsed.name.trim().length > 120 ||
-    /[\u0000-\u001f\u007f]/.test(parsed.name) ||
+    !["name,selectionId", "selectionId"].includes(
+      Object.keys(parsed).sort().join(",")
+    ) ||
+    (parsed.name !== undefined &&
+      (typeof parsed.name !== "string" ||
+        parsed.name.trim().length < 1 ||
+        parsed.name.trim().length > 120 ||
+        /[\u0000-\u001f\u007f]/.test(parsed.name))) ||
     typeof parsed.selectionId !== "string" ||
     !/^[a-zA-Z0-9_-]{32,64}$/.test(parsed.selectionId)
   )
     throw Object.assign(new Error("invalid_payload"), { statusCode: 400 });
-  return { name: parsed.name.trim(), selectionId: parsed.selectionId };
+  return { name: parsed.name?.trim(), selectionId: parsed.selectionId };
 };
 
 const readCollaborationActionBody = async (request) => {

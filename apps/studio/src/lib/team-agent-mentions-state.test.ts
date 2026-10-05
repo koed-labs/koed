@@ -4,6 +4,7 @@ import {
   buildOwnedAgentHandoffDraft,
   buildTeamAgentMentions,
   privateAgentHandoffHref,
+  privateAgentHandoffSelection,
   teamMentionSelectionForScope
   // @ts-expect-error -- Node's native TypeScript runner needs the source extension.
 } from "./team-agent-mentions-state.ts";
@@ -141,4 +142,59 @@ test("private Agent handoff carries bounded editable context and only approved r
     }).split("?")[1]
   );
   assert.equal(bounded.get("draft")?.length, 8_000);
+});
+
+test("owned-Agent handoff retains model, reasoning, access and exact Client", () => {
+  const selection = {
+    agentId: "agent-a",
+    provider: "codex",
+    model: "model-b",
+    effort: "high",
+    permissionMode: "read" as const,
+    instanceId: "client-a",
+    hostedInstanceId: "hosted-a"
+  };
+  const href = privateAgentHandoffHref({
+    agentId: selection.agentId,
+    localProjectId: "lp_project",
+    teamId: "team",
+    draft: "retained",
+    selection
+  });
+  const restored = privateAgentHandoffSelection(
+    new URLSearchParams(href.split("?")[1])
+  );
+  assert.deepEqual(restored, {
+    provider: "codex",
+    model: "model-b",
+    effort: "high",
+    permissionMode: "read",
+    instanceId: "client-a",
+    hostedInstanceId: "hosted-a"
+  });
+});
+test("handoff settings reject incomplete or malformed values", () => {
+  assert.equal(privateAgentHandoffSelection(new URLSearchParams()), undefined);
+  assert.equal(
+    privateAgentHandoffSelection(
+      new URLSearchParams({
+        provider: "codex",
+        model: "model",
+        effort: "high",
+        access: "invalid"
+      })
+    ),
+    undefined
+  );
+  assert.equal(
+    privateAgentHandoffSelection(
+      new URLSearchParams({
+        provider: "codex",
+        model: "bad\nmodel",
+        effort: "high",
+        access: "read"
+      })
+    ),
+    undefined
+  );
 });

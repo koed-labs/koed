@@ -30,8 +30,8 @@ export type ManagedChatSendRequestIdentity = Readonly<{
   projectId: string | null;
   executionId: string | null;
   executionGeneration: number | null;
-  agentId: string;
-  agentVersion: number;
+  agentId: string | null;
+  agentVersion: number | null;
   provider: string;
   aiClientInstanceId: string;
   model: string;

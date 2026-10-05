@@ -1279,6 +1279,27 @@ export const managedConversationOriginSourceGeneration = (
   return artifact.sourceGenerationId;
 };
 
+export const managedConversationCodexRebaseSourceMatches = (
+  value: unknown,
+  expected: {
+    sourceGenerationId: string;
+    providerThreadId: string;
+    localSessionId: string;
+  }
+): boolean => {
+  const artifact = record(value);
+  return (
+    artifact.lifecycle === "active" &&
+    artifact.sourceGenerationId === expected.sourceGenerationId &&
+    artifact.externalSessionId === expected.providerThreadId &&
+    artifact.sessionId === expected.localSessionId &&
+    artifact.sourceKind === "codex" &&
+    (artifact.sourceRuntime === "codex" ||
+      artifact.sourceRuntime === "codex-cli") &&
+    typeof artifact.id === "string"
+  );
+};
+
 const promptFrom = (command: ClaimedManagedConversationCommand): string => {
   const prompt = command.payload?.prompt;
   if (typeof prompt !== "string" || !prompt.trim()) {
@@ -4456,13 +4477,11 @@ export const createManagedConversationService = (options: {
       );
     const parent = record(parentLookup.artifact);
     if (
-      parent.lifecycle !== "active" ||
-      parent.sourceGenerationId !== sourceGenerationId ||
-      parent.externalSessionId !== providerThreadId ||
-      parent.sessionId !== binding.localSessionId ||
-      parent.sourceKind !== "codex" ||
-      parent.sourceRuntime !== "codex" ||
-      typeof parent.id !== "string"
+      !managedConversationCodexRebaseSourceMatches(parent, {
+        sourceGenerationId,
+        providerThreadId,
+        localSessionId: binding.localSessionId
+      })
     ) {
       throw managedConversationError(
         "ManagedConversationSourceRebaseIdentityError"
@@ -8699,7 +8718,14 @@ export const createManagedConversationService = (options: {
           command,
           async (session) => {
             assertPromptNotStopped(command);
-            if (command.allowArchivedResume) {
+            // A new thread has no captured source generation to rebase. Native
+            // session identity checks still apply; once a generation exists,
+            // preserve the strict explicit-resume rebase checks below.
+            if (
+              command.allowArchivedResume &&
+              (command.execution.sourceGenerationId ||
+                checkpointBinding.sourceGenerationId)
+            ) {
               try {
                 const resumed = await session.start({
                   allowUnarchiveOnArchivedResume: true,

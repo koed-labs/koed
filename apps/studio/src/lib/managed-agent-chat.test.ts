@@ -199,9 +199,9 @@ describe("managed agent chat boundary", () => {
     expect(() =>
       resolveLaunchSelection({ ...selection, effort: "max" }, instances)
     ).toThrow("not available");
-    expect(() =>
+    expect(
       resolveLaunchSelection({ ...selection, agentId: null }, instances)
-    ).toThrow("Choose an agent");
+    ).toMatchObject({ provider: selection.provider, model: selection.model });
   });
   it("ignores unready models and old-generation runtime items", () => {
     expect(

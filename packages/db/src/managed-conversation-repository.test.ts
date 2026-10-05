@@ -1499,6 +1499,7 @@ describe("managed provider encrypted history", () => {
     const now = new Date();
     const row = {
       id: commandId,
+      state: "completed",
       client_user_message_id: commandId,
       result: { turnId: "provider-turn", providerItemId: "provider-item" },
       sequence: 4,
@@ -1522,7 +1523,7 @@ describe("managed provider encrypted history", () => {
       expect.stringContaining("owner_user_id = $1 and execution_id = $2"),
       [owner, executionId, 5, 2]
     );
-    expect(query.mock.calls[0]?.[0]).toContain("state = 'completed'");
+    expect(query.mock.calls[0]?.[0]).not.toContain("state = 'completed'");
     expect(query.mock.calls[0]?.[0]).toContain("not exists");
     expect(history).toMatchObject({
       turns: [
@@ -1553,6 +1554,46 @@ describe("managed provider encrypted history", () => {
     expect(query.mock.calls[1]?.[1]).toEqual([owner, executionId, null, 21]);
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["queued", "running", "failed", "canceled", "indeterminate"])(
+    "retains the submitted question for a %s task without presenting a completed answer",
+    async (state) => {
+      const encrypted = await envelope({
+        prompt: "Hello world!",
+        assistantOutput: { text: "Unconfirmed reply", truncated: false }
+      });
+      const now = new Date();
+      const query = vi.fn(async () => ({
+        rows: [
+          {
+            id: commandId,
+            state,
+            client_user_message_id: commandId,
+            sequence: 4,
+            created_at: now,
+            completed_at: null,
+            updated_at: now,
+            encrypted_payload: encrypted
+          }
+        ]
+      }));
+      const repository = createManagedConversationRepository(
+        { query } as unknown as pg.Pool,
+        { envelopeEncryptionProvider: provider }
+      );
+      const history = await repository.listManagedConversationPromptHistory(
+        { userId: owner },
+        { executionId }
+      );
+      expect(query.mock.calls[0]?.[0]).not.toContain("state = 'completed'");
+      expect(history.turns).toEqual([
+        expect.objectContaining({
+          prompt: "Hello world!",
+          assistantOutput: null
+        })
+      ]);
+    }
+  );
 
   it("directly loads one saved provider answer by owner, execution, and command id", async () => {
     const context = {

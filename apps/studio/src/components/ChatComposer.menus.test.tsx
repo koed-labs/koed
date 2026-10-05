@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type ChatComposerSelection } from "./ChatComposer";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -19,7 +19,14 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function mount() {
+async function mount(
+  options: {
+    localOnly?: boolean;
+    value?: string;
+    onChange?: (value: string) => void;
+    onSend?: (text: string, selection: ChatComposerSelection) => void | false;
+  } = {}
+) {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -29,7 +36,10 @@ async function mount() {
         placeholder="Continue"
         projectName="Personal"
         branch="main"
-        onSend={() => undefined}
+        onSend={options.onSend ?? (() => undefined)}
+        value={options.value}
+        onChange={options.onChange}
+        environmentSwitchDisabled={options.localOnly}
         initialModel="codex:model-a"
         initialEffort="medium"
         modelOptions={[
@@ -61,6 +71,39 @@ async function click(element: HTMLElement) {
 }
 
 describe("chat control menu dismissal", () => {
+  it("retains the draft when sending is deferred for a recipient choice", async () => {
+    const onChange = vi.fn();
+    const onSend = vi.fn(() => false as const);
+    await mount({ value: "Hello world!", onChange, onSend });
+    await click(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+    );
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")?.value).toBe("Hello world!");
+  });
+  it("keeps local execution fixed while sending the selected AI Client and model", async () => {
+    const onSend = vi.fn();
+    await mount({ value: "A local draft", onSend });
+    const execution = container.querySelector<HTMLSpanElement>(
+      '[aria-label="Local execution"]'
+    )!;
+    expect(execution.tagName).toBe("SPAN");
+    await click(execution);
+    expect(execution.textContent).toBe("Local");
+    await click(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+    );
+    expect(onSend).toHaveBeenCalledWith(
+      "A local draft",
+      expect.objectContaining({
+        provider: "codex",
+        model: "model-a",
+        effort: "medium"
+      }),
+      undefined
+    );
+  });
   it.each([
     { top: 100, bottom: 128, side: "top-full", height: 360 },
     { top: 320, bottom: 348, side: "bottom-full", height: 304 }

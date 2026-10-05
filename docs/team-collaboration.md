@@ -933,3 +933,9 @@ device where they were typed and are restored only under the authorized
 account, Team and thread. A reconnect does not send a draft automatically.
 Unread state comes from the backend; viewing a thread advances its read cursor
 only through messages that were actually visible in the focused view.
+
+### Channel composer Agent mode
+
+Channel messages and thread replies use the shared chat composer. Typing `@` opens the people/Agent list and keeps the normal message toolbar. Choosing a human keeps that toolbar; choosing an Agent switches to Agent mode, reveals the project context, and shows fixed Local execution plus model, reasoning, and access controls for the User's own Agents. Removing the selected Agent mention or cancelling Agent mode returns to ordinary messaging without discarding the draft. Thread composers retain the selected Agent identity and reset it when the selected root message changes.
+
+The composer loads available local AI Client model capabilities alongside Team Agent discovery. If no models are available, only the selected owned-Agent mode shows an availability warning and disables the model picker; ordinary channel messages remain usable. Owned-Agent handoffs carry the explicitly selected provider, model, reasoning, permission mode, and Client identity into the private chat draft. Private launch still verifies Agent lifecycle/version and current runtime capabilities before sending. Channel requests retain the Shared Project binding and its connected local Project; ordinary channels use the existing Shared Project selection step. Colleague-Agent requests leave execution settings to the receiving Agent owner and do not display controls that cannot affect that request.

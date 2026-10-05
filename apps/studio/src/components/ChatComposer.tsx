@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { AgentAvatarView } from "@/components/AgentAvatarView";
 import {
@@ -137,6 +143,7 @@ const ACCESS_MODES: {
 type ChatComposerProps = {
   placeholder: string;
   projectName: string;
+  projectSelector?: ReactNode;
   branch: string;
   footer?: string;
   value?: string;
@@ -145,7 +152,7 @@ type ChatComposerProps = {
     text: string,
     selection: ChatComposerSelection,
     continueWithoutMemory?: true
-  ) => void | Promise<void>;
+  ) => void | false | Promise<void | false>;
   memoryRecallFailure?: string | null;
   sendEnabled?: boolean;
   sendDisabledReason?: string;
@@ -162,6 +169,7 @@ type ChatComposerProps = {
   onAgentMention?: (agentId: string) => void;
   onActiveAgentChange?: (agentId: string | null) => void;
   modelOptions?: readonly AgentModelCapability[];
+  modelAvailabilityWarning?: string | null;
   clientResourceScope?: NativeSkillScope;
   onSelectedResourceIdsChange?: (resourceIds: string[]) => void;
   restoreSelection?: ChatComposerRestoreSelection;
@@ -183,6 +191,7 @@ type ChatComposerProps = {
 export function ChatComposer({
   placeholder,
   projectName,
+  projectSelector,
   branch,
   footer,
   value,
@@ -194,16 +203,17 @@ export function ChatComposer({
   showExecutionControls = true,
   switchToExecutionControlsOnMention = false,
   showMetaBar = true,
-  environmentSwitchDisabled = false,
+  environmentSwitchDisabled = true,
   executionPreset,
   agents = [],
   teamMembers = [],
   initialMentionUserIds = [],
   onMentionUserIdsChange,
-  activeAgentId = null,
+  activeAgentId: controlledActiveAgentId,
   onAgentMention,
   onActiveAgentChange,
   modelOptions = [],
+  modelAvailabilityWarning,
   clientResourceScope,
   onSelectedResourceIdsChange,
   restoreSelection,
@@ -221,6 +231,17 @@ export function ChatComposer({
   interruptDisabled = false,
   onInterrupt
 }: ChatComposerProps) {
+  const [internalActiveAgentId, setInternalActiveAgentId] = useState<
+    string | null
+  >(null);
+  const activeAgentId =
+    controlledActiveAgentId === undefined
+      ? internalActiveAgentId
+      : controlledActiveAgentId;
+  const changeActiveAgent = (id: string | null) => {
+    if (controlledActiveAgentId === undefined) setInternalActiveAgentId(id);
+    onActiveAgentChange?.(id);
+  };
   const initialAgent = agents.find((agent) => agent.id === activeAgentId);
   const initialAgentCapability = initialAgent
     ? modelOptions.find(
@@ -233,9 +254,10 @@ export function ChatComposer({
   const [model, setModel] = useState<string>(
     restoreSelection
       ? `${restoreSelection.provider}:${restoreSelection.model}${restoreSelection.hostedInstanceId || restoreSelection.instanceId ? `:${restoreSelection.hostedInstanceId ?? restoreSelection.instanceId}` : ""}`
-      : initialAgent?.defaultProvider && initialAgent.defaultModel
-        ? `${initialAgent.defaultProvider}:${initialAgent.defaultModel}`
-        : (initialModel ?? initialAgent?.defaultModel ?? DEFAULT_MODEL)
+      : (initialModel ??
+          (initialAgent?.defaultProvider && initialAgent.defaultModel
+            ? `${initialAgent.defaultProvider}:${initialAgent.defaultModel}`
+            : (initialAgent?.defaultModel ?? DEFAULT_MODEL)))
   );
   const [effortIndex, setEffortIndex] = useState<number | null>(() => {
     if (restoreSelection) {
@@ -243,14 +265,14 @@ export function ChatComposer({
       const index = effortIndexFor(restoreSelection.effort);
       return index >= 0 ? index : null;
     }
-    if (initialAgent) {
-      if (!initialAgent.defaultReasoningEffort) return null;
-      const index = effortIndexFor(initialAgent.defaultReasoningEffort);
-      return index >= 0 ? index : null;
-    }
     if (initialEffort !== undefined) {
       if (initialEffort === "") return null;
       const index = effortIndexFor(initialEffort);
+      return index >= 0 ? index : null;
+    }
+    if (initialAgent) {
+      if (!initialAgent.defaultReasoningEffort) return null;
+      const index = effortIndexFor(initialAgent.defaultReasoningEffort);
       return index >= 0 ? index : null;
     }
     return DEFAULT_EFFORT_INDEX;
@@ -259,13 +281,13 @@ export function ChatComposer({
     () => {
       const restored = restoreSelection?.effort;
       if (restored && effortIndexFor(restored) < 0) return restored;
-      const preferred = initialAgent?.defaultReasoningEffort;
+      const preferred = initialEffort ?? initialAgent?.defaultReasoningEffort;
       return preferred && effortIndexFor(preferred) < 0 ? preferred : null;
     }
   );
   const [confirmedAgentModelFor, setConfirmedAgentModelFor] = useState<
     string | null
-  >(null);
+  >(initialModel && initialAgent ? initialAgent.id : null);
   const [accessMode, setAccessMode] = useState<AccessMode>(
     restoreSelection?.permissionMode ?? initialPermissionMode
   );
@@ -359,7 +381,11 @@ export function ChatComposer({
   };
   const [unsupportedDefaultEffortFor, setUnsupportedDefaultEffortFor] =
     useState<string | null>(() => {
-      if (restoreSelection || !initialAgent?.defaultReasoningEffort)
+      if (
+        restoreSelection ||
+        initialEffort !== undefined ||
+        !initialAgent?.defaultReasoningEffort
+      )
         return null;
       const index = effortIndexFor(initialAgent.defaultReasoningEffort);
       return index < 0 ||
@@ -400,16 +426,16 @@ export function ChatComposer({
     (issue) =>
       !resolvedMentionIds[issue.name.toLocaleLowerCase().replace(/\s+/g, "_")]
   );
+  const channelAgentMode =
+    switchToExecutionControlsOnMention && selectedAgent !== null;
   const executionControlsVisible =
     showExecutionControls ||
-    (switchToExecutionControlsOnMention &&
-      (mentionQuery !== null || activeAgentId !== null));
-  const formattingToolbarVisible =
-    showFormattingToolbar &&
-    !(
-      switchToExecutionControlsOnMention &&
-      (mentionQuery !== null || activeAgentId !== null)
-    );
+    (channelAgentMode && !selectedAgent?.teamRequestOnly);
+  const modelUnavailable =
+    channelAgentMode &&
+    !selectedAgent?.teamRequestOnly &&
+    Boolean(modelAvailabilityWarning);
+  const formattingToolbarVisible = showFormattingToolbar && !channelAgentMode;
   const effortLabel = unavailableEffort
     ? `Unavailable: ${unavailableEffort}`
     : effortIndex === null
@@ -516,8 +542,9 @@ export function ChatComposer({
       textareaRef.current?.setSelectionRange(start, start);
     });
   };
-  const effectiveModel =
-    executionPreset?.model ?? selectedCapability?.displayName ?? model;
+  const effectiveModel = modelUnavailable
+    ? "Model unavailable"
+    : (executionPreset?.model ?? selectedCapability?.displayName ?? model);
   const availableModelOptions = modelOptions.length
     ? modelOptions.map((option) => ({
         id: capabilityKey(option),
@@ -584,6 +611,11 @@ export function ChatComposer({
         )
       );
     }
+    if (
+      channelAgentMode &&
+      !Object.values(retained).includes(activeAgentId ?? "")
+    )
+      changeActiveAgent(null);
     if (onChange) {
       onChange(nextValue);
       return;
@@ -660,11 +692,13 @@ export function ChatComposer({
     });
     const submittedDraftVersion = draftVersionRef.current;
     try {
-      await onSend?.(
+      const accepted = await onSend?.(
         trimmed,
         selection,
         continueWithoutMemory ? true : undefined
       );
+      // A deferred send (for example, choosing a recipient) retains the draft.
+      if (accepted === false) return;
       if (draftVersionRef.current === submittedDraftVersion) {
         setDraft("");
         setSelectedSkills(null);
@@ -725,7 +759,7 @@ export function ChatComposer({
     setMentionQuery(null);
     if (!agent.teamMember) {
       onAgentMention?.(agent.id);
-      onActiveAgentChange?.(agent.id);
+      changeActiveAgent(agent.id);
     }
     const nextResolved = {
       ...resolvedMentionIds,
@@ -806,12 +840,21 @@ export function ChatComposer({
 
   return (
     <div ref={composerRef} className="relative [container-type:inline-size]">
-      {showMetaBar && (
+      {(showMetaBar || channelAgentMode) && (
         <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-surface-hover/70 px-2.5 py-1.5 text-xs text-foreground-secondary sm:px-3">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <Folder className="h-3.5 w-3.5 flex-shrink-0 text-subtle" />
-            <span className="truncate">{projectName}</span>
-          </span>
+          {projectSelector ?? (
+            <span
+              className="flex min-w-0 items-center gap-1.5"
+              title={
+                channelAgentMode
+                  ? "Agent requests keep their Shared Project context. Ordinary channels choose a Shared Project before opening the private chat."
+                  : undefined
+              }
+            >
+              <Folder className="h-3.5 w-3.5 flex-shrink-0 text-subtle" />
+              <span className="truncate">{projectName}</span>
+            </span>
+          )}
           {executionControlsVisible && executionPreset ? (
             <span
               className="flex flex-shrink-0 items-center gap-1.5 text-subtle"
@@ -828,22 +871,14 @@ export function ChatComposer({
             </span>
           ) : executionControlsVisible ? (
             environmentSwitchDisabled ? (
-              <Tooltip
-                content="Cloud execution is not connected for this chat."
-                side="top"
+              <span
+                className="flex flex-shrink-0 items-center gap-1.5 text-subtle"
+                aria-label="Local execution"
+                title="Uses the selected AI Client on this computer"
               >
-                <span className="flex flex-shrink-0 items-center gap-1.5 text-subtle">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5"
-                    disabled
-                    aria-label="Local execution selected. Cloud execution is not connected for this chat."
-                  >
-                    <Laptop className="h-3.5 w-3.5" />
-                    <span>Local</span>
-                  </button>
-                </span>
-              </Tooltip>
+                <Laptop className="h-3.5 w-3.5" />
+                <span>Local</span>
+              </span>
             ) : (
               <button
                 type="button"
@@ -888,6 +923,21 @@ export function ChatComposer({
             />
             <span className="min-w-0 truncate">{selectedAgent.name}</span>
             <span className="text-subtle">Active respondent</span>
+            {channelAgentMode && (
+              <button
+                type="button"
+                aria-label="Stop addressing Agent"
+                onClick={() => changeActiveAgent(null)}
+                className="ml-auto text-subtle hover:text-foreground"
+              >
+                Cancel
+              </button>
+            )}
+            {selectedAgent.teamRequestOnly && (
+              <span className="text-subtle">
+                The Agent owner chooses execution settings.
+              </span>
+            )}
           </div>
         )}
         {skillSelection.length > 0 && (
@@ -1173,6 +1223,11 @@ export function ChatComposer({
           </div>
         )}
 
+        {modelUnavailable && (
+          <p role="alert" className="px-2 py-1 text-xs text-warning">
+            {modelAvailabilityWarning}
+          </p>
+        )}
         {mentionIssues.length > 0 && (
           <p className="px-2 pb-2 text-xs text-warning" role="status">
             {mentionIssues[0].kind === "ambiguous"
@@ -1313,6 +1368,12 @@ export function ChatComposer({
                     setIsModelListOpen(false);
                   }}
                   aria-expanded={openMenu === "model"}
+                  disabled={modelUnavailable}
+                  title={
+                    modelUnavailable
+                      ? (modelAvailabilityWarning ?? undefined)
+                      : undefined
+                  }
                   aria-label="Select model and effort"
                 >
                   <span className="max-w-[8rem] truncate text-foreground-secondary">

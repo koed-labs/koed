@@ -1,8 +1,7 @@
 "use client";
 
 import { CircleAlert, MessageSquare, MoreHorizontal, X } from "lucide-react";
-import { useState } from "react";
-import Link from "next/link";
+import { useState, type ReactNode } from "react";
 import {
   DEMO_STANDALONE_BUILD_ACTIVITY,
   type BuildActivity
@@ -103,6 +102,7 @@ export type NewChatViewProps = {
   mode: NewChatMode;
   onBack?: () => void;
   projectName?: string;
+  projectSelector?: ReactNode;
   branch?: string;
   initialDraft?: string;
   recoveredDraft?: string | null;
@@ -151,6 +151,7 @@ type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
 export function NewChatView({
   mode,
   projectName = "Standalone chat",
+  projectSelector,
   branch = "No project branch",
   initialDraft = "",
   recoveredDraft,
@@ -187,13 +188,13 @@ export function NewChatView({
   const visibleMessages = runtime?.messages ?? messages;
   const activeAgent = agents?.find((agent) => agent.id === activeAgentId);
   const activeAgentAvailable = Boolean(
-    activeAgentId && (!agents || activeAgent?.lifecycle === "active")
+    !activeAgentId || !agents || activeAgent?.lifecycle === "active"
   );
   const agentGateMessage =
     mode === "live" && !activeAgentAvailable
       ? activeAgent?.lifecycle === "retired"
         ? "The active agent is retired. Select an available agent with @ before sending."
-        : "Select an available agent with @ before sending."
+        : "Select an available agent with @ or remove the unavailable Agent selection."
       : null;
   const resolvedActivity =
     activity ?? (mode === "demo" ? DEMO_STANDALONE_BUILD_ACTIVITY : null);
@@ -335,6 +336,7 @@ export function NewChatView({
                       : "Describe what you need"
                   }
                   projectName={projectName}
+                  projectSelector={projectSelector}
                   branch={branch}
                   clientResourceScope={
                     mode === "live" ? clientResourceScope : undefined
@@ -368,7 +370,7 @@ export function NewChatView({
                     "Live execution is not connected yet"
                   }
                   showExecutionControls
-                  environmentSwitchDisabled={mode === "live"}
+                  environmentSwitchDisabled
                   agents={agents}
                   activeAgentId={activeAgentId}
                   onAgentMention={onAgentMention}
@@ -378,7 +380,7 @@ export function NewChatView({
                   initialPermissionMode={initialSelection?.permissionMode}
                   initialModel={
                     initialSelection?.provider
-                      ? `${initialSelection.provider}:${initialSelection.model}`
+                      ? `${initialSelection.provider}:${initialSelection.model}${initialSelection.hostedInstanceId || initialSelection.instanceId ? `:${initialSelection.hostedInstanceId ?? initialSelection.instanceId}` : ""}`
                       : initialSelection?.model
                   }
                   initialEffort={initialSelection?.effort}
@@ -468,61 +470,6 @@ export function NewChatView({
               ))}
 
               <div className="mt-auto pb-8 pt-8">
-                {mode === "live" ? (
-                  <div className="mb-3 flex flex-wrap items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
-                    <label className="min-w-52 flex-1 text-xs font-medium text-foreground-secondary">
-                      Personal Agent
-                      <select
-                        aria-label="Personal Agent"
-                        value={activeAgentId ?? ""}
-                        disabled={Boolean(runtime?.isSending)}
-                        onChange={(event) =>
-                          onActiveAgentChange?.(event.target.value || null)
-                        }
-                        className="mt-1 block w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground"
-                      >
-                        <option value="">Choose an active agent…</option>
-                        {agents
-                          ?.filter(
-                            (agent) =>
-                              agent.lifecycle === "active" ||
-                              agent.id === activeAgentId
-                          )
-                          .map((agent) => (
-                            <option
-                              key={agent.id}
-                              value={agent.id}
-                              disabled={agent.lifecycle !== "active"}
-                            >
-                              {agent.name}
-                              {agent.lifecycle === "active"
-                                ? ""
-                                : " (retired; unavailable)"}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <p className="max-w-md text-[11px] leading-4 text-muted">
-                      Choose who will handle this chat. You can also select an
-                      agent by typing @ in the message.
-                      {agents?.some(
-                        (agent) => agent.lifecycle === "active"
-                      ) ? null : (
-                        <>
-                          {" "}
-                          No active agents are available.{" "}
-                          <Link
-                            href="/agents"
-                            className="text-foreground-secondary underline underline-offset-2"
-                          >
-                            Create or activate an agent
-                          </Link>
-                          .
-                        </>
-                      )}
-                    </p>
-                  </div>
-                ) : null}
                 {pendingSuggestion && (
                   <div
                     className="mb-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"

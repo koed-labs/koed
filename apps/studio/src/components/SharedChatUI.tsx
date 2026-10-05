@@ -12,6 +12,7 @@ import {
   type ReactNode
 } from "react";
 import { AgentAvatarView } from "./AgentAvatarView";
+import { MarkdownContent } from "./MarkdownContent";
 import {
   activeChatExchange,
   chatNavigationMessages,
@@ -367,11 +368,10 @@ export function AgentChatMessage({
               {author.name}
             </p>
           )}
-          <p
-            className={`whitespace-pre-wrap break-words text-foreground-secondary ${compact ? "text-xs leading-5" : "text-[15px] leading-relaxed"}`}
-          >
-            {message.content}
-          </p>
+          <MarkdownContent
+            source={message.content}
+            className={`text-foreground-secondary ${compact ? "text-xs leading-5" : "text-[15px] leading-relaxed"}`}
+          />
           {children}
         </div>
       </div>

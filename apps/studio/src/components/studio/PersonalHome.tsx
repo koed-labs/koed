@@ -8,6 +8,10 @@ import {
   Share2
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  personalAgentsHttpAdapter,
+  type PersonalAgent
+} from "@/lib/personal-agents-client";
 import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import { parseLaunchInstances } from "@/lib/managed-agent-chat";
 import { readHomeJson } from "@/lib/home-json";
@@ -20,7 +24,12 @@ import type {
 } from "@/lib/studio-contract";
 import { StudioCollaborationClient } from "@/lib/studio-collaboration-client";
 import type { CollaborationSnapshot } from "@koed/shared/collaboration";
-import { filterHomeCollections, homeProjects } from "@/lib/studio-home";
+import {
+  filterHomeCollections,
+  homeProjects,
+  type HomeProject
+} from "@/lib/studio-home";
+import { HomeProjectPicker } from "./HomeProjectPicker";
 import type { HomeItem } from "@koed/shared/home";
 import type { HomeFeedController } from "@/lib/use-home-feed";
 import { StudioSidebar } from "./StudioSidebar";
@@ -147,6 +156,8 @@ function homeSummary(count: number) {
 
 export function PersonalHome({
   canCreateLocalProject,
+  registeredProjects = [],
+  onChooseChatFolder,
   onNewChat,
   onNewProject,
   onStartChat,
@@ -158,11 +169,13 @@ export function PersonalHome({
   onOpenHomeItem
 }: {
   canCreateLocalProject: boolean;
+  registeredProjects?: readonly HomeProject[];
+  onChooseChatFolder?: () => Promise<HomeProject | null>;
   onNewChat?: () => void;
   onNewProject?: () => void;
   onStartChat: (
     prompt: string,
-    projectId?: string,
+    projectId?: string | null,
     selection?: ChatComposerSelection
   ) => void;
   onResumeChat: (executionId: string) => void;
@@ -181,9 +194,23 @@ export function PersonalHome({
   const [refreshFailed, setRefreshFailed] = useState(false);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
   const runnerLoadedRef = useRef(false);
+  const homeGenerationRef = useRef(0);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
+  const [chatProject, setChatProject] = useState<
+    HomeProject | null | undefined
+  >();
   const [draft, setDraft] = useState("");
+  const [agentLibrary, setAgentLibrary] = useState<{
+    scope: string;
+    agents: PersonalAgent[];
+    error: string | null;
+  } | null>(null);
+  const [agentSelection, setAgentSelection] = useState<{
+    scope: string;
+    id: string | null;
+  } | null>(null);
+  const [agentReload, setAgentReload] = useState(0);
   const [modelOptions, setModelOptions] = useState<AgentModelCapability[]>([]);
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [localRunnerAvailability, setLocalRunnerAvailability] =
@@ -298,6 +325,7 @@ export function PersonalHome({
           scopeRef.current !== payload.scopeKey)
       ) {
         setFilter(null);
+        setChatProject(undefined);
       }
       scopeRef.current = payload.scopeKey;
       setSnapshot(payload);
@@ -317,6 +345,7 @@ export function PersonalHome({
         return;
       if (denied) {
         setFilter(null);
+        setChatProject(undefined);
         scopeRef.current = undefined;
         setSnapshot(null);
       }
@@ -485,6 +514,7 @@ export function PersonalHome({
 
   useEffect(() => {
     return () => {
+      homeGenerationRef.current += 1;
       requestSequenceRef.current += 1;
       controllerRef.current?.abort();
       runnerRequestSequenceRef.current += 1;
@@ -615,6 +645,42 @@ export function PersonalHome({
       : [];
   });
   const projects = homeProjects(browseRecents, browseExecutions);
+  const composerProject =
+    chatProject === undefined
+      ? (projects.find((project) => project.id === filter) ?? null)
+      : chatProject;
+  const homeAgents =
+    agentLibrary?.scope === homeScopeKey ? agentLibrary.agents : [];
+  const activeHomeAgents = homeAgents.filter(
+    (agent) => agent.lifecycle === "active"
+  );
+  const homeAgentId =
+    agentSelection?.scope === homeScopeKey ? agentSelection.id : null;
+  const homeAgentAvailable = activeHomeAgents.some(
+    (agent) => agent.id === homeAgentId
+  );
+  useEffect(() => {
+    if (!homeScopeKey) return;
+    const controller = new AbortController();
+    void personalAgentsHttpAdapter
+      .list(controller.signal)
+      .then((agents) => {
+        if (!controller.signal.aborted)
+          setAgentLibrary({ scope: homeScopeKey, agents, error: null });
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted)
+          setAgentLibrary({
+            scope: homeScopeKey,
+            agents: [],
+            error:
+              reason instanceof Error
+                ? reason.message
+                : "Could not load Personal Agents."
+          });
+      });
+    return () => controller.abort();
+  }, [homeScopeKey, agentReload]);
   const firstModelOption = modelOptions[0];
   const firstModelEffort =
     firstModelOption?.supportedReasoningEfforts.find(
@@ -630,7 +696,7 @@ export function PersonalHome({
   const startChat = (prompt: string, selection?: ChatComposerSelection) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
-    onStartChat(trimmed, filter ?? undefined, selection);
+    onStartChat(trimmed, composerProject?.id ?? null, selection);
     setDraft("");
   };
   return (
@@ -824,30 +890,6 @@ export function PersonalHome({
       <div className="relative flex min-w-0 flex-1 flex-col">
         <header className="z-10 flex h-14 items-center justify-between gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region">
           <p className="text-sm text-foreground no-drag">Home</p>
-          <div className="flex items-center gap-1 no-drag">
-            <button
-              type="button"
-              disabled={!onNewChat}
-              onClick={onNewChat}
-              title="New chat"
-              className="rounded-md px-2.5 py-1.5 text-xs text-muted transition-colors hover:bg-surface hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              New chat
-            </button>
-            <button
-              type="button"
-              disabled={!canCreateLocalProject || !onNewProject}
-              onClick={onNewProject}
-              title={
-                canCreateLocalProject
-                  ? "New project"
-                  : "New projects are available in Koed Studio for Electron."
-              }
-              className="rounded-md px-2.5 py-1.5 text-xs text-muted transition-colors hover:bg-surface hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              New project
-            </button>
-          </div>
         </header>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4">
           <div className="mx-auto max-w-2xl space-y-8 pb-20 pt-8">
@@ -902,6 +944,18 @@ export function PersonalHome({
               )}
             </section>
             <section className="no-drag" aria-label="Start a chat">
+              {agentLibrary?.scope === homeScopeKey && agentLibrary.error && (
+                <p role="alert" className="mb-2 text-xs text-warning">
+                  {agentLibrary.error}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setAgentReload((value) => value + 1)}
+                  >
+                    Retry Agents
+                  </button>
+                </p>
+              )}
+
               <SharedChatUI
                 mode={{ kind: "agent", controls: "execution" }}
                 scopeKey={`home:${homeScopeKey ?? "unavailable"}`}
@@ -910,10 +964,39 @@ export function PersonalHome({
                 composer={
                   <ChatComposer
                     placeholder="Ask Koed anything…"
-                    projectName={
-                      projects.find((project) => project.id === filter)?.name ??
-                      "Personal"
+                    projectName={composerProject?.name ?? "Personal"}
+                    projectSelector={
+                      <HomeProjectPicker
+                        project={composerProject}
+                        projects={registeredProjects}
+                        canChooseFolder={canCreateLocalProject}
+                        onSelect={setChatProject}
+                        onChooseFolder={
+                          onChooseChatFolder
+                            ? async () => {
+                                const generation = homeGenerationRef.current;
+                                const scope = scopeRef.current;
+                                const project = await onChooseChatFolder();
+                                if (
+                                  generation !== homeGenerationRef.current ||
+                                  scope !== scopeRef.current
+                                )
+                                  return null;
+                                if (project) setChatProject(project);
+                                return project;
+                              }
+                            : undefined
+                        }
+                      />
                     }
+                    environmentSwitchDisabled
+                    agents={homeAgents}
+                    activeAgentId={homeAgentId}
+                    onActiveAgentChange={(id) =>
+                      setAgentSelection({ scope: homeScopeKey ?? "", id })
+                    }
+                    sendEnabled={modelOptionsLoaded && modelOptions.length > 0}
+                    sendDisabledReason="Wait for an available AI model before sending."
                     branch="local"
                     value={draft}
                     onChange={setDraft}
@@ -923,9 +1006,12 @@ export function PersonalHome({
                           option.provider === selection.provider &&
                           option.id === selection.model
                       );
-                      startChat(text, hasVerifiedModel ? selection : undefined);
+                      if (!hasVerifiedModel || !homeScopeKey) return false;
+                      startChat(text, selection);
                     }}
-                    clientResourceScope={{ projectId: filter ?? null }}
+                    clientResourceScope={{
+                      projectId: composerProject?.id ?? null
+                    }}
                     modelOptions={modelOptions}
                     initialModel={
                       firstModelOption
@@ -940,8 +1026,10 @@ export function PersonalHome({
                     }
                     footer={
                       modelOptionsLoaded && modelOptions.length > 0
-                        ? "Opens a draft chat only. Nothing is sent yet. Available model settings carry over."
-                        : "Opens a draft chat only. Nothing is sent yet. Live model settings load in the chat."
+                        ? homeAgentAvailable
+                          ? "Sends your question to the selected Agent and opens the conversation."
+                          : "Sends your question and opens the conversation."
+                        : "Choose an available model to start a conversation."
                     }
                     showExecutionControls
                   />

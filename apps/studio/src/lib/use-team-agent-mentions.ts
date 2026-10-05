@@ -7,7 +7,14 @@ import {
   type TeamAgentMention
 } from "@/lib/team-agent-mentions";
 
-type State = { key: string; options: TeamAgentMention[]; error: string | null };
+import { managedRequest, parseLaunchInstances } from "@/lib/managed-agent-chat";
+import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
+type State = {
+  key: string;
+  options: TeamAgentMention[];
+  error: string | null;
+  models: AgentModelCapability[];
+};
 
 export function useTeamAgentMentions(
   client: TeamAgentRequestsClient,
@@ -18,6 +25,7 @@ export function useTeamAgentMentions(
 ) {
   const [state, setState] = useState<State>({
     key: "",
+    models: [],
     options: [],
     error: null
   });
@@ -26,14 +34,23 @@ export function useTeamAgentMentions(
     if (!teamId || !principalId) return;
     const controller = new AbortController();
     // The key-tagged state prevents agents from the previous Team/account painting during a scope transition.
-    void loadTeamAgentMentions(client, teamId, principalId, controller.signal)
-      .then((options) => {
-        if (!controller.signal.aborted) setState({ key, options, error: null });
+    void Promise.all([
+      loadTeamAgentMentions(client, teamId, principalId, controller.signal),
+      managedRequest("/launch-options", undefined, controller.signal)
+        .then((options) =>
+          parseLaunchInstances(options).flatMap((instance) => instance.models)
+        )
+        .catch(() => [])
+    ])
+      .then(([options, models]) => {
+        if (!controller.signal.aborted)
+          setState({ key, options, models, error: null });
       })
       .catch((failure: unknown) => {
         if (!controller.signal.aborted)
           setState({
             key,
+            models: [],
             options: [],
             error:
               failure instanceof Error
@@ -46,8 +63,23 @@ export function useTeamAgentMentions(
   return useMemo(
     () =>
       state.key === key
-        ? { options: state.options, error: state.error, loading: false }
-        : { options: [], error: null, loading: true },
+        ? {
+            options: state.options,
+            models: state.models,
+            error: state.error,
+            modelAvailabilityWarning:
+              state.models.length === 0
+                ? "AI models are unavailable. Check your AI Client settings before starting work."
+                : null,
+            loading: false
+          }
+        : {
+            options: [],
+            models: [],
+            error: null,
+            modelAvailabilityWarning: null,
+            loading: true
+          },
     [key, state]
   );
 }

@@ -367,6 +367,7 @@ export function HostedTeamChannels({
   );
   const [pendingAgentMention, setPendingAgentMention] = useState<{
     agent: TeamAgentMention;
+    selection: ChatComposerSelection;
     text: string;
     idempotencyKey: string;
     mentionUserIds: string[];
@@ -2248,6 +2249,7 @@ export function HostedTeamChannels({
       router.push(
         privateAgentHandoffHref({
           agentId: intent.agent.id,
+          selection: intent.selection,
           localProjectId: connection.localProjectId,
           teamId: capturedTeamId,
           draft: buildOwnedAgentHandoffDraft({
@@ -2307,6 +2309,7 @@ export function HostedTeamChannels({
     }
     const intent = {
       agent,
+      selection,
       text,
       idempotencyKey: crypto.randomUUID(),
       mentionUserIds: selection.mentionUserIds ?? [],
@@ -2321,6 +2324,13 @@ export function HostedTeamChannels({
     }
   };
 
+  const agentProjectId =
+    activeThread?.kind === "team_project_channel"
+      ? activeThread.teamProjectId
+      : null;
+  const agentProjectName =
+    visibleProjects.find((project) => project.id === agentProjectId)?.name ??
+    "Choose a Shared Project";
   const sendTeamComposer = async (
     text: string,
     selection: ChatComposerSelection
@@ -2346,6 +2356,7 @@ export function HostedTeamChannels({
     }
     const intent = {
       agent,
+      selection,
       text,
       idempotencyKey: crypto.randomUUID(),
       mentionUserIds: selection.mentionUserIds ?? []
@@ -2832,11 +2843,7 @@ export function HostedTeamChannels({
                                     ? `Message ${activeDirectMessageTitle}`
                                     : `Message #${activeThread?.name ?? "channel"}`
                                 }
-                                projectName={
-                                  activeDirectMessage
-                                    ? team.name
-                                    : (activeThread?.name ?? team.name)
-                                }
+                                projectName={agentProjectName}
                                 branch="shared"
                                 value={visibleDraftText}
                                 onChange={updateDraft}
@@ -2862,6 +2869,10 @@ export function HostedTeamChannels({
                                           id: person.id,
                                           name: person.displayName
                                         }))
+                                }
+                                modelOptions={teamAgentMentions.models}
+                                modelAvailabilityWarning={
+                                  teamAgentMentions.modelAvailabilityWarning
                                 }
                                 activeAgentId={activeMentionAgentId}
                                 onActiveAgentChange={(agentId) =>
@@ -3018,6 +3029,11 @@ export function HostedTeamChannels({
                       pendingSend={threadPendingSend}
                       pendingStatus={threadSendStatus}
                       editDrafts={threadEditDrafts}
+                      projectName={agentProjectName}
+                      modelOptions={teamAgentMentions.models}
+                      modelAvailabilityWarning={
+                        teamAgentMentions.modelAvailabilityWarning
+                      }
                       agents={teamAgentMentions.options}
                       teamMembers={people
                         .filter(

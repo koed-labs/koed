@@ -5401,7 +5401,7 @@ export const createManagedConversationRepository = (
         `select ${COMMAND_COLUMNS}
            from managed_conversation_commands
           where owner_user_id = $1 and execution_id = $2
-            and command_kind = 'prompt' and state = 'completed'
+            and command_kind = 'prompt'
             and ($3::integer is null or sequence < $3)
             ${assignmentFilter}
           order by sequence desc
@@ -5420,7 +5420,10 @@ export const createManagedConversationRepository = (
         if (typeof payload?.prompt !== "string") continue;
         const output = payload.assistantOutput;
         const validOutput =
-          output && typeof output === "object" && !Array.isArray(output)
+          row.state === "completed" &&
+          output &&
+          typeof output === "object" &&
+          !Array.isArray(output)
             ? (output as Record<string, unknown>)
             : null;
         turns.push({

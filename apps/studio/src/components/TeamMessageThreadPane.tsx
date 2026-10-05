@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CollaborationMessage } from "@koed/shared/collaboration";
 import type { ReactNode } from "react";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
+import type { AgentModelCapability } from "@/lib/agentIdentityEditor";
 import type { ChatMentionAgent } from "./ChatComposer";
 import { ChatComposer, type ChatComposerSelection } from "./ChatComposer";
 import { SharedChatUI } from "./SharedChatUI";
@@ -38,6 +39,9 @@ export function TeamMessageThreadPane({
   pendingStatus,
   editDrafts,
   agents = [],
+  modelOptions = [],
+  modelAvailabilityWarning,
+  projectName = "Team channel",
   teamMembers = [],
   agentRequests,
   forwardRequestsByMessage = {},
@@ -72,6 +76,9 @@ export function TeamMessageThreadPane({
   pendingStatus: "pending" | "uncertain" | "retry_failed" | null;
   editDrafts: ReadonlyMap<string, ThreadEditDraft>;
   agents?: readonly ChatMentionAgent[];
+  modelOptions?: readonly AgentModelCapability[];
+  modelAvailabilityWarning?: string | null;
+  projectName?: string;
   teamMembers?: readonly { id: string; name: string }[];
   agentRequests?: ReactNode;
   forwardRequestsByMessage?: Record<string, TeamAgentRequest[]>;
@@ -262,8 +269,9 @@ export function TeamMessageThreadPane({
                 )}
                 <fieldset className="m-0 min-w-0 border-0 p-0">
                   <ChatComposer
+                    key={root.id}
                     placeholder="Reply in thread..."
-                    projectName="Team channel"
+                    projectName={projectName}
                     branch="shared"
                     value={replyDraft}
                     onChange={onReplyDraftChange}
@@ -271,6 +279,8 @@ export function TeamMessageThreadPane({
                     onMentionUserIdsChange={onReplyMentionUserIdsChange}
                     onSend={onSendReply}
                     agents={agents}
+                    modelOptions={modelOptions}
+                    modelAvailabilityWarning={modelAvailabilityWarning}
                     teamMembers={teamMembers}
                     showExecutionControls={false}
                     switchToExecutionControlsOnMention={agents.length > 0}

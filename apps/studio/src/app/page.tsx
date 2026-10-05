@@ -1,6 +1,9 @@
 "use client";
 
 import { readHomeJson } from "@/lib/home-json";
+import type { InitialChatSubmission } from "@/lib/use-initial-chat-submission";
+import { privateAgentHandoffSelection } from "@/lib/team-agent-mentions-state";
+import { newChatProjectId } from "@/lib/chat-project-selection";
 
 import {
   Suspense,
@@ -39,6 +42,7 @@ function LiveHome({
   executionId,
   requestedProjectId,
   requestedAgentId,
+  requestedSettings,
   requestDraft,
   teamRequestId,
   teamRequestTeamId,
@@ -52,6 +56,7 @@ function LiveHome({
   executionId?: string;
   requestedProjectId?: string;
   requestedAgentId?: string;
+  requestedSettings?: Partial<ChatComposerSelection>;
   requestDraft?: string;
   teamRequestId?: string;
   teamRequestTeamId?: string;
@@ -65,6 +70,15 @@ function LiveHome({
   const [initialChatSelection, setInitialChatSelection] = useState<
     ChatComposerSelection | undefined
   >();
+  const [initialSubmission, setInitialSubmission] = useState<
+    InitialChatSubmission | undefined
+  >();
+  const startedHomeSubmissions = useRef(new Set<string>());
+  const claimInitialSubmission = useCallback((id: string) => {
+    if (startedHomeSubmissions.current.has(id)) return false;
+    startedHomeSubmissions.current.add(id);
+    return true;
+  }, []);
   const [agentSelectionResult, setAgentSelectionResult] = useState<{
     id: string;
     state: "ready" | "error";
@@ -151,13 +165,15 @@ function LiveHome({
         if (agent.lifecycle !== "active") {
           throw new Error("Retired Agents cannot start a new Conversation.");
         }
+        if (executionId) setResumeId(executionId);
         setInitialChatSelection({
           agentId: agent.id,
           expectedAgentVersion: agent.currentVersion,
           provider: agent.defaultProvider,
           model: agent.defaultModel ?? "",
           effort: agent.defaultReasoningEffort ?? "",
-          permissionMode: "full"
+          permissionMode: "full",
+          ...requestedSettings
         });
         setChatKey((value) => value + 1);
         setAgentSelectionResult({ id: requestedAgentId, state: "ready" });
@@ -175,7 +191,7 @@ function LiveHome({
         });
       });
     return () => controller.abort();
-  }, [requestedAgentId]);
+  }, [requestedAgentId, requestedSettings, executionId]);
 
   const loadRegisteredProjects = useCallback(async () => {
     registeredProjectsSequence.current += 1;
@@ -329,19 +345,24 @@ function LiveHome({
 
   const newChat = (
     prompt = "",
-    projectId?: string,
+    projectId?: string | null,
     selection?: ChatComposerSelection
   ) => {
     setResumeId(undefined);
     setInitialChatDraft(prompt);
     setInitialChatSelection(selection);
+    setInitialSubmission(
+      prompt.trim() && selection
+        ? { id: crypto.randomUUID(), text: prompt.trim(), selection }
+        : undefined
+    );
     setChatKey((value) => value + 1);
     setChatOpen(true);
-    const nextProject =
-      projectId ||
-      (selectedProject && projectIds.has(selectedProject)
-        ? selectedProject
-        : null);
+    const nextProject = newChatProjectId(
+      projectId,
+      selectedProject,
+      projectIds
+    );
     setSelectedProject(nextProject);
     const project = nextProject
       ? `&project=${encodeURIComponent(nextProject)}`
@@ -353,6 +374,7 @@ function LiveHome({
     setSelectedProject(null);
     setInitialChatDraft("");
     setInitialChatSelection(undefined);
+    setInitialSubmission(undefined);
     setChatKey((value) => value + 1);
     setChatOpen(true);
     router.replace(`/?chat=1&execution=${encodeURIComponent(id)}`);
@@ -379,6 +401,20 @@ function LiveHome({
   };
   const openProjectModal = () => {
     if (canCreateLocalProject) setProjectModalOpen(true);
+  };
+  const chooseChatFolder = async (): Promise<HomeProject | null> => {
+    if (!canCreateLocalProject) return null;
+    const folder = await chooseLocalProjectFolder();
+    if (!folder) return null;
+    const project = await registerLocalProject({
+      selectionId: folder.selectionId
+    });
+    setRegisteredProjects((current) => [
+      { id: project.id, name: project.name },
+      ...current.filter((item) => item.id !== project.id)
+    ]);
+    window.dispatchEvent(new Event("koed:projects-changed"));
+    return project;
   };
   const projectModal =
     (projectModalOpen ||
@@ -415,6 +451,10 @@ function LiveHome({
     return (
       <>
         <PersonalHome
+          registeredProjects={registeredProjects.filter((project) =>
+            /^lp_[0-9a-f]{32}$/iu.test(project.id)
+          )}
+          onChooseChatFolder={chooseChatFolder}
           onNewChat={() => newChat()}
           onNewProject={openProjectModal}
           canCreateLocalProject={canCreateLocalProject}
@@ -519,6 +559,8 @@ function LiveHome({
                 <LiveAgentChat
                   key={chatKey}
                   initialDraft={initialChatDraft}
+                  initialSubmission={initialSubmission}
+                  claimInitialSubmission={claimInitialSubmission}
                   initialSelection={initialChatSelection}
                   executionId={resumeId}
                   teamRequestId={teamRequestId}
@@ -540,6 +582,9 @@ function LiveHome({
                   registeredProjects={registeredProjects.filter((project) =>
                     /^lp_[0-9a-f]{32}$/iu.test(project.id)
                   )}
+                  onChooseChatFolder={
+                    canCreateLocalProject ? chooseChatFolder : undefined
+                  }
                   onProjectMoveCompleted={handleProjectMoveCompleted}
                 />
               </>
@@ -555,6 +600,10 @@ function LiveHome({
 function HomeMode() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const requestedSettings = useMemo(
+    () => privateAgentHandoffSelection(searchParams),
+    [searchParams]
+  );
   const demoMode = searchParams.get("demo");
   const chat = searchParams.get("chat") === "1";
   const initialProjectRequest = searchParams.get("newProject") === "1";
@@ -577,6 +626,7 @@ function HomeMode() {
       executionId={searchParams.get("execution") ?? undefined}
       requestedProjectId={searchParams.get("project") ?? undefined}
       requestedAgentId={searchParams.get("agent") ?? undefined}
+      requestedSettings={requestedSettings}
       requestDraft={searchParams.get("draft") ?? undefined}
       teamRequestId={searchParams.get("teamRequest") ?? undefined}
       teamRequestTeamId={searchParams.get("teamRequestTeam") ?? undefined}

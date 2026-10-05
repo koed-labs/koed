@@ -463,8 +463,6 @@ export function resolveLaunchSelection(
   selection: AgentTurnSelection,
   instances: LaunchInstance[]
 ) {
-  if (!selection.agentId)
-    throw new ManagedChatError("Choose an agent with @ before sending.");
   if (selection.permissionMode === "read") {
     throw new ManagedChatError(
       "This managed runtime does not support read-only execution. No task was started. Choose a supported permission mode explicitly."

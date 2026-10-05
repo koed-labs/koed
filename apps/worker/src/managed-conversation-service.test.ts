@@ -41,6 +41,7 @@ import {
   managedPersonalAgentTurnDeclaredComplete,
   managedPersonalAgentSignalThreadMatchesCurrentCommand,
   managedConversationOriginSourceGeneration,
+  managedConversationCodexRebaseSourceMatches,
   managedConversationAssistantOutputForTurn,
   codexAssistantFinalTextForTurn,
   reconcileBlockedManagedConversationSource,
@@ -2765,6 +2766,8 @@ describe("Managed Conversation service lifecycle", () => {
         executionId,
         executionGeneration: 1,
         commandKind: "prompt" as const,
+        // A fresh source has no captured generation yet, even though prompts permit archive resume.
+        allowArchivedResume: true,
         sequence: 2,
         attempts: 1,
         leaseToken: randomUUID(),
@@ -4813,5 +4816,49 @@ describe("Managed Conversation failure codes", () => {
 
     expect(reconciled).toBe(false);
     expect(release).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex source rebase identity", () => {
+  const identity = {
+    sourceGenerationId: randomUUID(),
+    providerThreadId: randomUUID(),
+    localSessionId: randomUUID()
+  };
+  const artifact = {
+    id: randomUUID(),
+    lifecycle: "active",
+    sourceGenerationId: identity.sourceGenerationId,
+    externalSessionId: identity.providerThreadId,
+    sessionId: identity.localSessionId,
+    sourceKind: "codex",
+    sourceRuntime: "codex"
+  };
+  it.each(["codex", "codex-cli"])(
+    "accepts a matching source captured by the %s adapter",
+    (sourceRuntime) => {
+      expect(
+        managedConversationCodexRebaseSourceMatches(
+          { ...artifact, sourceRuntime },
+          identity
+        )
+      ).toBe(true);
+    }
+  );
+  it.each([
+    { sourceGenerationId: randomUUID() },
+    { externalSessionId: randomUUID() },
+    { sessionId: randomUUID() },
+    { lifecycle: "finalized" },
+    { sourceKind: "claude-code" },
+    { sourceRuntime: "claude-code" },
+    { id: null }
+  ])("rejects a mismatched or inactive source: %j", (mismatch) => {
+    expect(
+      managedConversationCodexRebaseSourceMatches(
+        { ...artifact, ...mismatch },
+        identity
+      )
+    ).toBe(false);
   });
 });

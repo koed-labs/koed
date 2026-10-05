@@ -24,11 +24,17 @@ describe("Studio local Project bridge", () => {
     const response = await fetch(`${started.url}/studio-api/projects`);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      projects: [{ id, name: "An empty project", lastSeenAt: metadata.lastSeenAt }]
+      projects: [
+        { id, name: "An empty project", lastSeenAt: metadata.lastSeenAt }
+      ]
     });
-    const capabilities = await fetch(`${started.url}/studio-api/projects/capabilities`);
+    const capabilities = await fetch(
+      `${started.url}/studio-api/projects/capabilities`
+    );
     assert.equal(capabilities.status, 200);
-    assert.deepEqual(await capabilities.json(), { canCreateLocalProject: false });
+    assert.deepEqual(await capabilities.json(), {
+      canCreateLocalProject: false
+    });
   });
 
   it("requires a same-origin CSRF session and a chosen folder before registration", async () => {
@@ -44,43 +50,69 @@ describe("Studio local Project bridge", () => {
         return { ok: true, project: { ...metadata, displayName: name } };
       }
     });
-    const post = (path, body, csrfToken) => fetch(`${started.url}${path}`, {
-      method: "POST",
-      headers: {
-        origin: started.url,
-        "content-type": "application/json",
-        ...(csrfToken ? { "x-studio-csrf": csrfToken } : {})
-      },
-      body: JSON.stringify(body)
-    });
+    const post = (path, body, csrfToken) =>
+      fetch(`${started.url}${path}`, {
+        method: "POST",
+        headers: {
+          origin: started.url,
+          "content-type": "application/json",
+          ...(csrfToken ? { "x-studio-csrf": csrfToken } : {})
+        },
+        body: JSON.stringify(body)
+      });
     const withoutCsrf = await post("/studio-api/projects/choose-folder", {});
     assert.equal(withoutCsrf.status, 403);
     assert.equal(registerCalls, 0);
-    const capabilities = await fetch(`${started.url}/studio-api/projects/capabilities`);
-    assert.deepEqual(await capabilities.json(), { canCreateLocalProject: true });
+    const capabilities = await fetch(
+      `${started.url}/studio-api/projects/capabilities`
+    );
+    assert.deepEqual(await capabilities.json(), {
+      canCreateLocalProject: true
+    });
 
-    const sessionResponse = await fetch(`${started.url}/studio-api/projects/session`);
+    const sessionResponse = await fetch(
+      `${started.url}/studio-api/projects/session`
+    );
     assert.equal(sessionResponse.status, 200);
     const { csrfToken } = await sessionResponse.json();
-    const withoutSelection = await post("/studio-api/projects", {
-      name: "My project", selectionId: "b".repeat(32)
-    }, csrfToken);
+    const withoutSelection = await post(
+      "/studio-api/projects",
+      {
+        name: "My project",
+        selectionId: "b".repeat(32)
+      },
+      csrfToken
+    );
     assert.equal(withoutSelection.status, 400);
     assert.equal(registerCalls, 0);
 
-    const chosen = await post("/studio-api/projects/choose-folder", {}, csrfToken);
+    const chosen = await post(
+      "/studio-api/projects/choose-folder",
+      {},
+      csrfToken
+    );
     assert.equal(chosen.status, 200);
     const selection = await chosen.json();
     assert.equal(selection.canceled, false);
-    const created = await post("/studio-api/projects", {
-      name: "My project", selectionId: selection.selectionId
-    }, csrfToken);
+    const created = await post(
+      "/studio-api/projects",
+      {
+        name: "My project",
+        selectionId: selection.selectionId
+      },
+      csrfToken
+    );
     assert.equal(created.status, 201);
     assert.equal((await created.json()).project.name, "My project");
     assert.equal(registerCalls, 1);
-    const replay = await post("/studio-api/projects", {
-      name: "My project", selectionId: selection.selectionId
-    }, csrfToken);
+    const replay = await post(
+      "/studio-api/projects",
+      {
+        name: "My project",
+        selectionId: selection.selectionId
+      },
+      csrfToken
+    );
     assert.equal(replay.status, 400);
     assert.equal(registerCalls, 1);
   });
@@ -90,16 +122,88 @@ describe("Studio local Project bridge", () => {
     started = await startStudioServer({
       port: 0,
       chooseProjectDirectory: async () => null,
-      registerProject: async () => { registerCalls += 1; }
+      registerProject: async () => {
+        registerCalls += 1;
+      }
     });
-    const { csrfToken } = await (await fetch(`${started.url}/studio-api/projects/session`)).json();
-    const response = await fetch(`${started.url}/studio-api/projects/choose-folder`, {
-      method: "POST",
-      headers: { origin: started.url, "content-type": "application/json", "x-studio-csrf": csrfToken },
-      body: "{}"
-    });
+    const { csrfToken } = await (
+      await fetch(`${started.url}/studio-api/projects/session`)
+    ).json();
+    const response = await fetch(
+      `${started.url}/studio-api/projects/choose-folder`,
+      {
+        method: "POST",
+        headers: {
+          origin: started.url,
+          "content-type": "application/json",
+          "x-studio-csrf": csrfToken
+        },
+        body: "{}"
+      }
+    );
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { canceled: true });
     assert.equal(registerCalls, 0);
+  });
+
+  it("registers a chosen chat folder without overriding an existing Project name", async () => {
+    let registerCalls = 0;
+    started = await startStudioServer({
+      port: 0,
+      chooseProjectDirectory: async () => "/tmp/chosen-chat-folder",
+      registerProject: async ({ path, name }) => {
+        registerCalls += 1;
+        assert.equal(path, "/tmp/chosen-chat-folder");
+        assert.equal(name, undefined);
+        return { ok: true, project: metadata };
+      }
+    });
+    const { csrfToken } = await (
+      await fetch(`${started.url}/studio-api/projects/session`)
+    ).json();
+    const post = (path, body) =>
+      fetch(`${started.url}${path}`, {
+        method: "POST",
+        headers: {
+          origin: started.url,
+          "content-type": "application/json",
+          "x-studio-csrf": csrfToken
+        },
+        body: JSON.stringify(body)
+      });
+    const selection = await (
+      await post("/studio-api/projects/choose-folder", {})
+    ).json();
+    for (const extra of [
+      { path: "/arbitrary/path" },
+      { name: "" },
+      { name: null }
+    ]) {
+      assert.equal(
+        (
+          await post("/studio-api/projects", {
+            selectionId: selection.selectionId,
+            ...extra
+          })
+        ).status,
+        400
+      );
+    }
+    assert.equal(registerCalls, 0);
+    const registered = await post("/studio-api/projects", {
+      selectionId: selection.selectionId
+    });
+    assert.equal(registered.status, 201);
+    assert.equal((await registered.json()).project.name, metadata.displayName);
+    assert.equal(registerCalls, 1);
+    assert.equal(
+      (
+        await post("/studio-api/projects", {
+          selectionId: selection.selectionId
+        })
+      ).status,
+      400
+    );
+    assert.equal(registerCalls, 1);
   });
 });

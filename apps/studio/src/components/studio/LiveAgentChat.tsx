@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { NewChatView, type NewChatRuntimeMessage } from "./NewChatView";
+import {
+  useInitialChatSubmission,
+  type InitialChatSubmission
+} from "@/lib/use-initial-chat-submission";
+import { HomeProjectPicker } from "./HomeProjectPicker";
+import type { HomeProject } from "@/lib/studio-home";
 import type { ChatComposerSelection } from "../ChatComposer";
 import {
   personalAgentsHttpAdapter,
@@ -42,6 +48,7 @@ import { teamSummaryReplyForTurn } from "@/lib/team-agent-summary-state";
 import { teamReviewSavedHref } from "@/lib/team-review-saved-navigation";
 import { managedAgentJobMarkers } from "@/lib/managed-agent-job-markers";
 
+const EMPTY_REGISTERED_PROJECTS: Array<{ id: string; name: string }> = [];
 const RECEIPT_WAIT_EXPIRED = Symbol("receipt-wait-expired");
 
 async function awaitBeforeDeadline<T>(
@@ -165,9 +172,12 @@ export function LiveAgentChat({
   teamRequestExpectedReviewVersion,
   initialDraft = "",
   initialSelection,
-  projectId,
-  projectName,
-  registeredProjects = [],
+  initialSubmission,
+  claimInitialSubmission,
+  projectId: initialProjectId,
+  projectName: initialProjectName,
+  onChooseChatFolder,
+  registeredProjects = EMPTY_REGISTERED_PROJECTS,
   onProjectMoveCompleted,
   sidebarMoveTarget = null,
   onSidebarMoveTargetHandled
@@ -179,8 +189,11 @@ export function LiveAgentChat({
   teamRequestExpectedReviewVersion?: number;
   initialDraft?: string;
   initialSelection?: ChatComposerSelection;
+  initialSubmission?: InitialChatSubmission;
+  claimInitialSubmission?: (id: string) => boolean;
   projectId?: string;
   projectName?: string;
+  onChooseChatFolder?: () => Promise<HomeProject | null>;
   registeredProjects?: Array<{ id: string; name: string }>;
   onProjectMoveCompleted?: () => void;
   sidebarMoveTarget?: {
@@ -190,6 +203,13 @@ export function LiveAgentChat({
   } | null;
   onSidebarMoveTargetHandled?: (requestId: number) => void;
 }) {
+  const [draftProject, setDraftProject] = useState<
+    HomeProject | null | undefined
+  >(undefined);
+  const projectId =
+    draftProject === undefined ? initialProjectId : draftProject?.id;
+  const projectName =
+    draftProject === undefined ? initialProjectName : draftProject?.name;
   const router = useRouter();
   const teamAgentRequestsClient = useMemo(
     () => new TeamAgentRequestsClient("studio"),
@@ -377,8 +397,16 @@ export function LiveAgentChat({
           const editedDuringLoad = latestDraft.current !== initialDraft;
           const draft = editedDuringLoad
             ? latestDraft.current
-            : (recoveryRecord?.draft ?? latestDraft.current);
-          if (editedDuringLoad || (!recoveryRecord && draft)) {
+            : initialSubmission
+              ? initialSubmission.text
+              : initialDraft.trim()
+                ? initialDraft
+                : (recoveryRecord?.draft ?? latestDraft.current);
+          if (
+            editedDuringLoad ||
+            (!recoveryRecord && draft) ||
+            (initialSubmission && !recoveryRecord?.pendingOperation)
+          ) {
             recoveryStore.current?.write({
               schemaVersion: 1,
               draft,
@@ -575,6 +603,7 @@ export function LiveAgentChat({
     return () => controller.abort();
   }, [
     initialDraft,
+    initialSubmission,
     initialExecutionId,
     router,
     settleRecoveredSend,
@@ -1172,8 +1201,10 @@ export function LiveAgentChat({
         (agent) =>
           agent.id === selection.agentId && agent.lifecycle === "active"
       );
-      if (!selected)
-        throw new Error("Choose an available agent before sending.");
+      if (selection.agentId && !selected)
+        throw new Error(
+          "The selected Agent is unavailable. Choose an active Agent with @ or clear the selection."
+        );
       const latestOptions = parseLaunchInstances(
         await managedRequest("/launch-options", undefined, signal)
       );
@@ -1194,11 +1225,13 @@ export function LiveAgentChat({
         knownExecution?.state === "stopped";
       const requestFingerprint = managedChatSendRequestFingerprint({
         kind: operationKind,
-        projectId: projectId ?? null,
+        projectId: knownExecution
+          ? knownExecution.projectId
+          : (projectId ?? null),
         executionId: operationExecutionId,
         executionGeneration: knownExecution?.executionGeneration ?? null,
-        agentId: selected.id,
-        agentVersion: selected.currentVersion,
+        agentId: selected?.id ?? null,
+        agentVersion: selected?.currentVersion ?? null,
         provider: settings.provider,
         aiClientInstanceId: settings.aiClientInstanceId,
         model: settings.model,
@@ -1431,11 +1464,11 @@ export function LiveAgentChat({
       const shouldResume = resumeFromStopped || current.state === "stopped";
       const exactRequestFingerprint = managedChatSendRequestFingerprint({
         kind: "prompt",
-        projectId: projectId ?? null,
+        projectId: current.projectId,
         executionId: id,
         executionGeneration: current.executionGeneration,
-        agentId: selected.id,
-        agentVersion: selected.currentVersion,
+        agentId: selected?.id ?? null,
+        agentVersion: selected?.currentVersion ?? null,
         provider: settings.provider,
         aiClientInstanceId: settings.aiClientInstanceId,
         model: settings.model,
@@ -1506,9 +1539,13 @@ export function LiveAgentChat({
           idempotencyKey: request.id,
           clientUserMessageId: request.messageId,
           prompt: text,
-          agentId: selected.id,
+          ...(selected
+            ? {
+                agentId: selected.id,
+                expectedAgentVersion: selected.currentVersion
+              }
+            : {}),
           ...(shouldResume ? { resumeFromStopped: true } : {}),
-          expectedAgentVersion: selected.currentVersion,
           ...(continueWithoutMemory ? { continueWithoutMemory: true } : {}),
           ...(selection.selectedResourceIds?.length
             ? { selectedResourceIds: selection.selectedResourceIds }
@@ -1616,6 +1653,33 @@ export function LiveAgentChat({
         );
     }
   };
+
+  useInitialChatSubmission({
+    submission: initialSubmission,
+    claim: claimInitialSubmission,
+    ready:
+      loaded &&
+      Boolean(recoveryStore.current) &&
+      instances.length > 0 &&
+      !executionId &&
+      !sending &&
+      !recoveryBlocked &&
+      !teamRequestId &&
+      !recoveryStore.current?.read()?.pendingOperation &&
+      (!initialSubmission?.selection.agentId ||
+        agents.some(
+          (agent) =>
+            agent.id === initialSubmission.selection.agentId &&
+            agent.lifecycle === "active"
+        )),
+    send: async (text, selection) => {
+      await send(text, selection);
+      if (latestDraft.current === text) {
+        latestDraft.current = "";
+        setRecoveredDraft("");
+      }
+    }
+  });
 
   const interrupt = async () => {
     if (
@@ -2221,7 +2285,79 @@ export function LiveAgentChat({
           initialDraft={initialDraft}
           initialSelection={initialSelection}
           projectName={
-            projectId ? (projectName ?? "Project chat") : "Standalone chat"
+            currentExecution
+              ? (currentProjectName ?? "Personal")
+              : (projectName ?? "Personal")
+          }
+          projectSelector={
+            <HomeProjectPicker
+              placement="above"
+              project={
+                currentExecution
+                  ? currentProjectId
+                    ? {
+                        id: currentProjectId,
+                        name: currentProjectName ?? "Project"
+                      }
+                    : null
+                  : projectId
+                    ? { id: projectId, name: projectName ?? "Project" }
+                    : null
+              }
+              projects={registeredProjects}
+              canChooseFolder={Boolean(onChooseChatFolder)}
+              onChooseFolder={onChooseChatFolder}
+              disabled={
+                sending ||
+                recoveryBlocked ||
+                Boolean(teamRequestId) ||
+                Boolean(
+                  executionId && (!currentExecution || moveUnavailableReason)
+                )
+              }
+              unavailableReason={
+                teamRequestId
+                  ? "This chat uses the project attached to its Team request."
+                  : recoveryBlocked
+                    ? "Resolve the pending chat recovery before changing folders."
+                    : sending
+                      ? "Wait for the message to finish before changing folders."
+                      : executionId && !currentExecution
+                        ? "Wait for this chat to load before changing folders."
+                        : moveUnavailableReason
+              }
+              noFolderUnavailableReason={
+                executionId
+                  ? "No folder is available when starting a new chat. Existing chats change folders through a reviewed Project Move."
+                  : null
+              }
+              onSelect={(selected) => {
+                const execution = runtimeRef.current?.execution;
+                if (
+                  operationRef.current ||
+                  sending ||
+                  recoveryBlocked ||
+                  teamRequestId
+                )
+                  return;
+                if (!executionId && !execution) {
+                  setDraftProject(selected);
+                  return;
+                }
+                if (
+                  !execution ||
+                  !selected ||
+                  selected.id === execution.projectId ||
+                  moveUnavailableReason ||
+                  sending ||
+                  teamRequestId
+                )
+                  return;
+                setProjectMoveDestinationId(selected.id);
+                setProjectMovePickerOpen(false);
+                setProjectMoveDialogOpen(true);
+              }}
+            />
           }
           activity={activity}
           onBuildJobSelect={(jobId) => {
@@ -2269,7 +2405,9 @@ export function LiveAgentChat({
               ?.scrollIntoView({ behavior: "smooth", block: "center" });
           }}
           clientResourceScope={{
-            projectId: runtime?.execution.projectId ?? projectId ?? null,
+            projectId: runtime
+              ? runtime.execution.projectId
+              : (projectId ?? null),
             instanceId: runtime?.execution.aiClientInstanceId,
             provider: runtime?.execution.provider
           }}

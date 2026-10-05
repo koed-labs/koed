@@ -1,4 +1,7 @@
-import type { ChatMentionAgent } from "@/components/ChatComposer";
+import type {
+  ChatMentionAgent,
+  ChatComposerSelection
+} from "@/components/ChatComposer";
 // @ts-expect-error -- Node's native TypeScript tests need the source extension.
 import { canonicalAgentMentionToken } from "./agent-mentions.ts";
 import type { PersonalAgent } from "@/lib/personal-agents-client";
@@ -30,6 +33,7 @@ export function privateAgentHandoffHref(input: {
   draft: string;
   requestId?: string;
   executionId?: string | null;
+  selection?: ChatComposerSelection;
 }): string {
   const query = new URLSearchParams({
     chat: "1",
@@ -37,6 +41,16 @@ export function privateAgentHandoffHref(input: {
     project: input.localProjectId,
     draft: input.draft.slice(0, 8_000)
   });
+  if (input.selection) {
+    const settings = input.selection;
+    if (settings.provider) query.set("provider", settings.provider);
+    query.set("model", settings.model);
+    query.set("effort", settings.effort);
+    query.set("access", settings.permissionMode);
+    if (settings.instanceId) query.set("client", settings.instanceId);
+    if (settings.hostedInstanceId)
+      query.set("hostedClient", settings.hostedInstanceId);
+  }
   if (input.requestId) {
     query.set("teamRequest", input.requestId);
     query.set("teamRequestTeam", input.teamId);
@@ -130,4 +144,35 @@ export function buildTeamAgentMentions(
     });
   }
   return result;
+}
+
+export function privateAgentHandoffSelection(
+  query: Pick<URLSearchParams, "get">
+): Partial<ChatComposerSelection> | undefined {
+  const provider = query.get("provider");
+  const model = query.get("model");
+  const effort = query.get("effort");
+  const access = query.get("access");
+  const instanceId = query.get("client");
+  const hostedInstanceId = query.get("hostedClient");
+  const fields = [provider, model, effort, instanceId, hostedInstanceId];
+  if (
+    !provider ||
+    !model ||
+    effort === null ||
+    !["full", "ask", "read"].includes(access ?? "") ||
+    fields.some(
+      (value) =>
+        value !== null && (value.length > 256 || /[\u0000-\u001f]/u.test(value))
+    )
+  )
+    return undefined;
+  return {
+    provider,
+    model,
+    effort,
+    permissionMode: access as ChatComposerSelection["permissionMode"],
+    ...(instanceId ? { instanceId } : {}),
+    ...(hostedInstanceId ? { hostedInstanceId } : {})
+  };
 }

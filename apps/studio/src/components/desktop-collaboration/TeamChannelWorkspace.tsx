@@ -383,6 +383,7 @@ export function TeamChannelWorkspace({
   );
   const [pendingAgentMention, setPendingAgentMention] = useState<{
     agent: TeamAgentMention;
+    selection: ChatComposerSelection;
     text: string;
     idempotencyKey: string;
     sendClientMessageId: string;
@@ -3272,6 +3273,7 @@ export function TeamChannelWorkspace({
       router.push(
         privateAgentHandoffHref({
           agentId: intent.agent.id,
+          selection: intent.selection,
           localProjectId: connection.localProjectId,
           teamId: capturedTeamId,
           draft: buildOwnedAgentHandoffDraft({
@@ -3312,6 +3314,14 @@ export function TeamChannelWorkspace({
     }
   };
 
+  const agentProjectId =
+    activeThread?.kind === "team_project_channel"
+      ? activeThread.teamProjectId
+      : null;
+  const agentProjectName =
+    (activeTeam?.sharedProjects ?? []).find(
+      (project) => project.id === agentProjectId
+    )?.name ?? "Choose a Shared Project";
   const sendTeamComposer = async (
     text: string,
     selection: ChatComposerSelection
@@ -3339,6 +3349,7 @@ export function TeamChannelWorkspace({
     }
     const intent = {
       agent,
+      selection,
       text,
       idempotencyKey: crypto.randomUUID(),
       sendClientMessageId: crypto.randomUUID(),
@@ -3962,11 +3973,7 @@ export function TeamChannelWorkspace({
                                     ? `Message ${activeDirectMessageTitle}`
                                     : `Message #${activeThread?.name ?? "channel"}`
                                 }
-                                projectName={
-                                  activeDirectMessage
-                                    ? activeTeam.name
-                                    : (activeThread?.name ?? "Team")
-                                }
+                                projectName={agentProjectName}
                                 branch="shared"
                                 value={visibleDraftText}
                                 onChange={changeDraftText}
@@ -3994,6 +4001,10 @@ export function TeamChannelWorkspace({
                                           id: person.id,
                                           name: person.displayName
                                         }))
+                                }
+                                modelOptions={teamAgentMentions.models}
+                                modelAvailabilityWarning={
+                                  teamAgentMentions.modelAvailabilityWarning
                                 }
                                 activeAgentId={activeMentionAgentId}
                                 onActiveAgentChange={(agentId) =>
@@ -4137,6 +4148,11 @@ export function TeamChannelWorkspace({
                       pendingSend={threadPendingSend}
                       pendingStatus={threadSendStatus}
                       editDrafts={threadEditDrafts}
+                      projectName={agentProjectName}
+                      modelOptions={teamAgentMentions.models}
+                      modelAvailabilityWarning={
+                        teamAgentMentions.modelAvailabilityWarning
+                      }
                       agents={teamAgentMentions.options}
                       teamMembers={activeTeam.people
                         .filter(
@@ -4218,6 +4234,7 @@ export function TeamChannelWorkspace({
                           }
                           const intent = {
                             agent,
+                            selection,
                             text,
                             idempotencyKey: crypto.randomUUID(),
                             sendClientMessageId: crypto.randomUUID(),

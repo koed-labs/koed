@@ -4,6 +4,32 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { HomeFeedController } from "@/lib/use-home-feed";
 import { PersonalHome } from "./PersonalHome";
+const agentMocks = vi.hoisted(() => ({ multiple: false }));
+vi.mock("@/lib/personal-agents-client", () => ({
+  personalAgentsHttpAdapter: {
+    list: async () => [
+      {
+        id: "home-agent",
+        name: "Home Agent",
+        lifecycle: "active",
+        currentVersion: 1,
+        defaultProvider: "codex",
+        defaultModel: "test-model",
+        defaultReasoningEffort: "medium"
+      },
+      ...(agentMocks.multiple
+        ? [
+            {
+              id: "second-agent",
+              name: "Second Agent",
+              lifecycle: "active",
+              currentVersion: 2
+            }
+          ]
+        : [])
+    ]
+  }
+}));
 vi.mock("./StudioSidebar", () => ({ StudioSidebar: () => null }));
 vi.mock("./OwnedConversationShareDialog", () => ({
   OwnedConversationShareDialog: () => null
@@ -27,11 +53,54 @@ vi.mock("../SharedChatUI", () => ({
 vi.mock("../ChatComposer", () => ({
   ChatComposer: ({
     value,
-    onChange
+    onChange,
+    projectSelector,
+    onSend,
+    sendEnabled,
+    activeAgentId,
+    onActiveAgentChange
   }: {
     value: string;
+    sendEnabled: boolean;
+    activeAgentId: string | null;
+    onActiveAgentChange: (id: string | null) => void;
     onChange: (value: string) => void;
-  }) => <textarea value={value} onChange={(e) => onChange(e.target.value)} />
+    projectSelector?: ReactNode;
+    onSend: (
+      value: string,
+      selection: {
+        agentId: string | null;
+        provider: string;
+        model: string;
+        effort: string;
+        permissionMode: "full";
+        instanceId: string;
+      }
+    ) => void;
+  }) => (
+    <div>
+      {projectSelector}
+      <button onClick={() => onActiveAgentChange("home-agent")}>
+        Mention Home Agent
+      </button>
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} />
+      <button
+        disabled={!sendEnabled || !value.trim()}
+        onClick={() =>
+          onSend(value, {
+            agentId: activeAgentId,
+            provider: "codex",
+            model: "test-model",
+            effort: "high",
+            permissionMode: "full",
+            instanceId: "chosen-client"
+          })
+        }
+      >
+        Send draft
+      </button>
+    </div>
+  )
 }));
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -56,6 +125,7 @@ beforeEach(() => {
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
   fail = false;
+  agentMocks.multiple = false;
   feedRefresh = vi.fn().mockResolvedValue(true);
   vi.stubGlobal(
     "fetch",
@@ -86,7 +156,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-async function mount() {
+async function mount(onStartChat = vi.fn()) {
   const homeFeed = {
     snapshot: null,
     state: "ready",
@@ -103,7 +173,10 @@ async function mount() {
     root.render(
       <PersonalHome
         canCreateLocalProject={false}
-        onStartChat={vi.fn()}
+        onStartChat={onStartChat}
+        registeredProjects={[
+          { id: "selected-project", name: "Project folder" }
+        ]}
         onResumeChat={vi.fn()}
         homeFeed={homeFeed}
         onOpenHomeItem={vi.fn()}
@@ -148,4 +221,79 @@ it("also exposes Refresh when only the activity refresh fails", async () => {
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(refreshButton()).toBeDefined();
+});
+
+it("keeps the draft and chosen model while changing folders, and explicitly sends No folder", async () => {
+  const start = vi.fn();
+  await mount(start);
+  const button = (text: string) =>
+    [...container.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === text
+    )!;
+  await act(async () => button("What should I work on next?").click());
+  await act(async () => button("Personal").click());
+  await act(async () => button("Project folder").click());
+  expect(container.querySelector("textarea")?.value).toBe(
+    "What should I work on next?"
+  );
+  expect(start).not.toHaveBeenCalled();
+  await act(async () => button("Project folder").click());
+  await act(async () => button("No folder").click());
+  await act(async () => button("Send draft").click());
+  expect(start).toHaveBeenCalledWith(
+    "What should I work on next?",
+    null,
+    expect.objectContaining({ provider: "codex", model: "test-model" })
+  );
+});
+
+it.each([false, true])(
+  "opens New Chat without an Agent choice, whether one or multiple Agents exist (multiple=%s)",
+  async (multiple) => {
+    agentMocks.multiple = multiple;
+    const start = vi.fn();
+    await mount(start);
+    const button = (text: string) =>
+      [...container.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === text
+      )!;
+    expect(
+      container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Personal Agent"]'
+      )
+    ).toBeNull();
+    await act(async () => button("What should I work on next?").click());
+    expect(button("Send draft").disabled).toBe(false);
+    await act(async () => button("Send draft").click());
+    expect(container.querySelector("dialog")).toBeNull();
+    expect(start).toHaveBeenCalledExactlyOnceWith(
+      "What should I work on next?",
+      null,
+      {
+        agentId: null,
+        provider: "codex",
+        model: "test-model",
+        effort: "high",
+        permissionMode: "full",
+        instanceId: "chosen-client"
+      }
+    );
+  }
+);
+
+it("still lets the user explicitly select an optional Agent", async () => {
+  const start = vi.fn();
+  await mount(start);
+  const button = (text: string) =>
+    [...container.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === text
+    )!;
+  await act(async () => button("Mention Home Agent").click());
+  await act(async () => button("What should I work on next?").click());
+  await act(async () => button("Send draft").click());
+  expect(start).toHaveBeenCalledWith(
+    "What should I work on next?",
+    null,
+    expect.objectContaining({ agentId: "home-agent" })
+  );
 });

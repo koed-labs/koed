@@ -214,7 +214,7 @@ export interface StudioGatewayOptions {
   listLocalSources: (input: Record<string, unknown>) => Promise<unknown>;
   listProjects: () => Promise<unknown>;
   chooseProjectDirectory: () => Promise<string | null>;
-  registerProject: (input: { path: string; name: string }) => Promise<unknown>;
+  registerProject: (input: { path: string; name?: string }) => Promise<unknown>;
   loadCollaborationSnapshot?: () => Promise<StudioCollaborationSnapshot>;
   connectCollaborationBackend?: (
     remoteUrl: string
@@ -280,7 +280,7 @@ export const createStudioWindowController = (input: {
   listLocalSources: (input: Record<string, unknown>) => Promise<unknown>;
   listProjects: () => Promise<unknown>;
   chooseProjectDirectory: () => Promise<string | null>;
-  registerProject: (input: { path: string; name: string }) => Promise<unknown>;
+  registerProject: (input: { path: string; name?: string }) => Promise<unknown>;
   collaboration: (
     args: Record<string, unknown>,
     context: DesktopCommandContext
