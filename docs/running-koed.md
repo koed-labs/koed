@@ -170,8 +170,10 @@ Task 7 evidence (Node `v24.13.1`; `pnpm` resolves to
 export PATH=/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH
 node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server exec vitest run src/app-runtime.test.ts src/paths.test.ts src/local-privacy-runtime.test.ts src/start.test.ts src/stop.test.ts src/status.test.ts
 # 6 files / 163 tests passed
+node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server exec vitest run src/service-runtime-selection.test.ts
+# 1 file / 5 tests passed, including current-directory MCP artifact never-spawn regression
 node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server test
-# 51 files / 722 tests passed
+# 51 files / 723 tests passed
 node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server typecheck
 node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js --filter @koed-labs/server build
 node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js lint

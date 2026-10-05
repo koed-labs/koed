@@ -37,6 +37,7 @@ import { readCurrentGeneration } from "./generation-lifecycle.js";
 import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 
 const roots: string[] = [];
+const initialCwd = process.cwd();
 const tempDir = () => {
   const path = mkdtempSync(resolve(process.cwd(), ".koed-service-selection-"));
   roots.push(path);
@@ -113,6 +114,7 @@ const makeGeneration = async (root: string, productVersion: string) => {
 };
 
 afterEach(() => {
+  process.chdir(initialCwd);
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
   fixtureRuntime.value = undefined;
@@ -165,6 +167,29 @@ describe("packaged service runtime selection", () => {
       pinAndResolvePackagedRuntime(paths, {}, requirements)
     ).rejects.toThrow(/does not match Koed server control plane/);
     expect(() => readFileSync(paths.generationStatePath!, "utf8")).toThrow();
+  });
+
+  it("never spawns a current-directory MCP artifact without a verified generation", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    process.chdir(root);
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root
+    });
+    const spawn = vi.fn();
+    const launch = async () => {
+      const runtime = await resolveVerifiedPackagedRuntime(
+        paths,
+        {},
+        requirements
+      );
+      spawn(process.execPath, [runtime.mcpCli]);
+    };
+
+    await expect(launch()).rejects.toThrow("no active runtime generation");
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("fails without active verified generation and does not provision one", async () => {
