@@ -309,6 +309,151 @@ test("rejects missing literal imports and package edges", () => {
   );
 });
 
+test("uses Node ESM exact paths while preserving CommonJS extension inference", async (t) => {
+  const cases = [
+    [
+      "ESM extensionless import does not infer .js",
+      'import "./target";',
+      { "target.js": "export {};\\n" }
+    ],
+    [
+      "ESM directory import is not resolved",
+      'import "./directory";',
+      { "directory/index.js": "export {};\\n" }
+    ],
+    [
+      "ESM missing exact path does not accept missing.js",
+      'import "./missing";',
+      { "missing.js": "export {};\\n" }
+    ]
+  ];
+  for (const [name, source, files] of cases) {
+    await t.test(name, () => {
+      const workspace = mkdtempSync(
+        resolve(tmpdir(), "koed-component-esm-path-")
+      );
+      roots.push(workspace);
+      const sourceRoot = resolve(workspace, "shared-runtime");
+      minimalGraph(sourceRoot, source);
+      packageFixture(
+        sourceRoot,
+        "@koed/privacy-service",
+        {},
+        {
+          "dist/index.js": source,
+          ...Object.fromEntries(
+            Object.entries(files).map(([path, content]) => [
+              `dist/${path}`,
+              content
+            ])
+          )
+        }
+      );
+      assert.throws(
+        () =>
+          projectRuntimeComponents({
+            sourceRoot,
+            outputDir: resolve(workspace, "components")
+          }),
+        /unresolved runtime edges.*(?:target|directory|missing)/s
+      );
+    });
+  }
+  const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-cjs-path-"));
+  roots.push(workspace);
+  const sourceRoot = resolve(workspace, "shared-runtime");
+  minimalGraph(sourceRoot, 'require("./target");');
+  packageFixture(
+    sourceRoot,
+    "@koed/privacy-service",
+    {},
+    {
+      "dist/index.js": 'require("./target");',
+      "dist/target.js": "module.exports = {};\n"
+    }
+  );
+  assert.doesNotThrow(() =>
+    projectRuntimeComponents({
+      sourceRoot,
+      outputDir: resolve(workspace, "components")
+    })
+  );
+});
+
+test("URL assets require exact existing paths and never infer extensions", async (t) => {
+  const cases = [
+    [
+      "missing URL with missing.js sibling",
+      'new URL("./missing", import.meta.url);',
+      { "missing.js": "asset\n" }
+    ]
+  ];
+  for (const [name, source, files] of cases) {
+    await t.test(name, () => {
+      const workspace = mkdtempSync(
+        resolve(tmpdir(), "koed-component-url-path-")
+      );
+      roots.push(workspace);
+      const sourceRoot = resolve(workspace, "shared-runtime");
+      minimalGraph(sourceRoot, source);
+      packageFixture(
+        sourceRoot,
+        "@koed/privacy-service",
+        {},
+        {
+          "dist/index.js": source,
+          ...Object.fromEntries(
+            Object.entries(files).map(([path, content]) => [
+              `dist/${path}`,
+              content
+            ])
+          )
+        }
+      );
+      assert.throws(
+        () =>
+          projectRuntimeComponents({
+            sourceRoot,
+            outputDir: resolve(workspace, "components")
+          }),
+        /unresolved runtime edges.*(?:missing|assets)/s
+      );
+    });
+  }
+  for (const [source, files] of [
+    [
+      'new URL("./asset.prompt", import.meta.url);',
+      { "dist/asset.prompt": "prompt\n" }
+    ],
+    [
+      'new URL("./assets/", import.meta.url);',
+      { "dist/assets/index.js": "export {};\n" }
+    ]
+  ]) {
+    const workspace = mkdtempSync(
+      resolve(tmpdir(), "koed-component-url-exact-")
+    );
+    roots.push(workspace);
+    const sourceRoot = resolve(workspace, "shared-runtime");
+    minimalGraph(sourceRoot, source);
+    packageFixture(
+      sourceRoot,
+      "@koed/privacy-service",
+      {},
+      {
+        "dist/index.js": source,
+        ...files
+      }
+    );
+    assert.doesNotThrow(() =>
+      projectRuntimeComponents({
+        sourceRoot,
+        outputDir: resolve(workspace, "components")
+      })
+    );
+  }
+});
+
 test("rejects template dynamic imports and unresolved native/assets", () => {
   const workspace = mkdtempSync(
     resolve(tmpdir(), "koed-component-unknown-edge-")
@@ -723,6 +868,41 @@ test("uses loader-aware Node exports and rejects blocked or missing subpaths", a
   }
 });
 
+test("rejects unowned non-module-relative createRequire factories", async (t) => {
+  const cases = [
+    [
+      "direct factory",
+      'import { createRequire } from "node:module"; createRequire(userPath);'
+    ],
+    [
+      "assigned factory",
+      'import { createRequire } from "node:module"; const localRequire = createRequire(userPath); localRequire("./missing.node");'
+    ],
+    [
+      "namespace factory",
+      'import * as module from "node:module"; const localRequire = module.createRequire(userPath); localRequire("./missing.node");'
+    ]
+  ];
+  for (const [name, source] of cases) {
+    await t.test(name, () => {
+      const workspace = mkdtempSync(
+        resolve(tmpdir(), "koed-component-create-require-context-")
+      );
+      roots.push(workspace);
+      const sourceRoot = resolve(workspace, "shared-runtime");
+      minimalGraph(sourceRoot, source);
+      assert.throws(
+        () =>
+          projectRuntimeComponents({
+            sourceRoot,
+            outputDir: resolve(workspace, "components")
+          }),
+        /unresolved runtime edges.*createRequire/s
+      );
+    });
+  }
+});
+
 test("rejects relative, absolute, and package-import targets outside copied ownership", async (t) => {
   const cases = [
     ["relative escape", 'import "../../../../outside.js";', {}],
@@ -750,6 +930,59 @@ test("rejects relative, absolute, and package-import targets outside copied owne
           }),
         /unresolved runtime edges.*(?:outside|absolute|escapes|ownership)/is
       );
+    });
+  }
+});
+
+test("accepts #imports into declared dependency ownership and rejects dependency escapes", async (t) => {
+  for (const [name, target, dependencies, shouldReject] of [
+    [
+      "declared dependency target",
+      "dependency/entry.js",
+      { dependency: "1.0.0" },
+      false
+    ],
+    ["undeclared dependency target", "undeclared/entry.js", {}, true],
+    [
+      "target outside source root",
+      "../../../outside.js",
+      { dependency: "1.0.0" },
+      true
+    ]
+  ]) {
+    await t.test(name, () => {
+      const workspace = mkdtempSync(
+        resolve(tmpdir(), "koed-component-imports-owner-")
+      );
+      roots.push(workspace);
+      const sourceRoot = resolve(workspace, "shared-runtime");
+      minimalGraph(sourceRoot, 'import "#shared";', dependencies, {
+        imports: { "#shared": target }
+      });
+      packageFixture(
+        sourceRoot,
+        "dependency",
+        {},
+        { "entry.js": "export {};\n" }
+      );
+      packageFixture(
+        sourceRoot,
+        "undeclared",
+        {},
+        { "entry.js": "export {};\n" }
+      );
+      write(resolve(sourceRoot, "outside.js"), "export {};\\n");
+      const run = () =>
+        projectRuntimeComponents({
+          sourceRoot,
+          outputDir: resolve(workspace, "components")
+        });
+      if (shouldReject)
+        assert.throws(
+          run,
+          /unresolved runtime edges.*(?:outside|ownership|escapes)/s
+        );
+      else assert.doesNotThrow(run);
     });
   }
 });

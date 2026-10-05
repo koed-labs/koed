@@ -193,6 +193,14 @@ const dynamicImportOwnership = (packageName, file, edge) => {
   if (
     packageName === "node-gyp-build-optional-packages" &&
     file === "node-gyp-build.js" &&
+    edge.loader === "createRequire" &&
+    edge.call === "createRequire" &&
+    edge.argumentText === "url.pathToFileURL(path.join(dir, 'package.json'))"
+  )
+    return "optional-native-platform-package-probe";
+  if (
+    packageName === "node-gyp-build-optional-packages" &&
+    file === "node-gyp-build.js" &&
     edge.loader === "require.resolve" &&
     edge.call ===
       "require('module').createRequire(url.pathToFileURL(path.join(dir, 'package.json'))).resolve" &&
@@ -332,8 +340,32 @@ const hasClosureOwnedOptionalNativePackage = (closure) => {
   );
 };
 
-const sourceAuditExclusion = (packageName, file) => {
+const sourceAuditExclusion = (packageName, file, manifest) => {
   const basename = file.split("/").at(-1);
+  const moduleRoot =
+    typeof manifest.module === "string"
+      ? dirname(manifest.module.replace(/^\.\//, ""))
+      : undefined;
+  const mainRoot =
+    typeof manifest.main === "string"
+      ? dirname(manifest.main.replace(/^\.\//, ""))
+      : undefined;
+  const typesRoot =
+    typeof manifest.types === "string"
+      ? dirname(manifest.types.replace(/^\.\//, ""))
+      : undefined;
+  if (
+    moduleRoot &&
+    moduleRoot !== mainRoot &&
+    file.startsWith(`${moduleRoot}/`)
+  )
+    return "unselected bundler module field; Node resolution selects main field";
+  if (typesRoot && typesRoot !== mainRoot && file.startsWith(`${typesRoot}/`))
+    return "type declaration support output; Node resolution selects main field";
+  if (packageName === "json-canonicalize" && /^(?:esm5|esm2015)\//.test(file))
+    return "unselected bundler module entrypoint; Node main selects bundles";
+  if (packageName === "ts-algebra" && file.startsWith("lib/"))
+    return "type-level library entrypoint; no Node runtime consumers in component graph";
   if (
     /^(?:example|benchmark|bench)\.[cm]?js$/.test(basename) ||
     /(?:^|\/)(?:example|benchmark|benchmarks?)(?:\/|$)/.test(file) ||
@@ -594,15 +626,16 @@ const referenceEdges = (source) => {
           specifier(argument, "literal", callLoader, expression.getText(file));
         else edges.push({ kind: "dynamic", loader: callLoader });
       } else if (
-        ts.isIdentifier(expression) &&
-        createRequireBindings.has(expression.text) &&
+        isCreateRequireFactory(expression) &&
         node.arguments.length &&
         !isImportMetaUrl(node.arguments[0])
       ) {
         edges.push({
           kind: "dynamic",
           loader: "createRequire",
-          call: expression.getText(file),
+          call: ts.isPropertyAccessExpression(expression)
+            ? expression.name.text
+            : expression.getText(file),
           argumentText: node.arguments[0].getText(file)
         });
       }
@@ -635,6 +668,7 @@ const nodeResolver = (loader) => {
       enhancedResolve.create.sync({
         conditionNames: ["node", "node-addons", kind, "default"],
         extensions: [".js", ".mjs", ".cjs", ".json", ".node"],
+        fullySpecified: kind === "import",
         mainFields: ["main"],
         exportsFields: ["exports"],
         importsFields: ["imports"]
@@ -654,7 +688,7 @@ const isWithin = (root, path) => {
   );
 };
 
-const resolveNodeEdge = (sourceRoot, packageRoot, path, edge) => {
+const resolveNodeEdge = (sourceRoot, packageRoot, path, edge, included) => {
   const specifier = edge.specifier;
   if (isAbsolute(specifier))
     return { error: "absolute source target is nonportable" };
@@ -673,28 +707,55 @@ const resolveNodeEdge = (sourceRoot, packageRoot, path, edge) => {
     }
   }
   let target;
-  const directoryTarget = resolve(dirname(path), specifier);
-  if (
-    edge.kind === "asset" &&
-    specifier.endsWith("/") &&
-    existsSync(directoryTarget) &&
-    lstatSync(directoryTarget).isDirectory()
-  ) {
-    target = directoryTarget;
+  if (edge.kind === "asset") {
+    const assetPath = resolve(dirname(path), specifier);
+    if (!existsSync(assetPath)) return null;
+    const assetStat = lstatSync(assetPath);
+    if (
+      !assetStat.isFile() &&
+      !(specifier.endsWith("/") && assetStat.isDirectory())
+    )
+      return null;
+    target = assetPath;
   } else {
     try {
       target = nodeResolver(edge.loader)(dirname(path), specifier);
     } catch {
-      return null;
+      if (!isPackageImport) return null;
+      const imports = readManifest(
+        resolve(packageRoot, "package.json")
+      ).imports;
+      const importTarget = imports?.[specifier];
+      if (typeof importTarget !== "string") return null;
+      try {
+        if (importTarget.startsWith(".")) {
+          target = resolve(packageRoot, importTarget);
+        } else {
+          target = nodeResolver(edge.loader)(dirname(path), importTarget);
+        }
+      } catch {
+        return null;
+      }
     }
   }
   if (!target) return null;
   if (!isWithin(sourceRoot, target))
     return { error: "resolved source target escapes shared runtime root" };
+  if (isPackageImport && !isWithin(expectedPackageRoot, target)) {
+    const owner = [...included]
+      .sort((left, right) => right.length - left.length)
+      .find((root) => isWithin(root, target));
+    if (!owner)
+      return {
+        error: "resolved package import escapes declared dependency ownership"
+      };
+    expectedPackageRoot = owner;
+  }
   if (!isWithin(expectedPackageRoot, target))
     return { error: "resolved source target escapes copied package ownership" };
   return {
-    packageRoot: packageEdge ? expectedPackageRoot : packageRoot,
+    packageRoot:
+      packageEdge || isPackageImport ? expectedPackageRoot : packageRoot,
     target,
     packageEdge,
     isPackageImport
@@ -730,7 +791,7 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
         });
         continue;
       }
-      const exclusion = sourceAuditExclusion(manifest.name, file);
+      const exclusion = sourceAuditExclusion(manifest.name, file, manifest);
       if (exclusion) {
         excludedSourceFiles.push({
           package: manifest.name,
@@ -778,7 +839,13 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
           !edgeSpecifier.startsWith(".") &&
           !isAbsolute(edgeSpecifier) &&
           !edgeSpecifier.startsWith("#");
-        const resolved = resolveNodeEdge(sourceRoot, packageRoot, path, edge);
+        const resolved = resolveNodeEdge(
+          sourceRoot,
+          packageRoot,
+          path,
+          edge,
+          included
+        );
         if (resolved?.error) {
           unresolved.push(`${detail}: ${resolved.error}`);
           continue;
