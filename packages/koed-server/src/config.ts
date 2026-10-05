@@ -46,6 +46,7 @@ export interface KoedServerConfigDeps {
   writeFileSync?: typeof writeFileSync;
   renameSync?: typeof renameSync;
   rmSync?: typeof rmSync;
+  strict?: boolean;
 }
 
 const trim = (value: string | undefined): string | undefined => {
@@ -91,17 +92,84 @@ const hardwareAccelerationPreference = (
 
 const readConfig = (
   paths: KoedServerPaths,
-  deps: Required<Pick<KoedServerConfigDeps, "existsSync" | "readFileSync">>
+  deps: Required<Pick<KoedServerConfigDeps, "existsSync" | "readFileSync">> &
+    Pick<KoedServerConfigDeps, "strict">
 ): Partial<KoedServerConfig> => {
   if (!deps.existsSync(paths.serverConfigPath)) {
     return {};
   }
   try {
-    return JSON.parse(
+    const parsed: unknown = JSON.parse(
       deps.readFileSync(paths.serverConfigPath, "utf8") as string
-    ) as Partial<KoedServerConfig>;
-  } catch {
-    return {};
+    );
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("expected a JSON object");
+    }
+    const record = parsed as Record<string, unknown>;
+    if (!deps.strict) return record as Partial<KoedServerConfig>;
+    const stringFields = ["runtimeMode", "dependencyMode"];
+    const booleanFields = [
+      "codexTranscriptWatcherEnabled",
+      "claudeTranscriptWatcherEnabled",
+      "piTranscriptWatcherEnabled",
+      "codexGlobalMemoryGuidanceEnabled"
+    ];
+    for (const field of stringFields) {
+      if (record[field] !== undefined && typeof record[field] !== "string") {
+        throw new Error(`${field} must be a string`);
+      }
+    }
+    if (
+      record.runtimeMode !== undefined &&
+      !runtimeMode(record.runtimeMode as string)
+    ) {
+      throw new Error(
+        "runtimeMode must be local-personal, external, or developer"
+      );
+    }
+    if (
+      record.dependencyMode !== undefined &&
+      !dependencyMode(record.dependencyMode as string)
+    ) {
+      throw new Error("dependencyMode must be bundled-local or external");
+    }
+    for (const field of booleanFields) {
+      if (record[field] !== undefined && typeof record[field] !== "boolean") {
+        throw new Error(`${field} must be a boolean`);
+      }
+    }
+    if (
+      record.external !== undefined &&
+      (!record.external ||
+        typeof record.external !== "object" ||
+        Array.isArray(record.external))
+    ) {
+      throw new Error("external must be an object");
+    }
+    if (record.external && typeof record.external === "object") {
+      const external = record.external as Record<string, unknown>;
+      const supportedExternalFields = [
+        "databaseUrl",
+        "redisUrl",
+        "embeddingServiceUrl",
+        "privacyServiceUrl"
+      ];
+      for (const [field, value] of Object.entries(external)) {
+        if (!supportedExternalFields.includes(field)) {
+          throw new Error(`external.${field} is not supported`);
+        }
+        if (value !== undefined && typeof value !== "string") {
+          throw new Error(`external.${field} must be a string`);
+        }
+      }
+    }
+    return record as Partial<KoedServerConfig>;
+  } catch (error) {
+    if (!deps.strict) return {};
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot read ${paths.serverConfigPath}: ${message}`, {
+      cause: error
+    });
   }
 };
 
@@ -112,8 +180,25 @@ export const resolveKoedServerConfig = (
 ): KoedServerConfig => {
   const file = readConfig(paths, {
     existsSync: deps.existsSync ?? existsSync,
-    readFileSync: deps.readFileSync ?? readFileSync
+    readFileSync: deps.readFileSync ?? readFileSync,
+    strict: deps.strict
   });
+  if (deps.strict) {
+    if (
+      environment.KOED_RUNTIME_MODE !== undefined &&
+      !runtimeMode(environment.KOED_RUNTIME_MODE)
+    ) {
+      throw new Error(
+        "KOED_RUNTIME_MODE must be local-personal, external, or developer"
+      );
+    }
+    if (
+      environment.KOED_DEPENDENCY_MODE !== undefined &&
+      !dependencyMode(environment.KOED_DEPENDENCY_MODE)
+    ) {
+      throw new Error("KOED_DEPENDENCY_MODE must be bundled-local or external");
+    }
+  }
   const resolvedRuntimeMode =
     runtimeMode(environment.KOED_RUNTIME_MODE) ??
     runtimeMode(file.runtimeMode) ??

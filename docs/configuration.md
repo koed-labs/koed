@@ -40,6 +40,24 @@ documented defaults. API and Worker processes in one deployment must be started
 from the same resolved environment. Changing `.env` after startup has no effect
 until the affected processes are restarted.
 
+Effective runtime resolution uses process environment over an explicitly supplied
+`KOED_ENV_PATH` file, then `KOED_HOME/config/server.json`. Packaged execution
+never discovers checkout `.env` implicitly. Source execution retains checkout
+`.env` discovery; an explicitly supplied `KOED_ENV_PATH` must exist in either
+mode. Explicit env files use strict parsing and report file/line for malformed
+syntax. Packaged resolution rejects malformed, non-object, and invalid-valued
+`server.json` rather than silently falling back to defaults. Team state comes
+from `KOED_TEAM_COLLABORATION_ENABLED` (including explicit env-file values),
+not a `server.json` field.
+
+Effective requirements default queue to `local` for `bundled-local` and
+`bullmq` for `external`; `WORK_QUEUE_BACKEND=local|bullmq` overrides either
+default. `bundled-local` requires Postgres and Embedding Service processes and
+embedding model/native runtime assets. Team adds local Privacy Filter Service
+and privacy model only with `bundled-local`. External dependencies retain
+Operator-managed database, queue, embedding, and (when Team enabled) privacy
+endpoint/token requirements; they do not add local privacy artifacts.
+
 External dependency mode means the Operator manages Postgres, Redis/BullMQ, the
 Embedding Service, and the Privacy Service lifecycle. The services may be
 launched by Docker Compose, systemd, Homebrew, managed infrastructure, or

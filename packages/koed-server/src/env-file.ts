@@ -1,24 +1,44 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export const parseEnvFile = (content: string): Record<string, string> => {
+export interface ParseEnvFileOptions {
+  strict?: boolean;
+  source?: string;
+}
+
+export const parseEnvFile = (
+  content: string,
+  options: ParseEnvFileOptions = {}
+): Record<string, string> => {
   const values: Record<string, string> = {};
-  for (const line of content.split(/\r?\n/)) {
+  const fail = (lineNumber: number, reason: string): never => {
+    throw new Error(
+      `${options.source ?? "Environment file"}:${lineNumber}: ${reason}`
+    );
+  };
+  for (const [index, line] of content.split(/\r?\n/).entries()) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) {
       continue;
     }
     const equals = trimmed.indexOf("=");
     if (equals <= 0) {
+      if (options.strict) fail(index + 1, "expected KEY=VALUE");
       continue;
     }
     const key = trimmed.slice(0, equals).trim();
     let value = trimmed.slice(equals + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
+    const quoted = value.startsWith('"') || value.startsWith("'");
+    if (quoted) {
+      if (value.length < 2 || value.at(-1) !== value[0]) {
+        if (options.strict)
+          fail(index + 1, `unterminated quoted value for ${key}`);
+      } else {
+        value = value.slice(1, -1);
+      }
+    }
+    if (options.strict && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      fail(index + 1, `invalid environment variable name ${key}`);
     }
     values[key] = value;
   }

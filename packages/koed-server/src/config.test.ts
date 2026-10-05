@@ -211,6 +211,20 @@ describe("koed-server config", () => {
     ).toEqual([]);
   });
 
+  it("fails strict resolution for malformed or non-object server config", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    const serverConfigPath = resolve(root, "config/server.json");
+    writeFileSync(serverConfigPath, "[]");
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {}, { strict: true })
+    ).toThrow(`Cannot read ${serverConfigPath}: expected a JSON object`);
+    writeFileSync(serverConfigPath, JSON.stringify({ runtimeMode: "magic" }));
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {}, { strict: true })
+    ).toThrow("runtimeMode must be local-personal, external, or developer");
+  });
+
   it("rejects malformed persisted hardware acceleration", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
