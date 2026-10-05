@@ -33,7 +33,7 @@ export const parseEnvFile = (
       const quote = value[0];
       let closingQuote = -1;
       for (let position = 1; position < value.length; position += 1) {
-        if (value[position] === "\\") {
+        if (quote === '"' && value[position] === "\\") {
           position += 1;
         } else if (value[position] === quote) {
           closingQuote = position;

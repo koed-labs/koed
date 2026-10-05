@@ -28,6 +28,12 @@ describe("repo env loading", () => {
     ).toThrow("explicit.env:1: unterminated quoted value for TEAM_ENABLED");
   });
 
+  it("preserves a trailing backslash in strict single-quoted values", () => {
+    expect(parseEnvFile("VALUE='C:\\data\\'", { strict: true })).toEqual({
+      VALUE: "C:\\data\\"
+    });
+  });
+
   it("preserves legacy lenient parsing for unmatched quotes", () => {
     expect(parseEnvFile("VALUE='unfinished")).toEqual({ VALUE: "'unfinished" });
   });

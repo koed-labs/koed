@@ -38,3 +38,13 @@
 - `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm --filter @koed-labs/server typecheck` and `pnpm --filter @koed-labs/server build` — passed under Node `v24.13.1`.
 - `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm lint` — passed.
 - Targeted Prettier check for changed source/tests — passed. Full `pnpm fmt:prettier:check` remains blocked by existing formatting in `.superpowers/sdd/2026-10-05-publish-koed-labs-server/progress.md`, `task-1-brief.md`, `task-2-brief.md`, and `task-3-brief.md`; left unrelated files unchanged.
+
+## Round 2 narrow fix: single-quoted backslashes
+
+- Regression: strict parsing rejected `VALUE='C:\data\'` because scanner consumed final backslash as an escape, leaving closing quote undiscovered.
+- Fix: only treat backslash as an escape while scanning double-quoted values; single-quoted backslashes remain literal.
+- RED: `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm --filter @koed-labs/server exec vitest run src/env-file.test.ts` — 1 expected regression failure: `Environment file:1: unterminated quoted value for VALUE`; 7 passed.
+- GREEN: `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm --filter @koed-labs/server exec vitest run src/env-file.test.ts src/config.test.ts src/effective-runtime-config.test.ts src/component-contract.test.ts` — 4 files passed, 47 tests passed.
+- `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm --filter @koed-labs/server typecheck` — passed.
+- `PATH="/Users/jedd/.npm/_npx/8a4b1eccb173403d/node_modules/node/bin:$PATH" pnpm lint` — passed.
+- Targeted Prettier check for `packages/koed-server/src/env-file.ts` and `packages/koed-server/src/env-file.test.ts` — passed after formatting; `git diff --check` — passed.
