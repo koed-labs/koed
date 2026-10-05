@@ -367,7 +367,7 @@ const statusFrom = ({
       message:
         "Homebrew is required for Homebrew-backed bundled-local runtime provisioning.",
       action:
-        "Install Homebrew or Linuxbrew on macOS, Linux, or WSL, then run koed-server runtime install --provider homebrew --dependency-mode bundled-local --json."
+        "Install Homebrew or Linuxbrew on macOS, Linux, or WSL, then run koed runtime install --provider homebrew --dependency-mode bundled-local --json."
     };
   }
   const command = homebrew.command;
@@ -448,7 +448,7 @@ const statusFrom = ({
       : "Homebrew-backed bundled-local runtime is missing required assets or KOED_HOME links.",
     action: ok
       ? undefined
-      : "Run koed-server runtime install --provider homebrew --dependency-mode bundled-local --json."
+      : "Run koed runtime install --provider homebrew --dependency-mode bundled-local --json."
   };
 };
 
@@ -515,7 +515,7 @@ export const installHomebrewRuntime = (
       message:
         "Homebrew is required before installing bundled-local runtime assets.",
       action:
-        "Install Homebrew or Linuxbrew on macOS, Linux, or WSL, then rerun koed-server runtime install --provider homebrew --dependency-mode bundled-local --json.",
+        "Install Homebrew or Linuxbrew on macOS, Linux, or WSL, then rerun koed runtime install --provider homebrew --dependency-mode bundled-local --json.",
       installedPackages: [],
       linkedPaths: []
     };

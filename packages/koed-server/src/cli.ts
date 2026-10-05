@@ -95,9 +95,9 @@ import type { KoedServerDoctorResult } from "./types.js";
 
 export const personalSyncUsageText = `Personal Sync
 
-  koed-server pair                   Connect this device using a request link
-  koed-server pair status            Show pending pairing progress
-  koed-server pair cancel            Cancel a waiting request
+  koed pair                   Connect this device using a request link
+  koed pair status            Show pending pairing progress
+  koed pair cancel            Cancel a waiting request
   koed-server personal-sync status --json
                                      Show this installation’s group and members
 
@@ -336,7 +336,7 @@ const checkCoreSetupNeeded = (
   if (!existsSync(paths.localAppCredentialPath)) {
     return `Core setup is required. Run:
 
-  koed-server setup core
+  koed setup core
 
 This will provision your local API Token and prepare Koed services.`;
   }
@@ -353,7 +353,7 @@ const getNoAgentsWarning = (status: {
     status.claudeCode?.configured ||
     status.pi?.configured;
   if (!anyConfigured) {
-    return "No AI Clients configured. Run: koed-server setup codex, setup claude, or setup pi";
+    return "No AI Clients configured. Run: koed setup codex, setup claude, or setup pi";
   }
   return null;
 };
@@ -738,7 +738,7 @@ export const runKoedServerCli = async (
       }
       if (!ready.ok)
         throw new Error(
-          "Koed could not start. Run koed-server doctor for setup guidance."
+          "Koed could not start. Run koed doctor for setup guidance."
         );
       const labelIndex = args.indexOf("--device-label");
       if (labelIndex >= 0 && !args[labelIndex + 1])

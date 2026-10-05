@@ -12,21 +12,21 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const appRuntimePackages = [
-  { directory: "api", package: "api", entries: ["dist/index.js"] },
-  { directory: "worker", package: "worker", entries: ["dist/index.js"] },
+  { directory: "api", package: "@koed/api", entries: ["dist/index.js"] },
+  { directory: "worker", package: "@koed/worker", entries: ["dist/index.js"] },
   {
     directory: "embedding-service",
-    package: "embedding-service",
+    package: "@koed/embedding-service",
     entries: ["dist/index.js"]
   },
   {
     directory: "privacy-service",
-    package: "privacy-service",
+    package: "@koed/privacy-service",
     entries: ["dist/index.js"]
   },
   {
     directory: "mcp-server",
-    package: "mcp-server",
+    package: "@koed/mcp-server",
     entries: [
       "dist/cli.js",
       "dist/capture-hook.js",
@@ -35,7 +35,7 @@ export const appRuntimePackages = [
   },
   {
     directory: "koed-server",
-    package: "koed-server",
+    package: "@koed-labs/server",
     entries: ["dist/cli.js"]
   }
 ];
@@ -61,7 +61,7 @@ const wrapperSource = (packageName, entry) =>
   [
     "#!/usr/bin/env node",
     'import { fileURLToPath } from "node:url";',
-    `const entry = new URL(${JSON.stringify(`../../node_modules/@koed/${packageName}/${entry}`)}, import.meta.url);`,
+    `const entry = new URL(${JSON.stringify(`../../node_modules/${packageName}/${entry}`)}, import.meta.url);`,
     "process.argv[1] = fileURLToPath(entry);",
     "await import(entry.href);",
     ""

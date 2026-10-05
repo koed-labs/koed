@@ -2792,7 +2792,7 @@ export const runPersonalSyncCommand = async (
         ) as typeof runtime;
       } catch {
         return fail(
-          "Start Koed first with koed-server start --daemon, then retry personal-sync status."
+          "Start Koed first with koed start --daemon, then retry personal-sync status."
         );
       }
       if (runtime.runtimeMode !== "local-personal" || !runtime.apiUrl)
@@ -2812,7 +2812,7 @@ export const runPersonalSyncCommand = async (
       );
       if (!credential)
         return fail(
-          "Local Personal credentials are unavailable. Run koed-server setup core and retry."
+          "Local Personal credentials are unavailable. Run koed setup core and retry."
         );
       return status(
         {

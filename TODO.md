@@ -7,7 +7,7 @@ Implemented on 2026-09-14:
 - Joining headless and Electron installations create a short-lived device request.
 - The existing Authority-hosting Electron installation reviews and explicitly
   accepts that request, using the existing signed enrollment protocol.
-- `pnpm koed-server pair` starts the native Personal runtime with automatic ports
+- `pnpm koed pair` starts the native Personal runtime with automatic ports
   and credentials. CLI and Electron share supervisor-owned request state.
 - Setup no longer requires a recovery JSON export or a recovery code. Advanced
   optional recovery export remains available through the CLI.

@@ -426,7 +426,7 @@ const resolvePostgresClientRuntime = async ({
     if (!nativePostgresToolsExist(env)) {
       if (mode === "native") {
         throw new Error(
-          `Native Postgres backup tools are missing under ${nativePostgresBinDir(env)}. Run koed-server runtime install or set PSQL_BIN, PG_DUMP_BIN, and PG_RESTORE_BIN explicitly.`
+          `Native Postgres backup tools are missing under ${nativePostgresBinDir(env)}. Run koed runtime install or set PSQL_BIN, PG_DUMP_BIN, and PG_RESTORE_BIN explicitly.`
         );
       }
     } else {

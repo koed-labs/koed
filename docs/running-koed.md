@@ -72,7 +72,7 @@ pnpm source-runtime:prepare
 
 Both commands print the state, fingerprint, and duration for development logs.
 
-The source `koed-server start` path only checks these outputs. It does not build
+The source `koed start` path only checks these outputs. It does not build
 them. The supervisor records a repository lease while it uses the outputs.
 Preparation fails instead of changing stale outputs that a live supervisor
 uses. Stop that supervisor before you prepare the stale runtime. Packaged
@@ -162,13 +162,13 @@ monotonic `elapsedMs`. Successful startup records dependency and process-spawn
 milestones through `final_supervisor_status_emitted`; startup failure records
 `startup_failed`. These events contain no credentials or environment values.
 
-`start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. One live supervisor owns each `KOED_HOME`: startup acquires an atomic lock before allocating automatic ports or starting dependencies, and a concurrent start reuses the live supervisor instead of rewriting `config/local-ports.json`. Stale locks are reclaimed after their owning process exits. Bundled-local cleanup stops native Postgres only when the current startup actually started it, so a failed concurrent or recovery attempt cannot stop another live supervisor's database.
+`start --daemon --json` starts a detached `koed start` supervisor and returns machine-readable startup intent for Desktop and scripts. One live supervisor owns each `KOED_HOME`: startup acquires an atomic lock before allocating automatic ports or starting dependencies, and a concurrent start reuses the live supervisor instead of rewriting `config/local-ports.json`. Stale locks are reclaimed after their owning process exits. Bundled-local cleanup stops native Postgres only when the current startup actually started it, so a failed concurrent or recovery attempt cannot stop another live supervisor's database.
 
 Startup and `status --json` also inspect clone-safe local identity without blocking local services. JSON includes redacted `deviceIdentity` with opaque deployment/device IDs, health, remote-operation gate, and platform-protection level; it never contains raw host proof, proof references, paths, fingerprints, API Tokens, or upstream credentials. First boot records durable bootstrap state under `KOED_HOME/config` before proof/state writes, so faults never silently regenerate identity from disposable `run` state. Missing, malformed, mismatched, or unsafe proof/state leaves local capture and Recall available but blocks upstream enrollment, Cross-Identity Sync, Team local-edge proxying, and other remote work. Copying identity to another same-host `KOED_HOME` path fails proof binding. Native Windows reports limited protection and remote work fails closed. A perfect full-machine clone or restored image at same canonical path remains locally indistinguishable; remote collision detection and explicit re-enrollment are required.
 
 Use `identity rotate --json` only for explicit repair/replacement: it preserves deployment ID, creates a new device ID/proof, preserves local Memory, disables local routes, and invalidates local enrollment references where possible. Koed does not self-revoke remote credentials without authorized upstream flow. If remote revocation remains pending, rotation stays `repair_required` with redacted `pendingRemoteRevocation` state and never reports healthy; revoke remotely, run `identity rotate` again as Operator acknowledgement, then re-enroll.
 
-`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged, and a terminating supervisor removes the shared lock only while it still owns that lock. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged, and a terminating supervisor removes the shared lock only while it still owns that lock. `restart --json` runs the same stop lifecycle, starts a detached `koed start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
 API, Worker, and the bundled-local native Embedding Service are
 essential managed children. After startup, an unexpected exit or process error
@@ -176,7 +176,7 @@ from any one of them makes the supervisor stop the remaining managed children,
 stop owned bundled-local dependencies, remove its runtime ownership state, and
 exit nonzero. The supervisor does not restart individual children in-process;
 the deployment supervisor restarts the complete service set. SIGINT, SIGTERM,
-and an identity-bound `koed-server stop` request use the same idempotent cleanup
+and an identity-bound `koed stop` request use the same idempotent cleanup
 path and exit cleanly.
 
 In a source checkout, the supervisor verifies and leases the prepared runtime.
@@ -250,7 +250,7 @@ runtime state, follow this sequence:
 1. **Stop Koed services:**
 
    ```bash
-   koed-server stop
+   koed stop
    ```
 
 2. **Remove local runtime state:**
@@ -290,7 +290,7 @@ also the recovery path for device-identity issues or corrupted local state.
 
 First boot takes a few minutes: the Embedding Service and Privacy Filter model
 files download (~640 MB total), Postgres initializes, and the supervisor starts
-managed services. Watch progress with `koed-server status --json` or tail
+managed services. Watch progress with `koed status --json` or tail
 `~/.koed/logs/supervisor.log` to see startup milestones.
 
 ## Personal Device Sync local data plane
@@ -317,7 +317,7 @@ paths, or key references.
 
 ### Connect a new headless or Electron device
 
-Run `koed-server pair` on the joining machine (or `pnpm koed-server pair` in a
+Run `koed pair` on the joining machine (or `pnpm koed pair` in a
 built source checkout). Paste its request link into **Devices → Add device** on
 the existing Authority-hosting Electron installation, review, and confirm.
 A joining Electron installation generates the same link from **Connect to an
@@ -854,7 +854,7 @@ and Recall remain device-local.
 
 Packaged Desktop and headless local-personal flows both use this layout. Raw host proof stays in user-private platform state outside `KOED_HOME`; copying this layout alone intentionally cannot clone usable device identity. See [configuration](configuration.md#clone-safe-local-device-identity) for paths, POSIX permission checks, and Windows ACL limits.
 
-Run Codex setup through the same surface after `koed-server start` has made the
+Run Codex setup through the same surface after `koed start` has made the
 API ready:
 
 ```bash
@@ -943,7 +943,7 @@ processes.
 
 ### Bundled-local native runtime
 
-Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch
+Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed start` launch
 native Koed-owned Postgres/pgvector and Embedding Service runtimes under
 `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not
 required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is
@@ -1012,7 +1012,7 @@ explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and
 `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation,
 Capture Hook-like personal ingestion, Projection, local queue/embedding work,
 Memory Answer evidence retrieval with a unique marker, API readiness,
-and cleanup through `koed-server stop --json`. Missing native binaries or model
+and cleanup through `koed stop --json`. Missing native binaries or model
 assets fail clearly instead of falling back to Docker.
 
 On Apple Silicon, validate the Metal runtime on real hardware with a clean
@@ -1106,7 +1106,7 @@ write limit needed for the test; it does not change product defaults.
 
 ```bash
 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build postgres redis embedding-service
-# In another shell, run koed-server start with scripts/lcm-smoke.env loaded before pnpm smoke:lcm
+# In another shell, run koed start with scripts/lcm-smoke.env loaded before pnpm smoke:lcm
 pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
 MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 ```
@@ -1152,4 +1152,4 @@ sensitive trusted-boundary data. Protect the database and backups with private
 networking, least-privilege credentials, encrypted storage, and restricted
 administrator access.
 
-Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, Embedding Service model/dimensions, and registered upstream capability-cache state before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, refreshing upstream capabilities, or correcting model/runtime mismatch. If startup times out, the supervisor lists the required blocking checks by component and state. Use those names with `/ready` for coarse dependency readiness and `koed-server status --json` for detailed remediation; non-blocking AI Client diagnostics are omitted from the timeout reason. Registered upstream backends are local edge metadata only: capability caches and route-policy state live under `KOED_HOME/config/upstream-backends.json`, while reusable upstream/device credentials must stay out of ordinary config. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.
+Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, Embedding Service model/dimensions, and registered upstream capability-cache state before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, refreshing upstream capabilities, or correcting model/runtime mismatch. If startup times out, the supervisor lists the required blocking checks by component and state. Use those names with `/ready` for coarse dependency readiness and `koed status --json` for detailed remediation; non-blocking AI Client diagnostics are omitted from the timeout reason. Registered upstream backends are local edge metadata only: capability caches and route-policy state live under `KOED_HOME/config/upstream-backends.json`, while reusable upstream/device credentials must stay out of ordinary config. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.

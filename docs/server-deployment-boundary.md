@@ -76,7 +76,7 @@ top-level product architecture for server/private VPS deployments.
 ## Health And Readiness
 
 Infrastructure should use `/ready` as the coarse readiness gate. Operators
-should use `koed-server status --json`, `koed-server doctor --json`,
+should use `koed status --json`, `koed doctor --json`,
 `/v1/capabilities`, authenticated diagnostics, and `/ops/status` for richer
 status and remediation.
 
@@ -90,7 +90,7 @@ and require its Personal API Token.
 
 If startup reaches its deadline, the supervisor reports every required blocker
 by stable component name and state. Match those entries to `/ready`, then use
-`koed-server status --json` for detailed remediation. Timeout summaries exclude
+`koed status --json` for detailed remediation. Timeout summaries exclude
 non-blocking diagnostics and credential values.
 
 Identity-provider sessions establish a verified User identity. Koed Team

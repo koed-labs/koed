@@ -57,7 +57,7 @@ missing historical telemetry, or a paused historical batch must not change
 Transcript Watcher writes a local aggregate status snapshot under
 `KOED_HOME/status` containing lifecycle state and timestamps plus scan, file,
 source, batch, record, and advanced-byte counters and one sanitized error code.
-`koed-server status --json` and `doctor --json` separately report only whether
+`koed status --json` and `doctor --json` separately report only whether
 the watcher is enabled and whether its supervised process is recorded/running.
 Watcher status is diagnostic-only: disabled, missing, stale, or failed watcher
 status never changes API `/ready`, overall readiness, or doctor success. Hook

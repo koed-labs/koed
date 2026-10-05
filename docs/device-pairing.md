@@ -9,10 +9,10 @@ Personal Device Group remains its Authority/Relay host and must be reachable.
 On the joining device, run:
 
 ```sh
-koed-server pair
+koed pair
 ```
 
-From a built source checkout, use `pnpm koed-server pair` instead. Koed starts or
+From a built source checkout, use `pnpm koed pair` instead. Koed starts or
 reuses its native local Personal runtime, prints a ten-minute request link, and
 waits. No environment exports, invitation input, or JSON file are required.
 Missing native binaries/models are reported through normal runtime setup guidance;
@@ -24,7 +24,7 @@ Choose **Review device**, check the displayed device name and replication scope,
 then choose **Add device**. Studio reports `connected` only after its local group
 state has been reconciled into its own database.
 
-`koed-server pair status` reports redacted progress. `koed-server pair cancel`
+`koed pair status` reports redacted progress. `koed pair cancel`
 invalidates a waiting request. Once enrollment begins, wait for its outcome;
 removal of an enrolled device is a separate membership operation. Ctrl-C detaches
 the CLI display; the supervisor keeps the request until expiry. Run `pair` again

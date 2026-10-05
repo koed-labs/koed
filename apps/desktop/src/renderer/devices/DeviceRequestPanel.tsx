@@ -193,7 +193,7 @@ export function DeviceRequestPanel({
           <>
             <p>
               Copy the request link from the other Electron app, or run{" "}
-              <code>koed-server pair</code> on a headless device.
+              <code>koed pair</code> on a headless device.
             </p>
             <label className="device-join-field">
               <span>Device request link</span>

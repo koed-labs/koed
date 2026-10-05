@@ -698,8 +698,8 @@ export const statusFromApiReady = async (
       api: needsAttention(
         `API is not ready at ${readyUrl}${response.error ? ` (${response.error})` : response.status ? ` (HTTP ${response.status})` : ""}`,
         options.dependencyMode === "external"
-          ? "Run koed-server start and check Operator-managed services are reachable."
-          : "Run koed-server start and check local dependencies."
+          ? "Run koed start and check Operator-managed services are reachable."
+          : "Run koed start and check local dependencies."
       ),
       database: starting(
         "Waiting for API readiness to confirm database state."
@@ -747,14 +747,14 @@ export const statusFromApiReady = async (
     if (value === "degraded") {
       return needsAttention(
         `${label} is degraded.`,
-        actionFor(service, "Run koed-server doctor --json for details."),
+        actionFor(service, "Run koed doctor --json for details."),
         check?.details
       );
     }
     if (value === "error") {
       return needsAttention(
         `${label} is unavailable or incompatible.`,
-        actionFor(service, "Run koed-server start or inspect Koed logs."),
+        actionFor(service, "Run koed start or inspect Koed logs."),
         check?.details
       );
     }
@@ -815,7 +815,7 @@ const statusWaitingForManagedRuntime = (
   const api = staleRuntime
     ? needsAttention(
         "Koed Desktop's managed supervisor is not running.",
-        "Restart Koed Desktop or run koed-server start."
+        "Restart Koed Desktop or run koed start."
       )
     : starting("Waiting for Koed Desktop to start its managed API.");
   return {
@@ -878,7 +878,7 @@ const inspectApiToken = async (
     return {
       ...notConfigured(
         "No local API Token is configured for Koed core services.",
-        "Run koed-server setup core --json or create an API Token."
+        "Run koed setup core --json or create an API Token."
       ),
       configured: false
     };
@@ -897,7 +897,7 @@ const inspectApiToken = async (
       return {
         ...needsAttention(
           "Local API Token is invalid or revoked.",
-          "Run koed-server setup core --json to validate or rotate the local credential.",
+          "Run koed setup core --json to validate or rotate the local credential.",
           { httpStatus: response.status }
         ),
         configured: true
@@ -1018,7 +1018,7 @@ export const inspectCodex = (
       return {
         ...notConfigured(
           "Codex is installed but Koed is not configured in Codex.",
-          "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
+          "Select Codex in Desktop AI Client setup, or run koed setup codex --json.",
           { ...installation, codexConfigPath }
         ),
         configured: false,
@@ -1232,7 +1232,7 @@ const inspectMcp = (
         : "MCP Server build output was not found.",
       appRuntime.kind === "packaged"
         ? "Rebuild Koed Desktop packaging so koed-runtime includes the MCP Server and Supported Capture Hook artifacts."
-        : "Run pnpm --filter @koed/mcp-server build or koed-server setup core --json.",
+        : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
       {
         artifactSource: appRuntime.artifactSource,
         runtimeRoot: appRuntime.root,
@@ -1266,7 +1266,7 @@ const inspectMcp = (
   }
   return needsAttention(
     "MCP Server doctor failed.",
-    "Run koed-server doctor --json for details.",
+    "Run koed doctor --json for details.",
     {
       stderr: result.stderr.trim(),
       stdout: result.stdout.trim(),
@@ -1295,7 +1295,7 @@ const inspectLocalAiRuntime = (
     return runtime
       ? needsAttention(
           "Local AI Runtime process is not running.",
-          "Run koed-server start --daemon or inspect Koed logs."
+          "Run koed start --daemon or inspect Koed logs."
         )
       : starting("Waiting for Koed server to start the Local AI Runtime.");
   }
@@ -1309,7 +1309,7 @@ const inspectLocalAiRuntime = (
     ? healthy("Local AI Runtime process is running.", { pid })
     : needsAttention(
         "Local AI Runtime process is not running.",
-        "Run koed-server restart --json or inspect Koed logs.",
+        "Run koed restart --json or inspect Koed logs.",
         { pid }
       );
 };
@@ -1337,7 +1337,7 @@ const inspectCodexTranscriptWatcher = (
   }
   if (!localAiRuntimePid) {
     return needsAttention(
-      "Local AI Runtime process is not recorded in koed-server runtime state.",
+      "Local AI Runtime process is not recorded in koed runtime state.",
       "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
       details
     );
@@ -1345,7 +1345,7 @@ const inspectCodexTranscriptWatcher = (
   if (!deps.checkPid(localAiRuntimePid)) {
     return needsAttention(
       "Local AI Runtime process hosting the Codex Transcript Watcher is not running.",
-      "Run koed-server restart --json or inspect Koed logs.",
+      "Run koed restart --json or inspect Koed logs.",
       details
     );
   }
@@ -1378,7 +1378,7 @@ const inspectClaudeTranscriptWatcher = (
   }
   if (!localAiRuntimePid) {
     return needsAttention(
-      "Local AI Runtime process is not recorded in koed-server runtime state.",
+      "Local AI Runtime process is not recorded in koed runtime state.",
       "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
       details
     );
@@ -1386,7 +1386,7 @@ const inspectClaudeTranscriptWatcher = (
   if (!deps.checkPid(localAiRuntimePid)) {
     return needsAttention(
       "Local AI Runtime process hosting the Claude Transcript Watcher is not running.",
-      "Run koed-server restart --json or inspect Koed logs.",
+      "Run koed restart --json or inspect Koed logs.",
       details
     );
   }
@@ -1419,7 +1419,7 @@ const inspectPiTranscriptWatcher = (
   }
   if (!localAiRuntimePid) {
     return needsAttention(
-      "Local AI Runtime process is not recorded in koed-server runtime state.",
+      "Local AI Runtime process is not recorded in koed runtime state.",
       "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
       details
     );
@@ -1427,7 +1427,7 @@ const inspectPiTranscriptWatcher = (
   if (!deps.checkPid(localAiRuntimePid)) {
     return needsAttention(
       "Local AI Runtime process hosting the Pi Transcript Watcher is not running.",
-      "Run koed-server restart --json or inspect Koed logs.",
+      "Run koed restart --json or inspect Koed logs.",
       details
     );
   }
@@ -2211,7 +2211,7 @@ const inspectLastVerification = (
     return {
       ...notConfigured(
         "No setup verification has been recorded yet.",
-        "Run koed-server setup core --json."
+        "Run koed setup core --json."
       ),
       checkedAt: null
     };
@@ -2220,7 +2220,7 @@ const inspectLastVerification = (
     ...(value.ok === false
       ? needsAttention(
           value.message ?? "Last verification failed.",
-          "Run koed-server setup core --json."
+          "Run koed setup core --json."
         )
       : healthy("Last setup verification passed.")),
     checkedAt: value.checkedAt
@@ -2286,7 +2286,7 @@ const inspectUpstreamBackends = (
     return {
       ...needsAttention(
         "One or more upstream backend capability refreshes failed.",
-        "Run koed-server upstream refresh --id <id> --json.",
+        "Run koed upstream refresh --id <id> --json.",
         details
       ),
       registered: registry.registered,
@@ -2300,7 +2300,7 @@ const inspectUpstreamBackends = (
     return {
       ...needsAttention(
         "One or more upstream backends need capability validation.",
-        "Run koed-server upstream refresh --id <id> --json.",
+        "Run koed upstream refresh --id <id> --json.",
         details
       ),
       registered: registry.registered,

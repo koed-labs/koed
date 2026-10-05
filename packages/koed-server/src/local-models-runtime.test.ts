@@ -84,9 +84,7 @@ describe("local model runtime", () => {
     const status = await collectLocalModelStatus(paths(root), "embedding", {});
 
     expect(status.state).toBe("missing");
-    expect(status.action).toContain(
-      "koed-server models install --kind embedding"
-    );
+    expect(status.action).toContain("koed models install --kind embedding");
   });
 
   it("blocks model downloads in external dependency mode", async () => {

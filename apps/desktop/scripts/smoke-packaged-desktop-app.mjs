@@ -281,8 +281,8 @@ const resolvePackagedLayout = () => {
     resourcesPath,
     "app.asar",
     "node_modules",
-    "@koed",
-    "koed-server",
+    "@koed-labs",
+    "server",
     "dist",
     "cli.js"
   );
@@ -507,26 +507,26 @@ const assertPackagedJsSurface = (layout) => {
   const entries = listPackage(layout.appAsarPath);
   const entrySet = new Set(entries);
   const requiredEntries = [
-    "/node_modules/@koed/koed-server/package.json",
-    "/node_modules/@koed/koed-server/dist/cli.js",
-    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker.js",
-    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker-contract.js",
-    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker-local-transport.js"
+    "/node_modules/@koed-labs/server/package.json",
+    "/node_modules/@koed-labs/server/dist/cli.js",
+    "/node_modules/@koed-labs/server/dist/desktop-collaboration-broker.js",
+    "/node_modules/@koed-labs/server/dist/desktop-collaboration-broker-contract.js",
+    "/node_modules/@koed-labs/server/dist/desktop-collaboration-broker-local-transport.js"
   ];
   const missing = requiredEntries.filter((entry) => !entrySet.has(entry));
   if (missing.length > 0) {
     throw new Error(
-      `Packaged koed-server runtime files are missing from app.asar: ${missing.join(", ")}`
+      `Packaged koed runtime files are missing from app.asar: ${missing.join(", ")}`
     );
   }
   const forbidden = entries.filter(
     (entry) =>
-      entry.startsWith("/node_modules/@koed/koed-server/src") ||
-      entry.startsWith("/node_modules/@koed/koed-server/tsconfig.json") ||
+      entry.startsWith("/node_modules/@koed-labs/server/src") ||
+      entry.startsWith("/node_modules/@koed-labs/server/tsconfig.json") ||
       entry.startsWith(
-        "/node_modules/@koed/koed-server/tsconfig.tsbuildinfo"
+        "/node_modules/@koed-labs/server/tsconfig.tsbuildinfo"
       ) ||
-      (entry.startsWith("/node_modules/@koed/koed-server/") &&
+      (entry.startsWith("/node_modules/@koed-labs/server/") &&
         entry.endsWith(".test.ts"))
   );
   if (forbidden.length > 0) {

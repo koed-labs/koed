@@ -1326,7 +1326,7 @@ export const startKoedServer = async ({
     });
     if (status.api.state !== "healthy" || status.database.state !== "healthy") {
       throw new Error(
-        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed-server status --json for details.`
+        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
       );
     }
     emitStartupMilestone("api_and_database_ready");
@@ -1486,7 +1486,7 @@ export const startKoedServer = async ({
     });
     if (!status.ok) {
       throw new Error(
-        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed-server status --json for details.`
+        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
       );
     }
     emitStartupMilestone("core_services_ready");

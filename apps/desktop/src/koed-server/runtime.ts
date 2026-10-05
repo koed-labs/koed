@@ -65,8 +65,8 @@ export const resolveKoedServerPaths = ({
         packagedResourcesPath,
         "app.asar",
         "node_modules",
-        "@koed",
-        "koed-server",
+        "@koed-labs",
+        "server",
         "dist",
         "cli.js"
       )

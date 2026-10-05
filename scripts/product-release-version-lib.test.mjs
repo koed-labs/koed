@@ -103,7 +103,6 @@ const fixture = () => {
   });
   const synchronizedPackageNames = new Map([
     ["package.json", "koed"],
-    ["packages/koed-server/package.json", "@koed/koed-server"],
     ["apps/desktop/package.json", "@koed/desktop"]
   ]);
   for (const [, relativePath] of synchronizedProductPackagePaths) {
@@ -112,15 +111,43 @@ const fixture = () => {
       version: "1.3.2"
     });
   }
+  writeJson(root, "packages/koed-server/package.json", {
+    name: "@koed-labs/server",
+    version: "1.4.0",
+    private: false
+  });
   writeJson(root, "apps/api/package.json", {
     name: "@koed/api",
     version: "0.1.0"
   });
   writeJson(root, ".changeset/config.json", {
+    access: "public",
+    fixed: [["@koed/koed", "@koed-labs/server"]],
     ignore: internalWorkspacePackageNames
   });
   return root;
 };
+
+test("server is public, singly named and coordinated", () => {
+  const server = JSON.parse(
+    readFileSync(resolve("packages/koed-server/package.json"), "utf8")
+  );
+  const config = JSON.parse(
+    readFileSync(resolve(".changeset/config.json"), "utf8")
+  );
+  assert.equal(server.name, "@koed-labs/server");
+  assert.equal(server.private, false);
+  assert.deepEqual(server.bin, { koed: "dist/cli.js" });
+  assert.equal(server.engines.node, ">=24 <25");
+  assert.equal(server.publishConfig.access, "public");
+  assert.match(
+    server.scripts.prepublishOnly,
+    /source workspace publication blocked/
+  );
+  assert.equal(config.access, "public");
+  assert.deepEqual(config.fixed, [["@koed/koed", "@koed-labs/server"]]);
+  assert.ok(!config.ignore.includes("@koed-labs/server"));
+});
 
 test("synchronizes product artifacts without rewriting internal packages", () => {
   const root = fixture();
@@ -134,6 +161,23 @@ test("synchronizes product artifacts without rewriting internal packages", () =>
     assert.equal(
       readFileSync(resolve(root, "apps/api/package.json"), "utf8"),
       before
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses to synchronize a public server outside fixed-group version", () => {
+  const root = fixture();
+  try {
+    writeJson(root, "packages/koed-server/package.json", {
+      name: "@koed-labs/server",
+      version: "1.3.2",
+      private: false
+    });
+    assert.throws(
+      () => syncProductPackageVersions(root),
+      /Fixed Changesets release versions differ: @koed-labs\/server is 1\.3\.2; @koed\/koed is 1\.4\.0/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -155,10 +199,31 @@ test("reports actionable product-version drift", () => {
 test("rejects an incomplete Changesets internal-package policy", () => {
   const root = fixture();
   try {
-    writeJson(root, ".changeset/config.json", { ignore: ["@koed/api"] });
+    writeJson(root, ".changeset/config.json", {
+      access: "public",
+      fixed: [["@koed/koed", "@koed-labs/server"]],
+      ignore: ["@koed/api"]
+    });
     assert.throws(
       () => assertChangesetReleasePolicy(root),
       /@koed\/embedding-service/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a Changesets policy without coordinated fixed versions", () => {
+  const root = fixture();
+  try {
+    writeJson(root, ".changeset/config.json", {
+      access: "public",
+      fixed: [["@koed/koed"]],
+      ignore: internalWorkspacePackageNames
+    });
+    assert.throws(
+      () => assertChangesetReleasePolicy(root),
+      /must fixed-version @koed\/koed and @koed-labs\/server together/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

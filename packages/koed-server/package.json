@@ -1,11 +1,17 @@
 {
-  "name": "@koed/koed-server",
+  "name": "@koed-labs/server",
   "version": "0.8.1",
-  "private": true,
+  "private": false,
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "koed-server": "dist/cli.js"
+    "koed": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist/**/*",
@@ -25,6 +31,7 @@
     "zod": "^4.1.12"
   },
   "scripts": {
+    "prepublishOnly": "node -e \"throw new Error('Publish assembled artifact only; source workspace publication blocked')\"",
     "build": "node scripts/clean-dist.mjs && tsc -b tsconfig.json --force",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/cli.js start",

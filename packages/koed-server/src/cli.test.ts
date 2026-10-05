@@ -129,7 +129,7 @@ const runtimeBinaries = () => ({
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =
-      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js";
+      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js";
 
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
