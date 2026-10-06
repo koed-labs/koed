@@ -48,7 +48,9 @@ const readRc = (path: string): RcSnapshot | null => {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return null;
     if (code === "ELOOP")
-      throw new Error("Shell rc path must be a regular file, not a symlink.");
+      throw new Error("Shell rc path must be a regular file, not a symlink.", {
+        cause: error
+      });
     throw error;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

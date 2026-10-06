@@ -44,7 +44,7 @@ afterEach(() => {
 describe("Desktop bundled component capability", () => {
   it("validates base file digests and returns a private capability", async () => {
     const { root, manifestPath } = fixture();
-    const validated = await validateDesktopBundle(
+    const validated = validateDesktopBundle(
       root,
       manifestPath,
       { platform: "macos", architecture: "arm64" },
@@ -58,9 +58,9 @@ describe("Desktop bundled component capability", () => {
     expect(Object.isFrozen(validated.manifest.files)).toBe(true);
   });
 
-  it("rejects caller-forged bundled runtime capabilities", async () => {
+  it("rejects caller-forged bundled runtime capabilities", () => {
     const { root, manifestPath } = fixture();
-    const valid = await validateDesktopBundle(
+    const valid = validateDesktopBundle(
       root,
       manifestPath,
       { platform: "macos", architecture: "arm64" },
@@ -82,29 +82,31 @@ describe("Desktop bundled component capability", () => {
   it("rejects changed payload and privacy content in the base manifest", async () => {
     const { root, manifestPath } = fixture();
     writeFileSync(resolve(root, "api/index.js"), "tampered bundle");
-    await expect(
+    expect(() =>
       validateDesktopBundle(
         root,
         manifestPath,
         { platform: "macos", architecture: "arm64" },
         "0.8.1"
       )
-    ).rejects.toThrow("Desktop bundle file digest mismatch: api/index.js");
+    ).toThrow("Desktop bundle file digest mismatch: api/index.js");
     writeFileSync(resolve(root, "api/index.js"), "verified bundle");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      files: Array<{ path: string; kind: string; sha256: string }>;
+    };
     manifest.files.push({
       path: "privacy-service/index.js",
       kind: "file",
       sha256: hash("privacy")
     });
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    await expect(
+    expect(() =>
       validateDesktopBundle(
         root,
         manifestPath,
         { platform: "macos", architecture: "arm64" },
         "0.8.1"
       )
-    ).rejects.toThrow("Desktop bundle manifest file entry is invalid");
+    ).toThrow("Desktop bundle manifest file entry is invalid");
   });
 });

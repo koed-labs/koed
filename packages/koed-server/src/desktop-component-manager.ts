@@ -53,12 +53,12 @@ export interface DesktopBundleCapability {
 const desktopCapability = Symbol("koed desktop bundled runtime");
 const validatedCapabilities = new WeakSet<object>();
 
-export const validateDesktopBundle = async (
+export const validateDesktopBundle = (
   root: string,
   manifestPath: string,
   expectedTarget: ArtifactTarget,
   expectedVersion: string
-): Promise<DesktopBundleCapability> => {
+): DesktopBundleCapability => {
   const absoluteRoot = resolve(root);
   const stat = lstatSync(manifestPath);
   if (!stat.isFile() || stat.isSymbolicLink())
@@ -128,9 +128,7 @@ export const validateDesktopBundle = async (
     if (declaredEntry?.kind !== kind || digest(content) !== declared.get(path))
       throw new Error(`Desktop bundle file digest mismatch: ${path}`);
   }
-  const manifest = Object.freeze(
-    parsed as unknown as DesktopBundleManifest
-  );
+  const manifest = Object.freeze(parsed as unknown as DesktopBundleManifest);
   Object.freeze(manifest.target);
   for (const entry of manifest.files) Object.freeze(entry);
   Object.freeze(manifest.files);
@@ -179,11 +177,12 @@ export const createDesktopComponentManagerBridge = (input: {
     bundleDigest: capability.digest,
     bundleRoot: capability.root,
     status: () => runComponentStatus(context),
-    install: async (): Promise<never> => {
-      throw new Error(
-        "Desktop component installation is blocked until production trust roots are configured"
-      );
-    },
+    install: (): Promise<never> =>
+      Promise.reject(
+        new Error(
+          "Desktop component installation is blocked until production trust roots are configured"
+        )
+      ),
     newOperationId: () => randomUUID()
   });
 };

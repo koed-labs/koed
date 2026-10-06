@@ -20,7 +20,7 @@ test("release retries verify existing asset bytes and never clobber", () => {
   assert.match(recovery, /scripts\/ensure-release-assets\.mjs/);
 });
 
-test("official promotion remains fail-closed without signer, trust, approval, and npm adapter", () => {
+test("official promotion invokes configured adapter behind signer and approval gates", () => {
   for (const key of [
     "KOED_COMPONENT_SIGNER_URL",
     "KOED_COMPONENT_SIGNER_KEY_ID",
@@ -29,11 +29,14 @@ test("official promotion remains fail-closed without signer, trust, approval, an
     "KOED_RELEASE_PROMOTION_APPROVED"
   ])
     assert.ok(release.includes(key), `missing release gate ${key}`);
-  assert.match(
-    release,
-    /npm candidate\/registry promotion adapters are not implemented/
+  assert.match(release, /node scripts\/release-promotion-adapter\.mjs/);
+  const adapter = readFileSync(
+    resolve(root, "scripts/release-promotion-adapter.mjs"),
+    "utf8"
   );
-  assert.match(recovery, /recovery cannot publish release/);
+  assert.match(adapter, /Missing required promotion option: \$\{field\}/);
+  assert.match(adapter, /main\(\)\.catch\([\s\S]*process\.exitCode = 1/);
+  assert.doesNotMatch(adapter, /process\.exit\(0\)/);
   assert.doesNotMatch(release, /draft=false|npm publish|npm dist-tag/);
   assert.doesNotMatch(recovery, /draft=false/);
 });
