@@ -151,6 +151,9 @@ jobs:
     name: Standalone koed-server release assets (${{ matrix.platform }} ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
     needs: release
     if: needs.release.outputs.desktop_assets_enabled == 'true'
     strategy:
@@ -191,10 +194,31 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --json
 
-      - name: Build signed base and privacy component release set
+      - name: Build base and privacy component release set
         env:
           SOURCE_DATE_EPOCH: 0
         run: node scripts/build-koed-component-release.mjs --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+
+      - name: Sign component manifests with external signer
+        env:
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
+          VERSION: ${{ needs.release.outputs.version }}
+          TARGET: ${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test -n "${SIGNER_URL}" || { echo "Official component signer is not configured." >&2; exit 1; }
+          test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured." >&2; exit 1; }
+          test -n "${TRUST_ROOTS_JSON}" || { echo "Production trust root public keys are not configured." >&2; exit 1; }
+          [[ "${CONTROLPLANE_TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Built control-plane trusted key digest is not configured." >&2; exit 1; }
+          trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
+          printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
+          node scripts/release-signing-adapter.mjs \
+            "dist/koed-components/${TARGET}" "${VERSION}" "${TARGET}" \
+            "${trust_roots}" "${SIGNER_URL}" "${SIGNER_KEY_ID}" "${TRUST_ROOTS_SHA256}" "${CONTROLPLANE_TRUST_ROOTS_SHA256}"
 
       - name: Pack public Koed Server npm candidate
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
@@ -595,6 +619,9 @@ jobs:
     name: Verify assets and publish release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
     needs:
       - release
       - standalone-koed-server-release-assets
@@ -607,11 +634,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      - name: Setup Node and npm trusted publishing
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          registry-url: https://registry.npmjs.org
+
       - name: Require official signer, trust roots, npm authorization, and explicit promotion approval
         env:
           SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
           SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
           TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
           NPM_AUTHORIZED: ${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}
           PROMOTION_APPROVED: ${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}
         run: |
@@ -619,6 +654,8 @@ jobs:
           test -n "${SIGNER_URL}" || { echo "Official component signer is not configured." >&2; exit 1; }
           test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured." >&2; exit 1; }
           [[ "${TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Approved production trust roots are not configured." >&2; exit 1; }
+          test -n "${TRUST_ROOTS_JSON}" || { echo "Production trust root public keys are not configured." >&2; exit 1; }
+          [[ "${CONTROLPLANE_TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Built control-plane trusted key digest is not configured." >&2; exit 1; }
           test "${NPM_AUTHORIZED}" = "true" || { echo "npm trusted publishing authorization is not configured." >&2; exit 1; }
           test "${PROMOTION_APPROVED}" = "true" || { echo "Independent release promotion approval is missing." >&2; exit 1; }
 
@@ -709,7 +746,27 @@ jobs:
             --release "${release_json}" \
             --json
 
-      - name: Block publication until signer and npm registry adapters are implemented
+      - name: Verify signatures, promote npm candidate, and publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          VERSION: ${{ needs.release.outputs.version }}
         run: |
-          echo "External signer verification and npm candidate/registry promotion adapters are not implemented; release remains draft." >&2
-          exit 1
+          set -euo pipefail
+          trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
+          printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
+          node scripts/release-promotion-adapter.mjs \
+            --trust-roots "${trust_roots}" \
+            --trust-roots-sha256 "${TRUST_ROOTS_SHA256}" \
+            --controlplane-trust-roots-sha256 "${CONTROLPLANE_TRUST_ROOTS_SHA256}" \
+            --signer-url "${SIGNER_URL}" \
+            --signer-key-id "${SIGNER_KEY_ID}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --release-id "${RELEASE_ID}" \
+            --version "${VERSION}" \
+            --json
