@@ -30,7 +30,24 @@ vi.mock("@/lib/personal-agents-client", () => ({
     ]
   }
 }));
-vi.mock("./StudioSidebar", () => ({ StudioSidebar: () => null }));
+vi.mock("./StudioSidebar", () => ({
+  StudioSidebar: ({
+    managedConversations,
+    onProjectSelect
+  }: {
+    managedConversations: Array<{ title: string }>;
+    onProjectSelect: (id: string) => void;
+  }) => (
+    <aside>
+      <button onClick={() => onProjectSelect("selected-project")}>
+        Filter Home Project
+      </button>
+      {managedConversations.map((item) => (
+        <span key={item.title}>{item.title}</span>
+      ))}
+    </aside>
+  )
+}));
 vi.mock("./OwnedConversationShareDialog", () => ({
   OwnedConversationShareDialog: () => null
 }));
@@ -295,5 +312,41 @@ it("still lets the user explicitly select an optional Agent", async () => {
     "What should I work on next?",
     null,
     expect.objectContaining({ agentId: "home-agent" })
+  );
+});
+
+it("keeps other Projects' conversations in the sidebar when Home is filtered", async () => {
+  const executions = ["selected-project", "other-project"].map(
+    (projectId, index) => ({
+      id: `execution-${index}`,
+      sessionId: null,
+      projectId,
+      title: `Conversation ${index}`,
+      provider: "codex",
+      state: "ready",
+      updatedAt: "2026-10-04T10:00:00Z",
+      error: null
+    })
+  );
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input, init) =>
+      String(input).includes("/studio-api/home")
+        ? Response.json({ ...metadata, executions })
+        : originalFetch(input, init)
+    )
+  );
+  await mount();
+  await act(async () =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Filter Home Project")!
+      .click()
+  );
+  expect(container.querySelector("aside")?.textContent).toContain(
+    "Conversation 0"
+  );
+  expect(container.querySelector("aside")?.textContent).toContain(
+    "Conversation 1"
   );
 });

@@ -204,9 +204,110 @@ it("keeps a visible summary card when minimizing in a desktop chat with a sideba
     summary.parentElement!.parentElement!.classList.contains("hidden")
   ).toBe(false);
   expect(summary.textContent).toContain("Completed");
-  await act(async () => summary.click());
+  const maximize = container.querySelector<HTMLButtonElement>(
+    '[aria-label="Maximize Build activity"]'
+  )!;
+  expect(maximize.closest(".no-drag")).not.toBeNull();
+  await act(async () => maximize.click());
+  expect(readBuildPanelMode()).toBe("expanded");
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>(
+        '[aria-label="Minimize Build activity"]'
+      )!
+      .click()
+  );
+  const reopenedSummary = [
+    ...container.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Expand Build activity"]'
+    )
+  ].find((button) => button.textContent?.includes("Open"))!;
+  await act(async () => reopenedSummary.click());
   expect(
     container.querySelector('[aria-label="Minimize Build activity"]')
   ).not.toBeNull();
   width.mockRestore();
+});
+
+it("reopens a closed panel directly to the full view", async () => {
+  window.localStorage.setItem(BUILD_PANEL_MODE_STORAGE_KEY, "hidden");
+  await act(async () =>
+    root.render(
+      <BuildViewProvider>
+        <BuildActivityPanel activity={activity} />
+      </BuildViewProvider>
+    )
+  );
+  const reopen = container.querySelector<HTMLButtonElement>(
+    '[aria-label="Reopen Build activity"]'
+  )!;
+  expect(reopen.closest(".no-drag")).not.toBeNull();
+  await act(async () => reopen.click());
+  expect(readBuildPanelMode()).toBe("expanded");
+  expect(
+    container.querySelector('[aria-label="Minimize Build activity"]')
+  ).not.toBeNull();
+});
+
+it("renders a readable response in Simple and existing file counts in Advanced", async () => {
+  await act(async () =>
+    root.render(
+      <BuildViewProvider>
+        <BuildActivityPanel
+          initialMode="expanded"
+          activity={{
+            ...activity,
+            events: [
+              {
+                id: "response",
+                kind: "completed",
+                state: "completed",
+                story: {
+                  title:
+                    "Agent reports: Created index.html with a Hello world message."
+                }
+              },
+              {
+                id: "diff",
+                kind: "workspace-observed",
+                technical: {
+                  status: "Saved changes for this request",
+                  files: [
+                    {
+                      path: "index.html",
+                      change: "added",
+                      additions: 12,
+                      deletions: 2,
+                      patch: "@@ -1 +1 @@\n-Old message\n+Hello world",
+                      patchTruncated: false
+                    }
+                  ],
+                  diff: { filesChanged: 1, additions: 12, deletions: 2 }
+                }
+              }
+            ]
+          }}
+        />
+      </BuildViewProvider>
+    )
+  );
+  expect(container.textContent).toContain(
+    "Created index.html with a Hello world message."
+  );
+  await act(async () =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Advanced")!
+      .click()
+  );
+  expect(container.textContent).toContain(
+    "1 files changed · +12 lines · -2 lines"
+  );
+  expect(container.textContent).toContain("index.html");
+  expect(container.textContent).toContain("added · +12 −2");
+  expect(
+    container.querySelector('[aria-label="Diff for index.html"]')?.textContent
+  ).toContain("+Hello world");
+  expect(
+    container.querySelector('[aria-label="Diff for index.html"]')?.textContent
+  ).toContain("-Old message");
 });

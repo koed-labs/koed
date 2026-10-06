@@ -13,6 +13,7 @@ import {
 } from "@koed/koed-server";
 import { RetainedWorkspaceCatalog } from "@koed/koed-server/retained-workspace-catalog";
 import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import { readDesktopLocalCredentialAuthorization } from "@koed/shared";
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
@@ -1435,6 +1436,10 @@ export const createStudioServer = ({
         fetchImpl,
         resolveToken,
         resolveAccess: providedResolveAccess ? resolveAccess : undefined,
+        resolveManagedFileAuthorization: async () =>
+          readDesktopLocalCredentialAuthorization(
+            resolveKoedServerPaths(environment).koedHome
+          )?.authorization ?? null,
         validCsrf: (incoming) => {
           const origin = exactRequestOrigin(incoming);
           return Boolean(

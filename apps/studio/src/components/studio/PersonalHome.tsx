@@ -683,7 +683,7 @@ export function PersonalHome({
         personalScopeKey={personalScopeKey}
         homeBadgeCount={homeFeed.snapshot?.badgeCount ?? 0}
         showLocalCatalog
-        managedConversations={executions}
+        managedConversations={browseExecutions}
         managedSourceIds={[
           ...managedConversationSourceIds({
             recents: allRecents,

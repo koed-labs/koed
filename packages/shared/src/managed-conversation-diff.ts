@@ -68,3 +68,33 @@ export const managedConversationDiffSchema = z
 export type ManagedConversationDiff = z.infer<
   typeof managedConversationDiffSchema
 >;
+
+/** Applied edit evidence from a completed AI Client turn, not a Git comparison. */
+export const managedConversationAppliedEditsSchema = z
+  .object({
+    executionId: z.uuid(),
+    executionGeneration: z.number().int().safe().positive(),
+    scope: z.literal("turn"),
+    scopeKey: z.string().max(256),
+    source: z.literal("ai_client"),
+    files: z
+      .array(
+        z
+          .object({
+            path: managedConversationFilePathSchema,
+            change: z.enum(["added", "modified", "deleted"]),
+            confirmation: z.enum(["applied", "recorded"]).optional(),
+            patch: z
+              .string()
+              .max(32 * 1024)
+              .optional(),
+            patchTruncated: z.boolean(),
+            additions: z.number().int().nonnegative().optional(),
+            deletions: z.number().int().nonnegative().optional(),
+            contentExcluded: z.literal(true).optional()
+          })
+          .strict()
+      )
+      .max(100)
+  })
+  .strict();

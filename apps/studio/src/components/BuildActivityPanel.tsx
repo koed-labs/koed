@@ -8,6 +8,7 @@ import {
   GitBranch,
   Hammer,
   LoaderCircle,
+  Maximize2,
   Minimize2,
   PanelRightOpen,
   X
@@ -212,10 +213,10 @@ export function BuildActivityPanel({
 
   if (mode === "hidden") {
     return (
-      <div className="absolute right-0 top-0 z-30 flex items-start justify-end">
+      <div className="no-drag absolute right-0 top-0 z-30 flex items-start justify-end">
         <button
           type="button"
-          onClick={() => setMode("compact")}
+          onClick={() => setMode("expanded")}
           aria-label="Reopen Build activity"
           title="Reopen Build activity"
           className="mt-3 mr-3 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface text-subtle shadow-lg transition-colors hover:text-foreground-secondary"
@@ -235,7 +236,7 @@ export function BuildActivityPanel({
           className="pointer-events-none absolute right-0 top-0 h-px w-px opacity-0"
         />
         <div
-          className={`${showCompactCard ? "hidden" : "absolute"} right-0 top-0 z-30 max-w-full p-3`}
+          className={`${showCompactCard ? "hidden" : "absolute"} no-drag right-0 top-0 z-30 max-w-full p-3`}
         >
           <button
             type="button"
@@ -248,7 +249,7 @@ export function BuildActivityPanel({
           </button>
         </div>
         <div
-          className={`${showCompactCard ? "absolute" : "hidden"} right-0 top-0 z-30 max-w-full p-3`}
+          className={`${showCompactCard ? "absolute" : "hidden"} no-drag right-0 top-0 z-30 max-w-full p-3`}
         >
           <div className="w-[300px] max-w-full overflow-hidden rounded-xl border border-border bg-surface shadow-lg shadow-black/20">
             <BuildPanelHeader
@@ -259,6 +260,7 @@ export function BuildActivityPanel({
               jobs={resolved?.jobs ?? []}
               selectedJobId={resolved?.selectedJobId}
               onJobSelect={onJobSelect}
+              onExpand={() => setMode("expanded")}
               onClose={() => setMode("hidden")}
             />
             <button
@@ -337,6 +339,7 @@ function BuildPanelHeader({
   selectedJobId,
   onJobSelect,
   onMinimize,
+  onExpand,
   onClose
 }: {
   title: string;
@@ -347,10 +350,11 @@ function BuildPanelHeader({
   selectedJobId?: string;
   onJobSelect?: (jobId: string) => void;
   onMinimize?: () => void;
+  onExpand?: () => void;
   onClose: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-3">
+    <div className="no-drag flex shrink-0 items-center justify-between gap-2 px-3 py-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <h2
@@ -390,6 +394,17 @@ function BuildPanelHeader({
           </select>
         )}
         <BuildViewToggle view={view} setView={setView} />
+        {onExpand && (
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Maximize Build activity"
+            title="Maximize Build activity"
+            className="rounded-md p-1 text-subtle transition-colors hover:bg-surface-hover hover:text-foreground-secondary"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        )}
         {onMinimize && (
           <button
             type="button"
@@ -547,6 +562,22 @@ function StoryDetails({
           <span className="text-xs font-medium">Open existing request</span>
         </button>
       ) : null}
+      {activity.recentExchanges?.length ? (
+        <section className="mb-5">
+          <h3 className="mb-3 text-xs font-semibold text-subtle">
+            Recent conversation
+          </h3>
+          <ol className="space-y-4">
+            {activity.recentExchanges.map((event, index) => (
+              <StoryEvent
+                key={event.id}
+                event={event}
+                latest={index === activity.recentExchanges!.length - 1}
+              />
+            ))}
+          </ol>
+        </section>
+      ) : null}
       {events.length === 0 ? (
         <EmptyActivity />
       ) : (
@@ -635,7 +666,7 @@ function StoryEvent({
         />
       </button>
       {open && story.detail && (
-        <p className="ml-7 mt-2 rounded-lg bg-surface-hover/60 px-3 py-2.5 text-xs leading-relaxed text-subtle">
+        <p className="ml-7 mt-2 whitespace-pre-line rounded-lg bg-surface-hover/60 px-3 py-2.5 text-xs leading-relaxed text-subtle">
           {story.detail}
         </p>
       )}
@@ -668,13 +699,26 @@ function AdvancedDetails({ activity }: { activity: BuildActivity | null }) {
           totals.deletions !== null) && (
           <p className="font-mono text-subtle">
             {totals.filesChanged !== null
-              ? `${totals.filesChanged} files reported`
+              ? `${totals.filesChanged} files changed`
               : "Files reported: unknown"}
-            {totals.additions !== null && ` · +${totals.additions}`}
-            {totals.deletions !== null && ` · -${totals.deletions}`}
+            {totals.additions !== null && ` · +${totals.additions} lines`}
+            {totals.deletions !== null && ` · -${totals.deletions} lines`}
+            {totals.filesChanged !== null &&
+              (totals.additions === null || totals.deletions === null) &&
+              " · line counts unavailable"}
           </p>
         )}
       </div>
+      {activity.recentTurnChanges ? (
+        <section className="mb-4">
+          <h3 className="mb-2 text-xs font-semibold text-subtle">
+            Latest conversation changes
+          </h3>
+          <ul>
+            <AdvancedEvent event={activity.recentTurnChanges} />
+          </ul>
+        </section>
+      ) : null}
       {events.length === 0 ? (
         <EmptyAdvancedActivity />
       ) : (
@@ -738,15 +782,49 @@ function AdvancedEvent({ event }: { event: BuildActivityEvent }) {
           )}
           {technical.files?.length ? (
             <ul className="mt-2 space-y-1">
-              {technical.files.map((file) => (
+              {technical.files.map((file, index) => (
                 <li
-                  key={`${event.id}-${file.path}`}
-                  className="flex items-center justify-between gap-2 font-mono text-[11px]"
+                  key={`${event.id}-${file.path}-${index}`}
+                  className="font-mono text-[11px]"
                 >
-                  <span className="min-w-0 truncate text-foreground-secondary">
-                    {file.path}
-                  </span>
-                  <span className="shrink-0 text-subtle">{file.change}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-foreground-secondary">
+                      {file.path}
+                    </span>
+                    <span className="shrink-0 text-subtle">
+                      {file.change}
+                      {file.additions !== undefined && ` · +${file.additions}`}
+                      {file.deletions !== undefined && ` −${file.deletions}`}
+                    </span>
+                  </div>
+                  {file.patch ? (
+                    <details
+                      className="mt-2"
+                      open={technical.files?.length === 1}
+                    >
+                      <summary className="cursor-pointer text-muted">
+                        View diff · {file.path}
+                      </summary>
+                      <pre
+                        aria-label={`Diff for ${file.path}`}
+                        className="mt-2 max-h-72 overflow-auto rounded-md bg-background p-2 text-[11px] leading-5"
+                      >
+                        {file.patch.split("\n").map((line, index) => (
+                          <span
+                            key={index}
+                            className={`block min-w-max ${line.startsWith("+") ? "bg-success/10 text-success" : line.startsWith("-") ? "bg-danger/10 text-danger" : line.startsWith("@@") ? "text-accent" : "text-muted"}`}
+                          >
+                            {line || " "}
+                          </span>
+                        ))}
+                      </pre>
+                      {file.patchTruncated ? (
+                        <p className="mt-1 text-subtle">Partial patch shown.</p>
+                      ) : null}
+                    </details>
+                  ) : file.patchUnavailable ? (
+                    <p className="mt-1 text-subtle">{file.patchUnavailable}</p>
+                  ) : null}
                 </li>
               ))}
             </ul>

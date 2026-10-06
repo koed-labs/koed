@@ -135,3 +135,59 @@ test("Build reads forward only an exact owner-authenticated Job query", async ()
   }
   assert.equal(await read(`?jobId=${jobId}`, "POST"), 405);
 });
+
+test("saved turn diffs forward only the owner-authenticated execution and command", async () => {
+  const executionId = "11111111-1111-4111-8111-111111111111";
+  const commandId = "22222222-2222-4222-8222-222222222222";
+  async function read(
+    query,
+    method = "GET",
+    fileAuthorization = "Koed-Desktop owner-file-credential"
+  ) {
+    let result;
+    let forwarded = false;
+    await handleManagedConversations({
+      request: Object.assign(Readable.from([]), { method, headers: {} }),
+      url: new URL(
+        `http://localhost/studio-api/managed-conversations/${executionId}/diff${query}`
+      ),
+      apiBase: "http://127.0.0.1:43300",
+      validCsrf: () => false,
+      resolveToken: async () => "owner-token",
+      resolveManagedFileAuthorization: async () => fileAuthorization,
+      fetchImpl: async (url, init) => {
+        forwarded = true;
+        assert.equal(
+          url.pathname,
+          `/v1/managed-conversations/${executionId}/diff`
+        );
+        assert.equal(url.search, `?scope=turn&commandId=${commandId}`);
+        assert.equal(
+          init.headers.authorization,
+          "Koed-Desktop owner-file-credential"
+        );
+        return Response.json({ fileCount: 1 });
+      },
+      send: (status, body) => {
+        result = { status, body };
+      }
+    });
+    if (fileAuthorization === null) assert.equal(forwarded, false);
+    return result.status;
+  }
+  assert.equal(await read(`?scope=turn&commandId=${commandId}`), 200);
+  for (const query of [
+    "",
+    `?scope=full&commandId=${commandId}`,
+    "?scope=turn&commandId=invalid",
+    `?scope=turn&commandId=${commandId}&ownerId=other`,
+    `?scope=turn&commandId=${commandId}&commandId=${commandId}`,
+    `?scope=turn&scope=turn`
+  ])
+    assert.equal(await read(query), 400);
+  assert.equal(await read(`?scope=turn&commandId=${commandId}`, "POST"), 405);
+  assert.equal(
+    await read(`?scope=turn&commandId=${commandId}`, "GET", null),
+    503
+  );
+});

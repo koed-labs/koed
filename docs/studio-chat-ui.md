@@ -100,8 +100,37 @@ Only explicit user-facing phase signals from an active selected Job appear in th
 
 ## Conversation activity panel
 
-Native and hosted managed Conversations populate the Build panel from named Agent Jobs when available. Direct chats without a Job use the matching execution generation and latest runtime command instead, displaying its verified status and matching user request. Advanced adds the execution client, model, reasoning setting and access policy, and retains reported command results. File changes are shown only when supplied by activity events; assistant replies are not treated as evidence of file edits.
+Native and hosted managed Conversations populate the Build panel from named Agent Jobs when available. Direct chats without a Job use the matching execution generation and latest runtime command instead, displaying its verified status and matching user request. Completed direct chats show a bounded excerpt of the matching Agent reply as an explicitly reported outcome in Simple. Replies from other requests and Personal Memory attribution footers are excluded. Advanced adds the execution client, model, reasoning setting and access policy, and retains reported command results. Assistant replies are not treated as evidence of file edits.
 
-The panel labels its plain-language view Simple and shares the saved Simple/Advanced preference through `BuildViewProvider`. Its expanded, compact or closed state is also saved per device and restored on reload; the native chat header uses the same restored state for layout. Invalid or unavailable storage falls back to compact mode with a visible expand control. This fallback reuses existing conversation and runtime reads without adding polling or backend contracts.
+Completed direct chats also read the existing owner-authorized saved turn-diff API. Execution, generation and command identity must match before its file changes enter the existing Advanced presenter. The controller caches up to five bounded results per owner/backend scope, retaining display patches without adding polling. Line counts come from complete text hunks only; binary, excluded or truncated patches leave totals unknown. Older tasks use their saved checkpoints rather than today's workspace. Plain-folder Codex turns can use the recorded-edit fallback below; other requests without a saved diff explicitly report unavailable file counts. Named Job events retain their existing source and history, with the latest conversation patches labelled separately.
 
-On desktop, minimizing retains the 300px summary card when the chat area has at least 660px available, allowing room for both the card and chat content with the sidebar open. Narrow windows retain the compact expand button.
+The panel labels its plain-language view Simple and shares the saved Simple/Advanced preference through `BuildViewProvider`. Its expanded, compact or closed state is also saved per device and restored on reload; the native chat header uses the same restored state for layout. Invalid or unavailable storage falls back to compact mode with a visible expand control. The status fallback reuses existing conversation and runtime reads without adding polling.
+
+On desktop, minimizing retains the 300px summary card when the chat area has at least 660px available, allowing room for both the card and chat content with the sidebar open. The compact header has an explicit maximize control as well as the clickable summary. Narrow windows retain the compact expand button. Reopening a closed panel opens its full view directly. Floating controls and the panel header exclude native window dragging so mouse clicks reach the controls.
+
+The native gateway forwards only a GET turn-diff read with an execution UUID, `scope=turn` and a command UUID. It uses the existing Desktop local credential for managed file inspection and the 4 MiB response ceiling; unsupported query parameters, full-conversation diff reads and writes are rejected. An ordinary Personal API Token is not a fallback for file inspection. Hosted reads reuse the existing managed file-read authority.
+
+The Simple activity view retains the last five conversation exchanges from the
+authorized prompt history, including the request and a readable reply summary.
+Named Agent activity keeps this conversation history alongside its selected Job.
+Advanced renders saved text patches in expandable, scrollable file views. Patch
+retention is bounded to 200 files, 32 KiB per file, 256 KiB per turn, and five cached
+turns; partial patches and unavailable content are labelled explicitly.
+
+For a local Codex chat in a plain folder, the existing authenticated turn-diff
+read can fall back to `apply_patch` edits in its bound transcript. Direct calls
+require successful application output. Literal patch arguments inside completed
+`exec` calls are shown as recorded patches with application explicitly unverified;
+recorded JavaScript is never executed. The
+API verifies the owner, execution generation, completed prompt, provider turn,
+Captured Session, transcript session header, and exact project folder before
+returning any edit. This reports recorded applied edits rather than pretending
+to have a Git workspace comparison. Reads are limited to 16 MiB, refuse symlink
+transcripts, omit out-of-project paths and sensitive content, and retain at most
+100 edits and 256 KiB of patch text. Unrecorded shell writes, other AI Clients,
+missing transcripts, and deleted-file contents still have no recoverable patch.
+No Git repository is created and the parent repository is never inspected.
+
+### Personal Project discovery
+
+Local conversation discovery prefers a registered Project's canonical root over another Project's historical working-directory alias. This keeps an explicitly selected nested folder separate from its parent and reuses its registered ID rather than creating a duplicate discovery Project. Conflicting records for the same root remain ambiguous, and unrelated folders are never merged by name. Home filters affect its content only; the sidebar retains conversations across all visible Projects.

@@ -6115,3 +6115,119 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[0]?.pathname).not.toContain("%3F");
   });
 });
+
+it("serves recorded plain-folder patches only for the bound owner's completed command", async () => {
+  const folder = mkdtempSync(resolve(tmpdir(), "koed-recorded-diff-"));
+  const executionId = randomUUID(),
+    commandId = randomUUID(),
+    owner = randomUUID(),
+    sessionId = randomUUID();
+  const path = resolve(folder, "transcript.jsonl");
+  const line = (type: string, payload: Record<string, unknown>) =>
+    JSON.stringify({ type, payload });
+  writeFileSync(
+    path,
+    [
+      line("session_meta", { id: "thread", cwd: folder }),
+      line("event_msg", { type: "task_started", turn_id: "turn" }),
+      line("response_item", {
+        type: "custom_tool_call",
+        name: "apply_patch",
+        call_id: "call",
+        input:
+          "*** Begin Patch\n*** Add File: index.html\n+Hello world\n*** End Patch"
+      }),
+      line("response_item", {
+        type: "custom_tool_call_output",
+        call_id: "call",
+        output: "Success. Updated the following files:\nA index.html\n"
+      }),
+      line("event_msg", { type: "task_complete", turn_id: "turn" })
+    ].join("\n")
+  );
+  const command = {
+    executionId,
+    executionGeneration: 1,
+    commandKind: "prompt",
+    state: "completed",
+    result: { turnId: "turn" }
+  };
+  const app = Fastify({ logger: false });
+  registerManagedConversationRoutes(app, {
+    config: { deploymentProfile: "local_personal" },
+    encryption: { envelopeEncryptionProvider: {} },
+    auth: {
+      authenticate: async () => ({ id: owner }),
+      authenticateSessionOrDeviceCredential: async (request: {
+        headers: Record<string, unknown>;
+      }) => ({
+        id: request.headers["x-test-user"] === "stranger" ? "stranger" : owner
+      })
+    },
+    rateLimit: {
+      memoryRead: async () => undefined,
+      memoryWrite: async () => undefined
+    },
+    localEdge: {
+      upstreamBackendsPath: resolve(folder, "upstream.json"),
+      resolveUpstreamAuthorization: () => null,
+      fetch: vi.fn()
+    },
+    requireRepository: () => ({
+      getManagedConversationRuntimeBinding: async (actor: {
+        userId: string;
+      }) =>
+        actor.userId === owner
+          ? {
+              executionGeneration: 1,
+              checkoutKind: "non_vcs_directory",
+              localSessionId: sessionId,
+              transcriptPath: path,
+              providerThreadId: "thread",
+              projectPath: folder
+            }
+          : null,
+      getManagedConversationExecutionDiff: async () => null,
+      getManagedConversationExecution: async () => ({
+        provider: "codex",
+        providerThreadId: "thread",
+        executionGeneration: 1,
+        logicalSessionId: "logical"
+      }),
+      getManagedConversationCommand: async (_actor: unknown, id: string) =>
+        id === commandId ? command : null,
+      getCapturedSession: async () => ({
+        logicalSessionId: "logical",
+        externalSessionId: "thread"
+      })
+    })
+  } as unknown as ApiRouteContext);
+  try {
+    const url = `/v1/managed-conversations/${executionId}/diff?scope=turn&commandId=${commandId}`;
+    const response = await app.inject({ method: "GET", url });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().files[0].patch).toBe("+Hello world");
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url,
+          headers: { "x-test-user": "stranger" }
+        })
+      ).statusCode
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: url.replace(commandId, randomUUID())
+        })
+      ).statusCode
+    ).toBe(404);
+    command.executionGeneration = 2;
+    expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+  } finally {
+    await app.close();
+    rmSync(folder, { recursive: true, force: true });
+  }
+});

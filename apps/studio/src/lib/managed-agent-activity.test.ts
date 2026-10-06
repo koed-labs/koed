@@ -75,15 +75,19 @@ it("shows a direct chat's completed task and verified settings without a named A
       jobs: [],
       messages: [
         { id: "prompt", role: "user", content: "Create a Hello world page" },
-        { id: "reply", role: "assistant", content: "Created index.html" }
+        {
+          id: "reply",
+          role: "assistant",
+          content: "**Created [index.html](index.html)**"
+        }
       ]
     },
     directRuntime
   );
   expect(activity.state).toBe("completed");
   expect(activity.events[0].story).toMatchObject({
-    title: "Task completed",
-    detail: "Request: Create a Hello world page"
+    title: "Agent reports: Created index.html",
+    detail: "Request: Create a Hello world page\nReply: Created index.html"
   });
   expect(activity.events[0].technical?.execution).toMatchObject({
     model: "test-model",
@@ -121,6 +125,30 @@ it("does not attach the previous prompt to pending work or reuse a different exe
     )
   ).toMatchObject({ state: "unknown", events: [] });
 });
+
+it("does not label the next task's response as the current task's result", () => {
+  const activity = managedConversationActivity(
+    {
+      executionGeneration: 1,
+      jobs: [],
+      messages: [
+        { id: "prompt", role: "user", content: "First task" },
+        { id: "response", role: "assistant", content: "Created first.html" },
+        { id: "next", role: "user", content: "Second task" },
+        {
+          id: "next-response",
+          role: "assistant",
+          content: "Deleted another file"
+        }
+      ]
+    },
+    directRuntime
+  );
+  expect(activity.events[0].story?.title).toBe(
+    "Agent reports: Created first.html"
+  );
+  expect(activity.events[0].technical?.files).toBeUndefined();
+});
 it.each([
   ["dispatching", "running"],
   ["indeterminate", "unknown"],
@@ -136,4 +164,44 @@ it.each([
       }
     ).state
   ).toBe(expected);
+});
+
+it("keeps the last five exchanges, in order, and survives a reload", () => {
+  const messages = Array.from({ length: 8 }, (_, index) => [
+    { id: `user-${index}`, role: "user", content: `Request ${index}` },
+    { id: `reply-${index}`, role: "assistant", content: `Finished ${index}` }
+  ]).flat();
+  const runtime = {
+    ...directRuntime,
+    latestCommand: {
+      ...directRuntime.latestCommand!,
+      clientUserMessageId: "user-7"
+    }
+  };
+  const payload = { executionGeneration: 1, messages };
+  const first = managedConversationActivity(payload, runtime);
+  expect(first.events).toHaveLength(5);
+  expect(first.events.map((event) => event.story?.title)).toEqual(
+    [3, 4, 5, 6, 7].map((index) => `Agent reports: Finished ${index}`)
+  );
+  expect(first.events[0].story?.detail).toBe(
+    "Request: Request 3\nReply: Finished 3"
+  );
+  expect(managedConversationActivity(payload, runtime)).toEqual(first);
+});
+it("keeps conversation history available alongside named Agent activity", () => {
+  const activity = managedConversationActivity(
+    {
+      executionGeneration: 1,
+      jobs: [{ id: "job", observedState: "succeeded" }],
+      messages: [
+        { id: "prompt", role: "user", content: "Make a page" },
+        { id: "reply", role: "assistant", content: "Created the page" }
+      ]
+    },
+    directRuntime
+  );
+  expect(activity.recentExchanges?.at(-1)?.story?.title).toBe(
+    "Agent reports: Created the page"
+  );
 });

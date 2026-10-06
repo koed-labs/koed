@@ -39,6 +39,10 @@ export type BuildFileChange = {
   additions?: number;
   deletions?: number;
   baseline?: boolean;
+  patch?: string;
+  confirmation?: "applied" | "recorded";
+  patchTruncated?: boolean;
+  patchUnavailable?: string;
 };
 
 export type BuildActivityEvent = {
@@ -84,6 +88,8 @@ export type BuildActivity = {
     status?: string;
   };
   events: BuildActivityEvent[];
+  recentExchanges?: BuildActivityEvent[];
+  recentTurnChanges?: BuildActivityEvent;
   updatedAt?: number;
   jobs?: BuildActivityJob[];
   selectedJobId?: string;

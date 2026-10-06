@@ -1,5 +1,6 @@
 import { pendingChatRequests } from "./managed-chat-requests";
 import type { RuntimeSnapshot } from "./managed-agent-chat";
+import { stripPersonalMemoryAttributionFooter } from "@koed/shared/personal-memory-attribution";
 import { record } from "./managed-agent-chat";
 import type {
   BuildActivity,
@@ -91,7 +92,6 @@ export function managedConversationActivity(
   if (payload.executionGeneration !== runtime.execution.executionGeneration)
     return { source: "live", state: "unknown", events: [] };
   const activity = managedAgentActivity(payload);
-  if (activity.events.length) return activity;
   const command = runtime.latestCommand;
   if (!command) return activity;
   const state: BuildActivityState =
@@ -123,21 +123,74 @@ export function managedConversationActivity(
                     command.commandKind === "interrupt"
                   ? "Task stopped"
                   : "Task queued";
-  const prompts = (Array.isArray(payload.messages) ? payload.messages : [])
-    .filter(record)
-    .filter(
-      (message) =>
-        message.role === "user" && typeof message.content === "string"
-    );
-  const prompt = prompts.find(
+  const messages = (
+    Array.isArray(payload.messages) ? payload.messages : []
+  ).filter(record);
+  const promptIndex = messages.findIndex(
     (message) =>
-      message.id === command.clientUserMessageId || message.id === command.id
-  )?.content;
+      message.role === "user" &&
+      (message.id === command.clientUserMessageId || message.id === command.id)
+  );
+  const history: BuildActivityEvent[] = [];
+  const historyMessages = messages.slice(
+    0,
+    promptIndex < 0 ? undefined : promptIndex
+  );
+  for (let index = 0; index < historyMessages.length; index++) {
+    const request = historyMessages[index];
+    if (
+      request.role !== "user" ||
+      typeof request.content !== "string" ||
+      typeof request.id !== "string"
+    )
+      continue;
+    let reply: Record<string, unknown> | undefined;
+    for (
+      let next = index + 1;
+      next < historyMessages.length && historyMessages[next].role !== "user";
+      next++
+    ) {
+      if (historyMessages[next].role === "assistant")
+        reply = historyMessages[next];
+    }
+    const summary = replySummary(reply?.content);
+    if (!summary) continue;
+    const at = Date.parse(
+      typeof reply?.createdAt === "string" ? reply.createdAt : ""
+    );
+    history.push({
+      id: `exchange:${request.id}`,
+      kind: "message",
+      state: "idle",
+      story: {
+        title: `Agent reports: ${summary.slice(0, 180)}`,
+        detail: `Request: ${request.content.slice(0, 1000)}\nReply: ${summary}`
+      },
+      ...(Number.isFinite(at) ? { at } : {})
+    });
+  }
+  const prompt = messages[promptIndex]?.content;
+  const nextPrompt = messages.findIndex(
+    (message, index) => index > promptIndex && message.role === "user"
+  );
+  const reply =
+    state === "completed" && promptIndex >= 0
+      ? messages
+          .slice(promptIndex + 1, nextPrompt < 0 ? undefined : nextPrompt)
+          .filter(
+            (message) =>
+              message.role === "assistant" &&
+              typeof message.content === "string"
+          )
+          .at(-1)?.content
+      : null;
+  const summary = replySummary(reply);
   const at = Date.parse(command.updatedAt ?? "");
-  return {
+  const direct: BuildActivity = {
     source: "live",
     state,
     events: [
+      ...history.slice(-4),
       {
         id: `command:${command.id}`,
         ...(Number.isFinite(at) ? { at } : {}),
@@ -151,10 +204,10 @@ export function managedConversationActivity(
                 : "progress",
         state,
         story: {
-          title,
+          title: summary ? `Agent reports: ${summary.slice(0, 180)}` : title,
           detail:
             typeof prompt === "string"
-              ? `Request: ${prompt.slice(0, 1000)}`
+              ? `Request: ${prompt.slice(0, 1000)}${summary ? `\nReply: ${summary}` : ""}`
               : "Status reported by the execution service."
         },
         technical: {
@@ -170,4 +223,20 @@ export function managedConversationActivity(
     ],
     ...(Number.isFinite(at) ? { updatedAt: at } : {})
   };
+  return activity.events.length
+    ? { ...activity, recentExchanges: direct.events }
+    : direct;
+}
+
+function replySummary(reply: unknown): string {
+  return typeof reply === "string"
+    ? stripPersonalMemoryAttributionFooter(reply, { mode: "final" })
+        .trim()
+        .split(/\n\s*\n/u)[0]
+        .replace(/^#{1,6}\s+/u, "")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1")
+        .replace(/[*`]/gu, "")
+        .replace(/\s+/gu, " ")
+        .slice(0, 500)
+    : "";
 }

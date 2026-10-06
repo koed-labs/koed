@@ -21,6 +21,7 @@ import {
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
 import { managedChatProgress } from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
+import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
 import {
   activityWithBuildProgress,
   buildProgressJobState,
@@ -313,6 +314,9 @@ export function LiveAgentChat({
   }>();
   const restoredExecution = useRef<string | null>(null);
   const runtimeRef = useRef<RuntimeSnapshot | null>(null);
+  const [loadConversationBuildDiff] = useState(() =>
+    createConversationBuildDiffLoader()
+  );
   const refreshSequence = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
   const recoveryStore = useRef<LocalRecoveryStore | null>(null);
@@ -672,7 +676,7 @@ export function LiveAgentChat({
           (project) => project.id === snapshot.execution.projectId
         )?.name ??
         (snapshot.execution.projectId ? "Project" : "Standalone chat");
-      setActivity({
+      let conversationActivity: BuildActivity = {
         ...baseActivity,
         project: { name: projectName },
         jobs,
@@ -680,7 +684,27 @@ export function LiveAgentChat({
         availability: snapshot.execution.projectId
           ? "unavailable"
           : "no_project"
-      });
+      };
+      setActivity(conversationActivity);
+      if (snapshot.latestCommand?.state === "completed") {
+        const owner = recoveryIdentity.current;
+        const enriched = await loadConversationBuildDiff(
+          conversationActivity,
+          snapshot,
+          owner ? `${owner.backendId}:${owner.ownerId}` : null,
+          () =>
+            managedRequest(
+              `/${id}/diff?scope=turn&commandId=${encodeURIComponent(snapshot.latestCommand!.id)}`,
+              undefined,
+              signal
+            ),
+          signal
+        );
+        if (!signal.aborted && sequence === refreshSequence.current) {
+          conversationActivity = enriched;
+          setActivity(enriched);
+        }
+      }
       if (preferredJobId) {
         try {
           const progressPayload = await loadManagedBuildProgress(
@@ -695,7 +719,7 @@ export function LiveAgentChat({
             if (page) {
               setActivity(
                 activityWithBuildProgress({
-                  current: baseActivity,
+                  current: conversationActivity,
                   page,
                   jobs,
                   projectName
@@ -890,7 +914,13 @@ export function LiveAgentChat({
       }
       return snapshot;
     },
-    [agents, initialExecutionId, registeredProjects, settleRecoveredSend]
+    [
+      agents,
+      initialExecutionId,
+      registeredProjects,
+      settleRecoveredSend,
+      loadConversationBuildDiff
+    ]
   );
 
   const refreshRetainedWorkspaces = useCallback(

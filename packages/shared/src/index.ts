@@ -325,6 +325,7 @@ export {
 } from "./conversation-presentation-policy.js";
 export {
   managedConversationDiffPayloadSchema,
+  managedConversationAppliedEditsSchema,
   managedConversationDiffSchema
 } from "./managed-conversation-diff.js";
 export type { ManagedConversationDiff } from "./managed-conversation-diff.js";

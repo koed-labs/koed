@@ -378,6 +378,92 @@ describe("listLocalConversationSources", () => {
     expect(JSON.stringify(page)).not.toContain(sourceCwd);
   });
 
+  it("prefers the selected nested folder over a legacy parent project's cwd", async () => {
+    const home = await makeRoot();
+    const koedHome = path.join(home, "koed");
+    const parent = path.join(home, "Coding");
+    const selected = path.join(parent, "testing-the-ui");
+    const piRoot = path.join(home, "pi", "sessions");
+    await mkdir(piRoot, { recursive: true });
+    await writeProjectRegistry(koedHome, [
+      {
+        localProjectId: "lp_parent",
+        displayName: "Coding",
+        cwd: selected,
+        projectRoot: parent
+      },
+      {
+        localProjectId: "lp_selected",
+        displayName: "testing-the-ui",
+        cwd: selected,
+        projectRoot: selected
+      }
+    ]);
+    for (const [id, cwd] of [
+      ["child", selected],
+      ["parent", parent]
+    ]) {
+      await writeFile(
+        path.join(piRoot, `${id}.jsonl`),
+        `${JSON.stringify({ type: "session", version: 3, id, cwd })}\n`
+      );
+    }
+    const page = await listLocalConversationSources({
+      provider: "pi",
+      env: {
+        ...process.env,
+        HOME: home,
+        KOED_HOME: koedHome,
+        PI_CODING_AGENT_DIR: path.join(home, "pi")
+      }
+    });
+    expect(
+      page.items.find((item) => item.sourceId === "pi:child")
+    ).toMatchObject({
+      projectId: "lp_selected",
+      projectName: "testing-the-ui"
+    });
+    expect(
+      page.items.find((item) => item.sourceId === "pi:parent")
+    ).toMatchObject({ projectId: "lp_parent", projectName: "Coding" });
+  });
+
+  it("keeps conflicting registrations of the same exact root ambiguous", async () => {
+    const home = await makeRoot();
+    const koedHome = path.join(home, "koed");
+    const cwd = path.join(home, "work", "app");
+    const piRoot = path.join(home, "pi", "sessions");
+    await mkdir(piRoot, { recursive: true });
+    await writeProjectRegistry(koedHome, [
+      {
+        localProjectId: "lp_first",
+        displayName: "First",
+        cwd,
+        projectRoot: cwd
+      },
+      {
+        localProjectId: "lp_second",
+        displayName: "Second",
+        cwd,
+        projectRoot: cwd
+      }
+    ]);
+    await writeFile(
+      path.join(piRoot, "session.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "conflict", cwd })}\n`
+    );
+    const page = await listLocalConversationSources({
+      provider: "pi",
+      env: {
+        ...process.env,
+        HOME: home,
+        KOED_HOME: koedHome,
+        PI_CODING_AGENT_DIR: path.join(home, "pi")
+      }
+    });
+    expect(page.items[0]?.projectId).toMatch(/^local-project:/);
+  });
+
   it("does not merge distinct same-name folders by display name", async () => {
     const home = await makeRoot();
     const koedHome = path.join(home, "koed");

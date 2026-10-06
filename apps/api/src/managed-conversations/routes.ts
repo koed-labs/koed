@@ -15,6 +15,7 @@ import {
   fetchBoundedJsonObject,
   isSupportedAiClientDriverId,
   managedConversationDiffPayloadSchema,
+  managedConversationAppliedEditsSchema,
   managedConversationSelectedResourceIdsSchema,
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
@@ -54,6 +55,8 @@ import {
   resolveManagedRecallFeedbackTarget,
   verifiedRecallFeedbackAttribution
 } from "./recall-feedback.js";
+
+import { readCodexAppliedEdits } from "./applied-edits.js";
 
 const localExecutionProfiles = new Set(["developer", "local_personal"]);
 const opaqueLocalProjectId = /^lp_[0-9a-f]{32}$/;
@@ -3043,6 +3046,54 @@ export const registerManagedConversationRoutes = (
           scopeKey
         }
       );
+      if (
+        !diff &&
+        query.scope === "turn" &&
+        binding.checkoutKind === "non_vcs_directory" &&
+        binding.localSessionId &&
+        binding.transcriptPath &&
+        binding.providerThreadId
+      ) {
+        const execution = await repository.getManagedConversationExecution(
+          { userId: user.id },
+          executionId
+        );
+        const command = await repository.getManagedConversationCommand(
+          { userId: user.id },
+          query.commandId!
+        );
+        const session = await repository.getCapturedSession(
+          { userId: user.id },
+          binding.localSessionId
+        );
+        if (
+          execution?.provider === "codex" &&
+          execution.providerThreadId === binding.providerThreadId &&
+          execution.executionGeneration === binding.executionGeneration &&
+          command?.executionId === executionId &&
+          command.executionGeneration === binding.executionGeneration &&
+          command.commandKind === "prompt" &&
+          command.state === "completed" &&
+          typeof command.result?.turnId === "string" &&
+          session?.logicalSessionId === execution.logicalSessionId &&
+          session.externalSessionId === binding.providerThreadId
+        ) {
+          const files = await readCodexAppliedEdits(binding.transcriptPath, {
+            threadId: binding.providerThreadId,
+            turnId: command.result.turnId,
+            projectPath: binding.projectPath
+          }).catch(() => []);
+          if (files.length)
+            return managedConversationAppliedEditsSchema.parse({
+              executionId,
+              executionGeneration: binding.executionGeneration,
+              scope: "turn",
+              scopeKey,
+              source: "ai_client",
+              files
+            });
+        }
+      }
       if (!diff) {
         throw Object.assign(new Error("Managed Conversation diff not found"), {
           statusCode: 404

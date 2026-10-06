@@ -201,6 +201,7 @@ const readRegisteredProjectIdentities = async (
     const records: Array<{
       identity: RegisteredProjectIdentity;
       paths: Set<string>;
+      root: string | null;
     }> = [];
     for (const value of projects) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
@@ -235,7 +236,18 @@ const readRegisteredProjectIdentities = async (
         registeredPaths.add(await canonicalProjectPath(registeredPath));
       }
       if (registeredPaths.size)
-        records.push({ identity, paths: registeredPaths });
+        records.push({
+          identity,
+          paths: registeredPaths,
+          root:
+            typeof project.path.projectRoot === "string" &&
+            path.isAbsolute(project.path.projectRoot)
+              ? await canonicalProjectPath(project.path.projectRoot)
+              : typeof project.path.cwd === "string" &&
+                  path.isAbsolute(project.path.cwd)
+                ? await canonicalProjectPath(project.path.cwd)
+                : null
+        });
     }
 
     // A repeated local ID on unrelated registry records is corrupt or ambiguous.
@@ -267,9 +279,17 @@ const readRegisteredProjectIdentities = async (
     }
 
     const matches = new Map<string, RegisteredProjectIdentity | null>();
+    // A selected folder owns its root. A legacy parent-project record may
+    // retain that folder as its last cwd, but must not override that ownership.
+    const exactRoots = new Set(
+      records
+        .filter((record) => !ambiguousIds.has(record.identity.localProjectId))
+        .flatMap((record) => (record.root ? [record.root] : []))
+    );
     for (const record of records) {
       if (ambiguousIds.has(record.identity.localProjectId)) continue;
       for (const key of record.paths) {
+        if (key !== record.root && exactRoots.has(key)) continue;
         const existing = matches.get(key);
         if (existing === undefined) matches.set(key, record.identity);
         else if (

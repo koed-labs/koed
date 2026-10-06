@@ -24,6 +24,7 @@ import {
   loadHostedManagedConversationAccess,
   loadHostedRecallFeedback,
   loadHostedBuildProgress,
+  loadHostedConversationDiff,
   lookupHostedConversationRecovery,
   hasMeaningfulHostedApprovalDetails,
   hostedPromptOutcomeIsUncertain,
@@ -55,6 +56,7 @@ import {
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
 import { managedChatProgress } from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
+import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
 import {
   activityWithBuildProgress,
   buildProgressJobState,
@@ -1120,6 +1122,10 @@ export function HostedManagedChats({
     setScopedPendingRecoveryOperation
   ]);
 
+  const [loadConversationBuildDiff] = useState(() =>
+    createConversationBuildDiffLoader()
+  );
+  const buildActivitySequence = useRef(0);
   const refreshBuildActivity = useCallback(
     async (
       executionId: string,
@@ -1129,6 +1135,7 @@ export function HostedManagedChats({
       runtimeSnapshot: RuntimeSnapshot,
       signal?: AbortSignal
     ) => {
+      const sequence = ++buildActivitySequence.current;
       const rawJobs = (state.jobs ?? []).filter(record).slice(0, 20);
       const jobs = rawJobs.flatMap((job) =>
         typeof job.id === "string" && typeof job.title === "string"
@@ -1157,14 +1164,39 @@ export function HostedManagedChats({
         runtimeSnapshot
       );
       setSelectedBuildJobId(selectedJobId);
-      setBuildActivity({
+      let conversationActivity: BuildActivity = {
         ...base,
         project: { name: projectName },
         jobs,
         ...(selectedJobId ? { selectedJobId } : {}),
         availability: projectId ? "unavailable" : "no_project"
-      });
-      if (!selectedJobId) return;
+      };
+      setBuildActivity(conversationActivity);
+      {
+        const enriched = await loadConversationBuildDiff(
+          conversationActivity,
+          runtimeSnapshot,
+          recoveryScope
+            ? `${recoveryScope.backendId}:${recoveryScope.ownerId}`
+            : null,
+          () =>
+            loadHostedConversationDiff(
+              executionId,
+              runtimeSnapshot.latestCommand!.id,
+              signal
+            ),
+          signal
+        );
+        if (
+          !signal?.aborted &&
+          sequence === buildActivitySequence.current &&
+          selectedIdRef.current === executionId
+        ) {
+          conversationActivity = enriched;
+          setBuildActivity(enriched);
+        }
+        if (!selectedJobId) return;
+      }
       try {
         const payload = await loadHostedBuildProgress(
           executionId,
@@ -1181,14 +1213,24 @@ export function HostedManagedChats({
           return;
         }
         setBuildActivity(
-          activityWithBuildProgress({ current: base, page, jobs, projectName })
+          activityWithBuildProgress({
+            current: conversationActivity,
+            page,
+            jobs,
+            projectName
+          })
         );
       } catch {
         if (!signal?.aborted && selectedIdRef.current === executionId)
           setBuildActivity(unavailableBuildProgress(base));
       }
     },
-    [launchOptions, selectedBuildJobId]
+    [
+      launchOptions,
+      selectedBuildJobId,
+      recoveryScope,
+      loadConversationBuildDiff
+    ]
   );
 
   useEffect(() => {

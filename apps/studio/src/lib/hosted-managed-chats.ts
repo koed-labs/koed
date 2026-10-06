@@ -1356,6 +1356,19 @@ export async function loadHostedBuildProgress(
   );
 }
 
+export async function loadHostedConversationDiff(
+  executionId: string,
+  commandId: string,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  assertExecutionId(executionId);
+  assertExecutionId(commandId);
+  return requestJson(
+    `/v1/managed-conversations/${encodeURIComponent(executionId)}/diff?scope=turn&commandId=${encodeURIComponent(commandId)}`,
+    { signal }
+  );
+}
+
 export async function loadHostedManagedConversationAccess(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch

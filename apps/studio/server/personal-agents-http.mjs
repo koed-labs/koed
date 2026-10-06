@@ -61,6 +61,7 @@ export async function handlePersonalAgents({
   validCsrf,
   resolveToken,
   resolveAccess,
+  resolveManagedFileAuthorization,
   apiBase,
   fetchImpl,
   send,
@@ -155,6 +156,9 @@ export async function handlePersonalAgents({
   const buildProgressRoute =
     routeFamily === "managed-conversations" &&
     new RegExp(`^/${uuid}/build-progress$`).test(suffix);
+  const turnDiffRoute =
+    routeFamily === "managed-conversations" &&
+    new RegExp(`^/${uuid}/diff$`).test(suffix);
   const recoveryLookup =
     routeFamily === "managed-conversations" && suffix === "/recovery/lookup";
   const squareList =
@@ -167,6 +171,7 @@ export async function handlePersonalAgents({
     url.search &&
     !recoveryLookup &&
     !buildProgressRoute &&
+    !turnDiffRoute &&
     !squareList &&
     !teamAgentRequestList &&
     !activityRoute &&
@@ -187,6 +192,15 @@ export async function handlePersonalAgents({
   }
   if (homeList && !validHomeFeedQuery(url.searchParams)) {
     send(400, { error: "invalid_home_query" });
+    return true;
+  }
+  if (
+    turnDiffRoute &&
+    ([...url.searchParams.keys()].length !== 2 ||
+      url.searchParams.get("scope") !== "turn" ||
+      !validUuid(url.searchParams.get("commandId")))
+  ) {
+    send(400, { error: "invalid_turn_diff_query" });
     return true;
   }
   if (recoveryLookup && !validRecoveryLookupQuery(url.searchParams)) {
@@ -279,6 +293,13 @@ export async function handlePersonalAgents({
         return true;
       }
     }
+    const authorization = turnDiffRoute
+      ? await resolveManagedFileAuthorization?.()
+      : `Bearer ${token}`;
+    if (!authorization) {
+      send(503, { error: "Managed file inspection is unavailable." });
+      return true;
+    }
     const upstream = await fetchImpl(
       new URL(
         routeFamily === "conversation-titles"
@@ -291,14 +312,14 @@ export async function handlePersonalAgents({
                 ? `${teamAgentRequestRoute.path}${teamAgentRequestList ? url.search : ""}`
                 : squareRoute
                   ? `${squareRoute.path}${squareList ? url.search : ""}`
-                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
+                  : `/v1/${routeFamily}${suffix}${recoveryLookup || buildProgressRoute || turnDiffRoute || activityRoute || historyMatch || homeList ? url.search : ""}`,
         base
       ),
       {
         method: request.method,
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${token}`,
+          authorization,
           ...(body ? { "content-type": "application/json" } : {})
         },
         body,
@@ -447,9 +468,9 @@ function managedMethods(suffix) {
   if (new RegExp(`^/${uuid}/project-moves/${uuid}/cancel$`).test(suffix))
     return ["POST"];
   if (
-    new RegExp(`^/${uuid}(?:/runtime|/agent-state|/build-progress)?$`).test(
-      suffix
-    )
+    new RegExp(
+      `^/${uuid}(?:/runtime|/agent-state|/build-progress|/diff)?$`
+    ).test(suffix)
   )
     return ["GET"];
   if (new RegExp(`^/${uuid}/prompts/${uuid}/cancel$`).test(suffix))
