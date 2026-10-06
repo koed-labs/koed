@@ -123,6 +123,19 @@ afterEach(() => {
 });
 
 describe("packaged service runtime selection", () => {
+  it("rejects caller-constructed Desktop capability before selecting a generation", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: tempDir() });
+    await expect(
+      resolveVerifiedPackagedRuntime(paths, {}, requirements, existsSync, {
+        resourcesPath: "/untrusted",
+        productVersion: "1.2.3",
+        bundleDigest: "0".repeat(64)
+      } as never)
+    ).rejects.toThrow(
+      "validated private Desktop runtime capability is required"
+    );
+  });
+
   it("resolves authenticated runtime without creating a generation pin", async () => {
     const root = tempDir();
     const paths = await makeGeneration(root, resolveKoedControlPlaneVersion());

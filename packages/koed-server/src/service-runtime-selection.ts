@@ -12,18 +12,32 @@ import {
   pinGenerationForStart,
   readCurrentGenerationForOwner
 } from "./generation-lifecycle.js";
+import {
+  resolveDesktopRuntimeOwner,
+  validateDesktopRuntimeCapability,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
+
+const runtimeOwner = (capability?: DesktopRuntimeCapability) => {
+  if (capability === undefined) return resolveKoedRuntimeOwner();
+  if (!validateDesktopRuntimeCapability(capability)) {
+    throw new Error("validated private Desktop runtime capability is required");
+  }
+  return resolveDesktopRuntimeOwner(capability);
+};
 
 export async function resolveVerifiedPackagedRuntime(
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
   requirements: RuntimeRequirements,
-  exists: (path: string) => boolean = existsSync
+  exists: (path: string) => boolean = existsSync,
+  capability?: DesktopRuntimeCapability
 ): Promise<KoedAppRuntime> {
   let generation;
   try {
     generation = await readCurrentGenerationForOwner(
       paths,
-      resolveKoedRuntimeOwner()
+      runtimeOwner(capability)
     );
   } catch (error) {
     if (error instanceof Error && error.message === "runtime owner mismatch") {
@@ -56,14 +70,15 @@ export async function pinAndResolvePackagedRuntime(
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
   requirements: RuntimeRequirements,
-  exists: (path: string) => boolean = existsSync
+  exists: (path: string) => boolean = existsSync,
+  capability?: DesktopRuntimeCapability
 ): Promise<{
   runtime: KoedAppRuntime;
   pin: Awaited<ReturnType<typeof pinGenerationForStart>>;
 }> {
   let pin: Awaited<ReturnType<typeof pinGenerationForStart>>;
   try {
-    pin = await pinGenerationForStart(paths, resolveKoedRuntimeOwner());
+    pin = await pinGenerationForStart(paths, runtimeOwner(capability));
   } catch (error) {
     if (error instanceof Error && error.message === "runtime owner mismatch") {
       throw new Error(
