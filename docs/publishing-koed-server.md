@@ -7,6 +7,22 @@ base and privacy components. Each component archive has SHA-256, a component
 manifest, and detached signature metadata. Unsigned local builds are marked
 `unsigned-placeholder`; they are not official release artifacts.
 
+## Desktop privacy component lifecycle
+
+Desktop installs privacy components through the private supervisor IPC channel;
+this is not a public server API. The supervisor stages only a signed privacy
+component that matches the packaged bundle's product version and target and the
+actual runtime identity. The staged generation descriptor combines the trusted
+bundled base with that privacy component. Startup rereads the descriptor and
+re-verifies the bundle, component signature, stored bytes, version, target, and
+runtime before pinning the generation.
+
+While Koed is running, installation stages a candidate without changing the
+active generation. Activation runs only in stopped mode under the generation
+lifecycle lock. Failed or cancelled staging leaves the current generation
+pointer unchanged. Production signing and trust-root prerequisites below remain
+unchanged; test fixture keys are not production trust material.
+
 ## Required production infrastructure
 
 Release publication remains blocked until Operator-managed infrastructure is
