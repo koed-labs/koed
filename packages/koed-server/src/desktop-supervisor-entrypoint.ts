@@ -104,6 +104,7 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   });
   const handlePrivacyRpc = createDesktopPrivacyRpcHandler({
     manager: privacyManager,
+    nonce: handshake.nonce,
     send: (response) =>
       process.send?.(response, () => {
         if (handshake.mode === "privacy-activation") process.disconnect?.();

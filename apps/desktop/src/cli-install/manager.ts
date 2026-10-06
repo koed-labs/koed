@@ -13,7 +13,8 @@ import type {
   CliInstallManager,
   PrivacyInstallBridge,
   PrivacyInstallProgress,
-  PrivacyInstallStatus
+  PrivacyInstallStatus,
+  PrivacyOfflineSource
 } from "./protocol.js";
 
 export interface DesktopCliInstallManager extends CliInstallManager {
@@ -46,7 +47,7 @@ export const createDesktopCliInstallManager = (input: {
   probeHelper: HelperProbe;
 }): DesktopCliInstallManager => {
   let progressListener: (progress: PrivacyInstallProgress) => void = () => {};
-  let selectedOfflinePath: string | null = null;
+  let selectedOfflineSource: PrivacyOfflineSource | null = null;
   const defaultDestination = join(
     input.homePath ?? homedir(),
     ".local",
@@ -72,27 +73,30 @@ export const createDesktopCliInstallManager = (input: {
     },
     getStatus: async () =>
       input.bridge ? input.bridge.getStatus() : unavailablePrivacyStatus,
-    installPrivacy: async (consent, offlinePath) => {
+    installPrivacy: async (consent, offlineSource) => {
       if (consent !== true)
         throw new Error(
           "Explicit consent is required to install Privacy Filter assets."
         );
-      if (offlinePath && offlinePath !== selectedOfflinePath)
+      if (
+        offlineSource &&
+        JSON.stringify(offlineSource) !== JSON.stringify(selectedOfflineSource)
+      )
         throw new Error(
-          "Choose offline model file through Desktop before importing it."
+          "Choose offline component files through Desktop before importing them."
         );
-      const selectedPath = selectedOfflinePath;
-      selectedOfflinePath = null;
+      const selectedSource = selectedOfflineSource;
+      selectedOfflineSource = null;
       return requireBridge().installPrivacy({
         consent: true,
-        ...(selectedPath ? { offlinePath: selectedPath } : {}),
+        ...(selectedSource ? { offlineSource: selectedSource } : {}),
         onProgress: progressListener
       });
     },
     cancel: async () => requireBridge().cancel(),
     selectOffline: async () => {
-      selectedOfflinePath = await requireBridge().selectOffline();
-      return selectedOfflinePath;
+      selectedOfflineSource = await requireBridge().selectOffline();
+      return selectedOfflineSource;
     },
     launcher: async (operation, options = {}) => {
       if (input.platform === "win32")

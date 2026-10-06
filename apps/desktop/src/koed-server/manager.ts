@@ -11,6 +11,7 @@ import {
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
+import type { PrivacyInstallBridge } from "../cli-install/protocol.js";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import {
@@ -193,6 +194,7 @@ export interface KoedServerManagerOptions {
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
   createSupervisorInvocation?: () => NodeEntrypointInvocation;
   packagedResourcesPath?: string;
+  productVersion?: string;
   existsSync: (path: string) => boolean;
   execFile: (
     command: string,
@@ -261,6 +263,7 @@ export interface KoedServerManager {
   ) => Promise<void>;
   resume: () => Promise<unknown>;
   stop: () => Promise<unknown>;
+  privacyInstall: PrivacyInstallBridge;
 }
 
 export interface HardwareAccelerationState {
@@ -1608,6 +1611,7 @@ export const createKoedServerManager = ({
   createCliInvocation,
   createSupervisorInvocation,
   packagedResourcesPath,
+  productVersion,
   existsSync,
   execFile,
   spawn,
@@ -1623,6 +1627,8 @@ export const createKoedServerManager = ({
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let desktopSupervisorProcess: ChildProcess | null = null;
+  let desktopSupervisorNonce: string | null = null;
+  let activePrivacyRequestId: string | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
   let projectMetadataReconciliation: Promise<void> | null = null;
   const pendingProjectMetadataPaths = new Set<string>();
@@ -4780,6 +4786,77 @@ export const createKoedServerManager = ({
     }
   };
 
+  const requestPrivacyRpc = <T>(
+    action: string,
+    args: Record<string, unknown> = {},
+    onProgress?: (value: Record<string, unknown>) => void
+  ): Promise<T> => {
+    const child = desktopSupervisorProcess;
+    const nonce = desktopSupervisorNonce;
+    if (!child || !child.connected || !nonce)
+      return Promise.reject(
+        new Error("Start Koed services before managing Privacy Filter assets.")
+      );
+    const requestId =
+      typeof args.requestId === "string" ? args.requestId : randomUUID();
+    return new Promise<T>((resolveRequest, rejectRequest) => {
+      const onMessage = (message: unknown) => {
+        if (!message || typeof message !== "object" || Array.isArray(message))
+          return;
+        const envelope = message as Record<string, unknown>;
+        if (
+          envelope.nonce !== nonce ||
+          envelope.requestId !== requestId ||
+          envelope.action !== action
+        )
+          return;
+        if (envelope.type === "koed.desktop.privacy.progress") {
+          onProgress?.(envelope);
+          return;
+        }
+        if (envelope.type !== "koed.desktop.privacy.response") return;
+        cleanup();
+        if (typeof envelope.error === "string")
+          rejectRequest(new Error(envelope.error));
+        else resolveRequest(envelope.result as T);
+      };
+      const onExit = () => {
+        cleanup();
+        rejectRequest(
+          new Error(
+            "Privacy Filter operation interrupted because Koed supervisor exited."
+          )
+        );
+      };
+      const cleanup = () => {
+        child.off("message", onMessage);
+        child.off("exit", onExit);
+        child.off("error", onError);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        rejectRequest(error);
+      };
+      child.on("message", onMessage);
+      child.once("exit", onExit);
+      child.once("error", onError);
+      try {
+        child.send({
+          type: "koed.desktop.privacy.request",
+          requestId,
+          action,
+          ...args,
+          nonce
+        });
+      } catch (error) {
+        cleanup();
+        rejectRequest(
+          error instanceof Error ? error : new Error(String(error))
+        );
+      }
+    });
+  };
+
   const requestDaemonStart = async () => {
     const current = await runJson(
       ["status", "--startup"],
@@ -4839,6 +4916,15 @@ export const createKoedServerManager = ({
           () => rejectReady(new Error("Desktop supervisor startup timed out.")),
           120_000
         );
+        child.once("exit", () => {
+          if (desktopSupervisorProcess === child)
+            desktopSupervisorProcess = null;
+          desktopSupervisorNonce = null;
+          clearTimeout(timeout);
+          rejectReady(
+            new Error("Desktop supervisor exited before completing startup.")
+          );
+        });
         child.once("message", (message: unknown) => {
           clearTimeout(timeout);
           if (
@@ -4874,10 +4960,9 @@ export const createKoedServerManager = ({
           resourcesPath: packagedResourcesPath
         });
         await ready;
-        child.once("exit", () => {
-          if (desktopSupervisorProcess === child)
-            desktopSupervisorProcess = null;
-        });
+        if (desktopSupervisorProcess !== child)
+          throw new Error("Desktop supervisor exited during startup.");
+        desktopSupervisorNonce = nonce;
         return {
           ok: true,
           state: "starting",
@@ -4887,6 +4972,7 @@ export const createKoedServerManager = ({
       } catch (error) {
         child.kill("SIGTERM");
         desktopSupervisorProcess = null;
+        desktopSupervisorNonce = null;
         return {
           ok: false,
           state: "needs_attention",
@@ -5267,17 +5353,29 @@ export const createKoedServerManager = ({
       const child = desktopSupervisorProcess;
       if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
       else child.kill("SIGTERM");
+      let exited = false;
       await new Promise<void>((resolveExit) => {
         const timeout = setTimeout(() => {
           child.kill("SIGTERM");
           resolveExit();
         }, 30_000);
         child.once("exit", () => {
+          exited = true;
           clearTimeout(timeout);
           resolveExit();
         });
       });
-      if (desktopSupervisorProcess === child) desktopSupervisorProcess = null;
+      if (desktopSupervisorProcess === child) {
+        desktopSupervisorProcess = null;
+        desktopSupervisorNonce = null;
+      }
+      if (!exited)
+        return {
+          ok: false,
+          state: "needs_attention",
+          error:
+            "Koed Desktop supervisor did not exit after stop was requested."
+        };
       return {
         ok: true,
         state: "stopped",
@@ -5559,6 +5657,294 @@ export const createKoedServerManager = ({
     { link: string; label: string; expiresAt: string }
   >();
 
+  const privacyInstall: PrivacyInstallBridge = {
+    getStatus: async () => {
+      if (!desktopSupervisorProcess)
+        return {
+          available: false,
+          state: "unavailable",
+          message: "Start Koed services to check Privacy Filter assets."
+        };
+      const result = await requestPrivacyRpc<Record<string, unknown>>("status");
+      if (result.trustedSignerConfigured === false)
+        return {
+          available: false,
+          state: "unavailable",
+          message:
+            "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+        };
+      const components = objectValue(result.components);
+      const componentState = components?.privacy;
+      const required =
+        Array.isArray(result.required) && result.required.includes("privacy");
+      if (!required)
+        return {
+          available: false,
+          state: "unavailable",
+          message:
+            "Privacy Filter is not required by current runtime configuration."
+        };
+      if (componentState === "active")
+        return {
+          available: true,
+          state: "ready",
+          message: "Privacy Filter assets are installed and active."
+        };
+      if (componentState === "staged")
+        return {
+          available: true,
+          state: "not_installed",
+          message: "Privacy Filter assets are staged and ready to activate."
+        };
+      return {
+        available: true,
+        state: "not_installed",
+        message: "Privacy Filter assets are not installed."
+      };
+    },
+    installPrivacy: async ({ consent, offlineSource, onProgress }) => {
+      if (consent !== true)
+        throw new Error(
+          "Explicit consent is required to install Privacy Filter assets."
+        );
+      if (
+        !productVersion ||
+        !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(productVersion)
+      )
+        throw new Error(
+          "Desktop release version is unavailable; update Koed Desktop before installing Privacy Filter assets."
+        );
+      const requestId = randomUUID();
+      const version = productVersion;
+      const platform =
+        process.platform === "darwin" ? "macos" : process.platform;
+      const architecture =
+        process.arch === "arm64"
+          ? "arm64"
+          : process.arch === "x64"
+            ? "x64"
+            : "unsupported";
+      if (
+        (platform !== "macos" && platform !== "linux") ||
+        architecture === "unsupported"
+      )
+        throw new Error(
+          "Privacy Filter assets are unavailable for this Desktop target."
+        );
+      const archive = `koed-privacy-${version}-${platform}-${architecture}.tar.gz`;
+      const origin = `https://github.com/koed-labs/koed/releases/download/v${version}`;
+      activePrivacyRequestId = requestId;
+      const source = offlineSource
+        ? { kind: "offline", ...offlineSource }
+        : {
+            kind: "remote",
+            archiveUrl: `${origin}/${archive}`,
+            manifestUrl: `${origin}/${archive}.manifest.json`,
+            signatureUrl: `${origin}/${archive}.signature.json`
+          };
+      try {
+        const before =
+          await requestPrivacyRpc<Record<string, unknown>>("status");
+        const result = await requestPrivacyRpc<{
+          state: string;
+          generationId: string;
+        }>("install", { requestId, source, version }, (event) =>
+          onProgress({
+            requestId,
+            stage: String(event.phase ?? "install"),
+            message: String(
+              event.message ??
+                event.phase ??
+                "Installing Privacy Filter assets…"
+            ),
+            completedBytes:
+              typeof event.transferredBytes === "number"
+                ? event.transferredBytes
+                : null,
+            totalBytes:
+              typeof event.totalBytes === "number" ? event.totalBytes : null
+          })
+        );
+        if (result.state === "active")
+          return {
+            available: true,
+            state: "ready",
+            message: "Privacy Filter assets installed."
+          };
+        const oldGeneration =
+          typeof before.activeGeneration === "string"
+            ? before.activeGeneration
+            : null;
+        if (!oldGeneration)
+          throw new Error(
+            "Cannot safely activate Privacy Filter assets because the current runtime generation is unavailable for rollback. Koed was not stopped."
+          );
+        activePrivacyRequestId = null;
+        onProgress({
+          requestId,
+          stage: "activation",
+          message: "Stopping Koed to activate verified Privacy Filter assets.",
+          completedBytes: null,
+          totalBytes: null
+        });
+        const stopped = await stop();
+        if (!resultOk(stopped))
+          throw new Error(
+            resultMessage(
+              stopped,
+              "Could not stop Koed to activate Privacy Filter assets."
+            )
+          );
+        try {
+          await activatePrivacyGeneration(result.generationId);
+          onProgress({
+            requestId,
+            stage: "restart",
+            message: "Restarting Koed with Privacy Filter assets.",
+            completedBytes: null,
+            totalBytes: null
+          });
+          const started = await requestDaemonStart();
+          if (!resultOk(started))
+            throw new Error(
+              resultMessage(
+                started,
+                "Koed could not restart with Privacy Filter assets."
+              )
+            );
+          await pollUntilReady(60);
+          return {
+            available: true,
+            state: "ready",
+            message: "Privacy Filter assets installed and activated."
+          };
+        } catch (error) {
+          const originalMessage =
+            error instanceof Error ? error.message : String(error);
+          const rollbackStop = await stop();
+          if (!resultOk(rollbackStop))
+            throw new Error(
+              `${originalMessage} Previous runtime rollback could not confirm Koed stopped; no runtime restart was attempted.`,
+              { cause: error }
+            );
+          try {
+            await activatePrivacyGeneration(oldGeneration);
+          } catch (rollbackError) {
+            throw new Error(
+              `${originalMessage} Previous runtime generation could not be restored: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. Koed remains stopped.`,
+              { cause: rollbackError }
+            );
+          }
+          const restored = await requestDaemonStart();
+          if (!resultOk(restored))
+            throw new Error(
+              `${originalMessage} Previous runtime generation was restored but Koed could not restart: ${resultMessage(restored, "restart failed")}`,
+              { cause: error }
+            );
+          try {
+            await pollUntilReady(60);
+          } catch (restartError) {
+            throw new Error(
+              `${originalMessage} Previous runtime generation was restored but Koed did not become ready: ${restartError instanceof Error ? restartError.message : String(restartError)}`,
+              { cause: restartError }
+            );
+          }
+          throw error;
+        }
+      } finally {
+        if (activePrivacyRequestId === requestId) activePrivacyRequestId = null;
+      }
+    },
+    cancel: async () => {
+      if (!activePrivacyRequestId) return;
+      await requestPrivacyRpc("cancel", { requestId: activePrivacyRequestId });
+    },
+    selectOffline: async () => null
+  };
+
+  const activatePrivacyGeneration = async (
+    generationId: string
+  ): Promise<void> => {
+    if (!createSupervisorInvocation || !packagedResourcesPath)
+      throw new Error(
+        "Trusted Desktop supervisor is unavailable for stopped activation."
+      );
+    const invocation = createSupervisorInvocation();
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: repoRoot,
+      env: invocation.env,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      detached: false
+    });
+    const nonce = randomBytes(32).toString("hex");
+    await new Promise<void>((resolveActivation, rejectActivation) => {
+      let activated = false;
+      const timeout = setTimeout(
+        () =>
+          failActivation(new Error("Stopped privacy activation timed out.")),
+        30_000
+      );
+      const failActivation = (error: Error) => {
+        clearTimeout(timeout);
+        child.kill("SIGTERM");
+        rejectActivation(error);
+      };
+      const onMessage = (message: unknown) => {
+        if (!message || typeof message !== "object" || Array.isArray(message))
+          return;
+        const record = message as Record<string, unknown>;
+        if (record.nonce !== nonce) return;
+        if (record.type === "koed.desktop.supervisor.ready") {
+          if (
+            record.childPid !== child.pid ||
+            typeof record.bundleDigest !== "string" ||
+            !/^[a-f0-9]{64}$/.test(record.bundleDigest) ||
+            record.mode !== "privacy-activation"
+          ) {
+            failActivation(
+              new Error(
+                "Stopped privacy activation handshake response is invalid."
+              )
+            );
+            return;
+          }
+          child.send({
+            type: "koed.desktop.privacy.request",
+            requestId: randomUUID(),
+            action: "activate",
+            generationId,
+            nonce
+          });
+        } else if (
+          record.type === "koed.desktop.privacy.response" &&
+          record.action === "activate"
+        ) {
+          if (typeof record.error === "string")
+            failActivation(new Error(record.error));
+          else activated = true;
+        }
+      };
+      child.on("message", onMessage);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        child.off("message", onMessage);
+        if (activated) resolveActivation();
+        else
+          rejectActivation(
+            new Error("Stopped privacy activation child exited unexpectedly.")
+          );
+      });
+      child.once("error", (error) => failActivation(error));
+      child.send({
+        type: "koed.desktop.supervisor.init",
+        nonce,
+        managerPid: process.pid,
+        resourcesPath: packagedResourcesPath,
+        mode: "privacy-activation"
+      });
+    });
+  };
+
   return {
     personalMemory,
     localAiClients,
@@ -5572,6 +5958,7 @@ export const createKoedServerManager = ({
       runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,
     resume,
+    privacyInstall,
     handlers: {
       personal_sync_request_create: async () => {
         await personalMemoryAccess();

@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import type {
   CliInstallApi,
   CliInstallProgressEnvelope,
-  PrivacyInstallStatus
+  PrivacyInstallStatus,
+  PrivacyOfflineSource
 } from "../../../cli-install/protocol.js";
 import type { LauncherStatus } from "../../../cli-install/launcher.js";
 import "./cli-install-settings.css";
@@ -13,7 +14,8 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
   const [progress, setProgress] = useState<CliInstallProgressEnvelope | null>(
     null
   );
-  const [offlinePath, setOfflinePath] = useState("");
+  const [offlineSource, setOfflineSource] =
+    useState<PrivacyOfflineSource | null>(null);
   const [launcher, setLauncher] = useState<LauncherStatus | null>(null);
   const [consent, setConsent] = useState(false);
   const [pathConsent, setPathConsent] = useState(false);
@@ -73,8 +75,8 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
     >
       <h2>Privacy Filter assets</h2>
       <p>
-        Installing optional Privacy Filter assets downloads or imports local
-        model files. Koed does not install them without your explicit consent.
+        Installing optional Privacy Filter assets downloads or imports a signed
+        component. Koed does not install it without your explicit consent.
       </p>
       <p role="status">
         {status?.message ??
@@ -96,14 +98,16 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
           disabled={!api || busy}
           onClick={() =>
             void run(async () =>
-              setOfflinePath((await api!.selectOffline()) ?? "")
+              setOfflineSource((await api!.selectOffline()) ?? null)
             )
           }
           variant="outline"
         >
-          Choose offline model file
+          Choose offline component files
         </Button>
-        {offlinePath ? <span>Offline file: {offlinePath}</span> : null}
+        {offlineSource ? (
+          <span>Offline source: {offlineSource.archivePath}</span>
+        ) : null}
       </div>
       <label className="koed-cli-install-consent">
         <input
@@ -121,7 +125,7 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
               current ? { ...current, state: "installing" } : current
             );
             void run(() =>
-              api!.installPrivacy(consent, offlinePath || undefined)
+              api!.installPrivacy(consent, offlineSource ?? undefined)
             );
           }}
         >
@@ -129,7 +133,9 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
             ? "Retry install"
             : "Install Privacy Filter"}
         </Button>
-        {status?.state === "installing" ? (
+        {status?.state === "installing" &&
+        progress?.stage !== "activation" &&
+        progress?.stage !== "restart" ? (
           <Button
             disabled={!api}
             onClick={() => void run(() => api!.cancel())}

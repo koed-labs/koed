@@ -7,11 +7,7 @@ import {
   realpathSync
 } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
-import type {
-  ArtifactTarget,
-  RuntimeIdentity,
-  RuntimeOwner
-} from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 export type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
 import { deriveDesktopRuntimeOwner } from "./desktop-runtime-capability.js";
@@ -25,6 +21,7 @@ import {
   stageDesktopPrivacyGeneration
 } from "./component-store.js";
 import { activateGeneration } from "./generation-lifecycle.js";
+import { productionComponentTrustRoots } from "./component-trust-roots.js";
 
 export interface DesktopBundleManifest {
   schemaVersion: 1;
@@ -62,6 +59,7 @@ const desktopCapability = Symbol("koed desktop bundled runtime");
 export const createDesktopPrivacyRpcHandler =
   (input: {
     manager: ReturnType<typeof createDesktopComponentManagerBridge>;
+    nonce?: string;
     send: (message: Record<string, unknown>) => void;
   }) =>
   (message: unknown): boolean => {
@@ -72,23 +70,32 @@ export const createDesktopPrivacyRpcHandler =
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         message.requestId
       ) ||
-      typeof message.action !== "string"
+      typeof message.action !== "string" ||
+      (input.nonce !== undefined && message.nonce !== input.nonce)
     )
       return false;
     const requestId = message.requestId;
-    const hasExactKeys = (keys: readonly string[]) =>
-      Object.keys(message).length === keys.length &&
-      keys.every((key) => Object.hasOwn(message, key));
+    const hasExactKeys = (keys: readonly string[]) => {
+      const expected = input.nonce ? [...keys, "nonce"] : keys;
+      return (
+        Object.keys(message).length === expected.length &&
+        expected.every((key) => Object.hasOwn(message, key))
+      );
+    };
     const respond = (result: unknown) =>
       input.send({
         type: "koed.desktop.privacy.response",
         requestId,
+        action: message.action,
+        ...(input.nonce ? { nonce: input.nonce } : {}),
         result
       });
     const fail = (error: unknown) =>
       input.send({
         type: "koed.desktop.privacy.response",
         requestId,
+        action: message.action,
+        ...(input.nonce ? { nonce: input.nonce } : {}),
         error:
           error instanceof Error
             ? error.message
@@ -98,7 +105,14 @@ export const createDesktopPrivacyRpcHandler =
       message.action === "status" &&
       hasExactKeys(["type", "requestId", "action"])
     ) {
-      void input.manager.status().then(respond, fail);
+      void input.manager.status().then(
+        (status) =>
+          respond({
+            ...status,
+            trustedSignerConfigured: productionComponentTrustRoots.size > 0
+          }),
+        fail
+      );
       return true;
     }
     if (
@@ -133,6 +147,8 @@ export const createDesktopPrivacyRpcHandler =
           progress: (event) =>
             input.send({
               type: "koed.desktop.privacy.progress",
+              action: "install",
+              ...(input.nonce ? { nonce: input.nonce } : {}),
               ...event
             })
         })
@@ -327,6 +343,10 @@ export const createDesktopComponentManagerBridge = (input: {
       const requestId = requireRequestId(input.requestId);
       if (operations.has(requestId))
         throw new Error("Desktop privacy request is already active");
+      if (productionComponentTrustRoots.size === 0)
+        throw new Error(
+          "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+        );
       const source = parseSource(input.source);
       const version = input.version ?? context.controlPlaneVersion;
       if (version !== context.controlPlaneVersion)

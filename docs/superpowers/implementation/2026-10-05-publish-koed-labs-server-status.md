@@ -14,8 +14,8 @@ This branch is **not code-complete or release-ready**. Do not merge or publish i
 ## Implementation blockers — not external acceptance criteria
 
 1. Desktop bundled Base is validated but is not admitted into authenticated generation storage or selected through private supervisor startup authority. Packaged Personal startup is not complete.
-2. Desktop manager does not implement the privacy installation capability consumed by Preferences. Consent/progress/cancel/retry/offline controls report unavailable; they are not an operational provisioning flow.
-3. Private Desktop supervisor channel, bundled-generation pinning and manager-owned activation remain unimplemented. Do not bypass these with environment variables, CLI owner flags, unsigned public manifests or weakened standalone ownership checks.
+2. Desktop Preferences now calls manager-owned `privacyInstall` over nonce- and request-ID-correlated private supervisor RPC. Status/install/cancel/progress, exact-version canonical online assets, signed offline triplet selection, stopped activation, restart, and rollback attempt are wired and covered by deterministic manager/IPC/UI tests. Production install remains fail-closed and unavailable because shipped production component trust roots are empty; no packaged Desktop smoke or end-to-end activation acceptance is claimed.
+3. Private supervisor authority and bundled-generation pinning are implemented in source. Packaged Desktop lifecycle, relocation, failure-injection rollback and terminal-helper validation still need integration-level/platform verification; do not bypass authority with environment variables, CLI owner flags, unsigned public manifests or weakened standalone ownership checks.
 4. End-to-end packaged Desktop lifecycle, relocation, uninstall and terminal-helper validation still need implementation-level integration and platform verification.
 
 These blockers correspond primarily to implementation plan Tasks 10–13 and prevent completing Task 16 acceptance accounting.
@@ -38,6 +38,6 @@ Final local checks used Node 24.13.1:
 - Targeted formatting passed during implementation. Full formatting remains affected by locally ignored SDD working Markdown; final tracked-file formatting is checked separately.
 - Root database-dependent test suite previously stopped at `Missing required environment variable: DATABASE_URL`; no database readiness claim.
 
-One final security review identified Desktop integration and launcher/filesystem safety blockers. Launcher and filesystem findings were fixed; Desktop integration remains open. Unit tests do not establish packaged Desktop acceptance.
+One final security review identified Desktop integration and launcher/filesystem safety blockers. Launcher and filesystem findings were fixed. Desktop manager/IPC/UI wiring now has targeted coverage, but empty production trust roots and unverified packaged activation remain release blockers. Unit tests do not establish packaged Desktop acceptance.
 
 Architecture and operation documentation were updated. Remaining work must preserve fail-closed behavior and replace unavailable adapters with real integration, not simulated success.

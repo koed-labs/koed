@@ -8,36 +8,47 @@ export interface PrivacyInstallStatus {
 }
 
 export interface PrivacyInstallProgress {
+  requestId: string;
   completedBytes: number | null;
   message: string;
   stage: string;
   totalBytes: number | null;
 }
 
+export interface PrivacyOfflineSource {
+  archivePath: string;
+  manifestPath: string;
+  signaturePath: string;
+}
+
 export interface PrivacyInstallBridge {
   getStatus(): Promise<PrivacyInstallStatus>;
   installPrivacy(options: {
     consent: true;
-    offlinePath?: string;
+    offlineSource?: PrivacyOfflineSource;
     onProgress(progress: PrivacyInstallProgress): void;
   }): Promise<PrivacyInstallStatus>;
   cancel(): Promise<void>;
-  selectOffline(): Promise<string | null>;
+  selectOffline(): Promise<PrivacyOfflineSource | null>;
 }
 
 export interface CliInstallManager {
   getStatus(): Promise<PrivacyInstallStatus>;
   installPrivacy(
     consent: boolean,
-    offlinePath?: string
+    offlineSource?: PrivacyOfflineSource
   ): Promise<PrivacyInstallStatus>;
   cancel(): Promise<void>;
-  selectOffline(): Promise<string | null>;
+  selectOffline(): Promise<PrivacyOfflineSource | null>;
 }
 
 export type CliInstallCommand =
   | { operation: "status" }
-  | { operation: "install"; consent: boolean; offlinePath?: string }
+  | {
+      operation: "install";
+      consent: boolean;
+      offlineSource?: PrivacyOfflineSource;
+    }
   | { operation: "cancel" }
   | { operation: "select-offline" }
   | { operation: "launcher-inspect" }
@@ -50,6 +61,7 @@ export type CliInstallCommand =
     };
 
 export interface CliInstallProgressEnvelope {
+  requestId: string;
   completedBytes: number | null;
   message: string;
   stage: string;
@@ -60,10 +72,10 @@ export interface CliInstallApi {
   getStatus(): Promise<PrivacyInstallStatus>;
   installPrivacy(
     consent: boolean,
-    offlinePath?: string
+    offlineSource?: PrivacyOfflineSource
   ): Promise<PrivacyInstallStatus>;
   cancel(): Promise<void>;
-  selectOffline(): Promise<string | null>;
+  selectOffline(): Promise<PrivacyOfflineSource | null>;
   launcher(
     operation: "inspect" | "install" | "remove",
     options?: { consent?: boolean; destination?: string }

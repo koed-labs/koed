@@ -50,6 +50,7 @@ describe("desktop CLI install adapter", () => {
         options: Parameters<PrivacyInstallBridge["installPrivacy"]>[0]
       ) => {
         options.onProgress({
+          requestId: "request-1",
           stage: "download",
           message: "Downloading",
           completedBytes: 2,
@@ -62,7 +63,11 @@ describe("desktop CLI install adapter", () => {
       getStatus: vi.fn(),
       installPrivacy,
       cancel: vi.fn(),
-      selectOffline: vi.fn(async () => "/tmp/model.onnx")
+      selectOffline: vi.fn(async () => ({
+        archivePath: "/tmp/privacy.tar.gz",
+        manifestPath: "/tmp/privacy.manifest.json",
+        signaturePath: "/tmp/privacy.signature.json"
+      }))
     };
     const manager = create(root, bridge);
     const listener = vi.fn();
@@ -72,10 +77,21 @@ describe("desktop CLI install adapter", () => {
     );
     await manager.selectOffline();
     await expect(
-      manager.installPrivacy(true, "/tmp/model.onnx")
+      manager.installPrivacy(true, {
+        archivePath: "/tmp/privacy.tar.gz",
+        manifestPath: "/tmp/privacy.manifest.json",
+        signaturePath: "/tmp/privacy.signature.json"
+      })
     ).resolves.toMatchObject({ state: "ready" });
     expect(installPrivacy).toHaveBeenCalledWith(
-      expect.objectContaining({ consent: true, offlinePath: "/tmp/model.onnx" })
+      expect.objectContaining({
+        consent: true,
+        offlineSource: {
+          archivePath: "/tmp/privacy.tar.gz",
+          manifestPath: "/tmp/privacy.manifest.json",
+          signaturePath: "/tmp/privacy.signature.json"
+        }
+      })
     );
     expect(listener).toHaveBeenCalledWith(
       expect.objectContaining({ stage: "download" })

@@ -1,9 +1,11 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import type { DesktopCliInstallManager } from "./manager.js";
+import { desktopRendererOrigin } from "../ipc/protocol.js";
 import {
   cliInstallCommandChannel,
   cliInstallProgressChannel,
-  type CliInstallCommand
+  type CliInstallCommand,
+  type PrivacyOfflineSource
 } from "./protocol.js";
 
 const trusted = (
@@ -11,8 +13,9 @@ const trusted = (
   origins: ReadonlySet<string>
 ): boolean => {
   try {
-    if (!event.senderFrame) return false;
-    return origins.has(new URL(event.senderFrame.url).origin);
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame)
+      return false;
+    return origins.has(desktopRendererOrigin(event.senderFrame.url));
   } catch {
     return false;
   }
@@ -32,15 +35,29 @@ const parseCommand = (value: unknown): CliInstallCommand => {
     case "install":
       if (
         typeof command.consent !== "boolean" ||
-        (command.offlinePath !== undefined &&
-          typeof command.offlinePath !== "string")
+        (command.offlineSource !== undefined &&
+          (!command.offlineSource ||
+            typeof command.offlineSource !== "object" ||
+            Array.isArray(command.offlineSource) ||
+            Object.keys(command.offlineSource).length !== 3 ||
+            !["archivePath", "manifestPath", "signaturePath"].every(
+              (key) =>
+                typeof (command.offlineSource as Record<string, unknown>)[
+                  key
+                ] === "string" &&
+                (
+                  (command.offlineSource as Record<string, unknown>)[
+                    key
+                  ] as string
+                ).length > 0
+            )))
       )
         throw new Error("Invalid Privacy Filter install request.");
       return {
         operation: "install",
         consent: command.consent,
-        ...(typeof command.offlinePath === "string"
-          ? { offlinePath: command.offlinePath }
+        ...(command.offlineSource
+          ? { offlineSource: command.offlineSource as PrivacyOfflineSource }
           : {})
       };
     case "launcher-install":
@@ -85,7 +102,7 @@ export const registerCliInstallIpc = (input: {
         case "install":
           return input.manager.installPrivacy(
             command.consent,
-            command.offlinePath
+            command.offlineSource
           );
         case "cancel":
           return input.manager.cancel();

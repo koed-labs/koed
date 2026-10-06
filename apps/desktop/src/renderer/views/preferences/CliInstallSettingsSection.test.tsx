@@ -37,7 +37,11 @@ const makeApi = () =>
       message: "Ready"
     })),
     cancel: vi.fn(async () => undefined),
-    selectOffline: vi.fn(async () => null),
+    selectOffline: vi.fn(async () => ({
+      archivePath: "/tmp/privacy.tar.gz",
+      manifestPath: "/tmp/privacy.manifest.json",
+      signaturePath: "/tmp/privacy.signature.json"
+    })),
     launcher: vi.fn(async () => ({
       ownership: "absent" as const,
       target: "missing" as const,
@@ -56,8 +60,30 @@ describe("CLI install preferences", () => {
     expect(view.textContent).toContain("Desktop installer bridge unavailable");
     expect(view.textContent).toContain("Koed CLI launcher");
     expect(view.querySelector("button")?.textContent).toContain(
-      "Choose offline model file"
+      "Choose offline component files"
     );
+  });
+
+  it("selects and submits signed offline archive, manifest, and signature triplet", async () => {
+    const api = makeApi();
+    const view = await render(api);
+    await click(
+      [...view.querySelectorAll("button")].find(
+        (button) => button.textContent === "Choose offline component files"
+      )!
+    );
+    expect(view.textContent).toContain("Offline source: /tmp/privacy.tar.gz");
+    await click(view.querySelector('input[type="checkbox"]')!);
+    await click(
+      [...view.querySelectorAll("button")].find(
+        (button) => button.textContent === "Install Privacy Filter"
+      )!
+    );
+    expect(api.installPrivacy).toHaveBeenCalledWith(true, {
+      archivePath: "/tmp/privacy.tar.gz",
+      manifestPath: "/tmp/privacy.manifest.json",
+      signaturePath: "/tmp/privacy.signature.json"
+    });
   });
 
   it("requires independent Privacy Filter and PATH consent", async () => {

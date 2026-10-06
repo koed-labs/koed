@@ -59,7 +59,6 @@ import {
   registerCliInstallIpc,
   sendCliInstallProgress
 } from "./cli-install/ipc.js";
-import type { PrivacyInstallBridge } from "./cli-install/protocol.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
   createLaunchAtStartupController,
@@ -219,6 +218,7 @@ const createServerManager = (
           )
       : undefined,
     packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    productVersion: app.getVersion(),
     existsSync,
     execFile,
     spawn,
@@ -398,13 +398,43 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIcon);
   }
   registerAppProtocol();
-  const privacyInstallBridge = (
-    server as KoedServerManager & {
-      privacyInstall?: PrivacyInstallBridge;
+  const privacyInstallBridge = server.privacyInstall;
+  const selectPrivacyOfflineSource = async () => {
+    const files: string[] = [];
+    for (const [label, extensions] of [
+      ["Privacy archive", ["tar.gz"]],
+      ["Component manifest", ["json"]],
+      ["Detached signature", ["json"]]
+    ] as const) {
+      const selected = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, {
+            title: `Choose ${label}`,
+            properties: ["openFile"],
+            filters: [{ name: label, extensions: [...extensions] }]
+          })
+        : await dialog.showOpenDialog({
+            title: `Choose ${label}`,
+            properties: ["openFile"],
+            filters: [{ name: label, extensions: [...extensions] }]
+          });
+      if (selected.canceled || !selected.filePaths[0]) return null;
+      files.push(selected.filePaths[0]);
     }
-  ).privacyInstall;
+    return {
+      archivePath: files[0]!,
+      manifestPath: files[1]!,
+      signaturePath: files[2]!
+    };
+  };
   const cliInstallManager = createDesktopCliInstallManager({
-    ...(privacyInstallBridge ? { bridge: privacyInstallBridge } : {}),
+    ...(privacyInstallBridge
+      ? {
+          bridge: {
+            ...privacyInstallBridge,
+            selectOffline: selectPrivacyOfflineSource
+          }
+        }
+      : {}),
     appPath: app.getAppPath(),
     helperPath: process.execPath,
     cliPath: koedServerCli,

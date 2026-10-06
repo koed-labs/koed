@@ -17,11 +17,25 @@ bundled base with that privacy component. Startup rereads the descriptor and
 re-verifies the bundle, component signature, stored bytes, version, target, and
 runtime before pinning the generation.
 
+Desktop Preferences calls the manager-owned `privacyInstall` capability. The
+main process communicates with its private supervisor using the startup nonce
+and request-ID-correlated status, progress, install, cancel, and activation RPCs.
+Renderer IPC accepts only the allowed origin's main frame. Online installs use
+the exact Desktop version and target from the canonical
+`https://github.com/koed-labs/koed/releases/download/v<version>/` release path;
+offline imports require archive, manifest, and detached-signature paths. No
+renderer-supplied release owner, version, or key is accepted.
+
 While Koed is running, installation stages a candidate without changing the
-active generation. Activation runs only in stopped mode under the generation
-lifecycle lock. Failed or cancelled staging leaves the current generation
-pointer unchanged. Production signing and trust-root prerequisites below remain
-unchanged; test fixture keys are not production trust material.
+active generation. Manager confirms supervisor exit before activating the
+staged descriptor in a short-lived child using the same private authority, then
+restarts and waits for readiness. Failed or cancelled staging leaves the
+current generation pointer unchanged. Activation/restart failures attempt to
+restore the previously active generation and restart it. Production signing
+and trust-root prerequisites below remain unchanged; test fixture keys are not
+production trust material. Until approved production trust roots are shipped,
+Desktop status reports that signer prerequisite with update guidance and
+installation fails closed.
 
 ## Required production infrastructure
 

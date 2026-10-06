@@ -143,8 +143,10 @@ describe("Desktop bundled component capability", () => {
       controlPlaneVersion: "0.8.1"
     });
     const messages: Record<string, unknown>[] = [];
+    const nonce = "a".repeat(64);
     const handler = createDesktopPrivacyRpcHandler({
       manager,
+      nonce,
       send: (message) => messages.push(message)
     });
     const requestId = "123e4567-e89b-42d3-a456-426614174000";
@@ -154,10 +156,20 @@ describe("Desktop bundled component capability", () => {
         requestId,
         action: "cancel"
       })
+    ).toBe(false);
+    expect(messages).toHaveLength(0);
+    expect(
+      handler({
+        type: "koed.desktop.privacy.request",
+        requestId,
+        action: "cancel",
+        nonce
+      })
     ).toBe(true);
     expect(messages[0]).toMatchObject({
       type: "koed.desktop.privacy.response",
       requestId,
+      nonce,
       result: { cancelled: false }
     });
     expect(
@@ -165,14 +177,51 @@ describe("Desktop bundled component capability", () => {
         type: "koed.desktop.privacy.request",
         requestId,
         action: "cancel",
-        trustedKeys: []
+        trustedKeys: [],
+        nonce
       })
     ).toBe(true);
     expect(messages[1]).toMatchObject({
       type: "koed.desktop.privacy.response",
       requestId,
+      nonce,
       error: "Desktop privacy IPC request is invalid"
     });
+  });
+
+  it("fails closed with actionable error when production signer trust is empty", async () => {
+    const { root, manifestPath } = fixture();
+    const capability = validateDesktopBundle(
+      root,
+      manifestPath,
+      { platform: "macos", architecture: "arm64" },
+      "0.8.1"
+    );
+    const manager = createDesktopComponentManagerBridge({
+      capability,
+      paths: { koedHome: resolve(root, "home") } as never,
+      runtime: {} as never,
+      isRunning: true,
+      target: { platform: "macos", architecture: "arm64" },
+      controlPlaneVersion: "0.8.1"
+    });
+    await expect(
+      manager.install({
+        requestId: "123e4567-e89b-42d3-a456-426614174000",
+        source: {
+          kind: "remote",
+          archiveUrl:
+            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.tar.gz",
+          manifestUrl:
+            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.manifest.json",
+          signatureUrl:
+            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.signature.json"
+        },
+        version: "0.8.1"
+      })
+    ).rejects.toThrow(
+      "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+    );
   });
 
   it("rejects caller-forged bundled runtime capabilities", () => {
