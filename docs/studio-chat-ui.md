@@ -140,3 +140,9 @@ Saved conversations remain in sidebar navigation during reconciliation, pause an
 The Personal conversation header shows a folder icon beside the chat title only when the conversation belongs to a Project. Hovering or focusing the icon reveals the Project name. The redundant Current Project label and separate Move to Project header button are removed; the composer retains its folder picker.
 
 The Personal chat header contains only the conversation title and optional Project folder icon. It omits the Personal prefix and the three-dot End session menu.
+
+The Advanced Build activity view includes the last five readable conversation updates as well as execution details, command results, and file changes. It uses the same recent-exchange history as Simple, including direct chats and named Agent Jobs whose technical events are stored separately. Conversation notes and technical entries can be expanded or collapsed individually. Both Simple and Advanced display newest entries first. Advanced places the latest command-scoped file diff directly beneath its conversation note, before older messages. Earlier entries start collapsed and the latest entry starts expanded.
+
+Agent activity displays only provider-exported public reasoning summaries and allowlisted tool phases. Live details use small, muted text in a bounded scroll area; completed details remain collapsed under the initiating user message. Owner-authorized runtime snapshots retain the latest 20 turns, with at most 20 updates and 2,000 characters per summary. Updates are coalesced at 500 ms and flushed before command completion. Team channels continue to expose shared status only.
+
+The compact Advanced activity card displays the latest reported lines added in green and deleted in red, using per-file counts when aggregate counts are absent. Missing counts are shown as unavailable rather than zero.

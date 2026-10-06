@@ -3,6 +3,7 @@ import type { RuntimeSnapshot, RuntimeItem } from "./managed-agent-chat";
 import type { BuildActivity } from "./studio-build-activity";
 import {
   managedChatProgress,
+  managedChatProgressHistory,
   teamRequestProgress
 } from "./agent-chat-progress";
 import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
@@ -146,4 +147,58 @@ it("keeps Team feedback to shared status and stops when the assignment finishes"
   expect(
     teamRequestProgress({ ...request, status: "awaiting_owner" })
   ).toBeNull();
+});
+
+it("uses public summaries for the active turn and retains completed snapshots after reload", () => {
+  const item: RuntimeItem = {
+    id: "progress",
+    executionGeneration: 2,
+    itemKind: "transient_output",
+    state: "pending",
+    presentation: {
+      mode: "expanded",
+      renderer: "message",
+      policyKey: "transient_output"
+    },
+    payload: {
+      publicProgress: true,
+      commandId: "turn",
+      clientUserMessageId: "user-message",
+      steps: [
+        { id: "summary", title: "Thinking", detail: "Checking project files" }
+      ]
+    }
+  };
+  expect(
+    managedChatProgress(runtime("running", [item]))?.steps[0]?.detail
+  ).toBe("Checking project files");
+  const completed = managedChatProgressHistory(
+    runtime("completed", [{ ...item, state: "resolved" }])
+  );
+  expect(completed[0]).toMatchObject({
+    state: "completed",
+    userMessageId: "user-message",
+    steps: [{ detail: "Checking project files" }]
+  });
+  expect(
+    managedChatProgressHistory(
+      runtime("completed", [
+        {
+          ...item,
+          presentation: {
+            mode: "hidden",
+            renderer: "message",
+            policyKey: "hidden"
+          }
+        }
+      ])
+    )
+  ).toEqual([]);
+  expect(
+    managedChatProgressHistory(
+      runtime("running", [
+        { ...item, payload: { text: "raw private reasoning" } }
+      ])
+    )
+  ).toEqual([]);
 });

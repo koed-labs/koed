@@ -32,6 +32,11 @@ export interface PiManagedConversationConfig {
   requestTimeoutMs?: number;
   startupTimeoutMs?: number;
   onTextDelta?: (delta: string, turnId: string) => void;
+  onUserFacingProgress?: (event: {
+    turnId: string;
+    id: string;
+    title: string;
+  }) => void;
   onResumeIdentity?: (identity: PiManagedConversationIdentity) => Promise<void>;
   personalAgentIntentHandler?: (signal: PersonalAgentIntentSignal) => Promise<{
     jobId: string;
@@ -491,6 +496,22 @@ export class PiManagedConversationSession {
       clearTimeout(pending.timer);
       if (event.success === true) pending.resolve(object(event.data));
       else pending.reject(new Error("Pi managed RPC command was rejected."));
+    } else if (
+      (event.type === "tool_execution_start" ||
+        event.type === "tool_execution_end") &&
+      this.active &&
+      typeof event.toolCallId === "string"
+    ) {
+      this.config.onUserFacingProgress?.({
+        turnId: this.active.turnId,
+        id: event.toolCallId,
+        title:
+          event.type === "tool_execution_end"
+            ? "Tool finished"
+            : typeof event.toolName === "string"
+              ? `Using ${event.toolName.slice(0, 80)}`
+              : "Using a tool"
+      });
     } else if (event.type === "message_update" && this.active) {
       const delta = object(event.assistantMessageEvent);
       if (delta.type === "text_delta" && typeof delta.delta === "string") {

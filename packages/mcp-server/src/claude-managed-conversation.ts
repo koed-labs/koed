@@ -76,6 +76,11 @@ export interface ClaudeManagedConversationConfig {
   systemPrompt?: Options["systemPrompt"];
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
+  onUserFacingProgress?: (event: {
+    turnId: string;
+    id: string;
+    title: string;
+  }) => void;
   onTextDelta?: (delta: string, turnId: string) => void;
   onCommandExecutionEvent?: (event: {
     phase: "started" | "completed";
@@ -1335,6 +1340,17 @@ export class ClaudeManagedConversationSession {
             for (const candidate of blocks) {
               if (!candidate || typeof candidate !== "object") continue;
               const block = candidate as Record<string, unknown>;
+              if (
+                block.type === "tool_use" &&
+                typeof block.id === "string" &&
+                typeof block.name === "string"
+              ) {
+                this.config.onUserFacingProgress?.({
+                  turnId,
+                  id: block.id,
+                  title: `Using ${block.name.slice(0, 80)}`
+                });
+              }
               const input =
                 block.input && typeof block.input === "object"
                   ? (block.input as Record<string, unknown>)
@@ -1361,6 +1377,11 @@ export class ClaudeManagedConversationSession {
                 typeof block.tool_use_id !== "string"
               )
                 continue;
+              this.config.onUserFacingProgress?.({
+                turnId,
+                id: block.tool_use_id,
+                title: "Tool finished"
+              });
               const command = observedCommands.get(block.tool_use_id);
               if (!command) continue;
               observedCommands.delete(block.tool_use_id);

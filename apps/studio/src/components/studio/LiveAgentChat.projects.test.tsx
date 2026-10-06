@@ -161,3 +161,87 @@ it("shows the running chat's actual folder and reviews a move without changing c
     mocks.request.mock.calls.every((call) => !call[0].includes("/start"))
   ).toBe(true);
 });
+
+function failedSnapshot(): RuntimeSnapshot {
+  return {
+    execution: {
+      id: "12345678-1234-4234-8234-123456789012",
+      projectId: project.id,
+      provider: "codex",
+      aiClientInstanceId: "instance",
+      executionGeneration: 1,
+      stateVersion: 2,
+      state: "reconciling",
+      lastErrorCode: "ManagedConversationFailure",
+      model: "model-a",
+      reasoningEffort: "medium",
+      permissionMode: "full_access"
+    },
+    hasIndeterminatePrompt: false,
+    items: [],
+    latestCommand: {
+      id: "failed-command",
+      commandKind: "prompt",
+      state: "failed",
+      lastErrorCode: "ManagedConversationFailure"
+    }
+  };
+}
+it("recovers a confirmed failed conversation without sending a prompt or changing its identity", async () => {
+  mocks.snapshot = failedSnapshot();
+  const id = mocks.snapshot.execution.id;
+  await mount(undefined, id);
+  expect(container.textContent).toContain("Reconnect conversation");
+  mocks.request.mockImplementation(async (path) => {
+    if (path === `/${id}/stop`) {
+      mocks.snapshot = {
+        ...failedSnapshot(),
+        execution: { ...failedSnapshot().execution, state: "stopped" },
+        latestCommand: {
+          id: "stop-command",
+          commandKind: "stop",
+          state: "completed",
+          lastErrorCode: null
+        }
+      };
+    }
+    return {};
+  });
+  await click("Reconnect conversation");
+  expect(mocks.request).toHaveBeenCalledWith(`/${id}/stop`, {
+    executionGeneration: 1,
+    idempotencyKey: expect.any(String)
+  });
+  expect(container.textContent).not.toContain("Reconnect conversation");
+  expect(mocks.view.mock.lastCall?.[0].runtime.status).toContain(
+    "Send a message to continue"
+  );
+  expect(mocks.view.mock.lastCall?.[0].runtime.error).toBeNull();
+  expect(
+    mocks.request.mock.calls.some(([path]) => /\/prompts|\/start/.test(path))
+  ).toBe(false);
+  expect(router.replace).not.toHaveBeenCalled();
+  expect(scope()).toBe(project.id);
+  mocks.request.mockImplementation(async () => ({}));
+});
+it.each(["indeterminate", "dispatching", "queued"])(
+  "does not offer reconnect for a %s prompt",
+  async (state) => {
+    const snapshot = failedSnapshot();
+    mocks.snapshot = {
+      ...snapshot,
+      hasIndeterminatePrompt: state === "indeterminate",
+      latestCommand: { ...snapshot.latestCommand!, state }
+    };
+    await mount(undefined, snapshot.execution.id);
+    expect(container.textContent).not.toContain("Reconnect conversation");
+    expect(
+      mocks.request.mock.calls.some(([path]) => path.endsWith("/stop"))
+    ).toBe(false);
+  }
+);
+it("does not offer reconnect while any earlier prompt has an uncertain outcome", async () => {
+  mocks.snapshot = { ...failedSnapshot(), hasIndeterminatePrompt: true };
+  await mount(undefined, mocks.snapshot.execution.id);
+  expect(container.textContent).not.toContain("Reconnect conversation");
+});

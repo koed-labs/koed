@@ -33,14 +33,14 @@ afterEach(async () => {
   container.remove();
   vi.useRealTimers();
 });
-it("shows a quiet live label, elapsed wait and collapsed reported phases", async () => {
+it("shows a quiet live label, elapsed wait and visible reported phases", async () => {
   await act(async () =>
     root.render(<AgentThinkingIndicator progress={progress} />)
   );
   expect(container.querySelector('[role="status"]')?.textContent).toBe(
     progress.label
   );
-  expect(container.querySelector("details")?.open).toBe(false);
+  expect(container.querySelector("details")?.open).toBe(true);
   await act(async () => vi.advanceTimersByTime(4000));
   expect(container.textContent).toContain("4s");
   expect(container.querySelector('[role="status"]')?.textContent).not.toContain(
@@ -76,4 +76,21 @@ it("stops animation and timers while waiting for the user, and cleans up on unmo
   );
   await act(async () => root.render(null));
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("retains activity collapsed when the turn completes and stops the timer", async () => {
+  await act(async () =>
+    root.render(<AgentThinkingIndicator progress={progress} />)
+  );
+  expect(container.querySelector("details")?.open).toBe(true);
+  await act(async () =>
+    root.render(
+      <AgentThinkingIndicator progress={{ ...progress, state: "completed" }} />
+    )
+  );
+  expect(container.querySelector("details")?.open).toBe(false);
+  expect(container.textContent).toContain("Checking the modified files");
+  expect(container.textContent).toContain("Agent activity · 1 updates");
+  expect(vi.getTimerCount()).toBe(0);
+  expect(container.querySelector('[role="status"]')).toBeNull();
 });

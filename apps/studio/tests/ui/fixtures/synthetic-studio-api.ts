@@ -465,10 +465,40 @@ export class SyntheticStudioApi {
       return;
     }
     if (
-      path === "/v1/managed-conversations/launch-options" &&
+      (path === "/v1/managed-conversations/launch-options" ||
+        path === "/studio-api/managed-conversations/launch-options") &&
       method === "GET"
     ) {
-      await route.fulfill({ json: { runners: [], instances: [] } });
+      await route.fulfill({
+        json: {
+          runners: [
+            {
+              kind: "local_device",
+              deviceId: "synthetic-runner",
+              displayName: "Synthetic runner"
+            }
+          ],
+          instances: [
+            {
+              instanceId: "codex.synthetic",
+              driverId: "codex",
+              runnerDeviceId: "synthetic-runner",
+              ready: true,
+              readiness: "ready",
+              capabilities: {
+                permissionModes: [{ mode: "supervised", support: "supported" }]
+              },
+              models: [
+                {
+                  id: "gpt-6-sol",
+                  displayName: "GPT 6 Sol",
+                  supportedReasoningEfforts: ["medium", "high"]
+                }
+              ]
+            }
+          ]
+        }
+      });
       return;
     }
     if (path === "/studio-api/collaboration/session" && method === "GET") {

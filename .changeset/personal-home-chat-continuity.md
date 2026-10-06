@@ -21,3 +21,13 @@ Resolve selected nested folders to their registered Project instead of creating 
 Keep saved conversations visible in Project and standalone navigation while the runtime reconciles, pauses, or stops.
 
 Simplify Personal conversation headers to the chat title and an optional folder icon whose tooltip names the Project. Remove the redundant Current Project label, separate Move to Project button, Personal prefix, and three-dot End session menu.
+
+Allow confirmed failed chats stuck in reconciliation to reconnect and continue the existing conversation without automatically replaying a failed message.
+
+Resume verified unchanged Codex conversation history while memory Projection catches up, retaining the backlog guard for actual history rebases.
+
+Show recent readable conversation notes in Advanced activity alongside technical details and file changes, with individual expand/collapse controls for notes and command outputs. Show newest entries first in both Simple and Advanced, with the latest file diff directly beneath its command note.
+
+Show subtle live Agent activity and public reasoning summaries, retaining completed activity collapsed beside each request.
+
+Show lines added in green and deleted in red in the compact Advanced activity card.

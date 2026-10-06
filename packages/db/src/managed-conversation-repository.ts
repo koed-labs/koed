@@ -5074,7 +5074,13 @@ export const createManagedConversationRepository = (
         `select ${RUNTIME_ITEM_COLUMNS}
            from managed_conversation_runtime_items
           where owner_user_id = $1 and execution_id = $2
-            and ($3::boolean or state in ('pending','answered'))
+            and ($3::boolean or
+              (state in ('pending','answered') and provider_request_id not like 'public-progress:%') or
+              id in (select id from managed_conversation_runtime_items
+                where owner_user_id = $1 and execution_id = $2
+                  and item_kind = 'transient_output'
+                  and provider_request_id like 'public-progress:%'
+                order by created_at desc, id desc limit 20))
           order by created_at, id`,
         [actor.userId, input.executionId, input.includeTerminal === true]
       );
@@ -5102,8 +5108,9 @@ export const createManagedConversationRepository = (
         const candidate = await client.query<{
           execution_id: string;
           item_kind: ManagedConversationRuntimeItemKind;
+          provider_request_id: string;
         }>(
-          `select execution_id, item_kind
+          `select execution_id, item_kind, provider_request_id
              from managed_conversation_runtime_items
             where owner_user_id = $1 and id = $2`,
           [actor.userId, input.itemId]
@@ -5198,8 +5205,9 @@ export const createManagedConversationRepository = (
         const candidate = await client.query<{
           execution_id: string;
           item_kind: ManagedConversationRuntimeItemKind;
+          provider_request_id: string;
         }>(
-          `select execution_id, item_kind
+          `select execution_id, item_kind, provider_request_id
              from managed_conversation_runtime_items
             where owner_user_id = $1 and id = $2`,
           [actor.userId, input.itemId]
@@ -5221,7 +5229,8 @@ export const createManagedConversationRepository = (
           return false;
         }
         const result =
-          candidate.rows[0]?.item_kind === "transient_output"
+          candidate.rows[0]?.item_kind === "transient_output" &&
+          !candidate.rows[0].provider_request_id.startsWith("public-progress:")
             ? await client.query<{ execution_id: string }>(
                 `delete from managed_conversation_runtime_items
                   where owner_user_id = $1 and id = $2
@@ -5272,7 +5281,8 @@ export const createManagedConversationRepository = (
               and execution_generation = $3 and item_kind = 'transient_output'
               and state = 'pending'
               and ($4::text is null or provider_turn_id = $4)
-              and not $5::boolean`,
+              and not $5::boolean
+              and provider_request_id not like 'public-progress:%'`,
           [
             actor.userId,
             input.executionId,
@@ -5287,7 +5297,7 @@ export const createManagedConversationRepository = (
                   revision = revision + 1, updated_at = now()
             where owner_user_id = $1 and execution_id = $2
               and execution_generation = $3 and state in ('pending','answered')
-              and item_kind <> 'transient_output'
+              and (item_kind <> 'transient_output' or provider_request_id like 'public-progress:%')
               and ($4::text is null or provider_turn_id = $4)`,
           [
             actor.userId,
@@ -5704,7 +5714,7 @@ export const createManagedConversationRepository = (
         CommandRow & { execution_json: ExecutionRow }
       >(
         `with candidates as (
-           select command.id
+           select command.id, execution.id as execution_id
              from managed_conversation_commands command
              join managed_conversation_executions execution
                on execution.id = command.execution_id
@@ -5715,8 +5725,22 @@ export const createManagedConversationRepository = (
               and ($7::uuid is null or command.owner_user_id = $7)
               and execution.runner_device_id = $5
               and execution.runner_deployment_id = $6
-              and execution.runner_id = $4
-              and execution.runner_lease_expires_at > now()
+              and (
+                (execution.runner_id = $4 and execution.runner_lease_expires_at > now())
+                or (
+                  command.command_kind = 'stop'
+                  and execution.state = 'reconciling'
+                  and execution.last_error_code is not null
+                  and (execution.runner_id is null or execution.runner_lease_expires_at <= now())
+                  and not exists (
+                    select 1 from managed_conversation_commands prompt
+                     where prompt.execution_id = execution.id
+                       and prompt.execution_generation = execution.execution_generation
+                       and prompt.command_kind = 'prompt'
+                       and prompt.state not in ('completed','failed','canceled')
+                  )
+                )
+              )
               and execution.state not in ('stopped','failed','fenced')
               and not exists (
                 select 1 from managed_conversation_project_moves move
@@ -5727,6 +5751,14 @@ export const createManagedConversationRepository = (
             order by command.created_at, command.sequence
             for update of command, execution skip locked
             limit $1
+         ), owned as (
+           update managed_conversation_executions execution
+              set runner_id = $4,
+                  runner_lease_expires_at = now() + ($3::bigint * interval '1 millisecond'),
+                  runner_last_seen_at = now(),
+                  updated_at = now()
+            where execution.id in (select execution_id from candidates)
+           returning execution.*
          ), claimed as (
            update managed_conversation_commands command
               set state = 'dispatching', attempts = command.attempts + 1,
@@ -5736,11 +5768,12 @@ export const createManagedConversationRepository = (
                   updated_at = now()
              from candidates
             where command.id = candidates.id
+              and command.execution_id in (select id from owned)
            returning command.*
          )
          select claimed.*, to_jsonb(execution.*) as execution_json
            from claimed
-           join managed_conversation_executions execution
+           join owned execution
              on execution.id = claimed.execution_id
             and execution.owner_user_id = claimed.owner_user_id`,
         [
@@ -6800,12 +6833,23 @@ export const createManagedConversationRepository = (
           }
           // Prompts execute serially. Completion follows canonical capture, so
           // temporary output from this generation must not survive into a new turn.
+          if (row.command_kind === "prompt") {
+            await client.query(
+              `update managed_conversation_runtime_items
+                  set state = 'resolved', resolved_at = now(), updated_at = now(), revision = revision + 1
+                where owner_user_id = $1 and execution_id = $2 and execution_generation = $3
+                  and item_kind = 'transient_output' and state = 'pending'
+                  and provider_request_id like 'public-progress:%'`,
+              [row.owner_user_id, row.execution_id, row.execution_generation]
+            );
+          }
           const retired =
             row.command_kind === "prompt"
               ? await client.query(
                   `delete from managed_conversation_runtime_items
                   where owner_user_id = $1 and execution_id = $2
-                    and execution_generation = $3 and item_kind = 'transient_output'`,
+                    and execution_generation = $3 and item_kind = 'transient_output'
+                    and provider_request_id not like 'public-progress:%'`,
                   [
                     row.owner_user_id,
                     row.execution_id,

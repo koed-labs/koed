@@ -1,3 +1,4 @@
+import type { CodexPublicProgress } from "./codex-public-progress.js";
 import {
   spawn,
   spawnSync,
@@ -129,6 +130,7 @@ export interface CodexAppServerRunConfig {
   appServerConfigOverrides?: string[];
   /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
   captureProcessMetrics?: boolean;
+  onUserFacingProgress?: (event: CodexPublicProgress) => void | Promise<void>;
   onProviderActivity?: (status: string) => void;
   onCommandExecutionEvent?: (event: {
     phase: "started" | "completed";
@@ -168,6 +170,7 @@ export interface CodexAppServerJsonTaskConfig {
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  onUserFacingProgress?: (event: CodexPublicProgress) => void | Promise<void>;
   onProviderActivity?: (status: string) => void;
 }
 
@@ -1373,6 +1376,11 @@ export class CodexAppServerClient {
       return;
     }
 
+    if (message.method === "item/reasoning/summaryTextDelta") {
+      this.dispatchTransientEvent(rawEvent);
+      return;
+    }
+
     if (message.method === "item/agentMessage/delta") {
       const params = asRecord(message.params);
       if (
@@ -1390,14 +1398,7 @@ export class CodexAppServerClient {
       message.method === "item/started" ||
       message.method === "item/completed"
     ) {
-      const params = asRecord(message.params);
-      const item = asRecord(params.item);
-      if (
-        item.type === "commandExecution" &&
-        typeof item.command === "string"
-      ) {
-        this.dispatchTransientEvent(rawEvent);
-      }
+      this.dispatchTransientEvent(rawEvent);
     }
 
     if (message.method === "item/completed") {

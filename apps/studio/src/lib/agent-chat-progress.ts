@@ -6,6 +6,7 @@ import type { TeamAgentRequest } from "@koed/shared/team-agent-requests";
 export type AgentChatProgress = Readonly<{
   key: string;
   state:
+    | "completed"
     | "sending"
     | "queued"
     | "working"
@@ -13,9 +14,66 @@ export type AgentChatProgress = Readonly<{
     | "waiting"
     | "uncertain";
   label: string;
+  userMessageId?: string;
   /** Only explicit, user-facing progress signals; never raw provider reasoning. */
   steps: readonly { id: string; title: string; detail?: string }[];
 }>;
+
+/** Bounded, explicitly public snapshots supplied by the owner-authorized runtime. */
+export function managedChatProgressHistory(
+  runtime: RuntimeSnapshot | null
+): AgentChatProgress[] {
+  return (runtime?.items ?? [])
+    .flatMap((item) => {
+      if (
+        item.itemKind !== "transient_output" ||
+        item.payload.publicProgress !== true ||
+        item.presentation?.mode === "hidden" ||
+        item.presentation?.renderer !== "message" ||
+        !item.presentation.policyKey ||
+        typeof item.payload.commandId !== "string" ||
+        !Array.isArray(item.payload.steps)
+      )
+        return [];
+      const steps = item.payload.steps.slice(-20).flatMap((value) => {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          typeof value.id !== "string" ||
+          typeof value.title !== "string"
+        )
+          return [];
+        return [
+          {
+            id: value.id,
+            title: value.title.slice(0, 180),
+            ...(typeof value.detail === "string"
+              ? { detail: value.detail.slice(0, 2000) }
+              : {})
+          }
+        ];
+      });
+      if (!steps.length) return [];
+      const command = runtime?.latestCommand;
+      const active =
+        item.state === "pending" &&
+        item.payload.commandId === command?.id &&
+        item.executionGeneration === runtime?.execution.executionGeneration &&
+        ["dispatching", "running"].includes(command.state);
+      return [
+        {
+          key: `${runtime!.execution.id}:${item.payload.commandId}`,
+          state: active ? ("working" as const) : ("completed" as const),
+          label: active ? "Working on your request…" : "Agent activity",
+          ...(typeof item.payload.clientUserMessageId === "string"
+            ? { userMessageId: item.payload.clientUserMessageId }
+            : {}),
+          steps
+        }
+      ];
+    })
+    .slice(-20);
+}
 
 export function managedChatProgress(
   runtime: RuntimeSnapshot | null,
@@ -68,7 +126,10 @@ export function managedChatProgress(
   const selectedJob = activity?.jobs?.find(
     (job) => job.id === activity.selectedJobId
   );
-  const steps =
+  const reported = managedChatProgressHistory(runtime).find(
+    (entry) => entry.state === "working"
+  );
+  const phaseSteps =
     activity?.source === "live" && selectedJob?.state === "running"
       ? activity.events
           .filter((event) => event.kind === "phase" && event.story?.title)
@@ -81,6 +142,7 @@ export function managedChatProgress(
               : {})
           }))
       : [];
+  const steps = [...phaseSteps, ...(reported?.steps ?? [])].slice(-20);
   const responding = runtime.items.some(
     (item) =>
       item.executionGeneration === runtime.execution.executionGeneration &&

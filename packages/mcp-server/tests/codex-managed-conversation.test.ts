@@ -359,6 +359,9 @@ reader.on("line", (line) => {
     if (options.nonRetryableErrorBeforeCompletion) {
       send({ method: "error", params: { threadId, turnId, error: { message: "non-terminal diagnostic failure", willRetry: false } } });
     }
+    send({ method: "item/reasoning/summaryTextDelta", params: {threadId, turnId, itemId: turn.reasoningId, summaryIndex: 0, delta: "Inspect the source."} });
+    send({ method: "item/reasoning/textDelta", params: {threadId, turnId, itemId: turn.reasoningId, delta: "private reasoning"} });
+    send({ method: "item/reasoning/summaryTextDelta", params: {threadId, turnId: "other-turn", itemId: "other", delta: "foreign summary"} });
     for (let noise = 0; noise < (options.stateNoiseCount ?? 0); noise += 1) {
       send({ method: "item/agentMessage/delta", params: { threadId, turnId: "noise-turn-" + noise, itemId: "noise-" + noise, delta: "noise" } });
     }
@@ -1281,6 +1284,7 @@ describe("Codex managed conversation coordinator", () => {
     expect(fs.existsSync(transcriptPath)).toBe(false);
     const memoryClient = new FakeMemoryClient();
     const streamedDeltas: string[] = [];
+    const publicSummaries: string[] = [];
     const config = configFor(
       memoryClient,
       writeManagedFakeAppServer(directory, transcriptPath),
@@ -1292,6 +1296,9 @@ describe("Codex managed conversation coordinator", () => {
         ...config.appServer,
         onAgentMessageDelta: ({ delta }) => {
           streamedDeltas.push(delta);
+        },
+        onUserFacingProgress: ({ detail }) => {
+          if (detail) publicSummaries.push(detail);
         }
       }
     });
@@ -1315,6 +1322,7 @@ describe("Codex managed conversation coordinator", () => {
         )
       ).toBe(false);
       expect(streamedDeltas).toEqual(["Managed answer"]);
+      expect(publicSummaries).toEqual(["Inspect the source."]);
 
       const canonicalGroups = new Map<string, Array<Record<string, unknown>>>();
       for (const observation of memoryClient.observations) {

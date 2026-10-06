@@ -89,6 +89,8 @@ function fixture(startupDelayMs = 0, bundled = false) {
     } else emit(response);
   });
   const onTextDelta = vi.fn();
+  const onUserFacingProgress =
+    vi.fn<(event: { turnId: string; id: string; title: string }) => void>();
   const onUiRequest = vi.fn().mockResolvedValue({ value: "Approve" });
   const config: PiManagedConversationConfig = {
     cwd: root,
@@ -97,6 +99,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
     permissionMode: "full_access",
     env: { PATH: process.env.PATH, KOED_PI_EXECUTABLE: executable },
     onTextDelta,
+    onUserFacingProgress,
     onUiRequest,
     ...(startupDelayMs ? { requestTimeoutMs: 50, startupTimeoutMs: 500 } : {})
   };
@@ -109,6 +112,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
     child,
     requests,
     onTextDelta,
+    onUserFacingProgress,
     onUiRequest,
     changeIdentity: () => {
       sessionId = "22222222-2222-4222-8222-222222222222";
@@ -553,4 +557,40 @@ describe("Pi managed native Agent signals", () => {
     await pending;
     await f.session.closeAndWait();
   });
+});
+
+it("reports tool phases without exposing thinking deltas or tool arguments", async () => {
+  const f = fixture();
+  await f.session.start();
+  const prompt = f.session.prompt("hello");
+  f.emit({
+    type: "tool_execution_start",
+    toolCallId: "tool",
+    toolName: "read",
+    args: { path: "private" }
+  });
+  f.emit({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      delta: "private reasoning"
+    }
+  });
+  f.emit({
+    type: "tool_execution_end",
+    toolCallId: "tool",
+    result: { content: "private result" }
+  });
+  f.emit({ type: "agent_settled" });
+  await prompt;
+  expect(
+    f.onUserFacingProgress.mock.calls.map(([event]) => ({
+      id: event.id,
+      title: event.title
+    }))
+  ).toEqual([
+    { id: "tool", title: "Using read" },
+    { id: "tool", title: "Tool finished" }
+  ]);
+  await f.session.closeAndWait();
 });

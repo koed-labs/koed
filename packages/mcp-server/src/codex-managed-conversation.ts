@@ -1,3 +1,4 @@
+import { codexPublicProgress } from "./codex-public-progress.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -1337,12 +1338,34 @@ export class CodexManagedConversationSession {
     }
   }
 
+  private publishPublicProgress(
+    event: CodexAppServerRawEvent
+  ): void | Promise<void> {
+    const progress = codexPublicProgress(event.method, event.params);
+    const active = this.client?.activeTurn();
+    if (
+      !progress ||
+      progress.threadId !== this.thread?.id ||
+      progress.threadId !== active?.threadId ||
+      progress.turnId !== active.turnId
+    )
+      return;
+    return this.config.appServer.onUserFacingProgress?.(progress);
+  }
+
   private handleTransientEvent(
     event: CodexAppServerRawEvent
   ): void | Promise<void> {
     if (!this.started || !this.thread || !this.sessionId) {
       return;
     }
+    const publicProgress = this.publishPublicProgress(event);
+    if (
+      event.method === "item/reasoning/summaryTextDelta" ||
+      event.method === "item/started" ||
+      event.method === "item/completed"
+    )
+      return publicProgress;
     const params = asRecord(event.params);
     if (
       event.method !== "item/agentMessage/delta" ||

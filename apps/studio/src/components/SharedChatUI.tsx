@@ -42,6 +42,7 @@ type SharedChatUIProps<T extends SharedChatMessage> = {
   renderMessage?: (message: T) => ReactNode;
   composerOnly?: boolean;
   progress?: AgentChatProgress | null;
+  progressHistory?: readonly AgentChatProgress[];
   progressClassName?: string;
 };
 
@@ -69,6 +70,7 @@ function SharedChatUIContents<T extends SharedChatMessage>({
   renderMessage,
   composerOnly = false,
   progress,
+  progressHistory = [],
   progressClassName = ""
 }: SharedChatUIProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -245,6 +247,13 @@ function SharedChatUIContents<T extends SharedChatMessage>({
                       className="min-w-0 max-w-full scroll-mt-4"
                     >
                       {renderMessage?.(message)}
+                      {progressHistory
+                        .filter((entry) => entry.userMessageId === message.id)
+                        .map((entry) => (
+                          <div key={entry.key} className={progressClassName}>
+                            <AgentThinkingIndicator progress={entry} />
+                          </div>
+                        ))}
                     </div>
                   ))}
                 </div>

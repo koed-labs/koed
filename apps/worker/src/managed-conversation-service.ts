@@ -1279,6 +1279,22 @@ export const managedConversationOriginSourceGeneration = (
   return artifact.sourceGenerationId;
 };
 
+/** Unchanged verified history can resume while canonical projection catches up.
+ * Rewriting a source generation still requires the canonical consumer at EOF. */
+export const managedConversationCodexRebaseRequired = (input: {
+  journalPrefixMatches: boolean;
+  acceptedPrefixMatches: boolean;
+  canonicalFrontierMatches: boolean;
+}): boolean => {
+  if (input.journalPrefixMatches && input.acceptedPrefixMatches) return false;
+  if (!input.canonicalFrontierMatches) {
+    throw managedConversationError(
+      "ManagedConversationSourceRebaseBacklogError"
+    );
+  }
+  return true;
+};
+
 export const managedConversationCodexRebaseSourceMatches = (
   value: unknown,
   expected: {
@@ -1492,6 +1508,104 @@ export const createManagedConversationService = (options: {
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
+  const publicProgress = new Map<
+    string,
+    {
+      command: ClaimedManagedConversationCommand;
+      turnId: string;
+      revision: number;
+      steps: Array<{ id: string; title: string; detail?: string }>;
+      timer?: ReturnType<typeof setTimeout>;
+      pendingWrite?: Promise<void>;
+    }
+  >();
+  const flushPublicProgress = async (commandId: string): Promise<void> => {
+    const entry = publicProgress.get(commandId);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    if (entry.pendingWrite) await entry.pendingWrite;
+    const revision = entry.revision;
+    const steps = entry.steps.map((step) => ({ ...step }));
+    entry.pendingWrite = Promise.resolve()
+      .then(async () => {
+        await options.repository.putManagedConversationRuntimeItem(
+          { userId: entry.command.ownerUserId },
+          {
+            executionId: entry.command.executionId,
+            executionGeneration: entry.command.executionGeneration,
+            providerRequestId: `public-progress:${commandId}`,
+            providerTurnId: entry.turnId,
+            itemKind: "transient_output",
+            payload: {
+              publicProgress: true,
+              commandId,
+              clientUserMessageId: entry.command.clientUserMessageId,
+              steps
+            }
+          }
+        );
+      })
+      .catch((error) => {
+        options.logger.warn(
+          { error_name: errorCode(error) },
+          "Public Agent progress could not be published"
+        );
+      });
+    await entry.pendingWrite;
+    entry.pendingWrite = undefined;
+    if (entry.revision !== revision && !stopped && !entry.timer) {
+      entry.timer = setTimeout(() => {
+        void flushPublicProgress(commandId);
+      }, 500);
+      entry.timer.unref?.();
+    }
+  };
+  const recordPublicProgress = (
+    executionId: string,
+    event: {
+      turnId: string;
+      id: string;
+      title: string;
+      detail?: string;
+      delta?: boolean;
+    }
+  ): void => {
+    if (stopped) return;
+    const command = activePersonalAgentCommandByExecution.get(executionId);
+    if (!command || command.commandKind !== "prompt") return;
+    const entry = publicProgress.get(command.id) ?? {
+      command,
+      turnId: event.turnId,
+      revision: 0,
+      steps: [] as Array<{ id: string; title: string; detail?: string }>,
+      timer: undefined as ReturnType<typeof setTimeout> | undefined,
+      pendingWrite: undefined as Promise<void> | undefined
+    };
+    const step = entry.steps.find((step) => step.id === event.id);
+    if (step) {
+      step.title = event.title;
+      if (event.detail)
+        step.detail = (
+          event.delta ? (step.detail ?? "") + event.detail : event.detail
+        ).slice(0, 2000);
+    } else {
+      entry.steps.push({
+        id: event.id,
+        title: event.title,
+        ...(event.detail ? { detail: event.detail.slice(0, 2000) } : {})
+      });
+      if (entry.steps.length > 20) entry.steps.shift();
+    }
+    entry.revision += 1;
+    publicProgress.set(command.id, entry);
+    if (!entry.timer && !entry.pendingWrite) {
+      entry.timer = setTimeout(() => {
+        void flushPublicProgress(command.id);
+      }, 500);
+      entry.timer.unref?.();
+    }
+  };
   const personalAgentAttemptsByCommand = new Map<string, string>();
   const buildWorkspaceBaselinesByAttempt = new Map<
     string,
@@ -3519,6 +3633,8 @@ export const createManagedConversationService = (options: {
             );
           }
         },
+        onUserFacingProgress: (event) =>
+          recordPublicProgress(execution.id, event),
         onAgentMessageDelta: ({ turnId, itemId, delta }) => {
           const key = `${execution.id}:${turnId}:${itemId ?? "assistant"}`;
           const existing = transientOutputs.get(key) ?? {
@@ -3703,6 +3819,8 @@ export const createManagedConversationService = (options: {
       permissionMode: permission.permissionMode,
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
+      onUserFacingProgress: (event) =>
+        recordPublicProgress(execution.id, event),
       onCommandExecutionEvent: (event) => {
         const activeCommand = activePersonalAgentCommandByExecution.get(
           execution.id
@@ -4036,6 +4154,8 @@ export const createManagedConversationService = (options: {
       },
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
+      onUserFacingProgress: (event) =>
+        recordPublicProgress(execution.id, event),
       personalAgentIntentHandler: async (signal) => {
         const active = personalAgentSignalCommand(execution.id, "pi");
         return recordPersonalAgentIntent(
@@ -4306,6 +4426,7 @@ export const createManagedConversationService = (options: {
     frontier: CodexTranscriptFrontier;
   }): Promise<{
     prefixMatches: boolean;
+    canonicalFrontierMatches: boolean;
     lastSegmentDigest: string | null;
   }> => {
     const { artifact, frontier } = input;
@@ -4335,19 +4456,12 @@ export const createManagedConversationService = (options: {
         "canonical_live"
       );
     const canonicalCursor = record(canonicalCursorResponse.cursor);
-    if (
-      (canonicalCursor.sourceOffset !== providerCursorOffset ||
-        canonicalCursor.sourceLine !== providerCursorLine) &&
-      !(
-        canonicalCursorResponse.cursor === null &&
+    const canonicalFrontierMatches =
+      (canonicalCursor.sourceOffset === providerCursorOffset &&
+        canonicalCursor.sourceLine === providerCursorLine) ||
+      (canonicalCursorResponse.cursor === null &&
         providerCursorOffset === journalStartOffset &&
-        providerCursorLine === journalStartLine
-      )
-    ) {
-      throw managedConversationError(
-        "ManagedConversationSourceRebaseBacklogError"
-      );
-    }
+        providerCursorLine === journalStartLine);
 
     let expectedOffset = journalStartOffset;
     let expectedLine = journalStartLine;
@@ -4445,7 +4559,7 @@ export const createManagedConversationService = (options: {
         "ManagedConversationSourceRebaseJournalError"
       );
     }
-    return { prefixMatches, lastSegmentDigest };
+    return { prefixMatches, canonicalFrontierMatches, lastSegmentDigest };
   };
 
   const rebaseExplicitCodexSourceIfNeeded = async (input: {
@@ -4503,7 +4617,13 @@ export const createManagedConversationService = (options: {
       artifact: parent,
       frontier: before
     });
-    if (journal.prefixMatches && acceptedPrefixMatches) {
+    if (
+      !managedConversationCodexRebaseRequired({
+        journalPrefixMatches: journal.prefixMatches,
+        acceptedPrefixMatches,
+        canonicalFrontierMatches: journal.canonicalFrontierMatches
+      })
+    ) {
       return sourceGenerationId;
     }
 
@@ -7064,6 +7184,12 @@ export const createManagedConversationService = (options: {
     try {
       return await heartbeat.withSession(session, operation);
     } finally {
+      if (isPromptTurn) {
+        await flushPublicProgress(command.id);
+        if (publicProgress.get(command.id)?.timer)
+          await flushPublicProgress(command.id);
+        publicProgress.delete(command.id);
+      }
       if (
         isPromptTurn &&
         activePromptProviderTurns.get(command.executionId) === command.id
@@ -12362,6 +12488,7 @@ export const createManagedConversationService = (options: {
     },
     async stop() {
       stopped = true;
+      await Promise.all([...publicProgress.keys()].map(flushPublicProgress));
       signalRuntimeWake();
       for (const transient of transientOutputs.values()) {
         if (transient.timer) clearTimeout(transient.timer);

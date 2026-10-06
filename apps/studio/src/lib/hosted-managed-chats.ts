@@ -459,6 +459,35 @@ const hostedRuntimeItem = (item: RuntimeSnapshot["items"][number]) => {
     typeof item.payload.text === "string"
   )
     payload.text = hostedRuntimeText(item.payload.text);
+  if (
+    item.itemKind === "transient_output" &&
+    item.payload.publicProgress === true &&
+    presentation?.mode !== "hidden" &&
+    presentation?.renderer === "message" &&
+    presentation?.policyKey &&
+    typeof item.payload.commandId === "string" &&
+    Array.isArray(item.payload.steps)
+  ) {
+    payload.publicProgress = true;
+    payload.commandId = item.payload.commandId;
+    if (typeof item.payload.clientUserMessageId === "string")
+      payload.clientUserMessageId = item.payload.clientUserMessageId;
+    payload.steps = item.payload.steps.slice(-20).flatMap((step) =>
+      record(step) &&
+      typeof step.id === "string" &&
+      typeof step.title === "string"
+        ? [
+            {
+              id: step.id,
+              title: hostedRuntimeText(step.title.slice(0, 180)),
+              ...(typeof step.detail === "string"
+                ? { detail: hostedRuntimeText(step.detail.slice(0, 2000)) }
+                : {})
+            }
+          ]
+        : []
+    );
+  }
   if (record(item.payload.permissions))
     payload.permissions = hostedRuntimeValue(
       item.payload.permissions,

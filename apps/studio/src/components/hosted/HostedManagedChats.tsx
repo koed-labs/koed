@@ -54,7 +54,10 @@ import {
   type RuntimeSnapshot
 } from "@/lib/managed-agent-chat";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
-import { managedChatProgress } from "@/lib/agent-chat-progress";
+import {
+  managedChatProgress,
+  managedChatProgressHistory
+} from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
 import {
@@ -3106,6 +3109,9 @@ export function HostedManagedChats({
                   sending,
                   selectedRuntime ? buildActivity : null
                 )}
+                progressHistory={managedChatProgressHistory(
+                  selectedRuntime
+                ).filter((entry) => entry.state === "completed")}
                 className="min-h-0 flex-1"
                 viewportClassName="p-3"
                 listClassName="space-y-3"

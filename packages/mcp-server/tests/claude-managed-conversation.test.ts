@@ -155,6 +155,8 @@ const queryOptions = (callIndex = 0): Options => {
 describe("ClaudeManagedConversationSession", () => {
   it("reports live Bash tool-use and tool-result messages without transcript parsing", async () => {
     const { config } = fixture();
+    const publicProgress =
+      vi.fn<(event: { turnId: string; id: string; title: string }) => void>();
     const commandEvents: Array<{
       phase: string;
       command: string;
@@ -196,11 +198,21 @@ describe("ClaudeManagedConversationSession", () => {
     );
     const session = new ClaudeManagedConversationSession({
       ...config,
-      onCommandExecutionEvent: (event) => commandEvents.push(event)
+      onCommandExecutionEvent: (event) => commandEvents.push(event),
+      onUserFacingProgress: publicProgress
     });
     try {
       await session.start();
       await session.prompt("Run the tests");
+      expect(
+        publicProgress.mock.calls.map(([event]) => ({
+          id: event.id,
+          title: event.title
+        }))
+      ).toEqual([
+        { id: "tool-use-1", title: "Using Bash" },
+        { id: "tool-use-1", title: "Tool finished" }
+      ]);
       expect(commandEvents).toEqual([
         { phase: "started", command: "pnpm test" },
         {

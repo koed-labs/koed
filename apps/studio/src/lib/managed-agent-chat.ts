@@ -508,8 +508,9 @@ export function parseRuntime(
         typeof item.id !== "string" ||
         typeof item.itemKind !== "string" ||
         typeof item.state !== "string" ||
-        item.executionGeneration !== execution.executionGeneration ||
-        !record(item.payload)
+        !record(item.payload) ||
+        (item.executionGeneration !== execution.executionGeneration &&
+          item.payload.publicProgress !== true)
       )
         return [];
       return [item as unknown as RuntimeItem];

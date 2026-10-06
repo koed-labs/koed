@@ -19,7 +19,10 @@ import {
   type PersonalAgent
 } from "@/lib/personal-agents-client";
 import { pendingChatRequests } from "@/lib/managed-chat-requests";
-import { managedChatProgress } from "@/lib/agent-chat-progress";
+import {
+  managedChatProgress,
+  managedChatProgressHistory
+} from "@/lib/agent-chat-progress";
 import { managedConversationActivity } from "@/lib/managed-agent-activity";
 import { createConversationBuildDiffLoader } from "@/lib/conversation-build-diff";
 import {
@@ -296,6 +299,7 @@ export function LiveAgentChat({
     userMessageId: string;
   } | null>(null);
   const [recoveryBlocked, setRecoveryBlocked] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [recoveredDraft, setRecoveredDraft] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [feedbackOwner, setFeedbackOwner] = useState<{
@@ -1794,6 +1798,46 @@ export function LiveAgentChat({
       );
     }
   };
+  const canReconnect = Boolean(
+    runtime?.execution.state === "reconciling" &&
+    runtime.hasIndeterminatePrompt === false &&
+    runtime.latestCommand?.commandKind === "prompt" &&
+    runtime.latestCommand.state === "failed" &&
+    !sending &&
+    !recoveryBlocked
+  );
+  const reconnectConversation = async () => {
+    if (!canReconnect || reconnecting || !runtime || !executionId) return;
+    setReconnecting(true);
+    setError(null);
+    setStatus("Reconnecting the conversation…");
+    try {
+      // Retire the stale runtime through the existing generation-fenced control
+      // route. A new explicit message resumes this same provider thread; the
+      // failed prompt is never replayed by this action.
+      await managedRequest(`/${executionId}/stop`, {
+        executionGeneration: runtime.execution.executionGeneration,
+        idempotencyKey: crypto.randomUUID()
+      });
+      const updated = await refresh(
+        executionId,
+        lifecycle.current?.signal ?? new AbortController().signal
+      );
+      if (updated.execution.state === "stopped") {
+        setStatus("Send a message to continue this conversation.");
+        setSending(false);
+        setError(null);
+      }
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not reconnect the conversation. Please try again."
+      );
+    } finally {
+      setReconnecting(false);
+    }
+  };
   const chooseAgent = (id: string | null) => {
     selectionDirty.current = true;
     setActiveAgentId(id);
@@ -2281,6 +2325,22 @@ export function LiveAgentChat({
           ) : null}
         </section>
       ) : null}
+      {canReconnect ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 text-xs text-muted">
+          <span>
+            The previous message failed. Reconnect to continue this
+            conversation.
+          </span>
+          <button
+            type="button"
+            disabled={reconnecting}
+            onClick={() => void reconnectConversation()}
+            className="rounded-md border border-border px-3 py-1 text-foreground-secondary hover:bg-surface-hover disabled:opacity-50"
+          >
+            {reconnecting ? "Reconnecting…" : "Reconnect conversation"}
+          </button>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1">
         <NewChatView
           conversationTitle={executionId ? conversationTitle : undefined}
@@ -2438,6 +2498,9 @@ export function LiveAgentChat({
             jobMarkers,
             isSending: sending,
             progress: managedChatProgress(runtime, sending, activity),
+            progressHistory: managedChatProgressHistory(runtime).filter(
+              (entry) => entry.state === "completed"
+            ),
             error,
             memoryRecallFailure,
             feedbackAccess:

@@ -13,7 +13,7 @@ import {
   PanelRightOpen,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   activityStateLabel,
   observedBuildTotals,
@@ -468,14 +468,39 @@ function BuildSummary({
   const state = activity?.state ?? "unknown";
   const latestStory = storyEvents(activity).at(-1)?.story;
   const latestTechnical = technicalEvents(activity).at(-1)?.technical;
-  const totals = observedBuildTotals(activity);
-  const advancedSummary = latestTechnical?.branch
-    ? latestTechnical.branch
-    : latestTechnical?.status
-      ? `Status observed: ${latestTechnical.status}`
-      : totals.filesChanged !== null
-        ? `${totals.filesChanged} files reported`
-        : "No technical details reported";
+  const latestChanges = technicalEvents(activity).findLast(
+    (event) => event.technical?.diff || event.technical?.files?.length
+  );
+  const totals = observedBuildTotals(
+    latestChanges
+      ? { source: activity!.source, state, events: [latestChanges] }
+      : null
+  );
+  const files = latestChanges?.technical?.files ?? [];
+  const fileTotal = (field: "additions" | "deletions") =>
+    files.length > 0 && files.every((file) => Number.isFinite(file[field]))
+      ? files.reduce((total, file) => total + file[field]!, 0)
+      : null;
+  const additions = totals.additions ?? fileTotal("additions");
+  const deletions = totals.deletions ?? fileTotal("deletions");
+  const advancedSummary =
+    additions === null && deletions === null ? (
+      "Line counts unavailable"
+    ) : (
+      <>
+        <span className={additions === null ? undefined : "text-success"}>
+          {additions === null
+            ? "Additions unavailable"
+            : `+${additions} ${additions === 1 ? "line" : "lines"} added`}
+        </span>
+        {" · "}
+        <span className={deletions === null ? undefined : "text-danger"}>
+          {deletions === null
+            ? "Deletions unavailable"
+            : `−${deletions} ${deletions === 1 ? "line" : "lines"} deleted`}
+        </span>
+      </>
+    );
   return (
     <div className="min-w-0 flex-1">
       <div className="flex items-center gap-2">
@@ -547,8 +572,8 @@ function StoryDetails({
   onAttention?: (runtimeItemId: string) => void;
 }) {
   if (!activity) return <EmptyActivity />;
-  const events = storyEvents(activity);
-  const attention = [...events].reverse().find((event) => event.attention);
+  const events = storyEvents(activity).reverse();
+  const attention = events.find((event) => event.attention);
   return (
     <>
       <ActivityHeader activity={activity} />
@@ -568,11 +593,11 @@ function StoryDetails({
             Recent conversation
           </h3>
           <ol className="space-y-4">
-            {activity.recentExchanges.map((event, index) => (
+            {[...activity.recentExchanges].reverse().map((event, index) => (
               <StoryEvent
-                key={event.id}
+                key={`${event.id}:${index === 0 ? "latest" : "history"}`}
                 event={event}
-                latest={index === activity.recentExchanges!.length - 1}
+                latest={index === 0}
               />
             ))}
           </ol>
@@ -584,9 +609,9 @@ function StoryDetails({
         <ol className="space-y-4">
           {events.map((event, index) => (
             <StoryEvent
-              key={event.id}
+              key={`${event.id}:${index === 0 ? "latest" : "history"}`}
               event={event}
-              latest={index === events.length - 1}
+              latest={index === 0}
             />
           ))}
         </ol>
@@ -676,8 +701,28 @@ function StoryEvent({
 
 function AdvancedDetails({ activity }: { activity: BuildActivity | null }) {
   if (!activity) return <EmptyAdvancedActivity />;
-  const events = technicalEvents(activity);
+  const events = technicalEvents(activity).reverse();
   const totals = observedBuildTotals(activity);
+  const conversationUpdates = (
+    activity.recentExchanges?.length
+      ? activity.recentExchanges
+      : storyEvents(activity)
+  )
+    .slice(-5)
+    .reverse();
+  const latestCommandId = conversationUpdates[0]?.id.startsWith("command:")
+    ? conversationUpdates[0].id.slice("command:".length)
+    : null;
+  const latestChanges = latestCommandId
+    ? [activity.recentTurnChanges, ...events].find(
+        (event) =>
+          event?.id === `turn-diff:${latestCommandId}` ||
+          event?.id === `turn-diff-unavailable:${latestCommandId}`
+      )
+    : undefined;
+  const remainingEvents = events.filter(
+    (event) => event.id !== latestChanges?.id
+  );
   return (
     <>
       <ActivityHeader activity={activity} />
@@ -709,7 +754,27 @@ function AdvancedDetails({ activity }: { activity: BuildActivity | null }) {
           </p>
         )}
       </div>
-      {activity.recentTurnChanges ? (
+      {conversationUpdates.length ? (
+        <section className="mb-4">
+          <h3 className="mb-3 text-xs font-semibold text-subtle">
+            Recent conversation
+          </h3>
+          <ol className="space-y-4">
+            {conversationUpdates.map((event, index) => (
+              <Fragment
+                key={`${event.id}:${index === 0 ? "latest" : "history"}`}
+              >
+                <StoryEvent event={event} latest={index === 0} />
+                {index === 0 && latestChanges ? (
+                  <AdvancedEvent event={latestChanges} />
+                ) : null}
+              </Fragment>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      {activity.recentTurnChanges &&
+      activity.recentTurnChanges.id !== latestChanges?.id ? (
         <section className="mb-4">
           <h3 className="mb-2 text-xs font-semibold text-subtle">
             Latest conversation changes
@@ -719,12 +784,16 @@ function AdvancedDetails({ activity }: { activity: BuildActivity | null }) {
           </ul>
         </section>
       ) : null}
-      {events.length === 0 ? (
+      {remainingEvents.length === 0 && !latestChanges ? (
         <EmptyAdvancedActivity />
       ) : (
         <ul className="space-y-2">
-          {events.map((event) => (
-            <AdvancedEvent key={event.id} event={event} />
+          {remainingEvents.map((event, index) => (
+            <AdvancedEvent
+              key={`${event.id}:${index === 0 ? "latest" : "history"}`}
+              event={event}
+              expanded={index === 0}
+            />
           ))}
         </ul>
       )}
@@ -732,14 +801,29 @@ function AdvancedDetails({ activity }: { activity: BuildActivity | null }) {
   );
 }
 
-function AdvancedEvent({ event }: { event: BuildActivityEvent }) {
+function AdvancedEvent({
+  event,
+  expanded = true
+}: {
+  event: BuildActivityEvent;
+  expanded?: boolean;
+}) {
   const technical = event.technical;
   if (!technical) return null;
   return (
     <li className="rounded-lg border border-border px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <FileCode2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-subtle" />
-        <div className="min-w-0 flex-1">
+      <details open={expanded} className="group">
+        <summary className="flex cursor-pointer list-none items-start gap-2 text-xs text-foreground-secondary [&::-webkit-details-marker]:hidden">
+          <FileCode2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-subtle" />
+          <span className="min-w-0 flex-1 break-words">
+            {event.story?.title ??
+              technical.command ??
+              technical.status ??
+              "Execution details"}
+          </span>
+          <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-faint transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-2 min-w-0">
           {technical.branch && (
             <p className="font-mono text-[11px] text-subtle">
               {technical.branch}
@@ -834,7 +918,7 @@ function AdvancedEvent({ event }: { event: BuildActivityEvent }) {
             </p>
           )}
         </div>
-      </div>
+      </details>
     </li>
   );
 }

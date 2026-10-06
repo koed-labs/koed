@@ -42,6 +42,7 @@ import {
   managedPersonalAgentSignalThreadMatchesCurrentCommand,
   managedConversationOriginSourceGeneration,
   managedConversationCodexRebaseSourceMatches,
+  managedConversationCodexRebaseRequired,
   managedConversationAssistantOutputForTurn,
   codexAssistantFinalTextForTurn,
   reconcileBlockedManagedConversationSource,
@@ -4868,4 +4869,37 @@ describe("Codex source rebase identity", () => {
       )
     ).toBe(false);
   });
+});
+
+describe("Codex continuation with canonical projection backlog", () => {
+  it("resumes fully verified unchanged history while projection is behind", () => {
+    expect(
+      managedConversationCodexRebaseRequired({
+        journalPrefixMatches: true,
+        acceptedPrefixMatches: true,
+        canonicalFrontierMatches: false
+      })
+    ).toBe(false);
+  });
+  it.each([
+    { journalPrefixMatches: false, acceptedPrefixMatches: true },
+    { journalPrefixMatches: true, acceptedPrefixMatches: false },
+    { journalPrefixMatches: false, acceptedPrefixMatches: false }
+  ])(
+    "blocks rewriting changed history until projection catches up: %j",
+    (prefixes) => {
+      expect(() =>
+        managedConversationCodexRebaseRequired({
+          ...prefixes,
+          canonicalFrontierMatches: false
+        })
+      ).toThrow("ManagedConversationSourceRebaseBacklogError");
+      expect(
+        managedConversationCodexRebaseRequired({
+          ...prefixes,
+          canonicalFrontierMatches: true
+        })
+      ).toBe(true);
+    }
+  );
 });

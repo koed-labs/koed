@@ -80,6 +80,7 @@ export type NewChatRuntime = Readonly<{
   jobMarkers?: readonly ManagedAgentJobMarker[];
   isSending: boolean;
   progress?: AgentChatProgress | null;
+  progressHistory?: readonly AgentChatProgress[];
   error?: string | null;
   memoryRecallFailure?: string | null;
   feedbackAccess?: RecallFeedbackAccess;
@@ -312,6 +313,9 @@ export function NewChatView({
           }
           messages={sharedMessages}
           progress={mode === "live" ? runtime?.progress : null}
+          progressHistory={
+            mode === "live" ? runtime?.progressHistory : undefined
+          }
           progressClassName="ml-0 w-full max-w-3xl lg:ml-10 lg:w-[calc(100%-2.5rem)]"
           className="min-h-0 flex-1"
           viewportClassName="px-4"
