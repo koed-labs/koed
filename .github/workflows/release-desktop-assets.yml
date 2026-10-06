@@ -49,6 +49,12 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.commit }}
 
+      - name: Checkout current immutable asset-promotion tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
@@ -198,12 +204,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ inputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
+          node .release-tools/scripts/ensure-release-assets.mjs "${{ inputs.tag }}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
             apps/desktop/release/desktop-artifact-size-report.json \
-            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
-            --clobber
+            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256
 
       - name: Verify required assets
         env:
@@ -246,8 +251,19 @@ jobs:
             fi
           done
 
-      - name: Publish recovered draft
+      - name: Keep recovered assets in draft until official promotion gate is configured
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ steps.release.outputs.release_id }}
-        run: gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false --silent
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          NPM_AUTHORIZED: ${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}
+          PROMOTION_APPROVED: ${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}
+        run: |
+          set -euo pipefail
+          test -n "${SIGNER_URL}" || { echo "Official component signer is not configured; recovered release remains draft." >&2; exit 1; }
+          test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured; recovered release remains draft." >&2; exit 1; }
+          [[ "${TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Approved trust roots are not configured; recovered release remains draft." >&2; exit 1; }
+          test "${NPM_AUTHORIZED}" = "true" || { echo "npm publication authorization is not configured; recovered release remains draft." >&2; exit 1; }
+          test "${PROMOTION_APPROVED}" = "true" || { echo "Explicit promotion approval missing; recovered release remains draft." >&2; exit 1; }
+          echo "Signer integration and npm promotion are not configured; recovery cannot publish release." >&2
+          exit 1
