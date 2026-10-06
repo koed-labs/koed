@@ -14,6 +14,7 @@ import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createPackageReleaseIdentity } from "./package-release-identity.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceManifest = JSON.parse(
@@ -174,11 +175,27 @@ const main = async () => {
     const { renameSync } = await import("node:fs");
     renameSync(tarball, expectedTarball);
   }
+  const releaseIdentity = createPackageReleaseIdentity({
+    packageRoot,
+    tarball: expectedTarball,
+    version: sourceManifest.version
+  });
+  if (output[0].integrity !== releaseIdentity.npm.integrity)
+    throw new Error("npm pack integrity differs from packed tarball bytes.");
+  const releaseIdentityPath = resolve(
+    tarballDir,
+    "koed-labs-server-release-identity.json"
+  );
+  writeFileSync(
+    releaseIdentityPath,
+    `${JSON.stringify(releaseIdentity, null, 2)}\n`
+  );
   console.log(
     JSON.stringify(
       {
         packageRoot,
         tarball: expectedTarball,
+        releaseIdentity: releaseIdentityPath,
         bundledInputs: Object.keys(built.metafile.inputs).length
       },
       null,
