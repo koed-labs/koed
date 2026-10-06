@@ -59,6 +59,13 @@ export const resolveKoedServerPaths = ({
   }
 
   if (appIsPackaged) {
+    if (
+      environment.KOED_SERVER_CLI?.trim() ||
+      environment.KOED_REPO_ROOT?.trim() ||
+      environment.KOED_NODE_COMMAND?.trim()
+    ) {
+      throw new Error("Packaged Desktop runtime overrides are not allowed.");
+    }
     const packagedResourcesPath = resourcesPath ?? resolve(appDir, "..");
     return {
       repoRoot: packagedResourcesPath,

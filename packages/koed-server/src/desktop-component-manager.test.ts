@@ -9,7 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { validateDesktopBundle } from "./desktop-component-manager.js";
+import {
+  createDesktopComponentManagerBridge,
+  validateDesktopBundle
+} from "./desktop-component-manager.js";
 
 const roots: string[] = [];
 const hash = (value: string): string =>
@@ -50,6 +53,30 @@ describe("Desktop bundled component capability", () => {
     expect(validated.root).toBe(root);
     expect(validated.digest).toMatch(/^[a-f0-9]{64}$/);
     expect(typeof validated.capability).toBe("symbol");
+    expect(Object.isFrozen(validated)).toBe(true);
+    expect(Object.isFrozen(validated.manifest)).toBe(true);
+    expect(Object.isFrozen(validated.manifest.files)).toBe(true);
+  });
+
+  it("rejects caller-forged bundled runtime capabilities", async () => {
+    const { root, manifestPath } = fixture();
+    const valid = await validateDesktopBundle(
+      root,
+      manifestPath,
+      { platform: "macos", architecture: "arm64" },
+      "0.8.1"
+    );
+    const forged = { ...valid, capability: Symbol("forged") };
+    expect(() =>
+      createDesktopComponentManagerBridge({
+        capability: forged,
+        paths: {} as never,
+        runtime: {} as never,
+        isRunning: false,
+        target: { platform: "macos", architecture: "arm64" },
+        controlPlaneVersion: "0.8.1"
+      })
+    ).toThrow("Desktop bundled runtime capability is invalid");
   });
 
   it("rejects changed payload and privacy content in the base manifest", async () => {

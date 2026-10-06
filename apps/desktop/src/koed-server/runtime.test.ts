@@ -36,8 +36,8 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     });
   });
 
-  it("ignores CLI and checkout overrides in packaged apps", () => {
-    expect(
+  it("rejects CLI and checkout overrides in packaged apps", () => {
+    expect(() =>
       resolveKoedServerPaths({
         appDir:
           "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
@@ -47,15 +47,8 @@ describe("Koed Desktop Node entrypoint runtime", () => {
         },
         resourcesPath: "/Applications/Koed.app/Contents/Resources"
       })
-    ).toEqual({
-      repoRoot: "/Applications/Koed.app/Contents/Resources",
-      cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js"
-    });
-  });
-
-  it("ignores explicit checkout root override in packaged apps", () => {
-    expect(
+    ).toThrow(/runtime overrides are not allowed/);
+    expect(() =>
       resolveKoedServerPaths({
         appDir:
           "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
@@ -63,11 +56,7 @@ describe("Koed Desktop Node entrypoint runtime", () => {
         environment: { KOED_REPO_ROOT: "/debug/repo" },
         resourcesPath: "/Applications/Koed.app/Contents/Resources"
       })
-    ).toEqual({
-      repoRoot: "/Applications/Koed.app/Contents/Resources",
-      cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js"
-    });
+    ).toThrow(/runtime overrides are not allowed/);
   });
 
   it("marks Electron child processes as Node-compatible", () => {

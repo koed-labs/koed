@@ -51,6 +51,7 @@ export interface DesktopBundleCapability {
 }
 
 const desktopCapability = Symbol("koed desktop bundled runtime");
+const validatedCapabilities = new WeakSet<object>();
 
 export const validateDesktopBundle = async (
   root: string,
@@ -127,13 +128,20 @@ export const validateDesktopBundle = async (
     if (declaredEntry?.kind !== kind || digest(content) !== declared.get(path))
       throw new Error(`Desktop bundle file digest mismatch: ${path}`);
   }
-  const manifest = parsed as unknown as DesktopBundleManifest;
-  return {
+  const manifest = Object.freeze(
+    parsed as unknown as DesktopBundleManifest
+  );
+  Object.freeze(manifest.target);
+  for (const entry of manifest.files) Object.freeze(entry);
+  Object.freeze(manifest.files);
+  const capability: DesktopBundleCapability = Object.freeze({
     root: absoluteRoot,
     digest: digest(canonicalJson(manifest)),
     manifest,
     capability: desktopCapability
-  };
+  });
+  validatedCapabilities.add(capability);
+  return capability;
 };
 
 export const createDesktopComponentManagerBridge = (input: {
@@ -146,6 +154,7 @@ export const createDesktopComponentManagerBridge = (input: {
 }) => {
   const { capability } = input;
   if (
+    !validatedCapabilities.has(capability) ||
     capability.capability !== desktopCapability ||
     capability.manifest.productVersion !== input.controlPlaneVersion ||
     canonicalJson(capability.manifest.target) !== canonicalJson(input.target)

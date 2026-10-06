@@ -111,9 +111,9 @@ native runtime assets. If no native source is staged, missing native runtime ass
 show as actionable `koed runtime status/install` diagnostics and
 Homebrew remains the macOS/Linux fallback.
 Packaged Desktop always resolves the control-plane CLI from its bundled
-`@koed-labs/server` package. `KOED_REPO_ROOT`, `KOED_SERVER_CLI`, and
-`KOED_NODE_COMMAND` are ignored and removed from packaged child-process
-environments; use an unpackaged development build for checkout overrides.
+`@koed-labs/server` package. Packaged `KOED_REPO_ROOT`, `KOED_SERVER_CLI`, and
+`KOED_NODE_COMMAND` overrides cause runtime resolution to fail closed; use an
+unpackaged development build for checkout overrides.
 
 Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
@@ -207,4 +207,10 @@ packaging, signing, runtime distribution, or packaged smoke support.
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed-labs/server/dist/cli.js`; packaged `KOED_REPO_ROOT`,
-  `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides are ignored.
+  `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides fail closed. Desktop
+  generation ownership still requires a validated private manager channel;
+  Desktop does not assert ownership through renderer data, environment
+  variables, or public CLI flags. Terminal launcher filesystem helpers exist
+  for isolated validation, but installation and shell PATH editing remain
+  unavailable until packaged Electron helper/fuse compatibility and mutation
+  safety are validated on supported target.
