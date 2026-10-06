@@ -163,7 +163,7 @@ KOED_HOME = ${JSON.stringify(koedHome)}
 ${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : ""}
 
 ${hookBlocks}
-${deliveryHooks ? `\n\n${deliveryHooks}` : ""}
+${deliveryHooks}
 ${markerEnd}
 `;
 

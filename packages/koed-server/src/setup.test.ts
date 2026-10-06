@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -261,6 +263,61 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
       mcpCli
     );
+  });
+
+  it("contributor check accepts repaired deferred and blocking configuration", () => {
+    const root = realpathSync(tempDir());
+    const codexHome = resolve(root, "codex");
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    const captureHook = resolve(mcpCli, "../capture-hook.js");
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    for (const artifact of [
+      mcpCli,
+      captureHook,
+      resolve(mcpCli, "../codex-memory-hook.js")
+    ])
+      writeFileSync(artifact, "");
+    mkdirSync(codexHome);
+    const configPath = resolve(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "fixture-model"\n');
+    const environment = {
+      ...process.env,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CODEX_HOME: codexHome,
+      CODEX_CONFIG_PATH: configPath,
+      MEMORY_NODE_COMMAND: process.execPath,
+      MEMORY_API_TOKEN: "synthetic-setup-token",
+      KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
+    };
+    for (const selection of ["1", "0"]) {
+      const result = repairCodexIntegration({
+        environment: { ...environment, KOED_CODEX_STOP_DELIVERY: selection },
+        resolveRuntime: () => ({ root, mcpCli, captureHook }) as never,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+      expect(result.ok).toBe(true);
+      const installed = readFileSync(configPath, "utf8");
+      expect(installed).toContain('model = "fixture-model"');
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          [
+            resolve(
+              import.meta.dirname,
+              "../../../scripts/configure-codex.mjs"
+            ),
+            "--check"
+          ],
+          {
+            cwd: root,
+            env: { ...environment, KOED_CODEX_STOP_DELIVERY: selection }
+          }
+        )
+      ).not.toThrow();
+      expect(readFileSync(configPath, "utf8")).toBe(installed);
+    }
   });
 
   it("preserves explicit deferred recall through packaged setup and repair", async () => {

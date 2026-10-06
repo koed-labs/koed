@@ -14,10 +14,28 @@ Follow-ups:
   revocation and expiry. Repeated calls and reopening delivery remain untested.
   Complete native qualification of the implemented opt-in Codex Stop adapter,
   which uses the shared durable task runtime and exact originating turn.
-  A real native CLI 0.159.3 positive and separate revocation/expiry cases passed
-  review. Failure, explicit cancellation, observer timeout, pending exit and
-  fork/replacement checks remain; IDE and Desktop are source-grounded
-  candidates whose actual delivery is still untested.
+  Real native CLI 0.159.3 positive, revocation/expiry, scheduler failure and
+  durable cancellation cases passed bounded review. Controlled fork and `/new`
+  origin checks passed after parent interruption. Observation timeout remains
+  inconclusive, and pending exit failed because the original turn produced a
+  model answer after CLI disconnection. Configuration repeat/repair/removal
+  checks passed; full setup and live recovery remain. A separate native VS Code
+  positive case demonstrated same-turn automatic delivery with useful overlap
+  and scoped cleanup. A controlled IDE pending window-close also passed its
+  bounded safety outcome; first binding-removal attribution remains uncaptured.
+  IDE durable cancellation also passed with a native no-answer notice and
+  scoped cleanup. IDE execution failure passed a genuine scheduler failure and
+  native no-answer notice. IDE observation timeout passed an unchanged late
+  client-read drain, real completion without cancel and no late answer.
+  Controlled IDE fork isolation also passed with native parent/child lineage,
+  useful child work before completion and no later answer in either history.
+  Active IDE foreground switching also passed: one answer stayed in the continuing
+  original owner and the new Conversation stayed answer-free. Real credential
+  provisioning/reuse, native missing-prehook blocking fallback and configuration
+  repair/check also passed. Simulated orphan-lock cleanup after task completion
+  passed without replay or late answer; pending-task removal and crash recovery
+  are not claimed. Independent review accepts the bounded IDE active-Stop route.
+  Desktop delivery and unresolved CLI outcomes remain separate follow-ups.
   The User accepts the upstream cancellation race temporarily: a hook result
   can enter an interrupted original turn during Codex's abort grace interval.
   Document this limitation and revalidate suppression after an upstream fix;

@@ -25,6 +25,11 @@ and Interrupt cleanup hooks. It preserves Capture Hooks and unrelated settings.
 A trusted PreToolUse hook binds each request to its exact native call. Missing
 readiness uses blocking recall instead.
 
+In the VS Code extension, a yellow badge on the hook icon can indicate hooks
+awaiting approval. Open **Review hooks** and review the Koed definitions before
+starting recall; folder trust is a separate decision. New or changed hook
+definitions are skipped until trusted. See the [official hook trust guide](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
 The default Stop wait is five minutes (`--wait-ms 300000`), with a 305-second
 native hook timeout. The helper accepts waits from 1,000 to 1,800,000 milliseconds.
 If you manually change that flag, set the native timeout to the wait in seconds,
@@ -35,6 +40,11 @@ Plain setup or repair preserves the existing selection. Use `--blocking-recall`
 with setup to disable this adapter. Contributor `pnpm codex:configure --check`
 checks the owned configuration without writing. `--remove` removes only Koed's
 owned configuration and managed global guidance.
+
+The contributor checker accepts configuration written by server repair in both
+recall modes. Isolated configuration checks cover repeat setup, repair, explicit
+blocking selection and owned removal while preserving unrelated settings and
+Capture Hooks. Runtime provisioning and native trust require separate checks.
 
 Only one recall per native turn can use deferred delivery. Further calls in that
 turn use blocking recall. A missing pre-call hook uses blocking recall; a consumed
@@ -49,19 +59,91 @@ processes, then clear only `KOED_HOME/codex-memory-delivery`. This does not canc
 or replay durable tasks, and it does not restore delivery to exited sessions.
 
 Isolated Codex 0.159.3 native CLI tests verified useful-work overlap, automatic
-original-turn delivery, token revocation and expiry. Failure, explicit task
-cancellation, observer timeout, pending exit, fork ownership, and IDE and Desktop
-delivery remain unverified. Stop waits inside the original active turn. This integration
-does not wake an idle conversation or recover a result after session exit.
+original-turn delivery, token revocation, expiry, one scheduler failure and one
+durable cancellation. The cancellation run used a managed backend at 0.160.0;
+the failure run used a managed backend at 0.159.3. A timeout run showed the
+native notice and later durable completion, but did not meet its strict delayed
+read criterion. A pending-exit run failed its criterion: `/quit` disconnected
+the CLI while the backend kept the original turn running, so a model answer
+appeared after the User left and before SessionEnd retired the receipt. A
+separate native fork test verified that an interrupted parent's result did not
+reach its package-only child when the User forked before completion; it used
+one unchanged real query response held for 90 seconds to create that window.
+A separate `/new` test used the same controlled hold after native parent
+interruption. The new Conversation completed package-only work before durable
+completion and received no original answer; the parent produced no later
+model answer. This qualifies CLI origin isolation for that interrupted-parent
+selection path. Active foreground switching, natural-latency fork/switch
+timing remain unverified for those CLI cases.
+Stop waits inside the original active turn. This integration does not wake an
+idle conversation or recover a result into a new session after exit.
 The adapter uses the shared delivery lifecycle and the same durable executor.
 It does not poll through model tools or synthesize answers on the backend.
 The [manual test checklist](codex-deferred-recall-manual-tests.md) records the
 remaining cases, preparation, and required evidence.
 
+A separate VS Code 1.139.1 test with extension 26.5930.51102 and bundled Codex
+0.160.0 demonstrated the normal active-turn path with `gpt-5.6-luna`. Native
+evidence showed one pending recall, an exact package read and summary 13.1
+seconds before real recall completed, then one automatic answer with the
+original source citation in that same turn. No added delay, polling or retry
+was used. The transcript stayed unchanged through a later check and window
+closure, and the isolated services and credentials were cleaned up. This
+qualifies that bounded positive behavior only. A separate User-driven pending
+window-close test showed the frontend backend exiting before real completion,
+binding absence by genuine SessionEnd, and no late answer or result context.
+SessionEnd found the binding already retired; its first-removal handler was
+not directly observed. That controlled case also passed scoped cleanup and
+four selected normal-file baseline comparisons. The additional IDE evidence
+is recorded below. Desktop remains unverified, and the CLI pending-exit failure
+remains separate.
+
+A controlled IDE fork test also passed native parent interruption, distinct
+child identity and recorded parent lineage. Real child package work preceded
+durable completion; neither history changed after completion or window closure.
+No answer reached the child or a later parent model response, and scoped cleanup
+passed. This does not establish natural fork speed. A separate active foreground
+switch also passed: the User opened a distinct non-fork Conversation without
+interrupting the original; the new Conversation finished package work before
+completion and received no original result. One answer stayed in the continuing
+original owner, and scoped cleanup passed. Real core provisioning/reuse and
+native blocking fallback with a healthy runtime but missing pre-call hook also
+passed. Plain repair restored the prehook, preserved Capture Hooks/instructions
+and passed contributor checking; scoped cleanup passed. A final simulated
+orphan-lock cleanup after durable completion also passed without replay or late
+answer. This does not prove state removal during pending work or crash recovery.
+Independent review accepts the bounded IDE active-Stop route. Desktop and the
+unresolved CLI cases remain separate; idle wake-up and exited-session result
+recovery are not claimed.
+
+A separate IDE durable-cancellation case also passed: one protected Koed API
+cancel changed the owned running task to cancelled, stopped real execution,
+and produced one native cancellation notice and model report without an answer,
+retry or duplicate delivery. The User kept the native turn open; this did not
+use VS Code's Stop action. Scoped cleanup and four selected normal-file
+comparisons passed. Further IDE evidence appears below; Desktop remains unverified.
+
+A further failure case on VS Code 1.140.0 with the same extension/backend
+verified accepted recall and package work before the original scheduler claim,
+then actual executor start and a genuine hard-deadline failure. One native
+failure notice arrived without an answer, retry or duplicate delivery. Scoped
+cleanup and selected normal-file comparisons passed.
+
+A separate IDE observation-timeout case then passed a short Stop wait, one
+actual nonterminal read drained unchanged after observation abort, and genuine
+task completion without cancellation or late answer. The test delayed the
+already-read client-port snapshot; it does not qualify the earlier CLI
+server-side delay whose socket closed. Scoped cleanup and selected normal-file
+comparisons passed. The IDE origin/setup closeout is recorded above; Desktop
+remains unverified.
+
 A confirmed interruption can still race a Stop hook that has already returned.
 Codex may record that late hook prompt in the interrupted turn. Interrupt cleanup
 is advisory and does not provide an atomic cancellation fence. This upstream
 limitation is accepted for this opt-in integration.
+The pending-exit model answer is outside that accepted exception. Until the
+exit path is resolved, do not treat `/quit` during a pending recall as proof
+that result delivery or model generation has stopped.
 
 ## Recommended Setup
 

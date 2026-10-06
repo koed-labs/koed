@@ -1268,7 +1268,7 @@ not provide the current native receiver capability needed by ticket 24.
 the shared lifecycle, then review standalone provider coverage and docs.
 **Blocked by:** 23 viable host mechanism; 21/22 validated Claude integration;
 25 canonical task-start boundary.
-**Status:** Blocked pending User availability for manual validation. **Owner:** orchestrator with bounded implementation delegation.
+**Status:** In progress: User-assisted native CLI lifecycle and frontend validation. **Owner:** orchestrator with bounded implementation delegation.
 
 **Latest update (2026-10-02):** The User explicitly accepts the observed
 native Stop cancellation race as a known limitation to fix after upstream changes,
@@ -3681,3 +3681,1122 @@ memory_answer call and the exact prompt required for a gated case. Plain file
 summary instructions are not presented as sufficient for that gate. Formatting
 and staged whitespace checks cover the checkpoint, including preserved Markdown
 line breaks. All three bounded workers finish without live fixture setup.
+
+### Ticket 24: manual CLI validation resumes (2026-10-05)
+
+The User is available and agrees to a separate CLI terminal and fresh sign-in.
+Root prepares /private/tmp/koed-codex-manual-cancel-oct05 with a private file-auth
+profile, synthetic package and separate KOED_HOME. The User reports successful
+native browser sign-in; root checks only auth-file ownership/permissions.
+Pinned Codex0.159.3 SHA still matches, with approved gpt-5.6-luna. Product setup
+installs deferred hooks only into this profile. The controlled outer catalog
+uses Direct/unified_exec for actual package-file work; no normal profile changes.
+
+Manual C starts first. Root supervises owned PostgreSQL session97137/port50403
+and real CPU embedding/API/Local AI Runtime session23410. Native UI launch,
+folder/hook trust and prompt submission belong to the User. Protected cancel
+requires actual private native history, receipt/call/task/Personal owner joins,
+running status and useful file work; no model polling or fabricated terminal
+state. Source-only manual bootstrap uses the maintained executor and private
+parent credentials through its ordinary isolated synthesis profile behavior.
+
+Initial initdb hit the sandbox shared-memory restriction and self-removed its
+incomplete cluster; the bounded escalated initialization succeeded. Service
+startup first failed before imports/task creation because of one extra parent
+in the new source path. Root retains that failure/source, corrects the import
+path and starts services successfully (READY). No native recall/model attempt
+occurred during those setup failures. The User received the one-call prompt.
+Evidence remains pending; no case passes until its actual outcome and scoped
+cleanup are reviewed. No further automated configuration framework is introduced.
+
+### Ticket 24: cancellation timing retries (2026-10-05)
+
+Manual C1 completed before the human report arrived: real executor duration
+13.19s, one attempt, zero protected cancellation requests. It is inconclusive
+for cancellation. The User confirms /quit; root stops only the private daemon
+and owned runtime/PG handles. Registration/connection files and private sign-in
+are removed. Daemon stop reports CLI0.159.3 with managed backend0.160.0, so this
+evidence is distinct from the earlier pinned backend tests.
+
+The User approves C2 with an immediate 250ms host history monitor. Its actual
+completed memory call and package read/summary predicates qualify in the final
+history, but the real executor ends before the full summary is available. The
+monitor stops inconclusive without a cancellation request. The User confirms
+/quit and approves C3 with a bounded real retrieval-response delay. C2's private
+daemon/runtime/PG handles stop and its private sign-in is removed after an
+opaque copy to the fresh C3 profile. No normal credentials, trust or sessions
+are copied.
+
+C3 owns PostgreSQL session96737/port52088 and runtime session63819. The monitor
+is armed before the User's prompt. It observes literal private native history
+read-only and retains actual receipt/owner/task/file-work evidence before its
+single protected control. One computed successful Qwen query response can be
+held up to20s; seed response/data/status remain unchanged. Cancellation/cleanup
+releases the hold early. The supported API timeout is60s and the unchanged
+execution ceiling is120s. Source syntax/pure hold checks pass and root reviews
+the query transform and launch wiring. The User receives the C3 prompt.
+No case acceptance is inferred from these fixture controls or earlier positives.
+
+### Ticket 24: manual C3 bounded cancellation accepted (2026-10-05)
+
+Root reads independent Pass review5c084a5ba1c0edfb1004a0a13315f69c35e02d70ef704b91372aa83cb1d0d6a2
+and verifies all14 source/evidence pins. One actual maintained executor task
+is runningv3 before protected cancellation, cancel_requestedv4 after one real
+request, and cancelledv5 on a fresh read. Actual package work/summary precedes
+control. The query response hold releases by abort at18.368s, without changing
+response data or the120s execution ceiling. The final row has attempt_count1,
+question_idnull and result_snapshotnull, with physical encryption metadata.
+
+Native same-original-turn Stop context and final model output report cancellation
+without an answer. One recall and identical owner/item arrays over83.733s show
+no later answer, duplicate or retry in that interval. Cooperative retrieval
+can continue briefly after abort; immediate cessation is not claimed.
+
+The User confirms /quit. Private daemon stop reports CLI0.159.3/backend0.160.0.
+Owned runtime/embedding handles close, PG shuts down with exit0, registration
+and connection are removed, and zero private auth files remain. Sanitized
+source/evidence and SHA manifest are retained beside the review. Raw receipt
+was retired before independent replay; canonical/native/control/final-row joins
+remain independently checked. Normal profile before/after hashes were not
+captured. Watcher reports memory_api_500 with zero ingestion, so capture health
+is explicitly excluded from this bounded recall/cancellation acceptance.
+
+This accepts the manual C behavior and scoped cleanup for the recorded mixed
+versions only. Failure, observation timeout, pending exit, fork/switch, setup
+recovery and frontend qualification remain incomplete. No whole-ticket or goal
+completion is claimed, and no new commit/push follows without a User request.
+
+### Ticket 24: manual T observation-timeout attempt prepared (2026-10-05)
+
+After the accepted C3 cleanup, the User directs the next case. Root prepares
+one fresh private CLI profile and synthetic Personal Memory fixture at
+`/private/tmp/koed-codex-manual-timeout-oct05`. No prior authentication,
+session, trust, or runtime registration is copied. The User signs in to that
+private profile. The case source is retained in the ignored investigation
+directory `manual-timeout-oct05`; its syntax checks pass. The private Stop hook
+has a 1,000 ms wait and six-second native timeout. The fixture holds one real
+computed query response up to 30 seconds and the first authorized nonterminal
+task GET response for 1,500 ms without changing its task body. PostgreSQL and
+the maintained Koed runtime report ready. The User has the exact launch command
+and one-call prompt. No outcome or acceptance is claimed before native and
+durable evidence review; failure and other lifecycle cases remain open.
+
+### Ticket 24: manual T attempt inconclusive; User selects F next (2026-10-05)
+
+The User signs in and submits one native prompt. The real task starts once, the
+first actual authorized GET sees running version 3, and the test holds its
+unchanged task body for 1,502 ms. The one-second Stop wait ends with an original
+turn timeout notice and no answer. The executor then completes with a real found
+answer in one attempt; the final durable row is completed version 5, with no
+cancel request or abort. Native history shows one Memory Answer call, correct
+package work before executor completion, and unchanged items over 60 seconds.
+
+The client connection had already closed when the held GET was released. The
+fixture therefore did not send that response after the delay. The manual T
+criterion requiring the unchanged held response to drain is unmet, so this
+attempt is inconclusive despite the supported timeout and durable-completion
+observations. Retained sanitized evidence and source hashes are in
+`manual-timeout-oct05/evidence`. The User confirms /quit; the private daemon
+reports CLI and backend 0.159.3, the owned runtime and PostgreSQL exit zero,
+registration/connection are removed, and one private auth file is removed with
+zero remaining. Watcher capture again reports `memory_api_500` and does not
+qualify capture health. No automatic T retry is authorized. The User chooses
+to move to F execution failure next; ticket 24 remains In progress.
+
+### Ticket 24: manual F execution failure accepted in bounded CLI scope (2026-10-05)
+
+Root prepares a fresh private profile and synthetic Personal Memory fixture,
+then the User signs in, trusts only the test folder/hooks, and submits one
+prompt. A 30-second test gate delays the first real scheduler claim until the
+original native turn has an actual package read and correct summary. The gate
+validates the receipt, selected owner/call, invocation key, accepted Personal
+task, and database row. It releases the original claim unchanged; the maintained
+scheduler's `MEMORY_ANSWER_HARD_TIMEOUT_MS=1000` starts after claim.
+
+The real executor starts at 09:20:11.890 UTC and receives the scheduler abort
+exactly 1,000 ms later. One executor invocation fails; a protected task read
+and the final database row both show failed version 3, attempt count 1,
+`last_error_code=hard_timeout`, no cancellation, no Memory Question, and no
+result snapshot. Native same-turn HookPrompt and final output report failure
+without a seeded answer. One recall and unchanged native items over 52 seconds
+show no retry, duplicate, or later output in that interval. CLI and managed
+backend both report 0.159.3 for this run.
+
+The User confirms /quit. The private daemon, maintained runtime, and owned
+PostgreSQL stop normally; registration, connection, and one private auth file
+are removed. Root-reviewed source and selected evidence are retained in
+`manual-failure-oct05/evidence`. This is a bounded case pass, not ticket 24's
+independent final review. No normal-profile before/after hashes were captured.
+Watcher capture again reports `memory_api_500` and remains outside this recall
+verdict. The strict T delayed-read criterion and other CLI/frontend lifecycle
+cases stay open. No new commit, push, or changeset follows from this test.
+
+### Ticket 24: manual X pending-exit case fails (2026-10-05)
+
+Root prepared one fresh private Codex CLI profile and a synthetic Personal
+Memory fixture. The User signed in, trusted only that folder/hooks, submitted
+one recall prompt, and entered `/quit` after a protected read showed the owned
+task running at version 2, attempt 1 and native history showed the package
+read and summary. The User reported shell exit with “Disconnected from this
+task. Any running work continues.” A spent delivery receipt still existed
+after that report. The exact original CLI process exit code was not recorded.
+
+The unchanged, already-computed real query response was released at 09:41:15
+UTC. The maintained executor completed at 09:41:29 UTC, and the final durable
+row was completed version 15, attempt 1, with a stored result and no cancel or
+abort. Native original-turn history then added a completed-result HookPrompt
+at 09:41:31 UTC and a model answer at 09:41:35 UTC. Genuine SessionEnd input
+for that same session reached the test-only wrapper at 09:42:36 UTC; the
+maintained helper retired the sole matching receipt then. A duplicate later
+SessionEnd found none. The model answer after User-reported disconnection
+violates X's no-later-answer criterion. The accepted late-HookPrompt exception
+does not cover it. This is a failed case, not a qualified exit path or an
+automatic retry authorization. No different conversation was opened, so
+cross-owner delivery remains untested.
+
+CLI 0.159.3 used a private managed backend at 0.160.0. Root-reviewed sanitized
+chronology, cleanup and source hashes are retained in
+`manual-pending-exit-oct05/evidence`, with analysis in `review.md`. The private
+daemon stopped; owned runtime and PostgreSQL exited zero; registration and
+connection metadata and the one private auth file were removed. Watcher
+`memory_api_500` does not qualify capture health. No normal-profile
+before/after hash or independent final ticket review is claimed. Ticket 24
+and the full standalone goal remain In progress; T, fork/switch, and
+IDE/Desktop qualification remain open. No production code, changeset, commit,
+push or PR was added for this case.
+
+### Ticket 24: manual B fork attempt misses overlap (2026-10-05)
+
+Root prepared a fresh private Codex CLI 0.159.3 profile, actual synthetic
+Personal Memory and maintained executor with no artificial retrieval delay.
+The User signed in, trusted the isolated folder/hooks, submitted one parent
+recall prompt, used native interruption and `/fork`, then submitted one
+package-only child prompt. A protected monitor observed the original task
+running at 10:09:36 UTC after the package read and summary. The real executor
+completed at 10:09:39 UTC, but native SessionMeta dates the distinct child
+fork to 10:09:45 UTC and the child prompt to 10:11:24 UTC. The required
+child-before-completion window was missed. This attempt is **inconclusive**
+for pending-fork origin ownership, with no automatic retry authorised.
+
+Native history confirms an interrupted parent turn with one Memory Answer
+call and no model answer containing the synthetic decision marker. The child
+completed package-only work, made no Koed call, contained no seeded answer,
+and both histories stayed unchanged in the later observation. The durable
+task completed once, attempt 1, with a saved Memory Question and no cancel.
+These narrower observations do not satisfy the overlap criterion. Root's
+review and selected private evidence are in `manual-fork-oct05`; independent
+final ticket review remains pending.
+
+The isolated Koed runtime and PostgreSQL stopped normally. A scoped process
+check later found the private CLI absent, though the User's shell-exit
+confirmation was not received. The private daemon stopped through its native
+command. One exact owned `pid-update-loop` remained and exited after a
+verified TERM signal. One private auth file and connection/registration
+metadata were removed; zero private auth files remain. The managed backend
+reported 0.160.0. No normal-profile change or full before/after hash claim
+is made. Ticket 24 and the overall goal remain In progress; T, X remediation,
+fork/switch, setup recovery and IDE/Desktop claims remain open. No production
+code, changeset, commit, push or PR was added for this case.
+
+### Ticket 24: User-approved controlled B fork retry passes origin isolation (2026-10-05)
+
+After the natural-timing miss, the User approved a more manual retry. Root
+prepared a fresh isolated CLI 0.159.3 profile, synthetic Personal Memory and
+maintained executor. The User signed in, trusted only the test folder/hooks,
+and received the parent prompt, interruption steps, `/fork` choice and child
+prompt together. The test held one already-computed real query embedding
+response unchanged for 90,002 ms, by deadline, within a 240-second API
+request timeout and unchanged 300-second scheduler hard ceiling. This revises
+the historical B no-artificial-delay procedure for a **controlled-timing
+origin test**; it does not qualify natural fork speed.
+
+The protected monitor observed the exact owned task running version 3,
+attempt 1 after actual package read and summary at 13:41:17 UTC. Native
+SessionMeta records a distinct child fork at 13:41:21 UTC with parent lineage
+and actual cutoff. The child package-only prompt began at 13:41:25 UTC, before
+the original executor completed at 13:42:49 UTC. The parent native turn was
+interrupted. The child actually read the generated package, completed its
+summary, made no Koed call and contained no synthetic answer or decision
+concepts. Parent and child full native item hashes remained unchanged through
+post-result observation; no later parent model answer or child delivery
+appeared. The durable row completed version 10, attempt 1, with a saved
+Memory Question/result, no cancel and no error. This is a **bounded CLI fork
+origin pass**, not a pass for pending exit, natural latency, IDE/Desktop or
+the whole ticket.
+
+The User confirmed `/quit`. Private runtime and PostgreSQL exited zero; the
+managed backend reported 0.160.0 and stopped through its native command. One
+exact owned `pid-update-loop` exited after verified TERM. One private auth
+file and connection/registration metadata were removed; a final scoped check
+found zero private-root processes. Root-reviewed source and sanitized evidence
+are pinned in `manual-fork-retry-oct05/evidence`; no independent final ticket
+review or normal-profile before/after hash claim is made. T remains
+inconclusive, X remains failed, and switch, setup recovery and IDE/Desktop
+qualification remain open. No production code, changeset, commit, push or PR
+was added for this case.
+
+### Ticket 24: controlled CLI `/new` origin isolation passes (2026-10-05)
+
+Root prepared a separate synthetic Personal Memory fixture and fresh Codex CLI
+0.159.3 profile. The User signed in, trusted the test folder/hooks, and ran
+the parent recall prompt followed by native interruption, `/new`, and a
+package-only prompt in the new Conversation. The installed CLI disables `/new`
+while a task is active, so this qualifies the **interrupted-parent selection
+path**, not an active foreground switch. The fixture held one already-computed
+real query embedding response unchanged for 90,003 ms, by deadline, within
+the 240-second API request timeout and unchanged 300-second scheduler ceiling.
+
+The protected monitor saw the exact owned task running version 3, attempt 1
+after actual package read and summary at 14:10:36 UTC. Native history records
+the parent turn interrupted and a distinct non-fork Codex TUI Conversation at
+14:10:41 UTC. The new turn began its package-only prompt at 14:10:44 UTC,
+before the executor completed at 14:12:03 UTC. It read the generated package,
+finished the summary and made no Koed call. Neither native history gained the
+synthetic answer or decision concepts, and the parent produced no later model
+answer. Full histories stayed unchanged through completion and a further
+45-second check. The durable task completed once, version 10, attempt 1,
+with stored question/result, no cancel and no error.
+
+The User confirmed `/quit`; private Koed runtime and PostgreSQL stopped. The
+managed backend reported 0.160.0 and stopped through its native command. One
+exact owned `pid-update-loop` exited after verified TERM. Private auth and
+config were removed; the final scoped process check found zero private-root
+processes. Root-reviewed source and selected sanitized evidence are pinned in
+`manual-switch-oct05/evidence`. This is a **bounded CLI origin pass**, not
+natural-latency timing, active foreground switch, pending-exit remediation,
+IDE/Desktop delivery or ticket completion. T remains inconclusive, X failed,
+and setup/recovery and frontend qualification remain open. No independent
+final ticket review or normal-profile before/after hash claim is made. No
+production code, changeset, commit, push or PR was added for this case.
+
+### Ticket 24: configuration setup/repair parity corrected and checked (2026-10-05)
+
+The User asks to continue and to drive timing-sensitive steps themselves.
+Root runs non-timed configuration checks in fresh private profiles, without
+native sessions or services. The first attempt finds server `repair codex`
+success followed by contributor `--check` failure: the contributor generator
+adds two blank lines before delivery hooks. That failed attempt is retained.
+Root aligns the contributor template and adds a regression that invokes the
+actual checker against repaired deferred and blocking configurations.
+
+A separate fresh fixture passes nine actual CLI operations covering enable,
+repeat, read-only check, changed-timeout repair, repair check, explicit blocking,
+plain repair, blocking check and owned removal. Unrelated MCP, User hook and
+instructions survive; all six Capture Hooks remain in both modes. Repeat/check
+are byte stable, repair restores definitions, blocking retains zero delivery
+hooks, and removal clears owned definitions/registry. The synthetic unavailable
+credential does not enter MCP configuration. This is configuration evidence,
+not runtime readiness, core provisioning, native trust or live receipt recovery.
+
+32 setup, seven configuration and 36 dispatch/delivery tests pass, as do server
+and targeted setup-test typechecks, affected lint and formatting. Full test
+typecheck reports existing errors in MCP dispatch/task/Pi tests; none is in the
+changed setup test. Evidence and source pins are retained in
+`manual-setup-oct05`. The User's no-changeset preference persists. Full setup,
+recovery, frontend qualification and independent final review remain open;
+no acceptance box, commit, push or PR is added.
+
+### Ticket 24: User selects manual VS Code frontend qualification (2026-10-05)
+
+The User selects VS Code and reports that the prior question UI was absent;
+root will supply steps directly. A fresh private fixture contains separate
+VS Code user data, Codex home, extensions, temporary directory and synthetic
+workspace. The selected installed extension 26.5930.51102 is cloned locally;
+all 19,327 regular-file hashes match, with zero source symlinks. Installed
+VS Code is 1.139.1, bundled frontend backend is 0.160.0. No developer CLI
+override or old auth/session/trust state is copied. Private automatic updates
+are disabled. Source pins and bounded preparation notes are retained in
+`manual-ide-positive-oct05`.
+
+The next User step is native launch/sign-in only. No services or native model
+request has started. Runtime readiness, observed private profile inheritance,
+native hook trust and actual frontend history remain prerequisites for the
+one-call positive experiment. CLI evidence is not transferred to this mode.
+
+### Ticket 24: native VS Code positive observed; cleanup pending (2026-10-05)
+
+The User completed native sign-in and submitted the one-recall/package prompt.
+Installed extension 26.5930.51102/backend 0.160.0 used the fresh private profile.
+Native SessionMeta establishes `codex_vscode`/`vscode` provenance and the exact
+receipt-bound original session/turn. One memory call returned pending; native
+code-mode output proves exact package JSON with exit zero, and its summary
+preceded real executor completion by 13,096 ms. The original turn automatically
+received one Stop result and produced the correct answer and seed source
+citation, with no extra recall. Full native transcript bytes remained unchanged
+for 28,137 ms afterward. The durable row completed version 4, attempt 1, with
+stored question/result, no cancel and no error. No artificial delay was used.
+
+The CLI SQLite-based live monitor was unsuitable because the IDE did not write
+that database; its inconclusive instrument result is retained. Root's bounded
+read-only native rollout decoder joins actual MCP/code-mode output, summary,
+result HookPrompt and turn completion to the production receipt and executor.
+Selected sanitized evidence and source hashes are in `manual-ide-positive-oct05`.
+Runtime and PostgreSQL stopped normally. User window closure, frontend/backend
+cleanup and private auth removal remain pending, so mode acceptance is not yet
+claimed. No independent final review or normal-profile baseline claim is made.
+Other IDE lifecycle cases and Desktop remain unverified.
+
+### Ticket 24: VS Code positive cleanup completes (2026-10-05)
+
+The User confirms isolated window closure. Its bundled app-server is absent
+before host cleanup. The windowless private Code application remains, so root
+verifies its original PID/start time and exact private user-data arguments,
+then sends TERM only to that instance. All recorded private PIDs and scoped
+fixture processes are absent. Private auth, VS Code user data, home, generated
+configuration and the 825 MB copied extension are removed. Runtime registration,
+connection metadata and PostgreSQL PID file are absent. Exact original native
+rollout bytes remain unchanged after window closure.
+
+Root accepts the bounded **native IDE positive behavior and scoped cleanup**
+observation: real useful-work overlap, automatic original-turn answer/citation,
+one task/executor and no duplicate output. The CLI-only monitor limitation is
+retained alongside the exact native rollout decoder and source/evidence hashes.
+Docs and plan now describe that separate observed mode. No normal-profile
+baseline, OS Keychain deletion or independent final review claim is made.
+Other IDE lifecycle/recovery cases, Desktop, strict timeout and pending-exit
+remediation remain open. No ticket checkbox, changeset, commit, push or PR is
+added by this bounded result.
+
+### Ticket 24: User-driven IDE pending-exit preparation starts (2026-10-05)
+
+The User asks to continue after positive IDE cleanup. Root prepares a fresh
+private VS Code profile and selected extension copy, with exact selected-file
+hash verification. Model/versions retain IDE 26.5930.51102/backend 0.160.0,
+worker CLI 0.159.3 and gpt-5.6-luna. A 90-second unchanged real query-response
+hold provides a manual closing window; the User will receive the prompt and
+entire closing sequence together and drive the timing. A narrow native
+SessionEnd observer calls the maintained helper without inventing events or
+changing its result. Selected normal-file hashes are captured privately before
+launch. No old auth/session/trust is copied and no services/model call has
+started. `manual-ide-pending-exit-oct05` retains source and preparation pins.
+The initial User action is isolated launch/sign-in only; native identity and
+runtime readiness remain gates before the prompt.
+
+### Ticket 24: IDE pending-exit attempt inconclusive, cleanup complete (2026-10-05)
+
+The User signed in, submitted the one-call prompt and reported window closure.
+Both finite pre-prompt monitors expired before submission. Actual execution
+started at 15:29:47 UTC and held one unchanged real query response for 90,003
+ms before normal release. This attempt used **ordinary blocking recall**:
+its durable invocation key is not `codex-stop:`, no pending receipt was shown,
+and native MCP call-end events were absent. The code-mode call yielded a
+running-cell notice; the model performed a second package-only read and
+finished its summary at 15:30:28 UTC, without a second memory request.
+
+The original recorded frontend PIDs and receipt files were absent at the host's
+15:31:25 UTC check, but no SessionEnd observer input was recorded. Empty
+receipts cannot prove retirement without admission. The real task completed
+at 15:31:37 UTC, version 10, attempt 1, with stored question/result, no cancel
+and no error. Original native history contains no seeded answer and stayed
+unchanged later. This is **inconclusive for deferred pending exit**, with the
+cause of blocking fallback unresolved; config alone does not prove hook trust.
+The earlier normal IDE positive result remains separate.
+
+Runtime and PostgreSQL exited normally. Final scoped processes are absent;
+private auth, VS Code data, extension copy, home/plugin cache and generated
+config were removed. Four selected normal config/instructions/auth/settings
+files match prelaunch hashes. No OS-wide/Keychain or independent final review
+claim is made. `manual-ide-pending-exit-oct05` retains source and selected
+evidence hashes. No automatic retry starts. A proposed retry must observe from
+task acceptance and gate window closure on actual pending-receipt admission,
+with native hook invocation/trust diagnosed. No acceptance box, changeset,
+commit, push or PR is added.
+
+### Ticket 24: yellow IDE hook badge identifies missing review step (2026-10-06)
+
+The User reports no hook trust prompt and a yellow anchor/hook icon in the
+inconclusive IDE attempt. Root checks the exact installed extension
+26.5930.51102 composer source: Review hooks has a yellow badge, appears for
+enabled unmanaged definitions requiring review, and opens the hook review
+dialog. The review model treats untrusted/modified definitions as needing
+approval. Official documentation confirms new/changed hooks are skipped until
+trusted. Unapproved hooks are therefore a strong explanation for blocking
+fallback; no prior UI trust-state capture establishes it retrospectively.
+
+The integration guide and manual checklist now explicitly require opening
+Review hooks, trusting only the generated Koed definitions, recording no
+remaining approval requirement, and proving a pending receipt before timed
+actions. `manual-ide-pending-exit-oct05/evidence/hook-trust-ui-findings.json`
+pins the installed source and bounded inference. No live retry, auth action,
+trust change, service or model call is started by this diagnosis.
+
+### Ticket 24: User explicitly restarts IDE exit test with trust gate (2026-10-06)
+
+The User requests a fresh retry. Root prepares separate private VS Code data,
+Codex home, HOME, temporary directory and synthetic workspace under
+`/private/tmp/koed-codex-manual-ide-exit-retry-oct06`. All 19,327 selected copied
+extension files match current installed source hashes. Versions/model retain
+IDE 26.5930.51102/backend 0.160.0, worker CLI 0.159.3 and gpt-5.6-luna. No old
+auth/session/trust is copied; four selected normal-file hashes are captured.
+
+The initial User action explicitly opens Review hooks and trusts only generated
+Koed definitions, reporting no remaining approval requirement before a prompt.
+Runtime overlap monitoring arms at actual executor start. Frontend monitoring
+waits for actual task capture rather than expiring during the initial manual
+wait. The complete timed sequence requires an actual pending receipt before
+closing the test window. A 90-second unchanged response hold and genuine
+SessionEnd observer preserve the previous bounded control; no canned response,
+durable cancellation or UI automation is introduced. Preparation/source pins
+are in `manual-ide-exit-retry-oct06`. No service/model request has started yet.
+
+### Ticket 24: trusted IDE retry proves admission, but test gate is wrong (2026-10-06)
+
+The User reports native sign-in and Koed hook trust, then submits the reviewed
+prompt. The native call returns valid `structuredContent.status: pending` with
+a matching production receipt, and the durable key is `codex-stop:`. This is
+real deferred admission. The model-generated gate incorrectly checks flat
+`memory.status` and reports RECALL_NOT_DEFERRED, suppressing the package output
+and markers. The User correctly leaves the window open. The task-start monitor
+does arm as intended; the missing work/marker makes exit qualification
+inconclusive. No timed exit is performed and no second recall is started.
+
+The task completes once and automatically supplies one seeded answer in the
+original turn. Runtime and PostgreSQL stop after settlement. Root records the
+faulty program hash, actual envelope and exact receipt/owner/task joins. The
+manual guide now requires unwrapping structuredContent/JSON text. A literal
+gate under `manual-ide-exit-retry-oct06` passes five generated checks covering
+structured/text envelopes, blocking answers, running cells and invalid
+receipts. Those checks are preparation, not live exit proof. Frontend window
+closure and final private credential cleanup are pending. No automatic new
+attempt, acceptance box, changeset, commit, push or PR is introduced.
+
+### Ticket 24: trusted IDE gate attempt cleanup completes (2026-10-06)
+
+The User closes the window after settlement. Genuine SessionEnd input for the
+original session arrives at 08:00:53.225 UTC with one matching spent receipt;
+the maintained helper returns two milliseconds later with no binding left.
+This proves completed-turn native retirement, not the unperformed pending-exit
+case. The backend is absent before host cleanup. Root verifies and stops only
+the windowless private Code instance. Final scoped and recorded processes are
+absent. Private auth, VS Code data, extension copy, home/plugin cache and config
+are removed; runtime/connection and PostgreSQL PID metadata are absent. All
+four selected normal files match prelaunch hashes.
+
+`manual-ide-exit-retry-oct06` retains root-reviewed exact admission, faulty gate,
+one completed task/answer, SessionEnd and cleanup evidence. The timed action
+was not performed, so pending exit stays unqualified. The corrected envelope
+gate is prepared and tested; no new attempt starts. No independent final
+review, OS-wide/Keychain, ticket completion, changeset, commit, push or PR is
+claimed.
+
+### Ticket 24: User starts fresh IDE exit attempt with literal gate (2026-10-06)
+
+The User asks to continue after trusted-attempt cleanup. Root prepares fresh
+isolated profiles at `koed-codex-manual-ide-exit-literal-oct06`, retaining the
+selected extension/backend, worker CLI and gpt-5.6-luna. All 19,327 copied
+files match current source hashes, and four normal files are baselined privately.
+No old credentials, sessions or hook trust are copied. The initial User action
+is native sign-in plus explicit Review hooks approval only for the generated
+Koed definitions; no services or model request has started.
+
+The exact literal program replaces only the owned fixture paths in the tested
+envelope gate. Four generated exact-program checks accept structured/text
+pending, reject blocking/running cells, preserve one memory call and assert
+the file command's exact paths. Source monitors trigger at task acceptance,
+the unchanged-response hold remains 90 seconds, and full User-driven timing
+steps will follow readiness. No generated check is live exit qualification;
+no automatic further retry, ticket completion, changeset, commit or PR is
+introduced.
+
+### Ticket 24: literal IDE pending window-close passes bounded safety outcome (2026-10-06)
+
+The User signs in, explicitly trusts the generated Koed hooks, executes the
+literal program and closes the test window promptly after the verified pending
+receipt/package summary markers. Exact native receipt/session/turn/call/input
+joins establish one deferred task. The protected read at 08:15:54.057 UTC finds
+running version 2, attempt 1 after actual package work. Native turn_aborted is
+at 08:15:58.355 UTC; genuine SessionEnd input/helper return follow at
+08:15:58.531/532 UTC. The binding is already absent before SessionEnd and
+remains absent afterward. Its native retirement postcondition is established,
+but the first deletion actor is not directly captured or attributed to
+SessionEnd; the ordinary Interrupt helper is also a retirement path.
+
+The exact frontend backend is last alive at 08:15:58.899 UTC and first absent
+at 08:15:59.162 UTC. The held real response returns unchanged by deadline after
+90,004 ms at 08:17:21.397 UTC. Real execution completes at 08:17:44.641 UTC,
+once, with stored question/result and no cancel/error. Original native history
+stays unchanged from exit through completion and a further 114,494 ms check:
+zero late model answers and completed-result hook contexts. No new Conversation
+is opened, and no host signal establishes the timed exit. This is a **bounded
+IDE pending window-close safety pass**, with the explicit first-removal
+attribution limit, not CLI quit remediation or whole-mode/ticket completion.
+
+Runtime/PostgreSQL stop normally. Backend exit occurs through User window
+closure; only the leftover windowless private Code process receives verified
+TERM during later cleanup. All scoped/recorded processes are absent, private
+auth/app data/extension/home/plugin cache/config are removed, and connection,
+runtime and PostgreSQL PID metadata are absent. Four selected normal files
+match prelaunch hashes. Root-reviewed evidence and source hashes are retained
+in `manual-ide-exit-literal-oct06`; no OS-wide/Keychain or independent final
+review claim is made. Guides/plan/TODO reflect this separate mode evidence.
+Other IDE lifecycle/recovery, Desktop, strict timeout and CLI pending-exit
+remediation remain open. No acceptance box, changeset, commit, push or PR is
+added.
+
+### Ticket 24: IDE durable-cancellation preparation (2026-10-06)
+
+The User asks to continue. Root prepares one fresh private IDE C fixture at
+`koed-codex-manual-ide-cancel-oct06`, retaining the selected versions/model and
+literal envelope gate. All 19,327 copied extension files match source hashes;
+four selected normal files are privately baselined. No old auth/session/trust
+is copied and no services or model request has started.
+
+Task-triggered monitoring joins the exact native owner, pending receipt,
+actual package summary and fresh running task read before one protected
+LocalAiRuntimeClient cancellation. An exclusive marker/used flag prevent a
+second attempt; a mismatched/terminal response is inconclusive. The User keeps
+the window open and does not substitute native Interrupt. Real response hold
+and API/scheduler limits remain 90/240/300 seconds. Readiness, actual cancelled
+outcome, native notice without answer, stability and cleanup remain required.
+
+### Ticket 24: IDE durable cancellation observed; frontend cleanup pending (2026-10-06)
+
+The User signs in, trusts this fixture's Koed hooks, executes the literal
+program and keeps the window open. Exact owner/native pending/package summary
+proof precedes one protected cancel request at 08:47:16.904 UTC against running
+version 2, attempt 1. The API acknowledges cancel_requested version 3 at
+08:47:16.911 UTC; the execution signal aborts at 08:47:16.910 UTC, releasing the
+real held response by abort after 3,523 ms. A fresh protected read and final
+row establish cancelled version 4, attempt 1, with no question or result and
+last_error_code cancelled. No native Interrupt or canned outcome substitutes
+for durable cancellation, and no second recall/cancel/executor is observed.
+
+The original turn receives one cancellation HookPrompt at 08:47:17.497 UTC,
+reports cancellation without an answer, and completes at 08:47:20.315 UTC.
+Native history has one recall and remains unchanged through a further 208,723
+ms check, with no seeded answer, source citation or decision concepts. The UI's
+hook feedback and model report are distinct representations of that one
+notification. Runtime and PostgreSQL stop normally after settlement. Selected
+source/evidence are retained in `manual-ide-cancel-oct06`; frontend exit and
+private credential/app-data cleanup remain pending. This is a bounded behavior
+pass pending cleanup, not whole-mode/ticket completion or independent review.
+
+### Ticket 24: IDE durable-cancellation cleanup completes (2026-10-06)
+
+The User closes the completed test window. Its backend is absent before host
+cleanup; root verifies and stops only the remaining windowless private Code
+instance. All scoped/recorded fixture processes are absent. Private auth,
+VS Code data, extension copy, home/plugin cache and config are removed;
+runtime/connection and PostgreSQL PID metadata are absent. Four selected normal
+files match prelaunch hashes. The original native transcript remains unchanged
+after window closure, with one recall and one cancellation context.
+
+Root accepts the **bounded IDE durable-cancellation and scoped cleanup pass**:
+exact running/work/owner proof, one protected cancellation, genuine cancelled
+execution and one native no-answer notice without retry/duplicate. Selected
+source/evidence hashes and review are in `manual-ide-cancel-oct06`. Docs, plan
+and TODO reflect this separate mode result. No OS-wide/Keychain or independent
+final review claim is made. IDE failure/timeout/origin and full recovery,
+Desktop, strict CLI timeout and CLI pending-exit remediation remain open.
+No acceptance box, changeset, commit, push or PR is added.
+
+### Ticket 24: IDE genuine execution-failure preparation (2026-10-06)
+
+The User asks to continue after cancellation cleanup. Root prepares one fresh
+private IDE F fixture at `koed-codex-manual-ide-failure-oct06`, with current
+VS Code metadata, selected extension/backend and worker CLI/gpt-5.6-luna.
+All 19,327 copied extension files match source hashes; four selected normal
+files are baselined privately. No old auth/session/trust is copied, and no
+services/model request has started.
+
+The retained real API acceptance response is unchanged. A 30-second preclaim
+work gate starts only at actual acceptance, validates the original pending
+owner and exact native package read/summary while the task remains accepted,
+then calls the original scheduler claim without changing its deadline. The
+real one-second hard ceiling produces the proposed failed outcome only after
+actual executor start. No canned response or fabricated terminal state is used.
+The native IDE observer/literal program are separate from historical CLI proof.
+The User will sign in, review only the Koed hooks and keep the window open;
+readiness, genuine failure/no-answer notice, stability and cleanup remain
+required. No automatic replacement attempt is authorized.
+
+### Ticket 24: current VS Code app version refresh (2026-10-06)
+
+The new F preflight freshly reads VS Code 1.140.0 and pins its app/launcher
+hashes; selected extension 26.5930.51102/backend 0.160.0 remain unchanged.
+This is separate versioned evidence. Subsequent prior IDE case reviews had
+not freshly re-pinned the app itself, so they now retain that app-version
+uncertainty rather than extending the original 1.139.1 file observation.
+Their extension/backend/native provenance and behavior evidence are unchanged;
+updated review digests are pinned. No retrospective exact app-version claim
+or new mode acceptance follows from this refresh.
+
+### Ticket 24: IDE real execution failure observed; cleanup pending (2026-10-06)
+
+The User signs in, trusts Koed hooks and runs the literal program with the
+window open. One unchanged API acceptance is recorded at 09:38:06.053 UTC.
+The original pending owner and exact package read/summary qualify before
+claim at 09:38:09.627 UTC while the task remains accepted. The original claim
+then releases real executor start at 09:38:09.636 UTC; one actual worker call
+is recorded and the real execution signal aborts 999 ms later. A fresh read
+and final row show failed version 3, attempt 1, hard_timeout, no cancel and
+no question/result. No preclaim failure, canned outcome, retry or second
+execution is observed.
+
+The original native turn receives one failure HookPrompt at 09:38:11.337 UTC,
+reports failure/no answer and completes at 09:38:13.148 UTC. One native recall
+and no seeded answer/citation/decision concepts are retained; full history
+stays unchanged through a further 113,575 ms observation. Runtime/PostgreSQL
+stop normally. This is bounded real failure behavior evidence for VS Code
+1.140.0, selected extension/backend and model, not whole-mode/ticket completion.
+`manual-ide-failure-oct06` retains selected evidence. User window closure,
+frontend cleanup and private credential removal remain pending.
+
+### Ticket 24: IDE real execution-failure cleanup completes (2026-10-06)
+
+The User closes the completed window. Its backend exits before host cleanup;
+root verifies and stops only the remaining windowless private Code instance.
+All scoped/recorded processes are absent. Private auth, VS Code data,
+extension copy, home/plugin cache and config are removed; runtime/connection
+and PostgreSQL PID metadata are absent. Four selected normal files match
+prelaunch hashes and original native history remains unchanged after closure.
+
+Root accepts the **bounded IDE real execution-failure and scoped cleanup
+pass** for freshly pinned VS Code 1.140.0: actual accepted package work before
+unchanged claim, real execution and hard-timeout failure, one native no-answer
+notice and no retry/duplicate. `manual-ide-failure-oct06` retains selected
+source/evidence hashes and root review. Guides/plan/TODO reflect that separate
+result. Full provider inference before the short deadline is not claimed.
+IDE timeout/origin/recovery, Desktop, strict CLI timeout and CLI pending-exit
+remediation remain open. No OS-wide/Keychain or independent final review,
+acceptance box, changeset, commit, push or PR claim is added.
+
+### Ticket 24: IDE observation-timeout preparation with drained real read (2026-10-06)
+
+The User requests continuation after F cleanup. Root prepares one fresh IDE T
+profile and selected extension copy at `koed-codex-manual-ide-timeout-oct06`,
+with current app/version hashes, unchanged backend/worker/gpt-5.6-luna and four
+normal-file baselines. No old auth/session/trust is copied and no services or
+model request has started.
+
+The unchanged real executor uses a 30-second real-query response hold and
+300-second hard limit. The native Stop helper uses 1,000 ms observation and
+six-second command timeout. To satisfy the unresolved drain criterion, a
+narrow client-port wrapper delays one actual authenticated/fully-read
+nonterminal snapshot for 1,500 ms, preserving its object/hash and recording
+abort/unchanged drain. The earlier CLI delay sat before HTTP write and lost its
+socket; this control is explicitly different and does not reclassify that
+attempt. Terminal first reads pass through unchanged and mark inconclusive.
+No fake result, task cancellation, authority mutation or model polling is used.
+Generated shared-lifecycle checks prove timeout with unchanged late drain and
+no presentation/cancel; they are not live qualification. User sign-in/hook
+review, actual native owner/read/timeout/drain, real completion, no late answer
+and scoped cleanup remain required. No automatic replacement attempt starts.
+
+### Ticket 24: IDE timeout attempt invalid after code change and repeat recall (2026-10-06)
+
+The User submits the full program. The native first code execution omits the
+pendingPayload function, obtains one valid pending receipt and then throws
+ReferenceError before package work. The model repairs the code and calls
+memory_answer again despite no-retry instructions. Two native calls and two
+real task rows are retained: the original codex-stop task completes attempt 1,
+and the ordinary blocking duplicate fails with attempt_count 3 after fixture
+entry guards reject additional execution. This is not represented as a single
+recall/execution-qualified test.
+
+The first Stop read occurs after original completion and returns completed
+version 5. The timeout wrapper correctly logs first-read-inconclusive and
+passes the actual object unchanged; the maintained helper delivers the real
+answer. No nonterminal delay, timeout notice or live unchanged-drain proof is
+produced. The timeout case remains unqualified; generated checks are not live
+proof. Runtime/PostgreSQL stop normally after settlement. `manual-ide-timeout-oct06`
+retains exact code/error, wrapper and task-row facts. User window closure and
+private auth/frontend cleanup remain pending. No automatic new attempt starts.
+
+### Ticket 24: invalid IDE timeout cleanup completes; inline gate prepared (2026-10-06)
+
+The User closes the invalid test window. Backend exit precedes host cleanup;
+only the verified windowless private Code instance receives TERM. Final scoped
+and recorded processes are absent. Private auth, app data, extension copy,
+home/plugin cache and generated config are removed; connection/runtime and
+PostgreSQL PID metadata are absent. Four selected normal files match baselines.
+The invalid two-recall/two-task outcome is retained without reclassification.
+
+A shorter inline structured-envelope gate removes the omitted-function failure
+mode. Three generated scenarios verify valid pending versus completed/running
+cell and one recall per execution. They are preparation, not live timeout
+proof. A future fixture should refuse second API acceptance before dispatch
+and explicitly forbid repairing code by repeating recall. No new attempt
+starts. `manual-ide-timeout-oct06` retains source/evidence; timeout remains open.
+No independent final review, OS-wide/Keychain, acceptance box, changeset,
+commit, push or PR claim is introduced.
+
+### Ticket 24: User restarts IDE timeout with inline gate and acceptance fence (2026-10-06)
+
+The User requests continuation. Root prepares a fresh private T profile at
+`koed-codex-manual-ide-timeout-retry-oct06`, with actual current app metadata,
+selected extension/backend, worker/gpt-5.6-luna and all copy hashes verified.
+No old auth/session/trust is copied; four normal files are baselined privately.
+The short inline structured-envelope gate removes the omitted-function
+failure. A fixture acceptance fence returns the original response unchanged
+and refuses second/uncertain retries before API dispatch. Generated checks
+cover those boundaries; no new live request has started.
+
+The actual nonterminal client snapshot hold remains 1,500 ms after a full
+protected read, with 1,000 ms observation and six-second native timeout.
+The real query-response hold is now 90 seconds, leaving ample model/Stop time;
+execution/hard deadline and return data remain unchanged. The User will keep
+the window open, forbid code repair/repeated recall and report timeout. Actual
+read/drain, no cancellation, real completion, no late answer and cleanup remain
+required. No automatic replacement attempt is introduced.
+
+### Ticket 24: IDE timeout retry satisfies live drain and completion checks (2026-10-06)
+
+The User signs in, trusts the test hooks and executes the short inline program
+once. Exact pending/native package work qualifies against one running task;
+one API acceptance and one executor are recorded, with no refused second
+attempt or retry. The original native Stop fully reads running version 2 at
+10:33:12.288 UTC before its observation limit. Observation aborts the read
+signal at 10:33:13.249 UTC; the maintained helper returns its static timeout
+at 10:33:13.250 UTC. The exact actual task object drains unchanged at
+10:33:13.790 UTC after 1,502 ms with identical snapshot hash and aborted signal.
+No fake status, authority mutation or task cancellation is substituted.
+
+One timeout HookPrompt enters the original turn at 10:33:13.801 UTC; the turn
+reports timeout and completes at 10:33:15.889 UTC. The real task continues
+normally and completes at 10:34:53.246 UTC with stored question/result, attempt
+1, no cancel and no execution abort. Original native bytes remain unchanged
+through a further 75,129 ms post-completion check, with no late seeded answer
+or citation. Runtime/PostgreSQL stop normally. This is bounded IDE observation-
+timeout behavior with the actual delayed-read/drain criterion exercised;
+the earlier CLI and invalid IDE attempts remain separate. Evidence is retained
+in `manual-ide-timeout-retry-oct06`. User window closure and final frontend/auth
+cleanup are pending; no independent final review or full-mode claim is made.
+
+### Ticket 24: IDE timeout retry cleanup completes (2026-10-06)
+
+The User closes the completed window. Backend exit precedes host cleanup;
+root verifies and stops only the windowless private Code instance. All scoped
+and recorded processes are absent. Private auth/app data/extension/home/plugin
+cache/config are removed; connection/runtime and PostgreSQL PID metadata are
+absent. Four selected normal files match baselines. Original native bytes
+remain unchanged after window closure, with one recall and one timeout context.
+
+Root accepts the **bounded IDE observation-timeout, actual unchanged read-drain,
+real completion and scoped cleanup pass**. The client-port delay follows a
+successful protected HTTP/body read; it does not claim the earlier CLI delayed
+server write drained after socket closure. Earlier invalid/inconclusive cases
+remain separate. `manual-ide-timeout-retry-oct06` retains source/evidence and
+review. Guides/plan/TODO reflect this result. Remaining IDE origin/recovery,
+Desktop, strict CLI timeout and CLI pending-exit remediation stay open. No
+OS-wide/Keychain, independent final review, acceptance box, changeset, commit,
+push or PR claim is added.
+
+### Ticket 24: IDE closeout audit and fork preparation (2026-10-06)
+
+The User requests completion of IDE checks. A bounded independent read-only
+review accepts the selected reports for five lifecycle behaviors and identifies
+three remaining exercises: native interrupted-parent fork, active foreground
+switch, and supported readiness/blocking fallback plus locked-state repair.
+Existing shared configuration-operation checks are reused. No criteria are
+waived, and idle wake-up/exited-session replay are not introduced as supported
+capabilities. The manual guide records the finite closeout checklist.
+
+Root prepares one fresh private fork profile at
+`/private/tmp/koed-codex-manual-ide-fork-oct06`, with no copied authentication,
+sessions or trust, four selected normal-file baseline hashes and 19,327
+verified extension-copy file hashes. Maintained runtime and 90-second unchanged
+real query-response hold are reused; standard native Stop observation remains.
+Short inline pending-envelope gate and one-acceptance guard are retained.
+Source syntax checks and `git diff --check` pass. No service or model request
+has started; User native sign-in/hook review and readiness precede the prompt.
+The User will drive the timing-sensitive fork sequence without host round trips.
+Selected preparation and the bounded independent review are retained under
+`24-standalone-codex/manual-ide-fork-oct06` and
+`IDE-CLOSEOUT-REVIEW-2026-10-06.md`. No live fork result, final acceptance,
+changeset, commit, push or PR is claimed.
+
+### Ticket 24: IDE fork fixture ready for User-driven native sequence (2026-10-06)
+
+The User reports ready after isolated IDE sign-in/hook review. Root verifies
+private Code PID 26313 and backend PID 26412, VS Code 1.140.0, extension
+26.5930.51102 and backend 0.160.0. Fresh private PostgreSQL starts on loopback 61122. The real synthetic runtime is ready (host handle 14009), with worker
+0.159.3/gpt-5.6-luna and no executor request before the prompt. Standard
+300000-ms Stop wait and 305-second native timeout remain; the timeout-specific
+read hold is absent. Installed IDE source names the local fork action “Fork
+chat”; it is distinct from creating a new worktree. User drives interruption,
+fork and child work without host round trips. Services and the private IDE
+remain active for this one attempt; no outcome or cleanup acceptance yet.
+
+### Ticket 24: IDE fork attempt stops at prompt syntax error (2026-10-06)
+
+The User reports the model stopped after a syntax error without retry/repair.
+Selected native code shows the execution included prose following the unfenced
+JavaScript; parsing failed with Unexpected identifier 'the'. Root identifies
+its prompt boundary ambiguity and will use explicit code fences in any separately
+approved replacement attempt. Actual API acceptance, executor and worker counts
+are zero. No fork or package work occurred; origin isolation remains untested.
+Runtime handle 14009 exits normally and private PostgreSQL stops. The isolated
+IDE remains open pending User window closure and scoped frontend/auth cleanup.
+No automatic retry, acceptance claim, changeset or commit.
+
+### Ticket 24: invalid IDE fork attempt cleanup complete (2026-10-06)
+
+The User closes the isolated window. Backend exits; root verifies the exact
+remaining private Code PID/start/command before stopping that windowless instance.
+No scoped process remains. Private auth/profile, application data, extension copy,
+home, presentation state and launcher are removed; runtime registration, connection
+metadata and PostgreSQL PID metadata are absent. Four selected normal-file hashes
+remain unchanged. Sanitized outcome/cleanup and source manifest are retained in
+manual-ide-fork-oct06. The pre-recall syntax error gives no fork qualification.
+A replacement must be a separately selected attempt under the manual checklist;
+no live retry or additional service is started.
+
+### Ticket 24: User approves fresh IDE fork retry (2026-10-06)
+
+After completed syntax-error-attempt cleanup, the User explicitly approves retry.
+Root prepares fresh private state at koed-codex-manual-ide-fork-retry-oct06,
+with no auth/session/trust copy and selected normal-file baselines. The corrected
+parent prompt explicitly fences JavaScript and labels the following instructions
+as response prose. Exact fence extraction and nonexecuting Node syntax checks
+must pass before launch. The real runtime, single acceptance and controlled
+90-second unchanged query-response hold are reused; no timeout-specific read
+hold is installed. Native sign-in/hook review and service readiness precede the
+live prompt. User drives timing; no live outcome or completion is claimed.
+
+### Ticket 24: corrected IDE fork retry ready (2026-10-06)
+
+The User reports ready. Root verifies the fresh private IDE main PID 27422 and
+backend PID 27524, VS Code 1.140.0, extension 26.5930.51102/backend 0.160.0.
+Private PostgreSQL and real runtime start successfully (host handle 68666),
+with no recall/executor before the prompt. Standard native Stop wait remains
+300000 ms with 305-second timeout; one actual query response will be held
+unchanged for 90 seconds. The exact fenced program has passed nonexecuting syntax
+and extraction checks. User drives native interruption/fork/child work. Services
+remain active for this single retry; no outcome or cleanup acceptance yet.
+
+### Ticket 24: IDE controlled fork origin checks pass; cleanup pending (2026-10-06)
+
+The User finishes the complete native sequence. Retained histories show one
+pending recall, real parent package work, native interruption at 11:11:01.093 UTC,
+and distinct child/fork lineage at 11:11:05.849. Child actual package read/summary
+finishes at 11:11:13.788, before unchanged real response hold releases at
+11:12:25.434 and original execution completes at 11:12:38.884. One acceptance,
+executor and worker; completed attempt 1 with question/result saved and no cancel.
+Both histories remain byte-identical across completion plus 45,954 ms, with no
+child original answer or later parent model message. Inherited parent rows are
+not counted as child tool calls. This qualifies controlled IDE origin timing,
+not natural fork speed. The post-interruption host status control finds a retired
+binding and fails; direct exact-owned private database evidence supplies the
+terminal status instead. Runtime handle 68666 stops normally; final frontend/auth
+and PostgreSQL cleanup remain pending. No final ticket acceptance yet.
+
+### Ticket 24: IDE controlled fork cleanup passes (2026-10-06)
+
+The User closes the isolated window. Backend exits before host cleanup; root
+verifies and stops only the remaining windowless private Code instance. All
+scoped processes are absent. Both native parent/child histories remain unchanged
+after closure. Temporary auth/profile, app data, extension copy, home/presentation
+state and launcher are removed; runtime registration, connection metadata and
+PostgreSQL PID metadata are absent. Four selected normal-file hashes match.
+Root accepts the bounded controlled IDE fork origin and scoped cleanup pass.
+Source/sanitized evidence are retained in manual-ide-fork-retry-oct06. No natural
+fork-speed, independent final review, Desktop or whole-ticket completion claim.
+The remaining IDE closeout exercises are active foreground switch and supported
+readiness/blocking fallback plus locked-state repair. No new test is started.
+
+### Ticket 24: IDE active foreground switch preparation (2026-10-06)
+
+After controlled fork cleanup passes, root continues the User-requested finite
+IDE closeout set with fresh private koed-codex-manual-ide-switch-oct06 state.
+The existing real runtime, single-acceptance guard, corrected fenced program and
+90-second unchanged query-response hold are reused. No authentication, trust or
+sessions are copied. User will select a distinct non-fork Conversation without
+interrupting the original, then finish package-only work before its completion.
+Original ongoing-owner delivery is permitted; output into the selected owner
+is forbidden. UI-forced interruption cannot qualify active foreground switching.
+Syntax/fence/copy validation precede native launch; no service or model request
+starts until User sign-in/hook review and readiness. No live result claimed.
+
+### Ticket 24: IDE foreground-switch fixture ready (2026-10-06)
+
+The User reports ready after native sign-in/hook review. Root verifies private
+Code PID 28313/backend PID 28420, VS Code 1.140.0, extension 26.5930.51102 and
+backend 0.160.0. Private PostgreSQL and the real runtime are ready (handle 45002)
+with no recall before the prompt. Standard Stop observation remains; controlled
+real query-response hold is 90 seconds. Installed native source labels the
+conversation-creation command New chat. User will switch there without Stop,
+fork or abandonment and submit package-only work before original completion.
+Services/private IDE remain active for this one attempt; no result claimed.
+
+### Ticket 24: IDE active foreground-switch origin checks pass (2026-10-06)
+
+The User completes the New chat sequence without Stop/fork. Native records show
+distinct non-fork Conversations and no original interruption. New actual package
+read uses sed in the exact cwd and matches full fixture JSON; its summary finishes
+at 11:22:21.609 UTC before original response hold release at 11:23:38.854 and
+execution completion at 11:23:53.317. One acceptance/executor/worker, completed
+attempt 1, no cancel/error. One answer reaches only the original owner at
+11:23:56.803; selected history remains unchanged and answer-free. Both native
+histories stay stable for another 89,860 ms after original turn completion.
+The host read extractor's cat/exit-code assumption is corrected to actual sed/raw
+output; no explicit command exit-zero claim. This is a bounded active foreground
+switch pass, distinct from interrupted /new. Runtime handle 45002 stops normally;
+window/frontend/auth/PG cleanup remains pending. Final setup/readiness/repair,
+Desktop and independent whole-ticket acceptance remain separate.
+
+### Ticket 24: IDE foreground-switch cleanup passes (2026-10-06)
+
+The User closes the private window. Backend exits; root verifies and stops only
+the windowless private Code instance. All scoped processes are absent. Original
+and selected histories remain unchanged after closure. Temporary auth/profile,
+application data, extension copy, home/presentation state and launcher are removed;
+runtime registration, connection and PostgreSQL PID metadata are absent. Four
+selected normal-file hashes match. Root accepts the bounded controlled active
+foreground-switch origin and cleanup result. Sanitized evidence/source pins are
+retained in manual-ide-switch-oct06. Only the IDE supported setup/readiness/fallback
+and presentation-state repair exercises remain in the finite closeout checklist;
+Desktop and independent whole-ticket audit are separate. No commit or changeset.
+
+### Ticket 24: final IDE provisioning/readiness preparation (2026-10-06)
+
+Root prepares fresh private koed-codex-manual-ide-readiness-oct06 state with full
+extension-copy hashes, four normal-file baselines, no copied auth/trust/sessions.
+The maintained real runtime fixture now invokes actual setup core twice before
+recall against migrated fixture storage, verifies one canonical-owner token is
+provisioned then reused, loads that actual credential and checks protected API
+anonymous 401 versus authorized missing-resource 404. Explicit private empty
+KOED_ENV_PATH prevents normal repository credentials from becoming test inputs.
+Only native memory-delivery PreToolUse is omitted before hook trust; Capture,
+other delivery hooks and opt-in MCP remain. Healthy runtime plus missing nonce
+must use ordinary blocking recall once, without codex-stop acceptance or duplicate
+Stop delivery. No retrieval delay. Source syntax checks pass; bounded independent
+preflight is requested before native launch. No service/model request yet.
+A separate simulated orphan-lock cleanup exercise remains; configuration repair
+alone must not be described as clearing presentation locks.
+
+### Ticket 24: readiness fixture passes bounded preflight (2026-10-06)
+
+Independent read-only review accepts core CLI shape, DB/credential/auth owner
+joins, protected GET expectations, empty private env boundaries and missing
+prehook-only configuration. It flags dormant pending arm/status controls as
+inapplicable to a blocking case. Root explicitly rejects every host control
+except stop before receipt inspection; post-correction Node syntax passes.
+No service/model/native result yet. User sign-in/hook review is the next input.
+
+### Ticket 24: real core provisioning/reuse passes; native fallback ready (2026-10-06)
+
+The User reports ready. Root verifies private Code PID 29694/backend PID 29793,
+VS Code 1.140.0, extension 26.5930.51102/backend 0.160.0. Exact before/after
+configuration comparison confirms all six Capture definitions, remaining four
+delivery definitions and MCP config unchanged; delivery PreToolUse alone is
+absent. A host check initially assumed Capture PreToolUse existed, but the actual
+baseline has none; filtering hook event arrays also excludes native hooks.state
+trust metadata. Corrected structural comparison passes without config mutation.
+
+Private database/runtime start (handle 40565). Actual maintained setup core first
+provisions one canonical-owner credential and second reuses the same token record
+and count. Authenticated owner matches that stored credential; protected API GET
+returns anonymous401 and authorized nonexistent-resource404. No tokens printed,
+no task accepted by these probes, and missing prehook remains absent after setup.
+Runtime healthy; no executor has started. User will now make one ordinary native
+blocking recall to establish fallback. No model/native outcome or cleanup yet.
+
+### Ticket 24: IDE provisioning and missing-prehook blocking behavior passes (2026-10-06)
+
+The User completes one ordinary memory call. Actual native call has no nonce or
+pending envelope, returns the found answer/source directly after real execution,
+and uses ordinary invocation rather than codex-stop. One acceptance/executor/worker,
+completed attempt 1 with saved question/result, no cancellation/retry. Presentation
+directory stays empty and no Stop completion HookPrompt is present. Model commentary
+and final package summary restate one direct result; no second delivery is claimed.
+Native history stays stable29,189ms. Real core credential provisioning/reuse and
+protected API access are separately proven. Runtime handle40565 stops normally;
+User window closure, prehook restoration through plain repair/check, and scoped
+frontend/auth/PG cleanup remain pending. Simulated orphan-lock repair remains.
+
+### Ticket 24: provisioning/fallback repair and cleanup pass (2026-10-06)
+
+The User closes the isolated window. Backend exits; root verifies/stops only its
+windowless private Code. Maintained plain repair codex restores the omitted
+prehook using the real provisioned fixture credential, preserves all six Capture
+definitions/global instructions, restores all five delivery definitions and
+passes contributor --check. No scoped process remains after repair. Native
+history stays unchanged through closure and repair. Temporary native auth and
+provisioned Koed credential, app data, extension copy, home/presentation state and
+launcher are removed. Runtime/connection/PG PID metadata are absent; four selected
+normal-file hashes match. Root accepts bounded real provisioning/reuse, native
+missing-prehook blocking fallback, configuration repair and cleanup. Source and
+sanitized evidence are retained in manual-ide-readiness-oct06. Only the simulated
+orphan-lock presentation-state repair remains for IDE closeout; no recovered
+exited-session delivery, Desktop or whole-ticket completion claim is made.
+
+### Ticket 24: final IDE orphan-lock repair preparation reviewed (2026-10-06)
+
+After readiness repair/cleanup passes, root prepares fresh private
+koed-codex-manual-ide-lock-repair-oct06 state, no auth/trust/session copy, four
+normal-file baselines and full extension-copy hashes. Bounded delegated fixture
+work produces only an offline PostToolUse wrapper, its synthetic tests and notes.
+Root reads it against maintained bind/canonical-input/lock semantics and reproduces
+all26 guard/ordering tests. Wrapper calls maintained bind unchanged, verifies exact
+native pending identity plus actual bound receipt/executor capture and exclusively
+creates one private nonce.json.lock, preserving original output. It waits only
+for real executor capture, not blocked native history. Only delivery PostToolUse
+is replaced before User trust; six Capture definitions, other four delivery
+handlers and MCP stay unchanged. Corrected fenced program syntax/extraction pass.
+
+User will close the window after pending/package markers. Host must verify all
+selected native/MCP/hook processes exited before removing only selected presentation
+state; actual durable task must complete once without cancel/replay/new question
+or late answer. The real response hold is90s. This explicitly simulates an orphan
+lock and does not claim a crash or exited-session recovery. No service/model
+request started; sign-in/hook review and readiness precede live recall.
+
+### Ticket 24: final IDE lock-repair fixture ready (2026-10-06)
+
+The User reports ready after native sign-in/hook review. Root verifies private
+Code PID30740/backendPID30838, VS Code1.140.0, extension26.5930.51102/backend0.160.0.
+Only reviewed delivery PostToolUse wrapper is configured, timeout10s; all six
+Capture definitions remain. Private PostgreSQL and real runtime start (handle95342)
+with no recall before the prompt. Real unchanged response hold is90s. User will
+submit one corrected fenced program then close the native window after pending
+package markers. Root must establish real lock/bound/task identity and native
+process absence before removing only selected presentation state, preserving
+runtime observation through genuine completion. No outcome or acceptance yet.
+
+### Ticket 24: final IDE orphan-state cleanup observed and cleaned (2026-10-06)
+
+Real maintained bind and strict wrapper guards create one private receipt lock at
+11:58:32.443UTC. Actual native pending recall and exact package JSON read/exit0
+precede turn completion/window close. Model summary uses npm aliases instead of
+actual node script strings; the stricter live summary monitor remains inconclusive,
+not silently promoted. Exact actual file output supplies retrospective useful-work
+proof. Native processes exit and locked bound state persists. Real execution
+completes once at12:00:09.202; host removes only selected presentation state at
+12:00:41.020 after completion. This is post-completion orphan cleanup, not pending
+state-clear survival or crash/restart recovery. Same attempt1/version9 task and
+one Memory Question/result remain, no cancellation/replay/new execution/late answer.
+Native history remains unchanged across repair106,266ms and service stop. All
+scoped/recorded processes stop, private auth/app/home/extension state is removed,
+registration/connection/PG PID metadata absent, four selected normal files unchanged.
+Raw native history stays private; selected native/source/sanitized evidence is
+retained in manual-ide-lock-repair-oct06. Fresh independent IDE closeout review is
+underway; no whole-ticket acceptance, changeset or commit.
+
+### Ticket 24: independent bounded IDE closeout accepted (2026-10-06)
+
+Fresh independent reviewer ide_final_review inspects nine sanitized case reports,
+source/criteria and all191 manifest entries; hashes match. It accepts the bounded
+IDE active-Stop route: normal useful overlap/delivery, window-close safety,
+cancellation, real failure, timeout, controlled fork, active switching, provisioning,
+blocking fallback/config repair, and simulated orphan-state cleanup with scoped
+cleanup. Last removal occurs after durable completion, so pending-state survival
+and crash/restart recovery are not proven. Model npm-alias wording keeps the strict
+live summary monitor inconclusive, while exact native file JSON/exit0 proves useful
+work. These limits are explicit; no criterion requires a still-pending clear for
+this bounded documented cleanup. No further manual IDE test is required. Guides,
+plan and TODO now reflect mode closeout. Desktop, unresolved CLI outcomes, affected
+check gaps and independent whole-ticket/goal audit remain open; ticket24 remains
+In progress and no overall acceptance box is changed. No changeset/commit/push/PR.
+
+### Ticket 24: User-requested local checkpoint validation (2026-10-06)
+
+The User requests a local checkpoint commit after IDE closeout. Targeted current
+checks pass:32 setup tests,7 contributor Codex configuration tests, touched-source
+ESLint, koed-server typecheck, formatting of all selected tracked files, and
+`git diff --check`. The full test-tsconfig gap recorded earlier is not reclassified
+by these targeted checks. Commit scope is the existing configuration-generator
+whitespace parity fix/regression plus tracked plan, backlog, ticket and integration
+validation documents. Preserve unrelated .gitignore and untracked CONFIG.md and
+FIXTURE_ACC.txt; ignored private investigation fixtures/evidence stay excluded.
+Existing User no-changeset preference remains. Local commit only; no push/PR.

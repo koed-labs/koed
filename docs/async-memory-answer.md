@@ -46,18 +46,54 @@ stop boundary. See [Codex setup](codex-integration.md#optional-deferred-recall-i
 An isolated native Codex CLI 0.159.3 test with gpt-5.6-luna returned a pending
 receipt in 72 ms. The agent read and summarised a generated package file before
 real recall completed, then automatically consumed the answer and original
-source citation in the same turn. This qualifies the normal CLI path. Failure,
-explicit task cancellation, observer timeout, pending exit and fork ownership
-remain unverified. Separate isolated
-revocation and expiry cases confirmed that a fresh task read prevents cached
+source citation in the same turn. This qualifies the normal CLI path. Separate
+isolated scheduler-failure and durable-cancellation CLI cases passed their
+bounded checks; the cancellation case used a managed backend at 0.160.0.
+Observation timeout remains inconclusive under its delayed-read criterion.
+One pending-exit run failed: after User-reported CLI disconnection, the original
+turn received a completed-result HookPrompt and produced a model answer before
+SessionEnd retired the receipt. A separate controlled-timing fork test showed
+the interrupted parent's result did not reach a child Conversation; it does
+not establish natural-latency fork speed. A controlled `/new` test likewise
+kept the completed result out of a distinct package-only Conversation after
+parent interruption, with no later parent model answer. Active foreground
+switching remains unverified. Separate isolated revocation and
+expiry cases confirmed that a fresh task read prevents cached
 answer delivery. Ordinary task GETs can return HTTP 200 with expired retention;
 the shared delivery lifecycle rejects that snapshot before presentation.
 
 External native queue presentation remains unsupported. Loaded-thread metadata
 does not establish the current interactive receiver. The Stop route avoids that
-receiver choice by retaining the original active turn. It does not prove idle
-wake-up, IDE, or Desktop delivery. The accepted upstream cancellation race can
-record a late hook prompt in an interrupted turn. Interrupt cleanup is advisory.
+receiver choice by retaining the original active turn. A separate native VS
+Code extension 26.5930.51102/backend 0.160.0 positive test demonstrated useful
+package work before recall and automatic same-turn answer/citation delivery,
+without added delay, polling or retry. Its scoped cleanup passed. A separate
+controlled IDE pending window-close showed native backend exit and binding
+absence before completion, with no late model answer or result context.
+Genuine SessionEnd confirmed the empty binding state; first-removal attribution
+was not directly captured. A separate IDE durable-cancellation case confirmed
+one protected cancel, actual cancelled execution and a native no-answer notice
+without another recall; its scoped cleanup passed. A separate IDE execution-failure
+case also confirmed useful queued work before claim, real execution and a
+genuine scheduler failure followed by one native no-answer notice. Its scoped
+cleanup passed. An IDE observation-timeout case also confirmed an actual late
+read drained unchanged, real task completion without cancellation and no late
+answer, with scoped cleanup. This used client-port latency after a successful
+HTTP read; the earlier CLI server-side timeout attempt remains inconclusive.
+Controlled IDE fork isolation also passed: actual parent interruption and child
+lineage preceded child package work and durable completion, with no result in
+the child or later parent model answer. Scoped cleanup passed. A separate active foreground switch also passed: the new
+Conversation finished package work before completion and received no original
+answer; the continuing original owner alone received it. Scoped cleanup passed.
+Real core credential provisioning/reuse and native missing-prehook blocking
+fallback also passed, with configuration repair/check and scoped cleanup.
+Simulated orphan-lock state removal after task completion passed without replay
+or late answer; in-flight removal and crash recovery are not claimed. Independent
+review accepts this bounded IDE active-Stop route. Desktop delivery remains
+unverified, and unresolved CLI outcomes remain separate. The Stop
+route does not prove idle wake-up. The accepted upstream cancellation race can
+record a late hook prompt in an interrupted turn. It does not accept the
+pending-exit model answer. Interrupt cleanup is advisory.
 
 ## Claude Code host backgrounding
 
