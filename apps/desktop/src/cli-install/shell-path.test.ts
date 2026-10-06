@@ -11,6 +11,28 @@ afterEach(() => {
 });
 
 describe("managed shell PATH block", () => {
+  it("fails closed on edited or duplicate markers and preserves contents", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed path "));
+    roots.push(root);
+    const rcPath = join(root, ".zshrc");
+    const input = {
+      rcPath,
+      shell: "zsh" as const,
+      operation: "add" as const,
+      consent: true,
+      launcherDirectory: join(root, ".local", "bin")
+    };
+    const edited = "# >>> koed managed PATH >>> altered\nkeep\n";
+    writeFileSync(rcPath, edited);
+    await expect(updateManagedPathBlock(input)).rejects.toThrow(/markers/);
+    expect(readFileSync(rcPath, "utf8")).toBe(edited);
+    const duplicate =
+      "# >>> koed managed PATH >>>\n# <<< koed managed PATH <<<\n".repeat(2);
+    writeFileSync(rcPath, duplicate);
+    await expect(updateManagedPathBlock(input)).rejects.toThrow(/markers/);
+    expect(readFileSync(rcPath, "utf8")).toBe(duplicate);
+  });
+
   it("adds one idempotent block and removes only unchanged owned bytes", async () => {
     const root = mkdtempSync(join(tmpdir(), "koed path "));
     roots.push(root);

@@ -1,6 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   inspectLauncher,
@@ -30,6 +36,8 @@ describe("Desktop CLI launcher", () => {
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
+    mkdirSync(dirname(input.cliPath), { recursive: true });
+    writeFileSync(input.cliPath, "// CLI entry\n");
     const status = await installLauncher({
       ...input,
       consent: true,
@@ -43,6 +51,32 @@ describe("Desktop CLI launcher", () => {
     );
   });
 
+  it("reports missing or non-regular CLI targets", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "koed"),
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      expectedVersion: "0.8.1",
+      currentPath: "/usr/bin"
+    };
+    writeFileSync(input.cliPath, "// CLI entry\n");
+    await installLauncher({
+      ...input,
+      consent: true,
+      probeHelper: async () => true
+    });
+    rmSync(input.cliPath);
+    await expect(
+      inspectLauncher({ ...input, probeHelper: async () => false })
+    ).resolves.toMatchObject({ target: "missing", helper: "unsupported" });
+    writeFileSync(input.cliPath, "// CLI entry\n");
+    await expect(
+      inspectLauncher({ ...input, probeHelper: async () => true })
+    ).resolves.toMatchObject({ target: "valid" });
+  });
+
   it("removes only unchanged Koed-owned launcher", async () => {
     const root = fixture();
     const input = {
@@ -53,6 +87,7 @@ describe("Desktop CLI launcher", () => {
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
+    writeFileSync(input.cliPath, "// CLI entry\n");
     await installLauncher({
       ...input,
       consent: true,
@@ -64,6 +99,38 @@ describe("Desktop CLI launcher", () => {
     await expect(
       removeLauncher({ ...input, probeHelper: async () => true })
     ).rejects.toThrow("unchanged Koed-owned");
+  });
+
+  it("revalidates launcher inode and contents after asynchronous helper probe", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "koed"),
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      expectedVersion: "0.8.1",
+      currentPath: "/usr/bin"
+    };
+    writeFileSync(input.cliPath, "// CLI entry\n");
+    await installLauncher({
+      ...input,
+      consent: true,
+      probeHelper: async () => true
+    });
+    await expect(
+      removeLauncher({
+        ...input,
+        probeHelper: async () => {
+          rmSync(input.destination);
+          writeFileSync(
+            input.destination,
+            "# koed-desktop-launcher:v1\\nreplacement"
+          );
+          return true;
+        }
+      })
+    ).rejects.toThrow("changed during removal");
+    expect(readFileSync(input.destination, "utf8")).toContain("replacement");
   });
 
   it("refuses an unrelated destination and unsupported helper without replacing it", async () => {
@@ -78,6 +145,7 @@ describe("Desktop CLI launcher", () => {
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
+    writeFileSync(input.cliPath, "// CLI entry\n");
     await expect(
       inspectLauncher({ ...input, probeHelper: async () => false })
     ).resolves.toMatchObject({

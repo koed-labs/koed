@@ -396,15 +396,34 @@ const bootstrap = async () => {
     platform: process.platform,
     probeHelper: async () =>
       new Promise<boolean>((resolveProbe) => {
+        const probe =
+          "process.stdout.write(JSON.stringify({electron:process.versions.electron??null,modules:process.versions.modules??null,node:process.versions.node??null}))";
         execFile(
           process.execPath,
-          ["--version"],
+          ["-e", probe],
           {
             env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
             timeout: 5_000,
-            windowsHide: true
+            windowsHide: true,
+            maxBuffer: 1024
           },
-          (error) => resolveProbe(!error)
+          (error, stdout) => {
+            if (error) return resolveProbe(false);
+            try {
+              const identity = JSON.parse(stdout) as {
+                electron?: unknown;
+                modules?: unknown;
+                node?: unknown;
+              };
+              resolveProbe(
+                identity.electron === process.versions.electron &&
+                  identity.modules === process.versions.modules &&
+                  identity.node === process.versions.node
+              );
+            } catch {
+              resolveProbe(false);
+            }
+          }
         );
       })
   });
