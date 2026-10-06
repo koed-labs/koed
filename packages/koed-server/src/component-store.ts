@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync
@@ -861,6 +862,55 @@ export async function stageGeneration(
       }
     }
   );
+}
+
+export async function readStoredComponents(
+  paths: KoedServerPaths,
+  runtime: RuntimeIdentity
+): Promise<VerifiedComponent[]> {
+  const components: VerifiedComponent[] = [];
+  for (const component of ["base", "privacy"] as const) {
+    const componentRoot = resolve(paths.componentsDir, component);
+    if (!existsSync(componentRoot)) continue;
+    assertDirectoryChain(paths.koedHome, componentRoot);
+    for (const versionEntry of readdirSync(componentRoot, {
+      withFileTypes: true
+    })) {
+      if (
+        !versionEntry.isDirectory() ||
+        !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?$/.test(
+          versionEntry.name
+        )
+      )
+        continue;
+      const versionRoot = resolve(componentRoot, versionEntry.name);
+      for (const digestEntry of readdirSync(versionRoot, {
+        withFileTypes: true
+      })) {
+        if (
+          !digestEntry.isDirectory() ||
+          !/^[a-f0-9]{64}$/.test(digestEntry.name)
+        )
+          continue;
+        try {
+          components.push(
+            await verifyStoredComponent(
+              paths.koedHome,
+              resolve(versionRoot, digestEntry.name),
+              {
+                component,
+                productVersion: versionEntry.name,
+                runtime
+              }
+            )
+          );
+        } catch {
+          // Invalid or incompatible cache entries are never considered installed.
+        }
+      }
+    }
+  }
+  return components;
 }
 
 export async function readStagedGeneration(

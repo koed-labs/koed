@@ -161,6 +161,69 @@ describe("koed executable help", () => {
   });
 });
 
+describe("explicit component provisioning CLI", () => {
+  it("rejects incomplete offline metadata before installation", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive",
+        "/tmp/base.tar.gz",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths: () =>
+          resolveKoedServerPaths({ KOED_HOME: "/tmp/koed-component-cli-test" })
+      }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      error:
+        "Offline install requires --archive, --manifest, and --signature paths."
+    });
+  });
+
+  it("rejects an incomplete network source triplet without fetching", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive-url",
+        "https://artifacts.example/base.tar.gz",
+        "--json"
+      ],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error:
+        "Network install requires --archive-url, --manifest-url, and --signature-url."
+    });
+  });
+
+  it("does not accept public trust-root or owner overrides", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      ["components", "status", "--owner", "desktop", "--json"],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Unsupported components option: --owner"
+    });
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =

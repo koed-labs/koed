@@ -1,1361 +1,163 @@
 #!/usr/bin/env node
-import { deviceRequestCommand } from "./personal-device-request.js";
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import {
-  appendFileSync,
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  realpathSync,
-  writeFileSync
-} from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { loadRepoEnv } from "./env-file.js";
-import { capSupervisorLog } from "./supervisor-log.js";
-import {
-  removeCodexIntegration,
-  repairCodexIntegration,
-  setupCodex,
-  setupCore
-} from "./setup.js";
-import { removePi, setupPi } from "./pi-setup.js";
-import { removeClaude, setupClaude } from "./claude-setup.js";
-import {
-  collectKoedServerDoctor,
-  collectKoedServerStartupStatus,
-  collectKoedServerStatus,
-  evaluateAiClientReadiness
-} from "./status.js";
-import { restartKoedServer } from "./restart.js";
-import { startKoedServer } from "./start.js";
-import { stopKoedServer } from "./stop.js";
-import { runDesktopCollaborationBrokerProcess } from "./desktop-collaboration-broker.js";
-import {
-  collectLocalModelStatus,
-  installLocalModel,
-  type LocalModelKind
-} from "./local-models-runtime.js";
-import {
-  collectPrivacyModelStatus,
-  installPrivacyModel
-} from "./privacy-model-runtime.js";
-import {
-  collectHomebrewRuntimeStatus,
-  installHomebrewRuntime
-} from "./runtime-homebrew.js";
-import {
-  collectPackagedRuntimeStatus,
-  installPackagedRuntime
-} from "./runtime-packaged.js";
-import {
-  activateServerPackage,
-  cleanupServerPackages,
-  collectServerPackageStatus,
-  installServerPackage
-} from "./package-runtime.js";
+import { pathToFileURL } from "node:url";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
-  listUpstreamBackends,
-  refreshUpstreamBackendCapabilities,
-  registerUpstreamBackend,
-  removeUpstreamBackend,
-  setActiveUpstreamBackend,
-  updateUpstreamBackendRoutePolicy,
-  type UpstreamRoutePolicyUpdate
-} from "./upstream-registry.js";
-import {
-  getProjectTeamWorkspaceLink,
-  linkProjectTeamWorkspace,
-  listProjectTeamWorkspaceLinks,
-  removeProjectTeamWorkspaceLink
-} from "./project-team-workspace-links.js";
-import {
-  discoverProjectMetadata,
-  forgetProjectMetadata,
-  getProjectMetadataForCwd,
-  listProjectMetadata
-} from "./project-metadata.js";
-import {
-  cancelUpstreamEnrollment,
-  disconnectUpstreamBackendEnrollment,
-  getUpstreamEnrollmentStatus,
-  invalidateUpstreamEnrollmentReferences,
-  startUpstreamEnrollment
-} from "./upstream-enrollment.js";
-import {
-  inspectDeviceIdentityStatus,
-  rotateDeviceIdentity
-} from "./device-identity.js";
-import { runPersonalSyncCommand } from "./personal-sync.js";
-import { runApplicationSecretProvider } from "./application-secret-provider.js";
-import type { KoedServerDoctorResult } from "./types.js";
+  personalSyncAdvancedUsageText,
+  personalSyncUsageText,
+  usageText
+} from "./cli-help.js";
+import { startKoedServerDaemon } from "./daemon-start.js";
+import type { KoedServerCliDependencies } from "./cli-implementation.js";
 
-export const personalSyncUsageText = `Personal Sync
-
-  koed pair                   Connect this device using a request link
-  koed pair status            Show pending pairing progress
-  koed pair cancel            Cancel a waiting request
-  koed personal-sync status --json
-                                     Show this installation’s group and members
-
-Create your first group and manage devices in Electron → Devices.
-Status uses the local Personal installation automatically; no browser session is needed.
-
-  koed personal-sync --help --advanced
-                                     Show retained low-level recovery commands
-`;
-
-export const personalSyncAdvancedUsageText = `${personalSyncUsageText}
-Advanced compatibility and recovery commands:
-  group bootstrap [--recovery-kit <path>] [--password-fd <fd>]
-  invite create --group-id <id>
-  join redeem --link-stdin [--device-label <name>]
-  join request | complete | bind-local-user | challenge
-  active-device approve | refresh
-  device list --group-id <id>
-  device revoke
-  policy enable | pause | resume --group-id <id>
-  replica status --group-id <id>
-  retry --group-id <id>
-  recovery approve | guidance
-  recovery-kit create | verify
-
-These are protocol/recovery operations, not the normal pairing flow. They need
-operation-specific signed artifacts, protected file descriptors, and/or browser
-session context. Use the recovery and protocol documentation before running them.
-Only status configures local authentication automatically. Existing scripts remain
-supported; use pair and Electron for ordinary enrollment and device management.
-`;
-
-export const usageText = `Usage: koed <command> [options]
-
-Commands:
-  start                  Start and supervise local Koed services
-  start --daemon --json  Start koed-server supervisor detached
-  stop --json            Stop supervised local Koed services
-  restart --json         Restart supervised local Koed services
-  status --json          Print machine-readable local service state
-  status --startup --json Print lightweight supervisor startup state
-  doctor --json          Print actionable setup/dependency diagnostics
-  identity status --json Print clone-safe deployment/device identity state
-  identity rotate --json Create fresh device identity and invalidate local enrollment references
-  pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
-  personal-sync status --json             Print redacted Personal Sync status
-  personal-sync --help   Show Personal Sync usage and advanced recovery help
-  setup core --json      Prepare Koed core services and local credential
-  setup codex --json     Configure the supported Codex integration
-    --without-memory-guidance  Do not install the recommended global guidance
-    --with-memory-guidance     Install the recommended global guidance (default)
-  setup claude --json    Configure the supported Claude Code integration
-  setup pi --json        Configure the supported Pi integration
-  check <client> --json  Check one AI Client integration without mutation
-  repair codex --json    Rewrite Codex integration for the active local API
-  repair <client> --json Repair one AI Client integration
-  remove <client> --json Remove only Koed-owned client integration state
-  models status --json   Print bundled local model install state
-  models install --json  Download bundled local model with SHA-256 verification
-  runtime status --json  Print native bundled-local runtime install state
-  runtime install --json Install native bundled-local runtime assets explicitly
-  package status --json  Print standalone koed-server package install state
-  package install --json Verify and install standalone koed-server package
-  package activate --json Activate an installed koed-server package version
-  package cleanup --json Remove inactive versions and stale cached archives
-  upstream list --json   List registered upstream backend status
-  upstream register --json Register or update an upstream backend
-  upstream refresh --json Refresh cached upstream capabilities
-  upstream policy --json  Update explicit upstream route-policy families
-  upstream activate --json Select the registered upstream used for remote work
-  upstream remove --json Remove an upstream backend
-  upstream enroll start --json Start enrollment with --source-owner-principal-id
-  upstream enroll status --json Print local upstream enrollment state
-  upstream enroll cancel --json Cancel local upstream enrollment orchestration
-  upstream disconnect --json Disable local upstream routes and enrollment state
-  project discover --json Discover and store local Project metadata
-  project list --json     List discovered local Project metadata
-  project show --json     Show discovered Project metadata for a cwd
-  project forget --json   Forget discovered Project metadata by local Project id
-  team workspace link --json Link a local Project root to a Team Workspace id
-  team workspace list --json List local Project to Team Workspace links
-  team workspace show --json Show the Team Workspace link for a Project root
-  team workspace remove --json Remove the Team Workspace link for a Project root
-
-Runtime providers:
-  --provider homebrew       Use Homebrew-backed runtime assets (default)
-  --provider packaged       Use packaged runtime resources from the app bundle
-
-Options:
-  --json                 Emit JSON output for commands that support it
-  --help, -h             Show this help
-
-Environment:
-  KOED_HOME              Directory for local Koed config, logs, and runtime state
-  KOED_REPO_ROOT         Koed checkout path used by this development build
-  KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_PEM
-                         Ed25519 public key PEM used to verify package provenance signatures
-`;
-
-export interface KoedServerCliDependencies {
-  collectStatus?: typeof collectKoedServerStatus;
-  collectStartupStatus?: typeof collectKoedServerStartupStatus;
-  collectDoctor?: typeof collectKoedServerDoctor;
-  inspectDeviceIdentity?: typeof inspectDeviceIdentityStatus;
-  rotateDeviceIdentity?: typeof rotateDeviceIdentity;
-  invalidateUpstreamEnrollmentReferences?: typeof invalidateUpstreamEnrollmentReferences;
-  start?: typeof startKoedServer;
-  startDaemon?: typeof startKoedServerDaemon;
-  stop?: typeof stopKoedServer;
-  restart?: typeof restartKoedServer;
-  setupCore?: typeof setupCore;
-  setupCodex?: typeof setupCodex;
-  setupClaude?: typeof setupClaude;
-  setupPi?: typeof setupPi;
-  removeClaude?: typeof removeClaude;
-  removePi?: typeof removePi;
-  removeCodex?: typeof removeCodexIntegration;
-  repairCodex?: typeof repairCodexIntegration;
-  collectModelStatus?: typeof collectLocalModelStatus;
-  installModel?: typeof installLocalModel;
-  collectPrivacyModelStatus?: typeof collectPrivacyModelStatus;
-  installPrivacyModel?: typeof installPrivacyModel;
-  collectRuntimeStatus?: typeof collectHomebrewRuntimeStatus;
-  installRuntime?: typeof installHomebrewRuntime;
-  collectPackagedRuntimeStatus?: typeof collectPackagedRuntimeStatus;
-  installPackagedRuntime?: typeof installPackagedRuntime;
-  collectPackageStatus?: typeof collectServerPackageStatus;
-  installPackage?: typeof installServerPackage;
-  activatePackage?: typeof activateServerPackage;
-  cleanupPackages?: typeof cleanupServerPackages;
-  listUpstreams?: typeof listUpstreamBackends;
-  registerUpstream?: typeof registerUpstreamBackend;
-  refreshUpstream?: typeof refreshUpstreamBackendCapabilities;
-  updateUpstreamPolicy?: typeof updateUpstreamBackendRoutePolicy;
-  activateUpstream?: typeof setActiveUpstreamBackend;
-  removeUpstream?: typeof removeUpstreamBackend;
-  startUpstreamEnroll?: typeof startUpstreamEnrollment;
-  getUpstreamEnrollStatus?: typeof getUpstreamEnrollmentStatus;
-  cancelUpstreamEnroll?: typeof cancelUpstreamEnrollment;
-  disconnectUpstream?: typeof disconnectUpstreamBackendEnrollment;
-  linkProjectTeamWorkspace?: typeof linkProjectTeamWorkspace;
-  listProjectTeamWorkspaceLinks?: typeof listProjectTeamWorkspaceLinks;
-  getProjectTeamWorkspaceLink?: typeof getProjectTeamWorkspaceLink;
-  removeProjectTeamWorkspaceLink?: typeof removeProjectTeamWorkspaceLink;
-  discoverProjectMetadata?: typeof discoverProjectMetadata;
-  listProjectMetadata?: typeof listProjectMetadata;
-  getProjectMetadataForCwd?: typeof getProjectMetadataForCwd;
-  forgetProjectMetadata?: typeof forgetProjectMetadata;
-  runPersonalSync?: typeof runPersonalSyncCommand;
-  loadEnvironment?: typeof loadRepoEnv;
-  resolvePaths?: typeof resolveKoedServerPaths;
-  stdout?: Pick<NodeJS.WriteStream, "write">;
-  stderr?: Pick<NodeJS.WriteStream, "write">;
-}
+export {
+  personalSyncAdvancedUsageText,
+  personalSyncUsageText,
+  usageText,
+  startKoedServerDaemon
+};
+export type { KoedServerCliDependencies } from "./cli-implementation.js";
+export type {
+  KoedServerStartDaemonOptions,
+  KoedServerStartDaemonResult
+} from "./daemon-start.js";
 
 const printJson = (
   stdout: Pick<NodeJS.WriteStream, "write">,
   value: unknown
-) => {
-  stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-};
-
-const persistDoctorVerification = (
-  paths: ReturnType<typeof resolveKoedServerPaths>,
-  doctor: KoedServerDoctorResult
 ): void => {
-  mkdirSync(resolve(paths.lastVerificationPath, ".."), {
-    recursive: true,
-    mode: 0o700
-  });
-  writeFileSync(
-    paths.lastVerificationPath,
-    `${JSON.stringify(
-      {
-        ok: doctor.ok,
-        checkedAt: doctor.generatedAt,
-        message: doctor.summary
-      },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
-  );
+  stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 };
 
 const mergeRepoEnvironment = (
   repoEnv: Record<string, string>,
   environment: NodeJS.ProcessEnv = process.env
-): NodeJS.ProcessEnv => {
-  const nonEmptyEnvironment = Object.fromEntries(
+): NodeJS.ProcessEnv => ({
+  ...repoEnv,
+  ...Object.fromEntries(
     Object.entries(environment).filter(([, value]) => value?.trim())
-  );
-  return {
-    ...repoEnv,
-    ...nonEmptyEnvironment
-  };
-};
+  )
+});
 
-const flagValue = (args: string[], name: string): string | undefined => {
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-};
-
-const requireFlagValue = (args: string[], name: string): string => {
-  const value = flagValue(args, name);
-  if (!value) {
-    throw new Error(`${name} is required.`);
+const lightweightStatus = async (
+  args: string[],
+  stdout: Pick<NodeJS.WriteStream, "write">
+): Promise<number | null> => {
+  const [command, subcommand] = args;
+  const wantsJson = args.includes("--json");
+  const paths = resolveKoedServerPaths();
+  if (command === "models" && subcommand === "status") {
+    const kindFlag = args.indexOf("--kind");
+    const kind = kindFlag < 0 ? "embedding" : args[kindFlag + 1];
+    if (kind !== "embedding" && kind !== "reranker" && kind !== "privacy")
+      throw new Error("--kind must be embedding, reranker, or privacy.");
+    const [
+      { collectLocalModelStatus },
+      { collectPrivacyModelStatus },
+      { loadRepoEnv }
+    ] = await Promise.all([
+      import("./local-models-runtime.js"),
+      import("./privacy-model-runtime.js"),
+      import("./env-file.js")
+    ]);
+    const environment = mergeRepoEnvironment(loadRepoEnv(paths.repoRoot));
+    const result =
+      kind === "privacy"
+        ? await collectPrivacyModelStatus(paths)
+        : await collectLocalModelStatus(paths, kind, environment);
+    if (wantsJson) printJson(stdout, result);
+    else stdout.write(`${result.message}\n`);
+    return result.state === "checksum_mismatch" ? 1 : 0;
   }
-  return value;
-};
-
-const packageTrustPolicy = (
-  value: string | undefined
-): "sha256-only" | "require-provenance" | "require-signature" | undefined => {
-  if (value === undefined) return undefined;
-  if (
-    value === "sha256-only" ||
-    value === "require-provenance" ||
-    value === "require-signature"
-  ) {
-    return value;
-  }
-  throw new Error(
-    "--trust-policy must be sha256-only, require-provenance, or require-signature."
-  );
-};
-
-const compactOptions = <T extends Record<string, unknown>>(options: T): T =>
-  Object.fromEntries(
-    Object.entries(options).filter(([, value]) => value !== undefined)
-  ) as T;
-
-const checkCoreSetupNeeded = (
-  paths: ReturnType<typeof resolveKoedServerPaths>
-): string | null => {
-  if (!existsSync(paths.localAppCredentialPath)) {
-    return `Core setup is required. Run:
-
-  koed setup core
-
-This will provision your local API Token and prepare Koed services.`;
+  if (command === "runtime" && subcommand === "status") {
+    const providerFlag = args.indexOf("--provider");
+    const provider = providerFlag < 0 ? "homebrew" : args[providerFlag + 1];
+    if (provider !== "homebrew" && provider !== "packaged")
+      throw new Error("--provider must be homebrew or packaged.");
+    const [
+      { collectHomebrewRuntimeStatus },
+      { collectPackagedRuntimeStatus },
+      { loadRepoEnv }
+    ] = await Promise.all([
+      import("./runtime-homebrew.js"),
+      import("./runtime-packaged.js"),
+      import("./env-file.js")
+    ]);
+    const environment = mergeRepoEnvironment(loadRepoEnv(paths.repoRoot));
+    const result =
+      provider === "packaged"
+        ? collectPackagedRuntimeStatus(paths, environment)
+        : collectHomebrewRuntimeStatus(paths, environment);
+    if (wantsJson) printJson(stdout, result);
+    else stdout.write(`${result.message}\n`);
+    return result.ok ? 0 : 1;
   }
   return null;
-};
-
-const getNoAgentsWarning = (status: {
-  codex?: { configured?: boolean };
-  claudeCode?: { configured?: boolean };
-  pi?: { configured?: boolean };
-}): string | null => {
-  const anyConfigured =
-    status.codex?.configured ||
-    status.claudeCode?.configured ||
-    status.pi?.configured;
-  if (!anyConfigured) {
-    return "No AI Clients configured. Run: koed setup codex, setup claude, or setup pi";
-  }
-  return null;
-};
-
-type SpawnLike = typeof nodeSpawn;
-
-export interface KoedServerStartDaemonResult {
-  ok: boolean;
-  state: "starting" | "needs_attention";
-  koedHome: string;
-  message: string;
-  startedPid?: number;
-  logPath?: string;
-  error?: string;
-}
-
-export interface KoedServerStartDaemonOptions {
-  environment?: NodeJS.ProcessEnv;
-  spawn?: SpawnLike;
-  startCommand?: string;
-  startArgs?: string[];
-  resolvePaths?: typeof resolveKoedServerPaths;
-}
-
-const configuredDaemonInvocation = (
-  environment: NodeJS.ProcessEnv
-): { command: string; args: string[] } | null => {
-  const command = environment.KOED_SERVER_DAEMON_COMMAND?.trim();
-  const argsJson = environment.KOED_SERVER_DAEMON_ARGS_JSON?.trim();
-  if (!command || !argsJson) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(argsJson) as unknown;
-    if (
-      !Array.isArray(parsed) ||
-      !parsed.every((arg) => typeof arg === "string")
-    ) {
-      throw new Error("KOED_SERVER_DAEMON_ARGS_JSON must be a string array.");
-    }
-    return { command, args: parsed };
-  } catch (error) {
-    throw new Error(
-      `Could not parse KOED_SERVER_DAEMON_ARGS_JSON: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error }
-    );
-  }
-};
-
-export const startKoedServerDaemon = ({
-  environment = process.env,
-  spawn = nodeSpawn,
-  startCommand = process.argv[1],
-  startArgs,
-  resolvePaths = resolveKoedServerPaths
-}: KoedServerStartDaemonOptions = {}): KoedServerStartDaemonResult => {
-  const paths = resolvePaths(environment);
-  const configured = configuredDaemonInvocation(environment);
-  const command = configured?.command ?? process.execPath;
-  const args =
-    configured?.args ??
-    startArgs ??
-    (startCommand ? [startCommand, "start"] : []);
-  if (args.length === 0) {
-    return {
-      ok: false,
-      state: "needs_attention",
-      koedHome: paths.koedHome,
-      message: "Could not resolve koed-server CLI path for daemon start.",
-      error: "Could not resolve koed-server CLI path for daemon start."
-    };
-  }
-  const logPath = resolve(paths.logsDir, "supervisor.log");
-  let stdoutFd: number | undefined;
-  let stderrFd: number | undefined;
-  try {
-    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
-    capSupervisorLog(logPath);
-    appendFileSync(
-      logPath,
-      `\n[${new Date().toISOString()}] Starting koed-server supervisor.\n`,
-      { mode: 0o600 }
-    );
-    stdoutFd = openSync(logPath, "a", 0o600);
-    stderrFd = openSync(logPath, "a", 0o600);
-    const child = spawn(command, args, {
-      cwd: environment.KOED_REPO_ROOT ?? process.cwd(),
-      detached: true,
-      env: { ...environment, KOED_SERVER_SUPERVISOR_LOG_PATH: logPath },
-      stdio: ["ignore", stdoutFd, stderrFd]
-    }) as ChildProcess;
-    if (!child.pid) {
-      throw new Error("koed-server daemon child process did not report a pid.");
-    }
-    child.unref();
-    return {
-      ok: true,
-      state: "starting",
-      koedHome: paths.koedHome,
-      message: "Koed server daemon start requested.",
-      startedPid: child.pid,
-      logPath
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      state: "needs_attention",
-      koedHome: paths.koedHome,
-      message,
-      logPath,
-      error: message
-    };
-  } finally {
-    if (stdoutFd !== undefined) closeSync(stdoutFd);
-    if (stderrFd !== undefined) closeSync(stderrFd);
-  }
-};
-
-const assertRuntimeFlags = (
-  args: string[],
-  command: "status" | "install"
-): "homebrew" | "packaged" => {
-  const provider = flagValue(args, "--provider") ?? "homebrew";
-  if (provider !== "homebrew" && provider !== "packaged") {
-    throw new Error("--provider must be homebrew or packaged.");
-  }
-  const dependencyMode = flagValue(args, "--dependency-mode");
-  if (command === "install" && dependencyMode !== "bundled-local") {
-    throw new Error(
-      "runtime install requires --dependency-mode bundled-local."
-    );
-  }
-  return provider;
-};
-
-const routePolicyFlags: Array<{
-  flag: string;
-  key: keyof UpstreamRoutePolicyUpdate;
-}> = [
-  { flag: "--personal-memory-read", key: "personalMemoryRead" },
-  { flag: "--personal-collaboration", key: "personalCollaboration" },
-  { flag: "--team-workspace-read", key: "teamWorkspaceRead" },
-  { flag: "--share-grant-management", key: "shareGrantManagement" },
-  { flag: "--capture-writes", key: "captureWrites" },
-  { flag: "--sync", key: "sync" },
-  { flag: "--managed-execution", key: "managedExecution" },
-  { flag: "--admin", key: "admin" }
-];
-
-const parseRoutePolicyUpdate = (args: string[]): UpstreamRoutePolicyUpdate => {
-  const update: UpstreamRoutePolicyUpdate = {};
-  for (const { flag, key } of routePolicyFlags) {
-    const value = flagValue(args, flag);
-    if (!value) continue;
-    if (value !== "enabled" && value !== "disabled") {
-      throw new Error(`${flag} must be enabled or disabled.`);
-    }
-    update[key] = value;
-  }
-  return update;
-};
-
-const readSecretStdin = (): string | null => {
-  const maximum = 2_000_000;
-  const buffer = Buffer.allocUnsafe(maximum + 1);
-  let offset = 0;
-  try {
-    while (offset < buffer.length) {
-      const count = readSync(0, buffer, offset, buffer.length - offset, null);
-      if (count === 0) break;
-      offset += count;
-    }
-    if (offset > maximum) return null;
-    return buffer.subarray(0, offset).toString("utf8");
-  } finally {
-    buffer.fill(0);
-  }
-};
-
-const runApplicationSecretProviderCli = async (
-  args: string[],
-  stdout: Pick<NodeJS.WritableStream, "write">
-): Promise<number> => {
-  const operation = args[1];
-  const reference = args[2];
-  if (
-    (operation !== "get" && operation !== "put" && operation !== "delete") ||
-    !reference ||
-    args.length !== 3
-  ) {
-    stdout.write("Usage: koed secret-provider <get|put|delete> <reference>\n");
-    return 1;
-  }
-  const value = operation === "put" ? readSecretStdin() : undefined;
-  if (operation === "put" && value === null) return 1;
-  const result = await runApplicationSecretProvider(
-    operation,
-    reference,
-    value ?? undefined,
-    process.env
-  );
-  if (!result.ok) return 1;
-  if (operation === "get" && result.value !== null) stdout.write(result.value);
-  return 0;
 };
 
 export const runKoedServerCli = async (
   args: string[],
-  {
-    collectStatus = collectKoedServerStatus,
-    collectStartupStatus = collectKoedServerStartupStatus,
-    collectDoctor = collectKoedServerDoctor,
-    inspectDeviceIdentity = inspectDeviceIdentityStatus,
-    rotateDeviceIdentity: rotateIdentity = rotateDeviceIdentity,
-    invalidateUpstreamEnrollmentReferences:
-      invalidateEnrollmentReferences = invalidateUpstreamEnrollmentReferences,
-    start = startKoedServer,
-    startDaemon = startKoedServerDaemon,
-    stop = stopKoedServer,
-    restart = restartKoedServer,
-    setupCore: setupCoreIntegration = setupCore,
-    setupCodex: setup = setupCodex,
-    setupClaude: setupClaudeIntegration = setupClaude,
-    setupPi: setupPiIntegration = setupPi,
-    removeClaude: removeClaudeIntegration = removeClaude,
-    removePi: removePiIntegration = removePi,
-    removeCodex: removeCodexIntegrationFn = removeCodexIntegration,
-    repairCodex = repairCodexIntegration,
-    collectModelStatus = collectLocalModelStatus,
-    installModel = installLocalModel,
-    collectPrivacyModelStatus: collectPrivacyStatus = collectPrivacyModelStatus,
-    installPrivacyModel: installPrivacy = installPrivacyModel,
-    collectRuntimeStatus = collectHomebrewRuntimeStatus,
-    installRuntime = installHomebrewRuntime,
-    collectPackagedRuntimeStatus:
-      collectPackagedRuntime = collectPackagedRuntimeStatus,
-    installPackagedRuntime: installPackaged = installPackagedRuntime,
-    collectPackageStatus = collectServerPackageStatus,
-    installPackage = installServerPackage,
-    activatePackage = activateServerPackage,
-    cleanupPackages = cleanupServerPackages,
-    listUpstreams = listUpstreamBackends,
-    registerUpstream = registerUpstreamBackend,
-    refreshUpstream = refreshUpstreamBackendCapabilities,
-    updateUpstreamPolicy = updateUpstreamBackendRoutePolicy,
-    activateUpstream = setActiveUpstreamBackend,
-    removeUpstream = removeUpstreamBackend,
-    startUpstreamEnroll = startUpstreamEnrollment,
-    getUpstreamEnrollStatus = getUpstreamEnrollmentStatus,
-    cancelUpstreamEnroll = cancelUpstreamEnrollment,
-    disconnectUpstream = disconnectUpstreamBackendEnrollment,
-    linkProjectTeamWorkspace: linkProjectWorkspace = linkProjectTeamWorkspace,
-    listProjectTeamWorkspaceLinks:
-      listProjectWorkspaceLinks = listProjectTeamWorkspaceLinks,
-    getProjectTeamWorkspaceLink:
-      getProjectWorkspaceLink = getProjectTeamWorkspaceLink,
-    removeProjectTeamWorkspaceLink:
-      removeProjectWorkspaceLink = removeProjectTeamWorkspaceLink,
-    discoverProjectMetadata: discoverProject = discoverProjectMetadata,
-    listProjectMetadata: listProjects = listProjectMetadata,
-    getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
-    forgetProjectMetadata: forgetProject = forgetProjectMetadata,
-    runPersonalSync = runPersonalSyncCommand,
-    loadEnvironment = loadRepoEnv,
-    resolvePaths = resolveKoedServerPaths,
-    stdout = process.stdout,
-    stderr = process.stderr
-  }: KoedServerCliDependencies = {}
+  dependencies?: KoedServerCliDependencies
 ): Promise<number> => {
-  const command = args[0];
-  const subcommand = args[1];
+  const [command] = args;
   const wantsHelp = args.includes("--help") || args.includes("-h");
-  const wantsJson = args.includes("--json");
-  const kindFlagIndex = args.indexOf("--kind");
-  const modelKind = (
-    kindFlagIndex >= 0 ? args[kindFlagIndex + 1] : "embedding"
-  ) as LocalModelKind | "privacy" | undefined;
-
+  const stdout = dependencies?.stdout ?? process.stdout;
+  if (wantsHelp || !command) {
+    stdout.write(
+      command === "personal-sync"
+        ? args.includes("--advanced")
+          ? personalSyncAdvancedUsageText
+          : personalSyncUsageText
+        : usageText
+    );
+    return 0;
+  }
+  if (
+    (command === "models" || command === "runtime") &&
+    !dependencies?.collectModelStatus &&
+    !dependencies?.collectPrivacyModelStatus &&
+    !dependencies?.collectRuntimeStatus &&
+    !dependencies?.collectPackagedRuntimeStatus
+  ) {
+    try {
+      const status = await lightweightStatus(args, stdout);
+      if (status !== null) return status;
+    } catch (error) {
+      const stderr = process.stderr;
+      stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`
+      );
+      return 1;
+    }
+  }
+  let implementation: typeof import("./cli-implementation.js");
   try {
-    if (wantsHelp || !command) {
-      stdout.write(
-        command === "personal-sync"
-          ? args.includes("--advanced")
-            ? personalSyncAdvancedUsageText
-            : personalSyncUsageText
-          : usageText
-      );
-      return 0;
-    }
-
-    if (command === "secret-provider") {
-      return await runApplicationSecretProviderCli(args, stdout);
-    }
-
-    if (command === "status") {
-      const paths = resolvePaths();
-      const setupNeeded = checkCoreSetupNeeded(paths);
-      if (setupNeeded) {
-        stderr.write(`${setupNeeded}\n`);
-        return 1;
-      }
-      const isStartup = args.includes("--startup");
-      const status = isStartup
-        ? await collectStartupStatus()
-        : await collectStatus();
-      if (wantsJson) {
-        printJson(stdout, status);
-      } else {
-        stdout.write(`${status.state}\n`);
-        if (!isStartup && "codex" in status) {
-          const warning = getNoAgentsWarning(
-            status as typeof status & { codex: { configured: boolean } }
-          );
-          if (warning) stdout.write(`Warning: ${warning}\n`);
-        }
-      }
-      return 0;
-    }
-
-    if (command === "doctor") {
-      const doctor = await collectDoctor();
-      persistDoctorVerification(resolvePaths(), doctor);
-      if (wantsJson) {
-        printJson(stdout, doctor);
-      } else {
-        stdout.write(`${doctor.summary}\n`);
-        const status = await collectStatus();
-        const warning = getNoAgentsWarning(status);
-        if (warning) stdout.write(`Warning: ${warning}\n`);
-      }
-      return doctor.ok ? 0 : 1;
-    }
-
-    if (command === "identity") {
-      const paths = resolvePaths();
-      const identity =
-        subcommand === "status"
-          ? await inspectDeviceIdentity(paths)
-          : subcommand === "rotate"
-            ? await rotateIdentity(paths, {
-                invalidateRemoteReferences: () =>
-                  invalidateEnrollmentReferences(paths)
-              })
-            : null;
-      if (!identity) {
-        throw new Error("identity command must be status or rotate.");
-      }
-      if (wantsJson) {
-        printJson(stdout, identity);
-      } else {
-        stdout.write(`${identity.health}\n`);
-      }
-      return identity.remoteOperationsAllowed ? 0 : 1;
-    }
-
-    if (command === "pair") {
-      const paths = resolvePaths();
-      const setupNeeded = checkCoreSetupNeeded(paths);
-      if (subcommand === "status" || subcommand === "cancel") {
-        const value = await deviceRequestCommand(paths, subcommand);
-        if (wantsJson) printJson(stdout, value);
-        else stdout.write(`${value.state}\n`);
-        return 0;
-      }
-      if (subcommand && !subcommand.startsWith("--"))
-        throw new Error("Use pair, pair status, or pair cancel.");
-      if (setupNeeded) {
-        stderr.write(`${setupNeeded}\n`);
-        return 1;
-      }
-      let ready = await collectKoedServerStartupStatus();
-      if (!ready.ok) {
-        const started = startDaemon();
-        if (!started.ok) throw new Error(started.error ?? started.message);
-        for (let attempt = 0; attempt < 90 && !ready.ok; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          ready = await collectKoedServerStartupStatus();
-        }
-      }
-      if (!ready.ok)
-        throw new Error(
-          "Koed could not start. Run koed doctor for setup guidance."
-        );
-      const labelIndex = args.indexOf("--device-label");
-      if (labelIndex >= 0 && !args[labelIndex + 1])
-        throw new Error("--device-label needs a name.");
-      const initial = await deviceRequestCommand(
-        paths,
-        "create",
-        labelIndex < 0 ? undefined : args[labelIndex + 1]
-      );
-      if (wantsJson) printJson(stdout, initial);
-      else
-        stdout.write(
-          initial.link
-            ? `Paste this request into Devices → Add device on your existing Koed installation:\n\n${initial.link}\n\nExpires ${initial.expiresAt}. Waiting for approval…\n`
-            : `Enrollment is ${initial.state}. Waiting…\n`
-        );
-      if (args.includes("--detach")) return 0;
-      let previous = initial.state;
-      for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        const value = await deviceRequestCommand(paths, "status");
-        if (value.state !== previous) {
-          if (wantsJson) printJson(stdout, value);
-          else stdout.write(`${value.state}\n`);
-          previous = value.state;
-        }
-        if (value.state === "connected") return 0;
-        if (["failed", "expired", "cancelled"].includes(value.state)) return 1;
-      }
-    }
-
-    if (command === "personal-sync") {
-      const paths = resolvePaths();
-      const result = await runPersonalSync(
-        args.slice(1).filter((arg) => arg !== "--json"),
-        paths,
-        process.env
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "start") {
-      if (args.includes("--daemon")) {
-        const result = startDaemon();
-        if (wantsJson) {
-          printJson(stdout, result);
-        } else {
-          stdout.write(`${result.message}\n`);
-        }
-        return result.ok ? 0 : 1;
-      }
-      await start();
-      return 0;
-    }
-
-    if (command === "stop") {
-      const result = stop();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "restart") {
-      const result = await restart();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "setup" && subcommand === "core") {
-      const result = await setupCoreIntegration();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(
-          result.ok
-            ? "Koed core setup completed.\n"
-            : `${result.error ?? "Koed core setup failed."}\n`
-        );
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "setup" && subcommand === "codex") {
-      const withoutGuidance = args.includes("--without-memory-guidance");
-      const withGuidance = args.includes("--with-memory-guidance");
-      if (withoutGuidance && withGuidance) {
-        throw new Error(
-          "Use only one of --with-memory-guidance or --without-memory-guidance."
-        );
-      }
-      const result = await setup({
-        environment:
-          withoutGuidance || withGuidance
-            ? {
-                ...process.env,
-                KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(withGuidance)
-              }
-            : process.env
+    implementation = await import("./cli-implementation.js");
+  } catch {
+    const message =
+      "Koed service runtime is not provisioned. Install the signed base component from a trusted offline archive set, then run `koed doctor`.";
+    const stderr = dependencies?.stderr ?? process.stderr;
+    if (args.includes("--json"))
+      printJson(dependencies?.stdout ?? process.stdout, {
+        ok: false,
+        error: message,
+        action: "components install --component base"
       });
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(
-          result.ok
-            ? "Codex setup completed.\n"
-            : `${result.error ?? "Codex setup failed."}\n`
-        );
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "setup" && subcommand === "pi") {
-      const result = await setupPiIntegration();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(
-          result.ok
-            ? result.authenticationState === "authenticated"
-              ? "Pi setup completed.\n"
-              : "Pi profile configured. Authenticate at least one model through Pi, then refresh capabilities; Pi-executed work remains unavailable until authentication.\n"
-            : `${result.error ?? "Pi setup failed."}\n`
-        );
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "setup" && subcommand === "claude") {
-      const result = await setupClaudeIntegration();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(
-          result.ok
-            ? result.authenticationState === "authenticated"
-              ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
-              : "Claude Code profile configured. Run `claude auth login`, then refresh capabilities; Claude-executed work remains unavailable until sign-in.\n"
-            : `${result.error ?? "Claude Code setup failed."}\n`
-        );
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "repair" && subcommand === "codex") {
-      const result = await repairCodex();
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(
-          result.ok
-            ? "Codex integration repaired. Restart Codex and trust updated hooks if prompted.\n"
-            : `${result.error ?? "Codex integration repair failed."}\n`
-        );
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "check" && subcommand) {
-      const status = await collectStatus(undefined, undefined, {
-        capabilitiesRefreshedSince: flagValue(
-          args,
-          "--capabilities-refreshed-since"
-        )
-      });
-      const components: Record<string, unknown> = {
-        codex: status.codex,
-        claude: status.claudeCode,
-        pi: status.pi
-      };
-      const readiness = components[subcommand]
-        ? status.aiClients?.[subcommand]
-        : undefined;
-      if (!components[subcommand])
-        throw new Error("check client must be codex, claude, or pi.");
-      const result = {
-        client: subcommand,
-        readiness: readiness ?? null,
-        ...(args.includes("--include-status") ? { status } : {}),
-        ...evaluateAiClientReadiness(readiness)
-      };
-      if (wantsJson) printJson(stdout, result);
-      else stdout.write(`${result.message}\n`);
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "repair" && subcommand) {
-      const result =
-        subcommand === "codex"
-          ? await repairCodex()
-          : subcommand === "claude"
-            ? await setupClaudeIntegration()
-            : subcommand === "pi"
-              ? await setupPiIntegration()
-              : null;
-      if (!result)
-        throw new Error("repair client must be codex, claude, or pi.");
-      if (wantsJson) printJson(stdout, result);
-      else
-        stdout.write(
-          `${result.ok ? "AI Client integration repaired." : (result.error ?? "AI Client integration repair failed.")}\n`
-        );
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "remove" && subcommand) {
-      const result =
-        subcommand === "codex"
-          ? removeCodexIntegrationFn()
-          : subcommand === "claude"
-            ? removeClaudeIntegration()
-            : subcommand === "pi"
-              ? removePiIntegration()
-              : null;
-      if (!result)
-        throw new Error("remove client must be codex, claude, or pi.");
-      if (wantsJson) printJson(stdout, result);
-      else
-        stdout.write(
-          `${result.ok ? "AI Client integration removed." : (result.error ?? "AI Client integration removal failed.")}\n`
-        );
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "models" && subcommand === "status") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
-      }
-      const paths = resolvePaths();
-      const modelEnvironment = mergeRepoEnvironment(
-        loadEnvironment(paths.repoRoot)
-      );
-      const result =
-        modelKind === "privacy"
-          ? await collectPrivacyStatus(paths)
-          : await collectModelStatus(paths, modelKind, modelEnvironment);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.state === "checksum_mismatch" ? 1 : 0;
-    }
-
-    if (command === "models" && subcommand === "install") {
-      if (
-        modelKind !== "embedding" &&
-        modelKind !== "reranker" &&
-        modelKind !== "privacy"
-      ) {
-        throw new Error("--kind must be embedding, reranker, or privacy.");
-      }
-      const paths = resolvePaths();
-      const modelEnvironment = mergeRepoEnvironment(
-        loadEnvironment(paths.repoRoot)
-      );
-      const result =
-        modelKind === "privacy"
-          ? await installPrivacy(paths, modelEnvironment)
-          : await installModel(paths, modelKind, modelEnvironment);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "runtime" && subcommand === "status") {
-      const provider = assertRuntimeFlags(args, "status");
-      const paths = resolvePaths();
-      const runtimeEnvironment = mergeRepoEnvironment(
-        loadEnvironment(paths.repoRoot)
-      );
-      const result =
-        provider === "packaged"
-          ? collectPackagedRuntime(paths, runtimeEnvironment)
-          : collectRuntimeStatus(paths, runtimeEnvironment);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "runtime" && subcommand === "install") {
-      const provider = assertRuntimeFlags(args, "install");
-      const paths = resolvePaths();
-      const runtimeEnvironment = mergeRepoEnvironment(
-        loadEnvironment(paths.repoRoot)
-      );
-      const result =
-        provider === "packaged"
-          ? installPackaged(paths, runtimeEnvironment)
-          : installRuntime(paths, runtimeEnvironment);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "package" && subcommand === "status") {
-      const paths = resolvePaths();
-      const result = collectPackageStatus(paths);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "package" && subcommand === "install") {
-      const paths = resolvePaths();
-      const result = await installPackage(
-        paths,
-        compactOptions({
-          source: requireFlagValue(args, "--source"),
-          sha256: flagValue(args, "--sha256"),
-          sha256File: flagValue(args, "--sha256-file"),
-          activate: args.includes("--activate"),
-          provenanceFile: flagValue(args, "--provenance-file"),
-          signatureFile: flagValue(args, "--signature-file"),
-          trustedPublicKey: flagValue(args, "--trusted-public-key"),
-          trustedPublicKeyFile: flagValue(args, "--trusted-public-key-file"),
-          trustPolicy: packageTrustPolicy(flagValue(args, "--trust-policy")),
-          allowDowngrade: args.includes("--allow-downgrade") ? true : undefined
-        })
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "package" && subcommand === "activate") {
-      const paths = resolvePaths();
-      const result = activatePackage(
-        paths,
-        requireFlagValue(args, "--version"),
-        { allowDowngrade: args.includes("--allow-downgrade") }
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "package" && subcommand === "cleanup") {
-      const paths = resolvePaths();
-      const keep = flagValue(args, "--keep");
-      const result = cleanupPackages(
-        paths,
-        keep === undefined ? 1 : Number.parseInt(keep, 10)
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "list") {
-      const paths = resolvePaths();
-      const result = listUpstreams(paths);
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "register") {
-      const paths = resolvePaths();
-      const result = registerUpstream(paths, {
-        url: requireFlagValue(args, "--url"),
-        id: flagValue(args, "--id"),
-        displayName: flagValue(args, "--name"),
-        profile: flagValue(args, "--profile")
-      });
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "refresh") {
-      const paths = resolvePaths();
-      const result = await refreshUpstream(
-        paths,
-        requireFlagValue(args, "--id")
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "policy") {
-      const paths = resolvePaths();
-      const result = updateUpstreamPolicy(
-        paths,
-        requireFlagValue(args, "--id"),
-        parseRoutePolicyUpdate(args)
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "activate") {
-      const paths = resolvePaths();
-      const result = activateUpstream(paths, requireFlagValue(args, "--id"));
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "remove") {
-      const paths = resolvePaths();
-      const result = removeUpstream(paths, requireFlagValue(args, "--id"));
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "enroll") {
-      const enrollCommand = args[2];
-      const paths = resolvePaths();
-      const id = requireFlagValue(args, "--id");
-      const result =
-        enrollCommand === "start"
-          ? await startUpstreamEnroll(paths, id, {
-              sourceOwnerPrincipalId: requireFlagValue(
-                args,
-                "--source-owner-principal-id"
-              )
-            })
-          : enrollCommand === "status"
-            ? await getUpstreamEnrollStatus(paths, id)
-            : enrollCommand === "cancel"
-              ? await cancelUpstreamEnroll(paths, id)
-              : null;
-      if (!result) {
-        throw new Error(
-          "upstream enroll command must be start, status, or cancel."
-        );
-      }
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "upstream" && subcommand === "disconnect") {
-      const paths = resolvePaths();
-      const result = await disconnectUpstream(
-        paths,
-        requireFlagValue(args, "--id")
-      );
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "project") {
-      const projectCommand = subcommand;
-      const paths = resolvePaths();
-      const result =
-        projectCommand === "discover"
-          ? await discoverProject(paths, {
-              cwd: flagValue(args, "--cwd") ?? process.cwd(),
-              aiClientSource: args.includes("--codex") ? "codex" : undefined
-            })
-          : projectCommand === "list"
-            ? listProjects(paths)
-            : projectCommand === "show"
-              ? getProjectForCwd(
-                  paths,
-                  flagValue(args, "--cwd") ?? process.cwd()
-                )
-              : projectCommand === "forget"
-                ? forgetProject(
-                    paths,
-                    requireFlagValue(args, "--local-project-id")
-                  )
-                : null;
-      if (!result) {
-        throw new Error(
-          "project command must be discover, list, show, or forget."
-        );
-      }
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (command === "desktop" && subcommand === "collaboration-broker") {
-      await runDesktopCollaborationBrokerProcess();
-      return 0;
-    }
-
-    if (command === "team" && subcommand === "workspace") {
-      const teamWorkspaceCommand = args[2];
-      const paths = resolvePaths();
-      const result =
-        teamWorkspaceCommand === "link"
-          ? linkProjectWorkspace(paths, {
-              projectRoot: requireFlagValue(args, "--project-root"),
-              teamWorkspaceId: requireFlagValue(args, "--team-workspace-id"),
-              backendId:
-                flagValue(args, "--backend-id") ??
-                flagValue(args, "--upstream-backend-id"),
-              localProjectId: flagValue(args, "--local-project-id"),
-              projectDisplayName: flagValue(args, "--project-display-name")
-            })
-          : teamWorkspaceCommand === "list"
-            ? listProjectWorkspaceLinks(paths)
-            : teamWorkspaceCommand === "show"
-              ? getProjectWorkspaceLink(
-                  paths,
-                  requireFlagValue(args, "--project-root")
-                )
-              : teamWorkspaceCommand === "remove"
-                ? removeProjectWorkspaceLink(
-                    paths,
-                    requireFlagValue(args, "--project-root")
-                  )
-                : null;
-      if (!result) {
-        throw new Error(
-          "team workspace command must be link, list, show, or remove."
-        );
-      }
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    stderr.write(`Unknown command.\n\n${usageText}`);
-    return 2;
-  } catch (error) {
-    const payload = {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
-    if (wantsJson) {
-      printJson(stdout, payload);
-    } else {
-      stderr.write(`${payload.error}\n`);
-    }
+    else stderr.write(`${message}\n`);
     return 1;
   }
+  return implementation.runKoedServerCli(args, dependencies);
 };
 
 export const isKoedServerCliEntrypoint = (
-  metaUrl: string,
+  moduleUrl: string | undefined,
   argvPath: string | undefined
 ): boolean => {
-  if (!argvPath) {
+  if (!moduleUrl || !argvPath) return false;
+  try {
+    return pathToFileURL(argvPath).href === moduleUrl;
+  } catch {
     return false;
   }
-  const normalize = (path: string) => {
-    const resolved = resolve(path);
-    try {
-      return realpathSync.native(resolved);
-    } catch {
-      return resolved;
-    }
-  };
-  return normalize(fileURLToPath(metaUrl)) === normalize(argvPath);
 };
 
 export const shouldExitPackagedSupervisor = (
@@ -1369,9 +171,7 @@ export const shouldExitPackagedSupervisor = (
 if (isKoedServerCliEntrypoint(import.meta.url, process.argv[1])) {
   const entrypointArgs = process.argv.slice(2);
   void runKoedServerCli(entrypointArgs).then((exitCode) => {
-    if (shouldExitPackagedSupervisor(entrypointArgs)) {
-      process.exit(exitCode);
-    }
+    if (shouldExitPackagedSupervisor(entrypointArgs)) process.exit(exitCode);
     process.exitCode = exitCode;
   });
 }

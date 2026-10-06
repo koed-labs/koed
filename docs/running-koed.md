@@ -154,6 +154,51 @@ supervisor channel; environment flags cannot assert Desktop ownership.
 Empty production component trust roots remain blocked, and staging a verified
 generation does not activate it.
 
+### Explicit component provisioning
+
+`koed components status --json` reports required, installed, staged, active,
+incompatible, and missing component state without starting services. Help and
+native/model status commands do not import the service runtime. `koed start`
+never downloads or installs components, native runtimes, or models; provisioning
+must be requested explicitly.
+
+Install one signed component from either a complete offline artifact set:
+
+```bash
+koed components install --component base \
+  --archive /path/to/base.tar.gz \
+  --manifest /path/to/base.manifest.json \
+  --signature /path/to/base.signature.json --json
+```
+
+or exact-version artifact URLs:
+
+```bash
+koed components install --component base \
+  --version 1.2.3 \
+  --archive-url https://artifacts.example/base.tar.gz \
+  --manifest-url https://artifacts.example/base.manifest.json \
+  --signature-url https://artifacts.example/base.signature.json --json
+```
+
+The manifest signature is checked against Koed's built-in component trust
+roots, and artifact target/runtime compatibility is checked against the actual
+process. CLI flags cannot replace trust roots, assert Desktop ownership, or
+select another installation owner. Network inputs are explicit; status, help,
+and start perform no downloads. An install for another product version, an
+incomplete required component set, or a running service stages verified
+components only. Install any other required component at the same version, stop
+Koed, and use `koed components activate --version <version> --json` to activate
+a complete generation. Activation requires the invoked control plane to match
+the selected version; for rollback, launch the matching older control plane
+first. `koed components cleanup --json` removes only verified inactive
+generations and retains the two newest eligible generations. Cleanup never
+removes User data or models.
+
+Production trust roots may be empty in development builds. In that case signed
+component installation fails closed until a trusted release is configured; do
+not bypass verification or supply an ad hoc key through CLI/environment flags.
+
 Task 7 focused evidence (Node `v24.13.1`):
 
 ```sh
