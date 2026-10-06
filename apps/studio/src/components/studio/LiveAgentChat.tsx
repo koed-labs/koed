@@ -127,8 +127,6 @@ const failedExecutions = new Set([
   "stopping",
   "reconciling"
 ]);
-// Local Codex Move is exposed for review only after the runner transition passed service regression checks.
-const PROJECT_MOVE_UI_ENABLED = true;
 const isRegisteredProjectId = (value: string) =>
   /^lp_[0-9a-f]{32}$/iu.test(value);
 const moveNoticeIntentKey = (executionId: string, moveId: string) =>
@@ -1040,33 +1038,6 @@ export function LiveAgentChat({
       retainedWorkspaceSequenceRef.current += 1;
     };
   }, [executionId, loaded, refreshRetainedWorkspaces]);
-
-  const openProjectMove = () => {
-    const current = runtimeRef.current?.execution;
-    if (!PROJECT_MOVE_UI_ENABLED || !current || current.provider !== "codex")
-      return;
-    if (
-      current.state !== "running" ||
-      commandInFlight ||
-      operationRef.current ||
-      moveInFlight
-    ) {
-      setStatus(
-        "Move is available only when this Codex Conversation is idle and running."
-      );
-      return;
-    }
-    const destinations = registeredProjects.filter(
-      (project) =>
-        isRegisteredProjectId(project.id) && project.id !== current.projectId
-    );
-    if (!destinations.length) {
-      setStatus("No other registered Projects are available in this Studio.");
-      return;
-    }
-    setProjectMoveDestinationId(destinations[0]?.id ?? "");
-    setProjectMovePickerOpen(true);
-  };
 
   const submitProjectMove = async (
     dontShowAgain: boolean
@@ -2186,18 +2157,17 @@ export function LiveAgentChat({
           onShareQuestion={shareTeamQuestion}
         />
       )}
-      {currentExecution ? (
+      {currentExecution &&
+      (moveInFlight ||
+        projectMovePickerOpen ||
+        (retainedWorkspaceState?.executionId === currentExecution.id &&
+          (retainedWorkspaceState.workspaces.length > 0 ||
+            retainedWorkspaceState.error))) ? (
         <section
-          aria-label="Managed Conversation Project"
+          aria-label="Project workspace activity"
           className="shrink-0 border-b border-border bg-surface/70 px-4 py-2"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <p className="mr-auto text-[11px] text-muted">
-              Current Project:{" "}
-              {currentProjectId
-                ? (currentProjectName ?? "Project")
-                : "Standalone"}
-            </p>
             {latestProjectMove?.executionId === currentExecution.id ? (
               <span role="status" className="text-[11px] text-muted">
                 Project Move{" "}
@@ -2210,24 +2180,6 @@ export function LiveAgentChat({
                       : latestProjectMove.state}
               </span>
             ) : null}
-            <button
-              type="button"
-              onClick={openProjectMove}
-              disabled={
-                !PROJECT_MOVE_UI_ENABLED ||
-                currentExecution.provider !== "codex" ||
-                currentExecution.state !== "running" ||
-                !projectMoveLoaded ||
-                projectMoveBusy ||
-                moveInFlight ||
-                sending ||
-                commandInFlight
-              }
-              title={moveUnavailableReason ?? undefined}
-              className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Move to Project
-            </button>
             {latestProjectMove?.executionId === currentExecution.id &&
             latestProjectMove.state === "pending" ? (
               <button
@@ -2240,13 +2192,6 @@ export function LiveAgentChat({
               </button>
             ) : null}
           </div>
-          {moveUnavailableReason ? (
-            <p role="note" className="mt-1 text-[10px] leading-4 text-muted">
-              {moveUnavailableReason} If Move succeeds, source edits stay in the
-              source Project; if they cannot be safely retained, the Move fails
-              and the original context remains unchanged.
-            </p>
-          ) : null}
           {retainedWorkspaceState?.executionId === currentExecution.id &&
           (retainedWorkspaceState.workspaces.length > 0 ||
             retainedWorkspaceState.error) ? (
@@ -2339,6 +2284,11 @@ export function LiveAgentChat({
       <div className="min-h-0 flex-1">
         <NewChatView
           conversationTitle={executionId ? conversationTitle : undefined}
+          conversationProjectName={
+            currentExecution && currentProjectId
+              ? (currentProjectName ?? "Project")
+              : null
+          }
           mode="live"
           initialDraft={initialDraft}
           initialSelection={initialSelection}

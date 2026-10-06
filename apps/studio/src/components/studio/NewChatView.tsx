@@ -1,7 +1,8 @@
 "use client";
 
-import { CircleAlert, MessageSquare, MoreHorizontal, X } from "lucide-react";
+import { CircleAlert, Folder, MessageSquare, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { Tooltip } from "../Tooltip";
 import {
   DEMO_STANDALONE_BUILD_ACTIVITY,
   type BuildActivity
@@ -105,6 +106,7 @@ export type NewChatViewProps = {
   mode: NewChatMode;
   onBack?: () => void;
   conversationTitle?: string;
+  conversationProjectName?: string | null;
   projectName?: string;
   projectSelector?: ReactNode;
   branch?: string;
@@ -154,6 +156,7 @@ type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
 
 export function NewChatView({
   conversationTitle,
+  conversationProjectName,
   mode,
   projectName = "Standalone chat",
   projectSelector,
@@ -186,8 +189,6 @@ export function NewChatView({
   >({});
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
-  const [chatMenuOpen, setChatMenuOpen] = useState(false);
-  const [endSessionConfirmOpen, setEndSessionConfirmOpen] = useState(false);
   const [buildPanelMode, setBuildPanelMode] = useState<BuildPanelMode>(() =>
     readBuildPanelMode()
   );
@@ -283,41 +284,22 @@ export function NewChatView({
         <header
           className={`z-10 flex h-14 shrink-0 items-center gap-3 bg-background/80 px-4 pt-4 backdrop-blur-sm drag-region ${buildPanelMode === "compact" ? "pr-16 xl:pr-[320px]" : buildPanelMode === "hidden" ? "pr-16" : "pr-4"}`}
         >
-          <p className="min-w-0 flex-1 truncate text-sm text-foreground no-drag">
-            Personal / {conversationTitle ?? "New chat"}
-          </p>
-          {runtime?.onEndSession ? (
-            <div className="relative no-drag">
-              <button
-                type="button"
-                aria-label="Chat menu"
-                aria-haspopup="menu"
-                aria-expanded={chatMenuOpen}
-                onClick={() => setChatMenuOpen((open) => !open)}
-                className="rounded-md p-1.5 text-muted hover:bg-surface-hover hover:text-foreground"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </button>
-              {chatMenuOpen ? (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-30 mt-1 min-w-44 rounded-md border border-border bg-surface p-1 shadow-xl"
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm text-foreground no-drag">
+            {conversationProjectName ? (
+              <Tooltip content={conversationProjectName} side="bottom">
+                <span
+                  tabIndex={0}
+                  aria-label={`Project: ${conversationProjectName}`}
+                  className="inline-flex shrink-0 rounded text-muted outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setChatMenuOpen(false);
-                      setEndSessionConfirmOpen(true);
-                    }}
-                    className="w-full rounded px-2.5 py-2 text-left text-xs text-danger hover:bg-surface-hover"
-                  >
-                    End session…
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+                  <Folder className="h-4 w-4" aria-hidden="true" />
+                </span>
+              </Tooltip>
+            ) : null}
+            <span className="min-w-0 truncate">
+              {conversationTitle ?? "New chat"}
+            </span>
+          </div>
           <span className="sr-only">
             <MessageSquare className="h-3 w-3" />
             {mode === "demo" ? "Demo data" : "Live"}
@@ -761,49 +743,6 @@ export function NewChatView({
         onModeChange={setBuildPanelMode}
         className="max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:shadow-2xl"
       />
-      {endSessionConfirmOpen && runtime?.onEndSession ? (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 no-drag"
-          role="presentation"
-        >
-          <section
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="end-session-title"
-            className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-2xl"
-          >
-            <h2
-              id="end-session-title"
-              className="text-sm font-semibold text-foreground"
-            >
-              End this session?
-            </h2>
-            <p className="mt-2 text-xs leading-relaxed text-muted">
-              This stops the managed session. You can still review its
-              conversation afterward.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setEndSessionConfirmOpen(false)}
-                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground-secondary"
-              >
-                Keep session
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEndSessionConfirmOpen(false);
-                  runtime.onEndSession?.();
-                }}
-                className="rounded-md bg-danger px-3 py-1.5 text-xs font-medium text-white"
-              >
-                End session
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
     </div>
   );
 }

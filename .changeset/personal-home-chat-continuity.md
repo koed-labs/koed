@@ -19,3 +19,5 @@ Show the last five human and AI exchanges in the Simple activity view and expand
 Resolve selected nested folders to their registered Project instead of creating duplicate discovery entries from historical parent-folder metadata. Keep all visible Project conversations in the sidebar when Home is filtered.
 
 Keep saved conversations visible in Project and standalone navigation while the runtime reconciles, pauses, or stops.
+
+Simplify Personal conversation headers to the chat title and an optional folder icon whose tooltip names the Project. Remove the redundant Current Project label, separate Move to Project button, Personal prefix, and three-dot End session menu.

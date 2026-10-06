@@ -138,6 +138,15 @@ it("shows the running chat's actual folder and reviews a move without changing c
   };
   await mount(undefined, id, [project, actual]);
   expect(scope()).toBe(actual.id);
+  expect(container.textContent).not.toContain("Current Project:");
+  expect(
+    [...container.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Move to Project"
+    )
+  ).toBe(false);
+  expect(mocks.view.mock.lastCall?.[0].conversationProjectName).toBe(
+    actual.name
+  );
   await click(actual.name);
   const noFolder = [...container.querySelectorAll("button")].find(
     (b) => b.textContent?.trim() === "No folder"
