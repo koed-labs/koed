@@ -191,6 +191,8 @@ export interface KoedServerManagerOptions {
   cliPath: string;
   environment: NodeJS.ProcessEnv;
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
+  createSupervisorInvocation?: () => NodeEntrypointInvocation;
+  packagedResourcesPath?: string;
   existsSync: (path: string) => boolean;
   execFile: (
     command: string,
@@ -1604,6 +1606,8 @@ export const createKoedServerManager = ({
   cliPath,
   environment,
   createCliInvocation,
+  createSupervisorInvocation,
+  packagedResourcesPath,
   existsSync,
   execFile,
   spawn,
@@ -1618,6 +1622,7 @@ export const createKoedServerManager = ({
   confirmSourceControlMutation
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
+  let desktopSupervisorProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
   let projectMetadataReconciliation: Promise<void> | null = null;
   const pendingProjectMetadataPaths = new Set<string>();
@@ -4781,6 +4786,14 @@ export const createKoedServerManager = ({
       statusCommandTimeoutMs
     );
     if (hasHealthyApi(current)) {
+      if (createSupervisorInvocation && !desktopSupervisorProcess) {
+        return {
+          ok: false,
+          state: "needs_attention",
+          error:
+            "A running Koed supervisor is not owned by this Desktop manager. Stop it before starting Desktop."
+        };
+      }
       retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
       await provisionLocalAppCredential();
       return {
@@ -4790,12 +4803,93 @@ export const createKoedServerManager = ({
       };
     }
 
-    if (serverProcess && !serverProcess.killed) {
+    if (
+      (desktopSupervisorProcess && !desktopSupervisorProcess.killed) ||
+      (serverProcess && !serverProcess.killed)
+    ) {
       return {
         ok: true,
         state: "starting",
         message: "Koed server daemon is already starting."
       };
+    }
+    if (createSupervisorInvocation) {
+      if (!packagedResourcesPath) {
+        return {
+          ok: false,
+          state: "needs_attention",
+          error: "Trusted Desktop resources path is unavailable."
+        };
+      }
+      const invocation = createSupervisorInvocation();
+      const child = spawn(invocation.command, invocation.args, {
+        cwd: repoRoot,
+        env: invocation.env,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        detached: false
+      });
+      desktopSupervisorProcess = child;
+      const nonce = randomBytes(32).toString("hex");
+      const ready = new Promise<void>((resolveReady, rejectReady) => {
+        const timeout = setTimeout(
+          () =>
+            rejectReady(new Error("Desktop supervisor handshake timed out.")),
+          10_000
+        );
+        child.once("message", (message: unknown) => {
+          clearTimeout(timeout);
+          if (
+            message &&
+            typeof message === "object" &&
+            !Array.isArray(message) &&
+            (message as Record<string, unknown>).type ===
+              "koed.desktop.supervisor.ready" &&
+            (message as Record<string, unknown>).nonce === nonce &&
+            (message as Record<string, unknown>).childPid === child.pid &&
+            typeof (message as Record<string, unknown>).bundleDigest ===
+              "string" &&
+            /^[a-f0-9]{64}$/.test(
+              (message as Record<string, unknown>).bundleDigest as string
+            )
+          )
+            resolveReady();
+          else
+            rejectReady(
+              new Error("Desktop supervisor handshake response is invalid.")
+            );
+        });
+        child.once("error", (error) => {
+          clearTimeout(timeout);
+          rejectReady(error);
+        });
+      });
+      try {
+        child.send({
+          type: "koed.desktop.supervisor.init",
+          nonce,
+          managerPid: process.pid,
+          resourcesPath: packagedResourcesPath
+        });
+        await ready;
+        child.once("exit", () => {
+          if (desktopSupervisorProcess === child)
+            desktopSupervisorProcess = null;
+        });
+        return {
+          ok: true,
+          state: "starting",
+          message: "Koed Desktop supervisor started.",
+          startedPid: child.pid
+        };
+      } catch (error) {
+        child.kill("SIGTERM");
+        desktopSupervisorProcess = null;
+        return {
+          ok: false,
+          state: "needs_attention",
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
     }
     if (!existsSync(cliPath)) {
       return missingCliPayload();
@@ -5166,10 +5260,29 @@ export const createKoedServerManager = ({
     } else if (environment.KOED_HOME?.trim()) {
       writePersonalDevicePeerEndpoint(environment, null);
     }
-    const result = await runJson(["stop"], 45_000);
-    if (serverProcess && !serverProcess.killed) {
-      serverProcess.kill("SIGTERM");
+    if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
+      const child = desktopSupervisorProcess;
+      if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
+      else child.kill("SIGTERM");
+      await new Promise<void>((resolveExit) => {
+        const timeout = setTimeout(() => {
+          child.kill("SIGTERM");
+          resolveExit();
+        }, 30_000);
+        child.once("exit", () => {
+          clearTimeout(timeout);
+          resolveExit();
+        });
+      });
+      if (desktopSupervisorProcess === child) desktopSupervisorProcess = null;
+      return {
+        ok: true,
+        state: "stopped",
+        message: "Koed Desktop supervisor stopped."
+      };
     }
+    const result = await runJson(["stop"], 45_000);
+    if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGTERM");
     serverProcess = null;
     return result;
   };
@@ -5223,7 +5336,14 @@ export const createKoedServerManager = ({
       ...config,
       hardwareAcceleration: enabled ? "auto" : "cpu"
     });
-    const restarted = await runJson(["restart"], 60_000);
+    const restarted = desktopSupervisorProcess
+      ? await (async () => {
+          await stop();
+          const started = await requestDaemonStart();
+          if (!resultOk(started)) return started;
+          return await pollUntilReady(60);
+        })()
+      : await runJson(["restart"], 60_000);
     if (!resultOk(restarted)) {
       throw new Error(
         resultMessage(

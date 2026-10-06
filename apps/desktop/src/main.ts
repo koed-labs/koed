@@ -32,6 +32,7 @@ import {
 } from "./koed-server/manager.js";
 import {
   createKoedServerCliInvocation,
+  createNodeEntrypointInvocation,
   resolveKoedServerPaths
 } from "./koed-server/runtime.js";
 import {
@@ -202,6 +203,22 @@ const createServerManager = (
         environment: koedEnvironment,
         existsSync
       }),
+    createSupervisorInvocation: app.isPackaged
+      ? () =>
+          createNodeEntrypointInvocation(
+            resolve(dirname(koedServerCli), "desktop-supervisor-entrypoint.js"),
+            [],
+            {
+              appIsPackaged: true,
+              electronExecPath: process.execPath,
+              platform: process.platform,
+              resourcesPath: process.resourcesPath,
+              environment: koedEnvironment,
+              existsSync
+            }
+          )
+      : undefined,
+    packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
     existsSync,
     execFile,
     spawn,

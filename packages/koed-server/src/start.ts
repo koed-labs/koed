@@ -27,6 +27,10 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
+import {
+  validateDesktopRuntimeCapability,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveActiveIntegrationApiToken,
@@ -148,6 +152,7 @@ export interface KoedServerStartOptions {
   collectStatus?: typeof collectKoedServerStartupStatus;
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
 }
 
 const runCommand = (
@@ -880,8 +885,15 @@ export const startKoedServer = async ({
   collectStatus = collectKoedServerStartupStatus,
   provisionLocalApiToken:
     provisionLocalApiTokenDependency = provisionLocalApiToken,
-  signal
+  signal,
+  desktopRuntimeCapability
 }: KoedServerStartOptions = {}): Promise<void> => {
+  if (
+    desktopRuntimeCapability !== undefined &&
+    !validateDesktopRuntimeCapability(desktopRuntimeCapability)
+  ) {
+    throw new Error("validated private Desktop runtime capability is required");
+  }
   const requestedEnvironment = environment;
   const startupId = randomBytes(12).toString("hex");
   const startupStartedAt = process.hrtime.bigint();
@@ -1228,7 +1240,9 @@ export const startKoedServer = async ({
         const selected = await pinAndResolvePackagedRuntime(
           paths,
           environment,
-          requiredRuntime
+          requiredRuntime,
+          existsSync,
+          desktopRuntimeCapability
         );
         generationPin = selected.pin;
         appRuntime = selected.runtime;

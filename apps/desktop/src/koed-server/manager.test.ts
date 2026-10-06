@@ -89,6 +89,68 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("starts private Desktop supervisor over inherited IPC and stops that child", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64)
+            })
+          );
+        } else if (message.type === "koed.desktop.supervisor.stop") {
+          queueMicrotask(() => child.emit("exit", 0, null));
+        }
+      }
+    });
+    let spawnOptions: Record<string, unknown> | undefined;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true, state: "stopped" }), ""),
+      spawn: ((
+        _command: string,
+        _args: string[],
+        options: Record<string, unknown>
+      ) => {
+        spawnOptions = options;
+        return child;
+      }) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: true,
+      state: "starting",
+      startedPid: 12345
+    });
+    expect(spawnOptions).toMatchObject({
+      detached: false,
+      stdio: ["ignore", "ignore", "ignore", "ipc"]
+    });
+    await expect(manager.stop()).resolves.toMatchObject({
+      ok: true,
+      state: "stopped"
+    });
+  });
+
   it("submits Personal Ask through the fixed local runtime operation", async () => {
     const question = {
       id: "11111111-1111-4111-8111-111111111111",

@@ -34,6 +34,10 @@ import {
 import { resolveKoedServerPaths } from "./paths.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
 import { readCurrentGeneration } from "./generation-lifecycle.js";
+import {
+  resolveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 
 const roots: string[] = [];
@@ -67,7 +71,11 @@ const requirements = {
   native: [],
   models: []
 };
-const makeGeneration = async (root: string, productVersion: string) => {
+const makeGeneration = async (
+  root: string,
+  productVersion: string,
+  owner = resolveKoedRuntimeOwner()
+) => {
   const paths = resolveKoedServerPaths({
     KOED_HOME: root,
     KOED_REPO_ROOT: root
@@ -105,11 +113,8 @@ const makeGeneration = async (root: string, productVersion: string) => {
       runtime: fixture.input.runtime
     }
   );
-  const generation = await stageGeneration(paths, {
-    base,
-    owner: resolveKoedRuntimeOwner()
-  });
-  await activateGeneration(paths, generation.id, resolveKoedRuntimeOwner());
+  const generation = await stageGeneration(paths, { base, owner });
+  await activateGeneration(paths, generation.id, owner);
   return paths;
 };
 
@@ -123,6 +128,39 @@ afterEach(() => {
 });
 
 describe("packaged service runtime selection", () => {
+  it("selects and pins Desktop-owned generation only with verified bundle capability", async () => {
+    const root = tempDir();
+    const resourcesPath = resolve(root, "resources");
+    mkdirSync(resolve(resourcesPath, "koed-runtime"), { recursive: true });
+    writeFileSync(
+      resolve(resourcesPath, "koed-runtime/desktop-bundle-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        productVersion: resolveKoedControlPlaneVersion(),
+        component: "base",
+        target: { platform: process.platform, architecture: process.arch },
+        files: []
+      })
+    );
+    const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    const paths = await makeGeneration(
+      resolve(root, "koed-home"),
+      resolveKoedControlPlaneVersion(),
+      resolveDesktopRuntimeOwner(capability)
+    );
+    const selection = await pinAndResolvePackagedRuntime(
+      paths,
+      {},
+      requirements,
+      existsSync,
+      capability
+    );
+    expect(selection.runtime.apiEntry).toBe(
+      resolve(selection.runtime.root, "api/dist/index.js")
+    );
+    await selection.pin.release();
+  });
+
   it("rejects caller-constructed Desktop capability before selecting a generation", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: tempDir() });
     await expect(

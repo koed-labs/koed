@@ -322,6 +322,20 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("rejects caller-constructed Desktop runtime authority", async () => {
+    await expect(
+      startKoedServer({
+        desktopRuntimeCapability: {
+          resourcesPath: "/untrusted",
+          productVersion: "1.2.3",
+          bundleDigest: "0".repeat(64)
+        } as never
+      })
+    ).rejects.toThrow(
+      "validated private Desktop runtime capability is required"
+    );
+  });
+
   it("collects startup status once per readiness phase and emits correlated timings", async () => {
     const root = tempDir();
     const logs: string[] = [];

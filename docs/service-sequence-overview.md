@@ -132,16 +132,24 @@ AI Runtime.
    collaboration is enabled, it also waits for the Privacy Filter; Personal-only
    startup reports that service as not required. Both source and packaged
    runtimes use these rules.
-8. `koed start --daemon --json` starts a detached `koed start`
-   supervisor and returns machine-readable startup intent for Desktop and
-   scripts. `koed stop --json` stops supervised processes in
+8. Packaged Desktop main starts its private supervisor entrypoint as a
+   long-running child with inherited IPC, a fresh nonce handshake, and Desktop
+   resources path. The child verifies the packaged runtime bundle itself and
+   receives process-local Desktop generation authority only after verification;
+   it then runs the same Personal supervisor and pins the selected authenticated
+   generation until shutdown. Desktop stop/restart is manager-owned and signals
+   that child, not a detached CLI daemon. Standalone `koed start --daemon --json`
+   remains available for CLI/scripts and starts a detached `koed start`
+   supervisor. `koed stop --json` stops standalone supervised processes in
    dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
    Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
-   `koed restart --json` runs the same stop lifecycle, starts a detached
-   supervisor, and returns machine-readable JSON without streaming startup logs.
+   Standalone `koed restart --json` runs the same stop lifecycle, starts a
+   detached supervisor, and returns machine-readable JSON without streaming
+   startup logs. Packaged Desktop restart keeps ownership in its Electron main
+   manager and restarts its inherited-IPC child.
 9. `koed status --json` and `koed doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP
