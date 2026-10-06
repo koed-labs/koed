@@ -13,6 +13,7 @@
   "exclude": [
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
-    "src/component-test-fixtures.ts"
+    "src/component-test-fixtures.ts",
+    "src/setup-runtime-test-fixtures.ts"
   ]
 }

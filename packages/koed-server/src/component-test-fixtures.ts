@@ -62,7 +62,8 @@ function createSignedComponentFixture(
     terminatorBlocks?: number;
     tail?: Buffer;
   } = {},
-  includeArchiveInventory = false
+  includeArchiveInventory = false,
+  entryContents: Readonly<Record<string, Buffer | string>> = {}
 ): {
   input: ComponentVerificationInput;
   root: string;
@@ -71,6 +72,10 @@ function createSignedComponentFixture(
   const directory = mkdtempSync(resolve(tmpdir(), "koed-component-fixture-"));
   const root = resolve(directory, "root");
   const payload = Buffer.from("export {}\n");
+  const fileContent = (path: string) => {
+    const content = entryContents[path] ?? payload;
+    return Buffer.isBuffer(content) ? content : Buffer.from(content);
+  };
   mkdirSync(root, { recursive: true });
   writeFileSync(resolve(root, "entry.js"), payload);
   const manifest: ComponentManifest = {
@@ -92,13 +97,15 @@ function createSignedComponentFixture(
     files: includeArchiveInventory
       ? archiveEntries
           .filter(({ type }) => type === undefined || type === "0")
-          .map(({ path }) => ({ path, sha256: hash(payload) }))
+          .map(({ path }) => ({ path, sha256: hash(fileContent(path)) }))
       : [{ path: "entry.js", sha256: hash(payload) }],
     ...overrides
   };
   const archive = gzipSync(
     Buffer.concat([
-      ...archiveEntries.map(({ path, type }) => tarFile(path, payload, type)),
+      ...archiveEntries.map(({ path, type }) =>
+        tarFile(path, fileContent(path), type)
+      ),
       Buffer.alloc(512 * (archiveOptions.terminatorBlocks ?? 2)),
       archiveOptions.tail ?? Buffer.alloc(0)
     ])
@@ -157,7 +164,8 @@ export const signedComponentFixture = (
     { path: "entry.js" }
   ],
   archiveOptions: { terminatorBlocks?: number; tail?: Buffer } = {},
-  includeArchiveInventory = false
+  includeArchiveInventory = false,
+  entryContents: Readonly<Record<string, Buffer | string>> = {}
 ): Promise<{
   input: ComponentVerificationInput;
   root: string;
@@ -168,6 +176,7 @@ export const signedComponentFixture = (
       overrides,
       archiveEntries,
       archiveOptions,
-      includeArchiveInventory
+      includeArchiveInventory,
+      entryContents
     )
   );
