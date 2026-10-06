@@ -23,6 +23,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./desktop-component-manager": {
+      "types": "./dist/desktop-component-manager.d.ts",
+      "import": "./dist/desktop-component-manager.js"
     }
   },
   "dependencies": {
