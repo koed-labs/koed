@@ -22,11 +22,13 @@ export interface DesktopDistributionManagerOptions {
 export const createDesktopDistributionManager = async (
   options: DesktopDistributionManagerOptions
 ) => {
-  const capability: DesktopBundleCapability = await validateDesktopBundle(
-    options.bundleRoot,
-    options.manifestPath,
-    options.target,
-    options.controlPlaneVersion
+  const capability: DesktopBundleCapability = await Promise.resolve(
+    validateDesktopBundle(
+      options.bundleRoot,
+      options.manifestPath,
+      options.target,
+      options.controlPlaneVersion
+    )
   );
   const bridge = createDesktopComponentManagerBridge({
     capability,

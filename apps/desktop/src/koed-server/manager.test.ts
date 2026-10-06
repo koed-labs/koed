@@ -92,6 +92,8 @@ describe("Koed server desktop manager", () => {
   it("routes privacy status/install through nonce-correlated child RPC with exact release source", async () => {
     const requests: Record<string, unknown>[] = [];
     let statusCount = 0;
+    let holdStatus = false;
+    let releaseStatus: (() => void) | undefined;
     let pendingInstall: Record<string, unknown> | null = null;
     const child = Object.assign(new EventEmitter(), {
       killed: false,
@@ -119,15 +121,18 @@ describe("Koed server desktop manager", () => {
             };
             if (message.action === "status") {
               statusCount += 1;
-              child.emit("message", {
-                ...envelope,
-                result: {
-                  required: ["privacy"],
-                  components: { privacy: "missing" },
-                  activeGeneration: null,
-                  trustedSignerConfigured: statusCount < 2
-                }
-              });
+              const respond = () =>
+                child.emit("message", {
+                  ...envelope,
+                  result: {
+                    required: ["privacy"],
+                    components: { privacy: "missing" },
+                    activeGeneration: null,
+                    trustedSignerConfigured: statusCount < 2
+                  }
+                });
+              if (holdStatus) releaseStatus = respond;
+              else respond();
             } else if (message.action === "install") {
               pendingInstall = envelope;
               child.emit("message", {
@@ -144,10 +149,11 @@ describe("Koed server desktop manager", () => {
                 ...envelope,
                 result: { cancelled: true }
               });
-              child.emit("message", {
-                ...pendingInstall,
-                error: "Privacy Filter installation cancelled."
-              });
+              if (!holdStatus)
+                child.emit("message", {
+                  ...pendingInstall,
+                  error: "Privacy Filter installation cancelled."
+                });
             }
           });
         }
@@ -213,6 +219,25 @@ describe("Koed server desktop manager", () => {
         totalBytes: 16
       })
     );
+    holdStatus = true;
+    const earlyInstallation = manager.privacyInstall.installPrivacy({
+      consent: true,
+      onProgress: vi.fn()
+    });
+    const earlyFailure = expect(earlyInstallation).rejects.toThrow(
+      "Privacy Filter installation cancelled."
+    );
+    await vi.waitFor(() => expect(releaseStatus).toBeDefined());
+    await manager.privacyInstall.cancel();
+    releaseStatus!();
+    await earlyFailure;
+    expect(
+      requests.filter((request) => request.action === "install")
+    ).toHaveLength(1);
+    expect(requests.some((request) => request.action === "activate")).toBe(
+      false
+    );
+    holdStatus = false;
     await expect(manager.privacyInstall.getStatus()).resolves.toEqual({
       available: false,
       state: "unavailable",

@@ -1629,6 +1629,7 @@ export const createKoedServerManager = ({
   let desktopSupervisorProcess: ChildProcess | null = null;
   let desktopSupervisorNonce: string | null = null;
   let activePrivacyRequestId: string | null = null;
+  let cancelActivePrivacyRequest: (() => void) | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
   let projectMetadataReconciliation: Promise<void> | null = null;
   const pendingProjectMetadataPaths = new Set<string>();
@@ -5734,6 +5735,10 @@ export const createKoedServerManager = ({
       const archive = `koed-privacy-${version}-${platform}-${architecture}.tar.gz`;
       const origin = `https://github.com/koed-labs/koed/releases/download/v${version}`;
       activePrivacyRequestId = requestId;
+      let cancelRequested = false;
+      cancelActivePrivacyRequest = () => {
+        cancelRequested = true;
+      };
       const source = offlineSource
         ? { kind: "offline", ...offlineSource }
         : {
@@ -5745,6 +5750,8 @@ export const createKoedServerManager = ({
       try {
         const before =
           await requestPrivacyRpc<Record<string, unknown>>("status");
+        if (cancelRequested)
+          throw new Error("Privacy Filter installation cancelled.");
         const result = await requestPrivacyRpc<{
           state: string;
           generationId: string;
@@ -5765,6 +5772,8 @@ export const createKoedServerManager = ({
               typeof event.totalBytes === "number" ? event.totalBytes : null
           })
         );
+        if (cancelRequested)
+          throw new Error("Privacy Filter installation cancelled.");
         if (result.state === "active")
           return {
             available: true,
@@ -5780,6 +5789,7 @@ export const createKoedServerManager = ({
             "Cannot safely activate Privacy Filter assets because the current runtime generation is unavailable for rollback. Koed was not stopped."
           );
         activePrivacyRequestId = null;
+        cancelActivePrivacyRequest = null;
         onProgress({
           requestId,
           stage: "activation",
@@ -5852,11 +5862,15 @@ export const createKoedServerManager = ({
           throw error;
         }
       } finally {
-        if (activePrivacyRequestId === requestId) activePrivacyRequestId = null;
+        if (activePrivacyRequestId === requestId) {
+          activePrivacyRequestId = null;
+          cancelActivePrivacyRequest = null;
+        }
       }
     },
     cancel: async () => {
       if (!activePrivacyRequestId) return;
+      cancelActivePrivacyRequest?.();
       await requestPrivacyRpc("cancel", { requestId: activePrivacyRequestId });
     },
     selectOffline: async () => null

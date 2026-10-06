@@ -24,9 +24,10 @@ const roots: string[] = [];
 const hash = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const fixture = () => {
-  const root = mkdtempSync(resolve(tmpdir(), "koed-desktop-bundle-"));
-  roots.push(root);
-  mkdirSync(resolve(root, "api"));
+  const resources = mkdtempSync(resolve(tmpdir(), "koed-desktop-bundle-"));
+  roots.push(resources);
+  const root = resolve(resources, "koed-runtime");
+  mkdirSync(resolve(root, "api"), { recursive: true });
   writeFileSync(resolve(root, "api/index.js"), "verified bundle");
   const manifest = {
     schemaVersion: 1,

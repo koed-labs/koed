@@ -22,8 +22,10 @@ import {
 import {
   activateGeneration,
   cleanupGenerations,
+  readCurrentDesktopGeneration,
   readCurrentGeneration
 } from "./generation-lifecycle.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 
 export type ComponentState =
   | "required"
@@ -47,6 +49,7 @@ export interface ComponentCommandContext {
   target: ArtifactTarget;
   runtime: RuntimeIdentity;
   owner: RuntimeOwner;
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
   signal?: AbortSignal;
   progress?: (event: {
     phase: string;
@@ -94,7 +97,12 @@ const readOwnedCurrentGeneration = async (
   context: ComponentCommandContext
 ): Promise<VerifiedGeneration | null> => {
   try {
-    const generation = await readCurrentGeneration(context.paths);
+    const generation = context.desktopRuntimeCapability
+      ? await readCurrentDesktopGeneration(
+          context.paths,
+          context.desktopRuntimeCapability
+        )
+      : await readCurrentGeneration(context.paths);
     return generation.owner.kind === context.owner.kind &&
       generation.owner.installationId === context.owner.installationId
       ? generation
@@ -260,7 +268,12 @@ export async function runComponentActivate(
     throw new Error(
       `No complete staged generation for ${version}; install all required components first.`
     );
-  return activateGeneration(context.paths, candidate.id, context.owner);
+  return activateGeneration(
+    context.paths,
+    candidate.id,
+    context.owner,
+    context.desktopRuntimeCapability
+  );
 }
 
 export async function runComponentCleanup(

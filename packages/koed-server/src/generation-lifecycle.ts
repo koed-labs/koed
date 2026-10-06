@@ -261,6 +261,112 @@ export async function readCurrentGeneration(
   return readStagedGeneration(paths, id);
 }
 
+const desktopBundleRecordPath = (paths: KoedServerPaths, id: string): string =>
+  resolve(paths.generationsDir, id, "desktop-bundle.json");
+const persistDesktopBundleRecord = (
+  paths: KoedServerPaths,
+  generation: VerifiedGeneration,
+  capability: DesktopRuntimeCapability
+): void => {
+  const root = resolve(paths.generationsDir, generation.id);
+  assertDirectoryChain(paths.koedHome, root);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const path = desktopBundleRecordPath(paths, generation.id);
+  const record = {
+    schemaVersion: 1,
+    kind: "desktop-bundle",
+    id: generation.id,
+    productVersion: generation.productVersion,
+    owner: generation.owner,
+    bundleDigest: capability.bundleDigest,
+    resourcesPath: capability.resourcesPath
+  };
+  try {
+    writeFileSync(path, `${JSON.stringify(record)}\n`, {
+      flag: "wx",
+      mode: 0o600
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const existing: unknown = JSON.parse(readRegularFile(path));
+    if (
+      !isRecord(existing) ||
+      existing.schemaVersion !== record.schemaVersion ||
+      existing.kind !== record.kind ||
+      existing.id !== record.id ||
+      existing.productVersion !== record.productVersion ||
+      existing.bundleDigest !== record.bundleDigest ||
+      existing.resourcesPath !== record.resourcesPath ||
+      !isRecord(existing.owner) ||
+      existing.owner.kind !== generation.owner.kind ||
+      existing.owner.installationId !== generation.owner.installationId
+    )
+      throw new Error("private Desktop bundle generation record is invalid", {
+        cause: error
+      });
+  }
+};
+const readDesktopBundleGenerationById = async (
+  paths: KoedServerPaths,
+  id: string,
+  capability: DesktopRuntimeCapability
+): Promise<VerifiedGeneration> => {
+  const generation = await readDesktopBundleGeneration(paths, capability);
+  if (generation.id !== id) throw new Error("runtime owner mismatch");
+  const record: unknown = JSON.parse(
+    readRegularFile(desktopBundleRecordPath(paths, id))
+  );
+  if (
+    !isRecord(record) ||
+    record.schemaVersion !== 1 ||
+    record.kind !== "desktop-bundle" ||
+    record.id !== generation.id ||
+    record.productVersion !== generation.productVersion ||
+    record.bundleDigest !== capability.bundleDigest ||
+    record.resourcesPath !== capability.resourcesPath ||
+    !isRecord(record.owner) ||
+    record.owner.kind !== generation.owner.kind ||
+    record.owner.installationId !== generation.owner.installationId
+  )
+    throw new Error("private Desktop bundle generation record is invalid");
+  return generation;
+};
+export async function readDesktopGenerationForCapability(
+  paths: KoedServerPaths,
+  id: string,
+  capability: DesktopRuntimeCapability
+): Promise<VerifiedGeneration> {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  try {
+    return await readDesktopBundleGenerationById(paths, id, capability);
+  } catch (error) {
+    if (error instanceof Error && error.message === "runtime owner mismatch")
+      return readStagedGeneration(paths, id);
+    throw error;
+  }
+}
+
+export async function readCurrentDesktopGeneration(
+  paths: KoedServerPaths,
+  capability: DesktopRuntimeCapability
+): Promise<VerifiedGeneration> {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  const id = readCurrentId(paths);
+  if (!id) throw new Error("no active runtime generation");
+  const generation = await readDesktopGenerationForCapability(
+    paths,
+    id,
+    capability
+  );
+  assertOwner(
+    generation,
+    resolveDesktopRuntimeOwner(capability, paths.koedHome)
+  );
+  return generation;
+}
+
 export async function readCurrentGenerationForOwner(
   paths: KoedServerPaths,
   requester: RuntimeOwner
@@ -324,7 +430,7 @@ const createPinRelease = (
     });
 };
 
-export async function readDesktopBundleGeneration(
+export function readDesktopBundleGeneration(
   paths: KoedServerPaths,
   capability: DesktopRuntimeCapability
 ): Promise<VerifiedGeneration> {
@@ -340,7 +446,7 @@ export async function readDesktopBundleGeneration(
     throw new Error("Desktop runtime bundle changed after verification");
   const owner = resolveDesktopRuntimeOwner(capability, paths.koedHome);
   const generation = desktopBundleGeneration(currentCapability, owner);
-  return generation;
+  return Promise.resolve(generation);
 }
 
 export async function pinDesktopBundleGenerationForStart(
@@ -357,8 +463,10 @@ export async function pinDesktopBundleGenerationForStart(
       const bundled = await readDesktopBundleGeneration(paths, capability);
       const activeId = readCurrentId(paths);
       const active = activeId
-        ? await readStagedGeneration(paths, activeId)
+        ? await readDesktopGenerationForCapability(paths, activeId, capability)
         : null;
+      if (active) assertOwner(active, requester);
+      persistDesktopBundleRecord(paths, bundled, capability);
       const generation =
         active &&
         sameOwner(active.owner, requester) &&
@@ -430,17 +538,26 @@ export async function pinGenerationForStart(
 export async function activateGeneration(
   paths: KoedServerPaths,
   id: string,
-  requester: RuntimeOwner
+  requester: RuntimeOwner,
+  capability?: DesktopRuntimeCapability
 ): Promise<VerifiedGeneration> {
   const lock = acquireLifecycleLock(paths);
   try {
     return await withStoreLock(paths, async () => {
       assertNoActivePin(paths);
-      const candidate = await readStagedGeneration(paths, id);
+      const candidate = capability
+        ? await readDesktopGenerationForCapability(paths, id, capability)
+        : await readStagedGeneration(paths, id);
       assertOwner(candidate, requester);
       const currentId = readCurrentId(paths);
       if (currentId) {
-        const current = await readStagedGeneration(paths, currentId);
+        const current = capability
+          ? await readDesktopGenerationForCapability(
+              paths,
+              currentId,
+              capability
+            )
+          : await readStagedGeneration(paths, currentId);
         assertOwner(current, requester);
         assertPackageMigrationCompatible(
           currentManifest(current),

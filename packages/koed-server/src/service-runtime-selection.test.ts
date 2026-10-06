@@ -34,7 +34,11 @@ import {
 } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
-import { readCurrentGeneration } from "./generation-lifecycle.js";
+import {
+  readCurrentDesktopGeneration,
+  readCurrentGeneration
+} from "./generation-lifecycle.js";
+import { runComponentStatus } from "./component-commands.js";
 import {
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
@@ -176,7 +180,7 @@ describe("packaged service runtime selection", () => {
       expect.arrayContaining([
         expect.objectContaining({
           path: "api/dist/index.js",
-          sha256: expect.any(String)
+          sha256: createHash("sha256").update("bundled runtime").digest("hex")
         })
       ])
     );
@@ -188,6 +192,69 @@ describe("packaged service runtime selection", () => {
     );
     await expect(readCurrentGeneration(paths)).rejects.toThrow();
     await selection.pin.release();
+    const restarted = await pinAndResolvePackagedRuntime(
+      paths,
+      {},
+      requirements,
+      existsSync,
+      capability
+    );
+    expect(restarted.pin.generation.id).toBe(selection.pin.generation.id);
+    const active = await readCurrentDesktopGeneration(paths, capability);
+    expect(active.id).toBe(selection.pin.generation.id);
+    const runtime: RuntimeIdentity = {
+      kind: "node",
+      version: process.versions.node,
+      nodeVersion: process.versions.node,
+      modulesAbi: process.versions.modules,
+      napiVersion: Number(process.versions.napi),
+      platform: process.platform === "darwin" ? "macos" : "linux",
+      architecture: process.arch as "arm64" | "x64"
+    };
+    const status = await runComponentStatus({
+      paths,
+      controlPlaneVersion: capability.productVersion,
+      target: capability.target,
+      runtime,
+      owner: active.owner,
+      desktopRuntimeCapability: capability,
+      isRunning: false,
+      execution: "packaged",
+      environment: {}
+    });
+    expect(status.activeGeneration).toBe(active.id);
+    expect(status.components.base).toBe("active");
+    await restarted.pin.release();
+    await activateGeneration(paths, active.id, active.owner, capability);
+    const foreignOwner = resolveKoedRuntimeOwner();
+    rmSync(resolve(paths.componentsDir, "current.json"));
+    const foreignPaths = await makeGeneration(
+      paths.koedHome,
+      capability.productVersion,
+      foreignOwner
+    );
+    const foreignPointer = readFileSync(
+      resolve(foreignPaths.componentsDir, "current.json"),
+      "utf8"
+    );
+    await expect(
+      pinAndResolvePackagedRuntime(
+        paths,
+        {},
+        requirements,
+        existsSync,
+        capability
+      )
+    ).rejects.toThrow(/owner/);
+    expect(
+      readFileSync(resolve(paths.componentsDir, "current.json"), "utf8")
+    ).toBe(foreignPointer);
+    expect(existsSync(paths.generationStatePath!)).toBe(false);
+    // Restore the verified Desktop selection before checking bundle tampering.
+    writeFileSync(
+      resolve(paths.componentsDir, "current.json"),
+      JSON.stringify({ schemaVersion: 1, generationId: active.id })
+    );
     writeFileSync(resolve(runtimeRoot, requiredFiles[0]!), "tampered");
     await expect(
       resolveVerifiedPackagedRuntime(

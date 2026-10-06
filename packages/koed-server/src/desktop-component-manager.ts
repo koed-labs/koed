@@ -10,7 +10,10 @@ import { resolve, relative, isAbsolute } from "node:path";
 import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 export type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
-import { deriveDesktopRuntimeOwner } from "./desktop-runtime-capability.js";
+import {
+  deriveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 import {
   runComponentStatus,
   type ComponentCommandContext
@@ -269,8 +272,14 @@ export const createDesktopComponentManagerBridge = (input: {
     input.paths.koedHome,
     realpathSync.native(resolve(capability.root, ".."))
   );
+  const desktopRuntimeCapability = verifyDesktopRuntimeBundle(
+    resolve(capability.root, "..")
+  );
+  if (desktopRuntimeCapability.bundleDigest !== capability.digest)
+    throw new Error("Desktop bundled runtime capability is invalid");
   const context: ComponentCommandContext = {
     paths: input.paths,
+    desktopRuntimeCapability,
     controlPlaneVersion: input.controlPlaneVersion,
     target: input.target,
     runtime: input.runtime,
@@ -399,7 +408,12 @@ export const createDesktopComponentManagerBridge = (input: {
         );
       if (!/^[a-f0-9]{64}$/.test(generationId))
         throw new Error("generation id is invalid");
-      return activateGeneration(context.paths, generationId, owner);
+      return activateGeneration(
+        context.paths,
+        generationId,
+        owner,
+        context.desktopRuntimeCapability
+      );
     }
   });
 };
