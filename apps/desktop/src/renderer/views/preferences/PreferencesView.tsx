@@ -39,6 +39,7 @@ import type { DesktopApi } from "../../../types.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
+import { CliInstallSettingsSection } from "./CliInstallSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
 import "./preferences.css";
@@ -77,6 +78,7 @@ export type PreferencesViewProps = {
   hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
   launchAtStartup?: DesktopApi["launchAtStartup"];
   localAiClients?: DesktopApi["localAiClients"];
+  cliInstall?: DesktopApi["cliInstall"];
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
@@ -131,11 +133,16 @@ function SettingRow({
 function GeneralSection({
   hardwareAcceleration,
   launchAtStartup,
+  cliInstall,
   onThemeChange,
   theme
 }: Pick<
   PreferencesViewProps,
-  "hardwareAcceleration" | "launchAtStartup" | "onThemeChange" | "theme"
+  | "hardwareAcceleration"
+  | "launchAtStartup"
+  | "cliInstall"
+  | "onThemeChange"
+  | "theme"
 >) {
   return (
     <div className="koed-preference-section">
@@ -159,6 +166,7 @@ function GeneralSection({
       </fieldset>
       <LaunchAtStartupSetting api={launchAtStartup} />
       <HardwareAccelerationSetting api={hardwareAcceleration} />
+      <CliInstallSettingsSection api={cliInstall} />
     </div>
   );
 }
@@ -1227,6 +1235,7 @@ function AdvancedSection({
 export function PreferencesView({
   acknowledgements,
   capture,
+  cliInstall,
   collaborationClient,
   collaborationSnapshot,
   initialSection = "general",
@@ -1292,6 +1301,7 @@ export function PreferencesView({
           <GeneralSection
             hardwareAcceleration={hardwareAcceleration}
             launchAtStartup={launchAtStartup}
+            cliInstall={cliInstall}
             onThemeChange={onThemeChange}
             theme={theme}
           />

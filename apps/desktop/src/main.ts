@@ -53,6 +53,12 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
+import { createDesktopCliInstallManager } from "./cli-install/manager.js";
+import {
+  registerCliInstallIpc,
+  sendCliInstallProgress
+} from "./cli-install/ipc.js";
+import type { PrivacyInstallBridge } from "./cli-install/protocol.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
   createLaunchAtStartupController,
@@ -375,6 +381,53 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIcon);
   }
   registerAppProtocol();
+  const privacyInstallBridge = (
+    server as KoedServerManager & {
+      privacyInstall?: PrivacyInstallBridge;
+    }
+  ).privacyInstall;
+  const cliInstallManager = createDesktopCliInstallManager({
+    ...(privacyInstallBridge ? { bridge: privacyInstallBridge } : {}),
+    appPath: app.getAppPath(),
+    helperPath: process.execPath,
+    cliPath: koedServerCli,
+    expectedVersion: app.getVersion(),
+    currentPath: process.env.PATH ?? "",
+    platform: process.platform,
+    probeHelper: async () =>
+      new Promise<boolean>((resolveProbe) => {
+        execFile(
+          process.execPath,
+          ["--version"],
+          {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+            timeout: 5_000,
+            windowsHide: true
+          },
+          (error) => resolveProbe(!error)
+        );
+      })
+  });
+  registerCliInstallIpc({
+    ipcMain,
+    allowedRendererOrigins,
+    manager: cliInstallManager,
+    selectLauncherDestination: async () => {
+      const options = {
+        title: "Choose Koed CLI launcher location",
+        defaultPath: resolve(app.getPath("home"), ".local", "bin", "koed"),
+        buttonLabel: "Install launcher"
+      };
+      const selected = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      return selected.canceled ? null : (selected.filePath ?? null);
+    }
+  });
+  sendCliInstallProgress(cliInstallManager, (channel, value) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send(channel, value);
+  });
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
     allowedRendererOrigins,
     localAiClients: server.localAiClients,

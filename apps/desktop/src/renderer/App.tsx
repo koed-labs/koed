@@ -1923,6 +1923,7 @@ export function App({
         collaborationClient={client}
         collaborationSnapshot={snapshot}
         initialSection={route.section}
+        cliInstall={window.koedDesktop?.cliInstall}
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
         launchAtStartup={window.koedDesktop?.launchAtStartup}
         localAiClients={window.koedDesktop?.localAiClients}
