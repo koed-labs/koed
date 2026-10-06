@@ -17,3 +17,5 @@ Show subtle Agent progress across AI chats, including current task status, elaps
 Show the last five human and AI exchanges in the Simple activity view and expandable file patches in Advanced. Use saved Git checkpoint diffs where available, and label recorded AI Client edits in plain folders with their confirmation status. Keep these details available for direct and hosted chats.
 
 Resolve selected nested folders to their registered Project instead of creating duplicate discovery entries from historical parent-folder metadata. Keep all visible Project conversations in the sidebar when Home is filtered.
+
+Keep saved conversations visible in Project and standalone navigation while the runtime reconciles, pauses, or stops.

@@ -36,6 +36,7 @@ import {
   MIN_STUDIO_SIDEBAR_WIDTH,
   STUDIO_SIDEBAR_WIDTH_STEP
 } from "./StudioSidebar.helpers";
+import { isListedManagedConversation } from "./LocalConversationBrowser.projects";
 import { isSyntheticIndependentProject } from "./LocalConversationBrowser.match";
 import { useHomeFeed } from "@/lib/use-home-feed";
 import type { PersonalRemovalTarget } from "@/lib/personal-removals-client";
@@ -276,7 +277,7 @@ export function StudioSidebar({
   const activeManagedConversations = personalRemovalsReady
     ? managedConversations.filter(
         (chat) =>
-          ["running", "ready", "starting"].includes(chat.state.toLowerCase()) &&
+          isListedManagedConversation(chat.state) &&
           !hasProjectRemoval(personalRemovals, chat.projectId ?? "") &&
           !hasConversationRemoval(personalRemovals, [`managed:${chat.id}`])
       )

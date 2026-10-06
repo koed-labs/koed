@@ -134,3 +134,5 @@ No Git repository is created and the parent repository is never inspected.
 ### Personal Project discovery
 
 Local conversation discovery prefers a registered Project's canonical root over another Project's historical working-directory alias. This keeps an explicitly selected nested folder separate from its parent and reuses its registered ID rather than creating a duplicate discovery Project. Conflicting records for the same root remain ambiguous, and unrelated folders are never merged by name. Home filters affect its content only; the sidebar retains conversations across all visible Projects.
+
+Saved conversations remain in sidebar navigation during reconciliation, pause and stop transitions, as well as after stopping or failure. Their current runtime state does not change their Project association.

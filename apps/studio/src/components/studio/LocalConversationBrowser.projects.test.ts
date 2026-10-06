@@ -3,6 +3,7 @@ import test from "node:test";
 // Node's native TypeScript runner needs the source extension here.
 import {
   deriveProjectBrowserView,
+  isListedManagedConversation,
   hasExplainableProjectAssociation
   // @ts-expect-error -- Next's app compiler does not enable TS extension imports.
 } from "./LocalConversationBrowser.projects.ts";
@@ -154,4 +155,24 @@ test("discovery Projects require a human label unless registered", () => {
     ),
     false
   );
+});
+
+test("saved conversations remain listed during reconciliation, pause and stop transitions", () => {
+  for (const state of [
+    "reconciling",
+    "quiesce_requested",
+    "quiesced",
+    "stopping"
+  ]) {
+    assert.equal(isListedManagedConversation(state), true);
+    const view = deriveProjectBrowserView({
+      items: [],
+      registeredProjects: projects,
+      managedConversations: [{ ...managed[1], state }],
+      provider: "codex",
+      normalizeProvider: normalizeConversationProvider
+    });
+    assert.equal(view.activeManagedConversations.length, 1);
+    assert.equal(view.projects[0]?.id, "lp_codex");
+  }
 });

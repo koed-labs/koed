@@ -23,7 +23,7 @@ afterEach(async () => {
   container?.remove();
   vi.unstubAllGlobals();
 });
-async function mount(project: string | null) {
+async function mount(project: string | null, state = "running") {
   const fetcher = vi.fn(async (url: string) =>
     Response.json(
       url === "/studio-api/projects"
@@ -43,7 +43,7 @@ async function mount(project: string | null) {
     root.render(
       <LocalConversationBrowser
         selectedExecutionId={conversation.id}
-        managedConversations={[{ ...conversation, projectId: project }]}
+        managedConversations={[{ ...conversation, projectId: project, state }]}
       />
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -100,3 +100,13 @@ it("saves a user rename with CSRF and retains the selected conversation", async 
     container.querySelector('[aria-current="page"]')?.textContent
   ).toContain("My login fix");
 });
+
+it.each(["reconciling", "quiesce_requested", "quiesced", "stopping"])(
+  "keeps the selected project conversation visible during %s",
+  async (state) => {
+    await mount(projectId, state);
+    expect(
+      container.querySelector('[aria-current="page"]')?.textContent
+    ).toContain("Fix login");
+  }
+);

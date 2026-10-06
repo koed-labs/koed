@@ -33,6 +33,22 @@ export function hasExplainableProjectAssociation(
   );
 }
 
+/** Runtime transitions must not remove a saved conversation from navigation. */
+export function isListedManagedConversation(state: string): boolean {
+  return [
+    "running",
+    "ready",
+    "starting",
+    "reconciling",
+    "quiesce_requested",
+    "quiesced",
+    "stopping",
+    "stopped",
+    "failed",
+    "fenced"
+  ].includes(state.toLowerCase());
+}
+
 /** Derive the sidebar Projects and managed rows, including terminal history. */
 export function deriveProjectBrowserView<TManaged extends ManagedConversation>({
   items,
@@ -53,15 +69,7 @@ export function deriveProjectBrowserView<TManaged extends ManagedConversation>({
   activeManagedConversations: TManaged[];
 } {
   const activeManagedConversations = managedConversations.filter((item) => {
-    const state = item.state.toLowerCase();
-    const listed = [
-      "running",
-      "ready",
-      "starting",
-      "stopped",
-      "failed",
-      "fenced"
-    ].includes(state);
+    const listed = isListedManagedConversation(item.state);
     return (
       listed &&
       (provider === "all" || normalizeProvider(item.provider) === provider)
