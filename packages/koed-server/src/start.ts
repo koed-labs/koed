@@ -153,6 +153,7 @@ export interface KoedServerStartOptions {
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
+  onReady?: () => void;
 }
 
 const runCommand = (
@@ -886,7 +887,8 @@ export const startKoedServer = async ({
   provisionLocalApiToken:
     provisionLocalApiTokenDependency = provisionLocalApiToken,
   signal,
-  desktopRuntimeCapability
+  desktopRuntimeCapability,
+  onReady
 }: KoedServerStartOptions = {}): Promise<void> => {
   if (
     desktopRuntimeCapability !== undefined &&
@@ -1613,6 +1615,7 @@ export const startKoedServer = async ({
       }
       emitStartupMilestone("core_services_ready");
       startupReady = true;
+      onReady?.();
       console.log(JSON.stringify(status, null, 2));
       emitStartupMilestone("final_supervisor_status_emitted");
       console.log(

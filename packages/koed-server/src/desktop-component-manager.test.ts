@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -13,6 +14,10 @@ import {
   createDesktopComponentManagerBridge,
   validateDesktopBundle
 } from "./desktop-component-manager.js";
+import {
+  resolveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 
 const roots: string[] = [];
 const hash = (value: string): string =>
@@ -56,6 +61,68 @@ describe("Desktop bundled component capability", () => {
     expect(Object.isFrozen(validated)).toBe(true);
     expect(Object.isFrozen(validated.manifest)).toBe(true);
     expect(Object.isFrozen(validated.manifest.files)).toBe(true);
+  });
+
+  it("derives same stable owner for component manager and runtime capability", () => {
+    const resourcesPath = mkdtempSync(resolve(tmpdir(), "koed-desktop-owner-"));
+    roots.push(resourcesPath);
+    const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+    mkdirSync(resolve(runtimeRoot, "api"), { recursive: true });
+    writeFileSync(resolve(runtimeRoot, "api/index.js"), "verified bundle");
+    const manifestPath = resolve(runtimeRoot, "desktop-bundle-manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        productVersion: "0.8.1",
+        component: "base",
+        target: { platform: "macos", architecture: "arm64" },
+        files: [
+          {
+            path: "api/index.js",
+            kind: "file",
+            sha256: hash("verified bundle")
+          }
+        ]
+      })
+    );
+    const managerCapability = validateDesktopBundle(
+      runtimeRoot,
+      manifestPath,
+      { platform: "macos", architecture: "arm64" },
+      "0.8.1"
+    );
+    const runtimeCapability = verifyDesktopRuntimeBundle(resourcesPath);
+    const manager = createDesktopComponentManagerBridge({
+      capability: managerCapability,
+      paths: { koedHome: resolve(resourcesPath, "home") } as never,
+      runtime: {} as never,
+      isRunning: false,
+      target: { platform: "macos", architecture: "arm64" },
+      controlPlaneVersion: "0.8.1"
+    });
+    expect(manager.owner).toEqual(
+      resolveDesktopRuntimeOwner(
+        runtimeCapability,
+        resolve(resourcesPath, "home")
+      )
+    );
+    expect(runtimeCapability.resourcesPath).toBe(
+      realpathSync.native(resourcesPath)
+    );
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(manifestPath, "utf8")),
+        productVersion: "0.8.2"
+      })
+    );
+    expect(
+      resolveDesktopRuntimeOwner(
+        verifyDesktopRuntimeBundle(resourcesPath),
+        resolve(resourcesPath, "home")
+      )
+    ).toEqual(manager.owner);
   });
 
   it("rejects caller-forged bundled runtime capabilities", () => {

@@ -14,6 +14,7 @@ import type {
 } from "./component-contract.js";
 export type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
+import { deriveDesktopRuntimeOwner } from "./desktop-runtime-capability.js";
 import {
   runComponentStatus,
   type ComponentCommandContext
@@ -158,10 +159,10 @@ export const createDesktopComponentManagerBridge = (input: {
     canonicalJson(capability.manifest.target) !== canonicalJson(input.target)
   )
     throw new Error("Desktop bundled runtime capability is invalid");
-  const installationId = digest(
-    `${input.paths.koedHome}\n${capability.digest}`
+  const owner = deriveDesktopRuntimeOwner(
+    input.paths.koedHome,
+    realpathSync.native(resolve(capability.root, ".."))
   );
-  const owner: RuntimeOwner = { kind: "desktop", installationId };
   const context: ComponentCommandContext = {
     paths: input.paths,
     controlPlaneVersion: input.controlPlaneVersion,

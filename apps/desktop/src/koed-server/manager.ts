@@ -210,7 +210,7 @@ export interface KoedServerManagerOptions {
     options: {
       cwd: string;
       env: NodeJS.ProcessEnv;
-      stdio: ["ignore", "ignore", "ignore", "ipc"];
+      stdio: ["ignore", "ignore", "ignore" | "pipe", "ipc"];
       detached: false;
     }
   ) => ChildProcess;
@@ -4825,16 +4825,19 @@ export const createKoedServerManager = ({
       const child = spawn(invocation.command, invocation.args, {
         cwd: repoRoot,
         env: invocation.env,
-        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        stdio: ["ignore", "ignore", "pipe", "ipc"],
         detached: false
       });
       desktopSupervisorProcess = child;
+      let supervisorStderr = "";
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        supervisorStderr = `${supervisorStderr}${String(chunk)}`.slice(-4_000);
+      });
       const nonce = randomBytes(32).toString("hex");
       const ready = new Promise<void>((resolveReady, rejectReady) => {
         const timeout = setTimeout(
-          () =>
-            rejectReady(new Error("Desktop supervisor handshake timed out.")),
-          10_000
+          () => rejectReady(new Error("Desktop supervisor startup timed out.")),
+          120_000
         );
         child.once("message", (message: unknown) => {
           clearTimeout(timeout);
@@ -4887,7 +4890,7 @@ export const createKoedServerManager = ({
         return {
           ok: false,
           state: "needs_attention",
-          error: error instanceof Error ? error.message : String(error)
+          error: `${error instanceof Error ? error.message : String(error)}${supervisorStderr.trim() ? `\n${supervisorStderr.trim()}` : ""}`
         };
       }
     }

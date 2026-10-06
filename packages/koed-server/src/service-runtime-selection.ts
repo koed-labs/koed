@@ -9,8 +9,10 @@ import {
 } from "./app-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 import {
+  pinDesktopBundleGenerationForStart,
   pinGenerationForStart,
-  readCurrentGenerationForOwner
+  readCurrentGenerationForOwner,
+  readDesktopBundleGeneration
 } from "./generation-lifecycle.js";
 import {
   resolveDesktopRuntimeOwner,
@@ -18,12 +20,15 @@ import {
   type DesktopRuntimeCapability
 } from "./desktop-runtime-capability.js";
 
-const runtimeOwner = (capability?: DesktopRuntimeCapability) => {
+const runtimeOwner = (
+  paths: KoedServerPaths,
+  capability?: DesktopRuntimeCapability
+) => {
   if (capability === undefined) return resolveKoedRuntimeOwner();
   if (!validateDesktopRuntimeCapability(capability)) {
     throw new Error("validated private Desktop runtime capability is required");
   }
-  return resolveDesktopRuntimeOwner(capability);
+  return resolveDesktopRuntimeOwner(capability, paths.koedHome);
 };
 
 export async function resolveVerifiedPackagedRuntime(
@@ -35,10 +40,9 @@ export async function resolveVerifiedPackagedRuntime(
 ): Promise<KoedAppRuntime> {
   let generation;
   try {
-    generation = await readCurrentGenerationForOwner(
-      paths,
-      runtimeOwner(capability)
-    );
+    generation = capability
+      ? await readDesktopBundleGeneration(paths, capability)
+      : await readCurrentGenerationForOwner(paths, runtimeOwner(paths));
   } catch (error) {
     if (error instanceof Error && error.message === "runtime owner mismatch") {
       throw new Error(
@@ -78,7 +82,9 @@ export async function pinAndResolvePackagedRuntime(
 }> {
   let pin: Awaited<ReturnType<typeof pinGenerationForStart>>;
   try {
-    pin = await pinGenerationForStart(paths, runtimeOwner(capability));
+    pin = capability
+      ? await pinDesktopBundleGenerationForStart(paths, capability)
+      : await pinGenerationForStart(paths, runtimeOwner(paths));
   } catch (error) {
     if (error instanceof Error && error.message === "runtime owner mismatch") {
       throw new Error(

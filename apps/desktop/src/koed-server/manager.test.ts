@@ -143,7 +143,7 @@ describe("Koed server desktop manager", () => {
     });
     expect(spawnOptions).toMatchObject({
       detached: false,
-      stdio: ["ignore", "ignore", "ignore", "ipc"]
+      stdio: ["ignore", "ignore", "pipe", "ipc"]
     });
     await expect(manager.stop()).resolves.toMatchObject({
       ok: true,

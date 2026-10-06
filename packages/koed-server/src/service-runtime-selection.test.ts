@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -128,26 +129,38 @@ afterEach(() => {
 });
 
 describe("packaged service runtime selection", () => {
-  it("selects and pins Desktop-owned generation only with verified bundle capability", async () => {
+  it("admits and pins verified Desktop bundle on fresh KOED_HOME", async () => {
     const root = tempDir();
     const resourcesPath = resolve(root, "resources");
-    mkdirSync(resolve(resourcesPath, "koed-runtime"), { recursive: true });
+    const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+    mkdirSync(runtimeRoot, { recursive: true });
+    const files = requiredFiles.map((path) => {
+      const absolute = resolve(runtimeRoot, path);
+      mkdirSync(resolve(absolute, ".."), { recursive: true });
+      writeFileSync(absolute, "bundled runtime");
+      return {
+        path,
+        kind: "file",
+        sha256: createHash("sha256").update("bundled runtime").digest("hex")
+      };
+    });
     writeFileSync(
-      resolve(resourcesPath, "koed-runtime/desktop-bundle-manifest.json"),
+      resolve(runtimeRoot, "desktop-bundle-manifest.json"),
       JSON.stringify({
         schemaVersion: 1,
         productVersion: resolveKoedControlPlaneVersion(),
         component: "base",
-        target: { platform: process.platform, architecture: process.arch },
-        files: []
+        target: {
+          platform: process.platform === "darwin" ? "macos" : process.platform,
+          architecture: process.arch
+        },
+        files
       })
     );
     const capability = verifyDesktopRuntimeBundle(resourcesPath);
-    const paths = await makeGeneration(
-      resolve(root, "koed-home"),
-      resolveKoedControlPlaneVersion(),
-      resolveDesktopRuntimeOwner(capability)
-    );
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: resolve(root, "koed-home")
+    });
     const selection = await pinAndResolvePackagedRuntime(
       paths,
       {},
@@ -155,10 +168,36 @@ describe("packaged service runtime selection", () => {
       existsSync,
       capability
     );
+    expect(selection.runtime.root).toBe(runtimeRoot);
     expect(selection.runtime.apiEntry).toBe(
-      resolve(selection.runtime.root, "api/dist/index.js")
+      resolve(runtimeRoot, "api/dist/index.js")
     );
+    expect(selection.pin.generation.base.manifest.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "api/dist/index.js",
+          sha256: expect.any(String)
+        })
+      ])
+    );
+    expect(selection.pin.generation.owner).toEqual(
+      resolveDesktopRuntimeOwner(capability, paths.koedHome)
+    );
+    expect(readFileSync(paths.generationStatePath!, "utf8")).toContain(
+      "desktop-bundle"
+    );
+    await expect(readCurrentGeneration(paths)).rejects.toThrow();
     await selection.pin.release();
+    writeFileSync(resolve(runtimeRoot, requiredFiles[0]!), "tampered");
+    await expect(
+      resolveVerifiedPackagedRuntime(
+        paths,
+        {},
+        requirements,
+        existsSync,
+        capability
+      )
+    ).rejects.toThrow("Desktop runtime bundle file digest mismatch");
   });
 
   it("rejects caller-constructed Desktop capability before selecting a generation", async () => {

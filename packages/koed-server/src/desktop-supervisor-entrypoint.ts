@@ -47,6 +47,17 @@ const waitForManagerAuthority = (): Promise<InitMessage> =>
     process.on("message", onMessage);
   });
 
+export const createDesktopSupervisorEnvironment = (
+  source: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv => {
+  const environment: NodeJS.ProcessEnv = {
+    ...source,
+    KOED_PACKAGED_DESKTOP: "1"
+  };
+  delete environment.KOED_PACKAGED_RESOURCES_PATH;
+  return environment;
+};
+
 const assertParentExecutable = (managerPid: number): void => {
   if (process.platform === "linux") {
     const parentExecutable = realpathSync.native(`/proc/${managerPid}/exe`);
@@ -62,12 +73,6 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   const capability = verifyDesktopRuntimeBundle(handshake.resourcesPath);
   if (typeof process.send !== "function")
     throw new Error("Desktop supervisor IPC channel is unavailable");
-  process.send({
-    type: "koed.desktop.supervisor.ready",
-    nonce: handshake.nonce,
-    childPid: process.pid,
-    bundleDigest: capability.bundleDigest
-  });
   process.on("message", (message: unknown) => {
     if (
       message &&
@@ -81,12 +86,16 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   process.once("disconnect", () => process.kill(process.pid, "SIGTERM"));
   try {
     await startKoedServer({
-      environment: {
-        ...process.env,
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: capability.resourcesPath
-      },
-      desktopRuntimeCapability: capability
+      environment: createDesktopSupervisorEnvironment(process.env),
+      desktopRuntimeCapability: capability,
+      onReady: () => {
+        process.send?.({
+          type: "koed.desktop.supervisor.ready",
+          nonce: handshake.nonce,
+          childPid: process.pid,
+          bundleDigest: capability.bundleDigest
+        });
+      }
     });
   } finally {
     process.disconnect?.();

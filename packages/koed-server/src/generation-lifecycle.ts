@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -12,6 +12,12 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import type { RuntimeOwner, VerifiedGeneration } from "./component-contract.js";
+import {
+  resolveDesktopRuntimeOwner,
+  validateDesktopRuntimeCapability,
+  verifyDesktopRuntimeBundle,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
 import type { KoedServerPaths } from "./paths.js";
 import { readStagedGeneration } from "./component-store.js";
 import {
@@ -268,7 +274,8 @@ const persistPinState = (
   paths: KoedServerPaths,
   generation: VerifiedGeneration,
   requester: RuntimeOwner,
-  lock: LifecycleLockRecord
+  lock: LifecycleLockRecord,
+  source: "signed-store" | "desktop-bundle" = "signed-store"
 ): { path: string; processIdentity: string } => {
   const processIdentity = resolveProcessIdentity(process.pid);
   if (!processIdentity)
@@ -280,7 +287,8 @@ const persistPinState = (
     processIdentity,
     startedAt: new Date().toISOString(),
     owner: requester,
-    pinToken: lock.token
+    pinToken: lock.token,
+    ...(source === "desktop-bundle" ? { source } : {})
   };
   const path = generationStatePath(paths);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -314,6 +322,77 @@ const createPinRelease = (
         releaseLifecycleLock(paths, lock);
       }
     });
+};
+
+export async function readDesktopBundleGeneration(
+  paths: KoedServerPaths,
+  capability: DesktopRuntimeCapability
+): Promise<VerifiedGeneration> {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  const currentCapability = verifyDesktopRuntimeBundle(
+    capability.resourcesPath
+  );
+  if (
+    currentCapability.productVersion !== capability.productVersion ||
+    currentCapability.bundleDigest !== capability.bundleDigest
+  )
+    throw new Error("Desktop runtime bundle changed after verification");
+  const owner = resolveDesktopRuntimeOwner(capability, paths.koedHome);
+  const generation = desktopBundleGeneration(currentCapability, owner);
+  return generation;
+}
+
+export async function pinDesktopBundleGenerationForStart(
+  paths: KoedServerPaths,
+  capability: DesktopRuntimeCapability
+): Promise<{ generation: VerifiedGeneration; release(): Promise<void> }> {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  const requester = resolveDesktopRuntimeOwner(capability, paths.koedHome);
+  const lock = acquireLifecycleLock(paths);
+  try {
+    return await withStoreLock(paths, async () => {
+      assertNoActivePin(paths);
+      const generation = await readDesktopBundleGeneration(paths, capability);
+      const activeId = readCurrentId(paths);
+      if (activeId !== generation.id) writeCurrentPointer(paths, generation.id);
+      const pin = persistPinState(
+        paths,
+        generation,
+        requester,
+        lock,
+        "desktop-bundle"
+      );
+      return {
+        generation,
+        release: createPinRelease(paths, lock, pin.path, pin.processIdentity)
+      };
+    });
+  } catch (error) {
+    releaseLifecycleLock(paths, lock);
+    throw error;
+  }
+}
+
+const desktopBundleGeneration = (
+  capability: DesktopRuntimeCapability,
+  owner: RuntimeOwner
+): VerifiedGeneration => {
+  const manifest = capability.manifest;
+  const id = createHash("sha256")
+    .update(`${owner.installationId}\n${capability.bundleDigest}`)
+    .digest("hex");
+  return {
+    id,
+    productVersion: capability.productVersion,
+    base: {
+      manifest: manifest as unknown as VerifiedGeneration["base"]["manifest"],
+      root: resolve(capability.resourcesPath, "koed-runtime"),
+      manifestDigest: capability.bundleDigest
+    },
+    owner
+  };
 };
 
 export async function pinGenerationForStart(
