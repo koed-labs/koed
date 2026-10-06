@@ -110,22 +110,10 @@ redistributable runtime bundle. Python virtualenv files are no longer packaged
 native runtime assets. If no native source is staged, missing native runtime assets
 show as actionable `koed runtime status/install` diagnostics and
 Homebrew remains the macOS/Linux fallback.
-Point the packaged app back at a checkout for developer diagnostics by opting
-into source fallbacks explicitly:
-
-```bash
-KOED_REPO_ROOT=/path/to/koed \
-KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1 \
-  apps/desktop/release/mac/Koed.app/Contents/MacOS/Koed
-```
-
-`KOED_SERVER_CLI=/path/to/cli.js` can override the control-plane CLI directly.
-Use the app executable when passing environment variables; macOS `open` does not
-reliably preserve inline shell environment assignments for `.app` launches.
-Alternatively, set persistent launch services environment with `launchctl setenv
-KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
-packaged app uses its bundled `koed-server` CLI and reports missing runtime
-diagnostics instead of crashing.
+Packaged Desktop always resolves the control-plane CLI from its bundled
+`@koed-labs/server` package. `KOED_REPO_ROOT`, `KOED_SERVER_CLI`, and
+`KOED_NODE_COMMAND` are ignored and removed from packaged child-process
+environments; use an unpackaged development build for checkout overrides.
 
 Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
@@ -218,7 +206,5 @@ packaging, signing, runtime distribution, or packaged smoke support.
 - macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
-  `node_modules/@koed-labs/server/dist/cli.js` by default; `KOED_REPO_ROOT` and
-  `KOED_SERVER_CLI` remain available for developer control-plane overrides.
-  Source-checkout runtime fallback also requires
-  `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
+  `node_modules/@koed-labs/server/dist/cli.js`; packaged `KOED_REPO_ROOT`,
+  `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides are ignored.
