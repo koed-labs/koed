@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDesktopComponentManagerBridge,
+  createDesktopPrivacyRpcHandler,
   validateDesktopBundle
 } from "./desktop-component-manager.js";
 import {
@@ -123,6 +124,55 @@ describe("Desktop bundled component capability", () => {
         resolve(resourcesPath, "home")
       )
     ).toEqual(manager.owner);
+  });
+
+  it("routes private cancel RPC by validated request ID and rejects extra fields", () => {
+    const { root, manifestPath } = fixture();
+    const capability = validateDesktopBundle(
+      root,
+      manifestPath,
+      { platform: "macos", architecture: "arm64" },
+      "0.8.1"
+    );
+    const manager = createDesktopComponentManagerBridge({
+      capability,
+      paths: { koedHome: resolve(root, "home") } as never,
+      runtime: {} as never,
+      isRunning: true,
+      target: { platform: "macos", architecture: "arm64" },
+      controlPlaneVersion: "0.8.1"
+    });
+    const messages: Record<string, unknown>[] = [];
+    const handler = createDesktopPrivacyRpcHandler({
+      manager,
+      send: (message) => messages.push(message)
+    });
+    const requestId = "123e4567-e89b-42d3-a456-426614174000";
+    expect(
+      handler({
+        type: "koed.desktop.privacy.request",
+        requestId,
+        action: "cancel"
+      })
+    ).toBe(true);
+    expect(messages[0]).toMatchObject({
+      type: "koed.desktop.privacy.response",
+      requestId,
+      result: { cancelled: false }
+    });
+    expect(
+      handler({
+        type: "koed.desktop.privacy.request",
+        requestId,
+        action: "cancel",
+        trustedKeys: []
+      })
+    ).toBe(true);
+    expect(messages[1]).toMatchObject({
+      type: "koed.desktop.privacy.response",
+      requestId,
+      error: "Desktop privacy IPC request is invalid"
+    });
   });
 
   it("rejects caller-forged bundled runtime capabilities", () => {

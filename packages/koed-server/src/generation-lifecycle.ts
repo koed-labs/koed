@@ -354,8 +354,18 @@ export async function pinDesktopBundleGenerationForStart(
   try {
     return await withStoreLock(paths, async () => {
       assertNoActivePin(paths);
-      const generation = await readDesktopBundleGeneration(paths, capability);
+      const bundled = await readDesktopBundleGeneration(paths, capability);
       const activeId = readCurrentId(paths);
+      const active = activeId
+        ? await readStagedGeneration(paths, activeId)
+        : null;
+      const generation =
+        active &&
+        sameOwner(active.owner, requester) &&
+        active.productVersion === bundled.productVersion &&
+        active.base.manifestDigest === bundled.base.manifestDigest
+          ? active
+          : bundled;
       if (activeId !== generation.id) writeCurrentPointer(paths, generation.id);
       const pin = persistPinState(
         paths,

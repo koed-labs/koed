@@ -9,7 +9,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import properLockfile from "proper-lockfile";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeIdentity } from "./component-contract.js";
@@ -29,9 +29,11 @@ vi.mock("./component-trust-roots.js", () => ({
 }));
 import { signedComponentFixture } from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import {
   readStagedGeneration,
   stageComponent,
+  stageDesktopPrivacyGeneration,
   stageGeneration
 } from "./component-store.js";
 
@@ -103,6 +105,26 @@ const writeMetadata = (contents: Buffer) => {
   return path;
 };
 const owner = { kind: "standalone" as const, installationId: "fixture-owner" };
+const desktopBundle = (
+  root: string,
+  productVersion: string,
+  target: { platform: "macos" | "linux"; architecture: "arm64" | "x64" }
+) => {
+  const resourcesPath = resolve(root, "resources");
+  const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+  mkdirSync(runtimeRoot, { recursive: true });
+  writeFileSync(
+    resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      productVersion,
+      component: "base",
+      target,
+      files: []
+    })
+  );
+  return resourcesPath;
+};
 
 afterEach(() => {
   const changedPointers = activePointers
@@ -131,6 +153,36 @@ describe("immutable component and generation store", () => {
     const second = await stageFixture(paths, item);
     expect(second).toEqual(first);
     expect(first.root).toContain(first.manifestDigest);
+  });
+
+  it("persists a Desktop bundle plus signed privacy generation and re-verifies disk bytes", async () => {
+    const home = temp();
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    const item = await fixture({ component: "privacy" });
+    const privacy = await stageFixture(paths, item);
+    const resourcesPath = desktopBundle(
+      home,
+      item.input.expectedVersion,
+      item.input.target
+    );
+    const bundle = verifyDesktopRuntimeBundle(resourcesPath);
+    const generation = await stageDesktopPrivacyGeneration(paths, {
+      resourcesPath,
+      bundleDigest: bundle.bundleDigest,
+      productVersion: bundle.productVersion,
+      privacy,
+      owner
+    });
+    expect(
+      (await readStagedGeneration(paths, generation.id)).privacy?.manifestDigest
+    ).toBe(privacy.manifestDigest);
+    const archiveName = (
+      JSON.parse(item.input.manifestBytes.toString("utf8")) as {
+        archive: { name: string };
+      }
+    ).archive.name;
+    writeFileSync(resolve(dirname(privacy.root), archiveName), "tampered");
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
   });
 
   it("rejects same component version with a different signed manifest digest", async () => {

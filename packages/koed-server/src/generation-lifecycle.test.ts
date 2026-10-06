@@ -42,16 +42,25 @@ vi.mock("./generation-lifecycle-filesystem.js", async () => {
 });
 
 import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  resolveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   pinGenerationForStart,
+  pinDesktopBundleGenerationForStart,
   activateGeneration,
   cleanupGenerations,
   readCurrentGeneration
 } from "./generation-lifecycle.js";
 import * as componentStore from "./component-store.js";
 import * as supervisorLock from "./supervisor-lock.js";
-import { stageComponent, stageGeneration } from "./component-store.js";
+import {
+  stageComponent,
+  stageGeneration,
+  stageDesktopPrivacyGeneration
+} from "./component-store.js";
 
 const temporaryRoots: string[] = [];
 const temporaryMetadata: string[] = [];
@@ -112,6 +121,60 @@ afterEach(() => {
 });
 
 describe("generation lifecycle", () => {
+  it("keeps active signed privacy generation when pinning unchanged Desktop bundle", async () => {
+    const paths = pathsForTest();
+    const fixture = await signedComponentFixture({ component: "privacy" });
+    temporaryRoots.push(fixture.root);
+    fixtureRuntime.value = fixture.input.runtime;
+    fixtureKeys.value.clear();
+    for (const [key, value] of fixture.input.trustedKeys)
+      fixtureKeys.value.set(key, value);
+    const resourcesPath = resolve(paths.koedHome, "resources");
+    const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(
+      resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        productVersion: fixture.input.expectedVersion,
+        component: "base",
+        target: fixture.input.target,
+        files: []
+      })
+    );
+    const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    const privacy = await stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: fixture.input.archivePath,
+        manifestPath: metadataFile(paths, fixture.input.manifestBytes),
+        signaturePath: metadataFile(
+          paths,
+          Buffer.from(JSON.stringify(fixture.input.signature))
+        )
+      },
+      {
+        expectedComponent: "privacy",
+        expectedVersion: fixture.input.expectedVersion,
+        target: fixture.input.target,
+        runtime: fixture.input.runtime
+      }
+    );
+    const desktopOwner = resolveDesktopRuntimeOwner(capability, paths.koedHome);
+    const generation = await stageDesktopPrivacyGeneration(paths, {
+      resourcesPath,
+      bundleDigest: capability.bundleDigest,
+      productVersion: capability.productVersion,
+      privacy,
+      owner: desktopOwner
+    });
+    await activateGeneration(paths, generation.id, desktopOwner);
+    const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+    expect(pin.generation.id).toBe(generation.id);
+    await pin.release();
+  });
+
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");

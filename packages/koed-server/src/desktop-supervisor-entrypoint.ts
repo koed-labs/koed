@@ -1,5 +1,13 @@
 import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { startKoedServer } from "./start.js";
+import {
+  createDesktopPrivacyRpcHandler,
+  createDesktopComponentManagerBridge,
+  validateDesktopBundle
+} from "./desktop-component-manager.js";
+import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
+import { resolveKoedServerPaths } from "./paths.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 
 interface InitMessage {
@@ -7,14 +15,18 @@ interface InitMessage {
   nonce: string;
   managerPid: number;
   resourcesPath: string;
+  mode?: "runtime" | "privacy-activation";
 }
 
 const isInitMessage = (value: unknown): value is InitMessage => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return (
-    Object.keys(item).length === 4 &&
+    (Object.keys(item).length === 4 || Object.keys(item).length === 5) &&
     item.type === "koed.desktop.supervisor.init" &&
+    (item.mode === undefined ||
+      item.mode === "runtime" ||
+      item.mode === "privacy-activation") &&
     typeof item.nonce === "string" &&
     /^[a-f0-9]{64}$/.test(item.nonce) &&
     Number.isSafeInteger(item.managerPid) &&
@@ -73,7 +85,71 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   const capability = verifyDesktopRuntimeBundle(handshake.resourcesPath);
   if (typeof process.send !== "function")
     throw new Error("Desktop supervisor IPC channel is unavailable");
+  const runtimeRoot = resolve(capability.resourcesPath, "koed-runtime");
+  const componentCapability = validateDesktopBundle(
+    runtimeRoot,
+    resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+    capability.target,
+    capability.productVersion
+  );
+  const privacyManager = createDesktopComponentManagerBridge({
+    capability: componentCapability,
+    paths: resolveKoedServerPaths(
+      createDesktopSupervisorEnvironment(process.env)
+    ),
+    runtime: discoverActualRuntimeIdentity(),
+    isRunning: handshake.mode !== "privacy-activation",
+    target: capability.target,
+    controlPlaneVersion: capability.productVersion
+  });
+  const handlePrivacyRpc = createDesktopPrivacyRpcHandler({
+    manager: privacyManager,
+    send: (response) =>
+      process.send?.(response, () => {
+        if (handshake.mode === "privacy-activation") process.disconnect?.();
+      })
+  });
+  if (handshake.mode === "privacy-activation") {
+    process.on("message", (message: unknown) => {
+      if (
+        !message ||
+        typeof message !== "object" ||
+        Array.isArray(message) ||
+        (message as Record<string, unknown>).action !== "activate"
+      ) {
+        process.send?.(
+          {
+            type: "koed.desktop.privacy.response",
+            requestId: (message as Record<string, unknown> | null)?.requestId,
+            error: "Stopped activation mode only accepts activate requests"
+          },
+          () => process.disconnect?.()
+        );
+        return;
+      }
+      if (!handlePrivacyRpc(message)) {
+        process.send?.(
+          {
+            type: "koed.desktop.privacy.response",
+            requestId: (message as Record<string, unknown>).requestId,
+            error: "Desktop privacy IPC request is invalid"
+          },
+          () => process.disconnect?.()
+        );
+      }
+    });
+    process.once("disconnect", () => process.exit(0));
+    process.send?.({
+      type: "koed.desktop.supervisor.ready",
+      nonce: handshake.nonce,
+      childPid: process.pid,
+      bundleDigest: capability.bundleDigest,
+      mode: "privacy-activation"
+    });
+    return;
+  }
   process.on("message", (message: unknown) => {
+    if (handlePrivacyRpc(message)) return;
     if (
       message &&
       typeof message === "object" &&

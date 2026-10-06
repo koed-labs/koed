@@ -43,6 +43,7 @@ import type { KoedServerPaths } from "./paths.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
 import { extractVerifiedPackageArchive } from "./package-runtime.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { productionComponentTrustRoots } from "./component-trust-roots.js";
 import {
   verifyComponent,
@@ -913,6 +914,163 @@ export async function readStoredComponents(
   return components;
 }
 
+const readDesktopPrivacyGeneration = async (
+  paths: KoedServerPaths,
+  id: string,
+  record: Record<string, unknown>
+): Promise<VerifiedGeneration> => {
+  if (
+    !exactKeys(record, [
+      "schemaVersion",
+      "kind",
+      "id",
+      "productVersion",
+      "owner",
+      "resourcesPath",
+      "bundleDigest",
+      "privacy"
+    ]) ||
+    record.schemaVersion !== 1 ||
+    record.kind !== "desktop-bundle-with-privacy" ||
+    record.id !== id ||
+    typeof record.productVersion !== "string" ||
+    typeof record.resourcesPath !== "string" ||
+    typeof record.bundleDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.bundleDigest) ||
+    !isPlainRecord(record.privacy) ||
+    !exactKeys(record.privacy, ["root", "manifestDigest"]) ||
+    typeof record.privacy.root !== "string" ||
+    typeof record.privacy.manifestDigest !== "string"
+  )
+    throw new Error("stored Desktop privacy generation record is invalid");
+  validateOwner(record.owner);
+  const bundle = verifyDesktopRuntimeBundle(record.resourcesPath);
+  if (
+    bundle.productVersion !== record.productVersion ||
+    bundle.bundleDigest !== record.bundleDigest
+  )
+    throw new Error("Desktop runtime bundle changed after generation staging");
+  const runtime = discoverActualRuntimeIdentity();
+  const privacyRoot = resolve(paths.koedHome, record.privacy.root);
+  assertInside(paths.koedHome, privacyRoot);
+  const privacy = await verifyStoredComponent(
+    paths.koedHome,
+    dirname(privacyRoot),
+    {
+      component: "privacy",
+      productVersion: bundle.productVersion,
+      target: bundle.target,
+      runtime
+    }
+  );
+  if (
+    privacy.root !== privacyRoot ||
+    privacy.manifestDigest !== record.privacy.manifestDigest
+  )
+    throw new Error(
+      "Desktop privacy generation differs from verified component"
+    );
+  const identity = {
+    schemaVersion: 1,
+    kind: "desktop-bundle-with-privacy",
+    productVersion: bundle.productVersion,
+    owner: record.owner,
+    resourcesPath: bundle.resourcesPath,
+    bundleDigest: bundle.bundleDigest,
+    privacy: {
+      root: relative(paths.koedHome, privacy.root),
+      manifestDigest: privacy.manifestDigest
+    }
+  };
+  if (hash(canonicalJson(identity)) !== id)
+    throw new Error("Desktop privacy generation digest mismatch");
+  return {
+    id,
+    productVersion: bundle.productVersion,
+    base: {
+      manifest:
+        bundle.manifest as unknown as VerifiedGeneration["base"]["manifest"],
+      root: resolve(bundle.resourcesPath, "koed-runtime"),
+      manifestDigest: bundle.bundleDigest
+    },
+    privacy,
+    owner: record.owner
+  };
+};
+
+export async function stageDesktopPrivacyGeneration(
+  paths: KoedServerPaths,
+  input: {
+    resourcesPath: string;
+    bundleDigest: string;
+    productVersion: string;
+    privacy: VerifiedComponent;
+    owner: RuntimeOwner;
+  }
+): Promise<VerifiedGeneration> {
+  validateOwner(input.owner);
+  const bundle = verifyDesktopRuntimeBundle(input.resourcesPath);
+  if (
+    bundle.bundleDigest !== input.bundleDigest ||
+    bundle.productVersion !== input.productVersion ||
+    input.privacy.manifest.component !== "privacy" ||
+    input.privacy.manifest.productVersion !== bundle.productVersion ||
+    canonicalJson(input.privacy.manifest.target) !==
+      canonicalJson(bundle.target)
+  )
+    throw new Error("Desktop privacy generation identity mismatch");
+  const runtime = discoverActualRuntimeIdentity();
+  const privacyRoot = resolve(paths.koedHome, dirname(input.privacy.root));
+  const privacy = await verifyStoredComponent(paths.koedHome, privacyRoot, {
+    component: "privacy",
+    productVersion: bundle.productVersion,
+    target: bundle.target,
+    runtime
+  });
+  if (privacy.manifestDigest !== input.privacy.manifestDigest)
+    throw new Error("privacy component is not a verified store entry");
+  const identity = {
+    schemaVersion: 1,
+    kind: "desktop-bundle-with-privacy",
+    productVersion: bundle.productVersion,
+    owner: input.owner,
+    resourcesPath: bundle.resourcesPath,
+    bundleDigest: bundle.bundleDigest,
+    privacy: {
+      root: relative(paths.koedHome, privacy.root),
+      manifestDigest: privacy.manifestDigest
+    }
+  };
+  const id = hash(canonicalJson(identity));
+  assertDirectoryChain(paths.koedHome, paths.generationsDir);
+  ensureSecureDirectory(paths.koedHome, paths.generationsDir);
+  return acquireLock(
+    paths.koedHome,
+    paths.generationsDir,
+    undefined,
+    async () => {
+      const root = resolve(paths.generationsDir, id);
+      if (existsSync(root)) return readStagedGeneration(paths, id);
+      const temporary = mkdtempSync(resolve(paths.generationsDir, ".stage-"));
+      chmodSync(temporary, 0o700);
+      try {
+        writeFileSync(
+          resolve(temporary, "generation.json"),
+          canonicalJson({ ...identity, id }),
+          {
+            flag: "wx",
+            mode: 0o600
+          }
+        );
+        renameSync(temporary, root);
+      } finally {
+        rmSync(temporary, { recursive: true, force: true });
+      }
+      return readStagedGeneration(paths, id);
+    }
+  );
+}
+
 export async function readStagedGeneration(
   paths: KoedServerPaths,
   id: string
@@ -926,6 +1084,8 @@ export async function readStagedGeneration(
     MAX_GENERATION_RECORD_BYTES,
     true
   );
+  if (isPlainRecord(record) && record.kind === "desktop-bundle-with-privacy")
+    return readDesktopPrivacyGeneration(paths, id, record);
   if (
     !isPlainRecord(record) ||
     !exactKeys(record, [
