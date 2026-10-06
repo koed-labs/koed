@@ -117,9 +117,9 @@ routing](docs/managed-conversation-ai-client-routing.md).
 
 The README keeps to one basic local path. For other options, see:
 
-- [Running Koed](docs/running-koed.md) for external dependency mode, manual
-  server commands, alternate ports, smoke tests, packaged first-run notes, and
-  desktop development.
+- [Running Koed](docs/running-koed.md) for the standalone npm control plane,
+  explicit component provisioning, external dependency mode, manual server
+  commands, smoke tests, packaged first-run notes, and desktop development.
 - [Koed Desktop](docs/desktop-ui.md) for the Personal/Team information model,
   collaboration workflows, recovery behavior, accessibility, and performance
   boundaries.

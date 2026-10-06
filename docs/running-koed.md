@@ -47,6 +47,25 @@ For server/private VPS terminology and migration notes, see
 
 ## Manual control-plane commands
 
+When the public npm package is available, install its control plane without
+installing service components:
+
+```bash
+npm install --global @koed-labs/server
+koed --help
+koed components status --json
+```
+
+Service components, native runtime dependencies, and models remain separate,
+explicit installs. Component archives require verified signed metadata; offline
+setup supplies archive, manifest, and signature paths to `koed components
+install`. Do not rely on `koed start`, help, or status to download or provision
+runtime artifacts. Then install the native runtime and required models explicitly
+with `koed runtime install --provider homebrew --dependency-mode bundled-local
+--json` and `koed models install --kind embedding --json` as applicable. See
+[Explicit component provisioning](#explicit-component-provisioning) for upgrade,
+staging, activation, and rollback rules.
+
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
 mandatory core setup when needed, and keeps the startup screen visible until
 core services are ready. AI Client setup is optional and explicit.
