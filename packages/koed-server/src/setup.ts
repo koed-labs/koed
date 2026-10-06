@@ -452,7 +452,7 @@ export const removeCodexIntegration = ({
   }
 };
 
-export const repairCodexIntegration = ({
+export const repairCodexIntegration = async ({
   environment = process.env,
   readFileSync = nodeReadFileSync,
   writeFileSync = nodeWriteFileSync,
@@ -466,7 +466,7 @@ export const repairCodexIntegration = ({
 }: Omit<
   KoedServerSetupOptions,
   "spawnSync"
-> = {}): KoedServerRepairCodexResult => {
+> = {}): Promise<KoedServerRepairCodexResult> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   environment = applyActiveRuntimeUrls(
@@ -501,6 +501,22 @@ export const repairCodexIntegration = ({
     ...environment,
     KOED_HOME: paths.koedHome
   };
+  const verifiedRuntime =
+    resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          integrationEnvironment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          existsSync
+        )
+      : undefined;
+  if (verifiedRuntime) resolveRuntime = () => verifiedRuntime;
   const codexConfigPath = resolve(
     integrationEnvironment.CODEX_CONFIG_PATH ??
       `${integrationEnvironment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
@@ -1063,7 +1079,7 @@ export const setupCodex = async (
       existsSync: options.existsSync,
       checkPid: options.checkPid,
       now: options.now,
-      resolveRuntime: options.resolveRuntime,
+      resolveRuntime: () => runtime,
       registerAiClient: options.registerAiClient,
       resolveCodexExecutable: options.resolveCodexExecutable
     });

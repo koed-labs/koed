@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe("Claude Code setup", () => {
-  it("requires a successful explicit logged-in auth probe", () => {
+  it("requires a successful explicit logged-in auth probe", async () => {
     expect(claudeAuthenticationState(spawnResult('{"loggedIn":true}', 1))).toBe(
       "unknown"
     );
@@ -45,7 +45,7 @@ describe("Claude Code setup", () => {
     );
   });
 
-  it("proves MCP ownership with exact runtime and Koed home paths", () => {
+  it("proves MCP ownership with exact runtime and Koed home paths", async () => {
     const output =
       "koed:\n  Args: /expected/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/expected/koed\n";
 
@@ -65,7 +65,7 @@ describe("Claude Code setup", () => {
     ).toBe(false);
   });
 
-  it("preserves unrelated settings and configures credential-free MCP and hooks", () => {
+  it("preserves unrelated settings and configures credential-free MCP and hooks", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-setup-"));
     temporaryDirectories.push(root);
     const settingsPath = resolve(root, ".claude/settings.json");
@@ -117,7 +117,7 @@ describe("Claude Code setup", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
 
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         PATH: "/usr/bin:/bin",
@@ -197,7 +197,7 @@ describe("Claude Code setup", () => {
     });
   });
 
-  it("configures MCP, hooks, and registry while Claude Code is signed out", () => {
+  it("configures MCP, hooks, and registry while Claude Code is signed out", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-signed-out-"));
     temporaryDirectories.push(root);
     const settingsPath = resolve(root, ".claude/settings.json");
@@ -218,7 +218,7 @@ describe("Claude Code setup", () => {
     );
     const calls: string[][] = [];
 
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         KOED_HOME: koedHome,
@@ -287,7 +287,7 @@ describe("Claude Code setup", () => {
     });
   });
 
-  it("removes only Koed-owned MCP and hooks while preserving unrelated settings", () => {
+  it("removes only Koed-owned MCP and hooks while preserving unrelated settings", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-remove-"));
     temporaryDirectories.push(root);
     const settingsPath = resolve(root, ".claude/settings.json");
@@ -365,7 +365,7 @@ describe("Claude Code setup", () => {
     expect(JSON.stringify(after.hooks)).not.toContain("capture-hook.js");
   });
 
-  it("fails when Claude MCP lookup is a command failure rather than confirmed absence", () => {
+  it("fails when Claude MCP lookup is a command failure rather than confirmed absence", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-lookup-fail-"));
     temporaryDirectories.push(root);
     const result = removeClaude(
@@ -388,7 +388,7 @@ describe("Claude Code setup", () => {
     expect(result.error).toContain("permission denied");
   });
 
-  it("removes newly added MCP and leaves no MCP when later setup fails without prior entry", () => {
+  it("removes newly added MCP and leaves no MCP when later setup fails without prior entry", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-rollback-absent-"));
     temporaryDirectories.push(root);
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -399,7 +399,7 @@ describe("Claude Code setup", () => {
     );
     const registry = resolve(root, "koed/config/ai-client-instances.json");
     const calls: string[][] = [];
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         PATH: "/bin",
@@ -436,7 +436,7 @@ describe("Claude Code setup", () => {
     expect(mcpCalls.filter((args) => args[1] === "add")).toHaveLength(1);
   });
 
-  it("removes replacement MCP then restores prior Koed entry when later setup fails", () => {
+  it("removes replacement MCP then restores prior Koed entry when later setup fails", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-rollback-prior-"));
     temporaryDirectories.push(root);
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -451,7 +451,7 @@ describe("Claude Code setup", () => {
     const registry = resolve(koedHome, "config/ai-client-instances.json");
     const calls: string[][] = [];
     let addCalls = 0;
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         PATH: "/bin",
@@ -504,7 +504,7 @@ describe("Claude Code setup", () => {
 
   it.each([false, true])(
     "restores the exact unrelated HTTP entry after setup fails (add succeeds: %s)",
-    (addSucceeds) => {
+    async (addSucceeds) => {
       const root = mkdtempSync(resolve(tmpdir(), "koed-claude-rollback-http-"));
       temporaryDirectories.push(root);
       mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -526,7 +526,7 @@ describe("Claude Code setup", () => {
       );
       const registry = resolve(root, "koed/config/ai-client-instances.json");
       const calls: string[][] = [];
-      const result = setupClaude(
+      const result = await setupClaude(
         {
           HOME: root,
           CLAUDE_CONFIG_DIR: configHome,
@@ -565,7 +565,7 @@ describe("Claude Code setup", () => {
     }
   );
 
-  it("restores the exact previous MCP entry when add writes before failing", () => {
+  it("restores the exact previous MCP entry when add writes before failing", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-partial-add-"));
     temporaryDirectories.push(root);
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -590,7 +590,7 @@ describe("Claude Code setup", () => {
       );
     writeConfig();
     const calls: string[][] = [];
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         CLAUDE_CONFIG_DIR: configHome,
@@ -638,7 +638,7 @@ describe("Claude Code setup", () => {
 
   it.each([false, true])(
     "preserves the prior MCP entry when remove fails (entry removed: %s)",
-    (entryRemoved) => {
+    async (entryRemoved) => {
       const root = mkdtempSync(
         resolve(tmpdir(), "koed-claude-partial-remove-")
       );
@@ -668,7 +668,7 @@ describe("Claude Code setup", () => {
         );
       writeConfig();
       const calls: string[][] = [];
-      const result = setupClaude(
+      const result = await setupClaude(
         {
           HOME: root,
           CLAUDE_CONFIG_DIR: configHome,
@@ -715,7 +715,7 @@ describe("Claude Code setup", () => {
     }
   );
 
-  it("replaces an unrelated user-scoped MCP name collision", () => {
+  it("replaces an unrelated user-scoped MCP name collision", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-collision-"));
     temporaryDirectories.push(root);
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -726,7 +726,7 @@ describe("Claude Code setup", () => {
     );
     const calls: string[][] = [];
 
-    const result = setupClaude(
+    const result = await setupClaude(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),

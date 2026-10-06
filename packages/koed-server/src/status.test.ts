@@ -164,10 +164,10 @@ afterEach(() => {
 });
 
 describe("Codex installation status", () => {
-  it("detects fallback-discovered Codex before first-time configuration", () => {
+  it("detects fallback-discovered Codex before first-time configuration", async () => {
     const root = tempDir();
     const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
-    const status = inspectCodex(
+    const status = await inspectCodex(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -195,13 +195,13 @@ describe("Codex installation status", () => {
     });
   });
 
-  it("detects fallback-discovered Codex with an existing unconfigured profile", () => {
+  it("detects fallback-discovered Codex with an existing unconfigured profile", async () => {
     const root = tempDir();
     const codexHome = resolve(root, ".codex");
     mkdirSync(codexHome, { recursive: true });
     writeFileSync(resolve(codexHome, "config.toml"), 'profile = "default"\n');
     const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
-    const status = inspectCodex(
+    const status = await inspectCodex(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -527,7 +527,7 @@ describe("startup status", () => {
 });
 
 describe("status state aggregation", () => {
-  it("reports client-neutral capability readiness without treating core as client setup", () => {
+  it("reports client-neutral capability readiness without treating core as client setup", async () => {
     const component = (
       state: "healthy" | "needs_attention" | "not_configured"
     ) => ({
@@ -677,7 +677,7 @@ describe("status state aggregation", () => {
     }
   );
 
-  it("keeps Claude capture ready when MCP profile configuration needs repair", () => {
+  it("keeps Claude capture ready when MCP profile configuration needs repair", async () => {
     const clients = inspectAiClientReadiness({
       codex: { ...notConfigured("Codex unavailable"), configured: false },
       claudeCode: {
@@ -712,7 +712,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("does not trust a ready Claude MCP descriptor when authentication is unknown", () => {
+  it("does not trust a ready Claude MCP descriptor when authentication is unknown", async () => {
     const clients = inspectAiClientReadiness({
       codex: { ...notConfigured("Codex unavailable"), configured: false },
       claudeCode: { ...healthy(), configured: true, detected: true },
@@ -765,7 +765,7 @@ describe("status state aggregation", () => {
     ).toMatchObject({ readiness: "unknown" });
   });
 
-  it("keeps Claude automatic capture ready while signed-out execution stays unavailable", () => {
+  it("keeps Claude automatic capture ready while signed-out execution stays unavailable", async () => {
     const unauthenticated = (id: string) => ({
       id,
       support: "supported" as const,
@@ -964,7 +964,7 @@ describe("status state aggregation", () => {
     }
   );
 
-  it("keeps Pi automatic capture ready while model authentication is unavailable", () => {
+  it("keeps Pi automatic capture ready while model authentication is unavailable", async () => {
     const unauthenticated = (id: string) => ({
       id,
       support: "supported" as const,
@@ -1050,7 +1050,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("reports independent flow assignment readiness from defaults and settings", () => {
+  it("reports independent flow assignment readiness from defaults and settings", async () => {
     const readModel = {
       instances: [
         {
@@ -1129,7 +1129,7 @@ describe("status state aggregation", () => {
     expect(conversationReady.mcp_memory_answer.state).toBe("needs_attention");
   });
 
-  it("reports explicit unavailable defaults as nonblocking attention", () => {
+  it("reports explicit unavailable defaults as nonblocking attention", async () => {
     const readiness = inspectAiClientFlowReadiness({
       environment: { MEMORY_ANSWER_PROVIDER: "pi" },
       capabilityReadModel: {
@@ -1153,7 +1153,7 @@ describe("status state aggregation", () => {
     });
   });
 
-  it("reports every AI Client instance without removing provider readiness", () => {
+  it("reports every AI Client instance without removing provider readiness", async () => {
     const baseInput: Parameters<typeof inspectAiClientReadiness>[0] = {
       codex: { ...healthy(), configured: true },
       claudeCode: {
@@ -1328,7 +1328,7 @@ describe("status state aggregation", () => {
     }
   );
 
-  it("overlays current profile readiness only for unknown capture and recall descriptors", () => {
+  it("overlays current profile readiness only for unknown capture and recall descriptors", async () => {
     const unknown = (id: string) => ({
       id,
       support: "supported" as const,
@@ -1395,7 +1395,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("keeps stale execution snapshots non-runnable without downgrading capture", () => {
+  it("keeps stale execution snapshots non-runnable without downgrading capture", async () => {
     const descriptor = (id: string) => ({
       id,
       support: "supported" as const,
@@ -1459,7 +1459,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("isolates broken client snapshot from healthy client snapshot", () => {
+  it("isolates broken client snapshot from healthy client snapshot", async () => {
     const snapshot = (
       driverId: "codex" | "claude",
       healthState: "healthy" | "unavailable"
@@ -1714,7 +1714,7 @@ describe("status state aggregation", () => {
     expect(status.apiToken.action).toContain("Token was not rotated");
   });
 
-  it("prioritizes needs_attention, then not_configured, then starting", () => {
+  it("prioritizes needs_attention, then not_configured, then starting", async () => {
     expect(aggregateState([healthy(), notConfigured("missing")])).toBe(
       "not_configured"
     );
@@ -1729,10 +1729,10 @@ describe("status state aggregation", () => {
 });
 
 describe("Claude collision diagnostic", () => {
-  it("directs repair to replace the conflicting entry", () => {
+  it("directs repair to replace the conflicting entry", async () => {
     const root = tempDir();
     const environment = { KOED_HOME: root, KOED_REPO_ROOT: root, HOME: root };
-    const status = inspectClaudeCode(
+    const status = await inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -1779,7 +1779,7 @@ describe("Pi integration status", () => {
     }
   });
 
-  it("explains a Pi profile inspection timeout without recommending repair", () => {
+  it("explains a Pi profile inspection timeout without recommending repair", async () => {
     const root = tempDir();
     const environment = { KOED_HOME: root };
     const status = inspectPi(environment, resolveKoedServerPaths(environment), {
@@ -1850,7 +1850,7 @@ describe("Pi integration status", () => {
     }
   );
 
-  it("reports a registered Koed package in the active Pi profile", () => {
+  it("reports a registered Koed package in the active Pi profile", async () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");
     mkdirSync(resolve(packagePath, "extensions"), { recursive: true });
@@ -1888,7 +1888,7 @@ describe("Pi integration status", () => {
     });
   });
 
-  it("uses execution discovery on ordinary Pi status checks without a second model catalog probe", () => {
+  it("uses execution discovery on ordinary Pi status checks without a second model catalog probe", async () => {
     const root = tempDir();
     const calls: string[] = [];
     const status = inspectPi(
@@ -1975,7 +1975,7 @@ describe("Pi integration status", () => {
     }
   );
 
-  it("separates registered-package health from authenticated-model health", () => {
+  it("separates registered-package health from authenticated-model health", async () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");
 
@@ -2007,7 +2007,7 @@ describe("Pi integration status", () => {
     });
   });
 
-  it("distinguishes Pi model discovery failure from missing authentication", () => {
+  it("distinguishes Pi model discovery failure from missing authentication", async () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");
 
@@ -2041,7 +2041,7 @@ describe("Pi integration status", () => {
     expect(status.action).not.toContain("Fix Pi model discovery");
   });
 
-  it("keeps missing Pi optional but actionable", () => {
+  it("keeps missing Pi optional but actionable", async () => {
     const root = tempDir();
     const environment = { KOED_HOME: root };
 
@@ -2060,7 +2060,7 @@ describe("Pi integration status", () => {
     expect(status.action).toContain("Install Pi");
   });
 
-  it("detects Pi from its global profile when the executable is unavailable", () => {
+  it("detects Pi from its global profile when the executable is unavailable", async () => {
     const root = tempDir();
     const profilePath = resolve(root, ".pi/agent");
     mkdirSync(profilePath, { recursive: true });
@@ -2083,7 +2083,7 @@ describe("Pi integration status", () => {
 });
 
 describe("Claude Code integration status", () => {
-  it("reports configured MCP, hooks, and authentication", () => {
+  it("reports configured MCP, hooks, and authentication", async () => {
     const root = tempDir();
     const settingsPath = resolve(root, ".claude/settings.json");
     const captureHook = resolve(
@@ -2131,7 +2131,7 @@ describe("Claude Code integration status", () => {
       env?: NodeJS.ProcessEnv;
     }> = [];
 
-    const status = inspectClaudeCode(
+    const status = await inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -2178,7 +2178,7 @@ describe("Claude Code integration status", () => {
     );
   });
 
-  it("reports configured capture separately from signed-out execution", () => {
+  it("reports configured capture separately from signed-out execution", async () => {
     const root = tempDir();
     const settingsPath = resolve(root, ".claude/settings.json");
     const runtimeDirectory = resolve(root, "packages/mcp-server/dist");
@@ -2216,7 +2216,7 @@ describe("Claude Code integration status", () => {
       CLAUDE_SETTINGS_PATH: settingsPath
     };
 
-    const status = inspectClaudeCode(
+    const status = await inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -2252,11 +2252,11 @@ describe("Claude Code integration status", () => {
     expect(status.action).toContain("Claude Desktop sign-in");
   });
 
-  it("keeps missing Claude Code optional but actionable", () => {
+  it("keeps missing Claude Code optional but actionable", async () => {
     const root = tempDir();
     const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
 
-    const status = inspectClaudeCode(
+    const status = await inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -2276,14 +2276,14 @@ describe("Claude Code integration status", () => {
     expect(status.action).toContain("Install Claude Code");
   });
 
-  it("detects Claude Code from its global settings when the executable is unavailable", () => {
+  it("detects Claude Code from its global settings when the executable is unavailable", async () => {
     const root = tempDir();
     const settingsPath = resolve(root, ".claude/settings.json");
     mkdirSync(resolve(root, ".claude"), { recursive: true });
     writeFileSync(settingsPath, "{}");
     const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
 
-    const status = inspectClaudeCode(
+    const status = await inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
       {
@@ -3198,7 +3198,7 @@ describe("status and doctor JSON contracts", () => {
 });
 
 describe("Privacy Filter supervisor configuration", () => {
-  it("requests restart when a running supervisor omitted Privacy Filter", () => {
+  it("requests restart when a running supervisor omitted Privacy Filter", async () => {
     expect(
       inspectPrivacyRuntimeConfiguration({ services: ["api", "worker"] }, true)
     ).toMatchObject({
@@ -3206,7 +3206,7 @@ describe("Privacy Filter supervisor configuration", () => {
       details: { reason: "runtime_configuration_changed" }
     });
   });
-  it("allows health checks during startup and when Privacy Filter was launched", () => {
+  it("allows health checks during startup and when Privacy Filter was launched", async () => {
     expect(inspectPrivacyRuntimeConfiguration(null, false)).toBeNull();
     expect(
       inspectPrivacyRuntimeConfiguration({ services: [] }, false)

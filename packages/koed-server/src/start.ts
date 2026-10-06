@@ -925,729 +925,762 @@ export const startKoedServer = async ({
     return;
   }
   let supervisorLockReleased = false;
+  let cleanupStarted = false;
+  let startupPhase = "post-lock initialization";
   const releaseSupervisorLock = (): void => {
     if (supervisorLockReleased) return;
     supervisorLockReleased = true;
     releaseKoedServerSupervisorLock(supervisorLock);
   };
-  const initializeUnderSupervisorLock = async <T>(
-    initialize: () => T | Promise<T>
-  ): Promise<T> => {
-    try {
-      return await initialize();
-    } catch (error) {
-      releaseSupervisorLock();
-      throw error;
-    }
-  };
-  await initializeUnderSupervisorLock(() =>
-    ensureDeviceIdentity(paths, { environment })
-  );
-  const supervisorStartedAt = new Date().toISOString();
-  const effectiveRuntimeConfig = await initializeUnderSupervisorLock(() =>
-    resolveEffectiveRuntimeConfig(paths, requestedEnvironment, execution)
-  );
-  environment = effectiveRuntimeConfig.environment;
-  const requiredRuntime = await initializeUnderSupervisorLock(() =>
-    calculateRuntimeRequirements(effectiveRuntimeConfig)
-  );
-  environment = {
-    ...environment,
-    WORK_QUEUE_BACKEND: requiredRuntime.queue
-  };
-  const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
-  const startupConfig = effectiveRuntimeConfig.config;
-  environment = await initializeUnderSupervisorLock(() =>
-    ensurePackagedLocalServiceSecrets(
-      paths,
-      execution === "packaged" ||
-        (startupConfig.runtimeMode === "local-personal" &&
-          startupConfig.dependencyMode === "bundled-local"),
-      environment
-    )
-  );
-  mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
-  if (
-    startupConfig.runtimeMode === "local-personal" &&
-    startupConfig.dependencyMode === "bundled-local" &&
-    environment.KOED_AUTO_PORTS === undefined
-  ) {
-    environment = { ...environment, KOED_AUTO_PORTS: "1" };
-  }
-  const portAllocationEnvironment = { ...environment };
-  if (environment.KOED_AUTO_PORTS === "1") {
-    for (const key of [
-      "API_HOST_PORT",
-      "POSTGRES_HOST_PORT",
-      "EMBEDDING_SERVICE_HOST_PORT",
-      "PRIVACY_SERVICE_PORT",
-      "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
-      "EMBEDDING_LLAMA_RERANKER_SERVER_PORT"
-    ]) {
-      if (!requestedEnvironment[key]?.trim())
-        delete portAllocationEnvironment[key];
-    }
-  }
-  const allocatedPortEnvironmentForStart = environment.KOED_ENV_PATH?.trim()
-    ? {
-        ...environmentWithRepoEnv(paths.repoRoot, environment),
-        ...portAllocationEnvironment
-      }
-    : portAllocationEnvironment;
-  const allocatedPortEnvironment = await initializeUnderSupervisorLock(() =>
-    allocateAndPersistLocalPorts(paths, allocatedPortEnvironmentForStart)
-  );
-  environment = {
-    ...environment,
-    API_HOST_PORT: allocatedPortEnvironment.API_HOST_PORT,
-    POSTGRES_HOST_PORT: allocatedPortEnvironment.POSTGRES_HOST_PORT,
-    EMBEDDING_SERVICE_HOST_PORT:
-      allocatedPortEnvironment.EMBEDDING_SERVICE_HOST_PORT,
-    PRIVACY_SERVICE_PORT: allocatedPortEnvironment.PRIVACY_SERVICE_PORT,
-    EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT:
-      allocatedPortEnvironment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
-    EMBEDDING_LLAMA_RERANKER_SERVER_PORT:
-      allocatedPortEnvironment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT
-  };
-
-  const repoEnv =
-    execution === "source" || environment.KOED_ENV_PATH?.trim()
-      ? loadRepoEnv(paths.repoRoot, environment)
-      : {};
-  const migration = migrateKoedOwnedCodexRegistrationBestEffort({
-    environment: { ...repoEnv, ...environment, KOED_HOME: paths.koedHome }
-  });
-  if (migration.diagnostic) {
-    console.warn(migration.diagnostic);
-  }
-  const apiToken = desktopManagedLocal
-    ? null
-    : resolveLocalApiToken(environment, repoEnv);
-  if (apiToken) {
-    writeLocalAppCredential(paths, {
-      apiToken: apiToken.token,
-      provisionedAt: new Date().toISOString(),
-      source: apiToken.source
-    });
-  }
-  const config = startupConfig;
-  const initialServiceEnv = localServiceEnv(
-    environment,
-    repoEnv,
-    apiToken,
-    paths
-  );
-  const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
-  const teamCollaborationEnabled = effectiveRuntimeConfig.teamEnabled;
-  const localAiRuntimeEnabled = config.runtimeMode !== "external";
-  const runtimeServices = useBundledLocalDependencies
-    ? [
-        "postgres-native",
-        "embedding-service-native",
-        ...(teamCollaborationEnabled ? ["privacy-service-native"] : [])
-      ]
-    : [];
-  const appServices = [
-    "api",
-    "worker",
-    ...(localAiRuntimeEnabled ? ["local-ai-runtime"] : [])
-  ];
-  const childEnv = initialServiceEnv;
-
-  if (execution === "source") {
-    runCommand(
-      paths,
-      "Prepare Koed environment",
-      process.execPath,
-      [resolve(paths.repoRoot, "scripts/setup-env.mjs")],
-      childEnv,
-      spawnSync
-    );
-  }
-
-  const refreshedRepoEnv = await initializeUnderSupervisorLock(() =>
-    execution === "source" || environment.KOED_ENV_PATH?.trim()
-      ? loadRepoEnv(paths.repoRoot, environment)
-      : {}
-  );
-  const refreshedApiToken = desktopManagedLocal
-    ? null
-    : resolveLocalApiToken(environment, refreshedRepoEnv);
-  if (refreshedApiToken) {
-    writeLocalAppCredential(paths, {
-      apiToken: refreshedApiToken.token,
-      provisionedAt: new Date().toISOString(),
-      source: refreshedApiToken.source
-    });
-  }
-  const refreshedEnv = localServiceEnv(
-    environment,
-    refreshedRepoEnv,
-    refreshedApiToken,
-    paths
-  );
-  refreshedEnv.WORK_QUEUE_BACKEND = requiredRuntime.queue;
-  const apiUrlEnvironment = { ...environment };
-  if (
-    requestedEnvironment.API_HOST_PORT?.trim() &&
-    !requestedEnvironment.MEMORY_API_URL?.trim()
-  ) {
-    delete apiUrlEnvironment.MEMORY_API_URL;
-  }
-  const apiUrl = resolveApiUrl(apiUrlEnvironment, refreshedRepoEnv);
-
-  let appRuntime: KoedAppRuntime;
-  let generationPin:
-    | Awaited<ReturnType<typeof pinAndResolvePackagedRuntime>>["pin"]
-    | undefined;
-  let startedNativePostgres = false;
-  let nativeEmbeddingProcess: ChildProcess | undefined;
-  let nativePrivacyProcess: ChildProcess | undefined;
-  const managedChildren: Record<string, ChildProcess> = {};
-  const managedProcessMonitor = createManagedProcessMonitor({
-    expectedSignals: []
-  });
-  const managedProcessOutcome = managedProcessMonitor.result.then(
-    () => ({ error: null }),
-    (error: unknown) => ({ error })
-  );
-  const manageChild = (name: string, child: ChildProcess): ChildProcess => {
-    managedChildren[name] = child;
-    managedProcessMonitor.watch(name, child);
-    return child;
-  };
-  let runtimeStateWritten = false;
-  let stopSupervisorExitMonitor: () => void = () => undefined;
-  const runtimeStateOwnedByCurrentProcess = (): boolean => {
-    try {
-      const runtime = JSON.parse(
-        readFileSync(paths.runtimeStatePath, "utf8")
-      ) as Partial<KoedServerRuntimeState>;
-      return (
-        runtime.pid === process.pid && runtime.startedAt === supervisorStartedAt
-      );
-    } catch {
-      return false;
-    }
-  };
-
-  let deviceRequestService:
-    | Awaited<ReturnType<typeof startDeviceRequestService>>
-    | undefined;
-  let cleanupPromise: Promise<void> | undefined;
-  let cleanupCompleted = false;
-  const cleanupStartedResources = (): Promise<void> => {
-    if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
-      const cleanupErrors: string[] = [];
-      await deviceRequestService?.close();
-      const shutdownOrder = [
-        "localAiRuntime",
-        "worker",
-        "api",
-        "privacyService",
-        "embeddingService"
-      ];
-      for (const name of shutdownOrder) {
-        try {
-          await stopChildProcess(managedChildren[name], 5_000, name);
-        } catch (error) {
-          cleanupErrors.push(
-            error instanceof Error ? error.message : String(error)
-          );
-        }
-      }
-      if (
-        nativeEmbeddingProcess &&
-        !Object.values(managedChildren).includes(nativeEmbeddingProcess)
-      ) {
-        try {
-          await stopChildProcess(
-            nativeEmbeddingProcess,
-            5_000,
-            "embeddingService"
-          );
-        } catch (error) {
-          cleanupErrors.push(
-            error instanceof Error ? error.message : String(error)
-          );
-        }
-      }
-      if (startedNativePostgres) {
-        const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
-          spawnSync
-        });
-        startedNativePostgres = false;
-        if (!stopped.ok) {
-          cleanupErrors.push(stopped.error ?? stopped.message);
-        }
-      }
-      if (cleanupErrors.length > 0) {
-        throw new Error(cleanupErrors.join("; "));
-      }
-      cleanupCompleted = true;
-    })();
-    return cleanupPromise;
-  };
-  let requestShutdown: () => void = () => undefined;
-  const shutdownRequested = new Promise<void>((resolveShutdown) => {
-    requestShutdown = resolveShutdown;
-  });
-  const shutdown = () => requestShutdown();
-  if (signal?.aborted) requestShutdown();
-  else signal?.addEventListener("abort", shutdown, { once: true });
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-
-  const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
-  let sourceRuntimeLeaseAcquired = false;
-  let startupReady = false;
   try {
-    if (execution === "packaged") {
-      const selected = await pinAndResolvePackagedRuntime(
-        paths,
-        environment,
-        requiredRuntime
-      );
-      generationPin = selected.pin;
-      appRuntime = selected.runtime;
-    } else {
-      appRuntime = resolveKoedAppRuntime(
-        paths,
-        environment,
-        existsSync,
-        undefined,
-        requiredRuntime
-      );
-      assertKoedAppRuntimeAvailable(appRuntime, paths);
-    }
-    if (appRuntime.kind === "source") {
-      runCommand(
-        paths,
-        "Check source runtime artifacts",
-        process.execPath,
-        [
-          resolve(paths.repoRoot, "scripts/source-runtime-build.mjs"),
-          "check",
-          "--lease-pid",
-          String(process.pid)
-        ],
-        refreshedEnv,
-        spawnSync
-      );
-      sourceRuntimeLeaseAcquired = true;
-      emitStartupMilestone("source_runtime_verification_complete");
-    }
-
-    if (config.dependencyMode === "external") {
-      const queueBackend = requiredRuntime.queue;
-      const requiredExternalServices: Array<[string, string | undefined]> = [
-        ["DATABASE_URL", refreshedEnv.DATABASE_URL],
-        ...(queueBackend === "bullmq"
-          ? [
-              ["REDIS_URL", refreshedEnv.REDIS_URL] as [
-                string,
-                string | undefined
-              ]
-            ]
-          : []),
-        ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
-      ];
-      if (teamCollaborationEnabled) {
-        requiredExternalServices.push(
-          ["PRIVACY_SERVICE_URL", refreshedEnv.PRIVACY_SERVICE_URL],
-          ["PRIVACY_SERVICE_TOKEN", refreshedEnv.PRIVACY_SERVICE_TOKEN],
-          [
-            "PRIVACY_RUNTIME_CONTROL_TOKEN",
-            refreshedEnv.PRIVACY_RUNTIME_CONTROL_TOKEN
-          ]
-        );
-      }
-      const missing = requiredExternalServices.flatMap(([name, value]) =>
-        value?.trim() ? [] : [name]
-      );
-      if (missing.length > 0) {
-        throw new Error(
-          `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
-        );
-      }
-    } else {
-      const queueBackend = requiredRuntime.queue;
-      if (queueBackend === "bullmq" && !refreshedEnv.REDIS_URL?.trim()) {
-        throw new Error(
-          "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL. Set REDIS_URL or use WORK_QUEUE_BACKEND=local."
-        );
-      }
-    }
-
-    if (useBundledLocalDependencies) {
-      const result = startLocalPostgresRuntime(paths, refreshedEnv, {
-        spawnSync
-      });
-      Object.assign(refreshedEnv, result.env);
-      startedNativePostgres = result.started;
-      if (!result.ok) {
-        throw new Error(
-          `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${localRuntimeFailureDetails(result.status.details)}${result.status.action ? ` ${result.status.action}` : ""}`
-        );
-      }
-      emitStartupMilestone("local_postgres_start_complete");
-    }
-
-    if (useBundledLocalDependencies && teamCollaborationEnabled) {
-      const result = await startLocalPrivacyRuntime(paths, refreshedEnv, {
-        spawn,
-        appRuntime
-      });
-      Object.assign(refreshedEnv, result.env);
-      nativePrivacyProcess = result.process;
-      if (nativePrivacyProcess) {
-        manageChild("privacyService", nativePrivacyProcess);
-      }
-      if (!result.ok) {
-        throw new Error(
-          `Bundled-local Privacy Filter Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
-        );
-      }
-      emitStartupMilestone("privacy_filter_process_spawned");
-    }
-
-    if (useBundledLocalDependencies) {
-      const result = startLocalEmbeddingRuntime(
-        paths,
-        appProcessEnvironment(refreshedEnv),
-        { spawn, appRuntime }
-      );
-      Object.assign(refreshedEnv, result.env);
-      nativeEmbeddingProcess = result.process;
-      if (nativeEmbeddingProcess) {
-        manageChild("embeddingService", nativeEmbeddingProcess);
-      }
-      if (!result.ok) {
-        throw new Error(
-          `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
-        );
-      }
-      emitStartupMilestone("embedding_service_process_spawned");
-    }
-
-    const api =
-      appRuntime.kind === "packaged"
-        ? spawnManagedProcess(
-            paths,
-            "API",
-            process.execPath,
-            [appRuntime.apiEntry],
-            appProcessEnvironment(refreshedEnv),
-            spawn,
-            resolve(appRuntime.root, "api")
-          )
-        : spawnManagedProcess(
-            paths,
-            "API",
-            process.execPath,
-            [resolve(paths.repoRoot, "apps/api/dist/index.js")],
-            appProcessEnvironment(refreshedEnv),
-            spawn,
-            resolve(paths.repoRoot, "apps/api")
-          );
-    manageChild("api", api);
-    emitStartupMilestone("api_process_spawned");
-
-    const runtime: KoedServerRuntimeState = {
-      pid: process.pid,
-      startedAt: supervisorStartedAt,
-      repoRoot: paths.repoRoot,
-      apiUrl,
-      runtimeMode: config.runtimeMode,
-      dependencyMode: config.dependencyMode,
-      automaticPorts: environment.KOED_AUTO_PORTS === "1",
-      codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
-      claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
-      piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
-      services: [...runtimeServices, "api"],
-      processes: {
-        ...(nativeEmbeddingProcess
-          ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
-          : {}),
-        ...(nativePrivacyProcess
-          ? { privacyService: nativePrivacyProcess.pid ?? 0 }
-          : {}),
-        api: api.pid ?? 0
+    const initializeUnderSupervisorLock = async <T>(
+      initialize: () => T | Promise<T>
+    ): Promise<T> => {
+      try {
+        return await initialize();
+      } catch (error) {
+        releaseSupervisorLock();
+        throw error;
       }
     };
-    const persistRuntime = (): void => {
-      writeFileSync(
-        paths.runtimeStatePath,
-        `${JSON.stringify(runtime, null, 2)}\n`,
-        {
-          mode: 0o600
-        }
-      );
-      runtimeStateWritten = true;
-    };
-    persistRuntime();
-    stopSupervisorExitMonitor = monitorSupervisorExitRequest(
-      paths,
-      {
-        pid: process.pid,
-        startedAt: supervisorStartedAt
-      },
-      {
-        onExit: requestShutdown
-      }
+    startupPhase = "device identity initialization";
+    await initializeUnderSupervisorLock(() =>
+      ensureDeviceIdentity(paths, { environment })
     );
-
-    let status = await waitForHealthyOrReady({
-      environment: refreshedEnv,
-      timeoutMs,
-      pollIntervalMs,
-      collectStatus,
-      isReady: (candidate) =>
-        candidate.api.state === "healthy" &&
-        candidate.database.state === "healthy"
-    });
-    if (status.api.state !== "healthy" || status.database.state !== "healthy") {
-      throw new Error(
-        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
-      );
-    }
-    emitStartupMilestone("api_and_database_ready");
-    if (desktopManagedLocal) {
-      const desktopApiToken = await provisionDesktopApiToken(
-        paths,
-        appRuntime,
-        refreshedEnv
-      );
-      if (desktopApiToken) {
-        Object.assign(refreshedEnv, {
-          MEMORY_API_TOKEN: desktopApiToken
-        });
-      }
-      emitStartupMilestone("desktop_credential_provisioned");
-    } else if (
-      useBundledLocalDependencies &&
-      config.runtimeMode === "local-personal" &&
-      !resolveActiveIntegrationApiToken(paths, refreshedEnv, refreshedRepoEnv)
-    ) {
-      const provisioned = await provisionLocalApiTokenDependency(
-        paths,
-        appRuntime,
-        refreshedEnv,
-        refreshedRepoEnv
-      );
-      Object.assign(refreshedEnv, { MEMORY_API_TOKEN: provisioned.token });
-      emitStartupMilestone("packaged_personal_credential_provisioned");
-    }
-
-    const finalApiToken = resolveActiveIntegrationApiToken(
-      paths,
-      refreshedEnv,
-      refreshedRepoEnv
-    )?.token;
-    if (finalApiToken) {
-      Object.assign(refreshedEnv, { MEMORY_API_TOKEN: finalApiToken });
-    }
-    let localAiRuntime: ChildProcess | undefined;
-    if (localAiRuntimeEnabled) {
-      if (!finalApiToken) {
-        throw new Error(
-          "A Personal API Token is required to start the local AI runtime."
-        );
-      }
-      localAiRuntime = spawnManagedProcess(
-        paths,
-        "Local AI Runtime",
-        process.execPath,
-        [appRuntime.localAiRuntime],
-        {
-          ...appProcessEnvironment(refreshedEnv),
-          KOED_HOME: paths.koedHome,
-          MEMORY_API_URL: apiUrl,
-          MEMORY_API_TOKEN: finalApiToken,
-          MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
-            config.codexTranscriptWatcherEnabled
-          ),
-          MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
-            config.claudeTranscriptWatcherEnabled
-          ),
-          MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: String(
-            config.piTranscriptWatcherEnabled
-          )
-        },
-        spawn,
-        appRuntime.kind === "packaged"
-          ? resolve(appRuntime.root, "mcp-server")
-          : resolve(paths.repoRoot, "packages", "mcp-server")
-      );
-      manageChild("localAiRuntime", localAiRuntime);
-      emitStartupMilestone("local_ai_runtime_process_spawned");
-    }
-
-    const worker =
-      appRuntime.kind === "packaged"
-        ? spawnManagedProcess(
-            paths,
-            "Worker",
-            process.execPath,
-            [appRuntime.workerEntry],
-            appProcessEnvironment(refreshedEnv),
-            spawn,
-            resolve(appRuntime.root, "worker")
-          )
-        : spawnManagedProcess(
-            paths,
-            "Worker",
-            process.execPath,
-            [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
-            appProcessEnvironment(refreshedEnv),
-            spawn,
-            resolve(paths.repoRoot, "apps/worker")
-          );
-    manageChild("worker", worker);
-    emitStartupMilestone("worker_process_spawned");
-    if (
-      config.runtimeMode === "local-personal" &&
-      useBundledLocalDependencies
-    ) {
-      deviceRequestService = await startDeviceRequestService({
-        paths,
-        host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,
-        enrolled: () =>
-          Boolean(
-            createPdsApplicationSecretStore({ rootPath: paths.koedHome }).get(
-              "pds-runtime"
-            )
-          ),
-        redeem: async (link, label, signal) => {
-          const fetchWithShutdown: typeof fetch = (input, init) =>
-            fetch(input, {
-              ...init,
-              signal: init?.signal
-                ? AbortSignal.any([signal, init.signal])
-                : signal
-            });
-          const result = await redeemPairingLink(
-            link,
-            label,
-            paths,
-            { ...refreshedEnv, PDS_LOCAL_CONTROL_URL: apiUrl },
-            { fetch: fetchWithShutdown }
-          );
-          if (!result.ok) throw new Error("Enrollment did not complete.");
-        }
-      });
-    }
-
-    runtime.services = [...runtimeServices, ...appServices];
-    runtime.processes = {
-      ...runtime.processes,
-      ...(localAiRuntime ? { localAiRuntime: localAiRuntime.pid ?? 0 } : {}),
-      worker: worker.pid ?? 0
+    const supervisorStartedAt = new Date().toISOString();
+    startupPhase = "effective runtime configuration";
+    const effectiveRuntimeConfig = await initializeUnderSupervisorLock(() =>
+      resolveEffectiveRuntimeConfig(paths, requestedEnvironment, execution)
+    );
+    environment = effectiveRuntimeConfig.environment;
+    startupPhase = "runtime requirements";
+    const requiredRuntime = await initializeUnderSupervisorLock(() =>
+      calculateRuntimeRequirements(effectiveRuntimeConfig)
+    );
+    environment = {
+      ...environment,
+      WORK_QUEUE_BACKEND: requiredRuntime.queue
     };
-    persistRuntime();
-
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          state: "starting",
-          koedHome: paths.koedHome,
-          apiUrl,
-          services: runtime.services
-        },
-        null,
-        2
+    const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
+    const startupConfig = effectiveRuntimeConfig.config;
+    startupPhase = "packaged local service secrets";
+    environment = await initializeUnderSupervisorLock(() =>
+      ensurePackagedLocalServiceSecrets(
+        paths,
+        execution === "packaged" ||
+          (startupConfig.runtimeMode === "local-personal" &&
+            startupConfig.dependencyMode === "bundled-local"),
+        environment
       )
     );
-
-    status = await waitForHealthyOrReady({
-      environment: refreshedEnv,
-      timeoutMs,
-      pollIntervalMs,
-      collectStatus
-    });
-    if (!status.ok) {
-      throw new Error(
-        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
-      );
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    if (
+      startupConfig.runtimeMode === "local-personal" &&
+      startupConfig.dependencyMode === "bundled-local" &&
+      environment.KOED_AUTO_PORTS === undefined
+    ) {
+      environment = { ...environment, KOED_AUTO_PORTS: "1" };
     }
-    emitStartupMilestone("core_services_ready");
-    startupReady = true;
-    console.log(JSON.stringify(status, null, 2));
-    emitStartupMilestone("final_supervisor_status_emitted");
-    console.log(
-      "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
-    );
-
-    await Promise.race([
-      shutdownRequested,
-      managedProcessOutcome.then(({ error }) => {
-        if (error) throw error;
-      })
-    ]);
-    await cleanupStartedResources();
-  } catch (error) {
-    if (!startupReady) emitStartupMilestone("startup_failed");
-    try {
-      await cleanupStartedResources();
-      if (runtimeStateOwnedByCurrentProcess()) {
-        rmSync(paths.runtimeStatePath, { force: true });
+    const portAllocationEnvironment = { ...environment };
+    if (environment.KOED_AUTO_PORTS === "1") {
+      for (const key of [
+        "API_HOST_PORT",
+        "POSTGRES_HOST_PORT",
+        "EMBEDDING_SERVICE_HOST_PORT",
+        "PRIVACY_SERVICE_PORT",
+        "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
+        "EMBEDDING_LLAMA_RERANKER_SERVER_PORT"
+      ]) {
+        if (!requestedEnvironment[key]?.trim())
+          delete portAllocationEnvironment[key];
       }
-    } catch (cleanupError) {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
-        { cause: cleanupError }
+    }
+    const allocatedPortEnvironmentForStart = environment.KOED_ENV_PATH?.trim()
+      ? {
+          ...environmentWithRepoEnv(paths.repoRoot, environment),
+          ...portAllocationEnvironment
+        }
+      : portAllocationEnvironment;
+    startupPhase = "local port allocation";
+    const allocatedPortEnvironment = await initializeUnderSupervisorLock(() =>
+      allocateAndPersistLocalPorts(paths, allocatedPortEnvironmentForStart)
+    );
+    environment = {
+      ...environment,
+      API_HOST_PORT: allocatedPortEnvironment.API_HOST_PORT,
+      POSTGRES_HOST_PORT: allocatedPortEnvironment.POSTGRES_HOST_PORT,
+      EMBEDDING_SERVICE_HOST_PORT:
+        allocatedPortEnvironment.EMBEDDING_SERVICE_HOST_PORT,
+      PRIVACY_SERVICE_PORT: allocatedPortEnvironment.PRIVACY_SERVICE_PORT,
+      EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT:
+        allocatedPortEnvironment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
+      EMBEDDING_LLAMA_RERANKER_SERVER_PORT:
+        allocatedPortEnvironment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT
+    };
+
+    startupPhase = "repository environment and credentials";
+    const repoEnv =
+      execution === "source" || environment.KOED_ENV_PATH?.trim()
+        ? loadRepoEnv(paths.repoRoot, environment)
+        : {};
+    const migration = migrateKoedOwnedCodexRegistrationBestEffort({
+      environment: { ...repoEnv, ...environment, KOED_HOME: paths.koedHome }
+    });
+    if (migration.diagnostic) {
+      console.warn(migration.diagnostic);
+    }
+    const apiToken = desktopManagedLocal
+      ? null
+      : resolveLocalApiToken(environment, repoEnv);
+    if (apiToken) {
+      writeLocalAppCredential(paths, {
+        apiToken: apiToken.token,
+        provisionedAt: new Date().toISOString(),
+        source: apiToken.source
+      });
+    }
+    const config = startupConfig;
+    const initialServiceEnv = localServiceEnv(
+      environment,
+      repoEnv,
+      apiToken,
+      paths
+    );
+    const useBundledLocalDependencies =
+      config.dependencyMode === "bundled-local";
+    const teamCollaborationEnabled = effectiveRuntimeConfig.teamEnabled;
+    const localAiRuntimeEnabled = config.runtimeMode !== "external";
+    const runtimeServices = useBundledLocalDependencies
+      ? [
+          "postgres-native",
+          "embedding-service-native",
+          ...(teamCollaborationEnabled ? ["privacy-service-native"] : [])
+        ]
+      : [];
+    const appServices = [
+      "api",
+      "worker",
+      ...(localAiRuntimeEnabled ? ["local-ai-runtime"] : [])
+    ];
+    const childEnv = initialServiceEnv;
+
+    if (execution === "source") {
+      startupPhase = "source environment preparation";
+      runCommand(
+        paths,
+        "Prepare Koed environment",
+        process.execPath,
+        [resolve(paths.repoRoot, "scripts/setup-env.mjs")],
+        childEnv,
+        spawnSync
       );
     }
-    throw error;
-  } finally {
-    stopSupervisorExitMonitor();
-    stopSupervisorLogMaintenance();
-    process.off("SIGINT", shutdown);
-    process.off("SIGTERM", shutdown);
-    signal?.removeEventListener("abort", shutdown);
-    managedProcessMonitor.dispose();
-    if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
-      rmSync(paths.runtimeStatePath, { force: true });
+
+    startupPhase = "refreshed repository environment and credentials";
+    const refreshedRepoEnv = await initializeUnderSupervisorLock(() =>
+      execution === "source" || environment.KOED_ENV_PATH?.trim()
+        ? loadRepoEnv(paths.repoRoot, environment)
+        : {}
+    );
+    const refreshedApiToken = desktopManagedLocal
+      ? null
+      : resolveLocalApiToken(environment, refreshedRepoEnv);
+    if (refreshedApiToken) {
+      writeLocalAppCredential(paths, {
+        apiToken: refreshedApiToken.token,
+        provisionedAt: new Date().toISOString(),
+        source: refreshedApiToken.source
+      });
     }
-    if (sourceRuntimeLeaseAcquired) {
+    const refreshedEnv = localServiceEnv(
+      environment,
+      refreshedRepoEnv,
+      refreshedApiToken,
+      paths
+    );
+    refreshedEnv.WORK_QUEUE_BACKEND = requiredRuntime.queue;
+    const apiUrlEnvironment = { ...environment };
+    if (
+      requestedEnvironment.API_HOST_PORT?.trim() &&
+      !requestedEnvironment.MEMORY_API_URL?.trim()
+    ) {
+      delete apiUrlEnvironment.MEMORY_API_URL;
+    }
+    const apiUrl = resolveApiUrl(apiUrlEnvironment, refreshedRepoEnv);
+
+    let appRuntime: KoedAppRuntime;
+    let generationPin:
+      | Awaited<ReturnType<typeof pinAndResolvePackagedRuntime>>["pin"]
+      | undefined;
+    let startedNativePostgres = false;
+    let nativeEmbeddingProcess: ChildProcess | undefined;
+    let nativePrivacyProcess: ChildProcess | undefined;
+    const managedChildren: Record<string, ChildProcess> = {};
+    const managedProcessMonitor = createManagedProcessMonitor({
+      expectedSignals: []
+    });
+    const managedProcessOutcome = managedProcessMonitor.result.then(
+      () => ({ error: null }),
+      (error: unknown) => ({ error })
+    );
+    const manageChild = (name: string, child: ChildProcess): ChildProcess => {
+      managedChildren[name] = child;
+      managedProcessMonitor.watch(name, child);
+      return child;
+    };
+    let runtimeStateWritten = false;
+    let stopSupervisorExitMonitor: () => void = () => undefined;
+    const runtimeStateOwnedByCurrentProcess = (): boolean => {
       try {
-        const releaseResult = spawnSync(
+        const runtime = JSON.parse(
+          readFileSync(paths.runtimeStatePath, "utf8")
+        ) as Partial<KoedServerRuntimeState>;
+        return (
+          runtime.pid === process.pid &&
+          runtime.startedAt === supervisorStartedAt
+        );
+      } catch {
+        return false;
+      }
+    };
+
+    let deviceRequestService:
+      | Awaited<ReturnType<typeof startDeviceRequestService>>
+      | undefined;
+    let cleanupPromise: Promise<void> | undefined;
+    let cleanupCompleted = false;
+    const cleanupStartedResources = (): Promise<void> => {
+      cleanupStarted = true;
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = (async () => {
+        const cleanupErrors: string[] = [];
+        try {
+          await deviceRequestService?.close();
+        } catch (error) {
+          cleanupErrors.push(
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+        const shutdownOrder = [
+          "localAiRuntime",
+          "worker",
+          "api",
+          "privacyService",
+          "embeddingService"
+        ];
+        for (const name of shutdownOrder) {
+          try {
+            await stopChildProcess(managedChildren[name], 5_000, name);
+          } catch (error) {
+            cleanupErrors.push(
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+        }
+        if (
+          nativeEmbeddingProcess &&
+          !Object.values(managedChildren).includes(nativeEmbeddingProcess)
+        ) {
+          try {
+            await stopChildProcess(
+              nativeEmbeddingProcess,
+              5_000,
+              "embeddingService"
+            );
+          } catch (error) {
+            cleanupErrors.push(
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+        }
+        if (startedNativePostgres) {
+          const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
+            spawnSync
+          });
+          startedNativePostgres = false;
+          if (!stopped.ok) {
+            cleanupErrors.push(stopped.error ?? stopped.message);
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          throw new Error(cleanupErrors.join("; "));
+        }
+        cleanupCompleted = true;
+      })();
+      return cleanupPromise;
+    };
+    let requestShutdown: () => void = () => undefined;
+    const shutdownRequested = new Promise<void>((resolveShutdown) => {
+      requestShutdown = resolveShutdown;
+    });
+    const shutdown = () => requestShutdown();
+    if (signal?.aborted) requestShutdown();
+    else signal?.addEventListener("abort", shutdown, { once: true });
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+
+    const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
+    let sourceRuntimeLeaseAcquired = false;
+    let startupReady = false;
+    try {
+      startupPhase = "authenticated runtime selection";
+      if (execution === "packaged") {
+        const selected = await pinAndResolvePackagedRuntime(
+          paths,
+          environment,
+          requiredRuntime
+        );
+        generationPin = selected.pin;
+        appRuntime = selected.runtime;
+      } else {
+        appRuntime = resolveKoedAppRuntime(
+          paths,
+          environment,
+          existsSync,
+          undefined,
+          requiredRuntime
+        );
+        assertKoedAppRuntimeAvailable(appRuntime, paths);
+      }
+      if (appRuntime.kind === "source") {
+        runCommand(
+          paths,
+          "Check source runtime artifacts",
           process.execPath,
           [
             resolve(paths.repoRoot, "scripts/source-runtime-build.mjs"),
-            "release-lease",
+            "check",
             "--lease-pid",
             String(process.pid)
           ],
-          {
-            cwd: paths.repoRoot,
-            env: refreshedEnv,
-            stdio: "inherit"
-          }
+          refreshedEnv,
+          spawnSync
         );
-        if (releaseResult.error || releaseResult.status !== 0) {
-          console.warn(
-            `Could not release the source-runtime lease: ${releaseResult.error?.message ?? `exit code ${releaseResult.status ?? 1}`}.`
+        sourceRuntimeLeaseAcquired = true;
+        emitStartupMilestone("source_runtime_verification_complete");
+      }
+
+      startupPhase = "service dependency validation and startup";
+      if (config.dependencyMode === "external") {
+        const queueBackend = requiredRuntime.queue;
+        const requiredExternalServices: Array<[string, string | undefined]> = [
+          ["DATABASE_URL", refreshedEnv.DATABASE_URL],
+          ...(queueBackend === "bullmq"
+            ? [
+                ["REDIS_URL", refreshedEnv.REDIS_URL] as [
+                  string,
+                  string | undefined
+                ]
+              ]
+            : []),
+          ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
+        ];
+        if (teamCollaborationEnabled) {
+          requiredExternalServices.push(
+            ["PRIVACY_SERVICE_URL", refreshedEnv.PRIVACY_SERVICE_URL],
+            ["PRIVACY_SERVICE_TOKEN", refreshedEnv.PRIVACY_SERVICE_TOKEN],
+            [
+              "PRIVACY_RUNTIME_CONTROL_TOKEN",
+              refreshedEnv.PRIVACY_RUNTIME_CONTROL_TOKEN
+            ]
           );
         }
-      } catch (error) {
-        console.warn(
-          `Could not release the source-runtime lease: ${error instanceof Error ? error.message : String(error)}.`
+        const missing = requiredExternalServices.flatMap(([name, value]) =>
+          value?.trim() ? [] : [name]
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
+          );
+        }
+      } else {
+        const queueBackend = requiredRuntime.queue;
+        if (queueBackend === "bullmq" && !refreshedEnv.REDIS_URL?.trim()) {
+          throw new Error(
+            "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL. Set REDIS_URL or use WORK_QUEUE_BACKEND=local."
+          );
+        }
+      }
+
+      if (useBundledLocalDependencies) {
+        const result = startLocalPostgresRuntime(paths, refreshedEnv, {
+          spawnSync
+        });
+        Object.assign(refreshedEnv, result.env);
+        startedNativePostgres = result.started;
+        if (!result.ok) {
+          throw new Error(
+            `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${localRuntimeFailureDetails(result.status.details)}${result.status.action ? ` ${result.status.action}` : ""}`
+          );
+        }
+        emitStartupMilestone("local_postgres_start_complete");
+      }
+
+      if (useBundledLocalDependencies && teamCollaborationEnabled) {
+        const result = await startLocalPrivacyRuntime(paths, refreshedEnv, {
+          spawn,
+          appRuntime
+        });
+        Object.assign(refreshedEnv, result.env);
+        nativePrivacyProcess = result.process;
+        if (nativePrivacyProcess) {
+          manageChild("privacyService", nativePrivacyProcess);
+        }
+        if (!result.ok) {
+          throw new Error(
+            `Bundled-local Privacy Filter Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+          );
+        }
+        emitStartupMilestone("privacy_filter_process_spawned");
+      }
+
+      if (useBundledLocalDependencies) {
+        const result = startLocalEmbeddingRuntime(
+          paths,
+          appProcessEnvironment(refreshedEnv),
+          { spawn, appRuntime }
+        );
+        Object.assign(refreshedEnv, result.env);
+        nativeEmbeddingProcess = result.process;
+        if (nativeEmbeddingProcess) {
+          manageChild("embeddingService", nativeEmbeddingProcess);
+        }
+        if (!result.ok) {
+          throw new Error(
+            `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+          );
+        }
+        emitStartupMilestone("embedding_service_process_spawned");
+      }
+
+      const api =
+        appRuntime.kind === "packaged"
+          ? spawnManagedProcess(
+              paths,
+              "API",
+              process.execPath,
+              [appRuntime.apiEntry],
+              appProcessEnvironment(refreshedEnv),
+              spawn,
+              resolve(appRuntime.root, "api")
+            )
+          : spawnManagedProcess(
+              paths,
+              "API",
+              process.execPath,
+              [resolve(paths.repoRoot, "apps/api/dist/index.js")],
+              appProcessEnvironment(refreshedEnv),
+              spawn,
+              resolve(paths.repoRoot, "apps/api")
+            );
+      manageChild("api", api);
+      emitStartupMilestone("api_process_spawned");
+
+      const runtime: KoedServerRuntimeState = {
+        pid: process.pid,
+        startedAt: supervisorStartedAt,
+        repoRoot: paths.repoRoot,
+        apiUrl,
+        runtimeMode: config.runtimeMode,
+        dependencyMode: config.dependencyMode,
+        automaticPorts: environment.KOED_AUTO_PORTS === "1",
+        codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
+        claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
+        piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
+        services: [...runtimeServices, "api"],
+        processes: {
+          ...(nativeEmbeddingProcess
+            ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
+            : {}),
+          ...(nativePrivacyProcess
+            ? { privacyService: nativePrivacyProcess.pid ?? 0 }
+            : {}),
+          api: api.pid ?? 0
+        }
+      };
+      const persistRuntime = (): void => {
+        writeFileSync(
+          paths.runtimeStatePath,
+          `${JSON.stringify(runtime, null, 2)}\n`,
+          {
+            mode: 0o600
+          }
+        );
+        runtimeStateWritten = true;
+      };
+      persistRuntime();
+      stopSupervisorExitMonitor = monitorSupervisorExitRequest(
+        paths,
+        {
+          pid: process.pid,
+          startedAt: supervisorStartedAt
+        },
+        {
+          onExit: requestShutdown
+        }
+      );
+
+      let status = await waitForHealthyOrReady({
+        environment: refreshedEnv,
+        timeoutMs,
+        pollIntervalMs,
+        collectStatus,
+        isReady: (candidate) =>
+          candidate.api.state === "healthy" &&
+          candidate.database.state === "healthy"
+      });
+      if (
+        status.api.state !== "healthy" ||
+        status.database.state !== "healthy"
+      ) {
+        throw new Error(
+          `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
+        );
+      }
+      emitStartupMilestone("api_and_database_ready");
+      if (desktopManagedLocal) {
+        const desktopApiToken = await provisionDesktopApiToken(
+          paths,
+          appRuntime,
+          refreshedEnv
+        );
+        if (desktopApiToken) {
+          Object.assign(refreshedEnv, {
+            MEMORY_API_TOKEN: desktopApiToken
+          });
+        }
+        emitStartupMilestone("desktop_credential_provisioned");
+      } else if (
+        useBundledLocalDependencies &&
+        config.runtimeMode === "local-personal" &&
+        !resolveActiveIntegrationApiToken(paths, refreshedEnv, refreshedRepoEnv)
+      ) {
+        const provisioned = await provisionLocalApiTokenDependency(
+          paths,
+          appRuntime,
+          refreshedEnv,
+          refreshedRepoEnv
+        );
+        Object.assign(refreshedEnv, { MEMORY_API_TOKEN: provisioned.token });
+        emitStartupMilestone("packaged_personal_credential_provisioned");
+      }
+
+      const finalApiToken = resolveActiveIntegrationApiToken(
+        paths,
+        refreshedEnv,
+        refreshedRepoEnv
+      )?.token;
+      if (finalApiToken) {
+        Object.assign(refreshedEnv, { MEMORY_API_TOKEN: finalApiToken });
+      }
+      let localAiRuntime: ChildProcess | undefined;
+      if (localAiRuntimeEnabled) {
+        if (!finalApiToken) {
+          throw new Error(
+            "A Personal API Token is required to start the local AI runtime."
+          );
+        }
+        localAiRuntime = spawnManagedProcess(
+          paths,
+          "Local AI Runtime",
+          process.execPath,
+          [appRuntime.localAiRuntime],
+          {
+            ...appProcessEnvironment(refreshedEnv),
+            KOED_HOME: paths.koedHome,
+            MEMORY_API_URL: apiUrl,
+            MEMORY_API_TOKEN: finalApiToken,
+            MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
+              config.codexTranscriptWatcherEnabled
+            ),
+            MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
+              config.claudeTranscriptWatcherEnabled
+            ),
+            MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: String(
+              config.piTranscriptWatcherEnabled
+            )
+          },
+          spawn,
+          appRuntime.kind === "packaged"
+            ? resolve(appRuntime.root, "mcp-server")
+            : resolve(paths.repoRoot, "packages", "mcp-server")
+        );
+        manageChild("localAiRuntime", localAiRuntime);
+        emitStartupMilestone("local_ai_runtime_process_spawned");
+      }
+
+      const worker =
+        appRuntime.kind === "packaged"
+          ? spawnManagedProcess(
+              paths,
+              "Worker",
+              process.execPath,
+              [appRuntime.workerEntry],
+              appProcessEnvironment(refreshedEnv),
+              spawn,
+              resolve(appRuntime.root, "worker")
+            )
+          : spawnManagedProcess(
+              paths,
+              "Worker",
+              process.execPath,
+              [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
+              appProcessEnvironment(refreshedEnv),
+              spawn,
+              resolve(paths.repoRoot, "apps/worker")
+            );
+      manageChild("worker", worker);
+      emitStartupMilestone("worker_process_spawned");
+      if (
+        config.runtimeMode === "local-personal" &&
+        useBundledLocalDependencies
+      ) {
+        deviceRequestService = await startDeviceRequestService({
+          paths,
+          host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,
+          enrolled: () =>
+            Boolean(
+              createPdsApplicationSecretStore({ rootPath: paths.koedHome }).get(
+                "pds-runtime"
+              )
+            ),
+          redeem: async (link, label, signal) => {
+            const fetchWithShutdown: typeof fetch = (input, init) =>
+              fetch(input, {
+                ...init,
+                signal: init?.signal
+                  ? AbortSignal.any([signal, init.signal])
+                  : signal
+              });
+            const result = await redeemPairingLink(
+              link,
+              label,
+              paths,
+              { ...refreshedEnv, PDS_LOCAL_CONTROL_URL: apiUrl },
+              { fetch: fetchWithShutdown }
+            );
+            if (!result.ok) throw new Error("Enrollment did not complete.");
+          }
+        });
+      }
+
+      runtime.services = [...runtimeServices, ...appServices];
+      runtime.processes = {
+        ...runtime.processes,
+        ...(localAiRuntime ? { localAiRuntime: localAiRuntime.pid ?? 0 } : {}),
+        worker: worker.pid ?? 0
+      };
+      persistRuntime();
+
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            state: "starting",
+            koedHome: paths.koedHome,
+            apiUrl,
+            services: runtime.services
+          },
+          null,
+          2
+        )
+      );
+
+      status = await waitForHealthyOrReady({
+        environment: refreshedEnv,
+        timeoutMs,
+        pollIntervalMs,
+        collectStatus
+      });
+      if (!status.ok) {
+        throw new Error(
+          `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
+        );
+      }
+      emitStartupMilestone("core_services_ready");
+      startupReady = true;
+      console.log(JSON.stringify(status, null, 2));
+      emitStartupMilestone("final_supervisor_status_emitted");
+      console.log(
+        "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
+      );
+
+      await Promise.race([
+        shutdownRequested,
+        managedProcessOutcome.then(({ error }) => {
+          if (error) throw error;
+        })
+      ]);
+      await cleanupStartedResources();
+    } catch (error) {
+      if (!startupReady) emitStartupMilestone("startup_failed");
+      try {
+        await cleanupStartedResources();
+        if (runtimeStateOwnedByCurrentProcess()) {
+          rmSync(paths.runtimeStatePath, { force: true });
+        }
+      } catch (cleanupError) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          { cause: cleanupError }
+        );
+      }
+      throw error;
+    } finally {
+      stopSupervisorExitMonitor();
+      stopSupervisorLogMaintenance();
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      signal?.removeEventListener("abort", shutdown);
+      managedProcessMonitor.dispose();
+      if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
+        rmSync(paths.runtimeStatePath, { force: true });
+      }
+      if (sourceRuntimeLeaseAcquired) {
+        try {
+          const releaseResult = spawnSync(
+            process.execPath,
+            [
+              resolve(paths.repoRoot, "scripts/source-runtime-build.mjs"),
+              "release-lease",
+              "--lease-pid",
+              String(process.pid)
+            ],
+            {
+              cwd: paths.repoRoot,
+              env: refreshedEnv,
+              stdio: "inherit"
+            }
+          );
+          if (releaseResult.error || releaseResult.status !== 0) {
+            console.warn(
+              `Could not release the source-runtime lease: ${releaseResult.error?.message ?? `exit code ${releaseResult.status ?? 1}`}.`
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `Could not release the source-runtime lease: ${error instanceof Error ? error.message : String(error)}.`
+          );
+        }
+      }
+      if (cleanupCompleted) {
+        try {
+          await generationPin?.release();
+        } finally {
+          releaseSupervisorLock();
+        }
+      } else {
+        console.error(
+          "Supervisor cleanup could not confirm all managed children exited; retaining runtime generation pin and supervisor lock."
         );
       }
     }
-    if (cleanupCompleted) {
-      try {
-        await generationPin?.release();
-      } finally {
-        releaseSupervisorLock();
-      }
-    } else {
-      console.error(
-        "Supervisor cleanup could not confirm all managed children exited; retaining runtime generation pin and supervisor lock."
-      );
-    }
+  } catch (error) {
+    throw new Error(
+      `${startupPhase} failed: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  } finally {
+    if (!cleanupStarted) releaseSupervisorLock();
   }
 };

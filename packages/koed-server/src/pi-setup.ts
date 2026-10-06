@@ -15,7 +15,11 @@ import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -366,10 +370,10 @@ export const removePi = (
   }
 };
 
-export const setupPi = (
+export const setupPi = async (
   environment: NodeJS.ProcessEnv = process.env,
   spawnSync: typeof nodeSpawnSync = nodeSpawnSync
-): KoedServerSetupPiResult => {
+): Promise<KoedServerSetupPiResult> => {
   const paths = resolveKoedServerPaths(environment);
   try {
     assertAiClientRegistryWritable({
@@ -387,7 +391,16 @@ export const setupPi = (
       action: "Fix malformed AI Client registry, then rerun Pi setup."
     };
   }
-  const runtime = resolveKoedAppRuntime(paths, environment);
+  const runtime =
+    resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(paths, environment, {
+          components: ["base"],
+          processes: ["local-ai-runtime"],
+          queue: "bullmq",
+          native: [],
+          models: []
+        })
+      : resolveKoedAppRuntime(paths, environment);
   const sourceCandidates =
     runtime.kind === "source"
       ? [resolve(runtime.root, "packages/mcp-server/integrations/pi")]

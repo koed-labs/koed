@@ -861,7 +861,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "pi") {
-      const result = setupPiIntegration();
+      const result = await setupPiIntegration();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -877,7 +877,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = setupClaudeIntegration();
+      const result = await setupClaudeIntegration();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -893,7 +893,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "repair" && subcommand === "codex") {
-      const result = repairCodex();
+      const result = await repairCodex();
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -937,11 +937,11 @@ export const runKoedServerCli = async (
     if (command === "repair" && subcommand) {
       const result =
         subcommand === "codex"
-          ? repairCodex()
+          ? await repairCodex()
           : subcommand === "claude"
-            ? setupClaudeIntegration()
+            ? await setupClaudeIntegration()
             : subcommand === "pi"
-              ? setupPiIntegration()
+              ? await setupPiIntegration()
               : null;
       if (!result)
         throw new Error("repair client must be codex, claude, or pi.");

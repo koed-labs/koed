@@ -120,7 +120,7 @@ afterEach(() => {
 });
 
 describe("Codex setup wrapper", () => {
-  it("removes only valid Koed-owned Codex block and preserves unrelated profile", () => {
+  it("removes only valid Koed-owned Codex block and preserves unrelated profile", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
     const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
@@ -174,7 +174,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("fails Codex removal without mutating malformed or unexpected ownership block", () => {
+  it("fails Codex removal without mutating malformed or unexpected ownership block", async () => {
     const root = tempDir();
     const configPath = resolve(root, "codex/config.toml");
     mkdirSync(resolve(root, "codex"), { recursive: true });
@@ -826,7 +826,7 @@ describe("Codex setup wrapper", () => {
     writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -877,7 +877,7 @@ describe("Codex setup wrapper", () => {
     const profile = '[mcp_servers.other]\ncommand = "other"\n';
     writeFileSync(codexConfigPath, profile);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -896,7 +896,7 @@ describe("Codex setup wrapper", () => {
     ).toThrow();
   });
 
-  it("rolls back Codex profile when registry registration fails", () => {
+  it("rolls back Codex profile when registry registration fails", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -914,7 +914,7 @@ describe("Codex setup wrapper", () => {
       mode: 0o640
     });
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -943,7 +943,7 @@ describe("Codex setup wrapper", () => {
     );
     writeMcpRuntimeArtifacts(root);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -970,7 +970,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("repair honors the persisted global memory guidance opt-out", () => {
+  it("repair honors the persisted global memory guidance opt-out", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -989,7 +989,7 @@ describe("Codex setup wrapper", () => {
       "# User rules\n\n<!-- >>> koed-memory-guidance -->\nold\n<!-- <<< koed-memory-guidance -->\n"
     );
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1004,7 +1004,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("fails closed without rewriting malformed global instructions", () => {
+  it("fails closed without rewriting malformed global instructions", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -1018,7 +1018,7 @@ describe("Codex setup wrapper", () => {
       "# User rules\n\n<!-- >>> koed-memory-guidance -->\nbroken\n";
     writeFileSync(resolve(codexHome, "AGENTS.md"), malformed);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1047,7 +1047,7 @@ describe("Codex setup wrapper", () => {
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=repo_token\n");
     writeMcpRuntimeArtifacts(root);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1087,7 +1087,7 @@ describe("Codex setup wrapper", () => {
     const codexConfigPath = resolve(root, "codex.toml");
     const checkedPids: number[] = [];
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,

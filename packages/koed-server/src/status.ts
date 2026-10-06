@@ -386,11 +386,40 @@ export const inspectPi = (
   };
 };
 
-export const inspectClaudeCode = (
+const resolveStatusIntegrationRuntime = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean
+) =>
+  resolveKoedAppRuntimeExecution() === "packaged"
+    ? resolveVerifiedPackagedRuntime(
+        paths,
+        environment,
+        {
+          components: ["base"],
+          processes: ["local-ai-runtime"],
+          queue: "bullmq",
+          native: [],
+          models: []
+        },
+        exists
+      )
+    : resolveKoedAppRuntime(paths, environment, exists);
+
+const authenticatedRuntimeUnavailable = () => ({
+  ...notConfigured(
+    "No compatible authenticated Koed app-runtime generation is available.",
+    "Install and activate a compatible signed Koed app-runtime generation; status never compares integrations against checkout or current-directory artifacts."
+  ),
+  configured: false,
+  detected: false
+});
+
+export const inspectClaudeCode = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
-): KoedServerStatus["claudeCode"] => {
+): Promise<KoedServerStatus["claudeCode"]> => {
   const settingsPath = resolveClaudeSettingsPath(environment);
   const detectedFromConfig = deps.existsSync(settingsPath);
   let executable: string;
@@ -407,7 +436,19 @@ export const inspectClaudeCode = (
     };
   }
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps.existsSync
+    );
+  } catch {
+    return {
+      ...authenticatedRuntimeUnavailable(),
+      detected: detectedFromConfig
+    };
+  }
   const childEnvironment = claudeProcessEnvironment(environment);
   const runClaude = (args: string[], timeout: number) => {
     const invocation = nodeCliInvocation(executable, args);
@@ -1006,12 +1047,12 @@ const inspectCodexInstallation = (
   return { executable, version };
 };
 
-export const inspectCodex = (
+export const inspectCodex = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>,
   memoryGuidanceEnabled: boolean
-): KoedServerStatus["codex"] => {
+): Promise<KoedServerStatus["codex"]> => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
@@ -1069,7 +1110,16 @@ export const inspectCodex = (
   }
 
   const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps.existsSync
+    );
+  } catch {
+    return authenticatedRuntimeUnavailable();
+  }
   const hasExpectedAdapter = mcpBlock.includes(JSON.stringify(runtime.mcpCli));
   const containsRetiredCredentials =
     tomlStringValue(mcpEnvBlock, "MEMORY_API_URL") !== null ||
@@ -1170,11 +1220,11 @@ export const inspectCodex = (
   };
 };
 
-const inspectCaptureHook = (
+const inspectCaptureHook = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
-) => {
+): Promise<KoedServerStatus["captureHook"]> => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
@@ -1186,7 +1236,16 @@ const inspectCaptureHook = (
     );
   }
   const content = String(deps.readFileSync(codexConfigPath, "utf8"));
-  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  let runtime;
+  try {
+    runtime = await resolveStatusIntegrationRuntime(
+      paths,
+      environment,
+      deps.existsSync
+    );
+  } catch {
+    return authenticatedRuntimeUnavailable();
+  }
   const requiredEvents = [
     "SessionStart",
     "UserPromptSubmit",
@@ -2398,9 +2457,13 @@ export const koedServerStartupBlockingComponentIds = (
     : (["localAiRuntime", "apiToken"] as const))
 ];
 
-const inspectSafely = <T>(label: string, inspect: () => T, fallback: T): T => {
+const inspectSafely = async <T>(
+  label: string,
+  inspect: () => T | Promise<T>,
+  fallback: T
+): Promise<T> => {
   try {
-    return inspect();
+    return await inspect();
   } catch {
     return {
       ...needsAttention(
@@ -2686,7 +2749,7 @@ export const collectKoedServerStatus = async (
     serverConfig.runtimeMode,
     deps
   );
-  const codex = inspectSafely(
+  const codex = await inspectSafely(
     "Codex",
     () =>
       inspectCodex(
@@ -2697,12 +2760,12 @@ export const collectKoedServerStatus = async (
       ),
     { state: "needs_attention", configured: false }
   );
-  const claudeCode = inspectSafely(
+  const claudeCode = await inspectSafely(
     "Claude Code",
     () => inspectClaudeCode(runtimeEnvironment, paths, deps),
     { state: "needs_attention", configured: false, detected: false }
   );
-  const pi = inspectSafely(
+  const pi = await inspectSafely(
     "Pi",
     () =>
       inspectPi(runtimeEnvironment, paths, deps, {
@@ -2717,7 +2780,7 @@ export const collectKoedServerStatus = async (
       }),
     { state: "needs_attention", configured: false, detected: false }
   );
-  const captureHook = inspectSafely(
+  const captureHook = await inspectSafely(
     "Supported Capture Hook",
     () => inspectCaptureHook(runtimeEnvironment, paths, deps),
     { state: "needs_attention" }

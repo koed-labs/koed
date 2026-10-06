@@ -14,7 +14,11 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
@@ -439,12 +443,21 @@ export const removeClaude = (
   }
 };
 
-export const setupClaude = (
+export const setupClaude = async (
   environment: NodeJS.ProcessEnv = process.env,
   spawnSync: SpawnSyncLike = nodeSpawnSync
-): KoedServerSetupClaudeResult => {
+): Promise<KoedServerSetupClaudeResult> => {
   const paths = resolveKoedServerPaths(environment);
-  const runtime = resolveKoedAppRuntime(paths, environment);
+  const runtime =
+    resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(paths, environment, {
+          components: ["base"],
+          processes: ["local-ai-runtime"],
+          queue: "bullmq",
+          native: [],
+          models: []
+        })
+      : resolveKoedAppRuntime(paths, environment);
   let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
