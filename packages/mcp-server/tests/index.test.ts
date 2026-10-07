@@ -123,8 +123,6 @@ const memoryAnswerObject = (answer_markdown: string) => ({
   evidence: [
     {
       evidence_index: 0,
-      source_id: "node-1",
-      visibility: "personal",
       relevance: "directly supports the answer"
     }
   ],
