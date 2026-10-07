@@ -121,7 +121,7 @@ describe.skipIf(!databaseUrl)(
       { encrypted: false, kind: "revert" },
       { encrypted: true, kind: "revert" }
     ])(
-      "retains one conversation through $kind, replay and compression with encryption=$encrypted",
+      "preserves existing Memory, embeddings and LCM through $kind, replay and compression with encryption=$encrypted",
       async ({ encrypted, kind }) => {
         const home = mkdtempSync(join(tmpdir(), "koed-pagination-api-"));
         vi.stubEnv("KOED_HOME", home);
@@ -242,6 +242,15 @@ describe.skipIf(!databaseUrl)(
               MEMORY_API_TOKEN: token
             })
           );
+          const projectCaptured = async () => {
+            const response = await app.inject({
+              method: "POST",
+              url: "/v1/memory/conversation-items/project",
+              headers: { authorization: `Bearer ${token}` },
+              payload: { limit: 1000 }
+            });
+            expect(response.statusCode, response.body).toBe(200);
+          };
           const nativeFixture =
             kind === "revert"
               ? process.env.KOED_CODEX_NATIVE_REVERT_FIXTURE
@@ -396,6 +405,184 @@ describe.skipIf(!databaseUrl)(
           const previousBytes = encode(previous);
           writeFileSync(file, previousBytes);
           const initial = await capture(previous);
+          // Finalize a legacy turnless assistant tail before snapshotting its Memory.
+          vi.stubEnv("MEMORY_AGENT_TURN_STALE_MS", "0");
+          await projectCaptured();
+          const memoryEventIds = async () =>
+            (
+              await pool.query<{ id: string }>(
+                "select id from memory_events where session_id=$1 order by id",
+                [initial.artifact.sessionId]
+              )
+            ).rows.map((event) => event.id);
+          const originalEventIds = await memoryEventIds();
+          expect(originalEventIds.length).toBeGreaterThan(0);
+          const buildPendingLcm = async () => {
+            const scopes = await repo.listPendingLcmDispatchScopes({
+              ownerUserId: owner.id
+            });
+            expect(scopes.length).toBeGreaterThan(0);
+            for (const scope of scopes) {
+              await repo.createLcmNodes(
+                { userId: owner.id },
+                {
+                  visibility: "personal",
+                  workClass: scope.workClass,
+                  sessionId: initial.artifact.sessionId,
+                  finalize: true
+                }
+              );
+            }
+          };
+          await buildPendingLcm();
+          const originalNodeIds = (
+            await pool.query<{ id: string }>(
+              "select id from memory_nodes where session_id=$1 order by id",
+              [initial.artifact.sessionId]
+            )
+          ).rows.map((node) => node.id);
+          expect(originalNodeIds.length).toBeGreaterThan(0);
+          // Work discovery is global; scope real SQL candidates before key-specific hydration.
+          const queueRepo = createMemorySourceRepository(
+            new Proxy(pool, {
+              get(target, property, receiver): unknown {
+                if (property !== "query")
+                  return Reflect.get(target, property, receiver) as unknown;
+                return async (query: string, values?: unknown[]) => {
+                  const result = await target.query<{ owner_user_id?: string }>(
+                    query,
+                    values
+                  );
+                  return query.includes("with sources as (") &&
+                    query.includes("limit $4")
+                    ? {
+                        ...result,
+                        rows: result.rows.filter(
+                          (row) => row.owner_user_id === owner.id
+                        )
+                      }
+                    : result;
+                };
+              }
+            }),
+            { envelopeEncryptionProvider: provider }
+          );
+          const pendingEmbeddings = async () =>
+            (await queueRepo.listSourcesNeedingEmbeddings(10_000)).filter(
+              (source) => source.ownerUserId === owner.id
+            );
+          const embedSources = async (
+            sources: Awaited<ReturnType<typeof pendingEmbeddings>>
+          ) => {
+            for (const source of sources) {
+              // Distinct deterministic fixtures exercise vector preservation, not model quality.
+              const digest = createHash("sha256").update(source.text).digest();
+              const slope = digest.readUInt32BE(0) / 0xffffffff / 10;
+              const length = Math.sqrt(1 + slope * slope);
+              const sourceVector = Array<number>(1024).fill(0);
+              sourceVector[0] = 1 / length;
+              sourceVector[1] = slope / length;
+              await repo.replaceSourceEmbeddings({
+                source,
+                model: "qwen3-0.6b",
+                dimensions: 1024,
+                version: "qwen3-0.6b",
+                modelArtifactHash: "a".repeat(64),
+                tokenizer: "qwen3-embedding-0.6b-gguf",
+                inputTransform: "qwen3-retrieval-document-v1",
+                pooling: "last",
+                normalization: "l2",
+                chunks: [
+                  {
+                    vector: sourceVector,
+                    chunkIndex: 0,
+                    chunkCount: 1,
+                    inputTokenCount: 4,
+                    sourceText: source.text
+                  }
+                ]
+              });
+            }
+          };
+          const originalSources = await pendingEmbeddings();
+          expect(
+            originalSources
+              .filter((source) => source.sourceType === "memory_event")
+              .map((source) => source.sourceId)
+              .sort()
+          ).toEqual(originalEventIds);
+          expect(
+            originalSources.some(
+              (source) => source.sourceType === "memory_node"
+            )
+          ).toBe(true);
+          await embedSources(originalSources);
+          expect(await pendingEmbeddings()).toEqual([]);
+          const preservedEmbeddings = async () =>
+            (
+              await pool.query<{ row: unknown; vector: string | null }>(
+                `select to_jsonb(me) as row, v.embedding::text as vector
+                 from memory_embeddings me
+                 left join memory_embeddings_1024 v on v.memory_embedding_id=me.id
+                where me.memory_event_id=any($1::uuid[])
+                   or me.memory_node_id=any($2::uuid[])
+                order by me.id`,
+                [originalEventIds, originalNodeIds]
+              )
+            ).rows;
+          const preservedMemory = async () => ({
+            events: (
+              await pool.query<{ row: unknown }>(
+                "select to_jsonb(me) as row from memory_events me where id=any($1::uuid[]) order by id",
+                [originalEventIds]
+              )
+            ).rows,
+            nodes: (
+              await pool.query<{ row: unknown }>(
+                "select to_jsonb(mn) as row from memory_nodes mn where id=any($1::uuid[]) order by id",
+                [originalNodeIds]
+              )
+            ).rows,
+            lcmLinks: (
+              await pool.query<{ row: unknown }>(
+                "select to_jsonb(ms) as row from memory_node_sources ms where memory_node_id=any($1::uuid[]) order by memory_node_id,source_order",
+                [originalNodeIds]
+              )
+            ).rows,
+            embeddings: await preservedEmbeddings(),
+            embeddingInputs: await Promise.all(
+              originalSources.map((source) =>
+                repo.getEmbeddableSource(source.sourceType, source.sourceId)
+              )
+            ),
+            encryptedCompanions: (
+              await pool.query<{ row: unknown }>(
+                `select to_jsonb(efp) as row from encrypted_field_payloads efp
+                where owner_user_id=$1
+                  and (
+                    (source_table='memory_events' and source_id=any($2::uuid[]))
+                    or (source_table='memory_nodes' and source_id=any($3::uuid[]))
+                    or (source_table='memory_embeddings' and source_id in (
+                      select id from memory_embeddings
+                       where memory_event_id=any($2::uuid[])
+                          or memory_node_id=any($3::uuid[])
+                    ))
+                  )
+                order by id`,
+                [owner.id, originalEventIds, originalNodeIds]
+              )
+            ).rows
+          });
+          const originalMemory = await preservedMemory();
+          expect(originalMemory.embeddings).toHaveLength(
+            originalSources.length
+          );
+          expect(
+            originalMemory.embeddings.every(
+              (entry) => typeof entry.vector === "string"
+            )
+          ).toBe(true);
+          expect(originalMemory.lcmLinks.length).toBeGreaterThan(0);
           if (kind === "revert") {
             const prefix = previous.slice(0, 2);
             migrated = nativeAfter ?? [
@@ -417,8 +604,17 @@ describe.skipIf(!databaseUrl)(
               `rollout-2026-01-01T00-00-00-${threadId}_${randomUUID()}.jsonl`
             );
           }
+          const migratedSuffix = kind === "revert" ? migrated.slice(1) : [];
+          if (kind === "revert") migrated = migrated.slice(0, 1);
           writeFileSync(file, encode(migrated));
           const rewritten = await capture(migrated);
+          await projectCaptured();
+          expect(await memoryEventIds()).toEqual(originalEventIds);
+          expect(await preservedMemory()).toEqual(originalMemory);
+          expect(await pendingEmbeddings()).toEqual([]);
+          await capture(migrated);
+          expect(await preservedMemory()).toEqual(originalMemory);
+          expect(await pendingEmbeddings()).toEqual([]);
           expect(rewritten.artifact).toMatchObject({
             sessionId: initial.artifact.sessionId,
             priorGenerationClosure: {
@@ -450,6 +646,16 @@ describe.skipIf(!databaseUrl)(
           ).rejects.toMatchObject({ status: 409 });
           if (kind === "revert")
             expect(readFileSync(previousFile)).toEqual(previousBytes);
+          if (migratedSuffix.length) {
+            appendFileSync(file, encode(migratedSuffix));
+            migrated = [...migrated, ...migratedSuffix];
+            await capture(migrated);
+            await projectCaptured();
+            expect(await preservedMemory()).toEqual(originalMemory);
+            await embedSources(await pendingEmbeddings());
+            expect(await pendingEmbeddings()).toEqual([]);
+          }
+          const preFutureEventIds = await memoryEventIds();
           const nextOrdinal = (migrated.at(-1)?.ordinal ?? -1) + 1;
           const future = [
             {
@@ -540,16 +746,19 @@ describe.skipIf(!databaseUrl)(
             await compressed.materialize(zst)
           );
           expect(await canonicalIdentities()).toEqual(capturedIdentities);
-          // Drive the existing background catch-up stage without waiting 15 minutes
-          // for a legacy turnless assistant tail to become stale.
-          vi.stubEnv("MEMORY_AGENT_TURN_STALE_MS", "0");
-          const catchUp = await app.inject({
-            method: "POST",
-            url: "/v1/memory/conversation-items/project",
-            headers: { authorization: `Bearer ${token}` },
-            payload: { limit: 1000 }
-          });
-          expect(catchUp.statusCode, catchUp.body).toBe(200);
+          await projectCaptured();
+          expect(await preservedMemory()).toEqual(originalMemory);
+          const newEventIds = (await memoryEventIds()).filter(
+            (id) => !preFutureEventIds.includes(id)
+          );
+          expect(newEventIds).toHaveLength(2);
+          const newSources = await pendingEmbeddings();
+          expect(newSources.map((source) => source.sourceId).sort()).toEqual(
+            newEventIds
+          );
+          expect(
+            newSources.every((source) => source.sourceType === "memory_event")
+          ).toBe(true);
           const counts = await pool.query<{ messages: string; events: string }>(
             "select (select count(*) from messages where session_id=$1)::text as messages, (select count(*) from memory_events where session_id=$1)::text as events",
             [initial.artifact.sessionId]
@@ -571,40 +780,11 @@ describe.skipIf(!databaseUrl)(
           expect(recall.statusCode, recall.body).toBe(200);
           expect(recall.json()).toHaveProperty("evidenceBundle");
           expect(recall.body).toContain(recallPhrase);
-          const projected = await pool.query<{ id: string }>(
-            "select id from memory_events where session_id=$1",
-            [initial.artifact.sessionId]
+          await embedSources(newSources);
+          expect(await pendingEmbeddings()).toEqual([]);
+          expect(await preservedEmbeddings()).toEqual(
+            originalMemory.embeddings
           );
-          let embeddedCount = 0;
-          for (const event of projected.rows) {
-            const source = await repo.getEmbeddableSource(
-              "memory_event",
-              event.id
-            );
-            if (!source) continue;
-            embeddedCount++;
-            await repo.replaceSourceEmbeddings({
-              source: source!,
-              model: "qwen3-0.6b",
-              dimensions: 1024,
-              version: "qwen3-0.6b",
-              modelArtifactHash: "a".repeat(64),
-              tokenizer: "qwen3-embedding-0.6b-gguf",
-              inputTransform: "qwen3-retrieval-document-v1",
-              pooling: "last",
-              normalization: "l2",
-              chunks: [
-                {
-                  vector,
-                  chunkIndex: 0,
-                  chunkCount: 1,
-                  inputTokenCount: 4,
-                  sourceText: source.text
-                }
-              ]
-            });
-          }
-          expect(embeddedCount).toBeGreaterThan(0);
           vectorsAvailable = true;
           const vectorRecall = await app.inject({
             method: "POST",
@@ -626,7 +806,13 @@ describe.skipIf(!databaseUrl)(
             "select count(*)::text as count from memory_embeddings where memory_event_id in (select id from memory_events where session_id=$1)",
             [initial.artifact.sessionId]
           );
-          expect(embeddingCounts.rows[0]?.count).toBe(String(embeddedCount));
+          expect(embeddingCounts.rows[0]?.count).toBe(
+            String(expectedMessageCount)
+          );
+          expect(await pendingEmbeddings()).toEqual([]);
+          expect(await preservedEmbeddings()).toEqual(
+            originalMemory.embeddings
+          );
           const graphEvents = await repo.listLcmGraphEvents(
             { userId: owner.id },
             { includeContent: true, limit: 100 }
@@ -638,21 +824,7 @@ describe.skipIf(!databaseUrl)(
                 event.content?.includes(message.text)
               )
             ).toHaveLength(1);
-          const scopes = await repo.listPendingLcmDispatchScopes({
-            ownerUserId: owner.id
-          });
-          expect(scopes.length).toBeGreaterThan(0);
-          for (const scope of scopes) {
-            await repo.createLcmNodes(
-              { userId: owner.id },
-              {
-                visibility: "personal",
-                workClass: scope.workClass,
-                sessionId: initial.artifact.sessionId,
-                finalize: true
-              }
-            );
-          }
+          await buildPendingLcm();
           const lcmSources = await pool.query<{ count: string }>(
             "select count(*)::text as count from memory_node_sources where memory_event_id in (select id from memory_events where session_id=$1)",
             [initial.artifact.sessionId]
