@@ -83,7 +83,10 @@ export class MemoryAnswerTaskRuntime {
       start: (input, caller, invocationKey) =>
         this.start({ input, caller, invocationKey }),
       get: (taskId) => this.scheduler.get(taskId),
-      cancel: (taskId) => this.scheduler.cancel(taskId)
+      cancel: (taskId) => this.scheduler.cancel(taskId),
+      // In-process scheduler events end the poll wait without supplying state.
+      subscribe: (taskId, wake) =>
+        this.scheduler.subscribe(taskId, () => wake())
     });
     const task = await delivery.accept(
       request.input,

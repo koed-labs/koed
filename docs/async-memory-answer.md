@@ -15,7 +15,12 @@ and expiry. It polls outside the model loop, reads the terminal task again, and
 checks the destination immediately before presentation.
 
 Observation starts with a one-second polling interval and increases the interval
-to five seconds while the task is unchanged. HTTP 429 responses delay another
+to five seconds while the task is unchanged. A port can also supply an optional
+`subscribe` wakeup that ends the current wait early. The Local AI Runtime's
+blocking route uses it with in-process scheduler events, so blocking recall
+does not wait for the next poll. A wakeup never supplies task state; the next
+state and the final authorized result always come from a fresh `get`. The Pi
+and Codex adapters use HTTP ports without wakeups. HTTP 429 responses delay another
 read of the same task, using a validated retry delay or bounded backoff. The
 original observation deadline, task expiry, cancellation signal and destination
 checks still apply. Throttling during the final authorized read cannot authorize

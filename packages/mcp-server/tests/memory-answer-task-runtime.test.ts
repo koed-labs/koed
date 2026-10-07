@@ -278,3 +278,51 @@ describe("authorized task observation", () => {
     expect(f.scheduler.cancel).not.toHaveBeenCalled();
   });
 });
+
+describe("MemoryAnswerTaskRuntime blocking recall", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("wakes on a scheduler event and returns the freshly read result", async () => {
+    vi.useFakeTimers();
+    let listener: ((task: MemoryAnswerTask) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const accepted = task(1, { invocationKey: "invocation-1" });
+    const completed = task(3, {
+      invocationKey: "invocation-1",
+      status: "completed",
+      result: { markdown: "FRESH" }
+    });
+    const scheduler = {
+      start: vi.fn(async () => accepted),
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(task(2, { invocationKey: "invocation-1" }))
+        .mockResolvedValue(completed),
+      cancel: vi.fn(),
+      subscribe: vi.fn(
+        (_id: string, next: (task: MemoryAnswerTask) => void) => {
+          listener = next;
+          return unsubscribe;
+        }
+      )
+    };
+    const runtime = new MemoryAnswerTaskRuntime(
+      scheduler as unknown as MemoryAnswerTaskScheduler,
+      {}
+    );
+    const blocking = runtime.executeBlocking({
+      input: { query: "What did we decide?" },
+      caller: { cwd: "/repo" } as LocalRuntimeCallerContext,
+      invocationKey: "invocation-1"
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.get).toHaveBeenCalledTimes(1);
+    // The event payload is ignored; only a fresh read supplies the result.
+    listener!(task(3, { status: "completed", result: { markdown: "CACHED" } }));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(blocking).resolves.toEqual({ markdown: "FRESH" });
+    expect(scheduler.get).toHaveBeenCalledTimes(3);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(scheduler.cancel).not.toHaveBeenCalled();
+  });
+});

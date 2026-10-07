@@ -26,6 +26,10 @@ export interface MemoryAnswerExecutionPort<
   ): Promise<Task>;
   get(taskId: string, signal?: AbortSignal): Promise<Task>;
   cancel(taskId: string, signal?: AbortSignal): Promise<Task>;
+  /** Optional change notification that ends the current poll wait early.
+   * Observation never uses notification payloads; it always reads fresh state
+   * through `get`. Returns an unsubscribe function. */
+  subscribe?(taskId: string, wake: () => void): () => void;
 }
 
 export type MemoryAnswerObservation<Task extends MemoryAnswerDeliveryTask> =

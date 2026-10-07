@@ -411,6 +411,91 @@ describe("MemoryAnswerDelivery", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("ends a poll wait on a port notification and reads fresh state", async () => {
+    vi.useFakeTimers();
+    let wake: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(task())
+      .mockResolvedValue(
+        task({ status: "completed", version: 2, result: { answer: "fresh" } })
+      );
+    const execution = {
+      ...port(get),
+      subscribe: vi.fn((_taskId: string, listener: () => void) => {
+        wake = listener;
+        return unsubscribe;
+      })
+    };
+    const present = vi.fn();
+    const observation = new MemoryAnswerDelivery(execution, {
+      pollMs: 60_000
+    }).observe("task-1", { present });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    wake!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await observation).toMatchObject({
+      kind: "terminal",
+      task: { version: 2 }
+    });
+    expect(execution.subscribe).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(Function)
+    );
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(present).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { answer: "fresh" } })
+    );
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a notification that arrives during a read", async () => {
+    vi.useFakeTimers();
+    let wake: (() => void) | undefined;
+    let reads = 0;
+    const execution = {
+      ...port(
+        vi.fn(async () => {
+          reads += 1;
+          if (reads === 1) {
+            wake!();
+            return task();
+          }
+          return task({ status: "completed", version: 2 });
+        })
+      ),
+      subscribe: (_taskId: string, listener: () => void) => {
+        wake = listener;
+        return () => undefined;
+      }
+    };
+    const observation = new MemoryAnswerDelivery(execution, {
+      pollMs: 60_000
+    }).observe("task-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await observation).toMatchObject({ kind: "terminal" });
+    expect(reads).toBe(3);
+  });
+
+  it("unsubscribes a detached observer without cancelling work", async () => {
+    vi.useFakeTimers();
+    const unsubscribe = vi.fn();
+    const execution = { ...port(), subscribe: vi.fn(() => unsubscribe) };
+    const controller = new AbortController();
+    const observation = new MemoryAnswerDelivery(execution).observe("task-1", {
+      signal: controller.signal
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    expect(await observation).toMatchObject({ reason: "observer-aborted" });
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(execution.cancel).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("detaches an aborted observer while leaving the execution untouched", async () => {
     vi.useFakeTimers();
     const execution = port();

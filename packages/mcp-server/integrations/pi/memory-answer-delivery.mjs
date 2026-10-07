@@ -31,18 +31,25 @@ const untilAbort = (operation, signal) =>
     if (signal.aborted) onAbort();
   });
 
-const pause = (ms, signal) =>
+// `register` receives a callback that ends the pause early, then undefined once
+// the pause settles.
+const pause = (ms, signal, register) =>
   new Promise((resolve, reject) => {
     if (signal.aborted) return reject(abortError(signal));
     const onAbort = () => {
       clearTimeout(timer);
+      register?.(undefined);
       reject(abortError(signal));
     };
-    const timer = setTimeout(() => {
+    const finish = () => {
+      clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
+      register?.(undefined);
       resolve();
-    }, ms);
+    };
+    const timer = setTimeout(finish, ms);
     signal.addEventListener("abort", onAbort, { once: true });
+    register?.(finish);
   });
 
 const validateTask = (task, taskId) => {
@@ -135,6 +142,16 @@ export class MemoryAnswerDelivery {
     let stopped;
     let pollDelay = this.pollMs;
     let polledTask;
+    // Port notifications are wakeups only: they end the current poll wait and
+    // the next state always comes from a fresh read. A wakeup during a read is
+    // remembered so the following wait is skipped.
+    let unsubscribe;
+    let woken = false;
+    let endPause;
+    const wake = () => {
+      if (endPause) endPause();
+      else woken = true;
+    };
     const detached = (task) => {
       if (signal?.aborted) return detach("observer-aborted");
       if (timedOut || this.now() >= deadline)
@@ -200,6 +217,7 @@ export class MemoryAnswerDelivery {
       return task;
     };
     try {
+      unsubscribe = this.port.subscribe?.(taskId, wake);
       while (true) {
         const before = detached(previous);
         if (before) return before;
@@ -228,14 +246,19 @@ export class MemoryAnswerDelivery {
           pollDelay = this.pollMs;
         }
         polledTask = { version: task.version, status: task.status };
-        await pause(
-          Math.min(
-            pollDelay,
-            deadline - this.now(),
-            Date.parse(task.expiresAt) - this.now()
-          ),
-          controller.signal
-        );
+        if (woken) woken = false;
+        else
+          await pause(
+            Math.min(
+              pollDelay,
+              deadline - this.now(),
+              Date.parse(task.expiresAt) - this.now()
+            ),
+            controller.signal,
+            (finish) => {
+              endPause = finish;
+            }
+          );
         pollDelay = Math.min(Math.max(this.pollMs, 5000), pollDelay * 1.5);
       }
     } catch (error) {
@@ -245,6 +268,7 @@ export class MemoryAnswerDelivery {
       if (expired) return detach("expired");
       throw error;
     } finally {
+      if (typeof unsubscribe === "function") unsubscribe();
       clearTimeout(timer);
       clearTimeout(expiryTimer);
       signal?.removeEventListener("abort", onAbort);
