@@ -149,10 +149,57 @@ describe("MCP logger", () => {
     expect(lines).toHaveLength(4);
     for (const line of lines)
       expect(Buffer.byteLength(line)).toBeLessThan(8192);
+    // The hostile `code` is not on the allowlist, so only safe fields remain.
     expect((JSON.parse(lines[0]!) as { err: unknown }).err).toEqual({
       type: "Error",
-      status: 401
+      name: "Error",
+      status: 401,
+      cause: { type: "Error", name: "Error" }
     });
+  });
+  it("keeps error class names and allowlisted codes, including one cause level", () => {
+    let output = "";
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        output += String(chunk);
+        callback();
+      }
+    });
+    const log = createMcpLogger("error-code-test", {
+      destination,
+      environment: { MEMORY_LOG_LEVEL: "info", NODE_ENV: "test" }
+    });
+    const refused = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:43123 PRIVATE_HOST_DETAIL"),
+      { code: "ECONNREFUSED" }
+    );
+    log.warn({ err: new TypeError("fetch failed", { cause: refused }) }, "x");
+    const renamed = Object.assign(new Error("PRIVATE"), {
+      code: "PRIVATE_CODE_SENTINEL"
+    });
+    Object.defineProperty(renamed, "name", {
+      value: "PRIVATE_NAME_SENTINEL"
+    });
+    log.warn({ err: renamed }, "x");
+    const getterName = new Error("PRIVATE");
+    Object.defineProperty(getterName, "name", {
+      get: () => {
+        throw new Error("PRIVATE_GETTER_SENTINEL");
+      }
+    });
+    expect(() => log.warn({ err: getterName }, "x")).not.toThrow();
+    const lines = output
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { err: unknown }).err);
+    expect(lines[0]).toEqual({
+      type: "Error",
+      name: "TypeError",
+      cause: { type: "Error", name: "Error", code: "ECONNREFUSED" }
+    });
+    expect(lines[1]).toEqual({ type: "Error" });
+    expect(lines[2]).toEqual({ type: "Error" });
+    expect(output).not.toContain("PRIVATE");
   });
   it("does not invoke error getters, toJSON or cyclic causes", () => {
     let output = "";

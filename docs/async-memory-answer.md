@@ -152,9 +152,18 @@ creates a new invocation.
 Task event streams resolve ownership before writing success headers. Scheduler
 notifications only wake an observer; each event and keepalive uses another
 authorized read. Expiry ends observation, resumed versions do not regress, and
-revoked authority never supplies a cached result. HTTP failures preserve their
-status through the Local AI Runtime and client.
+revoked authority never supplies a cached result. Task routes preserve the
+Memory API's denial, not-found and expiry statuses through the Local AI Runtime
+and client, so delivery adapters can stop observing.
 
-Runtime error responses use static messages. MCP diagnostics omit raw exception
-messages, stacks, causes and payloads and bound retained metadata. This does not
-replace task-result authorization or Capture Policy.
+Runtime error responses use static messages. On tool and Desktop Ask routes, a
+Memory API failure is reported as an upstream failure: HTTP 503 when the API is
+unreachable, 429 when it is rate limited, and 502 otherwise, with separate text
+for a rejected API Token. A failed blocking recall reports static text for its
+recorded reason, such as a time limit or cancellation; the raw failure message
+is never returned.
+
+MCP diagnostics omit raw exception messages, stacks, causes and payloads and
+bound retained metadata. They keep error class names, numeric status fields and
+allowlisted system codes such as `ECONNREFUSED`, including one level of cause.
+This does not replace task-result authorization or Capture Policy.

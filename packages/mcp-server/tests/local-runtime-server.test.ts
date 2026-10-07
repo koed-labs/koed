@@ -73,9 +73,9 @@ describe("Local AI Runtime", () => {
         serviceFactory: fixture({
           ...defaultExecutor(),
           execute: async () => {
-            throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE"), {
+            throw new MemoryApiError("PRIVATE_PROVIDER_MESSAGE", {
               status: 429,
-              retryAfterMs
+              retryAfterMs: retryAfterMs as number
             });
           }
         }).serviceFactory
@@ -90,9 +90,170 @@ describe("Local AI Runtime", () => {
           )
         ).rejects.toMatchObject({
           statusCode: 429,
-          message: "Koed Memory Answer queue is full",
+          message: "Koed memory API is busy. Retry later.",
           retryAfterMs: retryAfterMs === 2000 ? 2000 : undefined
         });
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+
+  it("reports the runtime's own full queue separately from an upstream rate limit", async () => {
+    const environment = { KOED_HOME: tempHome() };
+    const runtime = await startLocalAiRuntime({
+      environment,
+      serviceFactory: fixture({
+        ...defaultExecutor(),
+        execute: async () => {
+          throw Object.assign(new Error("PRIVATE"), {
+            statusCode: 429,
+            retryAfterMs: 2000
+          });
+        }
+      }).serviceFactory
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient(environment).callTool(
+          "memory_answer",
+          { query: "decision" },
+          { cwd: "/fixture" }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 429,
+        message: "Koed Memory Answer queue is full",
+        retryAfterMs: 2000
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it.each([
+    [401, 502, "Koed memory API rejected the configured API Token."],
+    [403, 502, "Koed memory API denied this memory operation."],
+    [404, 502, "Koed memory API request failed."],
+    [410, 502, "Koed memory API request failed."],
+    [500, 502, "Koed memory API request failed."],
+    [
+      undefined,
+      503,
+      "Koed memory API is unavailable or did not respond. Check that Koed is running."
+    ]
+  ])(
+    "reports upstream API status %s on tool and Desktop routes as HTTP %s",
+    async (upstream, statusCode, message) => {
+      const environment = { KOED_HOME: tempHome() };
+      const fail = async (): Promise<never> => {
+        throw new MemoryApiError("PRIVATE_UPSTREAM_DETAIL", {
+          status: upstream
+        });
+      };
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: fixture({
+          ...defaultExecutor(),
+          execute: fail,
+          executeDesktopAsk: fail
+        }).serviceFactory
+      });
+      try {
+        const client = new LocalAiRuntimeClient(environment);
+        await expect(
+          client.callTool(
+            "memory_search",
+            { query: "decision" },
+            { cwd: "/fixture" }
+          )
+        ).rejects.toMatchObject({ statusCode, message });
+        const registration = readLocalRuntimeRegistration(environment);
+        const desktop = await fetch(`${runtime.url}/v1/desktop/ask`, {
+          method: "POST",
+          headers: {
+            authorization: registration.authorization,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            input: { idempotencyKey: "ask-1", query: "decision" },
+            caller: { cwd: "/fixture" }
+          })
+        });
+        expect(desktop.status).toBe(statusCode);
+        const body = JSON.stringify(await desktop.json());
+        expect(body).toContain(message);
+        expect(body).not.toContain("PRIVATE");
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+
+  it.each([
+    [
+      "failed",
+      "hard_timeout",
+      500,
+      "Memory Answer exceeded its time limit. Try a narrower question."
+    ],
+    ["failed", "toString", 500, "Memory Answer failed. Try again."],
+    ["cancelled", "cancelled", 409, "Memory Answer was cancelled."]
+  ])(
+    "returns static blocking recall text for a %s task (%s)",
+    async (status, lastErrorCode, statusCode, message) => {
+      const environment = { KOED_HOME: tempHome() };
+      const task = (overrides: Record<string, unknown>) => ({
+        id: "7c07a3cc-5679-4df2-bb67-c86571df93c2",
+        invocationKey: "invocation-1",
+        status: "accepted",
+        version: 1,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        result: null,
+        ...overrides
+      });
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: async ({ apiClient }) => {
+          apiClient.acceptMemoryAnswerTask = vi.fn(async () => ({
+            task: task({})
+          })) as unknown as typeof apiClient.acceptMemoryAnswerTask;
+          apiClient.getMemoryAnswerTask = vi.fn(async () => ({
+            task: task({
+              status,
+              version: 3,
+              lastErrorCode,
+              lastErrorMessage: "PRIVATE_PROVIDER_FAILURE"
+            })
+          })) as unknown as typeof apiClient.getMemoryAnswerTask;
+          apiClient.claimMemoryAnswerTask = vi.fn(async () => ({
+            task: null,
+            reconciled: []
+          }));
+          apiClient.deleteExpiredMemoryAnswerTasks = vi.fn(async () => ({
+            deleted: 0
+          }));
+          return {
+            executor: {
+              ...defaultExecutor(),
+              durableMemoryAnswerEligible: () => true,
+              executeMemoryAnswerTask: vi.fn()
+            },
+            close: vi.fn(async () => undefined)
+          };
+        }
+      });
+      try {
+        await expect(
+          new LocalAiRuntimeClient(environment).callTool(
+            "memory_answer",
+            { query: "decision" },
+            { cwd: "/fixture" },
+            undefined,
+            "invocation-1"
+          )
+        ).rejects.toMatchObject({ statusCode, message });
       } finally {
         await runtime.close();
       }

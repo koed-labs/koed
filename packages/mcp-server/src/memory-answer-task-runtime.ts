@@ -37,6 +37,38 @@ export class MemoryAnswerDetachedIneligibleError extends Error {
   }
 }
 
+/** A blocking recall failure whose message is static and safe to return. */
+export class MemoryAnswerBlockingError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number
+  ) {
+    super(message);
+    this.name = "MemoryAnswerBlockingError";
+  }
+}
+
+// Keyed by the task's bounded error code. The raw failure message can contain
+// provider or memory content, so it is never returned.
+const blockingFailureMessages = new Map<string, string>([
+  [
+    "hard_timeout",
+    "Memory Answer exceeded its time limit. Try a narrower question."
+  ],
+  [
+    "no_progress_timeout",
+    "Memory Answer stopped making progress and was ended. Try again."
+  ],
+  [
+    "shutdown",
+    "Memory Answer stopped because the Local AI Runtime shut down. Try again."
+  ],
+  [
+    "personal_route_changed",
+    "Memory Answer was no longer eligible for Personal execution. Try again."
+  ]
+]);
+
 export class MemoryAnswerTaskRuntime {
   constructor(
     private readonly scheduler: MemoryAnswerTaskScheduler,
@@ -96,22 +128,24 @@ export class MemoryAnswerTaskRuntime {
     );
     const observed = await delivery.observe(task.id, { signal });
     if (observed.kind === "detached") {
-      throw Object.assign(new Error("Koed Memory Answer waiter detached"), {
-        statusCode: observed.reason === "expired" ? 410 : 409
-      });
+      throw observed.reason === "expired"
+        ? new MemoryAnswerBlockingError("Memory Answer task expired", 410)
+        : new MemoryAnswerBlockingError(
+            "Memory Answer observation ended before a result was available",
+            409
+          );
     }
     const terminal = observed.task;
     if (terminal.status === "completed" && terminal.result) {
       return terminal.result;
     }
-    throw Object.assign(
-      new Error(
-        terminal.lastErrorMessage ??
-          (terminal.status === "cancelled"
-            ? "Memory Answer task was cancelled"
-            : "Memory Answer task failed")
-      ),
-      { statusCode: terminal.status === "cancelled" ? 409 : 500 }
+    if (terminal.status === "cancelled") {
+      throw new MemoryAnswerBlockingError("Memory Answer was cancelled.", 409);
+    }
+    throw new MemoryAnswerBlockingError(
+      blockingFailureMessages.get(terminal.lastErrorCode ?? "") ??
+        "Memory Answer failed. Try again.",
+      500
     );
   }
 

@@ -109,18 +109,74 @@ const createMcpLogDestination = (
 };
 
 // Exceptions can contain retrieved memory, provider responses or credentials in
-// any property. Keep only explicitly approved numeric/status metadata.
-const diagnosticError = (value: unknown): Record<string, unknown> => {
+// any property. Keep only explicitly approved numeric/status metadata, error
+// class names, and codes from fixed allowlists. Any other string value, even
+// one shaped like a code, is treated as content.
+const ownValue = (value: object, key: string): unknown => {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+};
+const allowedErrorCodes = new Set([
+  "ABORT_ERR",
+  "EACCES",
+  "EADDRINUSE",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOENT",
+  "ENOTFOUND",
+  "EPERM",
+  "EPIPE",
+  "ERR_HTTP_HEADERS_SENT",
+  "ERR_STREAM_PREMATURE_CLOSE",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET"
+]);
+const allowedTaskErrorCodes = new Set(["personal_route_changed"]);
+const diagnosticError = (
+  value: unknown,
+  includeCause = true
+): Record<string, unknown> => {
   const result: Record<string, unknown> = { type: "Error" };
   if (!value || typeof value !== "object") return result;
   try {
+    // `name` is usually inherited from the class prototype. Read data
+    // descriptors only, so no getter runs. Only class-shaped names (for
+    // example MemoryApiError) are kept.
+    let name: unknown;
+    for (
+      let target: object | null = value, depth = 0;
+      target && depth < 8 && name === undefined;
+      target = Object.getPrototypeOf(target) as object | null, depth += 1
+    ) {
+      const descriptor = Object.getOwnPropertyDescriptor(target, "name");
+      if (descriptor) name = "value" in descriptor ? descriptor.value : null;
+    }
+    if (
+      typeof name === "string" &&
+      /^(?:[A-Z][A-Za-z0-9]{0,58})?Error$/.test(name)
+    )
+      result.name = name;
     for (const key of ["status", "statusCode", "retryAfterMs"]) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      const field: unknown =
-        descriptor && "value" in descriptor ? descriptor.value : undefined;
+      const field = ownValue(value, key);
       if (typeof field === "number" && Number.isFinite(field))
         result[key] = field;
     }
+    const code = ownValue(value, "code");
+    if (typeof code === "string" && allowedErrorCodes.has(code))
+      result.code = code;
+    const taskCode = ownValue(value, "memoryAnswerTaskErrorCode");
+    if (typeof taskCode === "string" && allowedTaskErrorCodes.has(taskCode))
+      result.memoryAnswerTaskErrorCode = taskCode;
+    const cause = ownValue(value, "cause");
+    if (includeCause && cause && typeof cause === "object")
+      result.cause = diagnosticError(cause, false);
   } catch {
     return { type: "Error" };
   }

@@ -35,6 +35,7 @@ import { startCuratedMemoryReviewService } from "./curated-memory-review-service
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
   MemoryApiClient,
+  MemoryApiError,
   defaultConfig,
   type McpServerConfig
 } from "./index.js";
@@ -59,9 +60,112 @@ import {
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
 import {
+  MemoryAnswerBlockingError,
   MemoryAnswerTaskRuntime,
   MemoryAnswerDetachedIneligibleError
 } from "./memory-answer-task-runtime.js";
+
+const httpErrorStatus = (value: unknown): number | undefined =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 400 &&
+  value <= 599
+    ? value
+    : undefined;
+
+const boundedRetryAfterMs = (value: unknown): number | undefined =>
+  typeof value === "number" &&
+  Number.isSafeInteger(value) &&
+  value > 0 &&
+  value <= 300_000
+    ? value
+    : undefined;
+
+const runtimeStatusMessages = new Map<number, string>([
+  [400, "Invalid local AI runtime request"],
+  [401, "Local AI runtime access denied"],
+  [403, "Local AI runtime operation forbidden"],
+  [404, "Memory Answer task not found"],
+  [410, "Memory Answer task expired"],
+  [413, "Local AI runtime request body is too large"],
+  [429, "Koed Memory Answer queue is full"]
+]);
+
+interface RuntimeFailure {
+  statusCode: number;
+  message: string;
+  errorCode?: string;
+  retryAfterMs?: number;
+}
+
+// Error bodies use static text only: exception messages can carry memory,
+// provider or credential content. Runtime-owned errors set `statusCode`.
+// Memory API errors carry `.status`; task routes pass it through so delivery
+// adapters can stop on denial or expiry, and other routes report an upstream
+// API failure instead of runtime or task wording.
+const runtimeFailure = (error: unknown, taskRoute: boolean): RuntimeFailure => {
+  const record =
+    error && typeof error === "object"
+      ? (error as { statusCode?: unknown; retryAfterMs?: unknown })
+      : {};
+  const retryAfterMs = boundedRetryAfterMs(record.retryAfterMs);
+  const withRetry = (failure: RuntimeFailure): RuntimeFailure =>
+    failure.statusCode === 429 && retryAfterMs !== undefined
+      ? { ...failure, retryAfterMs }
+      : failure;
+  if (error instanceof MemoryAnswerBlockingError) {
+    return { statusCode: error.statusCode, message: error.message };
+  }
+  const ownedStatus = httpErrorStatus(record.statusCode);
+  if (ownedStatus !== undefined) {
+    return withRetry({
+      statusCode: ownedStatus,
+      message:
+        runtimeStatusMessages.get(ownedStatus) ??
+        "Local AI runtime request failed",
+      ...(error instanceof MemoryAnswerDetachedIneligibleError
+        ? { errorCode: error.code }
+        : {})
+    });
+  }
+  if (error instanceof MemoryApiError) {
+    const upstreamStatus = httpErrorStatus(error.status);
+    if (taskRoute && upstreamStatus !== undefined) {
+      return withRetry({
+        statusCode: upstreamStatus,
+        message:
+          runtimeStatusMessages.get(upstreamStatus) ??
+          "Local AI runtime request failed"
+      });
+    }
+    if (upstreamStatus === undefined) {
+      return {
+        statusCode: 503,
+        message:
+          "Koed memory API is unavailable or did not respond. Check that Koed is running."
+      };
+    }
+    if (upstreamStatus === 429) {
+      return withRetry({
+        statusCode: 429,
+        message: "Koed memory API is busy. Retry later."
+      });
+    }
+    return {
+      statusCode: 502,
+      message:
+        upstreamStatus === 401
+          ? "Koed memory API rejected the configured API Token."
+          : upstreamStatus === 403
+            ? "Koed memory API denied this memory operation."
+            : "Koed memory API request failed."
+    };
+  }
+  if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    return { statusCode: 400, message: "Invalid local AI runtime request" };
+  }
+  return { statusCode: 500, message: "Local AI runtime request failed" };
+};
 
 export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
 export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
@@ -692,56 +796,24 @@ export const startLocalAiRuntime = async ({
         }
       } catch (error) {
         if (requestAbort.signal.aborted) return;
-        const errorStatus =
-          error && typeof error === "object"
-            ? (error as { statusCode?: unknown; status?: unknown })
-            : {};
-        const suppliedStatus = errorStatus.statusCode ?? errorStatus.status;
-        const statusCode =
-          typeof suppliedStatus === "number" &&
-          Number.isInteger(suppliedStatus) &&
-          suppliedStatus >= 400 &&
-          suppliedStatus <= 599
-            ? suppliedStatus
-            : error instanceof z.ZodError || error instanceof SyntaxError
-              ? 400
-              : 500;
+        const failure = runtimeFailure(
+          error,
+          (request.url ?? "").startsWith("/v1/tasks/")
+        );
         logger.warn(
-          { err: error, statusCode },
+          { err: error, statusCode: failure.statusCode },
           "local AI runtime request failed"
         );
         if (response.headersSent) {
           response.end();
           return;
         }
-        json(response, statusCode, {
-          ...(error instanceof MemoryAnswerDetachedIneligibleError
-            ? { errorCode: error.code }
+        json(response, failure.statusCode, {
+          ...(failure.errorCode ? { errorCode: failure.errorCode } : {}),
+          ...(failure.retryAfterMs !== undefined
+            ? { retryAfterMs: failure.retryAfterMs }
             : {}),
-          ...(statusCode === 429 &&
-          error &&
-          typeof error === "object" &&
-          "retryAfterMs" in error &&
-          typeof error.retryAfterMs === "number" &&
-          Number.isSafeInteger(error.retryAfterMs) &&
-          error.retryAfterMs > 0 &&
-          error.retryAfterMs <= 300_000
-            ? { retryAfterMs: error.retryAfterMs }
-            : {}),
-          error:
-            statusCode === 401
-              ? "Local AI runtime access denied"
-              : statusCode === 403
-                ? "Local AI runtime operation forbidden"
-                : statusCode === 404
-                  ? "Memory Answer task not found"
-                  : statusCode === 410
-                    ? "Memory Answer task expired"
-                    : statusCode === 429
-                      ? "Koed Memory Answer queue is full"
-                      : statusCode === 400
-                        ? "Invalid local AI runtime request"
-                        : "Local AI runtime request failed"
+          error: failure.message
         });
       } finally {
         activeRequests.delete(requestAbort);
