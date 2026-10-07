@@ -1,0 +1,1195 @@
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { builtinModules } from "node:module";
+import enhancedResolve from "enhanced-resolve";
+import ts from "typescript";
+import {
+  assertNoClaudeAgentSdkPlatformRuntimes,
+  removeClaudeAgentSdkPlatformRuntimes
+} from "./provider-runtime-package-policy.mjs";
+import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
+import { pruneTerminalRuntimeForTarget } from "./terminal-runtime-package-policy.mjs";
+import {
+  pruneSharedAppRuntimeMetadata,
+  stageSharedAppRuntime
+} from "./app-runtime-staging.mjs";
+
+const servicePackages = {
+  api: "@koed/api",
+  worker: "@koed/worker",
+  "embedding-service": "@koed/embedding-service",
+  "mcp-server": "@koed/mcp-server",
+  "koed-server": "@koed-labs/server",
+  "privacy-service": "@koed/privacy-service"
+};
+const baseServices = [
+  "api",
+  "worker",
+  "embedding-service",
+  "mcp-server",
+  "koed-server"
+];
+const privacyServices = ["privacy-service"];
+const licensePattern = /^(?:licen[cs]e|notice|copying)(?:\.|$)/i;
+
+const readManifest = (path) => JSON.parse(readFileSync(path, "utf8"));
+
+const resolveDependency = (sourceRoot, packageRoot, name) => {
+  let current = packageRoot;
+  while (current.startsWith(sourceRoot)) {
+    const candidate = resolve(current, "node_modules", name);
+    if (existsSync(resolve(candidate, "package.json"))) return candidate;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw new Error(
+    `Runtime dependency ${name} from ${packageRoot} is unresolved.`
+  );
+};
+
+const packageClosure = (sourceRoot, rootNames, excludedPackages = []) => {
+  const excluded = new Set(excludedPackages);
+  const visited = new Map();
+  const visit = (packageRoot) => {
+    const manifestPath = resolve(packageRoot, "package.json");
+    const manifest = readManifest(manifestPath);
+    if (!manifest.name || !manifest.version) {
+      throw new Error(
+        `Runtime package manifest lacks name/version: ${manifestPath}`
+      );
+    }
+    const identity = `${resolve(packageRoot)}\0${manifest.version}`;
+    if (visited.has(identity)) return;
+    visited.set(identity, { packageRoot, manifest });
+    const dependencies = Object.entries(manifest.dependencies ?? {}).map(
+      ([name]) => ({ name, optional: false })
+    );
+    dependencies.push(
+      ...Object.keys(manifest.optionalDependencies ?? {}).map((name) => ({
+        name,
+        optional: true
+      }))
+    );
+    dependencies.push(
+      ...Object.keys(manifest.peerDependencies ?? {}).map((name) => ({
+        name,
+        optional: manifest.peerDependenciesMeta?.[name]?.optional === true
+      }))
+    );
+    for (const { name, optional } of dependencies.sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      let dependencyRoot;
+      try {
+        dependencyRoot = resolveDependency(sourceRoot, packageRoot, name);
+      } catch (error) {
+        if (!optional && !excluded.has(name)) throw error;
+        continue;
+      }
+      visit(dependencyRoot);
+    }
+  };
+  for (const name of rootNames) {
+    visit(
+      resolveDependency(sourceRoot, resolve(sourceRoot, "node_modules"), name)
+    );
+  }
+  return [...visited.values()];
+};
+
+const assertSafeTree = (root) => {
+  const invalid = [];
+  if (lstatSync(root).isSymbolicLink()) invalid.push(root);
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+        invalid.push(path);
+      } else if (stat.isDirectory()) visit(path);
+    }
+  };
+  visit(root);
+  if (invalid.length) {
+    throw new Error(
+      `Component assembly contains unsupported entries:\n${invalid.slice(0, 20).join("\n")}`
+    );
+  }
+};
+
+const assertTargetPolicies = (componentRoot, platform, architecture) => {
+  assertNoClaudeAgentSdkPlatformRuntimes(componentRoot);
+  const prebuildsRoot = resolve(
+    componentRoot,
+    "node_modules/node-pty/prebuilds"
+  );
+  if (!existsSync(prebuildsRoot)) return;
+  const expected = `${platform === "macos" ? "darwin" : platform === "windows" ? "win32" : platform}-${architecture}`;
+  const targets = readdirSync(prebuildsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const expectedTargets = [
+    "darwin-arm64",
+    "darwin-x64",
+    "win32-arm64",
+    "win32-x64"
+  ].includes(expected)
+    ? [expected]
+    : [];
+  if (
+    targets.length !== expectedTargets.length ||
+    targets.some((target) => !expectedTargets.includes(target))
+  ) {
+    throw new Error(
+      `Component assembly contains node-pty targets outside ${expected}: ${targets.join(", ")}.`
+    );
+  }
+};
+
+const copyPackage = (sourceRoot, componentRoot, packageRoot) => {
+  const relativePath = relative(
+    resolve(sourceRoot, "node_modules"),
+    packageRoot
+  );
+  if (relativePath.startsWith(`..${sep}`) || relativePath === "..") {
+    throw new Error(`Runtime package escapes node_modules: ${packageRoot}`);
+  }
+  const target = resolve(componentRoot, "node_modules", relativePath);
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(packageRoot, target, {
+    recursive: true,
+    dereference: false,
+    errorOnExist: true
+  });
+};
+
+const componentFiles = (root) => {
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else files.push(relative(root, path).replaceAll("\\", "/"));
+    }
+  };
+  visit(root);
+  return files.sort();
+};
+
+const dynamicImportOwnership = (packageName, file, edge) => {
+  if (
+    packageName === "node-gyp-build-optional-packages" &&
+    file === "node-gyp-build.js" &&
+    edge.loader === "createRequire" &&
+    edge.call === "createRequire" &&
+    edge.argumentText === "url.pathToFileURL(path.join(dir, 'package.json'))"
+  )
+    return "optional-native-platform-package-probe";
+  if (
+    packageName === "node-gyp-build-optional-packages" &&
+    file === "node-gyp-build.js" &&
+    edge.loader === "require.resolve" &&
+    edge.call ===
+      "require('module').createRequire(url.pathToFileURL(path.join(dir, 'package.json'))).resolve" &&
+    edge.argumentText === "platformPackage"
+  )
+    return "optional-native-platform-package-probe";
+  if (
+    packageName === "pino" &&
+    file === "lib/transport.js" &&
+    ((edge.loader === "createRequire" &&
+      edge.call === "createRequire" &&
+      edge.argumentText === "context") ||
+      (edge.loader === "require.resolve" &&
+        edge.call === "createRequire(context).resolve" &&
+        edge.argumentText === "origin"))
+  )
+    return "pino-caller-selected-transport-resolver";
+  if (
+    packageName === "@anthropic-ai/claude-agent-sdk" &&
+    file === "sdk.mjs" &&
+    ((edge.loader === "createRequire" &&
+      edge.call === "IMe" &&
+      edge.argumentText === "yr") ||
+      (edge.loader === "require.resolve" &&
+        edge.call === "Xr.resolve" &&
+        edge.argumentText === "mi"))
+  )
+    return "claude-sdk-optional-platform-cli-probe";
+  if (/(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/.test(file))
+    return "excluded-test-file";
+  if (packageName === "bullmq" && /classes\/child-processor\.js$/.test(file))
+    return "base-runtime-path";
+  if (
+    packageName === "real-require" &&
+    (file === "src/index.js" || file.endsWith("/src/index.js"))
+  )
+    return "declared-package-runtime";
+  if (packageName === "node-pty" && file === "lib/utils.js")
+    return "declared-native-loader-runtime-edge";
+  if (packageName === "express" && file === "lib/view.js")
+    return "optional-view-engine-runtime-edge";
+  if (packageName === "onnxruntime-node" && file === "dist/binding.js")
+    return "platform-selected-native-addon-loader";
+  if (
+    packageName === "sharp" &&
+    ["lib/sharp.js", "lib/utility.js"].includes(file)
+  )
+    return "platform-selected-native-addon-loader";
+  if (packageName === "sharp" && file === "lib/libvips.js")
+    return "optional-libvips-package-probes";
+  if (
+    packageName === "@koed/privacy-service" &&
+    file === "dist/validation-cache.js"
+  )
+    return "maintained-local-source-file-set";
+  if (packageName === "qs" && file === "dist/qs.js")
+    return "bundled-commonjs-module-loader";
+  if (
+    packageName === "@huggingface/transformers" &&
+    [
+      "dist/transformers.node.cjs",
+      "dist/transformers.node.min.cjs",
+      "dist/transformers.node.mjs"
+    ].includes(file) &&
+    edge.loader === "require.apply" &&
+    edge.call === "require.apply" &&
+    edge.argumentText === "arguments"
+  )
+    return "bundled-commonjs-loader-helper";
+  if (
+    packageName === "@huggingface/transformers" &&
+    [
+      "dist/transformers.node.cjs",
+      "dist/transformers.node.min.cjs",
+      "dist/transformers.node.mjs"
+    ].includes(file) &&
+    edge.loader === "import" &&
+    /^[A-Za-z_$][\w$]*$/.test(edge.argumentText ?? "")
+  )
+    return "optional-worker-module-import";
+  if (packageName === "hono" && /utils\/color\.js$/.test(file))
+    return "optional-platform-module";
+  if (packageName === "@koed/privacy-service" && file === "dist/runtime.js")
+    return "declared-provider-dependency";
+  if (
+    packageName === "@koed/mcp-server" &&
+    file === "integrations/pi/managed-rpc-host.mjs"
+  )
+    return "external-ai-client-sdk-path";
+  if (
+    packageName === "@koed-labs/server" &&
+    ["dist/local-api-token.js", "dist/privacy-service-bootstrap.js"].includes(
+      file
+    )
+  )
+    return "selected-runtime-component-path";
+  if (packageName === "fast-json-stringify" && file === "lib/standalone.js")
+    return "runtime-generated-standalone-requires";
+  return null;
+};
+
+const maintainedRuntimeEdgeMetadata = (owner) => {
+  if (owner === "optional-native-platform-package-probe")
+    return {
+      rationale:
+        "node-gyp-build-optional-packages derives one platform/architecture package name and resolves it as an optional native prebuild fallback.",
+      limit:
+        "The selected @msgpackr-extract package is accepted only when msgpackr-extract declares it optional and closure includes a declared platform package; other computed targets remain unresolved."
+    };
+  if (owner === "pino-caller-selected-transport-resolver")
+    return {
+      rationale:
+        "Pino resolves configured transport origins relative to caller paths with createRequire(context). No transport is configured by Koed logger; target is caller-owned, not bundled.",
+      limit:
+        "If Koed configures a Pino transport, its selected target must be separately declared and verified in component closure before use. This owner does not include arbitrary caller targets."
+    };
+  if (owner === "claude-sdk-optional-platform-cli-probe")
+    return {
+      rationale:
+        "Claude Agent SDK derives its own module-relative require and resolves only fixed platform/architecture CLI package candidates before existsSync checks.",
+      limit:
+        "Only sdk.mjs expressions IMe(yr) and Xr.resolve(mi) are owned. Platform CLI runtime packages are deliberately removed and asserted absent; arbitrary require targets remain unresolved."
+    };
+  return {};
+};
+
+const hasClosureOwnedOptionalNativePackage = (closure) => {
+  const addon = closure.find(
+    ({ manifest }) => manifest.name === "msgpackr-extract"
+  );
+  if (!addon) return false;
+  const declared = Object.keys(
+    addon.manifest.optionalDependencies ?? {}
+  ).filter((name) => name.startsWith("@msgpackr-extract/msgpackr-extract-"));
+  return declared.some((name) =>
+    closure.some((entry) => entry.manifest.name === name)
+  );
+};
+
+const sourceAuditExclusion = (packageName, file) => {
+  if (
+    [
+      "@fastify/cookie",
+      "fastify-plugin",
+      "@fastify/cors",
+      "@fastify/websocket",
+      "fastify",
+      "@fastify/ajv-compiler",
+      "fast-uri",
+      "@fastify/error",
+      "@fastify/fast-json-stringify-compiler",
+      "fast-json-stringify",
+      "@fastify/merge-json-schemas",
+      "json-schema-ref-resolver",
+      "@fastify/proxy-addr",
+      "avvio",
+      "fastq",
+      "reusify",
+      "safe-regex2",
+      "light-my-request",
+      "process-warning",
+      "pino",
+      "@pinojs/redact",
+      "pino-std-serializers",
+      "thread-stream",
+      "secure-json-parse",
+      "qs",
+      "es-define-property",
+      "side-channel",
+      "es-errors",
+      "object-inspect",
+      "side-channel-list",
+      "side-channel-map",
+      "call-bound",
+      "call-bind-apply-helpers",
+      "function-bind",
+      "get-intrinsic",
+      "es-object-atoms",
+      "get-proto",
+      "dunder-proto",
+      "gopd",
+      "has-symbols",
+      "hasown",
+      "globalthis",
+      "define-data-property",
+      "has-property-descriptors",
+      "object-keys",
+      "json-stringify-safe",
+      "semver-compare"
+    ].includes(packageName) &&
+    /^eslint\.config\.[cm]?js$/.test(file)
+  )
+    return "package-local ESLint configuration, not a runtime entrypoint";
+  if (
+    [
+      ["pg-types", "test/index.js"],
+      ["isexe", "test/basic.js"],
+      ["fastify", "test/build-certificate.js"],
+      ["fastify", "test/input-validation.js"],
+      ["fastify", "examples/parser.js"],
+      ["fastq", "test/promise.js"],
+      ["rfdc", "test/index.js"],
+      ["node-abort-controller", "__tests__/node-fetch.js"],
+      ["node-abort-controller", "__tests__/whatwg-fetch.js"],
+      ["pino", "test/fixtures/syntax-error-esm.mjs"],
+      ["pino", "test/fixtures/ts/transpile.cjs"],
+      ["pino", "test/helper.js"],
+      ["sonic-boom", "test/helper.js"],
+      ["thread-stream", "test/syntax-error.mjs"],
+      ["qs", "test/parse.js"],
+      ["duplexify", "test.js"],
+      ["stream-shift", "test.js"],
+      ["xtend", "test.js"],
+      ["split2", "test.js"],
+      ["node-gyp-build", "build-test.js"],
+      ["node-gyp-build-optional-packages", "build-test.js"],
+      ["msgpackr", "dist/test.js"],
+      ["pg-protocol", "dist/inbound-parser.test.js"],
+      ["pg-protocol", "dist/outbound-serializer.test.js"],
+      ["@fastify/cookie", "benchmark/signer-multi.js"],
+      ["@fastify/cookie", "benchmark/signer.js"],
+      ["@fastify/cors", "benchmark/vary.js"],
+      ["fastify", "examples/benchmark/parser.js"],
+      ["@fastify/ajv-compiler", "benchmark/small-object.mjs"],
+      ["fast-uri", "benchmark/benchmark.mjs"],
+      ["fast-uri", "benchmark/equal.mjs"],
+      ["fast-uri", "benchmark/non-simple-domain.mjs"],
+      ["fast-uri", "benchmark/string-array-to-hex-stripped.mjs"],
+      ["fast-uri", "benchmark/ws-is-secure.mjs"],
+      ["@fastify/error", "benchmarks/create.js"],
+      ["@fastify/error", "benchmarks/instantiate.js"],
+      ["@fastify/error", "benchmarks/no-stack.js"],
+      ["@fastify/error", "benchmarks/toString.js"],
+      ["fast-json-stringify", "benchmark/bench-cmp-branch.js"],
+      ["fastq", "bench.js"],
+      ["reusify", "test.js"],
+      ["find-my-way", "benchmark/bench-thread.js"],
+      ["find-my-way", "benchmark/compare-branches.js"],
+      ["find-my-way", "benchmark/uri-decoding.js"],
+      ["@fastify/proxy-addr", "benchmark/compiling.js"],
+      ["@fastify/proxy-addr", "benchmark/kind.js"],
+      ["@fastify/proxy-addr", "benchmark/matching.js"],
+      ["fast-decode-uri-component", "bench.js"],
+      ["fast-decode-uri-component", "test.js"],
+      ["light-my-request", "benchmark/benchmark.js"],
+      ["process-warning", "benchmarks/warn.js"],
+      ["pino", "benchmarks/basic.bench.js"],
+      ["pino", "benchmarks/child-child.bench.js"],
+      ["pino", "benchmarks/child-creation.bench.js"],
+      ["pino", "benchmarks/child.bench.js"],
+      ["@pinojs/redact", "benchmarks/basic.js"],
+      ["quick-format-unescaped", "benchmark.js"],
+      ["sonic-boom", "bench.js"],
+      ["thread-stream", "bench.js"],
+      ["atomic-sleep", "test.js"],
+      ["node-pty", "lib/windowsTerminal.test.js"],
+      ["@stablelib/base64", "lib/base64.bench.js"],
+      ["object-inspect", "test-core-js.js"]
+    ].some(([name, path]) => packageName === name && file === path) ||
+    ([
+      "qs",
+      "object-inspect",
+      "es-define-property",
+      "side-channel",
+      "es-errors",
+      "side-channel-list",
+      "side-channel-map",
+      "call-bound",
+      "call-bind-apply-helpers",
+      "function-bind",
+      "get-intrinsic",
+      "es-object-atoms",
+      "get-proto",
+      "dunder-proto",
+      "gopd",
+      "has-symbols",
+      "math-intrinsics",
+      "side-channel-weakmap",
+      "retry",
+      "globalthis",
+      "define-data-property",
+      "has-property-descriptors",
+      "object-keys",
+      "json-stringify-safe",
+      "semver-compare",
+      "@fastify/cookie",
+      "fastify-plugin",
+      "@fastify/cors",
+      "fastify",
+      "@fastify/ajv-compiler",
+      "fast-uri",
+      "@fastify/fast-json-stringify-compiler",
+      "fast-json-stringify",
+      "fastq",
+      "find-my-way",
+      "light-my-request",
+      "process-warning",
+      "pino",
+      "@pinojs/redact",
+      "on-exit-leak-free",
+      "pino-abstract-transport",
+      "pino-std-serializers",
+      "sonic-boom",
+      "thread-stream",
+      "atomic-sleep",
+      "secure-json-parse",
+      "object-inspect"
+    ].includes(packageName) &&
+      file.startsWith("test/")) ||
+    (packageName === "secure-json-parse" && file.startsWith("benchmarks/")) ||
+    ([
+      "fast-uri",
+      "fast-json-stringify",
+      "@fastify/proxy-addr",
+      "find-my-way",
+      "light-my-request"
+    ].includes(packageName) &&
+      file.startsWith("benchmark/")) ||
+    (packageName === "process-warning" && file.startsWith("benchmarks/")) ||
+    (["pino", "@pinojs/redact"].includes(packageName) &&
+      file.startsWith("benchmarks/")) ||
+    (packageName === "@fastify/error" && file.startsWith("benchmarks/"))
+  )
+    return "package test, example, or benchmark fixture, not a runtime entrypoint";
+  if (
+    packageName === "json-schema-to-ts" &&
+    /^(?:lib\/esm|lib\/types)\//.test(file)
+  )
+    return "type-level JSON Schema utility distribution; no runtime module consumers in component graph";
+  if (packageName === "bullmq" && file.startsWith("dist/esm/"))
+    return "BullMQ package has no exports map; Node main selects dist/cjs/index.js, while dist/esm is bundler-only module output";
+  if (packageName === "json-canonicalize" && /^(?:esm5|esm2015)\//.test(file))
+    return "unselected bundler module entrypoint; Node main selects bundles";
+  if (packageName === "ts-algebra" && file.startsWith("lib/"))
+    return "type-level library entrypoint; no Node runtime consumers in component graph";
+  if (packageName === "safer-buffer" && file === "tests.js")
+    return "test-entrypoint";
+  if (
+    packageName === "@anthropic-ai/claude-agent-sdk" &&
+    file === "browser-sdk.js"
+  )
+    return "non-node-browser-sdk-bundle";
+  if (packageName === "global-agent" && file.startsWith("src/"))
+    return "uncompiled-flow-source-not-package-entrypoint";
+  if (
+    packageName === "drizzle-orm" &&
+    /^(?:bun-sql|bun-sqlite|expo-sqlite|op-sqlite)\//.test(file)
+  )
+    return "non-node-platform-entrypoint";
+  if (packageName === "pg-cloudflare" && file === "dist/index.js")
+    return "cloudflare-platform-entrypoint";
+  if (packageName === "split2" && file === "bench.js")
+    return "benchmark-entrypoint";
+  if (packageName === "node-addon-api" && file.startsWith("tools/"))
+    return "build-tooling";
+  if (
+    ["node-gyp-build", "node-gyp-build-optional-packages"].includes(
+      packageName
+    ) &&
+    file === "bin.js"
+  )
+    return "build-cli-entrypoint";
+  if (packageName === "semver" && file === "bin/semver.js")
+    return "cli-entrypoint";
+  if (packageName === "msgpackr" && file === "rollup.config.js")
+    return "build-tooling";
+  if (
+    packageName === "@huggingface/transformers" &&
+    [
+      "dist/transformers.js",
+      "dist/transformers.min.js",
+      "dist/transformers.web.js",
+      "dist/transformers.web.min.js",
+      "dist/transformers.node.min.mjs",
+      "dist/ort-wasm-simd-threaded.jsep.mjs"
+    ].includes(file)
+  )
+    return "non-selected-transformers-runtime-target";
+  if (
+    packageName === "onnxruntime-node" &&
+    ["script/build.js", "script/prepack.js"].includes(file)
+  )
+    return "native-addon-build-tooling";
+  if (packageName === "sharp" && file.startsWith("install/"))
+    return "native-addon-install-tooling";
+  if (packageName === "@koed/mcp-server" && file.startsWith("integrations/pi/"))
+    return "external-pi-integration";
+  return null;
+};
+
+const sourceFiles = (root) => {
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory() && entry.name !== "node_modules") visit(path);
+      else if (entry.isFile() && /\.(?:[cm]?js)$/.test(entry.name))
+        files.push(path);
+    }
+  };
+  visit(root);
+  return files;
+};
+
+const referenceEdges = (source) => {
+  const file = ts.createSourceFile(
+    "runtime.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const edges = [];
+  const createRequireBindings = new Set();
+  const createRequireNamespaces = new Set();
+  const requireBindings = new Set(["require"]);
+  const isImportMetaUrl = (node) =>
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "url" &&
+    ts.isMetaProperty(node.expression) &&
+    node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    node.expression.name.text === "meta";
+  const moduleRequire = (node) =>
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "require" &&
+    node.arguments[0] &&
+    ts.isStringLiteral(node.arguments[0]) &&
+    ["module", "node:module"].includes(node.arguments[0].text);
+  for (const statement of file.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      ["module", "node:module"].includes(statement.moduleSpecifier.text)
+    ) {
+      if (ts.isImportClause(statement.importClause)) {
+        const bindings = statement.importClause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements)
+            if ((element.propertyName ?? element.name).text === "createRequire")
+              createRequireBindings.add(element.name.text);
+        } else if (bindings && ts.isNamespaceImport(bindings)) {
+          createRequireNamespaces.add(bindings.name.text);
+        }
+      }
+    }
+  }
+  const isCreateRequireFactory = (expression) =>
+    (ts.isIdentifier(expression) &&
+      createRequireBindings.has(expression.text)) ||
+    (ts.isPropertyAccessExpression(expression) &&
+      expression.name.text === "createRequire" &&
+      ((ts.isIdentifier(expression.expression) &&
+        createRequireNamespaces.has(expression.expression.text)) ||
+        moduleRequire(expression.expression)));
+  const collectBindings = (node) => {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const initializer = node.initializer;
+      const isFactory =
+        ts.isCallExpression(initializer) &&
+        isCreateRequireFactory(initializer.expression);
+      if (isFactory && ts.isIdentifier(node.name))
+        requireBindings.add(node.name.text);
+      if (moduleRequire(initializer) && ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements)
+          if (
+            (element.propertyName ?? element.name).getText(file) ===
+            "createRequire"
+          )
+            createRequireBindings.add(element.name.getText(file));
+      }
+    }
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(file);
+  const literalValue = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      return node.text;
+    if (ts.isParenthesizedExpression(node))
+      return literalValue(node.expression);
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.PlusToken
+    ) {
+      const left = literalValue(node.left);
+      const right = literalValue(node.right);
+      return left === null || right === null ? null : left + right;
+    }
+    return null;
+  };
+  const specifier = (
+    node,
+    kind = "literal",
+    loader = "import",
+    call = null
+  ) => {
+    const literal = node && literalValue(node);
+    if (literal !== null) edges.push({ kind, specifier: literal, loader });
+    else
+      edges.push({
+        kind: kind === "literal" ? "dynamic" : kind,
+        loader,
+        call,
+        argumentText: node?.getText(file)
+      });
+  };
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier
+    ) {
+      specifier(node.moduleSpecifier, "literal", "import");
+    } else if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      const directCreateRequire =
+        ts.isCallExpression(expression) &&
+        isCreateRequireFactory(expression.expression) &&
+        expression.arguments.length === 1 &&
+        isImportMetaUrl(expression.arguments[0]);
+      const directCreateRequireResolve =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "resolve" &&
+        ts.isCallExpression(expression.expression) &&
+        isCreateRequireFactory(expression.expression.expression) &&
+        expression.expression.arguments.length === 1 &&
+        isImportMetaUrl(expression.expression.arguments[0]);
+      const callerCreateRequireResolve =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "resolve" &&
+        ts.isCallExpression(expression.expression) &&
+        isCreateRequireFactory(expression.expression.expression) &&
+        expression.expression.arguments.length === 1 &&
+        !isImportMetaUrl(expression.expression.arguments[0]);
+      const aliasRequire =
+        ts.isIdentifier(expression) && requireBindings.has(expression.text);
+      const loader = aliasRequire
+        ? "require"
+        : ts.isPropertyAccessExpression(expression) &&
+            ts.isIdentifier(expression.expression) &&
+            requireBindings.has(expression.expression.text) &&
+            expression.name.text === "resolve"
+          ? "require.resolve"
+          : ts.isMetaProperty(expression) &&
+              expression.keywordToken === ts.SyntaxKind.ImportKeyword
+            ? "import.meta"
+            : null;
+      const isImport = expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequireApply =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "apply" &&
+        ts.isIdentifier(expression.expression) &&
+        requireBindings.has(expression.expression.text);
+      const isMetaResolve =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "resolve" &&
+        expression.expression.getText(file) === "import.meta";
+      if (
+        isImport ||
+        loader ||
+        directCreateRequireResolve ||
+        callerCreateRequireResolve ||
+        isMetaResolve ||
+        isRequireApply ||
+        directCreateRequire
+      ) {
+        const argument = directCreateRequire
+          ? node.arguments[0]
+          : isRequireApply
+            ? node.arguments[1]
+            : node.arguments[0];
+        const callLoader = directCreateRequire
+          ? "require"
+          : directCreateRequireResolve || callerCreateRequireResolve
+            ? "require.resolve"
+            : isRequireApply
+              ? "require.apply"
+              : isImport
+                ? "import"
+                : (loader ?? "import.meta.resolve");
+        if (argument)
+          specifier(argument, "literal", callLoader, expression.getText(file));
+        else edges.push({ kind: "dynamic", loader: callLoader });
+      } else if (
+        isCreateRequireFactory(expression) &&
+        node.arguments.length &&
+        !isImportMetaUrl(node.arguments[0])
+      ) {
+        edges.push({
+          kind: "dynamic",
+          loader: "createRequire",
+          call: ts.isPropertyAccessExpression(expression)
+            ? expression.name.text
+            : expression.getText(file),
+          argumentText: node.arguments[0].getText(file)
+        });
+      }
+    } else if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "URL" &&
+      node.arguments?.length === 2 &&
+      isImportMetaUrl(node.arguments[1])
+    ) {
+      specifier(node.arguments[0], "asset", "asset");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return { edges, diagnostics: file.parseDiagnostics };
+};
+
+const nodeResolvers = new Map();
+const nodeResolver = (loader) => {
+  const kind =
+    loader === "require" ||
+    loader === "require.resolve" ||
+    loader === "require.apply"
+      ? "require"
+      : "import";
+  if (!nodeResolvers.has(kind)) {
+    nodeResolvers.set(
+      kind,
+      enhancedResolve.create.sync({
+        conditionNames: ["node", "node-addons", kind, "default"],
+        extensions: [".js", ".mjs", ".cjs", ".json", ".node"],
+        fullySpecified: kind === "import",
+        mainFields: ["main"],
+        exportsFields: ["exports"],
+        importsFields: ["imports"]
+      })
+    );
+  }
+  return nodeResolvers.get(kind);
+};
+
+const isWithin = (root, path) => {
+  const canonicalRoot = realpathSync(root);
+  const canonicalPath = realpathSync(path);
+  const relativePath = relative(canonicalRoot, canonicalPath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith(`..${sep}`) && relativePath !== "..")
+  );
+};
+
+const resolveNodeEdge = (sourceRoot, packageRoot, path, edge, included) => {
+  const specifier = edge.specifier;
+  if (isAbsolute(specifier))
+    return { error: "absolute source target is nonportable" };
+  const packageEdge = !specifier.startsWith(".") && !specifier.startsWith("#");
+  const isPackageImport = specifier.startsWith("#");
+  let expectedPackageRoot = packageRoot;
+  if (packageEdge) {
+    const parts = specifier.split("/");
+    const name = specifier.startsWith("@")
+      ? parts.slice(0, 2).join("/")
+      : parts[0];
+    try {
+      expectedPackageRoot = resolveDependency(sourceRoot, packageRoot, name);
+    } catch {
+      return null;
+    }
+  }
+  let target;
+  if (edge.kind === "asset") {
+    const assetPath = resolve(dirname(path), specifier);
+    if (!existsSync(assetPath)) return null;
+    const assetStat = lstatSync(assetPath);
+    if (
+      !assetStat.isFile() &&
+      !(specifier.endsWith("/") && assetStat.isDirectory())
+    )
+      return null;
+    target = assetPath;
+  } else {
+    try {
+      target = nodeResolver(edge.loader)(dirname(path), specifier);
+    } catch {
+      return null;
+    }
+  }
+  if (!target) return null;
+  if (!isWithin(sourceRoot, target))
+    return { error: "resolved source target escapes shared runtime root" };
+  if (isPackageImport && !isWithin(expectedPackageRoot, target)) {
+    const owner = [...included]
+      .sort((left, right) => right.length - left.length)
+      .find((root) => isWithin(root, target));
+    if (!owner)
+      return {
+        error: "resolved package import escapes declared dependency ownership"
+      };
+    expectedPackageRoot = owner;
+  }
+  if (!isWithin(expectedPackageRoot, target))
+    return { error: "resolved source target escapes copied package ownership" };
+  return {
+    packageRoot:
+      packageEdge || isPackageImport ? expectedPackageRoot : packageRoot,
+    target,
+    packageEdge,
+    isPackageImport
+  };
+};
+
+const unresolvedRuntimeEdges = (sourceRoot, closure) => {
+  const unresolved = [];
+  const known = [];
+  const excludedSourceFiles = [];
+  const included = new Set(
+    closure.map(({ packageRoot }) => resolve(packageRoot))
+  );
+  const builtins = new Set(
+    builtinModules.flatMap((name) => [name, `node:${name}`])
+  );
+  for (const { packageRoot, manifest } of closure) {
+    for (const path of sourceFiles(packageRoot)) {
+      const file = relative(packageRoot, path).replaceAll("\\", "/");
+      const exclusion = sourceAuditExclusion(manifest.name, file);
+      if (exclusion) {
+        excludedSourceFiles.push({
+          package: manifest.name,
+          file,
+          reason: exclusion
+        });
+        continue;
+      }
+      const { edges, diagnostics } = referenceEdges(readFileSync(path, "utf8"));
+      if (diagnostics.length) {
+        unresolved.push(
+          ...diagnostics.map(
+            (diagnostic) =>
+              `${manifest.name}:${file}: parser error: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`
+          )
+        );
+        continue;
+      }
+      for (const edge of edges) {
+        const detail = `${manifest.name}:${file}: ${edge.specifier ?? `${edge.loader ?? edge.kind}(${edge.argumentText ?? ""}) non-literal edge`}`;
+        if (!edge.specifier) {
+          const owner = dynamicImportOwnership(manifest.name, file, edge);
+          if (
+            owner === "optional-native-platform-package-probe" &&
+            !hasClosureOwnedOptionalNativePackage(closure)
+          ) {
+            unresolved.push(
+              `${detail}: no declared msgpackr-extract platform package in closure`
+            );
+          } else if (owner && ["dynamic", "asset"].includes(edge.kind))
+            known.push({
+              detail,
+              owner,
+              loader: edge.loader,
+              call: edge.call,
+              argumentText: edge.argumentText,
+              ...maintainedRuntimeEdgeMetadata(owner)
+            });
+          else unresolved.push(detail);
+          continue;
+        }
+        const edgeSpecifier = edge.specifier;
+        if (builtins.has(edgeSpecifier)) continue;
+        const packageEdge =
+          !edgeSpecifier.startsWith(".") &&
+          !isAbsolute(edgeSpecifier) &&
+          !edgeSpecifier.startsWith("#");
+        const resolved = resolveNodeEdge(
+          sourceRoot,
+          packageRoot,
+          path,
+          edge,
+          included
+        );
+        if (resolved?.error) {
+          unresolved.push(`${detail}: ${resolved.error}`);
+          continue;
+        }
+        if (!resolved?.target) {
+          const alternativeRuntimeOwner =
+            edge.kind === "asset" &&
+            manifest.name === "@koed/embedding-service" &&
+            file === "dist/env-config.js" &&
+            edgeSpecifier === "../.env"
+              ? "optional-env-file-guarded-by-existsSync"
+              : edge.kind === "asset" &&
+                  manifest.name === "@huggingface/transformers" &&
+                  edgeSpecifier.endsWith(".wasm")
+                ? "onnxruntime-web-optional-wasm-asset"
+                : edge.kind === "asset" &&
+                    manifest.name === "@koed/privacy-service" &&
+                    file === "dist/validation-cache.js"
+                  ? "maintained-local-source-file-set"
+                  : manifest.name === "drizzle-orm" &&
+                      file.startsWith("bun-") &&
+                      edgeSpecifier.startsWith("bun:")
+                    ? "non-node-runtime-import"
+                    : manifest.name === "pg-cloudflare" &&
+                        file === "dist/index.js" &&
+                        edgeSpecifier === "cloudflare:sockets"
+                      ? "cloudflare-runtime-import"
+                      : manifest.name === "ajv" &&
+                          file === "dist/runtime/re2.js" &&
+                          edgeSpecifier === "re2"
+                        ? "optional-native-plugin-import"
+                        : manifest.name === "@huggingface/transformers" &&
+                            edgeSpecifier === "onnxruntime-web/webgpu"
+                          ? "non-node-webgpu-provider-import"
+                          : manifest.name === "sharp" &&
+                              file === "lib/libvips.js" &&
+                              edgeSpecifier.startsWith(
+                                "@img/sharp-libvips-dev/"
+                              )
+                            ? "optional-build-only-libvips-package"
+                            : null;
+          if (alternativeRuntimeOwner) {
+            known.push({ detail, owner: alternativeRuntimeOwner });
+            continue;
+          }
+          const dependencyName = edgeSpecifier.startsWith("@")
+            ? edgeSpecifier.split("/").slice(0, 2).join("/")
+            : edgeSpecifier.split("/")[0];
+          const optional =
+            Object.hasOwn(
+              manifest.optionalDependencies ?? {},
+              dependencyName
+            ) ||
+            manifest.peerDependenciesMeta?.[dependencyName]?.optional === true;
+          if (packageEdge && optional) {
+            known.push({ detail, owner: "declared-optional-package-edge" });
+          } else {
+            unresolved.push(`${detail}: unavailable or ambiguous target`);
+          }
+          continue;
+        }
+        if (
+          resolved.packageEdge &&
+          !included.has(resolve(resolved.packageRoot))
+        ) {
+          unresolved.push(`${detail}: package is outside declared closure`);
+        }
+      }
+    }
+  }
+  return { unresolved, known, excludedSourceFiles };
+};
+
+const refreshRequiredFiles = (componentRoot) => {
+  const inventoryPath = resolve(
+    componentRoot,
+    "component-assembly-inventory.json"
+  );
+  const inventory = readManifest(inventoryPath);
+  const required = componentFiles(componentRoot);
+  writeFileSync(
+    inventoryPath,
+    `${JSON.stringify({ ...inventory, required }, null, 2)}\n`
+  );
+  return required;
+};
+
+const writeNotices = (componentRoot, closure) => {
+  const packages = closure
+    .map(({ packageRoot, manifest }) => ({
+      name: manifest.name,
+      version: manifest.version,
+      license: manifest.license ?? null,
+      files: readdirSync(packageRoot)
+        .filter((name) => licensePattern.test(name))
+        .sort()
+    }))
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name) || a.version.localeCompare(b.version)
+    );
+  writeFileSync(
+    resolve(componentRoot, "third-party-notices.json"),
+    `${JSON.stringify({ schemaVersion: 1, packages }, null, 2)}\n`
+  );
+};
+
+const projectComponent = (
+  sourceRoot,
+  componentRoot,
+  services,
+  packageNames,
+  excludedPackages = []
+) => {
+  mkdirSync(componentRoot, { recursive: true });
+  for (const service of services) {
+    const source = resolve(sourceRoot, service);
+    if (!existsSync(source))
+      throw new Error(`Component service root is missing: ${source}`);
+    cpSync(source, resolve(componentRoot, service), {
+      recursive: true,
+      dereference: false
+    });
+  }
+  const closure = packageClosure(sourceRoot, packageNames, excludedPackages);
+  const runtimeEdges = unresolvedRuntimeEdges(sourceRoot, closure);
+  if (runtimeEdges.unresolved.length) {
+    throw new Error(
+      `Component dependency graph has unresolved runtime edges:\n${runtimeEdges.unresolved.slice(0, 30).join("\n")}`
+    );
+  }
+  for (const { packageRoot } of closure)
+    copyPackage(sourceRoot, componentRoot, packageRoot);
+  writeNotices(componentRoot, closure);
+  const required = componentFiles(componentRoot);
+  writeFileSync(
+    resolve(componentRoot, "component-assembly-inventory.json"),
+    `${JSON.stringify({ schemaVersion: 2, excludedPackages, verifiedLiteralEdges: true, maintainedRuntimeEdges: runtimeEdges.known, unresolvedRuntimeEdges: runtimeEdges.unresolved, excludedSourceFiles: runtimeEdges.excludedSourceFiles, auditScope: "TypeScript JavaScript AST audit of .js, .cjs, and .mjs files in declared package closures; parser errors fail assembly.", scanLimits: ["Static import/export, import(), require(), require.resolve(), import.meta.resolve(), require.apply(), and new URL(literal, import.meta.url) references are checked.", "Dynamic loader and optional asset edges require named package/file/expression-constrained maintainedRuntimeEdges ownership; inventory entries state rationale and limits.", "Pino caller-selected transport targets are not bundled by this exception; configured targets require separate closure ownership and verification.", "Claude SDK platform CLI package probes are optional existence checks; platform runtime packages are removed and asserted absent.", "The node-gyp-build-optional-packages probe is owned only with a declared msgpackr-extract optional platform package in closure.", "Computed paths outside named owners, arbitrary loaders, native addon internals, and behavior assembled through arbitrary control flow are not fully inferable statically; successful loader smoke tests validate only selected host-target entries."], required }, null, 2)}\n`
+  );
+  assertSafeTree(componentRoot);
+  return { root: componentRoot, required, closure };
+};
+
+export const projectRuntimeComponents = ({
+  sourceRoot,
+  outputDir,
+  excludedPackages = []
+}) => {
+  assertSafeTree(sourceRoot);
+  const baseNames = baseServices.map((service) => servicePackages[service]);
+  const privacyName = servicePackages["privacy-service"];
+  rmSync(outputDir, { recursive: true, force: true });
+  mkdirSync(outputDir, { recursive: true });
+  const base = projectComponent(
+    sourceRoot,
+    resolve(outputDir, "base"),
+    baseServices,
+    baseNames
+  );
+  const privacy = projectComponent(
+    sourceRoot,
+    resolve(outputDir, "privacy"),
+    privacyServices,
+    [privacyName],
+    excludedPackages
+  );
+  return {
+    baseRoot: base.root,
+    privacyRoot: privacy.root,
+    baseRequired: base.required,
+    privacyRequired: privacy.required
+  };
+};
+
+export const stageRuntimeComponents = async ({
+  repoRoot,
+  outputDir,
+  platform,
+  architecture
+}) => {
+  const temporaryRoot = mkdtempSync(resolve(tmpdir(), "koed-component-stage-"));
+  const sharedRoot = resolve(temporaryRoot, "shared-runtime");
+  try {
+    stageSharedAppRuntime({ repoRoot, runtimeRoot: sharedRoot });
+    prunePrivacyRuntimeForTarget({
+      repoRoot,
+      runtimeRoot: sharedRoot,
+      platform,
+      architecture
+    });
+    const privacyPolicy = readManifest(
+      resolve(repoRoot, "config/privacy-runtime-package-policy.json")
+    );
+    const excludedPackages = privacyPolicy.removeStandaloneOnnxruntimeWeb
+      ? ["onnxruntime-web"]
+      : [];
+    removeClaudeAgentSdkPlatformRuntimes(sharedRoot);
+    pruneTerminalRuntimeForTarget({
+      runtimeRoot: sharedRoot,
+      platform,
+      architecture
+    });
+    assertNoClaudeAgentSdkPlatformRuntimes(sharedRoot);
+    const result = projectRuntimeComponents({
+      sourceRoot: sharedRoot,
+      outputDir,
+      excludedPackages
+    });
+    pruneSharedAppRuntimeMetadata(result.baseRoot);
+    pruneSharedAppRuntimeMetadata(result.privacyRoot);
+    assertTargetPolicies(result.baseRoot, platform, architecture);
+    assertTargetPolicies(result.privacyRoot, platform, architecture);
+    result.baseRequired = refreshRequiredFiles(result.baseRoot);
+    result.privacyRequired = refreshRequiredFiles(result.privacyRoot);
+    return result;
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+};

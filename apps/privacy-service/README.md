@@ -51,7 +51,7 @@ classification and runtime-control credentials:
 
 ```bash
 pnpm install
-pnpm --filter @koed/koed-server build
+pnpm --filter @koed-labs/server build
 pnpm models:install:privacy
 pnpm --filter @koed/privacy-service build
 export KOED_PRIVACY_TRANSFORMERS_CACHE="${KOED_HOME:-$HOME/.koed}/models/privacy/transformers-cache"

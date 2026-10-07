@@ -34,7 +34,10 @@ import {
   stopChildProcess,
   waitForManagedProcessExits
 } from "./start.js";
-import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
 vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
@@ -319,6 +322,20 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("rejects caller-constructed Desktop runtime authority", async () => {
+    await expect(
+      startKoedServer({
+        desktopRuntimeCapability: {
+          resourcesPath: "/untrusted",
+          productVersion: "1.2.3",
+          bundleDigest: "0".repeat(64)
+        } as never
+      })
+    ).rejects.toThrow(
+      "validated private Desktop runtime capability is required"
+    );
+  });
+
   it("collects startup status once per readiness phase and emits correlated timings", async () => {
     const root = tempDir();
     const logs: string[] = [];
@@ -419,7 +436,7 @@ describe("start supervisor", () => {
       "Blocking checks: Worker/queue (starting), Embedding Service (needs_attention)."
     );
     expect(thrown?.message).toContain(
-      "Inspect /ready and koed-server status --json for details."
+      "Inspect /ready and koed status --json for details."
     );
     expect(thrown?.message).not.toContain("Personal API Token");
     expect(thrown?.message).not.toContain("must-not-appear");
@@ -940,6 +957,12 @@ describe("start supervisor", () => {
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
+    const retryLock = acquireKoedServerSupervisorLock(
+      resolveKoedServerPaths({ KOED_HOME: root })
+    );
+    expect(retryLock.acquired).toBe(true);
+    releaseKoedServerSupervisorLock(retryLock);
   });
 
   it("lets one-shot port overrides win over repo .env URLs when starting external mode", async () => {
@@ -1668,7 +1691,7 @@ describe("start supervisor", () => {
     ).toThrow();
   });
 
-  it("starts packaged app services without workspace pnpm scripts", async () => {
+  it("ignores packaged environment flags during source execution", async () => {
     const root = tempDir();
     createPackagedAppRuntime(root);
     writeFileSync(
@@ -1731,48 +1754,45 @@ describe("start supervisor", () => {
       collectStatus: async () => healthyStatus(root)
     });
 
-    expect(commands).toEqual([]);
-    expect(spawned[0]?.args).toEqual([
-      resolve(root, "koed-runtime/api/dist/index.js")
-    ]);
+    expect(
+      commands.some((entry) => entry.args[0]?.endsWith("setup-env.mjs"))
+    ).toBe(true);
+    expect(spawned[0]?.args).toEqual([resolve(root, "apps/api/dist/index.js")]);
     expect(spawned[1]?.args).toEqual([
-      resolve(root, "koed-runtime/mcp-server/dist/local-runtime-cli.js")
+      resolve(root, "packages/mcp-server/dist/local-runtime-cli.js")
     ]);
     expect(spawned[2]?.args).toEqual([
-      resolve(root, "koed-runtime/worker/dist/index.js")
+      resolve(root, "apps/worker/dist/index.js")
     ]);
-    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).toBeDefined();
-    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).not.toBe("");
-    expect(
-      spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY
-    ).toBeDefined();
-    expect(spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
-      spawned[0]?.env?.DATA_ENCRYPTION_KEY
-    );
     expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBe(
-      "runtime-team-data-key"
+      "root-team-data-key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER).toBe(
-      "runtime-local-test-key"
+      "local_test_key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_ID).toBe(
-      "runtime-team-kms-key"
+      "root-team-kms-key"
     );
-    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("8");
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("7");
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL).toBe(
-      "https://runtime-kms.koed.example"
+      "https://kms.koed.example"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN).toBe(
-      "runtime-team-kms-token"
+      "root-team-kms-token"
     );
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
-  it("provisions a Personal API Token for a fresh packaged bundled-local start", async () => {
+  it("provisions a Personal API Token during a source bundled-local start", async () => {
     const root = tempDir();
-    createPackagedAppRuntime(root);
+    const embeddingEntry = resolve(
+      root,
+      "apps/embedding-service/dist/index.js"
+    );
+    mkdirSync(resolve(embeddingEntry, ".."), { recursive: true });
+    writeFileSync(embeddingEntry, "");
     const pgBin = resolve(root, "runtime/postgres/bin");
     const llamaBin = resolve(root, "runtime/llama.cpp");
     mkdirSync(pgBin, { recursive: true });
@@ -1799,8 +1819,6 @@ describe("start supervisor", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: root,
         KOED_RUNTIME_MODE: "local-personal",
         KOED_DEPENDENCY_MODE: "bundled-local",
         KOED_TEAM_COLLABORATION_ENABLED: "false"

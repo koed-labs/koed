@@ -65,14 +65,14 @@ AI Runtime.
    `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL` values.
    `koed-server` does not start, stop, or inspect Docker Compose in external
    mode.
-5. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
+5. When configured with `dependencyMode: "bundled-local"`, `koed start`
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
    Embedding Service entry, llama-server, or model assets report setup guidance through
-   `koed-server runtime status/install` and `koed-server models status/install`,
+   `koed runtime status/install` and `koed models status/install`,
    not repo scripts. It defaults job processing to the Postgres-backed local
    queue. Packaged Desktop can ship platform/architecture native resources plus
-   `runtime-asset-manifest.json`; `koed-server runtime install --provider packaged --dependency-mode bundled-local --json`
+   `runtime-asset-manifest.json`; `koed runtime install --provider packaged --dependency-mode bundled-local --json`
    verifies SHA-256, executable bits, PostgreSQL 17, `llama-server`, and loader
    dependencies before copying resources into `KOED_HOME/runtime`. For local
    packaged-native smoke, `pnpm native-runtime:stage:homebrew` can create a
@@ -80,19 +80,19 @@ AI Runtime.
    formulas; this is a development helper rather than a release-quality runtime
    distribution. Python virtualenv files are no longer packaged native runtime
    assets. Packaged Koed
-   Desktop also calls `koed-server models status --kind embedding --json` and
-   `koed-server models install --kind embedding --json` during first-run local
+   Desktop also calls `koed models status --kind embedding --json` and
+   `koed models install --kind embedding --json` during first-run local
    personal setup when the embedding model is missing or checksums do not match.
-   On macOS, Linux, and WSL, `koed-server runtime status --provider homebrew --json` can
+   On macOS, Linux, and WSL, `koed runtime status --provider homebrew --json` can
    inspect Homebrew-backed runtime assets without installing packages, and
-   `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`
+   `koed runtime install --provider homebrew --dependency-mode bundled-local --json`
    explicitly installs missing Homebrew packages and links selected binaries
    under `KOED_HOME/runtime`. Linux packaged native assets target glibc 2.35+
    distributions such as Ubuntu 22.04/Debian 12 or newer; unsupported hosts fail
    with explicit guidance instead of Docker Compose or source-checkout fallback.
    Native Windows packaged app support is not shipped in this build; use WSL for
    local development. Model assets are installed out of band with
-   `koed-server models install`, which requires configured artifact URLs and
+   `koed models install`, which requires configured artifact URLs and
    SHA-256 checksums before writing to `KOED_HOME/models`. See
    `docs/native-runtime-assets.md`.
 6. `pnpm smoke:bundled-local -- --full --install-runtime --json` verifies this
@@ -132,17 +132,25 @@ AI Runtime.
    collaboration is enabled, it also waits for the Privacy Filter; Personal-only
    startup reports that service as not required. Both source and packaged
    runtimes use these rules.
-8. `koed-server start --daemon --json` starts a detached `koed-server start`
-   supervisor and returns machine-readable startup intent for Desktop and
-   scripts. `koed-server stop --json` stops supervised processes in
+8. Packaged Desktop main starts its private supervisor entrypoint as a
+   long-running child with inherited IPC, a fresh nonce handshake, and Desktop
+   resources path. The child verifies the packaged runtime bundle itself and
+   receives process-local Desktop generation authority only after verification;
+   it then runs the same Personal supervisor and pins the selected authenticated
+   generation until shutdown. Desktop stop/restart is manager-owned and signals
+   that child, not a detached CLI daemon. Standalone `koed start --daemon --json`
+   remains available for CLI/scripts and starts a detached `koed start`
+   supervisor. `koed stop --json` stops standalone supervised processes in
    dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
    Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
-   `koed-server restart --json` runs the same stop lifecycle, starts a detached
-   supervisor, and returns machine-readable JSON without streaming startup logs.
-9. `koed-server status --json` and `koed-server doctor --json` poll the API
+   Standalone `koed restart --json` runs the same stop lifecycle, starts a
+   detached supervisor, and returns machine-readable JSON without streaming
+   startup logs. Packaged Desktop restart keeps ownership in its Electron main
+   manager and restarts its inherited-IPC child.
+9. `koed status --json` and `koed doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP
    artifact health, Supported Capture Hook config, per-client Codex configuration
@@ -247,14 +255,14 @@ Desktop uses explicit AI Client ownership for Managed Conversation lifecycle:
 
 See [managed Conversation AI Client routing](managed-conversation-ai-client-routing.md).
 
-10. `koed-server setup core --json` validates or provisions client-neutral core
+10. `koed setup core --json` validates or provisions client-neutral core
     local credential state. Final verification is recorded by `doctor --json`.
-    `koed-server setup codex --json` remains an explicit Codex profile
+    `koed setup codex --json` remains an explicit Codex profile
     compatibility path that may compose core setup with Codex MCP/Capture Hook
     configuration and managed global memory guidance. Setup applies persisted
     auto-allocated local ports before
     resolving the API URL, so Desktop-managed ports and direct CLI
-    setup write the same target URL/token. `koed-server repair codex --json` is
+    setup write the same target URL/token. `koed repair codex --json` is
     the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
     block for the active Local AI Runtime, the credential-free Hook command, and
     the Koed-managed section of `CODEX_HOME/AGENTS.md` without
@@ -263,7 +271,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     both mint the token through the active runtime repository with the same
     database and token pepper used by the API; Electron main only retains and
     rereads that supervisor-owned credential.
-    `koed-server setup claude --json` independently verifies Claude Code version,
+    `koed setup claude --json` independently verifies Claude Code version,
     records sign-in as advisory readiness, and preserves unrelated user settings
     while transactionally installing Koed's user-scoped MCP and Supported
     Capture Hook entries and registering `claude.default`. Signed-out setup
@@ -271,7 +279,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     the Local AI Runtime to refresh capabilities after registration. Running
     `claude auth login` and refreshing makes execution capabilities ready without
     profile reinstall. Claude Desktop authentication and Anthropic API keys are
-    outside this flow and are never inspected or reused. `koed-server setup pi
+    outside this flow and are never inspected or reused. `koed setup pi
 --json` independently installs Koed's stable local package and registers
     `pi.default` after canonical executable/version checks. Authenticated-model
     discovery is advisory for profile setup: no-model setup succeeds with
@@ -285,7 +293,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     mandatory client-neutral core setup and health checks, poll status, offer
     optional independently consented multi-select client setup with defer,
     per-client check/repair/remove for stale local config, and
-    provision the embedding model through `koed-server models status/install
+    provision the embedding model through `koed models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is
     native to the Desktop renderer. Selecting a Captured Session requests
@@ -630,9 +638,9 @@ defaults are fail-closed for capture-bearing writes, Team Workspace reads,
 Share Grant management, sync/offload, and admin operations. `koed-server
 upstream refresh --id <id> --json` validates the upstream `/v1/capabilities`
 contract and records checked, expiry, schema, profile, release, and failure
-metadata. `koed-server upstream policy --id <id> --... enabled --json`
+metadata. `koed upstream policy --id <id> --... enabled --json`
 explicitly enables the operation families the Operator has approved. Stale,
-failed, and unchecked upstreams show as attention items in `koed-server status
+failed, and unchecked upstreams show as attention items in `koed status
 --json` and `doctor --json`. Remote-dependent routing refuses those states
 without guessing from hostnames, ports, or route availability.
 

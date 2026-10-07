@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { assertNoClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
 
 export const standalonePackageSchemaVersion = 2;
@@ -208,6 +208,60 @@ const canonicalJson = (value) => {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+};
+
+export const canonicalComponentManifestBytes = (manifest) =>
+  Buffer.from(canonicalJson(manifest), "utf8");
+
+export const buildComponentManifest = ({
+  componentRoot,
+  archivePath,
+  component,
+  productVersion,
+  target,
+  runtimes,
+  requiredFiles
+}) => {
+  const root = resolve(componentRoot);
+  const files = listFiles(root)
+    .sort()
+    .map((path) => {
+      const stat = lstatSync(resolve(root, path));
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error(
+          `component payload must contain regular files only: ${path}`
+        );
+      }
+      return { path, sha256: sha256File(resolve(root, path)) };
+    });
+  const archive = readFileSync(archivePath);
+  return {
+    schemaVersion: 1,
+    productVersion,
+    component,
+    target,
+    runtimes,
+    archive: {
+      name: basename(archivePath),
+      bytes: archive.length,
+      sha256: createHash("sha256").update(archive).digest("hex")
+    },
+    requiredFiles: [...requiredFiles],
+    files
+  };
+};
+
+export const signComponentManifest = ({ manifest, keyId, privateKey }) => {
+  const manifestBytes = canonicalComponentManifestBytes(manifest);
+  const signature = sign(
+    null,
+    Buffer.concat([Buffer.from("koed-component-manifest-v1\n"), manifestBytes]),
+    createPrivateKey(privateKey)
+  ).toString("base64");
+  return {
+    manifestBytes,
+    signature: { schemaVersion: 1, keyId, algorithm: "ed25519", signature }
+  };
 };
 
 export const sha256Files = (root, files) => {

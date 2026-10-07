@@ -149,6 +149,8 @@ describe("clone-safe device identity", () => {
 
     expect(inspection.health).toBe("unsafe_proof_storage");
     expect(inspection.action).toContain("outside KOED_HOME");
+    expect(inspection.action).toContain("koed identity rotate --json");
+    expect(inspection.action).not.toContain("koed-server");
   });
 
   it("reports redacted machine-readable identity status", async () => {

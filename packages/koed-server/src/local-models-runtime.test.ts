@@ -25,6 +25,8 @@ const paths = (root: string): KoedServerPaths => ({
   dataDir: resolve(root, "data"),
   modelsDir: resolve(root, "models"),
   cacheDir: resolve(root, "cache"),
+  componentsDir: resolve(root, "runtime", "components"),
+  generationsDir: resolve(root, "runtime", "generations"),
   postgresDataDir: resolve(root, "data", "postgres"),
   postgresRunDir: resolve(root, "run", "postgres"),
   postgresLogPath: resolve(root, "logs", "postgres.log"),
@@ -84,9 +86,7 @@ describe("local model runtime", () => {
     const status = await collectLocalModelStatus(paths(root), "embedding", {});
 
     expect(status.state).toBe("missing");
-    expect(status.action).toContain(
-      "koed-server models install --kind embedding"
-    );
+    expect(status.action).toContain("koed models install --kind embedding");
   });
 
   it("blocks model downloads in external dependency mode", async () => {

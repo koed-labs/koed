@@ -32,12 +32,12 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     ).toEqual({
       repoRoot: "/Applications/Koed.app/Contents/Resources",
       cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js"
     });
   });
 
-  it("preserves explicit koed-server CLI override and infers its checkout root", () => {
-    expect(
+  it("rejects CLI and checkout overrides in packaged apps", () => {
+    expect(() =>
       resolveKoedServerPaths({
         appDir:
           "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
@@ -47,14 +47,8 @@ describe("Koed Desktop Node entrypoint runtime", () => {
         },
         resourcesPath: "/Applications/Koed.app/Contents/Resources"
       })
-    ).toEqual({
-      repoRoot: "/repo",
-      cliPath: "/repo/packages/koed-server/dist/cli.js"
-    });
-  });
-
-  it("preserves explicit checkout root override", () => {
-    expect(
+    ).toThrow(/runtime overrides are not allowed/);
+    expect(() =>
       resolveKoedServerPaths({
         appDir:
           "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
@@ -62,10 +56,7 @@ describe("Koed Desktop Node entrypoint runtime", () => {
         environment: { KOED_REPO_ROOT: "/debug/repo" },
         resourcesPath: "/Applications/Koed.app/Contents/Resources"
       })
-    ).toEqual({
-      repoRoot: "/debug/repo",
-      cliPath: "/debug/repo/packages/koed-server/dist/cli.js"
-    });
+    ).toThrow(/runtime overrides are not allowed/);
   });
 
   it("marks Electron child processes as Node-compatible", () => {
@@ -120,10 +111,30 @@ describe("Koed Desktop Node entrypoint runtime", () => {
       appIsPackaged: true,
       electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
       platform: "darwin",
-      existsSync: (path) => path.endsWith("Koed Helper")
+      existsSync: (path) => path.includes("Koed.app")
     });
 
     expect(execPath).toBe("/Applications/Koed.app/Contents/MacOS/Koed");
+  });
+
+  it("rejects packaged Node-command overrides and uses the Electron runtime", () => {
+    const invocation = createKoedServerCliInvocation(
+      "/app/cli.js",
+      ["status"],
+      {
+        appIsPackaged: true,
+        electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
+        platform: "darwin",
+        resourcesPath: "/Applications/Koed.app/Contents/Resources",
+        environment: { KOED_NODE_COMMAND: "/tmp/untrusted-node" },
+        existsSync: () => true
+      }
+    );
+    expect(invocation.command).toBe(
+      "/Applications/Koed.app/Contents/MacOS/Koed"
+    );
+    expect(invocation.env.KOED_NODE_COMMAND).toBeUndefined();
+    expect(invocation.env.ELECTRON_RUN_AS_NODE).toBe("1");
   });
 
   it("wraps packaged script entrypoints with the runner", () => {
@@ -135,7 +146,8 @@ describe("Koed Desktop Node entrypoint runtime", () => {
         electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
         platform: "linux",
         resourcesPath: "/Applications/Koed.app/Contents/Resources",
-        environment: {}
+        environment: {},
+        existsSync: () => true
       }
     );
 

@@ -36,7 +36,7 @@ Builds a standalone koed-server JS/service runtime package artifact.
 Options:
   --platform <platform>      Package platform key. Defaults to current host.
   --arch <arch>              Package architecture. Defaults to current host.
-  --version <version>        Package version. Defaults to @koed/koed-server.
+  --version <version>        Package version. Defaults to @koed-labs/server.
   --out-dir <dir>            Output directory. Defaults to dist/koed-server-package/<platform>-<arch>.
   --json                     Print JSON result.
   -h, --help                 Show help.

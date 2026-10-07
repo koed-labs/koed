@@ -199,7 +199,7 @@ koed-native-runtime-<platform>-<arch>-<version>.tar.gz
     llama.cpp/
 ```
 
-They remain installed through `koed-server runtime status/install` under:
+They remain installed through `koed runtime status/install` under:
 
 ```text
 KOED_HOME/runtime/postgres
@@ -351,7 +351,7 @@ Desktop and headless install flows should verify before activation:
 6. validate platform/architecture compatibility;
 7. validate Desktop/server compatibility;
 8. atomically update `current` pointer or marker;
-9. run `koed-server status --json` or a package validation command before
+9. run `koed status --json` or a package validation command before
    startup continues.
 
 Archive download, gzip decompression, and tar parsing are streaming operations.
@@ -383,6 +383,45 @@ Signature/provenance rules:
 - Local and bundled fallback installs keep the SHA-256 path unless an Operator
   or Desktop configuration opts into stricter policy.
 - Native runtime archives keep their own manifest/SHA-256 verification.
+
+Component bundle manifests use canonical JSON and an Ed25519 signature over
+`koed-component-manifest-v1\n` plus canonical UTF-8 manifest bytes. The signed
+fields bind product/component identity, target, Node/Electron and Node ABI or
+N-API compatibility, optional Linux glibc minimum, required files, archive size
+and SHA-256, and every archived file hash. Archive verification streams gzip/tar
+content under compressed, expanded, per-file, and entry-count limits; requires
+exactly two tar end records followed only by zero padding; and rejects partial
+blocks, concatenated archives, unsafe or duplicate paths, links, unsupported
+tar entries, and path conflicts. Extracted trees are traversed iteratively with
+depth, directory, file-count, aggregate-byte, and per-file limits; no-follow
+file-descriptor reads verify inode identity before and after hashing, and extra,
+missing, linked, and special files are rejected.
+
+When installation integration is added, it must create a fresh exclusive
+staging root under the private `KOED_HOME` runtime directory and verify/extract
+only within that root. These checks detect ordinary link and replacement races;
+they do not claim defense against a same-UID attacker with arbitrary ability to
+mutate the verifier process or its staging files.
+
+Component verification is not wired into package installation yet. Production
+component trust roots are intentionally empty, so component verification fails
+closed and official component promotion remains blocked pending explicit
+Operator approval of a production signing key. Runtime ranges intentionally use
+restricted numeric SemVer syntax: one to three decimal components with optional
+`>=`, `>`, `<=`, `<`, or `=` comparisons, whitespace-conjoined; exact runtime
+versions use two or three components. Leading zeroes, prerelease/build labels,
+wildcards, caret, and tilde ranges are rejected. This matches current signed
+component contracts without introducing an undeclared production SemVer
+dependency; all numeric components must be safe integers. Fixture keys exist only in test
+source and are excluded from the built package. No component-key environment,
+CLI, or per-user override exists. An internal trusted runtime-identity adapter is available in
+`component-runtime-identity.ts`; it derives Node/Electron versions, platform,
+architecture, ABI, N-API, and Linux glibc version from the running process.
+Unknown platforms, architectures, runtime fields, or Linux libc fail closed.
+Future public activation integration must consume this adapter; verifier inputs
+remain injectable only for internal tests. This component trust gate is distinct from
+existing standalone package provenance trust-policy options above; those options
+do not populate component trust roots.
 
 Downgrade and rollback rules:
 
@@ -478,8 +517,8 @@ unsigned-placeholder provenance only for non-default/test channels.
 Recommended command shape after a bootstrap entrypoint is available:
 
 ```bash
-koed-server package status --json
-koed-server package install \
+koed package status --json
+koed package install \
   --source https://downloads.koed.local/koed-server-<version>-linux-x64.tar.gz \
   --sha256 <sha256> \
   --provenance-file /path/to/koed-server-app-runtime-<version>-linux-x64.provenance.json \
@@ -487,11 +526,11 @@ koed-server package install \
   --trusted-public-key-file /path/to/koed-server-package.pub.pem \
   --trust-policy require-signature \
   --json
-koed-server runtime install --provider packaged --dependency-mode bundled-local --json
-koed-server models install --kind embedding --json
+koed runtime install --provider packaged --dependency-mode bundled-local --json
+koed models install --kind embedding --json
 # Required only when Team collaboration is enabled:
-koed-server models install --kind privacy --json
-koed-server start --daemon --json
+koed models install --kind privacy --json
+koed start --daemon --json
 ```
 
 On the first packaged, bundled-local, Personal Memory start, `koed-server`
@@ -503,7 +542,7 @@ Token and never provisions one implicitly.
 Offline install should use a local artifact path:
 
 ```bash
-koed-server package install \
+koed package install \
   --source /path/to/koed-server-<version>-linux-x64.tar.gz \
   --sha256-file /path/to/koed-server-<version>-linux-x64.tar.gz.sha256 \
   --json
@@ -540,7 +579,7 @@ KOED_HOME/runtime/koed-server/versions/<current>
 A cleanup command should remove inactive versions and stale cached archives:
 
 ```bash
-koed-server package cleanup --keep 1 --json
+koed package cleanup --keep 1 --json
 ```
 
 Desktop should expose cleanup only as an advanced repair/storage action.

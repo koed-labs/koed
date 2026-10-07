@@ -57,7 +57,7 @@ missing historical telemetry, or a paused historical batch must not change
 Transcript Watcher writes a local aggregate status snapshot under
 `KOED_HOME/status` containing lifecycle state and timestamps plus scan, file,
 source, batch, record, and advanced-byte counters and one sanitized error code.
-`koed-server status --json` and `doctor --json` separately report only whether
+`koed status --json` and `doctor --json` separately report only whether
 the watcher is enabled and whether its supervised process is recorded/running.
 Watcher status is diagnostic-only: disabled, missing, stale, or failed watcher
 status never changes API `/ready`, overall readiness, or doctor success. Hook
@@ -116,7 +116,7 @@ Share Grants, Cross-Identity Sync, and enrollment.
 Durable `audit_events` are the source for authorization and lifecycle history.
 Current collaboration-related action names include:
 
-`koed-server personal-sync status --json`, `credential status`, `key-epoch
+`koed personal-sync status --json`, `credential status`, `key-epoch
 status`, and `replica status` use same redaction boundary. They show only
 policy, epoch, device lifecycle, freshness, processing, failure, conflict,
 revocation, and tombstone counters. They never show secret-provider references,

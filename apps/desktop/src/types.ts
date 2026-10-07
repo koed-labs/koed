@@ -14,6 +14,7 @@ import type {
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
+import type { CliInstallApi } from "./cli-install/protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -210,6 +211,7 @@ export interface DesktopApi {
     set: (enabled: boolean) => Promise<DesktopLaunchAtStartupState>;
   };
   setup?: DesktopSetupApi;
+  cliInstall?: CliInstallApi;
   status?: {
     subscribe: (listener: () => void) => () => void;
   };

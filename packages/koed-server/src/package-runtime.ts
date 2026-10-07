@@ -643,7 +643,7 @@ export const collectServerPackageStatus = (
     ...(state === "missing"
       ? {
           action:
-            "Run koed-server package install --source <artifact> --sha256 <sha256>."
+            "Run koed package install --source <artifact> --sha256 <sha256>."
         }
       : {}),
     ...(invalid.length > 0
@@ -659,6 +659,11 @@ const readExpectedSha256 = (options: ServerPackageInstallOptions): string => {
   }
   throw new Error("--sha256 or --sha256-file is required.");
 };
+
+export const extractVerifiedPackageArchive = (
+  archivePath: string,
+  destination: string
+): Promise<void> => extractTarGz(archivePath, destination);
 
 const adjacentProvenancePath = (archivePath: string): string | undefined => {
   const archiveName = basename(archivePath);
@@ -792,6 +797,32 @@ const migrationTimestamp = (
     : undefined;
 };
 
+export const assertPackageMigrationCompatible = (
+  currentManifest: KoedServerPackageManifest,
+  nextManifest: KoedServerPackageManifest,
+  allowDowngrade = false
+): void => {
+  if (compareVersions(nextManifest.version, currentManifest.version) >= 0)
+    return;
+  if (!allowDowngrade) {
+    throw new Error(
+      `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
+    );
+  }
+  const currentMigration = migrationTimestamp(currentManifest);
+  const nextMigration = migrationTimestamp(nextManifest);
+  if (
+    currentMigration !== undefined &&
+    nextMigration !== undefined &&
+    nextMigration < currentMigration &&
+    nextManifest.database?.allowsRollback !== true
+  ) {
+    throw new Error(
+      "Downgrade would roll back the package migration set, and the target package does not allow rollback."
+    );
+  }
+};
+
 const assertUpgradeCompatible = ({
   paths,
   nextManifest,
@@ -803,25 +834,11 @@ const assertUpgradeCompatible = ({
 }): void => {
   const currentManifest = activePackageManifest(paths);
   if (!currentManifest?.version) return;
-  if (compareVersions(nextManifest.version, currentManifest.version) < 0) {
-    if (!allowDowngrade) {
-      throw new Error(
-        `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
-      );
-    }
-    const currentMigration = migrationTimestamp(currentManifest);
-    const nextMigration = migrationTimestamp(nextManifest);
-    if (
-      currentMigration !== undefined &&
-      nextMigration !== undefined &&
-      nextMigration < currentMigration &&
-      nextManifest.database?.allowsRollback !== true
-    ) {
-      throw new Error(
-        "Downgrade would roll back the package migration set, and the target package does not allow rollback."
-      );
-    }
-  }
+  assertPackageMigrationCompatible(
+    currentManifest,
+    nextManifest,
+    allowDowngrade
+  );
 };
 
 const copyAdjacentProvenanceSidecars = (

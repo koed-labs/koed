@@ -40,7 +40,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
   );
   writeFileSync(
     resolve(linux, "koed-server-0.4.0-linux-x64.tar.gz.sha256"),
-    `${"a".repeat(64)}  koed-server-0.4.0-linux-x64.tar.gz\n`
+    `${sha256("archive\n")}  koed-server-0.4.0-linux-x64.tar.gz\n`
   );
   writeFileSync(
     resolve(linux, "koed-server-app-runtime-0.4.0-linux-x64.manifest.json"),
@@ -58,7 +58,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
           platform: "linux",
           architecture: "x64",
           archiveName: "koed-server-0.4.0-linux-x64.tar.gz",
-          archiveSha256: "a".repeat(64),
+          archiveSha256: sha256("archive\n"),
           manifestName: "koed-server-package-manifest.json",
           manifestSha256: sha256(manifestContent)
         }
@@ -73,6 +73,21 @@ test("builds release metadata for standalone koed-server package targets", () =>
     ),
     "sig\n"
   );
+  const npmTarballBytes = "public server npm tarball\n";
+  writeFileSync(resolve(root, "koed-labs-server.tgz"), npmTarballBytes);
+  writeFileSync(
+    resolve(root, "koed-labs-server-release-identity.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      packageName: "@koed-labs/server",
+      version: "0.4.0",
+      npm: {
+        integrity: `sha512-${createHash("sha512").update(npmTarballBytes).digest("base64")}`,
+        inventorySha256: "c".repeat(64),
+        bytes: Buffer.byteLength(npmTarballBytes)
+      }
+    })}\n`
+  );
   const native = resolve(root, "native-runtime-linux-x64");
   mkdirSync(native, { recursive: true });
   writeFileSync(
@@ -81,7 +96,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
   );
   writeFileSync(
     resolve(native, "koed-native-runtime-linux-x64-0.4.0.tar.gz.sha256"),
-    `${"b".repeat(64)}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
+    `${sha256("native archive\n")}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
   );
   writeFileSync(
     resolve(native, "koed-native-runtime-linux-x64-0.4.0.provenance.json"),
@@ -104,12 +119,21 @@ test("builds release metadata for standalone koed-server package targets", () =>
 
   assert.equal(metadata.release.tag, "v0.4.0");
   assert.equal(
+    metadata.artifacts.publicServerPackage.packageName,
+    "@koed-labs/server"
+  );
+  assert.equal(metadata.artifacts.publicServerPackage.version, "0.4.0");
+  assert.equal(
+    metadata.artifacts.publicServerPackage.inventorySha256,
+    "c".repeat(64)
+  );
+  assert.equal(
     metadata.artifacts.koedServerAppRuntime.targets[0].archive.url,
     "https://github.com/koed/koed/releases/download/v0.4.0/koed-server-0.4.0-linux-x64.tar.gz"
   );
   assert.equal(
     metadata.artifacts.koedServerAppRuntime.targets[0].archive.sha256,
-    "a".repeat(64)
+    sha256("archive\n")
   );
   assert.equal(metadata.artifacts.desktop.kind, "desktop");
   assert.equal(metadata.artifacts.desktop.version, "0.4.0");
@@ -126,7 +150,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
   assert.equal(metadata.artifacts.nativeRuntime.kind, "native-runtime");
   assert.equal(
     metadata.artifacts.nativeRuntime.targets[0].archive.sha256,
-    "b".repeat(64)
+    sha256("native archive\n")
   );
   assert.equal(
     metadata.artifacts.nativeRuntime.targets[0].archive.url,
@@ -158,6 +182,26 @@ test("requires SHA-256 sidecars for koed-server archives", () => {
   );
 });
 
+test("rejects archive bytes that disagree with SHA-256 sidecars", () => {
+  const root = tempDir();
+  const archive = "koed-server-0.4.0-linux-x64.tar.gz";
+  writeFileSync(resolve(root, archive), "different bytes\\n");
+  writeFileSync(
+    resolve(root, `${archive}.sha256`),
+    `${"a".repeat(64)}  ${archive}\\n`
+  );
+  assert.throws(
+    () =>
+      buildReleaseArtifactMetadata({
+        version: "0.4.0",
+        tag: "v0.4.0",
+        repository: "koed/koed",
+        artifactRoot: root
+      }),
+    /Archive SHA-256 does not match sidecar/
+  );
+});
+
 test("requires valid provenance for native runtime archives", () => {
   const root = tempDir();
   writeFileSync(
@@ -166,7 +210,7 @@ test("requires valid provenance for native runtime archives", () => {
   );
   writeFileSync(
     resolve(root, "koed-native-runtime-linux-x64-0.4.0.tar.gz.sha256"),
-    `${"c".repeat(64)}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
+    `${sha256("archive\n")}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
   );
   writeFileSync(
     resolve(root, "koed-native-runtime-linux-x64-0.4.0.provenance.json"),
@@ -223,9 +267,9 @@ test("rejects release artifacts whose versions do not match the product", () => 
 
 test("binds flattened app-runtime sidecars to their exact targets", () => {
   const root = tempDir();
-  for (const [platform, architecture, hash] of [
-    ["linux", "x64", "d"],
-    ["macos", "arm64", "e"]
+  for (const [platform, architecture] of [
+    ["linux", "x64"],
+    ["macos", "arm64"]
   ]) {
     const archiveName = `koed-server-0.4.0-${platform}-${architecture}.tar.gz`;
     const manifestName = `koed-server-app-runtime-0.4.0-${platform}-${architecture}.manifest.json`;
@@ -241,7 +285,7 @@ test("binds flattened app-runtime sidecars to their exact targets", () => {
     writeFileSync(resolve(root, archiveName), "archive\n");
     writeFileSync(
       resolve(root, `${archiveName}.sha256`),
-      `${hash.repeat(64)}  ${archiveName}\n`
+      `${sha256("archive\n")}  ${archiveName}\n`
     );
     writeFileSync(resolve(root, manifestName), manifestContent);
     writeFileSync(
@@ -256,7 +300,7 @@ test("binds flattened app-runtime sidecars to their exact targets", () => {
             platform,
             architecture,
             archiveName,
-            archiveSha256: hash.repeat(64),
+            archiveSha256: sha256("archive\n"),
             manifestName: "koed-server-package-manifest.json",
             manifestSha256: sha256(manifestContent)
           }
@@ -290,7 +334,7 @@ test("rejects swapped app-runtime provenance", () => {
   writeFileSync(resolve(root, archiveName), "archive\n");
   writeFileSync(
     resolve(root, `${archiveName}.sha256`),
-    `${"f".repeat(64)}  ${archiveName}\n`
+    `${sha256("archive\n")}  ${archiveName}\n`
   );
   writeFileSync(
     resolve(root, "koed-server-app-runtime-0.4.0-macos-arm64.manifest.json"),

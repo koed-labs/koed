@@ -15,11 +15,11 @@ bridge that preserves the original call identity.
 Start the local control plane supervisor in one terminal:
 
 ```bash
-pnpm --filter @koed/koed-server build
+pnpm --filter @koed-labs/server build
 node packages/koed-server/dist/cli.js start
 ```
 
-`koed-server start` is long-running. After it reports that the API is ready, run
+`koed start` is long-running. After it reports that the API is ready, run
 client-neutral core setup from another terminal:
 
 ```bash
@@ -106,7 +106,7 @@ Environment:
 Working directory: /path/to/koed
 ```
 
-`koed-server setup codex` writes this configuration only after explicit Codex
+`koed setup codex` writes this configuration only after explicit Codex
 setup. Desktop exposes the same protected setup, check, repair, and remove
 commands after per-action consent. `check codex --json` is read-only and
 `remove codex --json` transactionally removes Koed's marked MCP/Capture Hook
@@ -116,7 +116,7 @@ adapter discovers the authenticated Local AI Runtime through an owner-only
 local registration under `KOED_HOME`; API and upstream credentials are not
 copied into Codex MCP configuration. Installing or detecting Codex does not
 select it for other flows. The same setup operation installs the packaged Koed
-memory guidance in Codex's global instructions. `koed-server status --json` and
+memory guidance in Codex's global instructions. `koed status --json` and
 `doctor --json` report missing, stale, or malformed guidance through the
 existing Codex configuration check, and **Fix Codex integration** reconciles
 missing or stale content.

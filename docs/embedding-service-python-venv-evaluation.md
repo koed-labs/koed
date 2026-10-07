@@ -48,7 +48,7 @@ Callers outside the service depend on the HTTP contract, not Python internals:
 
 - `packages/db/src/repository.ts` calls `/embed` and `/rerank` through `EMBEDDING_SERVICE_URL` with `x-koed-embedding-token`.
 - API and Worker load `EMBEDDING_SERVICE_URL`, `EMBEDDING_SERVICE_TOKEN`, `EMBEDDING_MODEL`, and reranker env through their existing config paths.
-- `koed-server start/status/doctor/stop` manages the local process and health checks.
+- `koed start/status/doctor/stop` manages the local process and health checks.
 - packaged Desktop smoke validates packaged-provider runtime install/start behavior through the same CLI path.
 
 ## Current packaging shape

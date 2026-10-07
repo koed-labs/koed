@@ -832,7 +832,7 @@ export const runBundledLocalSmoke = async ({
     assertCommand(
       deps,
       "pnpm",
-      ["--filter", "@koed/koed-server", "build"],
+      ["--filter", "@koed-labs/server", "build"],
       "koed-server build",
       { cwd: context.root, env: context.env }
     );

@@ -27,7 +27,24 @@ When the `Release` workflow creates a new GitHub Release, it first creates it as
 
 The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing draft release name. Draft releases do not necessarily have a Git tag, so the workflow resolves the draft's `targetCommitish` to an immutable commit SHA before checkout. It then confirms that source contains both the pinned hermetic OpenSSL builder and the safe Desktop symlink/sealing behavior, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present. The recovery workflow deliberately rejects published releases and source such as `v0.4.3` that predates the safe packaging boundary; repair those through a patch release instead of mixing current build tooling into historical source.
 
-Packaged Desktop smoke writes detached supervisor output to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
+Packaged Desktop smoke launches the real packaged manager with a private inherited
+IPC harness and temporary user-data directory. The manager owns supervisor
+start/status/stop/restart and creates its private supervisor authority channel;
+no environment flag grants that authority. While the owned supervisor is running,
+status/startup status, doctor, core setup, and Codex setup/repair use nonce- and
+request-ID-correlated private IPC. The supervisor passes its reverified, sealed
+Desktop capability directly to runtime selection; it never serializes capability
+authority into CLI arguments or environment variables. Guided setup uses the same
+transport, and pending requests reject on timeout, child exit, or disconnect.
+Startup acquires its supervisor lock
+before pinning the verified runtime generation. Only start pinning may accept that
+same live PID and exact process identity; existing generation pins, foreign or
+uncertain supervisor ownership, activation, and cleanup remain blocked. Lifecycle
+and component-store locks still protect generation selection and retention.
+Personal/Base smoke requires embedding,
+not Privacy assets. A separate Team launch verifies startup fails closed without
+verified Privacy assets; empty production signer trust roots block positive Team
+provisioning. Supervisor output is written to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
 
 These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
 
@@ -64,14 +81,17 @@ Do not present these unsigned artifacts as signed or notarized release builds.
 
 Use the app UI first: launch Koed Desktop, wait for local startup, then check runtime setup/status/doctor controls.
 
-For CLI verification against an installed app, set paths and run packaged `koed-server` commands through Electron:
+For standalone diagnostic CLI verification against an installed app, set paths and
+run packaged `koed-server` commands through Electron. These commands do not gain
+Desktop authority and cannot establish healthy Desktop-owned generation status;
+use app controls for that acceptance check:
 
 ```bash
 APP="/Applications/Koed.app"
 EXE="$APP/Contents/MacOS/Koed"
 RES="$APP/Contents/Resources"
 RUNNER="$RES/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js"
-CLI="$RES/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+CLI="$RES/app.asar/node_modules/@koed-labs/server/dist/cli.js"
 export KOED_HOME="${KOED_HOME:-$HOME/Library/Application Support/Koed}"
 
 ELECTRON_RUN_AS_NODE=1 \
@@ -91,26 +111,15 @@ WORK_QUEUE_BACKEND=local \
 "$EXE" "$RUNNER" node-script "$CLI" doctor --json
 ```
 
-Expected result: packaged runtime source resolves under `Contents/Resources/koed-runtime`, runtime install/status succeed, doctor does not fall back to source-checkout paths, and packaged runtime contents do not require `embedding-service/.venv/bin/python`.
+Expected result: diagnostics never fall back to source-checkout paths, environment
+flags do not authenticate a Desktop generation, and packaged runtime contents do
+not require `embedding-service/.venv/bin/python`. Standalone doctor may report no
+compatible authenticated runtime even while Desktop is healthy; only the private
+manager/supervisor status channel carries Desktop's sealed capability.
 
 ## Cleanup
 
-Stop Koed from the app UI or CLI before deleting test data:
-
-```bash
-APP="/Applications/Koed.app"
-EXE="$APP/Contents/MacOS/Koed"
-RES="$APP/Contents/Resources"
-RUNNER="$RES/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js"
-CLI="$RES/app.asar/node_modules/@koed/koed-server/dist/cli.js"
-
-ELECTRON_RUN_AS_NODE=1 \
-KOED_PACKAGED_DESKTOP=1 \
-KOED_PACKAGED_RESOURCES_PATH="$RES" \
-KOED_RUNTIME_MODE=local-personal \
-KOED_DEPENDENCY_MODE=bundled-local \
-WORK_QUEUE_BACKEND=local \
-"$EXE" "$RUNNER" node-script "$CLI" stop --json
-```
+Stop Koed from the app UI before deleting test data. Packaged lifecycle authority
+belongs to the Desktop manager, not public CLI start/stop or environment flags.
 
 Then remove temporary app copies and test `KOED_HOME` if used.

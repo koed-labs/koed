@@ -16,6 +16,10 @@ import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
+  cliInstallCommandChannel,
+  cliInstallProgressChannel
+} from "./cli-install/protocol.js";
+import {
   clipboardWriteChannel,
   desktopCommandNames,
   hardwareAccelerationGetChannel,
@@ -89,6 +93,53 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(launchAtStartupGetChannel),
     set: (enabled: boolean) =>
       ipcRenderer.invoke(launchAtStartupSetChannel, enabled)
+  }),
+  cliInstall: Object.freeze({
+    getStatus: () =>
+      ipcRenderer.invoke(cliInstallCommandChannel, { operation: "status" }),
+    installPrivacy: (consent: boolean, offlinePath?: string) =>
+      ipcRenderer.invoke(cliInstallCommandChannel, {
+        operation: "install",
+        consent,
+        ...(offlinePath ? { offlinePath } : {})
+      }),
+    cancel: () =>
+      ipcRenderer.invoke(cliInstallCommandChannel, { operation: "cancel" }),
+    selectOffline: () =>
+      ipcRenderer.invoke(cliInstallCommandChannel, {
+        operation: "select-offline"
+      }),
+    launcher: (
+      operation: "inspect" | "install" | "remove",
+      options?: { consent?: boolean; destination?: string }
+    ) =>
+      ipcRenderer.invoke(
+        cliInstallCommandChannel,
+        operation === "inspect"
+          ? { operation: "launcher-inspect" }
+          : operation === "remove"
+            ? { operation: "launcher-remove" }
+            : { operation: "launcher-install", ...options }
+      ),
+    updatePath: (operationKind: "add" | "remove", consent: boolean) =>
+      ipcRenderer.invoke(cliInstallCommandChannel, {
+        operation: "path-update",
+        operationKind,
+        consent
+      }),
+    subscribe: (listener: (progress: unknown) => void) => {
+      if (typeof listener !== "function")
+        throw new TypeError("CLI install progress listener is required.");
+      let active = true;
+      const wrapped = (_event: unknown, value: unknown) => {
+        if (active) listener(value);
+      };
+      ipcRenderer.on(cliInstallProgressChannel, wrapped);
+      return () => {
+        active = false;
+        ipcRenderer.removeListener(cliInstallProgressChannel, wrapped);
+      };
+    }
   }),
   setup: Object.freeze({
     inspect: () => ipcRenderer.invoke(setupCommandChannel, "inspect"),

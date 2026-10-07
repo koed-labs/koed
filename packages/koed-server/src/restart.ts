@@ -52,7 +52,7 @@ const startDetached = ({
     stdio: "ignore"
   }) as ChildProcess;
   if (!child.pid) {
-    throw new Error("Could not start koed-server restart child process.");
+    throw new Error("Could not start koed restart child process.");
   }
   child.unref();
   return child.pid;

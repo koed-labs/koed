@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency: recover-desktop-release-${{ inputs.tag }}
 
@@ -18,6 +19,9 @@ jobs:
     name: Recover unsigned Desktop assets for ${{ inputs.tag }}
     runs-on: macos-14
     timeout-minutes: 90
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Resolve draft release source
@@ -49,6 +53,12 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.commit }}
 
+      - name: Checkout current immutable asset-promotion tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
@@ -60,6 +70,7 @@ jobs:
         with:
           node-version: 24.13.1
           cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - name: Verify release version and safe source boundary
         env:
@@ -136,7 +147,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Build native runtime artifact
         env:
@@ -198,12 +209,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ inputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
+          node .release-tools/scripts/ensure-release-assets.mjs "${{ inputs.tag }}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
             apps/desktop/release/desktop-artifact-size-report.json \
-            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
-            --clobber
+            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256
 
       - name: Verify required assets
         env:
@@ -246,8 +256,53 @@ jobs:
             fi
           done
 
-      - name: Publish recovered draft
+      - name: Validate release metadata URLs against immutable draft assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.release.outputs.release_id }}
-        run: gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false --silent
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          release_json="${RUNNER_TEMP}/koed-release.json"
+          metadata_json="${RUNNER_TEMP}/koed-release-artifacts.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > "${release_json}"
+          metadata_asset_id="$(jq -r --arg name "koed-release-artifacts-${version}.json" '.assets[] | select(.name == $name) | .id' "${release_json}")"
+          test -n "${metadata_asset_id}"
+          gh api --header 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/${metadata_asset_id}" > "${metadata_json}"
+          node .release-tools/scripts/validate-published-release-assets.mjs --metadata "${metadata_json}" --release "${release_json}" --json
+
+      - name: Verify signatures, promote npm candidate, and publish recovered release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
+          NPM_AUTHORIZED: ${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}
+          PROMOTION_APPROVED: ${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          VERSION: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "${SIGNER_URL}" || { echo "Official component signer is not configured; recovered release remains draft." >&2; exit 1; }
+          test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured; recovered release remains draft." >&2; exit 1; }
+          [[ "${TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Approved production trust roots are not configured; recovered release remains draft." >&2; exit 1; }
+          test -n "${TRUST_ROOTS_JSON}" || { echo "Production trust root public keys are not configured; recovered release remains draft." >&2; exit 1; }
+          [[ "${CONTROLPLANE_TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Built control-plane trusted key digest is not configured; recovered release remains draft." >&2; exit 1; }
+          test "${NPM_AUTHORIZED}" = "true" || { echo "npm publication authorization is not configured; recovered release remains draft." >&2; exit 1; }
+          test "${PROMOTION_APPROVED}" = "true" || { echo "Explicit promotion approval missing; recovered release remains draft." >&2; exit 1; }
+          trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
+          printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
+          version="${VERSION#v}"
+          node .release-tools/scripts/release-promotion-adapter.mjs \
+            --trust-roots "${trust_roots}" \
+            --trust-roots-sha256 "${TRUST_ROOTS_SHA256}" \
+            --controlplane-trust-roots-sha256 "${CONTROLPLANE_TRUST_ROOTS_SHA256}" \
+            --signer-url "${SIGNER_URL}" \
+            --signer-key-id "${SIGNER_KEY_ID}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --release-id "${RELEASE_ID}" \
+            --version "${version}" \
+            --json

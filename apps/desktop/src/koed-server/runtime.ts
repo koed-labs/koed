@@ -37,11 +37,12 @@ export const resolveKoedServerPaths = ({
   environment,
   resourcesPath
 }: KoedServerPathOptions): KoedServerPaths => {
-  const explicitCliPath = environment.KOED_SERVER_CLI?.trim()
-    ? resolve(environment.KOED_SERVER_CLI)
-    : undefined;
+  const explicitCliPath =
+    !appIsPackaged && environment.KOED_SERVER_CLI?.trim()
+      ? resolve(environment.KOED_SERVER_CLI)
+      : undefined;
 
-  if (environment.KOED_REPO_ROOT?.trim()) {
+  if (!appIsPackaged && environment.KOED_REPO_ROOT?.trim()) {
     const repoRoot = resolve(environment.KOED_REPO_ROOT);
     return {
       repoRoot,
@@ -50,7 +51,7 @@ export const resolveKoedServerPaths = ({
     };
   }
 
-  if (explicitCliPath) {
+  if (!appIsPackaged && explicitCliPath) {
     return {
       repoRoot: resolve(dirname(explicitCliPath), "..", "..", ".."),
       cliPath: explicitCliPath
@@ -58,6 +59,13 @@ export const resolveKoedServerPaths = ({
   }
 
   if (appIsPackaged) {
+    if (
+      environment.KOED_SERVER_CLI?.trim() ||
+      environment.KOED_REPO_ROOT?.trim() ||
+      environment.KOED_NODE_COMMAND?.trim()
+    ) {
+      throw new Error("Packaged Desktop runtime overrides are not allowed.");
+    }
     const packagedResourcesPath = resourcesPath ?? resolve(appDir, "..");
     return {
       repoRoot: packagedResourcesPath,
@@ -65,8 +73,8 @@ export const resolveKoedServerPaths = ({
         packagedResourcesPath,
         "app.asar",
         "node_modules",
-        "@koed",
-        "koed-server",
+        "@koed-labs",
+        "server",
         "dist",
         "cli.js"
       )
@@ -82,10 +90,16 @@ export const resolveKoedServerPaths = ({
 
 export const createElectronNodeEnv = (
   environment: NodeJS.ProcessEnv
-): NodeJS.ProcessEnv => ({
-  ...environment,
-  ELECTRON_RUN_AS_NODE: "1"
-});
+): NodeJS.ProcessEnv => {
+  const packagedEnvironment = { ...environment };
+  delete packagedEnvironment.KOED_SERVER_CLI;
+  delete packagedEnvironment.KOED_REPO_ROOT;
+  delete packagedEnvironment.KOED_NODE_COMMAND;
+  return {
+    ...packagedEnvironment,
+    ELECTRON_RUN_AS_NODE: "1"
+  };
+};
 
 export const resolveElectronNodeExecPath = ({
   appIsPackaged,
@@ -96,9 +110,13 @@ export const resolveElectronNodeExecPath = ({
   KoedServerRuntimeOptions,
   "appIsPackaged" | "electronExecPath" | "platform" | "existsSync"
 >): string => {
-  void appIsPackaged;
-  void platform;
-  void pathExists;
+  if (!appIsPackaged) return electronExecPath;
+  if (platform !== "darwin" && platform !== "win32" && platform !== "linux") {
+    throw new Error(`Unsupported packaged Electron platform: ${platform}`);
+  }
+  if (!pathExists(electronExecPath)) {
+    throw new Error("Packaged Electron executable is unavailable");
+  }
   return electronExecPath;
 };
 
@@ -137,7 +155,9 @@ export const createNodeEntrypointInvocation = (
   args: string[],
   options: KoedServerRuntimeOptions
 ): NodeEntrypointInvocation => {
-  const explicitNodeCommand = options.environment.KOED_NODE_COMMAND?.trim();
+  const explicitNodeCommand = options.appIsPackaged
+    ? undefined
+    : options.environment.KOED_NODE_COMMAND?.trim();
   if (explicitNodeCommand) {
     const invocationArgs = [entrypointPath, ...args];
     return {

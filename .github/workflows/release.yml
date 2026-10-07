@@ -105,7 +105,7 @@ jobs:
 
       - name: Create release notes
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
-        run: pnpm release:notes > release-notes.md
+        run: pnpm release:notes --version "${{ steps.product.outputs.version }}" > release-notes.md
 
       - name: Append release artifact notes
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
@@ -114,21 +114,19 @@ jobs:
 
           ## Release artifact lines
 
+          - Public npm package: `@koed-labs/server`, promoted through immutable version and candidate-tag verification before `latest`.
+          - Standalone Koed distribution: independently hashed base and optional privacy component archives with component manifests; official promotion requires external signatures trusted by approved production roots.
           - Desktop package: Koed Desktop control-plane assets.
-          - koed-server app-runtime package: standalone JS/service runtime archives named `koed-server-<version>-<platform>-<arch>.tar.gz` with SHA-256 sidecars.
           - Native runtime assets: separate, checksum-pinned Postgres, pgvector, and llama-server runtime archives. Linux x64 includes CPU and CUDA payloads; models remain separate.
-          - Model artifacts: separate embedding and reranker assets installed under `KOED_HOME/models`; not embedded in the koed-server app-runtime package.
+          - Model artifacts: separate embedding and reranker assets installed under `KOED_HOME/models`; not embedded in Koed component archives.
           EOF
 
       - name: Mark Desktop release assets enabled
         id: release_assets
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
-          if [ "${{ steps.release.outputs.exists }}" = "false" ]; then
-            echo "enabled=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "enabled=false" >> "${GITHUB_OUTPUT}"
-          fi
+          # Existing drafts are resumable; asset builders verify exact bytes.
+          echo "enabled=true" >> "${GITHUB_OUTPUT}"
 
       - name: Create GitHub release
         id: create_release
@@ -153,6 +151,9 @@ jobs:
     name: Standalone koed-server release assets (${{ matrix.platform }} ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
     needs: release
     if: needs.release.outputs.desktop_assets_enabled == 'true'
     strategy:
@@ -192,6 +193,36 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --json
+
+      - name: Build base and privacy component release set
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: node scripts/build-koed-component-release.mjs --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+
+      - name: Sign component manifests with external signer
+        env:
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
+          VERSION: ${{ needs.release.outputs.version }}
+          TARGET: ${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test -n "${SIGNER_URL}" || { echo "Official component signer is not configured." >&2; exit 1; }
+          test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured." >&2; exit 1; }
+          test -n "${TRUST_ROOTS_JSON}" || { echo "Production trust root public keys are not configured." >&2; exit 1; }
+          [[ "${CONTROLPLANE_TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Built control-plane trusted key digest is not configured." >&2; exit 1; }
+          trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
+          printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
+          node scripts/release-signing-adapter.mjs \
+            "dist/koed-components/${TARGET}" "${VERSION}" "${TARGET}" \
+            "${trust_roots}" "${SIGNER_URL}" "${SIGNER_KEY_ID}" "${TRUST_ROOTS_SHA256}" "${CONTROLPLANE_TRUST_ROOTS_SHA256}"
+
+      - name: Pack public Koed Server npm candidate
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        run: pnpm koed-server:public-package -- --out-dir dist/public-server-package
 
       - name: Verify standalone package reproducibility
         env:
@@ -254,6 +285,11 @@ jobs:
           manifest="$(find "${package_dir}" -path '*/koed-server-package-manifest.json' -print -quit)"
           test -n "${manifest}"
           cp "${manifest}" "${release_dir}/koed-server-app-runtime-${{ needs.release.outputs.version }}-${target}.manifest.json"
+          cp "dist/koed-components/${target}"/koed-* "${release_dir}/"
+          if [[ "${{ matrix.platform }}-${{ matrix.arch }}" == "linux-x64" ]]; then
+            cp dist/public-server-package/tarballs/koed-labs-server.tgz "${release_dir}/"
+            cp dist/public-server-package/tarballs/koed-labs-server-release-identity.json "${release_dir}/"
+          fi
 
       - name: Inspect standalone koed-server package
         run: |
@@ -285,9 +321,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
-            release-artifacts/koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}/* \
-            --clobber
+          node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
+            release-artifacts/koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}/*
 
   standalone-koed-server-release-metadata:
     name: Standalone koed-server release metadata
@@ -335,9 +370,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
-            "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
-            --clobber
+          node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
+            "koed-release-artifacts-${{ needs.release.outputs.version }}.json"
 
   native-runtime-linux-x64-release-assets:
     name: Linux x64 native runtime release assets
@@ -366,7 +400,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Restore verified Linux native runtime payload
         id: native-cache
@@ -469,9 +503,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
-            release-artifacts/native-runtime-linux-x64/* \
-            --clobber
+          node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
+            release-artifacts/native-runtime-linux-x64/*
 
   unsigned-desktop-release-assets:
     name: Unsigned Desktop release assets
@@ -500,7 +533,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Build native runtime artifact
         env:
@@ -576,17 +609,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
+          node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
             apps/desktop/release/desktop-artifact-size-report.json \
-            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
-            --clobber
+            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256
 
   publish-release:
     name: Verify assets and publish release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
     needs:
       - release
       - standalone-koed-server-release-assets
@@ -598,6 +633,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Node and npm trusted publishing
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          registry-url: https://registry.npmjs.org
+
+      - name: Require official signer, trust roots, npm authorization, and explicit promotion approval
+        env:
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
+          NPM_AUTHORIZED: ${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}
+          PROMOTION_APPROVED: ${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}
+        run: |
+          set -euo pipefail
+          test -n "${SIGNER_URL}" || { echo "Official component signer is not configured." >&2; exit 1; }
+          test -n "${SIGNER_KEY_ID}" || { echo "Official signer key ID is not configured." >&2; exit 1; }
+          [[ "${TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Approved production trust roots are not configured." >&2; exit 1; }
+          test -n "${TRUST_ROOTS_JSON}" || { echo "Production trust root public keys are not configured." >&2; exit 1; }
+          [[ "${CONTROLPLANE_TRUST_ROOTS_SHA256}" =~ ^[a-f0-9]{64}$ ]] || { echo "Built control-plane trusted key digest is not configured." >&2; exit 1; }
+          test "${NPM_AUTHORIZED}" = "true" || { echo "npm trusted publishing authorization is not configured." >&2; exit 1; }
+          test "${PROMOTION_APPROVED}" = "true" || { echo "Independent release promotion approval is missing." >&2; exit 1; }
 
       - name: Verify required release assets
         env:
@@ -634,7 +694,25 @@ jobs:
             "koed-server-${VERSION}-macos-arm64.tar.gz.sha256" \
             "koed-server-app-runtime-${VERSION}-macos-arm64.provenance.json" \
             "koed-server-app-runtime-${VERSION}-macos-arm64.manifest.json" \
+            "koed-base-${VERSION}-linux-x64.tar.gz" \
+            "koed-base-${VERSION}-linux-x64.tar.gz.sha256" \
+            "koed-base-${VERSION}-linux-x64.tar.gz.manifest.json" \
+            "koed-base-${VERSION}-linux-x64.tar.gz.signature.json" \
+            "koed-privacy-${VERSION}-linux-x64.tar.gz" \
+            "koed-privacy-${VERSION}-linux-x64.tar.gz.sha256" \
+            "koed-privacy-${VERSION}-linux-x64.tar.gz.manifest.json" \
+            "koed-privacy-${VERSION}-linux-x64.tar.gz.signature.json" \
+            "koed-base-${VERSION}-macos-arm64.tar.gz" \
+            "koed-base-${VERSION}-macos-arm64.tar.gz.sha256" \
+            "koed-base-${VERSION}-macos-arm64.tar.gz.manifest.json" \
+            "koed-base-${VERSION}-macos-arm64.tar.gz.signature.json" \
+            "koed-privacy-${VERSION}-macos-arm64.tar.gz" \
+            "koed-privacy-${VERSION}-macos-arm64.tar.gz.sha256" \
+            "koed-privacy-${VERSION}-macos-arm64.tar.gz.manifest.json" \
+            "koed-privacy-${VERSION}-macos-arm64.tar.gz.signature.json" \
             "koed-release-artifacts-${VERSION}.json" \
+            "koed-labs-server.tgz" \
+            "koed-labs-server-release-identity.json" \
             "koed-native-runtime-linux-x64-${VERSION}.tar.gz" \
             "koed-native-runtime-linux-x64-${VERSION}.tar.gz.sha256" \
             "koed-native-runtime-linux-x64-${VERSION}.provenance.json" \
@@ -668,8 +746,27 @@ jobs:
             --release "${release_json}" \
             --json
 
-      - name: Publish verified release
+      - name: Verify signatures, promote npm candidate, and publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
+          SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
+          TRUST_ROOTS_SHA256: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_SHA256 }}
+          CONTROLPLANE_TRUST_ROOTS_SHA256: ${{ vars.KOED_CONTROLPLANE_TRUST_ROOTS_SHA256 }}
+          TRUST_ROOTS_JSON: ${{ vars.KOED_COMPONENT_TRUST_ROOTS_JSON }}
           RELEASE_ID: ${{ needs.release.outputs.release_id }}
-        run: gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false --silent
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
+          printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
+          node scripts/release-promotion-adapter.mjs \
+            --trust-roots "${trust_roots}" \
+            --trust-roots-sha256 "${TRUST_ROOTS_SHA256}" \
+            --controlplane-trust-roots-sha256 "${CONTROLPLANE_TRUST_ROOTS_SHA256}" \
+            --signer-url "${SIGNER_URL}" \
+            --signer-key-id "${SIGNER_KEY_ID}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --release-id "${RELEASE_ID}" \
+            --version "${VERSION}" \
+            --json

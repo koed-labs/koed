@@ -10,5 +10,10 @@
   },
   "references": [{ "path": "../shared" }],
   "include": ["src/**/*.ts", "src/**/*.mjs"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts",
+    "src/component-test-fixtures.ts",
+    "src/setup-runtime-test-fixtures.ts"
+  ]
 }

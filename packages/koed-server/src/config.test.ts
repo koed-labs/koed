@@ -32,6 +32,8 @@ const paths = (root: string): KoedServerPaths => ({
   dataDir: resolve(root, "data"),
   modelsDir: resolve(root, "models"),
   cacheDir: resolve(root, "cache"),
+  componentsDir: resolve(root, "runtime", "components"),
+  generationsDir: resolve(root, "runtime", "generations"),
   postgresDataDir: resolve(root, "data/postgres"),
   postgresRunDir: resolve(root, "run/postgres"),
   postgresLogPath: resolve(root, "logs/postgres.log"),
@@ -211,16 +213,37 @@ describe("koed-server config", () => {
     ).toEqual([]);
   });
 
-  it("rejects malformed persisted hardware acceleration", () => {
+  it("fails strict resolution for malformed or non-object server config", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
+    const serverConfigPath = resolve(root, "config/server.json");
+    writeFileSync(serverConfigPath, "[]");
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {}, { strict: true })
+    ).toThrow(`Cannot read ${serverConfigPath}: expected a JSON object`);
+    writeFileSync(serverConfigPath, JSON.stringify({ runtimeMode: "magic" }));
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {}, { strict: true })
+    ).toThrow("runtimeMode must be local-personal, external, or developer");
+  });
+
+  it("rejects malformed persisted hardware acceleration even with environment override", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    const serverConfigPath = resolve(root, "config/server.json");
     writeFileSync(
-      resolve(root, "config/server.json"),
+      serverConfigPath,
       JSON.stringify({ hardwareAcceleration: "fastest" })
     );
 
-    expect(() => resolveKoedServerConfig(paths(root), {})).toThrow(
-      "server.json hardwareAcceleration must be auto or cpu"
+    expect(() =>
+      resolveKoedServerConfig(
+        paths(root),
+        { KOED_HARDWARE_ACCELERATION: "cpu" },
+        { strict: true }
+      )
+    ).toThrow(
+      `Cannot read ${serverConfigPath}: server.json hardwareAcceleration must be auto or cpu`
     );
   });
 

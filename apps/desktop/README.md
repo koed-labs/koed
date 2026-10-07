@@ -67,7 +67,7 @@ state.
 ## Run
 
 ```bash
-pnpm --filter @koed/koed-server build
+pnpm --filter @koed-labs/server build
 pnpm --filter @koed/desktop start
 ```
 
@@ -95,37 +95,25 @@ anything with a clear macOS-only message; set
 skip this smoke.
 
 This local package bundles the Electron shell, packaged renderer assets, the
-`@koed/koed-server` control-plane CLI, JS/service artifacts for API, Worker,
+`@koed-labs/server` control-plane CLI, JS/service artifacts for API, Worker,
 MCP Server, Supported Capture Hook, DB migrations, the built
 Embedding Service, and runtime package dependencies under
 `Contents/Resources/koed-runtime`. It can also stage native Postgres/pgvector
 and llama-server assets from `KOED_NATIVE_RUNTIME_SOURCE_DIR`; when present,
 packaging writes a platform/architecture `runtime-asset-manifest.json` so
-`koed-server runtime install --provider packaged --dependency-mode
+`koed runtime install --provider packaged --dependency-mode
 bundled-local --json` can verify and install them under `KOED_HOME/runtime`.
 For local packaged-native smoke, `pnpm native-runtime:stage:homebrew -- --out
 /tmp/koed-native-runtime --force` can create a staging directory from
 Homebrew/Linuxbrew formulas; this helper is not a release-quality
 redistributable runtime bundle. Python virtualenv files are no longer packaged
 native runtime assets. If no native source is staged, missing native runtime assets
-show as actionable `koed-server runtime status/install` diagnostics and
+show as actionable `koed runtime status/install` diagnostics and
 Homebrew remains the macOS/Linux fallback.
-Point the packaged app back at a checkout for developer diagnostics by opting
-into source fallbacks explicitly:
-
-```bash
-KOED_REPO_ROOT=/path/to/koed \
-KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1 \
-  apps/desktop/release/mac/Koed.app/Contents/MacOS/Koed
-```
-
-`KOED_SERVER_CLI=/path/to/cli.js` can override the control-plane CLI directly.
-Use the app executable when passing environment variables; macOS `open` does not
-reliably preserve inline shell environment assignments for `.app` launches.
-Alternatively, set persistent launch services environment with `launchctl setenv
-KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
-packaged app uses its bundled `koed-server` CLI and reports missing runtime
-diagnostics instead of crashing.
+Packaged Desktop always resolves the control-plane CLI from its bundled
+`@koed-labs/server` package. Packaged `KOED_REPO_ROOT`, `KOED_SERVER_CLI`, and
+`KOED_NODE_COMMAND` overrides cause runtime resolution to fail closed; use an
+unpackaged development build for checkout overrides.
 
 Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
@@ -184,19 +172,24 @@ packaging, signing, runtime distribution, or packaged smoke support.
   `electron-builder --mac dir` and disables signing/notarization.
 - `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
-  can run without checkout overrides. The smoke launches the packaged
-  `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
+  can run without checkout overrides. The smoke launches the real packaged
+  Desktop manager with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
   the setup surface, Personal Memory navigation, collaboration, preferences,
   and renderer fault handling, and verifies daemon
-  start/status/reconnect/stop. The focused `--missing-assets` mode checks
+  start/status/reconnect/stop through a private inherited IPC harness. The
+  manager retains sole supervisor authority; environment flags do not grant it.
+  Personal/Base smoke installs only embedding assets. A separate Team launch
+  proves missing verified Privacy assets fail closed; positive Team provisioning
+  remains blocked while production signer trust roots are empty.
+  The focused `--missing-assets` mode checks
   packaged-CLI status and actionable `doctor --json` output without launching
   Electron services. Add `--mask-native-assets` to temporarily hide and then
   restore `postgres` and `llama.cpp` in an already-built packaged app. Set
   `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
   manifest for packaged-provider runtime install tests. For deterministic
-  offline smoke, pass `--embedding-model-source <gguf>` and
-  `--privacy-model-source <privacy-model-directory>`; the packaged CLI still
-  verifies the pinned hashes before starting services.
+  offline smoke, pass `--embedding-model-source <gguf>`; the packaged CLI still
+  verifies pinned hashes before starting services. Privacy pre-seeding is not
+  supported by Base smoke and cannot bypass the Team verification gate.
   `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
   can produce a local Homebrew-backed staging directory for those smoke tests.
   `desktop:package:smoke` currently aliases the macOS smoke and guards
@@ -218,7 +211,11 @@ packaging, signing, runtime distribution, or packaged smoke support.
 - macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
-  `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
-  `KOED_SERVER_CLI` remain available for developer control-plane overrides.
-  Source-checkout runtime fallback also requires
-  `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
+  `node_modules/@koed-labs/server/dist/cli.js`; packaged `KOED_REPO_ROOT`,
+  `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides fail closed. Desktop
+  generation ownership still requires a validated private manager channel;
+  Desktop does not assert ownership through renderer data, environment
+  variables, or public CLI flags. Terminal launcher filesystem helpers exist
+  for isolated validation, but installation and shell PATH editing remain
+  unavailable until packaged Electron helper/fuse compatibility and mutation
+  safety are validated on supported target.

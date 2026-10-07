@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe("Pi setup", () => {
-  it("parses model and package listings without substring matches", () => {
+  it("parses model and package listings without substring matches", async () => {
     expect(parsePiModelListOutput("provider model\nopenai gpt-5.4\n")).toEqual({
       valid: true,
       models: ["openai/gpt-5.4"]
@@ -70,70 +70,77 @@ describe("Pi setup", () => {
     "koed-home",
     "server-package",
     "legacy-flat"
-  ])("installs Pi from the selected %s packaged runtime", (layout) => {
-    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-"));
-    temporaryDirectories.push(root);
-    const koedHome = resolve(root, "koed");
-    const runtimeRoot =
-      layout === "koed-home"
-        ? resolve(koedHome, "runtime/koed-runtime")
-        : layout === "server-package"
-          ? resolve(koedHome, "runtime/koed-server/current/koed-runtime")
-          : resolve(root, "resources/koed-runtime");
-    const source = resolve(
-      runtimeRoot,
-      layout === "legacy-flat"
-        ? "mcp-server/integrations/pi"
-        : "node_modules/@koed/mcp-server/integrations/pi"
-    );
-    mkdirSync(resolve(source, "extensions"), { recursive: true });
-    writeFileSync(resolve(source, "package.json"), "{}\n");
-    writeFileSync(
-      resolve(source, "extensions/koed.mjs"),
-      "// selected runtime\n"
-    );
-    // A checkout package must not supersede the selected packaged runtime.
-    const decoy = resolve(root, "checkout/packages/mcp-server/integrations/pi");
-    mkdirSync(resolve(decoy, "extensions"), { recursive: true });
-    writeFileSync(resolve(decoy, "package.json"), "{}\n");
-    writeFileSync(resolve(decoy, "extensions/koed.mjs"), "// wrong checkout\n");
-    const result = setupPi(
-      {
-        HOME: root,
-        KOED_HOME: koedHome,
-        KOED_REPO_ROOT: resolve(root, "checkout"),
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: resolve(root, "resources"),
-        ...(layout === "explicit" ? { KOED_JS_RUNTIME_ROOT: runtimeRoot } : {}),
-        KOED_PI_EXECUTABLE: "/bin/sh"
-      },
-      ((_command: string, args: string[]) =>
-        args[0] === "--version"
-          ? spawnResult("0.84.2\n")
-          : args[0] === "--list-models"
-            ? spawnResult("No models available.\n")
-            : args[0] === "list"
-              ? spawnResult(`${resolve(koedHome, "integrations/pi")}\n`)
-              : spawnResult()) as never
-    );
-    expect(result.ok).toBe(true);
-    expect(
-      readFileSync(
-        resolve(koedHome, "integrations/pi/extensions/koed.mjs"),
-        "utf8"
-      )
-    ).toBe("// selected runtime\n");
-  });
+  ])(
+    "uses the explicit source checkout despite %s packaged flags",
+    async (layout) => {
+      const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-"));
+      temporaryDirectories.push(root);
+      const koedHome = resolve(root, "koed");
+      const runtimeRoot =
+        layout === "koed-home"
+          ? resolve(koedHome, "runtime/koed-runtime")
+          : layout === "server-package"
+            ? resolve(koedHome, "runtime/koed-server/current/koed-runtime")
+            : resolve(root, "resources/koed-runtime");
+      const source = resolve(
+        runtimeRoot,
+        layout === "legacy-flat"
+          ? "mcp-server/integrations/pi"
+          : "node_modules/@koed/mcp-server/integrations/pi"
+      );
+      mkdirSync(resolve(source, "extensions"), { recursive: true });
+      writeFileSync(resolve(source, "package.json"), "{}\n");
+      writeFileSync(
+        resolve(source, "extensions/koed.mjs"),
+        "// selected runtime\n"
+      );
+      // A checkout package must not supersede the selected packaged runtime.
+      const decoy = resolve(
+        root,
+        "checkout/packages/mcp-server/integrations/pi"
+      );
+      mkdirSync(resolve(decoy, "extensions"), { recursive: true });
+      writeFileSync(resolve(decoy, "package.json"), "{}\n");
+      writeFileSync(
+        resolve(decoy, "extensions/koed.mjs"),
+        "// wrong checkout\n"
+      );
+      const result = await setupPi(
+        {
+          HOME: root,
+          KOED_HOME: koedHome,
+          KOED_REPO_ROOT: resolve(root, "checkout"),
+          KOED_PACKAGED_DESKTOP: "1",
+          KOED_PACKAGED_RESOURCES_PATH: resolve(root, "resources"),
+          ...(layout === "explicit"
+            ? { KOED_JS_RUNTIME_ROOT: runtimeRoot }
+            : {}),
+          KOED_PI_EXECUTABLE: "/bin/sh"
+        },
+        ((_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("No models available.\n")
+              : args[0] === "list"
+                ? spawnResult(`${resolve(koedHome, "integrations/pi")}\n`)
+                : spawnResult()) as never
+      );
+      expect(result.ok).toBe(true);
+      expect(
+        readFileSync(
+          resolve(koedHome, "integrations/pi/extensions/koed.mjs"),
+          "utf8"
+        )
+      ).toBe("// wrong checkout\n");
+    }
+  );
 
-  it("does not fall back to checkout files when an explicit runtime lacks Pi", () => {
-    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-packaged-missing-"));
+  it("fails when explicit source checkout lacks Pi and ignores packaged runtime roots", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-source-missing-"));
     temporaryDirectories.push(root);
-    const source = resolve(root, "packages/mcp-server/integrations/pi");
-    mkdirSync(resolve(source, "extensions"), { recursive: true });
-    writeFileSync(resolve(source, "package.json"), "{}\n");
-    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
     const spawn = vi.fn();
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),
@@ -147,7 +154,7 @@ describe("Pi setup", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("finds and stores Pi from a macOS fallback directory", () => {
+  it("finds and stores Pi from a macOS fallback directory", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-macos-discovery-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -160,7 +167,7 @@ describe("Pi setup", () => {
     chmodSync(executable, 0o700);
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         PATH: "/usr/bin:/bin",
@@ -198,7 +205,7 @@ describe("Pi setup", () => {
     });
   });
 
-  it("canonicalizes Pi and invokes it with an authenticated, secret-free environment", () => {
+  it("canonicalizes Pi and invokes it with an authenticated, secret-free environment", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-setup-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -216,7 +223,7 @@ describe("Pi setup", () => {
       env?: NodeJS.ProcessEnv;
     }> = [];
 
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         PATH: process.env.PATH,
@@ -279,7 +286,7 @@ describe("Pi setup", () => {
     }
   });
 
-  it("configures the Pi profile while no models are authenticated", () => {
+  it("configures the Pi profile while no models are authenticated", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-models-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -291,7 +298,7 @@ describe("Pi setup", () => {
     chmodSync(executable, 0o700);
 
     const calls: string[][] = [];
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),
@@ -333,7 +340,7 @@ describe("Pi setup", () => {
     ).toMatchObject({ instances: [{ instanceId: "pi.default" }] });
   });
 
-  it("configures the Pi profile when model discovery fails but reports unknown authentication", () => {
+  it("configures the Pi profile when model discovery fails but reports unknown authentication", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-model-probe-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -345,7 +352,7 @@ describe("Pi setup", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o700);
 
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),
@@ -373,7 +380,7 @@ describe("Pi setup", () => {
     expect(result.action).toContain("Fix Pi model discovery");
   });
 
-  it("rolls back an unverified Pi profile installation", () => {
+  it("rolls back an unverified Pi profile installation", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-profile-verify-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -385,7 +392,7 @@ describe("Pi setup", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o700);
 
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),
@@ -416,7 +423,7 @@ describe("Pi setup", () => {
     ).toBe(false);
   });
 
-  it("preserves fnm launcher while resolving its canonical invocation target", () => {
+  it("preserves fnm launcher while resolving its canonical invocation target", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-fnm-launcher-"));
     temporaryDirectories.push(root);
     const launcher = resolve(root, ".local/share/fnm/aliases/default/bin/pi");
@@ -435,7 +442,7 @@ describe("Pi setup", () => {
     ).toBe(realpathSync(target));
   });
 
-  it("resolves Windows npm launchers to the package Node entry", () => {
+  it("resolves Windows npm launchers to the package Node entry", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-win-setup-"));
     temporaryDirectories.push(root);
     const shim = resolve(root, "pi.cmd");
@@ -452,7 +459,7 @@ describe("Pi setup", () => {
     );
   });
 
-  it("runs trusted Pi removal, verifies active profile, and preserves unrelated registry entries", () => {
+  it("runs trusted Pi removal, verifies active profile, and preserves unrelated registry entries", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-remove-"));
     temporaryDirectories.push(root);
     const executable = resolve(root, "pi");
@@ -515,7 +522,7 @@ describe("Pi setup", () => {
     expect(afterRegistry.instances[0]?.instanceId).toBe("other.default");
   });
 
-  it("rolls back Pi package and registry when command verification fails", () => {
+  it("rolls back Pi package and registry when command verification fails", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-remove-fail-"));
     temporaryDirectories.push(root);
     const executable = resolve(root, "pi");
@@ -560,7 +567,7 @@ describe("Pi setup", () => {
     expect(readFileSync(registry, "utf8")).toBe(registryContent);
   });
 
-  it("restores package and re-registers Pi after removal verification fails", () => {
+  it("restores package and re-registers Pi after removal verification fails", async () => {
     const root = mkdtempSync(
       resolve(tmpdir(), "koed-pi-remove-profile-rollback-")
     );
@@ -618,7 +625,7 @@ describe("Pi setup", () => {
     );
   });
 
-  it("restores the last working package when replacement fails", () => {
+  it("restores the last working package when replacement fails", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-rollback-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
@@ -634,7 +641,7 @@ describe("Pi setup", () => {
     chmodSync(executable, 0o700);
     let installs = 0;
 
-    const result = setupPi(
+    const result = await setupPi(
       {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),

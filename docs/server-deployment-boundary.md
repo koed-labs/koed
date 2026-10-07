@@ -31,7 +31,7 @@ identity keeps opaque deployment/device IDs plus non-secret metadata in
 `KOED_HOME`. API, Worker, MCP Server, Capture Hook, ordinary config,
 and diagnostics never receive raw proof. Local capture and Recall do not depend
 on proof health; local-edge remote, Team, enrollment, and sync paths evaluate
-identity health and fail closed. Explicit `koed-server identity rotate --json`
+identity health and fail closed. Explicit `koed identity rotate --json`
 creates a replacement identity, preserves local Memory, and disables local
 upstream enrollment references for re-enrollment. Dependencies may be native services,
 managed infrastructure, systemd units, containers, or Docker Compose examples,
@@ -76,7 +76,7 @@ top-level product architecture for server/private VPS deployments.
 ## Health And Readiness
 
 Infrastructure should use `/ready` as the coarse readiness gate. Operators
-should use `koed-server status --json`, `koed-server doctor --json`,
+should use `koed status --json`, `koed doctor --json`,
 `/v1/capabilities`, authenticated diagnostics, and `/ops/status` for richer
 status and remediation.
 
@@ -90,7 +90,7 @@ and require its Personal API Token.
 
 If startup reaches its deadline, the supervisor reports every required blocker
 by stable component name and state. Match those entries to `/ready`, then use
-`koed-server status --json` for detailed remediation. Timeout summaries exclude
+`koed status --json` for detailed remediation. Timeout summaries exclude
 non-blocking diagnostics and credential values.
 
 Identity-provider sessions establish a verified User identity. Koed Team

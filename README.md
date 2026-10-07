@@ -84,7 +84,7 @@ never selects Codex merely because Codex is installed.
 
 ### Connect another Personal device
 
-On a prepared joining machine, run `koed-server pair` (or `pnpm koed-server pair`
+On a prepared joining machine, run `koed pair` (or `pnpm koed pair`
 from this built checkout). Paste its request link into **Devices → Add device**
 on your existing Koed Electron installation and confirm. Another Electron
 installation can generate its link with **Connect to an existing device**.
@@ -117,9 +117,9 @@ routing](docs/managed-conversation-ai-client-routing.md).
 
 The README keeps to one basic local path. For other options, see:
 
-- [Running Koed](docs/running-koed.md) for external dependency mode, manual
-  server commands, alternate ports, smoke tests, packaged first-run notes, and
-  desktop development.
+- [Running Koed](docs/running-koed.md) for the standalone npm control plane,
+  explicit component provisioning, external dependency mode, manual server
+  commands, smoke tests, packaged first-run notes, and desktop development.
 - [Koed Desktop](docs/desktop-ui.md) for the Personal/Team information model,
   collaboration workflows, recovery behavior, accessibility, and performance
   boundaries.

@@ -343,7 +343,11 @@ describe("standalone koed-server package runtime", () => {
 
     const status = collectServerPackageStatus(paths);
 
-    expect(status).toMatchObject({ ok: false, state: "missing" });
+    expect(status).toMatchObject({
+      ok: false,
+      state: "missing",
+      action: "Run koed package install --source <artifact> --sha256 <sha256>."
+    });
   });
 
   it("validates a package root and rejects incompatible platforms", () => {

@@ -89,6 +89,258 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("routes privacy status/install through nonce-correlated child RPC with exact release source", async () => {
+    const requests: Record<string, unknown>[] = [];
+    let statusCount = 0;
+    let holdStatus = false;
+    let releaseStatus: (() => void) | undefined;
+    let pendingInstall: Record<string, unknown> | null = null;
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64)
+            })
+          );
+        } else if (message.type === "koed.desktop.privacy.request") {
+          requests.push(message);
+          queueMicrotask(() => {
+            const envelope = {
+              type: "koed.desktop.privacy.response",
+              requestId: message.requestId,
+              action: message.action,
+              nonce: message.nonce
+            };
+            if (message.action === "status") {
+              statusCount += 1;
+              const respond = () =>
+                child.emit("message", {
+                  ...envelope,
+                  result: {
+                    required: ["privacy"],
+                    components: { privacy: "missing" },
+                    activeGeneration: null,
+                    trustedSignerConfigured: statusCount < 2
+                  }
+                });
+              if (holdStatus) releaseStatus = respond;
+              else respond();
+            } else if (message.action === "install") {
+              pendingInstall = envelope;
+              child.emit("message", {
+                type: "koed.desktop.privacy.progress",
+                nonce: message.nonce,
+                requestId: message.requestId,
+                action: "install",
+                phase: "download",
+                transferredBytes: 8,
+                totalBytes: 16
+              });
+            } else if (message.action === "cancel") {
+              child.emit("message", {
+                ...envelope,
+                result: { cancelled: true }
+              });
+              if (!holdStatus)
+                child.emit("message", {
+                  ...pendingInstall,
+                  error: "Privacy Filter installation cancelled."
+                });
+            }
+          });
+        }
+      }
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      productVersion: "0.8.1",
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, "{}", ""),
+      spawn: (() => child) as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.start_daemon();
+    await expect(manager.privacyInstall.getStatus()).resolves.toMatchObject({
+      available: true,
+      state: "not_installed"
+    });
+    const progress = vi.fn();
+    const installation = manager.privacyInstall.installPrivacy({
+      consent: true,
+      onProgress: progress
+    });
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.action === "install")).toBe(
+        true
+      )
+    );
+    await manager.privacyInstall.cancel();
+    await expect(installation).rejects.toThrow(
+      "Privacy Filter installation cancelled."
+    );
+    const installRequest = requests.find(
+      (request) => request.action === "install"
+    );
+    expect(installRequest).toMatchObject({
+      version: "0.8.1",
+      nonce: expect.any(String),
+      requestId: expect.any(String),
+      source: {
+        kind: "remote",
+        archiveUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz`,
+        manifestUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.manifest.json`,
+        signatureUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.signature.json`
+      }
+    });
+    expect(progress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: expect.any(String),
+        stage: "download",
+        completedBytes: 8,
+        totalBytes: 16
+      })
+    );
+    holdStatus = true;
+    const earlyInstallation = manager.privacyInstall.installPrivacy({
+      consent: true,
+      onProgress: vi.fn()
+    });
+    const earlyFailure = expect(earlyInstallation).rejects.toThrow(
+      "Privacy Filter installation cancelled."
+    );
+    await vi.waitFor(() => expect(releaseStatus).toBeDefined());
+    await manager.privacyInstall.cancel();
+    releaseStatus!();
+    await earlyFailure;
+    expect(
+      requests.filter((request) => request.action === "install")
+    ).toHaveLength(1);
+    expect(requests.some((request) => request.action === "activate")).toBe(
+      false
+    );
+    holdStatus = false;
+    await expect(manager.privacyInstall.getStatus()).resolves.toEqual({
+      available: false,
+      state: "unavailable",
+      message:
+        "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+    });
+    const inFlightStatus = manager.privacyInstall.getStatus();
+    child.emit("exit", 1, null);
+    await expect(inFlightStatus).rejects.toThrow(
+      "Privacy Filter operation interrupted because Koed supervisor exited."
+    );
+    await expect(manager.privacyInstall.getStatus()).resolves.toMatchObject({
+      available: false,
+      state: "unavailable"
+    });
+  });
+
+  it("reads status over private Desktop IPC after starting and stops that child", async () => {
+    const statusRequests: Record<string, unknown>[] = [];
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      connected: true,
+      pid: 12345,
+      kill: vi.fn(() => true),
+      send(message: Record<string, unknown>) {
+        if (message.type === "koed.desktop.supervisor.init") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64)
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          statusRequests.push(message);
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: { ok: true, state: "stopped" }
+            })
+          );
+        } else if (message.type === "koed.desktop.supervisor.stop") {
+          queueMicrotask(() => child.emit("exit", 0, null));
+        }
+      }
+    });
+    let spawnOptions: Record<string, unknown> | undefined;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true, state: "stopped" }), ""),
+      spawn: ((
+        _command: string,
+        _args: string[],
+        options: Record<string, unknown>
+      ) => {
+        spawnOptions = options;
+        return child;
+      }) as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: true,
+      state: "starting",
+      startedPid: 12345
+    });
+    expect(spawnOptions).toMatchObject({
+      detached: false,
+      stdio: ["ignore", "ignore", "pipe", "ipc"]
+    });
+    await manager.handlers.status();
+    expect(statusRequests).toHaveLength(1);
+    expect(statusRequests[0]).toMatchObject({ startup: false });
+    await manager.handlers.setup_core();
+    await manager.handlers.setup_codex();
+    await manager.handlers.repair_codex();
+    await manager.handlers.doctor();
+    expect(statusRequests.map((request) => request.action)).toEqual([
+      "status",
+      "setup-core",
+      "setup-codex",
+      "repair-codex",
+      "doctor"
+    ]);
+    await expect(manager.stop()).resolves.toMatchObject({
+      ok: true,
+      state: "stopped"
+    });
+  });
+
   it("submits Personal Ask through the fixed local runtime operation", async () => {
     const question = {
       id: "11111111-1111-4111-8111-111111111111",
@@ -3883,7 +4135,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         state: "healthy",
         source: "bundled-fallback",
         message:
-          "Using the bundled fallback koed-server runtime; a standalone package is optional for this Desktop build."
+          "Using the bundled fallback koed runtime; a standalone package is optional for this Desktop build."
       }
     });
   });
@@ -4316,7 +4568,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const manager = createKoedServerManager({
       repoRoot: "/Applications/Koed.app/Contents/Resources",
       cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js",
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js",
       environment: {},
       createCliInvocation: (args) => ({
         command: "/Applications/Koed.app/Contents/MacOS/Koed",
@@ -4416,7 +4668,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(JSON.stringify(status)).not.toContain("/Users/operator");
   });
 
-  it("reconnects without requesting koed-server start --daemon again once healthy", async () => {
+  it("reconnects without requesting koed start --daemon again once healthy", async () => {
     const calls: string[][] = [];
     let statusCalls = 0;
     const manager = createKoedServerManager({

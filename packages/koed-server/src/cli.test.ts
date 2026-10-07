@@ -126,10 +126,108 @@ const runtimeBinaries = () => ({
   }
 });
 
+describe("koed executable help", () => {
+  it("uses koed command names in general and Personal Sync help", async () => {
+    const general = writer();
+    const personalSync = writer();
+
+    expect(await runKoedServerCli(["--help"], { stdout: general.stream })).toBe(
+      0
+    );
+    expect(general.text()).toContain("Usage: koed <command> [options]");
+    expect(general.text()).not.toContain("Usage: koed-server");
+
+    const secretProvider = writer();
+    expect(
+      await runKoedServerCli(["secret-provider"], {
+        stdout: secretProvider.stream
+      })
+    ).toBe(1);
+    expect(secretProvider.text()).toContain(
+      "Usage: koed secret-provider <get|put|delete> <reference>"
+    );
+    expect(secretProvider.text()).not.toContain("koed-server");
+
+    expect(
+      await runKoedServerCli(["personal-sync", "--help"], {
+        stdout: personalSync.stream
+      })
+    ).toBe(0);
+    expect(personalSync.text()).toContain("koed personal-sync status --json");
+    expect(personalSync.text()).toContain(
+      "koed personal-sync --help --advanced"
+    );
+    expect(personalSync.text()).not.toContain("koed-server personal-sync");
+  });
+});
+
+describe("explicit component provisioning CLI", () => {
+  it("rejects incomplete offline metadata before installation", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive",
+        "/tmp/base.tar.gz",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths: () =>
+          resolveKoedServerPaths({ KOED_HOME: "/tmp/koed-component-cli-test" })
+      }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      error:
+        "Offline install requires --archive, --manifest, and --signature paths."
+    });
+  });
+
+  it("rejects an incomplete network source triplet without fetching", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive-url",
+        "https://artifacts.example/base.tar.gz",
+        "--json"
+      ],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error:
+        "Network install requires --archive-url, --manifest-url, and --signature-url."
+    });
+  });
+
+  it("does not accept public trust-root or owner overrides", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      ["components", "status", "--owner", "desktop", "--json"],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Unsupported components option: --owner"
+    });
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =
-      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js";
+      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js";
 
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
@@ -1448,7 +1546,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
       stdout: stdout.stream,
-      setupClaude: () => ({
+      setupClaude: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",
@@ -1599,7 +1697,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
       stdout: stdout.stream,
-      repairCodex: () => ({
+      repairCodex: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",

@@ -36,7 +36,12 @@ import {
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
-import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntime,
+  resolveKoedAppRuntimeExecution
+} from "./app-runtime.js";
+import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -85,6 +90,7 @@ type SpawnSyncLike = (
 ) => SpawnSyncReturns<string>;
 
 export interface KoedServerSetupOptions {
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
   environment?: NodeJS.ProcessEnv;
   spawnSync?: SpawnSyncLike;
   readFileSync?: typeof nodeReadFileSync;
@@ -448,7 +454,8 @@ export const removeCodexIntegration = ({
   }
 };
 
-export const repairCodexIntegration = ({
+export const repairCodexIntegration = async ({
+  desktopRuntimeCapability,
   environment = process.env,
   readFileSync = nodeReadFileSync,
   writeFileSync = nodeWriteFileSync,
@@ -462,7 +469,7 @@ export const repairCodexIntegration = ({
 }: Omit<
   KoedServerSetupOptions,
   "spawnSync"
-> = {}): KoedServerRepairCodexResult => {
+> = {}): Promise<KoedServerRepairCodexResult> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   environment = applyActiveRuntimeUrls(
@@ -497,6 +504,23 @@ export const repairCodexIntegration = ({
     ...environment,
     KOED_HOME: paths.koedHome
   };
+  const verifiedRuntime =
+    resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          integrationEnvironment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          existsSync,
+          desktopRuntimeCapability
+        )
+      : undefined;
+  if (verifiedRuntime) resolveRuntime = () => verifiedRuntime;
   const codexConfigPath = resolve(
     integrationEnvironment.CODEX_CONFIG_PATH ??
       `${integrationEnvironment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
@@ -659,7 +683,7 @@ const resolveBundledDatabaseEnvironment = (
       return {
         ok: false,
         error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
-        action: `Fix or remove ${persisted.path}, then rerun koed-server setup core --json.`
+        action: `Fix or remove ${persisted.path}, then rerun koed setup core --json.`
       };
     }
     return {
@@ -682,14 +706,14 @@ const resolveBundledDatabaseEnvironment = (
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed setup ${recoveryCommand} --json.`
     };
   }
   if (persisted.state === "valid" && !persisted.secrets.POSTGRES_PASSWORD) {
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are missing required POSTGRES_PASSWORD.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed setup ${recoveryCommand} --json.`
     };
   }
   const password =
@@ -866,7 +890,7 @@ const runSetupBootstrap = (
       state: "needs_attention",
       error: result.error.message,
       action:
-        "Fix the reported client setup failure, then rerun koed-server setup codex --json."
+        "Fix the reported client setup failure, then rerun koed setup codex --json."
     };
   }
   const redactApiTokens = (value: string): string =>
@@ -884,7 +908,7 @@ const runSetupBootstrap = (
         state: "needs_attention",
         error: `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
-          "Review stdout/stderr, fix the reported client setup failure, then rerun koed-server setup codex --json."
+          "Review stdout/stderr, fix the reported client setup failure, then rerun koed setup codex --json."
       };
 };
 
@@ -923,11 +947,31 @@ export const setupCore = async (
     command: "provision local API Token"
   };
   try {
-    const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-      context.paths,
-      context.childEnv,
-      options.existsSync ?? nodeExistsSync
-    );
+    const runtime = options.resolveRuntime
+      ? options.resolveRuntime(
+          context.paths,
+          context.childEnv,
+          options.existsSync ?? nodeExistsSync
+        )
+      : resolveKoedAppRuntimeExecution() === "packaged"
+        ? await resolveVerifiedPackagedRuntime(
+            context.paths,
+            context.childEnv,
+            {
+              components: ["base"],
+              processes: ["api"],
+              queue: "bullmq",
+              native: [],
+              models: []
+            },
+            options.existsSync ?? nodeExistsSync,
+            options.desktopRuntimeCapability
+          )
+        : resolveKoedAppRuntime(
+            context.paths,
+            context.childEnv,
+            options.existsSync ?? nodeExistsSync
+          );
     if (runtime.missing.length > 0) {
       throw new Error(
         `Koed runtime artifacts are missing: ${runtime.missing.join(", ")}.`
@@ -967,7 +1011,7 @@ export const setupCore = async (
       state: "needs_attention",
       error: error instanceof Error ? error.message : String(error),
       action:
-        "Fix the reported core setup failure, then rerun koed-server setup core --json."
+        "Fix the reported core setup failure, then rerun koed setup core --json."
     };
   }
 };
@@ -1007,11 +1051,31 @@ export const setupCodex = async (
       }
     );
   }
-  const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
-    paths,
-    environment,
-    options.existsSync ?? nodeExistsSync
-  );
+  const runtime = options.resolveRuntime
+    ? options.resolveRuntime(
+        paths,
+        environment,
+        options.existsSync ?? nodeExistsSync
+      )
+    : resolveKoedAppRuntimeExecution() === "packaged"
+      ? await resolveVerifiedPackagedRuntime(
+          paths,
+          environment,
+          {
+            components: ["base"],
+            processes: ["local-ai-runtime"],
+            queue: "bullmq",
+            native: [],
+            models: []
+          },
+          options.existsSync ?? nodeExistsSync,
+          options.desktopRuntimeCapability
+        )
+      : resolveKoedAppRuntime(
+          paths,
+          environment,
+          options.existsSync ?? nodeExistsSync
+        );
   if (runtime.kind === "packaged") {
     return repairCodexIntegration({
       environment,
@@ -1021,7 +1085,8 @@ export const setupCodex = async (
       existsSync: options.existsSync,
       checkPid: options.checkPid,
       now: options.now,
-      resolveRuntime: options.resolveRuntime,
+      resolveRuntime: () => runtime,
+      desktopRuntimeCapability: options.desktopRuntimeCapability,
       registerAiClient: options.registerAiClient,
       resolveCodexExecutable: options.resolveCodexExecutable
     });
@@ -1103,7 +1168,7 @@ export const setupCodex = async (
         state: "needs_attention" as const,
         error: error instanceof Error ? error.message : String(error),
         action:
-          "Fix the Codex-specific registration, then rerun koed-server setup codex --json."
+          "Fix the Codex-specific registration, then rerun koed setup codex --json."
       };
       writeSetupVerification(
         context.paths,

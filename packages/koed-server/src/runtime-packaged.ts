@@ -642,7 +642,7 @@ const statusFromAssets = (
         : "Packaged bundled-local runtime assets are missing from KOED_HOME/runtime.",
     action: ok
       ? undefined
-      : "Run koed-server runtime install --provider packaged --dependency-mode bundled-local --json."
+      : "Run koed runtime install --provider packaged --dependency-mode bundled-local --json."
   };
 };
 
