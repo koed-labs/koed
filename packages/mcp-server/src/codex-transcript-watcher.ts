@@ -411,6 +411,18 @@ const responseValue = <T>(
   return value as T;
 };
 
+// Codex can replace a transcript with its plain or compressed sibling. Callers
+// still revalidate confinement and decoded identity for whichever path exists.
+const currentStorageSibling = (transcriptPath: string): string => {
+  if (existsSync(transcriptPath)) return transcriptPath;
+  const sibling = transcriptPath.endsWith(".jsonl")
+    ? `${transcriptPath}.zst`
+    : transcriptPath.endsWith(".jsonl.zst")
+      ? transcriptPath.slice(0, -".zst".length)
+      : undefined;
+  return sibling && existsSync(sibling) ? sibling : transcriptPath;
+};
+
 const sourceIdentity = (
   transcriptPath: string,
   boundary: number,
@@ -1033,13 +1045,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             this.historyMetadataFailures.set(home, error);
             throw error;
           });
-          let currentPath = current.path!;
-          if (
-            !existsSync(currentPath) &&
-            currentPath.endsWith(".jsonl") &&
-            existsSync(`${currentPath}.zst`)
-          )
-            currentPath += ".zst";
+          const currentPath = currentStorageSibling(current.path!);
           const currentResolved = await realpath(currentPath).catch(
             () => undefined
           );
@@ -1078,12 +1084,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
               transcriptPath,
               redactedSourceLabel: path.basename(transcriptPath),
               withTranscript: async (consume) => {
-                const nativePath =
-                  !existsSync(transcriptPath) &&
-                  transcriptPath.endsWith(".jsonl") &&
-                  existsSync(`${transcriptPath}.zst`)
-                    ? `${transcriptPath}.zst`
-                    : transcriptPath;
+                const nativePath = currentStorageSibling(transcriptPath);
                 const { before: currentState } =
                   await this.validateConfinedSource(nativePath);
                 return this.compressedReader.withMaterialized(

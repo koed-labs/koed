@@ -813,6 +813,41 @@ describe("Codex Transcript Watcher source journal", () => {
     );
   });
 
+  it("ingests a delayed compressed historical candidate after a plain replacement", async () => {
+    const root = temporaryDirectory();
+    const plain = transcriptPath(root, "rollout-delayed-storage.jsonl");
+    const compressed = `${plain}.zst`;
+    const content =
+      line(
+        sessionRecord(
+          "delayed-storage",
+          "/fixture/project",
+          "2026-01-01T00:00:00.000Z"
+        )
+      ) + line(userRecord("Delayed history"));
+    writeFileSync(compressed, zstdCompressSync(Buffer.from(content)));
+    let offered: CodexHistoricalCandidate | undefined;
+    const watcher = trackedWatcher(
+      new FakeWatcherClient(),
+      watcherConfig(root),
+      {
+        offerCandidates(candidates) {
+          offered ??= candidates.find(
+            (candidate) => candidate.sourceSessionId === "delayed-storage"
+          );
+        },
+        selectionFor: () => undefined
+      }
+    );
+    await watcher.scanNow();
+    expect(offered?.transcriptPath).toBe(compressed);
+    const consume = (readablePath: string) =>
+      Promise.resolve(readFileSync(readablePath, "utf8"));
+    writeFileSync(plain, content);
+    unlinkSync(compressed);
+    await expect(offered!.withTranscript!(consume)).resolves.toBe(content);
+  });
+
   it("uses platform-delimited supported roots and rejects unsafe root scope", () => {
     const home = temporaryDirectory();
     const first = path.join(home, ".codex-a");
