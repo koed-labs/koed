@@ -106,6 +106,7 @@ const writeMcpRuntimeArtifacts = (
   writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
   writeFileSync(resolve(dist, "cli.js"), "");
   writeFileSync(resolve(dist, "capture-hook.js"), "");
+  writeFileSync(resolve(dist, "codex-memory-hook.js"), "");
   if (includeGuidance) {
     mkdirSync(resolve(dist, "prompts"), { recursive: true });
     writeFileSync(
@@ -206,6 +207,7 @@ describe("Codex setup wrapper", () => {
     mkdirSync(resolve(mcpCli, ".."), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
     const order: string[] = [];
     const runtime = () => {
       order.push("runtime");
@@ -320,7 +322,7 @@ describe("Codex setup wrapper", () => {
     }
   });
 
-  it("preserves explicit deferred recall through packaged setup and repair", async () => {
+  it("defaults to deferred recall and preserves a recorded blocking selection through packaged setup and repair", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
     const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
@@ -352,7 +354,6 @@ describe("Codex setup wrapper", () => {
     };
     const result = await setupCodex({
       environment: {
-        KOED_CODEX_STOP_DELIVERY: "1",
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         CODEX_HOME: codexHome,
@@ -409,10 +410,18 @@ describe("Codex setup wrapper", () => {
     expect(repair().ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(installed);
     expect(repair("0").ok).toBe(true);
-    expect(readFileSync(configPath, "utf8")).not.toContain(
-      'KOED_CODEX_STOP_DELIVERY = "1"'
-    );
     const blocking = readFileSync(configPath, "utf8");
+    expect(blocking).toContain('KOED_CODEX_STOP_DELIVERY = "0"');
+    expect(blocking).not.toContain("codex-memory-hook.js");
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+    writeFileSync(
+      configPath,
+      blocking.replace(/^KOED_CODEX_STOP_DELIVERY = "0"\n/m, "")
+    );
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
+    expect(repair("0").ok).toBe(true);
     rmSync(resolve(mcpCli, "../codex-memory-hook.js"));
     expect(repair("1").ok).toBe(false);
     expect(readFileSync(configPath, "utf8")).toBe(blocking);

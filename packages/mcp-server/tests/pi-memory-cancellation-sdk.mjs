@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL, URL } from "node:url";
+import { fileURLToPath, pathToFileURL, URL } from "node:url";
 import process from "node:process";
 const require = createRequire(import.meta.url);
 let modulePath = process.env.KOED_TEST_PI_SDK_MODULE;
@@ -93,7 +93,7 @@ try {
     settingsManager,
     additionalExtensionPaths: [
       resolve(
-        dirname(new URL(import.meta.url).pathname),
+        dirname(fileURLToPath(import.meta.url)),
         "../integrations/pi/extensions/koed.mjs"
       )
     ],
@@ -182,7 +182,8 @@ try {
     enqueueOptions.push(options);
     return sendCustomMessage(message, { ...options, triggerTurn: false });
   };
-  await session.bindExtensions({});
+  // Bind as a long-lived host; an unbound SDK session reports "print" mode.
+  await session.bindExtensions({ mode: "rpc" });
   const runtime = new AgentSessionRuntime(
     session,
     { cwd: root, agentDir: join(root, "agent") },

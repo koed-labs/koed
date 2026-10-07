@@ -62,9 +62,9 @@ from the MCP Server package. It has no Pi dependency. Future client adapters can
 reuse it or bind the same execution port to a maintained MCP Tasks extension.
 This lifecycle does not expose native MCP Tasks. Claude Code's host backgrounding
 uses the ordinary blocking MCP result path described below. Codex defaults to
-blocking recall. Its opt-in native Stop adapter instead binds a protected
-one-use request to the original turn and supplies its result at that turn's
-stop boundary. See [Codex setup](codex-integration.md#optional-deferred-recall-in-the-native-cli).
+its native Stop adapter, which binds a protected one-use request to the
+original turn and supplies its result at that turn's stop boundary. Setup can
+select blocking recall instead. See [Codex setup](codex-integration.md#deferred-recall-in-the-native-cli).
 
 The Stop adapter keeps the original turn active until the result arrives.
 Delivery after a backend loss, Local AI Runtime restart or session exit, and
@@ -116,8 +116,9 @@ the protected Local AI Runtime registration; credentials and results are not
 cached for delivery.
 
 `KOED_PI_MEMORY_ANSWER_MODE=blocking` retains blocking recall. Ephemeral sessions,
-clients without the required Pi APIs, and Team Workspace calls also use the
-blocking route. The runtime remains authoritative about task eligibility.
+single-shot print and JSON runs, Koed Desktop-managed Pi Conversations, clients
+without the required Pi APIs, and Team Workspace calls also use the blocking
+route. The runtime remains authoritative about task eligibility.
 At most 128 pending receipts are observed by one adapter.
 
 ## Recovery and limits
@@ -140,6 +141,13 @@ message enqueue. These limits apply:
 - The extension records an enqueue attempt before calling Pi's message API.
   A crash or queue failure between those steps can lose delivery. That marker
   prevents duplicate enqueue attempts after reopening.
+
+Session tree navigation is not atomic with delivery either. Pi checks for a
+running response only when `/tree` navigation starts, then awaits extension
+handlers and any branch summary before it commits the new branch. It reports no
+event when navigation is cancelled or fails in that window. A completion that
+arrives in that window can start a turn on the outgoing branch whose response
+Pi saves on the destination branch. This is a current limitation.
 
 Recovery therefore provides at-most-once enqueue attempts, rather than exactly
 once delivery. Expiry or a permanent authorization failure can prevent

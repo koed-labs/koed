@@ -6,19 +6,20 @@ see [Claude Code integration](claude-code-integration.md) and
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 Personal Memory Answers use [durable execution](durable-memory-answer.md).
-Codex uses blocking recall by default. An optional native CLI integration lets
-the original turn continue while recall runs. Its synchronous Stop hook supplies
+Codex uses deferred recall by default. The native integration lets the
+original turn continue while recall runs. Its synchronous Stop hook supplies
 the completed result when that turn reaches its stop boundary.
 
-## Optional deferred recall in the native CLI
+## Deferred recall in the native CLI
 
-Enable the adapter through the packaged Local Operator Script:
+Setup installs the adapter by default through the packaged Local Operator
+Script:
 
 ```bash
-koed-server setup codex --deferred-recall --json
+koed-server setup codex --json
 ```
 
-From a contributor checkout, use `pnpm codex:configure --deferred-recall`.
+From a contributor checkout, use `pnpm codex:configure`.
 Restart Codex and review its native hook trust request before use. Setup installs
 matched PreToolUse and PostToolUse hooks, a synchronous Stop hook, and SessionEnd
 and Interrupt cleanup hooks. It preserves Capture Hooks and unrelated settings.
@@ -36,8 +37,10 @@ If you manually change that flag, set the native timeout to the wait in seconds,
 rounded up, plus five. A wait failure supplies no recalled answer and does not
 guarantee later delivery. The worker can continue under its separate hard limit.
 
-Plain setup or repair preserves the existing selection. Use `--blocking-recall`
-with setup to disable this adapter. Contributor `pnpm codex:configure --check`
+Setup records the selected mode in the Koed-owned block. Plain setup or repair
+preserves a recorded selection. A Koed block written before the selection was
+recorded is upgraded to deferred recall. Use `--blocking-recall` with setup to
+disable this adapter, or `--deferred-recall` to enable it again. Contributor `pnpm codex:configure --check`
 checks the owned configuration without writing. `--remove` removes only Koed's
 owned configuration and managed global guidance.
 
@@ -77,7 +80,7 @@ or synthesize answers on the backend.
 - Interrupting the turn (for example Ctrl+C) retires the receipt. A confirmed
   interruption can still race a Stop hook that has already returned, and Codex
   may record that late hook prompt in the interrupted turn. This upstream
-  limitation is accepted for this opt-in integration.
+  limitation is accepted for this integration.
 - `/quit` disconnects the CLI but can leave the original backend turn running.
   That turn can still finish and produce an answer, which appears when you
   reconnect to that Conversation. Do not treat `/quit` during a pending recall

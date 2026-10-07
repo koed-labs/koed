@@ -1114,9 +1114,20 @@ export const inspectCodex = (
       ]
         .map(quote)
         .join(" ") + " ";
+    // Match the decoded command: quoting and TOML escaping change the raw path.
+    const quotedHook = quote(memoryHook);
     const groups = ownedBlock
       .split(/(?=^\[\[hooks\.[A-Za-z]+\]\])/m)
-      .filter((group) => group.includes(memoryHook));
+      .filter((group) => {
+        try {
+          const command = JSON.parse(
+            /^command = (.+)$/m.exec(group)?.[1] ?? "null"
+          ) as unknown;
+          return typeof command === "string" && command.includes(quotedHook);
+        } catch {
+          return false;
+        }
+      });
     let waitMs: number | undefined;
     let valid =
       deps.existsSync(memoryHook) &&

@@ -86,10 +86,10 @@ Every route below uses the same durable task and the shared delivery lifecycle
 described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
 of them exposes native MCP Tasks or a status tool to the model.
 
-- **Codex:** recall is blocking by default. The opt-in
-  `setup codex --deferred-recall` route installs native Codex hooks. The CLI,
-  IDE extension and Desktop app were each tested separately; see
-  [Codex integration](codex-integration.md#optional-deferred-recall-in-the-native-cli).
+- **Codex:** recall is deferred by default. Setup installs native Codex
+  hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
+  Desktop app were each tested separately; see
+  [Codex integration](codex-integration.md#deferred-recall-in-the-native-cli).
   A PreToolUse hook binds a one-use receipt to the exact
   session, turn and tool call. `memory_answer` then returns a pending receipt,
   and the Stop hook waits outside the model loop and supplies the result to
@@ -107,17 +107,20 @@ of them exposes native MCP Tasks or a status tool to the model.
 - **Pi:** in a persistent Conversation, `memory_answer` returns an attributed
   receipt promptly. The extension observes the task and delivers the result as
   a follow-up message that starts a turn. Matching pending receipts recover
-  when the same Conversation reopens. Ephemeral sessions, Team Workspace
-  calls, clients without the required Pi APIs, and
-  `KOED_PI_MEMORY_ANSWER_MODE=blocking` use blocking recall.
+  when the same Conversation reopens. Ephemeral sessions, single-shot print
+  and JSON runs, Koed Desktop-managed Pi Conversations, Team Workspace calls,
+  clients without the required Pi APIs, and
+  `KOED_PI_MEMORY_ANSWER_MODE=blocking` use blocking recall. A completion that
+  arrives during `/tree` navigation can be saved on the destination branch; see
+  [asynchronous Memory Answer delivery](async-memory-answer.md#recovery-and-limits).
 - **ACP:** no ACP runtime is added. A future adapter can map its native task
   behavior to the same start, state, cancel, and terminal-event semantics after
   conformance testing.
 
 AI Client capability snapshots still report host task notification and model
 continuation as `unsupported` for Claude Code and `requires_bridge` for Codex
-and Pi. They do not yet reflect the opt-in Codex and Claude routes or Pi's
-default deferred delivery.
+and Pi. They do not yet reflect the opt-in Claude route or the default
+deferred delivery for Codex and Pi.
 
 Team Workspace Memory Answer remains on its existing blocking authority path.
 It must not create a local Personal task; asynchronous Team execution requires

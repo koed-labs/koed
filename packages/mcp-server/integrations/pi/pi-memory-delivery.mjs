@@ -11,7 +11,11 @@ const textResult = (result) => ({
   content: [{ type: "text", text: JSON.stringify(result) }],
   details: result
 });
+// Print and JSON modes are single-shot: Pi disposes the runtime once the
+// prompted turn returns, before a deferred result could be presented.
 const capabilities = (pi, ctx) =>
+  ctx.mode !== "print" &&
+  ctx.mode !== "json" &&
   Boolean(ctx.sessionManager.getSessionFile()) &&
   typeof ctx.sessionManager.getBranch === "function" &&
   typeof ctx.sessionManager.getEntries === "function" &&

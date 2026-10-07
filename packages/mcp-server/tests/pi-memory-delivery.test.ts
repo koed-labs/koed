@@ -15,7 +15,12 @@ interface Task {
   result?: { answer: string };
 }
 function fixture(
-  options: { mode?: string; persistent?: boolean; incapable?: boolean } = {}
+  options: {
+    mode?: string;
+    runMode?: string;
+    persistent?: boolean;
+    incapable?: boolean;
+  } = {}
 ) {
   const entries: Array<{
     type: string;
@@ -32,7 +37,8 @@ function fixture(
   const ctx = {
     cwd: "/generated",
     sessionManager: manager,
-    ui: { notify: vi.fn() }
+    ui: { notify: vi.fn() },
+    ...(options.runMode ? { mode: options.runMode } : {})
   };
   const pi = {
     appendEntry: vi.fn((customType: string, data: Record<string, unknown>) =>
@@ -152,7 +158,13 @@ describe("supported Pi Memory Answer delivery", () => {
     expect(options).toEqual({ deliverAs: "followUp", triggerTurn: true });
     expect(f.entries.some((e) => e.customType === DISPOSITION)).toBe(true);
   });
-  it.each([{ mode: "blocking" }, { persistent: false }, { incapable: true }])(
+  it.each([
+    { mode: "blocking" },
+    { persistent: false },
+    { incapable: true },
+    { runMode: "print" },
+    { runMode: "json" }
+  ])(
     "retains blocking for unsupported mode/capabilities: %j",
     async (options) => {
       const f = fixture(options);

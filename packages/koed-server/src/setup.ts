@@ -196,10 +196,12 @@ const configureCodexIntegration = ({
     existing.indexOf("# >>> koed"),
     existing.indexOf("# <<< koed")
   );
+  // Deferred recall is the default. An explicit selection wins, then a
+  // recorded blocking choice; blocks written before the line existed upgrade.
   const deferredRecall =
     environment.KOED_CODEX_STOP_DELIVERY === "1" ||
     (environment.KOED_CODEX_STOP_DELIVERY !== "0" &&
-      /^KOED_CODEX_STOP_DELIVERY\s*=\s*"1"\s*$/m.test(ownedContent));
+      !/^KOED_CODEX_STOP_DELIVERY\s*=\s*"0"\s*$/m.test(ownedContent));
   const memoryHook = resolve(dirname(runtime.mcpCli), "codex-memory-hook.js");
   if (!/^[A-Za-z0-9_-]+$/.test(mcpName))
     throw new Error("MEMORY_MCP_NAME must be a TOML bare server name.");
@@ -299,7 +301,7 @@ approval_mode = "approve"
 
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${tomlString(paths.koedHome)}
-${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${tomlString(memoryTool)}\n` : ""}
+${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${tomlString(memoryTool)}\n` : `KOED_CODEX_STOP_DELIVERY = "0"\n`}
 
 ${hookBlocks}
 ${deliveryHooks}

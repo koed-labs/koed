@@ -160,7 +160,7 @@ approval_mode = "approve"
 
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${JSON.stringify(koedHome)}
-${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : ""}
+${deferredRecall ? `KOED_CODEX_STOP_DELIVERY = "1"\nKOED_CODEX_MEMORY_TOOL = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : `KOED_CODEX_STOP_DELIVERY = "0"\n`}
 
 ${hookBlocks}
 ${deliveryHooks}
@@ -204,7 +204,7 @@ const deferredRecall = process.argv.includes("--blocking-recall")
     : process.env.KOED_CODEX_STOP_DELIVERY === "0"
       ? false
       : process.env.KOED_CODEX_STOP_DELIVERY === "1" ||
-        /^KOED_CODEX_STOP_DELIVERY\s*=\s*"1"\s*$/m.test(ownedContent);
+        !/^KOED_CODEX_STOP_DELIVERY\s*=\s*"0"\s*$/m.test(ownedContent);
 if (mode !== "remove" && deferredRecall && !existsSync(memoryHookPath)) {
   throw new Error(
     `${memoryHookPath} does not exist. Build @koed/mcp-server before configuring deferred recall.`
@@ -287,7 +287,7 @@ console.log(
 );
 if (mode === "remove") process.exit(0);
 console.log(
-  `Memory Answer delivery: ${deferredRecall ? "opt-in native Stop hook" : "blocking"}.`
+  `Memory Answer delivery: ${deferredRecall ? "deferred native Stop hook" : "blocking"}.`
 );
 console.log(`Detected Node command: ${nodeCommand}`);
 console.log(`Detected Koed home: ${koedHome}`);

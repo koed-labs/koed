@@ -107,8 +107,18 @@ Pi provides the required history and message APIs. The tool returns a receipt;
 the extension polls outside the model loop and automatically delivers completion
 into the original Conversation. `KOED_PI_MEMORY_ANSWER_MODE=blocking` selects
 blocking recall. Ephemeral sessions and Team Workspace calls retain blocking
-recall. See [asynchronous delivery](async-memory-answer.md) for shared execution
+recall. Single-shot print and JSON runs (`pi -p`, `pi --mode json`) also block,
+because Pi exits after the prompted turn. An SDK host that does not bind an
+extension mode reports print mode and blocks too. Koed Desktop-managed Pi
+Conversations block, because Koed presents only the turn it prompted. See
+[asynchronous delivery](async-memory-answer.md) for shared execution
 ownership, recovery behavior and crash limits.
+
+Deferred delivery can cross an in-progress `/tree` navigation. Pi checks for a
+running response only when navigation starts. It then waits for extension
+handlers and any branch summary before it changes the branch. A completion that
+arrives in that window starts a turn on the outgoing branch, and Pi saves the
+response on the destination branch. Avoid `/tree` while a recall is pending.
 
 `--no-extensions`, `--exclude-tools`, package resource controls, and related Pi controls remain authoritative. Persistent sessions still capture while extension disabled, but recall readiness should be treated as unavailable until extension enabled.
 

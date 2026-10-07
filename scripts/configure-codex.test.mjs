@@ -45,6 +45,10 @@ test("codex configure writes credential-free hooks and pre-approved read-only re
   mkdirSync(path.join(dir, "packages/mcp-server/dist"), { recursive: true });
   writeFileSync(path.join(dir, "packages/mcp-server/dist/cli.js"), "");
   writeFileSync(path.join(dir, "packages/mcp-server/dist/capture-hook.js"), "");
+  writeFileSync(
+    path.join(dir, "packages/mcp-server/dist/codex-memory-hook.js"),
+    ""
+  );
   stageGuidance(dir);
 
   try {
@@ -189,10 +193,10 @@ test("deferred Codex setup installs synchronous matched delivery hooks and prese
     assert.equal(readFileSync(instructions, "utf8"), guidance);
     await invoke(["--blocking-recall"], { MEMORY_MCP_NAME: "memory-local" });
     const blocking = readFileSync(config, "utf8");
-    assert.doesNotMatch(
-      blocking,
-      /KOED_CODEX_STOP_DELIVERY|codex-memory-hook\.js/
-    );
+    assert.match(blocking, /KOED_CODEX_STOP_DELIVERY = "0"/);
+    assert.doesNotMatch(blocking, /codex-memory-hook\.js/);
+    await invoke([], { MEMORY_MCP_NAME: "memory-local" });
+    assert.equal(readFileSync(config, "utf8"), blocking);
     assert.equal((blocking.match(/capture-hook\.js/g) ?? []).length, 6);
     assert.ok(blocking.startsWith(unrelated));
     await invoke(["--remove"], { MEMORY_MCP_NAME: "memory-local" });
@@ -205,6 +209,26 @@ test("deferred Codex setup installs synchronous matched delivery hooks and prese
     const removed = readFileSync(config, "utf8");
     await invoke(["--remove"]);
     assert.equal(readFileSync(config, "utf8"), removed);
+  });
+});
+
+test("Codex setup defaults to deferred recall and upgrades blocks without a recorded selection", async () => {
+  await withCodexFixture(async ({ config, invoke }) => {
+    await invoke();
+    const installed = readFileSync(config, "utf8");
+    assert.match(installed, /KOED_CODEX_STOP_DELIVERY = "1"/);
+    assert.match(installed, /codex-memory-hook\.js/);
+    await invoke(["--check"]);
+    await invoke(["--blocking-recall"]);
+    const legacy = readFileSync(config, "utf8").replace(
+      /^KOED_CODEX_STOP_DELIVERY = "0"\n/m,
+      ""
+    );
+    assert.doesNotMatch(legacy, /KOED_CODEX_STOP_DELIVERY|codex-memory-hook/);
+    writeFileSync(config, legacy);
+    await assert.rejects(invoke(["--check"]));
+    await invoke();
+    assert.equal(readFileSync(config, "utf8"), installed);
   });
 });
 
@@ -229,12 +253,15 @@ test("Codex owned-block validation and missing delivery artifact fail before con
       /Build @koed\/mcp-server/
     );
     assert.equal(readFileSync(config, "utf8"), "# User settings\n");
-    await invoke();
-    assert.doesNotMatch(
+    await assert.rejects(invoke(), /Build @koed\/mcp-server/);
+    assert.equal(readFileSync(config, "utf8"), "# User settings\n");
+    await invoke(["--blocking-recall"]);
+    assert.match(
       readFileSync(config, "utf8"),
-      /KOED_CODEX_STOP_DELIVERY/
+      /KOED_CODEX_STOP_DELIVERY = "0"/
     );
     const installed = readFileSync(config, "utf8");
+    await invoke(["--check"]);
     await assert.rejects(invoke(["--check", "--deferred-recall"]));
     assert.equal(readFileSync(config, "utf8"), installed);
     await assert.rejects(
@@ -293,6 +320,10 @@ test("codex configure preserves user instructions and updates one managed block"
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(path.join(dir, "packages/mcp-server/dist/cli.js"), "");
   writeFileSync(path.join(dir, "packages/mcp-server/dist/capture-hook.js"), "");
+  writeFileSync(
+    path.join(dir, "packages/mcp-server/dist/codex-memory-hook.js"),
+    ""
+  );
   stageGuidance(dir);
   writeFileSync(
     codexInstructionsPath,
@@ -337,6 +368,10 @@ test("codex configure removes only managed guidance when disabled", async () => 
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(path.join(dir, "packages/mcp-server/dist/cli.js"), "");
   writeFileSync(path.join(dir, "packages/mcp-server/dist/capture-hook.js"), "");
+  writeFileSync(
+    path.join(dir, "packages/mcp-server/dist/codex-memory-hook.js"),
+    ""
+  );
   stageGuidance(dir);
   writeFileSync(
     codexInstructionsPath,
@@ -370,6 +405,10 @@ test("codex configure preserves User-owned whitespace across enable and disable"
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(path.join(dir, "packages/mcp-server/dist/cli.js"), "");
   writeFileSync(path.join(dir, "packages/mcp-server/dist/capture-hook.js"), "");
+  writeFileSync(
+    path.join(dir, "packages/mcp-server/dist/codex-memory-hook.js"),
+    ""
+  );
   stageGuidance(dir);
   writeFileSync(codexInstructionsPath, original);
 

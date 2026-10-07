@@ -3050,6 +3050,40 @@ describe("status and doctor JSON contracts", () => {
     expect((await check()).state).toBe("healthy");
   });
 
+  it("accepts Codex delivery hooks whose runtime path needs quoting", async () => {
+    const root = resolve(tempDir(), "koed's home");
+    const dist = resolve(root, "packages/mcp-server/dist");
+    const profile = resolve(root, ".codex");
+    mkdirSync(dist, { recursive: true });
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "generated-token" })
+    );
+    for (const name of ["cli.js", "capture-hook.js", "codex-memory-hook.js"])
+      writeFileSync(resolve(dist, name), "");
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      HOME: root,
+      CODEX_HOME: profile,
+      KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false",
+      KOED_CODEX_STOP_DELIVERY: "1"
+    };
+    expect(
+      repairCodexIntegration({
+        environment,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      }).ok
+    ).toBe(true);
+    const status = await collectKoedServerStatus(environment, {
+      fetch: async () => response(false, 503, {}),
+      spawnSync: () => spawnResult("", 0)
+    });
+    expect(status.codex.state).toBe("healthy");
+  });
+
   it("reports healthy Codex integration when global guidance is disabled", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });

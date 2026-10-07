@@ -7,6 +7,8 @@ export declare const DISPOSITION: string;
 export declare const COMPLETION: string;
 export interface PiDeliveryContext {
   cwd: string;
+  /** Pi run mode; "print" and "json" are single-shot and use blocking recall. */
+  mode?: string;
   sessionManager: {
     getSessionId(): string;
     getSessionFile(): string | undefined;

@@ -146,7 +146,7 @@ Commands:
   personal-sync status --json             Print redacted Personal Sync status
   personal-sync --help   Show Personal Sync usage and advanced recovery help
   setup core --json      Prepare Koed core services and local credential
-  setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration
+  setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration (deferred recall by default)
     --without-memory-guidance  Do not install the recommended global guidance
     --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration
