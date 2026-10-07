@@ -36,6 +36,10 @@
     "./codex-memory-delivery": {
       "types": "./dist/codex-memory-delivery.d.ts",
       "import": "./dist/codex-memory-delivery.js"
+    },
+    "./managed-conversation-command-types": {
+      "types": "./dist/managed-conversation-command-types.d.ts",
+      "import": "./dist/managed-conversation-command-types.js"
     }
   },
   "files": [

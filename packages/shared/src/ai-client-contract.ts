@@ -100,7 +100,8 @@ export const aiClientCapabilityIds = {
   modelContinuationDuringTool: "model_continuation_during_tool",
   sessionIdentity: "session_identity",
   handoff: "handoff",
-  fork: "fork"
+  fork: "fork",
+  slashCommandDiscovery: "slash_command_discovery"
 } as const;
 
 export type AiClientCapabilityId =

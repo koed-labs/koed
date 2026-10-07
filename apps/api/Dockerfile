@@ -10,8 +10,10 @@ RUN find apps packages -name "*.tsbuildinfo" -delete && rm -rf apps/*/dist packa
 RUN pnpm --filter @koed/shared build \
   && pnpm --filter @koed/core build \
   && pnpm --filter @koed/db build \
+  && pnpm --filter @koed/mcp-server build \
   && pnpm --filter @koed/api build
 RUN pnpm --filter @koed/api deploy --legacy --prod /deploy/api
+RUN cd /deploy/api && node --input-type=module -e "await import('./dist/managed-conversations/routes.js')"
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

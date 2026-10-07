@@ -627,7 +627,13 @@ export const claudeAgentSdkEnvironment = (
     ...allowedNames
       .map((name) => [name, env[name]] as const)
       .filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
-    ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`]
+    ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`],
+    // SessionStore resume relocates CLAUDE_CONFIG_DIR. Keep the CLI's original
+    // secure-storage identity, including its empty/default Keychain namespace.
+    [
+      "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+      env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR ?? ""
+    ]
   ]);
 };
 
@@ -930,9 +936,13 @@ const capability = (
   id: (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds],
   driver: AiClientProvider,
   synthesisReady: boolean,
+  slashCommandDiscoveryReady: boolean,
   recoveryAction?: AiClientRecoveryActionId
 ): AiClientCapabilityDescriptor => {
   const support = capabilitySupportFor(id, driver);
+  const slashCommandDiscoveryReadiness = slashCommandDiscoveryReady
+    ? "ready"
+    : "not_ready";
   const readiness =
     support !== "supported"
       ? "not_ready"
@@ -941,11 +951,13 @@ const capability = (
         ? synthesisReady
           ? "ready"
           : "not_ready"
-        : managedCapabilityIds.has(id)
-          ? implementedManagedCapabilityIds.has(id)
-            ? "ready"
-            : "not_ready"
-          : "unknown";
+        : id === aiClientCapabilityIds.slashCommandDiscovery
+          ? slashCommandDiscoveryReadiness
+          : managedCapabilityIds.has(id)
+            ? implementedManagedCapabilityIds.has(id)
+              ? "ready"
+              : "not_ready"
+            : "unknown";
   return {
     id,
     support,
@@ -965,13 +977,15 @@ const capability = (
 
 const capabilitiesFor = (
   driver: AiClientProvider,
-  synthesisReady: boolean
+  synthesisReady: boolean,
+  slashCommandDiscoveryReady: boolean
 ): AiClientCapabilityDescriptor[] =>
   Object.values(aiClientCapabilityIds).map((id) =>
     capability(
       id,
       driver,
       synthesisReady,
+      slashCommandDiscoveryReady,
       id === aiClientCapabilityIds.setup ||
         id === aiClientCapabilityIds.check ||
         id === aiClientCapabilityIds.repair ||
@@ -1026,7 +1040,7 @@ export const aiClientDiscoveryError = (
     authenticationState,
     healthState: "unavailable",
     models,
-    capabilities: capabilitiesFor(driver, false).map((item) => ({
+    capabilities: capabilitiesFor(driver, false, false).map((item) => ({
       ...item,
       diagnostics,
       readiness:
@@ -1108,7 +1122,8 @@ const codexDriver: AiClientDriver = {
         models: normalized,
         capabilities: capabilitiesFor(
           "codex",
-          authenticationState === "authenticated"
+          authenticationState === "authenticated",
+          true
         ),
         diagnostics: []
       };
@@ -1144,7 +1159,7 @@ const claudeAuthenticationUnavailableDiscovery = (
     authenticationState: availability.authenticationState,
     healthState: "unavailable",
     models: [],
-    capabilities: capabilitiesFor("claude", false).map((descriptor) => ({
+    capabilities: capabilitiesFor("claude", false, false).map((descriptor) => ({
       ...descriptor,
       diagnostics,
       ...(descriptor.id === aiClientCapabilityIds.automaticCapture
@@ -1201,7 +1216,7 @@ const claudeDriver: AiClientDriver = {
         authenticationState: "authenticated",
         healthState: "healthy",
         models: normalized,
-        capabilities: capabilitiesFor("claude", true),
+        capabilities: capabilitiesFor("claude", true, true),
         diagnostics: []
       };
     } catch (error) {
@@ -1236,7 +1251,7 @@ const piAuthenticationUnavailableDiscovery = (
     authenticationState: availability.authenticationState,
     healthState: "unavailable",
     models: [],
-    capabilities: capabilitiesFor("pi", false).map((descriptor) => ({
+    capabilities: capabilitiesFor("pi", false, false).map((descriptor) => ({
       ...descriptor,
       diagnostics,
       ...(descriptor.id === aiClientCapabilityIds.automaticCapture
@@ -1300,7 +1315,7 @@ const piDriver: AiClientDriver = {
         authenticationState: "authenticated",
         healthState: "healthy",
         models,
-        capabilities: capabilitiesFor("pi", true).map((descriptor) => ({
+        capabilities: capabilitiesFor("pi", true, true).map((descriptor) => ({
           ...descriptor,
           diagnostics
         })),

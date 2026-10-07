@@ -216,7 +216,14 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
     "node_modules/@koed/db/dist/user-api-token-repository.js",
     "node_modules/@koed/db/drizzle/meta/_journal.json",
     "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-    codexGuidanceSource
+    codexGuidanceSource,
+    "node_modules/@koed/mcp-server/integrations/pi/package.json",
+    "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
+    "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
   ];
   const missing = requiredSharedFiles.filter(
     (entry) => !existsSync(resolve(runtimeRoot, entry))

@@ -30,6 +30,13 @@ import {
   projectRawConversationItems
 } from "./raw-conversation-items.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
+import {
+  MANAGED_CONVERSATION_CONTROL_ACTIONS,
+  type ManagedConversationCommand,
+  type ManagedConversationCommandActionRequest,
+  type ManagedConversationControlActionResult
+} from "./managed-conversation-command-types.js";
+import { CommandOpIdStore } from "./command-op-id-store.js";
 
 export interface CodexConversationStartupTiming {
   stage:
@@ -50,6 +57,8 @@ export interface CodexManagedConversationConfig {
   memoryClient: MemoryApiClient;
   appServer: CodexAppServerRunConfig;
   projectId?: string;
+  executionGeneration?: number;
+  aiClientInstanceId?: string;
   onStartupTiming?: (timing: CodexConversationStartupTiming) => void;
   transcriptReadMaxBytes?: number;
   requestTimeoutMs?: number;
@@ -154,6 +163,106 @@ const positiveFiniteInteger = (value: number | undefined, fallback: number) =>
 
 const identityIssueKey = (issue: CodexConversationIdentityIssue): string =>
   JSON.stringify(issue);
+
+const codexSkillEntries = (payload: unknown): ManagedConversationCommand[] => {
+  const root = asRecord(payload);
+  const skillRoots: unknown[] = Array.isArray(root.skills)
+    ? root.skills
+    : Array.isArray(root.data)
+      ? root.data
+      : [];
+  const allSkills: Record<string, unknown>[] = [];
+  for (const skillRoot of skillRoots.slice(0, 64)) {
+    const entry = asRecord(skillRoot);
+    // skills/list groups by cwd; skills are nested inside.
+    const nestedSkills = Array.isArray(entry.skills)
+      ? entry.skills
+      : Array.isArray(entry.data)
+        ? entry.data
+        : [skillRoot];
+    for (const skill of nestedSkills.slice(0, 128)) {
+      const s = asRecord(skill);
+      // If this entry itself is a cwd wrapper, skip it (it has a skills/data key but no name).
+      if (typeof s.name !== "string") continue;
+      allSkills.push(s);
+    }
+  }
+  return allSkills.flatMap((s) => {
+    const skill = asRecord(s);
+    // Strip leading slash; catalog names are slash-free, slash is added at insert time.
+    const rawName =
+      typeof skill.name === "string"
+        ? skill.name.trim().replace(/^\//, "")
+        : "";
+    if (
+      !rawName ||
+      rawName.length > 64 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(rawName)
+    )
+      return [];
+    return [
+      {
+        name: rawName,
+        description:
+          typeof skill.description === "string"
+            ? skill.description.slice(0, 512)
+            : "",
+        kind: "skill" as const,
+        scope: skill.cwd ? ("project" as const) : ("global" as const),
+        source: "provider" as const,
+        verification: "verified" as const,
+        invocation: { type: "prompt" as const }
+      }
+    ];
+  });
+};
+
+const codexPromptCommands = (
+  codexHome: string
+): ManagedConversationCommand[] => {
+  const root = path.join(codexHome, "prompts");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs
+      .readdirSync(root, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, 128);
+  } catch {
+    return [];
+  }
+  return entries.flatMap((entry) => {
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".md")
+      return [];
+    const name = path.basename(entry.name, path.extname(entry.name));
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) return [];
+    const file = path.join(root, entry.name);
+    try {
+      if (fs.statSync(file).size > 64 * 1024) return [];
+      const content = fs.readFileSync(file, "utf8");
+      const description =
+        content
+          .match(
+            /^---\r?\n[\s\S]*?description\s*:\s*(.*?)\r?\n[\s\S]*?---/i
+          )?.[1]
+          ?.trim()
+          .replace(/^['"]|['"]$/g, "")
+          .slice(0, 512) ?? "";
+      return [
+        {
+          name: name,
+          description,
+          kind: "command" as const,
+          scope: "global" as const,
+          source: "global-file" as const,
+          verification: "unverified" as const,
+          invocation: { type: "prompt" as const }
+        }
+      ];
+    } catch {
+      return [];
+    }
+  });
+};
 
 const itemTurnId = (item: RawConversationItemRequest): string | null =>
   typeof item.externalTurnId === "string" ? item.externalTurnId : null;
@@ -276,6 +385,9 @@ export class CodexManagedConversationSession {
   private readonly identityIssueKeys = new Set<string>();
   private readonly clientUserMessageIds = new Map<string, string>();
   private readonly terminalTurnSessions = new Map<string, string>();
+  private commandOpIdStore: CommandOpIdStore;
+  private commandOpIdArtifactId: string | null = null;
+  private commandOpIdArtifactPromise: Promise<void> | null = null;
   private readonly childSources = new Map<string, ManagedConversationSource>();
   private bufferedEventBytes = 0;
   private thread: CodexAppServerThreadInfo | null = null;
@@ -290,7 +402,9 @@ export class CodexManagedConversationSession {
   private started = false;
   private closed = false;
 
-  constructor(private readonly config: CodexManagedConversationConfig) {}
+  constructor(private readonly config: CodexManagedConversationConfig) {
+    this.commandOpIdStore = new CommandOpIdStore(this.config.memoryClient);
+  }
 
   async start(): Promise<CodexManagedConversationStartResult> {
     if (this.started && this.client && !this.client.isClosed()) {
@@ -599,6 +713,124 @@ export class CodexManagedConversationSession {
       () => undefined
     );
     return operation;
+  }
+
+  async listCommands(): Promise<ManagedConversationCommand[]> {
+    await this.start();
+    const cwd = this.config.appServer.cwd;
+    const commands: ManagedConversationCommand[] = [];
+    if (this.protocol?.requestMethods.includes("skills/list")) {
+      try {
+        commands.push(
+          ...codexSkillEntries(await this.appServerClient().listSkills(cwd))
+        );
+      } catch {
+        // Provider listing unavailable; built-ins and bounded custom prompts remain useful.
+      }
+    }
+    if (this.protocol?.requestMethods.includes("thread/compact/start")) {
+      commands.push({
+        name: "compact",
+        description: "Compact the conversation context",
+        kind: "command",
+        scope: "global",
+        source: "builtin",
+        verification: "verified",
+        invocation: { type: "control_action", actionId: "codex.compact" }
+      });
+    }
+    commands.push(...codexPromptCommands(this.startResult().codexHome));
+    const unique = new Map<string, ManagedConversationCommand>();
+    for (const command of commands) {
+      const key = `${command.kind}:${command.name.toLowerCase()}`;
+      if (!unique.has(key) || command.source === "builtin")
+        unique.set(key, command);
+    }
+    return [...unique.values()].slice(0, 128);
+  }
+
+  private async ensureCommandOpIdArtifactId(): Promise<string> {
+    if (this.commandOpIdArtifactId) return this.commandOpIdArtifactId;
+    if (!this.commandOpIdArtifactPromise) {
+      this.commandOpIdArtifactPromise = this.resolveCommandOpIdArtifactId();
+    }
+    try {
+      await this.commandOpIdArtifactPromise;
+    } finally {
+      // Reset promise on failure so subsequent calls retry.
+      this.commandOpIdArtifactPromise = null;
+    }
+    return this.commandOpIdArtifactId!;
+  }
+
+  private async resolveCommandOpIdArtifactId(): Promise<void> {
+    const thread = this.thread;
+    if (!thread) return;
+    const lookup =
+      await this.config.memoryClient.lookupConversationSourceArtifact({
+        sourceKind: "codex",
+        externalSessionId: thread.id
+      });
+    const artifact = lookup.artifact as Record<string, unknown>;
+    const artifactId = artifact.id as string;
+    if (!artifactId) return;
+    await this.commandOpIdStore.ensureArtifact(artifactId);
+    this.commandOpIdArtifactId = artifactId;
+  }
+
+  async executeControlAction(
+    input: ManagedConversationCommandActionRequest
+  ): Promise<ManagedConversationControlActionResult> {
+    if (
+      typeof input.operationId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.operationId) ||
+      !Array.isArray(input.arguments) ||
+      input.arguments.some((argument) => typeof argument !== "string")
+    )
+      return { status: "rejected", reason: "invalid_request" };
+    await this.start();
+    // Ensure artifact is available for persistence (triggers restore).
+    await this.ensureCommandOpIdArtifactId();
+    // Idempotency: return persisted state for known operation IDs.
+    const existing = this.commandOpIdStore.get(input.operationId);
+    if (existing)
+      return existing.status === "accepted"
+        ? { status: "already_accepted" }
+        : existing;
+    const definition = MANAGED_CONVERSATION_CONTROL_ACTIONS[input.actionId];
+    if (!definition || definition.provider !== "codex")
+      return { status: "rejected", reason: "unsupported_action" };
+    if (input.arguments.length > 0)
+      return { status: "rejected", reason: "arguments_not_supported" };
+    if (
+      this.config.executionGeneration === undefined ||
+      input.executionGeneration !== this.config.executionGeneration
+    )
+      return { status: "rejected", reason: "generation_changed" };
+    if (this.appServerClient().activeTurn())
+      return { status: "rejected", reason: "try_after_response" };
+    if (!this.protocol?.requestMethods.includes("thread/compact/start"))
+      return { status: "rejected", reason: "provider_unsupported" };
+    await this.ensureCommandOpIdArtifactId();
+    // Dispatch directly; control actions must not queue behind turns.
+    this.commandOpIdStore.set(input.operationId, { status: "unknown" });
+    try {
+      await this.appServerClient().compactThread(this.startResult().thread.id);
+      const accepted = { status: "accepted" as const };
+      this.commandOpIdStore.set(input.operationId, accepted);
+      // Persist fire-and-forget; next restore will recover.
+      void this.commandOpIdStore
+        .save(this.commandOpIdArtifactId ?? "")
+        .catch(() => {});
+      return accepted;
+    } catch {
+      const unknown = { status: "unknown" as const };
+      this.commandOpIdStore.set(input.operationId, unknown);
+      void this.commandOpIdStore
+        .save(this.commandOpIdArtifactId ?? "")
+        .catch(() => {});
+      return unknown;
+    }
   }
 
   async interruptActiveTurn(): Promise<{

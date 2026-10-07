@@ -160,6 +160,9 @@ describe("Claude AI Client runner boundary", () => {
       const capability = (id: string) =>
         discovery.capabilities.find((item) => item.id === id);
 
+      expect(capability("slash_command_discovery")).toMatchObject({
+        support: "supported"
+      });
       expect(capability("durable_memory_answer")).toMatchObject({
         support: "supported"
       });
@@ -360,6 +363,10 @@ exit 1
         expect.objectContaining({
           id: "managed_conversation_start",
           readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "slash_command_discovery",
+          readiness: "not_ready"
         })
       ])
     );
@@ -594,7 +601,8 @@ exit 1
       HOME: "/home/alice",
       PATH: "/usr/bin",
       CLAUDE_CONFIG_DIR: "/home/alice/.claude-work",
-      CLAUDE_AGENT_SDK_CLIENT_APP: "koed/test"
+      CLAUDE_AGENT_SDK_CLIENT_APP: "koed/test",
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/alice/.claude-work"
     });
   });
 

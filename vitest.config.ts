@@ -59,12 +59,20 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
       },
       {
+        find: "@koed/mcp-server/managed-conversation-command-types",
+        replacement: `${root}packages/mcp-server/src/managed-conversation-command-types.ts`
+      },
+      {
         find: "@koed/mcp-server/runtime-contracts",
         replacement: `${root}packages/mcp-server/src/runtime-contracts.ts`
       },
       {
         find: "@koed/mcp-server",
         replacement: `${root}packages/mcp-server/src/index.ts`
+      },
+      {
+        find: /^@koed\/worker\/(command-discovery-adapter(?:-codex|-claude|-pi)?)$/,
+        replacement: `${root}apps/worker/src/$1.ts`
       },
       {
         find: "@koed/worker/embedding-workflow",

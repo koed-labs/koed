@@ -183,8 +183,23 @@ const writeSettings = (content) => {
     chmodSync(settingsPath, 0o600);
   }
 };
-const restorePriorMcp = (existingMcp) => {
+const restorePriorMcp = (existingMcp, exactEntry) => {
   if (existingMcp.status !== 0) return;
+  if (exactEntry) {
+    const restored = runClaude([
+      "mcp",
+      "add-json",
+      "--scope",
+      "user",
+      mcpName,
+      JSON.stringify(exactEntry)
+    ]);
+    if (restored.error || restored.status !== 0)
+      throw new Error(
+        restored.error?.message || restored.stderr?.trim() || "restore failed"
+      );
+    return;
+  }
   const entry = parseClaudeOwnedMcpEntry(
     existingMcp.stdout ?? "",
     mcpCliPath,
@@ -215,7 +230,12 @@ const rollbackSettings = () => {
     if (existsSync(settingsPath)) unlinkSync(settingsPath);
   } else writeSettings(originalSettings);
 };
-const failWithRollback = (error, existingMcp, removeReplacement) => {
+const failWithRollback = (
+  error,
+  existingMcp,
+  removeReplacement,
+  exactEntry
+) => {
   const failures = [error instanceof Error ? error.message : String(error)];
   try {
     rollbackSettings();
@@ -242,7 +262,7 @@ const failWithRollback = (error, existingMcp, removeReplacement) => {
   )
     failures.push("Claude MCP rollback failed.");
   try {
-    restorePriorMcp(existingMcp);
+    restorePriorMcp(existingMcp, exactEntry);
   } catch (restoreError) {
     failures.push(restoreError.message);
   }
@@ -320,41 +340,72 @@ if (mode === "remove") {
 }
 
 const existingMcp = runClaude(["mcp", "get", mcpName]);
-if (
-  existingMcp.status === 0 &&
-  !mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
-) {
-  console.error(
-    `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}. Rename it or set MEMORY_MCP_NAME to a distinct name.`
-  );
-  process.exit(1);
-}
+let previousMcp;
 if (existingMcp.status === 0) {
+  const configPath = process.env.CLAUDE_CONFIG_DIR?.trim()
+    ? resolve(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
+    : resolve(process.env.HOME?.trim() || homedir(), ".claude.json");
+  if (existsSync(configPath)) {
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    previousMcp = config.mcpServers?.[mcpName];
+  }
+  if (
+    !previousMcp &&
+    !parseClaudeOwnedMcpEntry(existingMcp.stdout ?? "", mcpCliPath, koedHome)
+  ) {
+    console.error(
+      "Claude Code already has an unrelated user-scoped MCP server named " +
+        mcpName +
+        "; its exact configuration is unavailable for safe replacement."
+    );
+    process.exit(1);
+  }
   const remove = runClaude(["mcp", "remove", "--scope", "user", mcpName]);
-  if (remove.status !== 0) {
-    console.error(remove.stderr?.trim() || "Claude MCP removal failed.");
+  if (remove.error || remove.status !== 0) {
+    console.error(
+      remove.error?.message ||
+        remove.stderr?.trim() ||
+        "Claude MCP removal failed."
+    );
+    // The CLI may have removed the entry before reporting failure.
+    const currentMcp = existsSync(configPath)
+      ? JSON.parse(readFileSync(configPath, "utf8")).mcpServers?.[mcpName]
+      : undefined;
+    if (!currentMcp && previousMcp) {
+      try {
+        restorePriorMcp(existingMcp, previousMcp);
+      } catch (restoreError) {
+        console.error(`Claude MCP rollback failed: ${restoreError.message}`);
+      }
+    }
     process.exit(1);
   }
 }
-const add = spawnSync(
-  claudeCommand,
-  [
-    "mcp",
-    "add",
-    "--scope",
-    "user",
-    mcpName,
-    "--env",
-    `KOED_HOME=${koedHome}`,
-    "--",
-    nodeCommand,
-    mcpCliPath
-  ],
-  { encoding: "utf8", env: childEnvironment, timeout: 30_000 }
-);
-if (add.status !== 0) {
-  if (existingMcp.status === 0) restorePriorMcp(existingMcp);
-  console.error(add.stderr?.trim() || "Claude MCP setup failed.");
+const add = runClaude([
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  mcpName,
+  "--env",
+  `KOED_HOME=${koedHome}`,
+  "--",
+  nodeCommand,
+  mcpCliPath
+]);
+if (add.error || add.status !== 0) {
+  console.error(
+    add.error?.message || add.stderr?.trim() || "Claude MCP setup failed."
+  );
+  if (existingMcp.status === 0) {
+    // A failed or timed-out add may still have written the replacement.
+    runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+    try {
+      restorePriorMcp(existingMcp, previousMcp);
+    } catch (restoreError) {
+      console.error(`Claude MCP rollback failed: ${restoreError.message}`);
+    }
+  }
   process.exit(1);
 }
 
@@ -379,7 +430,7 @@ try {
     writeClaudeBackgroundJournal(backgroundSnapshot, background.journal);
   writeSettings(`${JSON.stringify(settings, null, 2)}\n`);
 } catch (error) {
-  failWithRollback(error, existingMcp, true);
+  failWithRollback(error, existingMcp, true, previousMcp);
 }
 
 console.log("Claude Code integration configured.");

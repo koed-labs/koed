@@ -291,6 +291,19 @@ export const createManagedConversationPreloadApi = (
         throw new Error("Invalid Managed Conversation fork correlation.");
       }
       return result;
+    },
+    discoverCommands: async (input) => {
+      const request = parseManagedConversationRequest({
+        operation: "command_discovery",
+        ...input
+      }) as Extract<
+        ReturnType<typeof parseManagedConversationRequest>,
+        { operation: "command_discovery" }
+      >;
+      return correlated(
+        "command_discovery",
+        await invoke(managedConversationCommandChannel, request)
+      );
     }
   };
   return Object.freeze(api);

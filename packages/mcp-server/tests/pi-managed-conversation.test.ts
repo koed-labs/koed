@@ -82,12 +82,15 @@ function fixture(startupDelayMs = 0, bundled = false) {
                 ).resumeSessionPath ??
                 path.join(root, "sessions", "session.jsonl")
             }
-          : {}
+          : request.type === "get_commands"
+            ? { commands: mockCommands }
+            : {}
     };
     if (request.type === "get_state" && startupDelayMs) {
       setTimeout(() => emit(response), startupDelayMs);
     } else emit(response);
   });
+  const mockCommands: Record<string, unknown>[] = [];
   const onTextDelta = vi.fn();
   const onUiRequest = vi.fn().mockResolvedValue({ value: "Approve" });
   const config: PiManagedConversationConfig = {
@@ -110,6 +113,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
     requests,
     onTextDelta,
     onUiRequest,
+    mockCommands,
     changeIdentity: () => {
       sessionId = "22222222-2222-4222-8222-222222222222";
     }
@@ -178,7 +182,7 @@ describe("Pi managed RPC conversation", () => {
       const args = mocks.spawn.mock.calls[0]?.[1] as string[];
       const passedConfig = JSON.parse(args.at(-1)!) as Record<string, unknown>;
       expect(passedConfig).toMatchObject({
-        sessionDirectory: f.config.sessionDirectory,
+        sessionDirectory: fs.realpathSync(f.config.sessionDirectory),
         resumeSessionPath: identity.transcriptPath
       });
       const original = fs.readFileSync(transcriptPath, "utf8");
@@ -284,6 +288,64 @@ describe("Pi managed RPC conversation", () => {
     await expect(session.start()).resolves.toMatchObject({
       sessionId: "11111111-1111-4111-8111-111111111111"
     });
+    await session.closeAndWait();
+  });
+
+  it("lists commands via get_commands RPC and rejects actions", async () => {
+    const f = fixture();
+    f.mockCommands.length = 0;
+    f.mockCommands.push(
+      {
+        name: "review",
+        description: "Review changes",
+        source: "prompt",
+        sourceInfo: {
+          path: "/tmp/review.md",
+          scope: "user",
+          origin: "top-level"
+        }
+      },
+      {
+        name: "skill:test",
+        description: "Test skill",
+        source: "skill",
+        sourceInfo: {
+          path: "/tmp/skill-test",
+          scope: "project",
+          origin: "package"
+        }
+      }
+    );
+    const session = new PiManagedConversationSession(f.config);
+    await session.start();
+
+    await expect(session.listCommands()).resolves.toEqual([
+      expect.objectContaining({
+        name: "review",
+        description: "Review changes",
+        scope: "global",
+        source: "global-file",
+        verification: "unverified",
+        invocation: { type: "prompt" }
+      }),
+      expect.objectContaining({
+        name: "skill:test",
+        description: "Test skill",
+        kind: "skill",
+        scope: "project",
+        source: "project-file",
+        verification: "unverified"
+      })
+    ]);
+    await expect(
+      session.executeControlAction({
+        operationId: "operation-1",
+        actionId: "codex.compact",
+        executionGeneration: 1,
+        arguments: []
+      })
+    ).resolves.toEqual({ status: "rejected", reason: "unsupported_action" });
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
     await session.closeAndWait();
   });
 

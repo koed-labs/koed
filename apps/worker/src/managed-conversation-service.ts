@@ -1477,6 +1477,8 @@ export const createManagedConversationService = (options: {
           "managed Conversation startup stage"
         ),
       projectId: execution.projectId,
+      executionGeneration: execution.executionGeneration,
+      aiClientInstanceId: execution.aiClientInstanceId,
       appServer: {
         appServerBinary:
           runtimeEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??

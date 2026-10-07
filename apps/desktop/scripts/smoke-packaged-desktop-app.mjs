@@ -785,38 +785,47 @@ const smokeMissingAssets = (layout, koedHome) => {
   };
 };
 
-const waitForHealthyStatus = async ({
-  layout,
-  koedHome,
-  timeoutMs,
-  pollIntervalMs,
-  supervisorPid
-}) => {
-  const startedAt = Date.now();
+export const waitForHealthyStatus = async (
+  {
+    layout,
+    koedHome,
+    timeoutMs,
+    pollIntervalMs,
+    supervisorPid,
+    requireClientIntegration = false
+  },
+  {
+    now = Date.now,
+    isRunning = pidIsRunning,
+    runCommand = runPackagedCommand,
+    delay = sleep
+  } = {}
+) => {
+  const startedAt = now();
   let lastStatus = null;
-  while (Date.now() - startedAt < timeoutMs) {
-    if (!pidIsRunning(supervisorPid)) {
+  while (now() - startedAt < timeoutMs) {
+    if (!isRunning(supervisorPid)) {
       throw new Error(
         `Packaged daemon supervisor ${supervisorPid} exited before becoming healthy.`
       );
     }
-    const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
+    const status = runCommand(layout, koedHome, ["status", "--json"]);
     if (status.status !== 0) {
       lastStatus = parseJsonOutput("status --json", status.stdout || "{}");
-      await sleep(pollIntervalMs);
+      await delay(pollIntervalMs);
       continue;
     }
     lastStatus = parseJsonOutput("status --json", status.stdout);
     try {
       assertPackagedDaemonReady(lastStatus, "status --json", {
-        requireClientIntegration: false
+        requireClientIntegration
       });
       assertNoSourceCheckoutResolution("status --json", lastStatus);
       return lastStatus;
     } catch {
       // A daemon may need time to load its native models and start every service.
     }
-    await sleep(pollIntervalMs);
+    await delay(pollIntervalMs);
   }
   throw new Error(
     `Timed out waiting for packaged daemon health. Last status:\n${JSON.stringify(lastStatus, null, 2)}`
@@ -1060,16 +1069,14 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
     );
   }
-  const reconnectStatus = runPackagedCommand(layout, koedHome, [
-    "status",
-    "--json"
-  ]);
-  const reconnectJson = parseJsonOutput(
-    "status --json",
-    reconnectStatus.stdout
-  );
-  assertNoSourceCheckoutResolution("status --json", reconnectJson);
-  assertPackagedDaemonReady(reconnectJson, "status --json after reconnect");
+  const reconnectJson = await waitForHealthyStatus({
+    layout,
+    koedHome,
+    timeoutMs: options.timeoutMs,
+    pollIntervalMs: options.pollIntervalMs,
+    supervisorPid: startJson.startedPid,
+    requireClientIntegration: true
+  });
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
   phaseStarted = beginPhase("daemon stop, restart, and health");

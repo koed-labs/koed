@@ -58,6 +58,14 @@ node packages/koed-server/dist/cli.js check pi --json
 node packages/koed-server/dist/cli.js remove pi --json
 ```
 
+Setup reads the Koed-owned integration package from the selected app runtime.
+Packaged installations use `koed-runtime/node_modules/@koed/mcp-server/integrations/pi`
+(the older flat `koed-runtime/mcp-server/integrations/pi` layout remains supported).
+Contributor checkouts use `packages/mcp-server/integrations/pi`. Explicit runtime
+overrides remain authoritative; setup does not substitute checkout files for a
+missing packaged integration. Runtime staging verifies that the Pi integration
+files are present before producing an installation.
+
 Setup stages and validates the Koed-owned package beside `$KOED_HOME/integrations/pi/`, atomically replaces that stable path, and then runs `pi install`. Both koed-server setup and the Local Operator Script use the same exception-safe transaction: a failed filesystem swap or install restores the previous package, and a failed install also restores its registration. If filesystem restoration itself fails, Koed preserves and reports the backup path instead of deleting the last working copy. Pi records the stable package path in the active global profile. Desktop and the
 CLI expose protected setup, check, repair, and remove actions. Removal deletes
 only Koed's stable package and registry entry. The next ordinary `pi` startup

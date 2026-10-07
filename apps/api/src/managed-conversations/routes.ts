@@ -31,6 +31,13 @@ import {
   verifyDesktopLocalCredentialAuthorization
 } from "@koed/shared";
 
+import {
+  createCommandDiscoveryAdapter,
+  type ManagedConversationSlashCommand
+} from "@koed/worker/command-discovery-adapter";
+import { listCodexDraftCommands } from "@koed/worker/command-discovery-adapter-codex";
+import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-claude";
+import { createPiCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter-pi";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   managedConversationTransferRequestHash,
@@ -52,6 +59,20 @@ const idempotencyKeySchema = z
   .min(8)
   .max(255)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+
+const managedConversationCommandsRequestSchema = z
+  .object({
+    aiClientDriverId: z.string().min(1).max(64),
+    aiClientInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
+    projectId: z.string().trim().min(1).max(128).optional(),
+    mode: z.enum(["file", "draft"]).optional().default("file")
+  })
+  .strict();
 
 const startSchema = z
   .object({
@@ -1439,6 +1460,228 @@ export const registerManagedConversationRoutes = (
         user.id,
         await runnerIdentity(request)
       );
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversations/commands",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await authenticateManaged(request);
+
+      const rawBody = request.body as Record<string, unknown>;
+      const body = managedConversationCommandsRequestSchema.parse(rawBody);
+
+      if (!isSupportedAiClientDriverId(body.aiClientDriverId)) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+
+      const repository = context.requireRepository();
+      const [instances, snapshots] = await Promise.all([
+        repository.listAiClientInstances({ userId: user.id }),
+        repository.listCurrentAiClientCapabilitySnapshots({ userId: user.id })
+      ]);
+      const instance = instances.find(
+        (candidate) => candidate.instanceId === body.aiClientInstanceId
+      );
+
+      if (!instance || !instance.enabled) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+      if (instance.ownerUserId !== user.id) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+      if (instance.driverId !== body.aiClientDriverId) {
+        return {
+          operation: "command_discovery",
+          status: "unauthorized",
+          commands: []
+        };
+      }
+
+      const snapshot = snapshots.find(
+        (candidate) => candidate.instanceId === body.aiClientInstanceId
+      );
+      const expiresAtMs = snapshot
+        ? new Date(snapshot.expiresAt).getTime()
+        : Number.NaN;
+      if (
+        !snapshot ||
+        !Number.isFinite(expiresAtMs) ||
+        expiresAtMs <= Date.now()
+      ) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      const descriptors = snapshot.capabilities?.descriptors;
+      const descriptor =
+        descriptors && typeof descriptors === "object"
+          ? (descriptors as Record<string, unknown>)[
+              aiClientCapabilityIds.slashCommandDiscovery
+            ]
+          : undefined;
+      const isReady =
+        descriptor &&
+        typeof descriptor === "object" &&
+        (descriptor as Record<string, unknown>).support === "supported" &&
+        (descriptor as Record<string, unknown>).readiness === "ready";
+      if (!isReady) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
+
+      let projectRoot: string | undefined;
+      if (body.projectId) {
+        try {
+          projectRoot =
+            (await localProjectExecutionPath(
+              context.config.koedHome,
+              body.projectId
+            )) ?? undefined;
+        } catch {
+          return {
+            operation: "command_discovery",
+            status: "unavailable",
+            commands: []
+          };
+        }
+      }
+
+      const environment = {
+        ...process.env,
+        ...(context.config.koedHome
+          ? { KOED_HOME: context.config.koedHome }
+          : {})
+      };
+      try {
+        if (body.mode === "draft") {
+          if (body.aiClientDriverId === "codex") {
+            const draftCommands = await listCodexDraftCommands({
+              aiClientInstanceId: body.aiClientInstanceId,
+              environment
+            });
+            const projectCommands = projectRoot
+              ? await createCommandDiscoveryAdapter(
+                  body.aiClientDriverId,
+                  environment
+                )
+                  .discoverCommands({
+                    aiClientInstanceId: body.aiClientInstanceId,
+                    projectRoot
+                  })
+                  .then((commands) =>
+                    commands.filter(
+                      (command) =>
+                        command.scope === "project" &&
+                        command.source === "project-file"
+                    )
+                  )
+              : [];
+            const merged = new Map<string, ManagedConversationSlashCommand>();
+            for (const cmd of draftCommands) {
+              merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+            }
+            for (const cmd of projectCommands) {
+              merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+            }
+            return {
+              operation: "command_discovery",
+              status: "ok",
+              commands: [...merged.values()].slice(0, 128)
+            };
+          }
+          if (body.aiClientDriverId === "claude") {
+            const draftCommands = await listClaudeDraftCommands({
+              aiClientInstanceId: body.aiClientInstanceId,
+              environment
+            });
+            const projectCommands = projectRoot
+              ? await createCommandDiscoveryAdapter(
+                  body.aiClientDriverId,
+                  environment
+                )
+                  .discoverCommands({
+                    aiClientInstanceId: body.aiClientInstanceId,
+                    projectRoot
+                  })
+                  .then((commands) =>
+                    commands.filter(
+                      (command) =>
+                        command.scope === "project" &&
+                        command.source === "project-file"
+                    )
+                  )
+              : [];
+            const merged = new Map<string, ManagedConversationSlashCommand>();
+            for (const cmd of draftCommands) {
+              merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+            }
+            for (const cmd of projectCommands) {
+              merged.set(`${cmd.kind}:${cmd.name.toLowerCase()}`, cmd);
+            }
+            return {
+              operation: "command_discovery",
+              status: "ok",
+              commands: [...merged.values()].slice(0, 128)
+            };
+          }
+          if (body.aiClientDriverId === "pi") {
+            const adapter = createPiCommandDiscoveryAdapter(environment);
+            const commands = await adapter.discoverCommands({
+              aiClientInstanceId: body.aiClientInstanceId,
+              ...(projectRoot ? { projectRoot } : {})
+            });
+            return {
+              operation: "command_discovery",
+              status: "ok",
+              commands
+            };
+          }
+        }
+        const adapter = createCommandDiscoveryAdapter(
+          body.aiClientDriverId,
+          environment
+        );
+        const commands = await adapter.discoverCommands({
+          aiClientInstanceId: body.aiClientInstanceId,
+          ...(projectRoot ? { projectRoot } : {})
+        });
+        return { operation: "command_discovery", status: "ok", commands };
+      } catch {
+        return {
+          operation: "command_discovery",
+          status: "unavailable",
+          commands: []
+        };
+      }
     }
   );
 

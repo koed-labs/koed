@@ -1,15 +1,16 @@
 import type {
   ClaudeManagedConversationSession,
   CodexManagedConversationSession,
-  PiManagedConversationSession
+  PiManagedConversationSession,
+  ManagedConversationCommandSession
 } from "@koed/mcp-server";
 
 export type ManagedConversationProvider = "codex" | "claude" | "pi";
 
 type ProviderSession = {
-  codex: CodexManagedConversationSession;
-  claude: ClaudeManagedConversationSession;
-  pi: PiManagedConversationSession;
+  codex: CodexManagedConversationSession & ManagedConversationCommandSession;
+  claude: ClaudeManagedConversationSession & ManagedConversationCommandSession;
+  pi: PiManagedConversationSession & ManagedConversationCommandSession;
 };
 
 export type RuntimeSessionEntry<P extends ManagedConversationProvider> = {

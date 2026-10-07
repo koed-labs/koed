@@ -256,6 +256,11 @@ const readRegistry = (target: string): RegistryRoot => {
   return { version: 1, instances: instances as RegistryEntry[] };
 };
 
+export const readExplicitAiClients = (
+  environment: NodeJS.ProcessEnv
+): readonly RegistryEntry[] =>
+  readRegistry(registryPath(environment)).instances;
+
 export const assertAiClientRegistryWritable = (
   environment: NodeJS.ProcessEnv
 ): void => {

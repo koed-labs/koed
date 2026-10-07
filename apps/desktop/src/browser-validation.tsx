@@ -566,6 +566,7 @@ const managedConversations: ManagedConversationDesktopApi = {
   }),
   handoff: unavailableManagedOperation,
   fork: unavailableManagedOperation,
+  discoverCommands: unavailableManagedOperation,
   resume: async (input) => {
     const conversation = managedValidationConversations.get(
       input.capturedSessionId

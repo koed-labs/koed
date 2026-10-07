@@ -5,6 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
+import type {
+  ManagedConversationCommand,
+  ManagedConversationCommandActionRequest,
+  ManagedConversationControlActionResult
+} from "./managed-conversation-command-types.js";
 import { piSessionIdentity } from "./pi-transcript-watcher.js";
 import { piRpcEnvironment, resolvePiExecutable } from "./pi-rpc-runner.js";
 
@@ -340,6 +345,65 @@ export class PiManagedConversationSession {
       throw new Error("Pi resumed a different transcript.");
     }
     return { provider: "pi", sessionId, transcriptPath };
+  }
+
+  async listCommands(): Promise<ManagedConversationCommand[]> {
+    try {
+      const response = await this.request({ type: "get_commands" });
+      if (!Array.isArray(response?.commands)) return [];
+      const commands: ManagedConversationCommand[] = [];
+      for (const raw of response.commands.slice(0, 128)) {
+        if (!raw || typeof raw !== "object") continue;
+        const item = raw as Record<string, unknown>;
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        if (!name || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/.test(name))
+          continue;
+        const description =
+          typeof item.description === "string" && item.description.trim()
+            ? item.description.trim().slice(0, 512)
+            : "";
+        const sourceType =
+          typeof item.source === "string" ? item.source : "prompt";
+        const sourceInfo =
+          item.sourceInfo && typeof item.sourceInfo === "object"
+            ? (item.sourceInfo as Record<string, unknown>)
+            : {};
+        const scope =
+          (typeof sourceInfo.scope === "string"
+            ? sourceInfo.scope
+            : "project") === "user"
+            ? "global"
+            : "project";
+        const sourceKind =
+          sourceType === "extension"
+            ? "provider"
+            : scope === "global"
+              ? "global-file"
+              : "project-file";
+        commands.push({
+          name,
+          description,
+          kind: sourceType === "skill" ? "skill" : "command",
+          scope,
+          source: sourceKind,
+          verification: "unverified",
+          invocation: { type: "prompt" }
+        });
+      }
+      return commands;
+    } catch {
+      return [];
+    }
+  }
+
+  executeControlAction(
+    input: ManagedConversationCommandActionRequest
+  ): Promise<ManagedConversationControlActionResult> {
+    void input;
+    return Promise.resolve({
+      status: "rejected",
+      reason: "unsupported_action"
+    });
   }
 
   async prompt(prompt: string): Promise<{

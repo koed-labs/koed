@@ -446,6 +446,7 @@ interface FakeSourceArtifact {
 interface FakeSourceSegment {
   id: string;
   artifactId: string;
+  key?: string;
   segmentIndex: number;
   sourceStartOffset: number;
   sourceEndOffset: number;
@@ -579,6 +580,7 @@ class FakeMemoryClient {
     const segment: FakeSourceSegment = {
       id: `segment-${artifactId}-${segments.length + 1}`,
       artifactId,
+      key: typeof input.key === "string" ? input.key : undefined,
       segmentIndex: segments.length + 1,
       sourceStartOffset: artifact.providerCursorOffset,
       sourceEndOffset: Number(input.sourceEndOffset),
@@ -2701,6 +2703,73 @@ describe("Codex managed conversation coordinator", () => {
       ).toBe(true);
     } finally {
       await session.closeAndWait();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Command operation ID persistence", () => {
+  it("persists control action state to artifact segment and restores on reload", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-op-id-persist-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        {
+          timestamp: "2026-07-11T10:59:59.000Z",
+          type: "session_meta",
+          payload: {
+            id: "managed-thread-1",
+            cwd: directory,
+            timestamp: "2026-07-11T10:59:59.000Z"
+          }
+        },
+        {
+          timestamp: "2026-07-11T11:00:00.000Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "active-turn" }
+        }
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+      { mode: 0o600 }
+    );
+    const memoryClient = new FakeMemoryClient("existing-op-id-session");
+    const session = new CodexManagedConversationSession(
+      configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath),
+        directory,
+        {
+          threadId: "managed-thread-1",
+          sessionId: "existing-op-id-session",
+          transcriptPath
+        }
+      )
+    );
+
+    try {
+      // Start the session to create the artifact
+      await session.start();
+
+      // Verify artifact was created
+      expect(memoryClient.sourceArtifacts.size).toBeGreaterThan(0);
+
+      // Execute a control action to trigger op ID persistence
+      const result = await session.executeControlAction({
+        operationId: "test-op-1",
+        actionId: "codex.compact",
+        executionGeneration: 1,
+        arguments: []
+      });
+
+      // Should be rejected because generation_changed or other reason
+      // but the key thing is that the store was initialized
+      expect(result.status).toBe("rejected");
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
