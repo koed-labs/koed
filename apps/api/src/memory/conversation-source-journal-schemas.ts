@@ -248,11 +248,21 @@ export const conversationSourceCursorSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.sourceOffset <= value.expectedSourceOffset) {
+    // The repository allows this only for an absent cursor at the verified live boundary.
+    const canonicalCheckpointInitialization =
+      value.consumerKind === "canonical_live" &&
+      value.sourceOffset === value.expectedSourceOffset &&
+      value.parserState?.historyMode === "paginated";
+    if (
+      value.sourceOffset < value.expectedSourceOffset ||
+      (value.sourceOffset === value.expectedSourceOffset &&
+        !canonicalCheckpointInitialization)
+    ) {
       context.addIssue({
         code: "custom",
         path: ["sourceOffset"],
-        message: "Conversation source consumer cursor must advance"
+        message:
+          "Conversation source consumer cursor must advance or initialize a canonical paginated checkpoint"
       });
     }
   });

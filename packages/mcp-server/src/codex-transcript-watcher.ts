@@ -1499,7 +1499,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     completeSourceBoundary = file.size
   ): void {
     const prior = this.sourcePaths.get(artifact.id);
-    this.sourcePaths.delete(artifact.id);
+    for (const [id, observation] of this.sourcePaths) {
+      if (id === artifact.id || observation.transcriptPath === transcriptPath)
+        this.sourcePaths.delete(id);
+    }
     this.sourcePaths.set(artifact.id, {
       transcriptPath,
       fileKey: `${file.dev}:${file.ino}`,

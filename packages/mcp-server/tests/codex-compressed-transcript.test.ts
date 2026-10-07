@@ -1,4 +1,5 @@
 import {
+  appendFile,
   mkdtemp,
   mkdir,
   readFile,
@@ -41,6 +42,134 @@ const fixture = async (
 };
 
 describe("Codex compressed transcript reader", () => {
+  it.each([false, true])(
+    "keeps reading successive source revisions within a two-entry cache (compressed: %s)",
+    async (compressed) => {
+      const {
+        root,
+        source: compressedSource,
+        reader
+      } = await fixture(64, 128, 2);
+      const source = compressed
+        ? compressedSource
+        : path.join(root, "rollout-growing.jsonl");
+      await writeFile(source, "");
+      let content = "";
+      const snapshots: string[] = [];
+      for (let index = 0; index < 5; index++) {
+        const addition = `revision-${index}\n`;
+        content += addition;
+        if (compressed) await writeFile(source, zstdCompressSync(content));
+        else await appendFile(source, addition);
+        snapshots.push(
+          await reader.withMaterialized(source, async (file) => {
+            expect(await readFile(file, "utf8")).toBe(content);
+            return file;
+          })
+        );
+      }
+      expect(await readdir(path.dirname(snapshots[4]!))).toHaveLength(2);
+      await expect(stat(snapshots[0]!)).rejects.toMatchObject({
+        code: "ENOENT"
+      });
+    }
+  );
+
+  it("pins only the consumed revision while evicting unused revisions of the same source", async () => {
+    const { root, reader } = await fixture(64, 128, 2);
+    const source = path.join(root, "rollout-growing.jsonl");
+    await writeFile(source, "original\n");
+    let release!: () => void;
+    let started!: (file: string) => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readable = new Promise<string>((resolve) => {
+      started = resolve;
+    });
+    const first = reader.withMaterialized(source, async (file) => {
+      started(file);
+      await barrier;
+      return readFile(file, "utf8");
+    });
+    const firstPath = await readable;
+    try {
+      await appendFile(source, "second\n");
+      const second = await reader.withMaterialized(
+        source,
+        async (file) => file
+      );
+      await appendFile(source, "third\n");
+      const third = await reader.withMaterialized(source, async (file) => file);
+      expect(await readFile(firstPath, "utf8")).toBe("original\n");
+      expect(await readFile(third, "utf8")).toBe("original\nsecond\nthird\n");
+      await expect(stat(second)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readdir(path.dirname(firstPath))).toHaveLength(2);
+    } finally {
+      release();
+      expect(await first).toBe("original\n");
+    }
+  });
+
+  it("deduplicates concurrent revision leases and waits for admitted reads when closed immediately", async () => {
+    const { source, reader } = await fixture(64, 64, 1);
+    await writeFile(source, zstdCompressSync(Buffer.from("shared revision\n")));
+    let release!: () => void;
+    let started!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readable = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const snapshots: string[] = [];
+    const captures = Array.from({ length: 3 }, () =>
+      reader.withMaterialized(source, async (file) => {
+        snapshots.push(file);
+        if (snapshots.length === 3) started();
+        await barrier;
+        return readFile(file, "utf8");
+      })
+    );
+    const close = reader.close();
+    await readable;
+    try {
+      expect(new Set(snapshots).size).toBe(1);
+      expect(await readdir(path.dirname(snapshots[0]!))).toHaveLength(1);
+      expect(await readFile(snapshots[0]!, "utf8")).toBe("shared revision\n");
+    } finally {
+      release();
+      expect(await Promise.all(captures)).toEqual([
+        "shared revision\n",
+        "shared revision\n",
+        "shared revision\n"
+      ]);
+      await close;
+    }
+    await expect(stat(snapshots[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reserves capacity for concurrent distinct decodes within the entry and byte bounds", async () => {
+    const { root, source, reader } = await fixture(64, 128, 2);
+    const other = path.join(root, "rollout-other.jsonl.zst");
+    const previous = path.join(root, "rollout-previous.jsonl");
+    await writeFile(previous, "old\n");
+    const old = await reader.withMaterialized(previous, async (file) => file);
+    await writeFile(source, zstdCompressSync(Buffer.from("first\n")));
+    await writeFile(other, zstdCompressSync(Buffer.from("second\n")));
+    expect(
+      await Promise.all(
+        [source, other].map((file) =>
+          reader.withMaterialized(file, async (snapshot) =>
+            readFile(snapshot, "utf8")
+          )
+        )
+      )
+    ).toEqual(["first\n", "second\n"]);
+    expect(await readdir(path.dirname(old))).toHaveLength(2);
+    await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("bounds the number of cached snapshots even for empty plaintext sources", async () => {
     const { root, reader } = await fixture(64, 256, 2);
     const snapshots: string[] = [];

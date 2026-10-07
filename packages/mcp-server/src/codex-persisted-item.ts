@@ -66,6 +66,24 @@ const durationMs = (value: unknown): number | undefined => {
   return result;
 };
 
+const validUserMessageContent = (content: unknown): content is unknown[] =>
+  Array.isArray(content) &&
+  content.every((entry) => {
+    const input = record(entry);
+    if (!input || typeof input.type !== "string") return false;
+    if (input.type === "text") return typeof input.text === "string";
+    if (["local_image", "local_audio"].includes(input.type))
+      return typeof input.path === "string";
+    if (["skill", "mention"].includes(input.type))
+      return typeof input.name === "string" && typeof input.path === "string";
+    if (input.type === "audio") return typeof input.audio_url === "string";
+    if (input.type === "image")
+      return (
+        typeof input.image_url === "string" || typeof input.file_id === "string"
+      );
+    return false;
+  });
+
 const normalizedItem = (item: RecordValue): RecordValue => {
   const type = text(item.type);
   const publicType =
@@ -104,27 +122,7 @@ const normalizedItem = (item: RecordValue): RecordValue => {
     normalized.text = item.content.map((entry) => record(entry)!.text).join("");
   }
   if (type === "UserMessage") {
-    if (
-      !Array.isArray(item.content) ||
-      item.content.some((entry) => {
-        const input = record(entry);
-        if (!input || typeof input.type !== "string") return true;
-        if (input.type === "text") return typeof input.text !== "string";
-        if (["local_image", "local_audio"].includes(input.type))
-          return typeof input.path !== "string";
-        if (["skill", "mention"].includes(input.type))
-          return (
-            typeof input.name !== "string" || typeof input.path !== "string"
-          );
-        if (input.type === "audio") return typeof input.audio_url !== "string";
-        if (input.type === "image")
-          return (
-            typeof input.image_url !== "string" &&
-            typeof input.file_id !== "string"
-          );
-        return true;
-      })
-    )
+    if (!validUserMessageContent(item.content))
       throw new Error("codex_completed_item_invalid_message");
   }
   if (type === "Reasoning") {
@@ -199,6 +197,26 @@ const normalizedItem = (item: RecordValue): RecordValue => {
   if (item.duration !== undefined && item.duration !== null)
     normalized.durationMs = durationMs(item.duration);
   return normalized;
+};
+
+export const codexPersistedUserMessageText = (
+  value: unknown
+): string | undefined => {
+  if (!isCodexPersistedCompletedItem(value)) return undefined;
+  const native = record(record(record(value)?.payload)?.item);
+  // Classification must not reject raw admission; canonical adaptation validates later.
+  if (
+    native?.type !== "UserMessage" ||
+    !validUserMessageContent(native.content)
+  )
+    return undefined;
+  return native.content
+    .map((entry) => {
+      const input = record(entry);
+      return text(input?.text) ?? text(input?.path) ?? "";
+    })
+    .filter(Boolean)
+    .join("\n");
 };
 
 // Reuse canonical live-item components while retaining the exact persisted envelope.

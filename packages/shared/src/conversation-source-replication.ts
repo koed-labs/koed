@@ -41,6 +41,20 @@ export const CONVERSATION_SOURCE_REPLICATION_PROTOCOL =
   "koed.conversation-source-replication/v1" as const;
 export const CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES =
   16 * 1024 * 1024;
+export const CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES = 64 * 1024 * 1024;
+
+export const conversationSourceRewriteProofWithinLimit = (
+  byteLengths: Iterable<number>,
+  maximumBytes = CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES
+): boolean => {
+  let total = 0;
+  for (const length of byteLengths) {
+    if (!Number.isSafeInteger(length) || length < 0) return false;
+    total += length;
+    if (!Number.isSafeInteger(total) || total > maximumBytes) return false;
+  }
+  return true;
+};
 export const CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION = 1 as const;
 
 export type ConversationSourceComponentRole = "primary" | "auxiliary";

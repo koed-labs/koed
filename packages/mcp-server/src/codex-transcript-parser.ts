@@ -13,6 +13,7 @@ import {
 } from "./codex-conversation-source-adapter.js";
 import {
   adaptCodexPersistedCompletedItem,
+  codexPersistedUserMessageText,
   isCodexPersistedCompletedItem
 } from "./codex-persisted-item.js";
 
@@ -979,6 +980,55 @@ const parseTranscriptLineRecords = (
   return records;
 };
 
+const transcriptRecordIsExcludedHistory = (
+  record: unknown,
+  context: TranscriptContext
+): boolean => {
+  if (!isRecord(record)) return false;
+  const ownHistoryStart =
+    context.transcriptMetadata.subagent_history_start_ordinal;
+  return (
+    (record as { [inheritedCodexContextSymbol]?: boolean })[
+      inheritedCodexContextSymbol
+    ] === true ||
+    (context.transcriptMetadata.history_mode === "paginated" &&
+      typeof ownHistoryStart === "number" &&
+      typeof record.ordinal === "number" &&
+      record.ordinal < ownHistoryStart) ||
+    (rawRecordType(record) === "response_item" &&
+      (context.transcriptMetadata.history_mode === "paginated" ||
+        (record as { [transcriptHistoryModeSymbol]?: string })[
+          transcriptHistoryModeSymbol
+        ] === "paginated"))
+  );
+};
+
+const transcriptHasApprovalEnvelope = (
+  records: unknown[],
+  context: TranscriptContext
+): boolean =>
+  context.threadKind === "subagent" &&
+  records.some((record) => {
+    if (!isRecord(record) || transcriptRecordIsExcludedHistory(record, context))
+      return false;
+    let content: string | undefined;
+    if (isCodexPersistedCompletedItem(record)) {
+      content = codexPersistedUserMessageText(record);
+    } else {
+      const item = isRecord(record.payload) ? record.payload : record;
+      if (item.type !== "user_message") return false;
+      const message = isRecord(item.message) ? item.message : undefined;
+      content = stringifyContent(
+        item.content ??
+          item.text ??
+          (typeof item.message === "string" ? item.message : undefined) ??
+          message?.content ??
+          message?.text
+      );
+    }
+    return Boolean(content && approvalReviewTranscriptDisplayFromText(content));
+  });
+
 export const parseTranscriptRecords = (
   records: unknown[],
   indexOffset = 0,
@@ -1012,28 +1062,7 @@ export const parseTranscriptRecords = (
 
   const items = records
     .flatMap((record, index) => {
-      const ownHistoryStart =
-        context.transcriptMetadata.subagent_history_start_ordinal;
-      if (
-        isRecord(record) &&
-        ((record as { [inheritedCodexContextSymbol]?: boolean })[
-          inheritedCodexContextSymbol
-        ] === true ||
-          (context.transcriptMetadata.history_mode === "paginated" &&
-            typeof ownHistoryStart === "number" &&
-            typeof record.ordinal === "number" &&
-            record.ordinal < ownHistoryStart))
-      )
-        return [];
-      if (
-        rawRecordType(record) === "response_item" &&
-        (context.transcriptMetadata.history_mode === "paginated" ||
-          (isRecord(record) &&
-            (record as { [transcriptHistoryModeSymbol]?: string })[
-              transcriptHistoryModeSymbol
-            ] === "paginated"))
-      )
-        return [];
+      if (transcriptRecordIsExcludedHistory(record, context)) return [];
       if (isCodexPersistedCompletedItem(record)) {
         const payload = rawRecordPayload(record);
         const source: RawConversationItemRequest = {
@@ -1400,18 +1429,10 @@ export const parseTranscriptJournalBytes = (input: {
   }
   const approvalHelperConversation =
     input.prior?.approvalHelperConversation === true ||
-    parseTranscriptRecords(
-      records.filter(
-        (record) =>
-          !isCodexPersistedCompletedItem(record) ||
-          (isRecord(record) &&
-            isRecord(record.payload) &&
-            isRecord(record.payload.item) &&
-            record.payload.item.type === "UserMessage")
-      ),
-      input.lineIndexOffset,
+    transcriptHasApprovalEnvelope(
+      records,
       input.context ?? extractTranscriptSessionMetadata(records)
-    ).some((item) => item.metadata.approvalReview === true);
+    );
   if (approvalHelperConversation) {
     for (const record of records)
       if (isRecord(record))
@@ -1859,10 +1880,17 @@ export const buildCodexTranscriptConversationItems = (
       : {})
   };
 
+  const parsedItemsByRecord: ParsedTranscriptItem[][] = [];
   const observations: CodexTranscriptObservation[] = input.records.map(
     (record, index) => {
       const sourceLineNumber =
         transcriptRecordLineIndex(record) ?? index + (input.indexOffset ?? 0);
+      const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
+        preferEventMessages,
+        preferStableResponseItems: preferProviderResponseItems,
+        context
+      });
+      parsedItemsByRecord.push(parsedItems);
       return {
         record,
         sourceLineNumber,
@@ -1877,11 +1905,7 @@ export const buildCodexTranscriptConversationItems = (
         eventTime: effectiveRawEventTime(record),
         eventTimeAccuracy: rawEventTimeAccuracy(record),
         fallbackRawText: rawText(record),
-        parsedItems: extractTranscriptItems(record, sourceLineNumber, {
-          preferEventMessages,
-          preferStableResponseItems: preferProviderResponseItems,
-          context
-        })
+        parsedItems
       };
     }
   );
@@ -1894,18 +1918,7 @@ export const buildCodexTranscriptConversationItems = (
           approvalHelperConversationSymbol
         ] === true
     ) ||
-      observations.some((observation) =>
-        observation.parsedItems.some(
-          (parsedItem) =>
-            parsedItem.item?.metadata.approvalReviewTranscriptDisplay !==
-            undefined
-        )
-      ) ||
-      parseTranscriptRecords(
-        input.records,
-        input.indexOffset ?? 0,
-        context
-      ).some((item) => item.metadata.approvalReview === true));
+      transcriptHasApprovalEnvelope(input.records, context));
   const adaptedItems = adaptCodexTranscriptV1({
     observations,
     sessionId: input.sessionId,
@@ -1935,11 +1948,7 @@ export const buildCodexTranscriptConversationItems = (
       activeTranscriptTurnId = explicitTurnId;
       activeSemanticTurnId = explicitTurnId;
     }
-    const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
-      preferEventMessages,
-      preferStableResponseItems: preferProviderResponseItems,
-      context
-    });
+    const parsedItems = parsedItemsByRecord[index]!;
     const hasLogicalUserPrompt = parsedItems.some(
       (parsedItem) => parsedItem.item.actor === "user"
     );

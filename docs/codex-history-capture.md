@@ -54,7 +54,9 @@ Journal cursors refer to decoded JSONL bytes. Physical compressed-file offsets
 from Capture Hook signals are not usable as decoded frontiers; durable terminal
 records provide the boundary instead. Malformed, truncated or changed compressed
 sources do not advance capture. Temporary decoded files are removed when the
-reader stops normally. Active readers pin their snapshots; unused snapshots are
+reader stops normally. Active readers pin only the specific revision they are
+consuming, so successive updates to one native file can evict its unused older
+snapshots without stalling capture. Unused snapshots are
 evicted when space is needed. Historical import re-materializes each batch from
 the native source rather than retaining an evictable temporary filename. Each
 batch rechecks root confinement and source identity before consuming the snapshot.
@@ -105,7 +107,20 @@ downstream work. Subsequent activity continues after the mapped frontier. The
 successor identity binds the verified rewritten prefix; changed replay attempts
 are rejected.
 
-Automatic verification is bounded at 64 MiB and supports text messages,
+Once the verified prefix has been journalled, the successor persists a real
+canonical checkpoint even when there is no new suffix. Parsing that prefix
+reconstructs history mode, ordinal boundaries and approval-helper classification;
+an inherited approval-helper flag also survives native revert. This checkpoint
+does not recreate old semantic items. It supplies the state needed for future
+messages and another generation transition. The watcher replaces a file's old
+in-memory observation with the successor; retained signed evidence is unchanged.
+
+Origin and receiver share a 64 MiB aggregate immutable proof limit, counting
+unique predecessor/ancestor evidence and the verified skipped rewrite prefix.
+Later appended messages do not consume this proof budget. Each native input is
+also separately bounded at 64 MiB for parsing. Unsupported or oversized proofs
+remain pending rather than publishing a transition that the receiver cannot verify.
+Automatic verification supports text messages,
 image/audio attachments with their original ordering and detail, reasoning,
 command/MCP/dynamic tool completions, patch results, web search, compaction,
 review-mode, image-generation and subagent-activity conversions. Supported

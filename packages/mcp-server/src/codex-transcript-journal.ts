@@ -5,13 +5,16 @@ import path from "node:path";
 
 import {
   CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES,
+  CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
+  conversationSourceRewriteProofWithinLimit,
   conversationSourceRewriteGenerationId,
   type ConversationSourceRewriteFrontier
 } from "@koed/shared";
 import {
   verifyCodexTranscriptRewrite,
   verifyCodexTranscriptContinuation,
-  collectCodexTranscriptContinuationAncestors
+  collectCodexTranscriptContinuationAncestors,
+  type CodexTranscriptContinuationEvidence
 } from "./codex-transcript-rewrite.js";
 
 import { MemoryApiError } from "./index.js";
@@ -431,9 +434,17 @@ const recoverNativeRewrite = async (input: {
     throw new Error("codex_rollout_rewrite_capture_incomplete");
   let total = 0;
   let pages = 0;
+  const evidenceCache = new Map<
+    string,
+    CodexTranscriptContinuationEvidence & {
+      artifact: ConversationSourceArtifact;
+    }
+  >();
   const loadEvidence = async (artifact: ConversationSourceArtifact) => {
     if (!artifact.sourceGenerationId)
       throw new Error("codex_rollout_continuation_ancestor_unproven");
+    const cached = evidenceCache.get(artifact.id);
+    if (cached) return cached;
     const parts: Buffer[] = [];
     let offset = artifact.journalStartOffset;
     while (offset < artifact.providerCursorOffset) {
@@ -453,13 +464,16 @@ const recoverNativeRewrite = async (input: {
         )
           throw new Error("journal_segment_chain_conflict");
         total += segment.plaintextSize;
-        if (total > 64 * 1024 * 1024 || input.boundary > 64 * 1024 * 1024)
+        if (
+          total > CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES ||
+          input.boundary > CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES
+        )
           throw new Error("codex_rollout_rewrite_input_limit");
         parts.push(await segmentBytes(input.client, artifact.id, segment));
         offset = segment.sourceEndOffset;
       }
     }
-    return {
+    const evidence = {
       artifact,
       bytes: Buffer.concat(parts),
       startOffset: artifact.journalStartOffset,
@@ -469,6 +483,8 @@ const recoverNativeRewrite = async (input: {
       priorGenerationClosure: artifact.priorGenerationClosure,
       closureHash: artifact.closureHash
     };
+    evidenceCache.set(artifact.id, evidence);
+    return evidence;
   };
   const previousEvidence = await loadEvidence(input.artifact);
   const rewrittenBytes = readSourceRange(
@@ -534,6 +550,13 @@ const recoverNativeRewrite = async (input: {
         rewrittenBytes,
         externalSessionId: input.artifact.externalSessionId
       });
+  if (
+    !conversationSourceRewriteProofWithinLimit([
+      total,
+      frontier.liveStartOffset - frontier.journalStartOffset
+    ])
+  )
+    throw new Error("codex_rollout_rewrite_input_limit");
   await input.authorize?.();
   const finalized = responseValue<ConversationSourceArtifact>(
     await input.client.finalizeConversationSourceArtifact(input.artifact.id, {
@@ -792,6 +815,7 @@ export const ingestCodexTranscriptJournal = async (input: {
     input.existingArtifact === undefined
       ? await lookupArtifact(input.client, input.sourceSessionId)
       : input.existingArtifact;
+  let rewriteParentParserState: TranscriptJournalParserState | undefined;
   if (artifact) {
     try {
       const previousCursor = await canonicalCursor(input.client, artifact);
@@ -816,6 +840,8 @@ export const ingestCodexTranscriptJournal = async (input: {
         !input.client.createConversationSourceSuccessorGeneration
       )
         throw error;
+      rewriteParentParserState = (await canonicalCursor(input.client, artifact))
+        .parserState;
       artifact = await recoverNativeRewrite({
         client: input.client,
         artifact,
@@ -905,6 +931,92 @@ export const ingestCodexTranscriptJournal = async (input: {
     }
   }
 
+  if (
+    artifact.priorGenerationClosure &&
+    artifact.liveStartOffset > artifact.journalStartOffset &&
+    artifact.providerCursorOffset >= artifact.liveStartOffset
+  ) {
+    const current = await input.client.getConversationSourceCursor(
+      artifact.id,
+      "canonical_live"
+    );
+    if (!current.cursor) {
+      if (!rewriteParentParserState) {
+        if (!input.client.getConversationSourceArtifactByGeneration)
+          throw new Error("codex_rollout_rewrite_parent_cursor_unavailable");
+        const parent = responseValue<ConversationSourceArtifact>(
+          await input.client.getConversationSourceArtifactByGeneration(
+            artifact.priorGenerationClosure.sourceGenerationId
+          ),
+          "artifact"
+        );
+        rewriteParentParserState = (await canonicalCursor(input.client, parent))
+          .parserState;
+      }
+      const prefixBytes = readSourceRange(
+        input.transcriptPath,
+        artifact.journalStartOffset,
+        artifact.liveStartOffset
+      );
+      if (
+        artifact.sourceGenerationId !==
+        conversationSourceRewriteGenerationId(
+          artifact.priorGenerationClosure.sourceGenerationId,
+          sha256Bytes(prefixBytes)
+        )
+      )
+        throw new Error("codex_rollout_rewrite_source_changed");
+      const parsedPrefix = parseTranscriptJournalBytes({
+        bytes: prefixBytes,
+        absoluteStartOffset: artifact.journalStartOffset,
+        lineIndexOffset: artifact.journalStartLine,
+        prior: {
+          historyMode: "paginated",
+          ...(rewriteParentParserState.approvalHelperConversation === true
+            ? { approvalHelperConversation: true }
+            : {})
+        },
+        context: input.context
+      });
+      if (
+        parsedPrefix.checkpoint.offset !== artifact.liveStartOffset ||
+        parsedPrefix.checkpoint.lineCount !== artifact.liveStartLine
+      )
+        throw new Error("codex_rollout_rewrite_boundary_invalid");
+      const [frontierSegment] = await listSegments(
+        input.client,
+        artifact.id,
+        artifact.liveStartOffset - 1,
+        1
+      );
+      if (
+        !frontierSegment ||
+        frontierSegment.sourceStartOffset >= artifact.liveStartOffset ||
+        frontierSegment.sourceEndOffset < artifact.liveStartOffset
+      )
+        throw new Error("journal_checkpoint_outside_segment");
+      await segmentBytes(input.client, artifact.id, frontierSegment);
+      await input.authorize?.();
+      try {
+        await input.client.advanceConversationSourceCursor(artifact.id, {
+          consumerKind: "canonical_live",
+          expectedSourceOffset: artifact.liveStartOffset,
+          sourceOffset: artifact.liveStartOffset,
+          sourceLine: artifact.liveStartLine,
+          segmentIndex: frontierSegment.segmentIndex,
+          lastVerifiedDigest: frontierSegment.plaintextDigest,
+          parserState: transcriptJournalParserState(parsedPrefix.checkpoint)
+        });
+      } catch (error) {
+        if (!isConcurrentCanonicalCursorAdvance(error)) throw error;
+        const winner = await input.client.getConversationSourceCursor(
+          artifact.id,
+          "canonical_live"
+        );
+        if (!winner.cursor) throw error;
+      }
+    }
+  }
   const cursor = await canonicalCursor(input.client, artifact);
   const hasTurnBoundary =
     input.turnBoundaryObservedAt !== undefined &&

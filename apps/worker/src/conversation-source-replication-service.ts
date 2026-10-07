@@ -20,6 +20,7 @@ import {
   assertConversationSourceReplicationJsonlSegment,
   assertSupportedAiClientSourceAdapter,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  conversationSourceRewriteProofWithinLimit,
   calculateConversationSourceClosureDigest,
   calculateConversationSourceClosureOperationContentDigest,
   calculateConversationSourceSetClosureDigest,
@@ -1022,8 +1023,12 @@ export const createConversationSourceReplicationService = (options: {
           true
         );
       }
-      let verificationBytes = 0;
+      const verificationSizes: number[] = [];
       let verificationPages = 0;
+      const verificationRanges = new Map<
+        string,
+        { bytes: Buffer; segment: ConversationSourceSegmentRecord }
+      >();
       const acceptedRange = async (
         source: ConversationSourceArtifactRecord,
         end: number
@@ -1031,11 +1036,14 @@ export const createConversationSourceReplicationService = (options: {
         bytes: Buffer;
         segment: ConversationSourceSegmentRecord;
       }> => {
+        const rangeKey = `${source.id}:${end}`;
+        const cached = verificationRanges.get(rangeKey);
+        if (cached) return cached;
         let offset = source.journalStartOffset;
         const parts: Buffer[] = [];
         let endingSegment: ConversationSourceSegmentRecord | undefined;
-        verificationBytes += end - offset;
-        if (verificationBytes > maxMaterializationBytes)
+        verificationSizes.push(end - offset);
+        if (!conversationSourceRewriteProofWithinLimit(verificationSizes))
           throw new SourceReplicationError(
             "SourceReplicationRewriteLimitError",
             "Rewritten source verification exceeds the byte limit",
@@ -1091,7 +1099,12 @@ export const createConversationSourceReplicationService = (options: {
             "Rewritten source evidence is incomplete",
             true
           );
-        return { bytes: Buffer.concat(parts), segment: endingSegment };
+        const verified = {
+          bytes: Buffer.concat(parts),
+          segment: endingSegment
+        };
+        verificationRanges.set(rangeKey, verified);
+        return verified;
       };
       const { bytes: previousBytes } = await acceptedRange(
         parent,

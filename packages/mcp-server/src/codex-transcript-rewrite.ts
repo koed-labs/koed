@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
+import {
+  CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
+  conversationSourceRewriteProofWithinLimit
+} from "@koed/shared";
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row => {
@@ -475,7 +479,11 @@ const legacyToolCompletion = (payload: Row, generatedId: string): Row => {
   };
 };
 const lines = (bytes: Uint8Array): { records: Row[]; ends: number[] } => {
-  if (!bytes.length || bytes.length > 64 * 1024 * 1024 || bytes.at(-1) !== 10)
+  if (
+    !bytes.length ||
+    bytes.length > CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES ||
+    bytes.at(-1) !== 10
+  )
     throw new Error("codex_rollout_rewrite_input_limit");
   const records: Row[] = [];
   const ends: number[] = [];
@@ -520,6 +528,14 @@ export interface CodexTranscriptContinuationEvidence {
   logicalAncestors?: CodexTranscriptContinuationEvidence[];
 }
 
+type CodexTranscriptContinuationProofEvidence = Pick<
+  CodexTranscriptContinuationEvidence,
+  "bytes" | "startOffset" | "sourceLabel"
+> & {
+  sourceGenerationId?: string;
+  logicalAncestors?: CodexTranscriptContinuationProofEvidence[];
+};
+
 const continuationParent = (metadata: Row, cutoff: number): string => {
   const fork = metadata.forked_from_id;
   const parent = metadata.parent_thread_id;
@@ -553,7 +569,8 @@ export const collectCodexTranscriptContinuationAncestors = async <
   loadGeneration: (generationId: string, from: T) => Promise<T | null>;
   loadThread: (threadId: string, from: T) => Promise<T | null>;
 }): Promise<T[]> => {
-  const replacement = row(lines(input.rewrittenBytes).records[0]?.payload);
+  const rewritten = lines(input.rewrittenBytes);
+  const replacement = row(rewritten.records[0]?.payload);
   const target = row(replacement.history_base).thread_id;
   if (
     typeof target !== "string" ||
@@ -565,16 +582,18 @@ export const collectCodexTranscriptContinuationAncestors = async <
   const admitted = new Map([
     [input.previous.sourceGenerationId, input.previous]
   ]);
-  let totalBytes =
-    input.previous.bytes.byteLength + input.rewrittenBytes.byteLength;
-  if (totalBytes > 64 * 1024 * 1024)
+  const proofSizes = [input.previous.bytes.byteLength, rewritten.ends[0]!];
+  if (!conversationSourceRewriteProofWithinLimit(proofSizes))
     throw new Error("codex_rollout_continuation_ancestry_limit");
   const admit = (evidence: T): T => {
     const cached = admitted.get(evidence.sourceGenerationId);
     if (cached) return cached;
     admitted.set(evidence.sourceGenerationId, evidence);
-    totalBytes += evidence.bytes.byteLength;
-    if (admitted.size > 32 || totalBytes > 64 * 1024 * 1024)
+    proofSizes.push(evidence.bytes.byteLength);
+    if (
+      admitted.size > 32 ||
+      !conversationSourceRewriteProofWithinLimit(proofSizes)
+    )
       throw new Error("codex_rollout_continuation_ancestry_limit");
     return evidence;
   };
@@ -694,12 +713,7 @@ export const verifyCodexTranscriptContinuation = (input: {
   rewrittenSourceLabel: string;
   externalSessionId: string;
   previousHistory?: { subagentHistoryStartOrdinal: number | null };
-  ancestors?: Array<
-    Pick<
-      CodexTranscriptContinuationEvidence,
-      "bytes" | "startOffset" | "sourceLabel" | "logicalAncestors"
-    >
-  >;
+  ancestors?: CodexTranscriptContinuationProofEvidence[];
 }): {
   journalStartOffset: number;
   journalStartLine: number;
@@ -709,12 +723,15 @@ export const verifyCodexTranscriptContinuation = (input: {
 } => {
   const proofEntries: NonNullable<typeof input.ancestors>[number][] = [];
   const activeProof = new Set<object>();
+  const seenProof = new Set<object>();
   const countProof = (
     evidence: NonNullable<typeof input.ancestors>[number],
     depth: number
   ) => {
     if (depth > 32 || activeProof.has(evidence))
       throw new Error("codex_rollout_continuation_cycle");
+    if (seenProof.has(evidence)) return;
+    seenProof.add(evidence);
     activeProof.add(evidence);
     proofEntries.push(evidence);
     if (proofEntries.length > 128)
@@ -724,19 +741,29 @@ export const verifyCodexTranscriptContinuation = (input: {
     activeProof.delete(evidence);
   };
   for (const ancestor of input.ancestors ?? []) countProof(ancestor, 0);
-  if (
-    (input.ancestors?.length ?? 0) > 32 ||
-    input.previousBytes.byteLength +
-      input.rewrittenBytes.byteLength +
-      proofEntries.reduce(
-        (size, evidence) => size + evidence.bytes.byteLength,
-        0
-      ) >
-      64 * 1024 * 1024
-  )
-    throw new Error("codex_rollout_continuation_ancestry_limit");
+  // Lineage wrappers can reference the same immutable evidence range.
+  const proofRanges = new Map<string, number>();
+  for (const evidence of proofEntries) {
+    const identity = JSON.stringify([
+      evidence.sourceGenerationId ?? null,
+      evidence.sourceLabel,
+      evidence.startOffset,
+      evidence.bytes.byteLength,
+      createHash("sha256").update(evidence.bytes).digest("hex")
+    ]);
+    proofRanges.set(identity, evidence.bytes.byteLength);
+  }
   const previous = lines(input.previousBytes);
   const rewritten = lines(input.rewrittenBytes);
+  if (
+    (input.ancestors?.length ?? 0) > 32 ||
+    !conversationSourceRewriteProofWithinLimit([
+      input.previousBytes.byteLength,
+      rewritten.ends[0]!,
+      ...proofRanges.values()
+    ])
+  )
+    throw new Error("codex_rollout_continuation_ancestry_limit");
   const header = rewritten.records[0]!;
   const metadata = row(header.payload);
   const base = row(metadata.history_base);
@@ -1558,6 +1585,13 @@ export const verifyCodexTranscriptRewrite = (input: {
   finishImplicit(previous.at(-1)?.timestamp);
   if (activeTurnId) throw new Error("codex_rollout_rewrite_unclosed_turn");
   const liveStartOffset = rewritten.ends[index - 1]!;
+  if (
+    !conversationSourceRewriteProofWithinLimit([
+      input.previousBytes.byteLength,
+      liveStartOffset - journalStartOffset
+    ])
+  )
+    throw new Error("codex_rollout_rewrite_input_limit");
   return {
     journalStartOffset,
     journalStartLine,

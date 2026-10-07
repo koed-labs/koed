@@ -84,14 +84,12 @@ export class CodexCompressedTranscriptReader {
   private directoryPromise?: Promise<string>;
   private closed = false;
   private readonly pending = new Map<string, Promise<string>>();
-  private readonly cached = new Map<
-    string,
-    { path: string; size: number; sourcePath: string }
-  >();
-  private readonly activeSources = new Map<string, number>();
+  private readonly cached = new Map<string, { path: string; size: number }>();
+  private readonly activeRevisions = new Map<string, number>();
   private readonly activeOperations = new Set<Promise<void>>();
   private cachedBytes = 0;
   private reservedBytes = 0;
+  private reservedEntries = 0;
 
   constructor(
     private readonly koedHome: string,
@@ -117,6 +115,20 @@ export class CodexCompressedTranscriptReader {
   async materialize(
     sourcePath: string,
     snapshotPlain = false,
+    expected?: Stats
+  ): Promise<string> {
+    return this.consumeMaterialized(
+      sourcePath,
+      snapshotPlain,
+      (readablePath) => Promise.resolve(readablePath),
+      expected
+    );
+  }
+
+  private async materializeSnapshot(
+    sourcePath: string,
+    snapshotPlain: boolean,
+    lease: (key: string) => void,
     expected?: Stats
   ): Promise<string> {
     if (this.closed)
@@ -153,6 +165,7 @@ export class CodexCompressedTranscriptReader {
         ])
       )
       .digest("hex");
+    lease(key);
     const cached = this.cached.get(key);
     if (cached) {
       this.cached.delete(key);
@@ -175,21 +188,43 @@ export class CodexCompressedTranscriptReader {
     consume: (readablePath: string) => Promise<T>,
     expected?: Stats
   ): Promise<T> {
+    return this.consumeMaterialized(sourcePath, true, consume, expected);
+  }
+
+  private async consumeMaterialized<T>(
+    sourcePath: string,
+    snapshotPlain: boolean,
+    consume: (readablePath: string) => Promise<T>,
+    expected?: Stats
+  ): Promise<T> {
     if (this.closed)
       throw new Error("codex_compressed_transcript_reader_closed");
-    const key = path.resolve(sourcePath);
-    this.activeSources.set(key, (this.activeSources.get(key) ?? 0) + 1);
+    let revision: string | undefined;
     let release!: () => void;
     const completed = new Promise<void>((resolve) => {
       release = resolve;
     });
     this.activeOperations.add(completed);
     try {
-      return await consume(await this.materialize(sourcePath, true, expected));
+      const readablePath = await this.materializeSnapshot(
+        sourcePath,
+        snapshotPlain,
+        (key) => {
+          revision = key;
+          this.activeRevisions.set(
+            key,
+            (this.activeRevisions.get(key) ?? 0) + 1
+          );
+        },
+        expected
+      );
+      return await consume(readablePath);
     } finally {
-      const count = this.activeSources.get(key)! - 1;
-      if (count) this.activeSources.set(key, count);
-      else this.activeSources.delete(key);
+      if (revision) {
+        const count = this.activeRevisions.get(revision)! - 1;
+        if (count) this.activeRevisions.set(revision, count);
+        else this.activeRevisions.delete(revision);
+      }
       this.activeOperations.delete(completed);
       release();
     }
@@ -197,14 +232,15 @@ export class CodexCompressedTranscriptReader {
 
   private async reserveCache(): Promise<void> {
     this.reservedBytes += this.maxDecodedBytes;
+    this.reservedEntries++;
     const removed: string[] = [];
     try {
       while (
         this.cachedBytes + this.reservedBytes > this.maxCacheBytes ||
-        this.cached.size + this.pending.size > this.maxCacheEntries
+        this.cached.size + this.reservedEntries > this.maxCacheEntries
       ) {
         const oldest = [...this.cached.entries()].find(
-          ([, entry]) => !this.activeSources.has(entry.sourcePath)
+          ([key]) => !this.activeRevisions.has(key)
         );
         if (!oldest)
           throw new Error("codex_compressed_transcript_limit_exceeded");
@@ -215,6 +251,7 @@ export class CodexCompressedTranscriptReader {
       await Promise.all(removed.map((file) => rm(file, { force: true })));
     } catch (error) {
       this.reservedBytes -= this.maxDecodedBytes;
+      this.reservedEntries--;
       await Promise.all(removed.map((file) => rm(file, { force: true })));
       throw error;
     }
@@ -349,8 +386,7 @@ export class CodexCompressedTranscriptReader {
       await utimes(decodedPath, before.atime, before.mtime);
       this.cached.set(key, {
         path: decodedPath,
-        size: count,
-        sourcePath: path.resolve(sourcePath)
+        size: count
       });
       this.cachedBytes += count;
       return decodedPath;
@@ -363,7 +399,10 @@ export class CodexCompressedTranscriptReader {
         throw error;
       throw new Error("codex_compressed_transcript_invalid", { cause: error });
     } finally {
-      if (reserved) this.reservedBytes -= this.maxDecodedBytes;
+      if (reserved) {
+        this.reservedBytes -= this.maxDecodedBytes;
+        this.reservedEntries--;
+      }
       await source.close();
     }
   }

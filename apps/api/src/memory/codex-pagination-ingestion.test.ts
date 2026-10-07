@@ -428,6 +428,26 @@ describe.skipIf(!databaseUrl)(
           expect(rewritten.artifact.sourceGenerationId).not.toBe(
             initial.artifact.sourceGenerationId
           );
+          const bootstrap = await client.getConversationSourceCursor(
+            rewritten.artifact.id,
+            "canonical_live"
+          );
+          expect(bootstrap.cursor).toMatchObject({
+            sourceOffset: rewritten.canonicalCursorOffset,
+            parserState: { historyMode: "paginated" }
+          });
+          const storedCheckpoint = bootstrap.cursor as Record<string, unknown>;
+          await expect(
+            client.advanceConversationSourceCursor(rewritten.artifact.id, {
+              expectedSourceOffset: rewritten.canonicalCursorOffset,
+              consumerKind: "canonical_live",
+              sourceOffset: storedCheckpoint.sourceOffset,
+              sourceLine: storedCheckpoint.sourceLine,
+              segmentIndex: storedCheckpoint.segmentIndex,
+              lastVerifiedDigest: storedCheckpoint.lastVerifiedDigest,
+              parserState: storedCheckpoint.parserState
+            })
+          ).rejects.toMatchObject({ status: 409 });
           if (kind === "revert")
             expect(readFileSync(previousFile)).toEqual(previousBytes);
           const nextOrdinal = (migrated.at(-1)?.ordinal ?? -1) + 1;

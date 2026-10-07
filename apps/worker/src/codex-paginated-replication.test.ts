@@ -14,6 +14,11 @@ import {
   signConversationSourceReplicationManifest
 } from "@koed/shared";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
+import * as sharedRewritePolicy from "@koed/shared";
+import {
+  parseTranscriptJournalBytes,
+  transcriptJournalParserState
+} from "@koed/mcp-server/codex-transcript-parser";
 
 const timestamp = "2026-10-07T00:00:00.000Z";
 const nativeId = "00000000-0000-4000-8000-000000000001";
@@ -619,5 +624,74 @@ describe("paginated Codex device materialization", () => {
     expect(f.advance).not.toHaveBeenCalled();
     expect(f.createConversationItems).not.toHaveBeenCalled();
     expect(f.failure).toHaveBeenCalledOnce();
+  });
+
+  it("persists the exact prefix checkpoint without requiring a live suffix", async () => {
+    const f = await fixture({ migration: true, rows: migrated });
+    expect((await f.service.processOnce()).materialized).toBe(1);
+    const parsed = parseTranscriptJournalBytes({
+      bytes: encode(migrated),
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      prior: { historyMode: "paginated" },
+      context: {
+        threadKind: "conversation",
+        transcriptSessionId: nativeId,
+        transcriptMetadata: {}
+      }
+    });
+    expect(f.advance.mock.calls[0]![1]).toMatchObject({
+      sourceOffset: encode(migrated).length,
+      sourceLine: migrated.length,
+      parserState: transcriptJournalParserState(parsed.checkpoint)
+    });
+    expect(f.createConversationItems).not.toHaveBeenCalled();
+    expect((await f.service.processOnce()).materialized).toBe(0);
+    expect(f.failure).not.toHaveBeenCalled();
+  });
+
+  it("uses one aggregate proof budget without charging appended live activity", async () => {
+    const proofBytes = encode(previous).length + encode(migrated).length;
+    const policy =
+      sharedRewritePolicy.conversationSourceRewriteProofWithinLimit;
+    const bounded = vi
+      .spyOn(sharedRewritePolicy, "conversationSourceRewriteProofWithinLimit")
+      .mockImplementation((sizes) => policy(sizes, proofBytes));
+    try {
+      const f = await fixture({
+        migration: true,
+        rows: [
+          ...migrated,
+          event({ type: "task_started", turn_id: "new-turn" }, 5),
+          completed(
+            "new-answer",
+            "AgentMessage",
+            "Later live activity",
+            6,
+            "new-turn"
+          )
+        ]
+      });
+      expect((await f.service.processOnce()).materialized).toBe(1);
+      expect(f.failure).not.toHaveBeenCalled();
+      expect(f.advance.mock.calls[0]![1].sourceOffset).toBe(
+        encode(migrated).length
+      );
+      expect(f.createConversationItems).not.toHaveBeenCalled();
+      bounded.mockImplementation((sizes) =>
+        policy(
+          sizes,
+          Math.max(encode(previous).length, encode(migrated).length)
+        )
+      );
+      const rejected = await fixture({ migration: true, rows: migrated });
+      expect((await rejected.service.processOnce()).materialized).toBe(0);
+      expect(rejected.advance).not.toHaveBeenCalled();
+      expect(rejected.failure.mock.calls[0]![1].errorCode).toBe(
+        "SourceReplicationRewriteLimitError"
+      );
+    } finally {
+      bounded.mockRestore();
+    }
   });
 });

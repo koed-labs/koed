@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as sharedRewritePolicy from "@koed/shared";
 import {
   verifyCodexTranscriptRewrite,
   verifyCodexTranscriptContinuation,
@@ -293,6 +294,115 @@ describe("verified Codex source rewrite frontier", () => {
     });
     expect(requested).toEqual([f.parentId]);
     expect(f.verifyAncestry(ancestors).liveStartLine).toBe(1);
+  });
+  it("budgets wrapped multi-hop ancestry once while checking every logical route", async () => {
+    const f = ancestryFixture(true);
+    const bridgeId = "00000000-0000-4000-8000-000000000007";
+    const bridge: CodexTranscriptContinuationEvidence = {
+      ...f.ancestor,
+      sourceGenerationId: "bridge-generation",
+      sourceLabel: `rollout-fixture-${bridgeId}.jsonl`,
+      logicalThreadId: bridgeId,
+      bytes: bytes([
+        {
+          ...rewritten[0]!,
+          ordinal: 3,
+          payload: {
+            ...rewritten[0]!.payload,
+            id: bridgeId,
+            forked_from_id: f.parentId,
+            forked_from_ordinal_exclusive: 3,
+            history_base: {
+              thread_id: f.parentId,
+              end_ordinal_exclusive: 3,
+              end_byte_offset: bytes(
+                rewritten.slice(0, 3).map((record, index) =>
+                  index === 0
+                    ? {
+                        ...record,
+                        payload: { ...record.payload, id: f.parentId }
+                      }
+                    : record
+                )
+              ).length
+            }
+          }
+        }
+      ])
+    };
+    const priorRows = Buffer.from(f.prior.bytes)
+      .toString("utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as FixtureRow);
+    priorRows[0]!.payload.forked_from_id = bridgeId;
+    const prior = { ...f.prior, bytes: bytes(priorRows) };
+    const replacement = {
+      ...f.replacement,
+      payload: { ...f.replacement.payload, forked_from_id: bridgeId }
+    };
+    const maximumBytes =
+      prior.bytes.byteLength +
+      bytes([replacement]).length +
+      bridge.bytes.byteLength +
+      f.ancestor.bytes.byteLength;
+    const policy =
+      sharedRewritePolicy.conversationSourceRewriteProofWithinLimit;
+    const bounded = vi
+      .spyOn(sharedRewritePolicy, "conversationSourceRewriteProofWithinLimit")
+      .mockImplementation((sizes) => policy(sizes, maximumBytes));
+    try {
+      const ancestors = await collectCodexTranscriptContinuationAncestors({
+        previous: prior,
+        rewrittenBytes: bytes([replacement]),
+        loadGeneration: async () => null,
+        loadThread: async (threadId) =>
+          threadId === bridgeId
+            ? bridge
+            : threadId === f.parentId
+              ? f.ancestor
+              : null
+      });
+      expect(ancestors[0]?.logicalAncestors).toEqual([bridge, f.ancestor]);
+      type Proof = NonNullable<
+        Parameters<typeof verifyCodexTranscriptContinuation>[0]["ancestors"]
+      >[number];
+      const verify = (evidence: Proof[] = ancestors) =>
+        verifyCodexTranscriptContinuation({
+          previousBytes: prior.bytes,
+          previousStartOffset: 0,
+          previousSourceLabel: prior.sourceLabel,
+          rewrittenBytes: bytes([replacement]),
+          rewrittenSourceLabel: `rollout-fixture-${sourceId}_00000000-0000-4000-8000-000000000005.jsonl`,
+          externalSessionId: sourceId,
+          ancestors: evidence
+        });
+      expect(verify().liveStartLine).toBe(1);
+      const withoutGeneration = (evidence: Proof): Proof => ({
+        bytes: evidence.bytes,
+        startOffset: evidence.startOffset,
+        sourceLabel: evidence.sourceLabel,
+        logicalAncestors: evidence.logicalAncestors?.map(withoutGeneration)
+      });
+      expect(verify(ancestors.map(withoutGeneration)).liveStartLine).toBe(1);
+      const altered = {
+        ...ancestors[0]!,
+        logicalAncestors: [f.ancestor]
+      };
+      expect(() => verify([altered])).toThrow(
+        "codex_rollout_continuation_ancestor_identity_mismatch"
+      );
+      const cyclic = {
+        ...ancestors[0]!,
+        logicalAncestors: [] as CodexTranscriptContinuationEvidence[]
+      };
+      cyclic.logicalAncestors.push(cyclic);
+      expect(() => verify([cyclic])).toThrow(
+        "codex_rollout_continuation_cycle"
+      );
+    } finally {
+      bounded.mockRestore();
+    }
   });
   it("rejects a normalized cutoff outside the previously retained ancestor range", () => {
     const f = ancestryFixture();
