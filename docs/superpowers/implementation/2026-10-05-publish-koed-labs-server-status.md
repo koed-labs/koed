@@ -1,6 +1,8 @@
 # Public server distribution: branch status
 
-This branch is **not code-complete or release-ready**. Do not merge or publish it as completed handoff implementation.
+This branch is ready for review and merge, but it is **not release-ready**. Merging publishes nothing: production install and release promotion fail closed until the external gates below are closed in a follow-up.
+
+**Do not merge the "Version Koed" release PR until the external gates are closed.** Merging it runs `release.yml` without pending changesets: it creates a draft GitHub release, and the asset jobs fail at the external-signer step because the signer and trust-root repository variables are unset. npm promotion (`release-desktop-assets.yml`, `workflow_dispatch` only) additionally requires `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
 
 ## Implemented
 
@@ -11,14 +13,14 @@ This branch is **not code-complete or release-ready**. Do not merge or publish i
 - Release artifact identity, immutable uploads/retries, external signing and npm candidate verification/promotion adapters. Production authorization remains gated.
 - Desktop bundle validation and sealed internal capabilities, optional component and launcher Preferences controls, IPC interfaces, conflict-safe launcher/PATH helpers and runtime helper probe.
 
-## Implementation blockers — not external acceptance criteria
+## Implementation status and remaining verification
 
 1. Desktop bundled Base now has capability-gated private generation admission and supervisor startup authority. Bundle records survive restart; private status and stopped activation use reverified records. Public unsigned generation reads remain rejected. Fresh-home/restart tests and full native packaged Personal/Base lifecycle smoke pass, including core/Codex setup, doctor, reconnect, and owned-supervisor stop/restart.
 2. Desktop Preferences now calls manager-owned `privacyInstall` over nonce- and request-ID-correlated private supervisor RPC. Status/install/cancel/progress, exact-version canonical online assets, signed offline triplet selection, stopped activation, restart, and rollback attempt are wired and covered by deterministic manager/IPC/UI tests. Production install remains fail-closed and unavailable because shipped production component trust roots are empty; packaged Personal/Base smoke and Team startup denial pass, but positive signed Team installation/end-to-end activation acceptance is not claimed.
 3. Private supervisor authority and bundled-generation pinning are implemented in source. Packaged Personal/Base lifecycle now passes on local macOS arm64. Relocation, failure-injection rollback and terminal-helper validation still need integration-level/platform verification; do not bypass authority with environment variables, CLI owner flags, unsigned public manifests or weakened standalone ownership checks.
 4. Relocation, uninstall and terminal-helper validation still need implementation-level integration and platform verification; Personal/Base lifecycle is locally verified.
 
-These blockers correspond primarily to implementation plan Tasks 10–13 and prevent completing Task 16 acceptance accounting.
+Items 3 and 4 remain unverified (relocation, failure-injection rollback, uninstall, terminal helper). They are not claimed as accepted and are tracked in `TODO.md`. Packaged Personal/Base lifecycle smoke and fail-closed Team startup denial pass in CI on the private Desktop lifecycle harness (`apps/desktop/scripts/packaged-desktop-lifecycle.mjs`).
 
 ## External gates
 
@@ -55,3 +57,5 @@ One final security review identified Desktop integration and launcher/filesystem
 Latest PR404 continuation used npm-provided Node 24.13.1 because Homebrew Node's `libsimdjson.30.dylib` is missing. Private manager/supervisor status, doctor, core setup, and Codex setup/repair now retain sealed Desktop capability without public CLI or environment authority. Guided setup uses the same transport; late status responses cannot emit unhandled IPC errors after disconnect. Server: 57 files / 766 tests passed. Desktop: 93 files / 900 tests passed. Production/test typechecks and native package build/integrity passed. Full native Personal/Base smoke passed core/Codex setup, doctor, reconnect, stop/restart/final stop; separate Team startup denied missing authenticated Privacy. Masked-assets smoke passed and restored native assets. Evidence: `/tmp/pr404-status-smoke-final.log` and `/tmp/pr404-status-masked-final.log`, both exit 0. Positive Team provisioning remains blocked by empty production signer trust roots. Root lint and changed-file formatting pass. Root `pnpm test` is blocked by `Missing required environment variable: DATABASE_URL`; root formatting is blocked by pre-existing local SDD planning files. No commit/push or additional changeset.
 
 Architecture and operation documentation were updated. Remaining work must preserve fail-closed behavior and replace unavailable adapters with real integration, not simulated success.
+
+Final CI at PR head `abb18f36f`: Tests, Build, Static checks and the packaged Desktop smoke all passed. Setup tests now use explicit executable paths and no longer depend on installed Claude or Pi. Packaged smoke uses the private Desktop lifecycle harness and status RPC instead of bundled Privacy or public CLI authority. Full formatting reports only locally ignored SDD working Markdown. No signing, publication or credential changes were performed.

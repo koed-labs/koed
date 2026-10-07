@@ -38,3 +38,19 @@ and offline catch-up on the updated runtime.
 
 Implemented: received-session badges use verified replica provenance and the
 installation-local nickname; device icons no longer guess hardware by row order.
+
+## Public Koed Server release gates
+
+Follow-up to the public `@koed-labs/server` distribution. Merging that work
+publishes nothing; do not merge the "Version Koed" release PR until these are closed:
+
+- Install production component trust roots into control-plane builds; configure an
+  authorized signer and set `KOED_COMPONENT_SIGNER_URL`, `KOED_COMPONENT_SIGNER_KEY_ID`
+  and the trust-root repository variables.
+- Confirm npm organization/package ownership and publication credentials.
+- Validate Linux/native artifacts and packaged Electron runtime/helper/fuse behavior
+  on supported targets (Linux x64 CI jobs are currently skipped).
+- Verify packaged Desktop relocation, failure-injection rollback, uninstall and
+  terminal-helper behavior.
+- Run an authorized release rehearsal, then promotion with
+  `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
