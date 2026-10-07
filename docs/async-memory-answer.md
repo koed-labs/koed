@@ -164,6 +164,7 @@ recorded reason, such as a time limit or cancellation; the raw failure message
 is never returned.
 
 MCP diagnostics omit raw exception messages, stacks, causes and payloads and
-bound retained metadata. They keep error class names, numeric status fields and
-allowlisted system codes such as `ECONNREFUSED`, including one level of cause.
+bound retained metadata. They keep allowlisted error class names, numeric status
+fields and allowlisted system codes such as `ECONNREFUSED`, including one level
+of cause.
 This does not replace task-result authorization or Capture Policy.

@@ -157,7 +157,7 @@ describe("MCP logger", () => {
       cause: { type: "Error", name: "Error" }
     });
   });
-  it("keeps error class names and allowlisted codes, including one cause level", () => {
+  it("keeps allowlisted error names and codes, including one cause level", () => {
     let output = "";
     const destination = new Writable({
       write(chunk, _encoding, callback) {
@@ -178,7 +178,7 @@ describe("MCP logger", () => {
       code: "PRIVATE_CODE_SENTINEL"
     });
     Object.defineProperty(renamed, "name", {
-      value: "PRIVATE_NAME_SENTINEL"
+      value: "PrivateNameSentinelError"
     });
     log.warn({ err: renamed }, "x");
     const getterName = new Error("PRIVATE");
@@ -200,6 +200,7 @@ describe("MCP logger", () => {
     expect(lines[1]).toEqual({ type: "Error" });
     expect(lines[2]).toEqual({ type: "Error" });
     expect(output).not.toContain("PRIVATE");
+    expect(output).not.toContain("PrivateNameSentinelError");
   });
   it("does not invoke error getters, toJSON or cyclic causes", () => {
     let output = "";

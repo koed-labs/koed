@@ -139,6 +139,30 @@ const allowedErrorCodes = new Set([
   "UND_ERR_SOCKET"
 ]);
 const allowedTaskErrorCodes = new Set(["personal_route_changed"]);
+const allowedErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "AiClientAssignmentError",
+  "ClaudeManagedConversationCancelledError",
+  "CodexAppServerCapacityError",
+  "CodexAppServerTurnError",
+  "CodexManagedConversationCapacityError",
+  "CodexManagedConversationIdentityError",
+  "Error",
+  "EvalError",
+  "LocalAiRuntimeError",
+  "MemoryAnswerBlockingError",
+  "MemoryAnswerDetachedIneligibleError",
+  "MemoryApiError",
+  "PiManagedConversationProviderError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+  "ZodError"
+]);
 const diagnosticError = (
   value: unknown,
   includeCause = true
@@ -147,8 +171,8 @@ const diagnosticError = (
   if (!value || typeof value !== "object") return result;
   try {
     // `name` is usually inherited from the class prototype. Read data
-    // descriptors only, so no getter runs. Only class-shaped names (for
-    // example MemoryApiError) are kept.
+    // descriptors only, so no getter runs. Keep only fixed names; an error
+    // can supply its own name containing memory or credential content.
     let name: unknown;
     for (
       let target: object | null = value, depth = 0;
@@ -158,10 +182,7 @@ const diagnosticError = (
       const descriptor = Object.getOwnPropertyDescriptor(target, "name");
       if (descriptor) name = "value" in descriptor ? descriptor.value : null;
     }
-    if (
-      typeof name === "string" &&
-      /^(?:[A-Z][A-Za-z0-9]{0,58})?Error$/.test(name)
-    )
+    if (typeof name === "string" && allowedErrorNames.has(name))
       result.name = name;
     for (const key of ["status", "statusCode", "retryAfterMs"]) {
       const field = ownValue(value, key);
