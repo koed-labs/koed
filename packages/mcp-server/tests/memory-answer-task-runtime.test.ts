@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import type http from "node:http";
+import http from "node:http";
+import { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryAnswerTask } from "@koed/shared";
 import { MemoryAnswerTaskRuntime } from "../src/memory-answer-task-runtime.js";
@@ -47,10 +48,10 @@ function fixture(get: () => Promise<MemoryAnswerTask>, resume?: string) {
   );
   const open = () =>
     runtime.handleResourceRoute(
-      {
+      Object.assign(new http.IncomingMessage(new Socket()), {
         method: "GET",
         headers: { "last-event-id": resume }
-      } as http.IncomingMessage,
+      }),
       response as unknown as http.ServerResponse,
       new URL(`http://local/v1/tasks/${id}/events`),
       vi.fn()

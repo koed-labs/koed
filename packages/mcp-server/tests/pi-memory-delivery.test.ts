@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createPiMemoryDelivery,
   COMPLETION,
@@ -95,7 +95,31 @@ function fixture(
   return { entries, ctx, pi, tasks, port, blocking, delivery, complete };
 }
 
+afterEach(() => vi.useRealTimers());
+
 describe("supported Pi Memory Answer delivery", () => {
+  it("keeps a throttled receipt pending and automatically delivers after the fresh read", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.port.get.mockRejectedValueOnce(
+      Object.assign(new Error("quota-private"), {
+        statusCode: 429,
+        retryAfterMs: 1000
+      })
+    );
+    await f.delivery.execute("call", { query: "q" }, undefined, f.ctx);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(f.delivery.pending.size).toBe(1);
+    expect(f.ctx.ui.notify).not.toHaveBeenCalled();
+    expect(f.pi.sendMessage).not.toHaveBeenCalled();
+    f.complete();
+    await vi.advanceTimersByTimeAsync(1);
+    await f.delivery.settle();
+    expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.port.cancel).not.toHaveBeenCalled();
+  });
+
   it("acknowledges promptly, polls outside the model, and sends attributed automatic followUp", async () => {
     const f = fixture();
     const receipt = await f.delivery.execute(
@@ -106,7 +130,8 @@ describe("supported Pi Memory Answer delivery", () => {
     );
     expect(receipt.details.accepted).toBe(true);
     expect(f.pi.sendMessage).not.toHaveBeenCalled();
-    expect(f.port.start.mock.calls[0][1]).toMatchObject({
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.port.start.mock.calls[0]![1]).toMatchObject({
       clientInfo: {
         deliveryOrigin: {
           conversation: "conversation-1",
@@ -187,14 +212,36 @@ describe("supported Pi Memory Answer delivery", () => {
     expect(f.pi.sendMessage).not.toHaveBeenCalled();
     expect(f.port.cancel).not.toHaveBeenCalled();
   });
+  it.each([401, 403])(
+    "ends Pi observation on fatal authorization HTTP %s",
+    async (statusCode) => {
+      const f = fixture();
+      f.port.get.mockRejectedValueOnce(
+        Object.assign(new Error("private denial"), { statusCode })
+      );
+      await f.delivery.execute("call", { query: "q" }, undefined, f.ctx);
+      await f.delivery.settle();
+      expect(f.delivery.pending.size).toBe(0);
+      expect(f.port.get).toHaveBeenCalledTimes(1);
+      expect(f.port.start).toHaveBeenCalledTimes(1);
+      expect(f.pi.sendMessage).not.toHaveBeenCalled();
+      expect(f.ctx.ui.notify).toHaveBeenCalledTimes(1);
+      expect(f.port.cancel).not.toHaveBeenCalled();
+    }
+  );
+
   it("revocation on the final authorized read prevents cached answer delivery", async () => {
     const f = fixture();
-    f.port.get.mockImplementationOnce(async (id) => ({
-      ...f.tasks.get(id),
-      status: "completed",
-      version: 2,
-      result: { answer: "secret" }
-    }));
+    f.port.get.mockImplementationOnce(async (id) => {
+      const task = f.tasks.get(id);
+      if (!task) throw new Error("Expected accepted fixture task");
+      return {
+        ...task,
+        status: "completed",
+        version: 2,
+        result: { answer: "secret" }
+      };
+    });
     f.port.get.mockRejectedValueOnce(
       Object.assign(new Error("private provider text"), { statusCode: 403 })
     );

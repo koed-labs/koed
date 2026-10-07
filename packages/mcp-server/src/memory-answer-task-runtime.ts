@@ -27,6 +27,16 @@ type JsonWriter = (
   body: Record<string, unknown>
 ) => void;
 
+export class MemoryAnswerDetachedIneligibleError extends Error {
+  readonly statusCode = 409;
+  readonly code = "memory_answer_team_ineligible";
+
+  constructor() {
+    super("Team Workspace Memory Answer does not support detached tasks");
+    this.name = "MemoryAnswerDetachedIneligibleError";
+  }
+}
+
 export class MemoryAnswerTaskRuntime {
   constructor(
     private readonly scheduler: MemoryAnswerTaskScheduler,
@@ -51,12 +61,7 @@ export class MemoryAnswerTaskRuntime {
     }
     const normalized = { ...request, input: parsed.data };
     if (!this.eligible(normalized)) {
-      throw Object.assign(
-        new Error(
-          "Team Workspace Memory Answer does not support detached tasks"
-        ),
-        { statusCode: 409 }
-      );
+      throw new MemoryAnswerDetachedIneligibleError();
     }
     return await this.scheduler.start({
       origin: request.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",

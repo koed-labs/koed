@@ -58,7 +58,10 @@ import {
 } from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
-import { MemoryAnswerTaskRuntime } from "./memory-answer-task-runtime.js";
+import {
+  MemoryAnswerTaskRuntime,
+  MemoryAnswerDetachedIneligibleError
+} from "./memory-answer-task-runtime.js";
 
 export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
 export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
@@ -712,6 +715,19 @@ export const startLocalAiRuntime = async ({
           return;
         }
         json(response, statusCode, {
+          ...(error instanceof MemoryAnswerDetachedIneligibleError
+            ? { errorCode: error.code }
+            : {}),
+          ...(statusCode === 429 &&
+          error &&
+          typeof error === "object" &&
+          "retryAfterMs" in error &&
+          typeof error.retryAfterMs === "number" &&
+          Number.isSafeInteger(error.retryAfterMs) &&
+          error.retryAfterMs > 0 &&
+          error.retryAfterMs <= 300_000
+            ? { retryAfterMs: error.retryAfterMs }
+            : {}),
           error:
             statusCode === 401
               ? "Local AI runtime access denied"

@@ -553,4 +553,88 @@ describe("Codex protected native-call delivery", () => {
       "authorized decision"
     );
   });
+  it("an earlier unrelated occupied lock, including an orphan, does not suppress the owned result", async () => {
+    const f = fixture();
+    const { input } = await f.accept();
+    const filename = path.join(
+      f.store.directory,
+      `${input[CODEX_DELIVERY_NONCE]}.json`
+    );
+    const foreignNonce = "0".repeat(64);
+    const foreignFile = path.join(f.store.directory, `${foreignNonce}.json`);
+    const record = JSON.parse(readFileSync(filename, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const foreignBytes = JSON.stringify({
+      ...record,
+      nonce: foreignNonce,
+      session: "other"
+    });
+    writeFileSync(foreignFile, foreignBytes, { mode: 0o600 });
+    mkdirSync(`${foreignFile}.lock`, { mode: 0o700 });
+    writeFileSync(`${foreignFile}.lock/owner`, "retain this lock", {
+      mode: 0o600
+    });
+    expect((await f.delivery.stop(hook())).reason).toContain(
+      "authorized decision"
+    );
+    expect(f.port.get).toHaveBeenCalled();
+    expect(readFileSync(foreignFile, "utf8")).toBe(foreignBytes);
+    expect(readFileSync(`${foreignFile}.lock/owner`, "utf8")).toBe(
+      "retain this lock"
+    );
+  });
+  it("does not break a matching busy lock or retrieve its result", async () => {
+    const f = fixture();
+    const { input } = await f.accept();
+    const filename = path.join(
+      f.store.directory,
+      `${input[CODEX_DELIVERY_NONCE]}.json`
+    );
+    const before = readFileSync(filename, "utf8");
+    mkdirSync(`${filename}.lock`, { mode: 0o700 });
+    await expect(f.delivery.stop(hook())).rejects.toThrow(
+      "receipt is unavailable or invalid"
+    );
+    expect(f.port.get).not.toHaveBeenCalled();
+    expect(readFileSync(filename, "utf8")).toBe(before);
+    expect(readdirSync(`${filename}.lock`)).toEqual([]);
+  });
+  it("rechecks ownership after the prefilter before consuming a receipt", async () => {
+    const f = fixture();
+    const { input } = await f.accept();
+    const filename = path.join(
+      f.store.directory,
+      `${input[CODEX_DELIVERY_NONCE]}.json`
+    );
+    const readable = f.store as unknown as {
+      read: (file: string) => Record<string, unknown> | undefined;
+    };
+    const original = readable.read.bind(f.store);
+    let reads = 0;
+    const spy = vi.spyOn(readable, "read").mockImplementation((file) => {
+      if (file === filename && ++reads === 2) {
+        const record = JSON.parse(readFileSync(filename, "utf8")) as Record<
+          string,
+          unknown
+        >;
+        writeFileSync(
+          filename,
+          JSON.stringify({ ...record, session: "other" })
+        );
+      }
+      return original(file);
+    });
+    try {
+      expect(await f.delivery.stop(hook())).toEqual({});
+      expect(f.port.get).not.toHaveBeenCalled();
+      expect(readFileSync(filename, "utf8")).toContain('"session":"other"');
+      expect(readdirSync(f.store.directory)).not.toContain(
+        `${input[CODEX_DELIVERY_NONCE]}.spent`
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

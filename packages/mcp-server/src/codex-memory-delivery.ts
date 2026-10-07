@@ -319,21 +319,31 @@ export class CodexMemoryReceiptStore {
       !path.isAbsolute(hook.cwd)
     )
       return undefined;
+    const matches = (value: Binding | undefined): value is Binding =>
+      !!value &&
+      value.state === "bound" &&
+      value.tool === memoryTool &&
+      value.session === hook.session_id &&
+      value.turn === hook.turn_id &&
+      value.cwd === path.resolve(hook.cwd);
     for (const name of readdirSync(this.directory)
       .filter((n) => /^[a-f0-9]{64}\.json$/.test(n))
       .slice(0, 256)) {
       const nonce = name.slice(0, 64);
+      // An unrelated receipt's occupied or orphaned lock must not prevent this
+      // owner from claiming its result. This read authorizes no mutation;
+      // ownership is checked again after acquiring the selected receipt lock.
+      let candidate: Binding | undefined;
+      try {
+        candidate = this.read(this.filename(nonce));
+      } catch {
+        // Invalid/unavailable state cannot establish ownership or be claimed.
+        continue;
+      }
+      if (!matches(candidate)) continue;
       const claimed = this.locked(nonce, () => {
         const value = this.read(this.filename(nonce));
-        if (
-          !value ||
-          value.state !== "bound" ||
-          value.tool !== memoryTool ||
-          value.session !== hook.session_id ||
-          value.turn !== hook.turn_id ||
-          value.cwd !== path.resolve(hook.cwd)
-        )
-          return undefined;
+        if (!matches(value)) return undefined;
         renameSync(this.filename(nonce), this.filename(nonce, true));
         return value;
       });
@@ -387,8 +397,7 @@ export class CodexMemoryDelivery {
     private readonly memoryTool = "mcp__koed__memory_answer"
   ) {
     this.delivery = new MemoryAnswerDelivery(port, {
-      maxObservationMs,
-      pollMs: 250
+      maxObservationMs
     });
   }
   async accept(

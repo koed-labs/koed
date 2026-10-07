@@ -187,8 +187,7 @@ export const createKoedMcpServer = async (
               if (
                 error instanceof LocalAiRuntimeError &&
                 error.statusCode === 409 &&
-                error.message ===
-                  "Team Workspace Memory Answer does not support detached tasks"
+                error.code === "memory_answer_team_ineligible"
               )
                 throw new CodexDetachedMemoryIneligible();
               throw error;

@@ -40,7 +40,7 @@ const validReceipt = (value) =>
 // owner; stopping this observer never cancels accepted work.
 export function createPiMemoryDelivery(
   pi,
-  { port, blocking, mode = "auto", pollMs = 250, retryMs = 1000 }
+  { port, blocking, mode = "auto", pollMs = 1000, retryMs = 1000 }
 ) {
   const boundary = new MemoryAnswerDelivery(port, { pollMs });
   const pending = new Map();
@@ -167,7 +167,8 @@ export function createPiMemoryDelivery(
           });
         } catch (error) {
           if (controller.signal.aborted || !current(binding, ownEpoch)) return;
-          if (error?.statusCode && error.statusCode < 500) {
+          const status = error?.statusCode ?? error?.status;
+          if (status && status < 500 && status !== 429) {
             context.ui?.notify?.(
               "Koed Memory Answer delivery unavailable; resume to retry authorized recall.",
               "warning"

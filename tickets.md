@@ -4800,3 +4800,1075 @@ whitespace parity fix/regression plus tracked plan, backlog, ticket and integrat
 validation documents. Preserve unrelated .gitignore and untracked CONFIG.md and
 FIXTURE_ACC.txt; ignored private investigation fixtures/evidence stay excluded.
 Existing User no-changeset preference remains. Local commit only; no push/PR.
+
+### Ticket 24: Desktop read-only isolation preflight and anonymous candidate (2026-10-06)
+
+The User requests Desktop testing while retaining this active app/chat. Root and
+bounded independent source reviewer inspect installed ChatGPT.app26.930.61225,
+bundlecom.openai.codex and bundledCLI0.160.1. ASAR source supports explicit private
+Electron userData, preserved Codex home and a separate-instance launch route.
+Source also exposes primary/legacy IPC, login-shell environment import (OS shell
+wins over SHELL), remote secret_auth_storage override, shared OS protocol registration
+and non-quitting window-close. Full isolation/auth namespaces are not assumed.
+Normal Koed recall cannot connect; existing repository findings guide this phase.
+
+Root prepares anonymous one-attempt discovery state under
+/private/tmp/koed-codex-desktop-discovery-oct06 with private HOME/ZDOTDIR, userData,
+CODEX_HOME, KOED_HOME and TMPDIR, no copied auth/config/sessions, no MCP/hooks,
+supported local-CLI selector and disabled updater. Only current source/metadata
+are pinned; no app/service/model launch yet. User will open the empty candidate
+window without sign-in/prompt; effective paths/IPC/backend/credential overrides
+must pass observation before model testing. Source review is not a Desktop behavior
+result. The committed IDE checkpoint remains separate; no new commit/changeset.
+
+### Ticket 24: anonymous private Desktop routing/path discovery passes (2026-10-06)
+
+The User reports window open. MainPID33429 and owned packaged local backends33458/
+33486 retain all whitelisted private HOME/ZDOTDIR/CODEX_HOME/userData/KOED_HOME/TMPDIR
+values. Exact ancestry/start metadata and private primary IPC ownership are
+observed; legacy fallback absent. Coordinator chat remains available. Startup
+installs private runtime/browser/helper/cache state and adds built-in node_repl/
+Desktop plugin config; original private config hash changes, while file auth,
+hooks=false and secret_auth_storage=false persist. No secret-auth argv override,
+auth file or secrets directory at observation. Four selected normal-file hashes
+match. No normal auth values/Keychain are inspected. This qualifies selected
+anonymous path/IPC coexistence, not full OS/auth-suite isolation or async delivery.
+Private app remains active; User sign-in in that window is the next input, followed
+by storage/normal-state recheck before any model/Koed request.
+
+### Ticket 24: private Desktop sign-in checked; first natural recall prepared (2026-10-06)
+
+The User signs in only within the candidate. Auth file exists0600; private secret
+directory absent; file auth/secret_auth_storage=false persist and owned backend
+argv has no secret override. Four selected normal-file hashes still match. Supported
+private login-status commands confirm ChatGPT login for packaged0.160.1 and worker
+0.159.3; raw status/token payloads are not retained. Root prepares first Desktop
+positive runtime/program, using this discovery-only profile (no prior model/Koed
+case), fresh synthetic database, unique MCP name koed_desktop_probe and natural
+real execution without delay. IDE native parser/monitor is not transferred; host
+control is stop-only and actual Desktop records establish identities/results.
+Source/fenced program syntax pass. Private app must close/drain before enabling
+hooks/configuring Koed, then restart with User folder/hook trust. No service/model
+or Memory Answer task starts at this preparation checkpoint.
+
+### Ticket 24: private Desktop drained and positive setup installed (2026-10-06)
+
+The User closes only the test window. Observed private main/backends/scoped helpers
+are already absent, so root signals no normal or private process. Private sign-in
+remains. Root enables hooks and installs uniquely named koed_desktop_probe through
+maintained contributor setup. Six Capture/five delivery definitions, unique memory
+tool alias, existing node_repl and file-auth/secret-storage controls are verified;
+contributor --check passes. Fresh synthetic package scripts are prepared. This
+private discovery-only profile becomes the first positive case; no normal auth is
+copied. Maintained synthesis uses/removes its own isolated test-auth worker copy.
+No Koed service or model request started yet. User private restart/project/hook
+trust and actual readiness precede one natural-timing recall prompt.
+
+### Ticket 24: first Desktop synthetic services ready (2026-10-06)
+
+Fresh private PostgreSQL61122 and maintained real API/runtime/embedding services
+start under the discovery/first-positive root (handle24377). Unique synthetic
+Personal note is seeded; worker remains0.159.3/gpt-5.6-luna. No retrieval delay,
+no model/Memory Answer task has started. Private app is stopped with sign-in
+preserved; User will reopen only it, add exact synthetic workspace as a local
+Codex project, select approved model and review fixture hooks before prompt.
+Private app/backend/profile authority must be rechecked after restart. No Desktop
+positive result, cleanup or broader mode qualification yet.
+
+### Ticket 24: private Desktop positive native readiness confirmed (2026-10-06)
+
+The User reopens the private instance, adds the synthetic local Codex project,
+selects approved model and reports hook trust ready. Root verifies mainPID36030,
+owned packaged backends36053/36063, hooks enabled, file auth retained, no private
+secrets directory/secret-auth argv override and unchanged selected normal hashes.
+Private config still selects gpt-5.6-luna. Unique MCP/Koed runtime registration
+exists; real accepted-task/executor counts remain0 before the prompt. Source
+runtime0.160.1 and worker0.159.3 remain separate. User will submit one corrected
+fenced natural-timing recall/read program and keep the test window open. No live
+Memory Answer result or qualification is claimed yet.
+
+### Ticket 24: first Desktop natural positive behavior passes (2026-10-06)
+
+The User finishes one native case. Actual Desktop originator/private PID provenance,
+serialized vscode source label, user thread and fixture cwd are recorded separately
+from IDE. Native MCP/command/HookPrompt SQL rows join rollout, receipt canonical
+hashes and durable owned task. One pending call, package cat/fullJSON exit0 and
+exact summary13:31:50.170UTC precede real completion13:32:01.788 by11,618ms, with
+no added delay. One Stop hook and answer with exact seeded decision/source reach
+only the originating turn; one User message/task/executor/worker and no poll/retry/
+cancel. Durable attempt1 saves Question/result. Rollout stable204,747ms and native
+SQL items unchanged; four selected normal hashes match, secret-storage controls
+unchanged. Raw history stays private; selected synthetic SQL/rollout records and
+reproducible verifier are retained in desktop-positive-oct06. Final service/window/
+auth cleanup and independent review remain pending; no whole Desktop acceptance.
+
+### Ticket 24: first Desktop positive cleanup passes (2026-10-06)
+
+The User closes only the private window; observed recorded main36030/backends36053/
+36063 are already absent, so no app signal is needed. All scoped/recorded native
+and runtime processes are gone. Rollout stays unchanged after closure. Temporary
+private auth/profile, Electron data, home/plugin/downloaded runtimes, Koed state/
+temp/sockets and launcher are removed. Service registration/connection/PG PID
+metadata are absent; four selected normal files match. Coordinator normal app
+is untouched. Source/sanitized records/verifier/cleanup pins are retained in
+desktop-positive-oct06; raw transcript remains only private. Root accepts bounded
+Desktop positive behavior and cleanup, pending independent review. Other Desktop
+lifecycle/origin/repair and broader ticket/goal audit remain open.
+
+### Ticket 24: first Desktop positive independently accepted (2026-10-06)
+
+Independent desktop_isolation_preflight review accepts bounded positive behavior
+and cleanup; all26 current manifest hashes match. Retained synthetic native SQL,
+rollout, durable/capture/event-index joins independently establish input equality,
+private cwd/session/turn/call/nonce/invocation/task/owner, one execution sequence,
+actual useful overlap11,618ms, one Stop/answer and protected result/source. Removed
+receipt canonical-binding and full live-history completeness remain explicitly
+live verification limits, not fully replayed archive proof. Four selected normal
+hashes match and normal app is never signalled. Guides/plan/TODO record only first
+Desktop positive support. Remaining Desktop lifecycle/origin/recovery, unresolved
+CLI results and whole-ticket/goal audit remain open; no overall acceptance box,
+changeset or new local commit is added. User can continue working in normal app.
+
+### Ticket 24: Desktop pending-window-close preparation starts (2026-10-06)
+
+The User asks to continue after accepted positive cleanup. Root prepares fresh
+private koed-codex-desktop-pending-exit-oct06 state with no copied authentication,
+sessions or trust and four normal-file baselines. Observed separate-instance
+launcher is reused, initially hooks/MCP disabled until new sign-in/storage/path
+checks. Source runtime retains one actual acceptance and adds only a90s unchanged
+real query-response hold. Native close/backend exit, genuine end/retirement and
+no late delivery must be observed independently of forced cleanup; durable task
+must complete once without cancellation/replay. User drives full timing sequence.
+Source/fenced program syntax passes. No new app/service/model/auth request started.
+Normal coordinator app remains untouched; no scope or acceptance criterion waived.
+
+### Ticket 24: Desktop pending-exit private sign-in checked (2026-10-06)
+
+The User signs in to the fresh instance. Root records main38028 and owned
+backends38054/38081, app26.930.61225/bundled0.160.1. All six whitelisted home/
+profile/userData/temp/Koed/ZDOTDIR paths remain private in main and both backends.
+Private auth file0600 exists, no secrets directory/secret-storage override appears,
+and normal selected hashes match. Supported login-status checks confirm both
+packaged and worker0.159.3 ChatGPT login, without retaining status/token payloads.
+Private window must close/drain before source-backed end-hook observation/setup;
+no model or Koed task yet. Normal coordinator remains untouched.
+
+### Ticket 24: Desktop pending-close hooks/services prepared (2026-10-06)
+
+User private window closure drains its main/backends without host app signals;
+sign-in remains. Maintained unique-MCP deferred setup is installed with hooks
+true and unchanged file-auth/secret-storage controls. Only memory delivery
+SessionEnd is wrapped to record actual native input and before/after matching
+receipt state while invoking maintained helper; six Capture/four other delivery
+handlers preserved. Observer uses exact unique tool alias and10s native timeout.
+Real private database/runtime/embedding ready (handle11710), no executor before
+prompt, one unchanged90s query-response hold. Read-only native PID watcher is
+prepared to arm at actual acceptance and record exit brackets, never signal.
+User will restart/trust fixture project/hooks; actual backend identity and watcher
+readiness precede complete prompt-close sequence. No outcome yet.
+
+### Ticket 24: Desktop pending-close native sequence armed (2026-10-06)
+
+User reports private project/model/hooks ready. Main38810 and owned native
+backends38833/38845 are verified with exact starts; private config gpt-5.6-luna,
+hooks/file-auth/secret-storage controls and normal selected hashes remain expected.
+Read-only native exit watcher starts before prompt and arms its active deadline at
+actual task acceptance; it dynamically records additional directly owned backends.
+No task accepted yet. User drives exact fenced pending/package work followed
+immediately by File/Close Window without host round trips. Runtime11710 remains
+available through real completion; native watcher never sends a signal.
+
+### Ticket 24: Desktop pending-close bounded safety observed (2026-10-06)
+
+User closes private window after actual pending/package proof. Native turn abort
+14:10:23.722UTC precedes main/backends exit; last recorded backend is absent by
+14:10:24.346877 with no host signal. Genuine SessionEnd14:10:23.873/.875 sees
+before/after empty binding; first removal is not attributed to SessionEnd or
+unobserved Interrupt. Real unchanged90,002ms response hold releases14:11:41.554;
+one durable execution completes14:11:51.354 attempt1/version9, Question/result
+saved, no cancellation/error/retry. Original rollout/native items stay unchanged
+through171,875ms with no late answer/result hook. This is bounded Desktop close
+safety only, not cross-owner/recovery/attribution; CLI failed exit remains separate.
+Sanitized native/runtime/capture/end/exit records retained. Final service/app/auth
+cleanup and independent review remain pending.
+
+### Ticket 24: Desktop pending-close final cleanup passes (2026-10-06)
+
+Runtime11710 and privatePG stop after genuine settlement. All recorded native
+main/backend and runtime IDs are absent; no host signal establishes native exit.
+Private auth/profile/Electron/home/plugin/runtime/Koed/temp/socket state and launcher
+are removed. Registration/connection/PG PID metadata absent; four selected normal
+files match. History remains unchanged across native exit/actual completion and
+service stop. Raw history stays private; selected archive includes actual native
+SQL/rollout/capture/event-index/exit/SessionEnd/durable/cleanup. Root accepts bounded
+pending-window-close safety with first binding-retirement attribution unobserved,
+pending independent review. No lifecycle-wide/other-owner/recovery/goal completion.
+
+### Ticket 24: User clarifies Desktop close versus native quit (2026-10-06)
+
+The User reports File/Close Window left the private app in the Dock, then they
+quit that instance from the Dock. Root corrects the current case classification
+to Close Window followed by native Dock Quit. Native PID exit/SessionEnd and task
+outcome proofs remain actual; window-close-only behavior is not qualified by this
+case. Per-gesture timestamps and first binding-removal handler are not separately
+observed. For future full-exit tests User should quit only the private instance;
+window-close-only tests must leave it running for host observation. Coordinator
+normal app stays untouched. Earlier private sign-in/positive drain observations
+prove process absence/cleanup, not that window closure alone caused exit.
+
+### Ticket 24: combined Desktop Close Window/native Quit independently accepted (2026-10-06)
+
+Independent review validates27 prior hashes and accepts only the combined User
+Close Window then Dock Quit safety outcome. Actual native exit/SessionEnd precede
+held-response release/one real completion, with no host signal, cancellation,
+replay/late answer, and scoped cleanup/four selected normal hashes pass. First
+binding remover and per-gesture timestamps remain unobserved; window-close alone
+is unqualified. Guides/plan/TODO clarify these distinct actions. No attribution,
+other-owner/recovery, full Desktop/ticket/goal or new commit/changeset claim.
+
+### Ticket 24: Desktop active foreground-switch preparation (2026-10-06)
+
+The User requests continuation. Root prepares fresh private Desktop switch state
+with no copied auth/session/trust and four normal-file baselines. Source runtime
+and corrected fenced program reuse real one-acceptance execution with one90s
+unchanged query-response hold. User will select distinct non-fork New chat while
+original remains active, without Stop/fork/Quit, then finish package-only work
+before completion. Original owned answer is permitted; selected-owner leakage is
+forbidden. Source/fence syntax checks pass. No new app/auth/service/model starts
+at preparation; sign-in/storage/path checks and private setup/trust precede prompt.
+
+### Ticket 24: Desktop switch profile sign-in checked (2026-10-06)
+
+User signs in only to fresh switch instance. Main40256/backends40282/40310,
+app26.930.61225/bundled0.160.1 are pinned; all selected private paths match in
+main/backends. File auth0600, no secret directory, configured secret-storage
+false and four normal hashes match. Supported private login-status checks pass
+for both bundled and worker0.159.3 without exposing auth payloads. User must
+fully quit only private instance before hook/setup changes, preserving its auth.
+No model or Memory Answer request started; normal coordinator untouched.
+
+### Ticket 24: Desktop switch private setup/services ready (2026-10-06)
+
+User fully quits only private instance. Main/backends/scoped processes are absent
+without host main signal; auth retained. Maintained unique-MCP deferred setup/check
+passes with six Capture/five delivery hooks and standard300000ms Stop wait, while
+file auth/secret-storage controls persist. Fresh private database and real runtime
+ready (handle6589); no task accepted before prompt. One unchanged90s response hold
+will leave time for User-driven New chat while original remains active. User
+private restart/project/model/hook trust precedes complete no-roundtrip sequence.
+No model or foreground-switch outcome/qualification yet; normal app untouched.
+
+### Ticket 24: Desktop foreground-switch native sequence ready (2026-10-06)
+
+User reports private project/model/fixture hooks ready; root rechecks own native
+instance/backends, hooks/model/storage and unchanged four normal-file hashes.
+Real runtime6589 ready with zero accepted tasks before prompt. User receives
+entire pending-work then New chat/package-only sequence without host round trips.
+No Stop/fork/quit is used; actual selected-owner history must distinguish retained
+original active delivery from leakage. No outcome or acceptance yet.
+
+### Ticket 24: Desktop active foreground-switch native checks pass (2026-10-06)
+
+User completes full no-roundtrip sequence without Stop/fork/quit. Native identities
+are distinct/non-fork; original stays uninterrupted. New actual package cat/exit0/
+exact summary14:31:25.219UTC precedes held-response release14:32:42.606 and real
+original completion14:33:05.310. One task/executor/worker, completed attempt1,
+Question/result saved, no cancellation/error/retry. One original Stop/answer at
+14:33:08.605 stays in the continuing owner; selected new history has no memory
+call/result hook/answer and remains unchanged across completion. Both actual
+histories/native SQL items stable113397ms. Actual spent receipt and canonical/
+owner/durable/native records retained. This is controlled active switching, not
+interrupted/new or natural timing. Final services/quit/auth cleanup and independent
+review remain pending; other Desktop cases still unverified.
+
+### Ticket 24: Desktop foreground-switch cleanup passes (2026-10-06)
+
+User quits only private instance. Recorded main/backends and scoped peers already
+absent; no host main signal. All recorded/scoped native/runtime processes stop.
+Both native history hashes remain unchanged after quit. Auth/profile/Electron,
+home/plugins/downloaded runtimes, Koed state/temp/socket paths and launcher removed;
+registration/connection/PG PID metadata absent. Four selected normal files match.
+Raw histories retained privately; actual receipt/native/capture/durable/event/cleanup
+archive supports independent review. Root accepts bounded active foreground-switch
+isolation/cleanup, pending independent review. Other Desktop cases remain untested.
+
+### Ticket 24: Desktop active foreground switching independently accepted (2026-10-06)
+
+Independent reviewer verifies26 prior hashes and canonical actual receipt/input/
+nonce/session/turn/call/invocation/task/owner joins, distinct non-fork Desktop
+identities, useful new work before completion, one original-only Stop/answer and
+no selected recall/hook/leak. Stable post-quit hashes, scoped cleanup/four normal
+checks pass. Full raw-history completeness/live113397ms checks remain live
+verification, not independently replayed raw archive. Root updates pending-cleanup
+label and docs/plan/TODO to this bounded controlled-switch outcome only. Fork,
+other Desktop lifecycle/recovery and broader CLI/ticket/goal audit remain open.
+No acceptance box, new commit, changeset or normal app modification.
+
+### Ticket 24: Desktop interrupted-parent fork preparation (2026-10-06)
+
+User requests continuation after accepted Desktop active-switch cleanup. Fresh
+private fork profile/home/userData/temp/Koed/workspace allocated without copied
+auth/session/trust; four normal baselines. Reused real one-acceptance runtime and
+one90s unchanged response hold, corrected fenced program passes syntax. User
+will confirm native interruption, local fork and child package work in one manual
+sequence, never cancel durable task. Actual lineage/distinct identities and no
+child/original-late-model result must be verified; no switch substitution or
+natural timing claim. No new app/auth/service/model started during preparation.
+
+### Ticket 24: Desktop fork private sign-in checked (2026-10-06)
+
+User signs into fresh private fork instance. Main42323/owned backends42351/42380,
+app26.930.61225/bundled0.160.1 repinned. All six selected paths private in main/
+backends; file auth0600 and no private secret directory/secret-storage enablement.
+Normal four hashes match. Supported private login-status commands confirm bundled
+and worker0.159.3 ChatGPT auth without raw output. Private full quit/drain precedes
+hook/config setup; auth preserved. No model or Koed task yet; normal app untouched.
+
+### Ticket 24: Desktop fork private setup/services ready (2026-10-06)
+
+User confirmed full private-instance exit. Verified prior private main/backends
+absent, retained only its signed-in profile for maintained configuration, and
+installed/check-passed six Capture Hook and five deferred delivery definitions.
+Private loopback PostgreSQL 61122 and synthetic real execution fixture report
+READY; unchanged 90-second query-response hold gives User control of the native
+interruption/fork sequence. No recall/prompt has been submitted. Restart/trust
+only this private local project before the one-attempt sequence.
+
+### Ticket 24: Desktop interrupted-parent fork native checks pass (2026-10-06)
+
+User drove the entire timing sequence. Native Desktop metadata proves child
+01a111b2-37b6-7561-8fb0-10d78b952538 forks interrupted parent
+01a111b1-b82f-75f2-8670-0c1c780e6ae7. Parent received one pending receipt and
+read the actual synthetic package; child completed its own real package read
+and exact script summary before unchanged real query-response release and
+executor completion at 14:52:26.925Z. One durable task completed with attempt1,
+no cancellation; child made no own recall call. Neither chat received a result
+HookPrompt or later parent model answer. Selected native items stayed unchanged
+across real completion; both full live rollout hashes stayed stable for60143ms
+after the archived completion snapshot. Controlled90s hold only, no natural
+fork latency/idle wake/recovery claim. Private-instance exit, final stability,
+service/auth cleanup and independent selected-evidence review remain pending.
+
+### Ticket 24: Desktop interrupted-parent fork independently accepted (2026-10-06)
+
+User fully quit the private instance. Main/backends absent without root signals;
+both histories unchanged after Quit. Real runtime and PG stopped; private auth,
+profile, app data and launcher removed, raw evidence preserved privately. Four
+selected normal-file hashes match. Independent reviewer verifies27 prior hashes
+and native/canonical/durable owner joins, accepting bounded controlled fork
+isolation with no child result or later parent model answer. Retired receipt
+binding not retained, first-removal attribution not claimed, full-history
+completeness and60143ms timing remain live recorded limits. Documentation and
+backlog updated; remaining Desktop lifecycle/recovery and whole ticket open.
+No changeset, commit or push requested in this cleanup turn.
+
+### Ticket 24: Desktop durable-cancellation preparation (2026-10-06)
+
+User continues required Desktop cases after fork cleanup. Prepared fresh private
+root /private/tmp/koed-codex-desktop-cancel-oct06 with no credential/session/trust
+copies, hooks/MCP disabled, app26.930.61225/bundled0.160.1 repinned and four
+selected normal-file hashes baselined. User will sign in before setup/restart.
+Reviewed-scope fixture retains real unchanged90s query hold; User will trigger an
+exclusive marker directly after native package summary, without host round trips.
+Host checks native Desktop SQL/receipt/canonical input and exact durable owner
+plus protected running status before one maintained cancellation request. Syntax
+checks pass; bounded independent source review requested before any live recall.
+No app, service or model launched by this preparation. No automatic retry.
+
+### Ticket 24: Desktop cancellation private sign-in checked (2026-10-06)
+
+User reports signed in. Verified exact private main44552 and owned backend44582/
+44612, all six private path fields, file auth0600, hooks disabled and no selected
+secret store/flag override. Private login statuses pass for bundled0.160.1 and
+worker0.159.3; four normal selected hashes unchanged. No credentials printed or
+copied. Independent control preflight reports no blocker. Added finite/unexpired
+receipt guard and explicit one-attempt marker-deadline inconclusive output to
+address two review limits; syntax checks pass. Request full private Quit before
+maintained configuration/services. No model recall has run.
+
+### Ticket 24: Desktop cancellation configuration/services ready (2026-10-06)
+
+User full private Quit verified: previous main/backends absent without signals.
+Maintained deferred configure/check pass for uniquely named koed_desktop_probe.
+Private file auth and disabled secret store retained. Fresh private PG61123 and
+real synthetic execution runtime report READY, with unchanged90s query hold and
+User marker required before one guarded protected cancellation. No recall yet.
+User must restart/trust only this fixture project before exact one-shot prompt.
+
+### Ticket 24: Desktop cancellation attempt inconclusive before useful work (2026-10-06)
+
+User reports RECALL_NOT_DEFERRED after stepping away briefly. Native literal
+program made one shown memory call and no package read. Tool result is failed:
+"Koed Memory Answer task acceptance could not be confirmed. Do not resubmit
+this request." Actual API accepted one task with ordinary runtime invocation
+key6b4a7dd4-3a22-4ac9-b56d-224605ee676b:2, then the fixture refused a second
+acceptance. Native nonce binding remains accepted without a task ID. This is
+consistent with blocking fallback before deferred acceptance, not qualification
+of the intended pending/cancel route. No User marker or protected cancellation
+request occurred. Cause of native early fallback remains unproven; User timing
+is not established as its cause. Preserve evidence and clean up this attempt;
+no automatic retry. Whole Desktop cancellation case remains unverified.
+
+### Ticket 24: Inconclusive Desktop cancellation cleanup complete (2026-10-06)
+
+User full private Quit confirmed and main/backends absent. Ordinary task completed
+with saved result; no User marker/cancel request. Native after-Quit selected
+evidence and private raw history preserved. Runtime/PG stopped, private auth,
+profile/app data and launcher/marker script removed; four normal hashes match,
+private app/runtime/PG absent. Maintained factory/runtime source confirms ordinary
+blocking invocation classification; cause of fallback remains unproven, not User
+timing attribution. Case recorded inconclusive, no automatic retry. A fresh
+cancellation attempt needs User decision under the manual one-attempt protocol.
+
+### Ticket 24: Desktop cancellation fresh retry prepared (2026-10-06)
+
+User expressly authorizes retry. Prepared separate fresh root
+/private/tmp/koed-codex-desktop-cancel-retry-oct06, no auth/session/trust copies.
+Repinned same installed app/bundled CLI and baselined four normal files. Reuse
+reviewed actual native SQL/receipt/canonical/durable owner controls, receipt expiry
+guard and one maintained protected cancel call, unchanged90s retrieval hold.
+Bounded marker standby now switches to execution-start deadline, so setup delay
+does not silently consume cancellation monitoring time; does not repair or
+explain prior fallback. No app/services/model started. User signs in first with
+hooks/MCP off; native trust and readiness required before one literal prompt.
+
+### Ticket 24: Desktop cancellation retry sign-in/preflight pass (2026-10-06)
+
+User signed in. Private main47335 and owned backend47364/47386 match all six
+private path fields. Private auth0600/file store, hooks-off/secret-store-disabled
+and no selected argv override verified. Both private CLI login statuses pass;
+four normal selected hashes unchanged. Independent source reviewer reports no
+blocker in fresh root/expiry/explicit-deadline guards or monitoring initialization.
+No live service/recall yet; request User full private Quit before setup. Prior
+fallback remains unexplained, not claimed repaired by this retry preparation.
+
+### Ticket 24: Desktop cancellation retry services ready (2026-10-06)
+
+User full private Quit verified; all prior selected main/backends absent.
+Maintained configure/check pass and private file auth/secret-store-disabled
+settings preserved. Fresh PG61124 and real synthetic runtime report READY.
+Reviewed one-attempt cancellation uses actual native pending/package proof
+and User marker; no recall yet. Request private restart, local project/model/
+Koed hook trust, then exact one-shot sequence.
+
+### Ticket 24: Desktop cancellation retry wrong native workspace (2026-10-06)
+
+User reports actual pending/package markers then native failed/no-answer notice.
+User exclusive marker arrived5.359s after accepted task; no protected cancellation
+was sent. Native session01a111cb-8d48-7960-94b1-c7d65edc43a1 cwd is previous
+/private/tmp/koed-codex-desktop-cancel-oct06/workspace, while current fixture
+requires cancellation-retry workspace. Model's explicit package command read
+current file, but native recall owner remained old cwd. Fixture rejects that
+caller before capture/execution. Durable task failed execution_failed after three
+API scheduler claims, without result/question/cancel. This is not a slow User
+trigger or passing cancellation; guard rejection is inconclusive. Native failed
+notice is genuine but does not substitute planned controlled one-attempt failure
+case. Preserve this attempt and request full private Quit before cleanup; no
+automatic retry. Next preparation should use unique project basename and verify
+native cwd before recall rather than relying only on private process paths.
+
+### Ticket 24: Wrong-workspace Desktop cancellation retry cleaned (2026-10-06)
+
+User full private Quit checked against selected main/backends. Selected native
+rows/metadata and private raw history retained. Runtime closed, its exact PID
+absent, PG stopped, private auth/profile/app data/launcher/cancel script removed;
+four selected normal hashes match. One task remains failed/version7/attempt3, no
+cancel/result/question. Genuine failure feedback is incidental wrong-workspace
+guard rejection, not passing cancellation or the reviewed planned failure case.
+Do not retry automatically. Next User-approved preparation must use unique
+project basename and verify native chat cwd before recall, not merely process
+profile paths or model-specified cat workdir. Cancellation remains outstanding.
+
+### Ticket 24: Desktop cancellation third attempt prepared (2026-10-06)
+
+User explicitly approves retry with unique project and pre-recall workspace check.
+Fresh root /private/tmp/koed-codex-desktop-cancel-03-oct06, no auth/session/trust
+copies; local project basename iris-desktop-cancel-03. Repinned app/bundled CLI,
+four normal hashes baselined. Reused reviewed real-response hold/owner/cancel
+controls with exact new project guard. A separate native pwd-only preflight with
+no workdir override must establish actual chat cwd before recall next turn.
+This does not add first-turn-positive evidence. No app/services/model launched.
+Sign-in with hooks/MCP off, private full Quit, maintained setup and trust remain
+required. One acceptance/executor/cancel maximum; no automatic retry.
+
+### Ticket 24: Desktop cancellation03 sign-in/preflight pass (2026-10-06)
+
+User signed in. Private main49131 and owned backend49160/49186 match all six
+private paths; private file-auth0600 and disabled hook/secret-store settings plus
+no selected argv override checked. Bundled/worker login statuses pass; four
+normal selected hashes unchanged. Independent reviewer finds fresh unique path
+consistent and native SQL proof scoped to receipt session/turn, so preceding
+pwd preflight cannot contaminate cancellation qualification. No services/recall
+yet; request full private Quit before maintained setup.
+
+### Ticket 24: Desktop cancellation03 services ready (2026-10-06)
+
+User full private Quit verified against main/backends. Maintained configure/check
+pass; private file-auth/secret-store-disabled settings preserved. Private PG61125
+and real synthetic runtime READY. Exact selected project must be
+/private/tmp/koed-codex-desktop-cancel-03-oct06/iris-desktop-cancel-03. No recall
+yet; package-free native cwd preflight required before subsequent cancellation
+turn. Prior wrong-project/first-fallback cases not reclassified.
+
+### Ticket 24: Desktop cancellation03 native workspace preflight passes (2026-10-06)
+
+User pwd response and actual native SQL/metadata verify selected Conversation
+01a111d1-b89b-7fa1-8b5f-1cffc6848c99 cwd is the unique iris-desktop-cancel-03
+project. One actual pwd command with exit0 returns exact cwd, no memory call.
+Restarted private main/backends match all six private paths; runtime ready/control
+unused. Next recall is in same Conversation's subsequent turn, with literal
+pending gate and User-driven marker immediately after exact package summary.
+No first-turn admission claim added by this preflight.
+
+### Ticket 24: Desktop durable cancellation native checks pass (2026-10-06)
+
+Unique project's native cwd preflight prevented prior selection ambiguity. One
+actual native codex-stop task accepted15:26:39.196Z; real executor/query hold
+started. User marker15:26:44.060Z followed actual package summary. Actual
+receipt/native session-turn-call/canonical/durable owner proof passes; protected
+read proves running/version2/attempt1 before one maintained cancel request at
+15:26:44.078Z. Genuine abort releases unchanged hold after4169ms; response
+cancel_requested/version3, durable final cancelled/version4/attempt1, no result
+or Question. One native static cancellation Stop hook and no-answer response,
+no model poll/retry/second recall. Selected SQL and full live native hash stable
+75518ms; private Quit/cleanup and independent selected-evidence review pending.
+This is subsequent-turn cancellation lifecycle evidence after separate pwd
+preflight, not an additional first-turn-positive or expiry/recovery claim.
+
+### Ticket 24: Desktop durable cancellation independently accepted (2026-10-06)
+
+User private Quit verified; selected main/backends absent without root signals.
+Selected SQL and full native rollout hash unchanged through Quit. Runtime
+closed/exact PID absent, PG stopped, private auth/profile/app data/launcher/marker
+script removed; four normal hashes match, private raw evidence retained.
+Independent reviewer verifies27 prior artifact hashes and actual binding/inputHash/
+native/canonical/durable owner joins, one maintained runningv2 → cancel_requested3
+→ cancelled4, attempt1, real abort after4169ms, no saved answer/result/
+Question, one native cancellation notice/no-answer follow-up. Bounded pass for
+subsequent-turn controlled port cancellation; full-history completeness/75518ms
+timing remain recorded live checks. Earlier two inconclusive cases, first-turn
+admission, native UI cancellation, expiry/recovery not reclassified. Documentation
+and backlog updated. Remaining Desktop failure/timeout/setup/recovery and whole
+ticket audit open. No changeset, commit or push in this cleanup turn.
+
+### Ticket 24: Desktop real execution-failure preparation (2026-10-06)
+
+User continues required Desktop checks after accepted cancellation cleanup.
+Fresh private root /private/tmp/koed-codex-desktop-failure-oct06 with unique
+iris-desktop-failure-01 project, no auth/session/trust copies. Repinned installed
+app/bundled CLI and four normal file hashes. Adapt reviewed IDE preclaim route
+to actual Desktop SQL/receipt proof: await real pending useful package work and
+accepted durable personal owner, release original claim unchanged, maintained
+executor/worker under genuine1000ms scheduler deadline. Static native failure
+required, no fabricated response/UI interruption. Workspace preflight before
+recall; one attempt/no automatic retry. No app/services/model launched.
+
+### Ticket 24: Cancellation worker-boundary evidence correction (2026-10-06)
+
+Root revisited retained private runtime events during failure preflight and found
+one actual worker entry(seq86) and returned worker boundary(seq102) after abort.
+Filtered selected event index omitted them; zero-worker inference was invalid.
+Sanitized task-matching worker-boundary artifact added, independently reviewed,
+and manifest pinned. Reviewer retracts zero-worker claim; durable cancelled, no
+saved result/Question and no delivered answer remain proven, bounded pass
+unchanged. Returned boundary memoryStatus/model null; no full raw-history replay
+or full inference claim. Root corrects report/ticket wording accordingly.
+
+### Ticket 24: Desktop failure sign-in/source preflight pass (2026-10-06)
+
+User signed in. Private main51087 and owned backend51115/51144 match six private
+paths. File-auth0600/hooks-off/secret-store-disabled and no selected argv override
+checked; private bundled/worker login statuses pass; four normal hashes match.
+Independent source reviewer reports no ownership/initialization blocker. Fixture
+qualifies real scheduler/executor hard failure; any worker entry is recorded only
+if actually observed, not promised by timing. Conservative incomplete native
+proof guards can make an attempt inconclusive, with no automatic retry. No live
+services/recall yet; request full private Quit before maintained setup.
+
+### Ticket 24: Desktop real failure services ready (2026-10-06)
+
+User full private Quit verified against main/backends. Maintained configure/check
+pass and private file-auth/secret-store-disabled settings preserved. Private
+PG61126 and real synthetic runtime READY. Unique project iris-desktop-failure-01
+must pass native pwd preflight before subsequent recall. Actual native useful
+work/owner proof gates original claim, genuine1000ms scheduler hard deadline.
+No recall yet; no User timed control needed, no automatic retry.
+
+### Ticket 24: Desktop real execution-failure native checks pass (2026-10-06)
+
+Verified unique native cwd before recall. One native pending/actual package
+read-summary precedes original preclaim release at15:41:05.242Z, exact receipt/
+canonical/native/durable accepted owner checked. Maintained executor starts
+15:41:05.261Z, actual worker entry observed; genuine scheduler abort after1002ms
+ends unchanged real response hold by abort. Worker returned boundary is observed
+separately, no durable result/Question/cancel. Final failed/hard_timeout/version3/
+attempt1, one native static failure hook and no-answer response, no second recall
+or model poll/retry. Selected items/live full history stable79416ms. Private Quit/
+cleanup and independent selected evidence review pending. Subsequent-turn test
+after separate pwd preflight; no extra first-turn/full provider inference claim.
+
+### Ticket 24: Desktop real execution failure independently accepted (2026-10-06)
+
+User full private Quit verified; selected main/backends absent and native SQL/
+full rollout hash unchanged through Quit. Runtime closed/exact PID absent, PG
+stopped, private auth/profile/app data/launcher removed; four normal hashes match.
+Independent reviewer verifies27 prior hashes and original binding/inputHash/
+canonical/native/durable personal owner joins. Preclaim real-work qualification
+forwards original claim, genuine scheduler abort1002ms after executor starts.
+One actual worker entry/returned insufficient/null-model boundary explicitly
+retained. Failed/hard_timeout/v3/attempt1, no cancel/result/Question, one native
+static failure/no-answer notice. Bounded subsequent-turn pass; full-history
+completeness/79416ms timing remain recorded live checks, no full inference or
+first-turn/observation-timeout/recovery claim. Documentation/backlog updated.
+Remaining Desktop timeout/setup/recovery and whole-ticket audit open. No changeset,
+commit or push in this cleanup turn.
+
+### Ticket 24: Desktop observation-timeout preparation (2026-10-06)
+
+User continues required Desktop cases. Fresh private root
+/private/tmp/koed-codex-desktop-timeout-oct06, unique iris-desktop-timeout-01
+project, no auth/session/trust copies. Repinned installed app/bundled CLI, four
+normal hashes baselined. Reuse real90s query hold/300s scheduler/240s API limits,
+one task/executor. Adapt reviewed IDE late-client-read Stop observer to actual
+Desktop native receipt/SQL/canonical owner and useful work. Actual authenticated
+body read precedes1500ms unchanged object hold; genuine1000ms observation
+deadline, unchanged drain afterabort, backend completes without cancel and no
+late answer. Only delivery Stop replaced after native private Quit/configure.
+No server-write/first-turn/recovery claim. Source preflight before live recall;
+no app/services/model launched by preparation.
+
+### Ticket 24: Desktop timeout sign-in/source preflight pass (2026-10-06)
+
+User signed in. Private main55027 and owned backend55055/55083 match six private
+paths. Private file-auth0600/hooks-off/secret-store-disabled and no selected
+argv override verified; bundled/worker login statuses pass; four normal hashes
+match. Independent observer source review has no blocker: actual authenticated
+GET/proof before same-object1500ms hold, maintained1000ms timeout output then
+unchanged drain, no cancel/substituted result/extra polling. Metadata serialization
+scoped; one attempt. Terminal/missing-proof/native-hook-timeout/failed-drain cases
+remain inconclusive, no automatic retry. No live services/recall yet. Request
+private full Quit before maintained configure plus exact delivery-Stop override.
+
+### Ticket 24: Desktop timeout services/observer ready (2026-10-06)
+
+User private full Quit verified against selected main/backends. Maintained
+configure/check pass. Observer installer required syntax and selection repairs
+before any config write; exact parsed-config comparison then verifies only
+delivery Stop command changed, preserving Capture/other delivery hooks, file
+auth and disabled secret store. No recall/native model ran during repair.
+Private PG61127 and real execution runtime READY. Unique iris-desktop-timeout-01
+requires native pwd preflight before subsequent recall; maintained1000ms Stop
+observation and actual client-port1500ms unchanged drain, backend90s queryhold/
+300s execution unchanged. No cancel or automatic retry.
+
+### Ticket 24: Desktop client-port timeout native checks pass (2026-10-06)
+
+Verified native unique cwd before subsequent recall. Actual pending/package
+work plus original receipt/native/canonical task proof qualify authenticated
+runningv2 read15:52:38.953Z. Maintained deadline aborts observation and returns
+static timeout15:52:39.912Z; same real object drains1502ms with identical hash/
+aborted signal, no replaced snapshot/cancel. Native one timeout/no-answer notice.
+Real executor continues, actual query hold releasesunchanged90003ms by deadline,
+backend completes15:54:20.435Z with found worker status, one attempt/saved result/
+Question and no cancel/abort. No late native answer/second recall/poll/retry;
+selected SQL/full rollout unchanged across completion and stable98675ms afterward.
+Private Quit/cleanup/independent review pending. Client-port late-read boundary
+only, not delayed server-write/first-turn/recovery/fullDesktop qualification.
+
+### Ticket 24: Desktop timeout cleanup/behavior reviewed; watchdog criterion unmet (2026-10-06)
+
+User private full Quit verified; main/backends absent and native history/items
+unchanged through Quit. Runtime closed/exact PID absent, PG stopped, private
+auth/profile/app data/launcher removed, four normal hashes match. Independent
+review validates31 hashes, actual owner/read/unchanged1502ms drain, one native
+timeout notice, real backend completed/found/attempt1 with savedQuestion/result
+and no cancel/abort/late answer. Bounded behavior passes.
+
+Root then found missed manual configuration criterion: observer wait1000ms but
+only delivery Stop command changed, native watchdog stayed305s; checklist
+requires6s. Independent audit confirms criterion unmet, no waiver or retrospective
+configuration claim. Full manual Desktop T remains incomplete despite accepted
+behavior/drain. Concrete fresh corrected retry proposal retained with exact
+Stop-command+timeout6 changes, others preserved, native cwd preflight and same
+backend/read/drain limits. Ask User decision before fresh replacement. No
+automatic retry/profile/services/model, commit/push or changeset here.
+
+### Ticket 24: Corrected Desktop timeout retry prepared (2026-10-06)
+
+User explicitly authorizes fresh corrected retry. New private root
+/private/tmp/koed-codex-desktop-timeout-retry-oct06 and unique
+iris-desktop-timeout-02, no auth/session/trust copies. Same pinned app/CLI, four
+normal hashes baselined; reuse reviewed actual GET/native proof/unchanged drain
+and real backend limits. Exact installer will change delivery Stop command and
+timeout6s only, preserve Capture30s/others, compare parsed before/after and retain
+selected definitions/hashes before restart. Prior305s case stays bounded behavior
+only, full exact-config criterion unmet there. No app/services/model launched.
+
+### Ticket 24: Corrected timeout retry sign-in/preflight pass (2026-10-06)
+
+User signed in. Private main59303 and owned backend59331/59357 match six
+private paths; file-auth0600/hooks-off/secret-store-disabled and no selected
+argv override verified. Bundled/worker login statuses pass, four normal hashes
+match. Independent installer/source preflight has no blocker: unique maintained
+delivery Stop selected, requires prior305s, changes command+watchdog6, deep
+parsed comparison preserves all else including Capture30s; before/after retained.
+Source paths consistent and timing1000/1500/6000ms explicit. No services/recall
+yet; request native private full Quit before exact setup.
+
+### Ticket 24: Corrected Desktop timeout definitions/services ready (2026-10-06)
+
+User full private Quit verified; selected main/backends absent. Maintained
+configure/check pass. Reviewed installer ran successfully: exact delivery Stop
+observer command and timeout6s, Capture30s and other parsed settings preserved,
+selected before/after definitions and full config hashes retained. Independent
+preflight and actual parsed reread verify6s. Private PG61128/runtime READY, real
+backend90s hold/300s execution/240s API unchanged. Native cwd preflight required
+before recall; no model recall/extra task yet.
+
+### Ticket 24: Corrected Desktop timeout native checks pass (2026-10-06)
+
+Original/restarted parsed native definition explicitly retains6s watchdog;
+Capture30s/other settings preserved. Native workspace verified before recall.
+One actual protected running read/original receipt/SQL/canonical owner qualifies
+same-object1500ms hold; maintained1000ms timeout, identical-hash1502ms drain
+after observation abort. Actual observer return/drain1552ms, within native6000ms.
+One native timeout/no-answer notice. Real backend completes18:39:09.117Z after
+unchanged90002ms query delay, attempt1 with savedQuestion/result, no cancel/abort.
+Selected SQL/full rollout unchanged across completion and stable55731ms after
+completion snapshot, exceeding required10s. Private Quit/cleanup/independent
+review pending. Prior305s attempt remains separately qualified behavior only.
+No server-write/first-turn/recovery/fullDesktop claim.
+
+### Ticket 24: Corrected Desktop timeout independently accepted (2026-10-06)
+
+User private full Quit verified; selected main/backends absent and native SQL/
+rollout hash unchanged through Quit. Runtime closed/exact PID absent, PG stopped,
+private auth/profile/app data/launcher removed, four normal hashes match.
+Independent review verifies33 prior hashes and before/after/restarted exact6s
+native watchdog with1000ms observation/1500ms actual read, Capture30/others
+preserved. Actual unchanged snapshot drains1502ms after observation abort,
+observer exits1552ms within6000ms. Original receipt/native/canonical/durable
+owner joins, real backend one completed attempt/savedQuestion/result/no cancel
+or executionabort, one native timeout/no-answer, no late native answer. Bounded
+pass including corrected T config. Full-history completeness/55731ms timing
+remain recorded live limits, prior305s fixture not reclassified, no serverwrite/
+first-turn/recovery/fullDesktop claim. Docs/backlog updated. Remaining Desktop
+setup/recovery and whole-ticket audit open, unresolved CLI outcomes retained.
+No changeset/commit/push in this cleanup turn.
+
+### Ticket 24: Desktop supported setup/readiness preparation (2026-10-06)
+
+User continues remaining required checks. Fresh private root
+/private/tmp/koed-codex-desktop-readiness-oct06 and unique iris-desktop-setup-01,
+no auth/session/trust copies. Repinned app/bundled CLI and four normal hashes.
+Reuse maintained real PG/core provisioning/reuse/credential owner/API401-vs404
+proof from separately accepted IDE fixture, Desktop-specific native evidence
+required. Stop-only control, no IDE history reader/monitor. Supported setup
+repeat, exact delivery-prehook omission, native pwd preflight then one blocking
+recall; supported plain repair, blocking selection and removal after native Quit.
+No retrieval delay/model polling/cancel/automatic retry; orphan-lock state cleanup
+remains separate. No app/services/model started; source preflight before live work.
+
+### Ticket 24: Desktop setup/readiness sign-in/source preflight pass (2026-10-06)
+
+User signed in. Private main61299 and owned backend61330/61361 match six
+private paths. File-auth0600/hooks-off/secret-store-disabled and no selected
+argv override verified; private bundled/worker login statuses pass, four normal
+hashes match. Independent source review has no blocker in freshPG/core twice/
+reuse/credential-owner/API401-vs404 checks, one acceptance/executor, no artificial
+delay and stop-only cleanup. No OS installer claim. Live configuration/fallback/
+repair still required, orphan recovery separate. No services/recall yet; request
+private native full Quit before core/runtime/setup.
+
+### Ticket 24: Desktop readiness preparation corrected; bootstrap deferred (2026-10-06)
+
+Standalone full setup invocation initially omitted runtime's private pepper/DB
+environment, failed before model/recall. First stopped runtime and preserved
+zero-task diagnostics; a public-schema-only reset left migration ledger and
+failed restart before core setup. Rebuilt only stopped privatePG with no native
+recall/task, preserving private preparation archive. Signed-in profile retained.
+Runtime now provides core environment in private0600 file, never selected/printed,
+required final deletion. Fresh maintained core twice/API401-vs404 proof passes.
+Full contributor setup with correct env entered bootstrap/build and exceeded60s
+fixture parent deadline. Scoped inventory found no surviving private bootstrap
+children; full bootstrap check deferred, not marked successful.
+
+Contributor configure selected deferred mode; actual supported plain repair
+twice passed with byte-stable config/guidance, unrelated disabled MCP and global
+marker preserved. Provisioned credential revalidated against private API404.
+Exact parsed config edit removes only one delivery PreToolUse, preserving six
+Capture/four other delivery definitions, opt-in MCP and unrelated settings.
+Private runtime1416/PG61129 READY, zero recall/task/executor so far. Unique native
+project pwd preflight required before one blocking fallback recall. Preparation
+failures not model retries; full bootstrap remains deferred, native fallback and
+post-Quit repair/removal still pending. All stage/private secret/archive cleanup
+required before acceptance.
+
+### Ticket 24: Desktop missing-prehook blocking fallback native checks pass (2026-10-06)
+
+Native pwd/cwd unique setup project verified, six Capture/four delivery hooks
+retained (GUI trust-state metadata ignored in event inventory). One ordinary
+recall returns direct found answer and exact seeddecision DECISION24_3f38bd1497004ba3
+/source b4eebbe9-a08b-444a-8f1c-e6bc5ba395b7 before actual package read/summary.
+No nonce/pending envelope/Stop result, presentation directory empty, native one
+call/zeroHookPrompt. Actual task completed19:03:37.000Z attempt1 with saved
+Question/result/no cancel/error; core token count1. Full live native hash stable
+117873ms, no model retry/second recall/Stop duplicate. Payload selection excludes
+worker/account event arrays, full native history private. Native Quit then plain
+repair/config blocking/removal/cleanup and independent review pending. Full
+contributor setup bootstrap remains deferred; preparation failures not model
+attempts. Missing-prehook fallback only, no unavailable-runtime/recovery claim.
+
+### Ticket 24: Desktop core repair/fallback independently accepted (2026-10-06)
+
+Post-native private Quit and unchanged history verified; supported plain repair
+restores prehook/Capture/guidance/unrelated MCP, contributor check passes.
+Initial Capture equality guard included empty event group; configuration-only
+repeat with corrected comparison proves preservation, no native recall repeated.
+Contributor blocking selection+plain supported repair preservesblocking/check;
+deferredrestored then supported ownedremove removesonlyowned integration,
+unrelated MCP/global marker retained. Runtime closed/exactPIDabsent, PG stopped,
+private native/Koed credentials/profile/appdata/launcher plus private core env/
+generatedenv and preparationPGarchive removed, four normal hashes match.
+Independent review verifies25 prior hashes, actual one core owner/token/API401/
+404/canonical/native blocking recall/foundsource/durable completed attempt and
+configuration/removal/cleanup outcomes. Bounded pass; full config/raw-history
+completeness and117873ms timing remain recorded live limits. Full contributor
+setup/bootstrap stays deferred, notpassed by directrepair. Remaining Desktop
+orphan-state/recovery, deferredbootstrap, unresolvedCLI and whole-ticket audit
+open. Docs/backlog updated; no changeset/commit/push here.
+
+### Ticket 24: Desktop orphan-state cleanup preparation (2026-10-06)
+
+User continues remaining required recovery-state check. Fresh root
+/private/tmp/koed-codex-desktop-lock-repair-oct06 and unique
+iris-desktop-recovery-01, no auth/session/trust copies; repinned app/CLI and
+four normal hashes. Reuse real single-task90s hold runtime and reviewed orphan
+PostToolUse wrapper adapted exact Desktop tool/path. Maintained bind/output
+preserved, actual original bound receipt/canonical/native/captured executor
+proof then exclusive one-use lock; no native history dependency in PostToolUse.
+User native Quit at markers without host roundtrip; selected process exit,
+genuine completion then selected presentation-state removal, no durable task/
+Question replay/cancel/output. Post-completion simulation only, not in-flight
+removal/crash/restart recovery. Source/guard tests before live recall; no app/
+services/model started. Full contributor bootstrap separately deferred.
+
+### Ticket 24: Desktop orphan-state sign-in/source preflight pass (2026-10-06)
+
+User signed in. Private main65129 and owned backend65157/65188 match six
+private path fields; file-auth0600/hooks-off/secret-store-disabled/no selected
+argv override verified, bundled/worker login statuses pass, four normal hashes
+match. Independent wrapper source preflight has no blocker: maintained bind/
+output first, exact native/nonce/unexpiredbound/canonical/capturedtask/private
+guards, hash recheck/exclusive one-use lock, no native history or credentialread.
+Before state cleanup all selected native/MCP/hook processes must exit and real
+durable task complete. Post-completion simulation only, guardfailureinconclusive
+with no automatic retry. No live services/recall yet; request private full Quit.
+
+### Ticket 24: Desktop orphan-state fixture definitions/services ready (2026-10-06)
+
+User private full Quit verified; selected main/backends absent. Maintained
+configure/check pass, exact delivery PostToolUse matcher+10s timeout retained
+while only command becomes reviewed orphan wrapper; parsed comparison preserves
+Capture/other definitions/fileauth/disabled secret-store. Actual before/after
+selected definitions retained. Private PG61130/runtime READY, single-task90s
+query hold/300s execution reused. No model recall yet; unique native pwd/cwd
+preflight before subsequent recall and User-driven Quit at package markers.
+
+### Ticket 24: Desktop post-completion orphan-state checks pass (2026-10-06)
+
+User drove native full Quit at pending/package markers. Actual reviewedwrapper
+lock created19:22:44.162Z after maintained bind/actualcapture; originalreceipt/
+lock/capture hashes retained. One nativepending/cat exit0/usefulsummary, no
+HookPrompt/answer. Main/backends and exact-scoped MCP/hook helpers absent before
+removal. Real query hold releases90003ms bydeadline, executor completes
+19:24:23.438Z. Only selected presentationdir removed after completedtask proof.
+Before/after durable row identical, completedattempt1/oneTask/oneQuestion/saved
+result/no cancel/error. No replay/newexecution/lateanswer, native SQL/fullhash
+unchanged through completion/removal and stable27826ms afterward; directoryabsent.
+This is post-completion simulatedorphan cleanup, not in-flight/crash/restart
+recovery. Final private services/auth cleanup and independent review pending.
+
+### Ticket 24: Desktop post-completion orphan-state independently accepted (2026-10-06)
+
+Actual wrapper lock/receipt/capture proof and native pending/file work retained.
+Selected native main/backends and scoped MCP/hook exit precede removal; real
+completed task proof before clearing only owned presentation state. Exact before/
+after task/oneQuestion unchanged, attempt1/no cancel/replay/lateanswer. Runtime
+closed/exactPIDabsent, PG stopped, private auth/profile/appdata/home/launcher
+removed, four normal hashes match. Independent reviewer verifies30 prior hashes
+and receipt/capture/lock/canonical/native/durable owner joins and ordering.
+Bounded post-completion simulation pass; process/fullhistory completeness and
+27826ms timing recorded live. No in-flight/crash/restart/exitedreplay/wholeDesktop
+claim. Docs/backlog updated; contributorbootstrap/unresolvedCLI/overall audit
+remain open. No changeset/commit/push here.
+
+### Ticket 24: Overall closeout-gap audit begins (2026-10-06)
+
+Independent finite audit maps original ticket1283–1287 criteria to current proof.
+Useful automatic owned work verified across CLI/IDE/Desktop. Desktop bounded
+set accepted; full contributorbootstrap deferred, strictfirst receipt retirement
+unobserved, CLI pendingexitmodelanswer outside acceptedlateHook exception, CLI T
+inconclusive, broaderdisconnect/reconnect/runtime-restart/resume disposition
+and integrated source/check review remain required. Optional natural-speed/UI
+cancel/inflight/crash/serverwrite/OSinstall expansions are not substitutes.
+Do not check completion boxes or narrow originalcriteria without User decision.
+Before more manualtests, map shared-runtime authorization/expiry/dedup/concurrency/
+restart evidence to actualshipped adapter and disposition existing testtypecheck
+errors. Focused shared delivery/Codex dispatch/runtime/scheduler tests and full
+testtypecheck running; stale broad Desktop-unverified doc wording corrected.
+No services/GUI tests or new permissions started by this audit.
+
+### Ticket 24: Integrated regression/typecheck gap remediated (2026-10-06)
+
+Root reproduced83 focused shared delivery/Codex dispatch+delivery/runtime/
+scheduler tests passing; fulltesttypecheck reported fixture errors in dispatch/
+task-runtime/Pi delivery/Pi runtime tests. Bounded remediation changed only
+those four testfiles: honest typedspy args/matchobject, actual unconnected
+IncomingMessage, callcount/existence assertions before typedaccess. No blanket
+any/ts-ignore or production behavior changes. Worker reports full
+pnpmtypecheck:test, sixfocusedfiles103tests, targetedESLint/Prettier/gitdiffcheck
+pass; root inspecteddiff. Historical3992–3993 gap now corrected, not described
+as passing earlier. Shared source/test mapping retained for authority/expiry/
+identity/dedup/capacity/canonicalacceptance/disconnect/resource behavior.
+Native receiver restart/resume/exited-delivery not proven by shared API tests.
+Final integrated review and originalcriteria host/CLI/deferredbootstrap gaps
+remain open; no completionbox/changeset/commit/push.
+
+### Ticket 24: Integrated closeout audit disposition (2026-10-06)
+
+Independent reviewer confirms shared-memory-delivery/runtimeClient port mapping
+accurate, no second executionstore, four testfixture typefixes semanticspreserved,
+productionunchanged. Recorded83focused/103remediation/fulltesttypecheck/lint/
+format results close earlierfixturetyping gap; reviewer did not rerunchecks.
+Remaining finite originalcriteria gaps: CLI pendingexitmodelanswer blocking
+outside lateHookPrompt exception; CLI T incomplete; first ownedretirement
+transition unobserved; fullcontributorbootstrap deferred; Codex disconnect/
+reconnect/runtime-restart/resume delivery unsupported/unverified requiring
+explicit disposition, notsharedAPIrecoverystageorlockcleanup. No broaderUser
+scopeamendment approved, no whole-ticket/goal completion. Next eligible work
+read-only currentCLI exit investigation/exactretirementinstrumentation preparation,
+then boundedbootstrap completion; User assistance only for resultingreviewed
+nativecases, notoptional repeatedDesktop expansions. Current Desktop bounded
+set remains independentlyaccepted with its limits. No sourcebehaviorchange/
+changeset/commit/push in this audit turn.
+
+### Ticket 24: Read-only CLI quit/disconnect source audit (2026-10-06)
+
+Pinned official release0.159.3 source01fc69 (same prior testedCLI pin),0.160.1
+d27764, currentmain0b863c; archive/hash exact public files. Both releases direct
+Quit dispatchShutdownFirst and threadshutdown detaches without turn_interrupt;
+persistent-daemon summary explicitly continues work/reconnect guidance. Explicit
+running-task Exit sends turn_interrupt beforeShutdownAfterInterrupt; background
+choice doesnotinterrupt. Currentupstream tests exercise choices. Inference:
+earlierbarequit continuation is consistent with deliberate disconnect, notby
+itselfCodexbug. StillfailedunderoriginalKoedabandonment criterion, mixedbackend
+0.160.0/CLI0.159.3 and OSexitinstant limits retained; no retrospective pass or
+lateHookexception expansion. Concrete prospective exit-criteria amendment
+drafted awaitingUserdecision: disconnect/originalresume vs explicitstop-and-exit
+/no latermodelanswer+firstretirement instrumentation. No livecase/services/auth/
+normalprofile/productionpatch, commit/push/changeset launched. OtherCLIT/
+bootstrap/restart gapsremain. Independent source/criteria review requested.
+
+### Ticket 24: CLI exit criteria proposal independently reviewed (2026-10-06)
+
+Independent reviewer validates33 prior source/proposal hashes and tagged
+0.159.3/0.160.1 dispatch/detach-vs-turninterrupt distinctions. Earlieroriginal
+answer afterdaemon disconnection consistentintentionalcontinuation, stillfailed
+originalabandonmentcriterion and noinstalledstop-and-exitproof. Proposed
+prospectivecriteria preserveoriginalownedwork/no crossowner/no latermodelanswer
+afterconfirmedinterrupt; oldverdict/mixedbackend/OSexitinstant/main-vs-binary
+limits and narrowlateHookexception retained. Userdecision required before
+changingcriteria or replacementexitcases. Completedhistoryreconnect is not
+pendingdelivery/runtime-restart recovery. CLIT/firstretirement/bootstrap/resume
+gaps remain. No livecase/normalprofile/adapterpatch/changeset/commit/push.
+
+### Ticket 24: User approves prospective CLI exit distinction (2026-10-06)
+
+User explicitly saysyes to independentlyreviewed exitcriteria amendment.
+Bare daemon-backed disconnect maycontinue onlyoriginalownedwork/result;
+explicitstop-and-exit requiresconfirmedinterruption/actualexit/firstretirement
+and no latermodelanswer. Oldpendingexit case staysfailedunderoriginalcriterion;
+lateHookexception remainsnarrow. Completedhistoryreconnect notpendingdelivery/
+restartrecovery. Prepared freshCLI0.160.1 privateprofile/uniqueproject/model5.6
+low, worker0.159.3, noauth/session/trustcopy,90s actualqueryhold and terminalPID/
+exitrecording launcher. No livecase/services/model yet; User freshsignin then
+maintainedconfig/nativeworkspacepreflight beforeone recall.
+
+### Ticket 24: CLI disconnect preparation source review/guard completion (2026-10-06)
+
+Independent launcher preflight finds no terminal/one-attempt blocker. Completed
+requested guards: koed-home/tmp private owned directories, private bounded
+regular non-symlink/hardlinked resume-approval file and exact UUID session;
+separate actualOS lstart retained alongside observation timestamps. Source
+syntaxchecked without launch. Active manualchecklist now reflects Userapproved
+prospective disconnect/originalcompletedhistory vs explicitstop-and-exit, old
+failedcriterion and narrowlateHookexception unchanged. CurrentCLI0.160.1/model
+5.6low, worker0.159.3 freshlyprivate. No native/services/model/authcopy yet.
+
+### Ticket 24: User-away offline preparation (2026-10-06)
+
+User asks workwithoutmanualinput whileaway. Deferred allnative/login/model
+cases, CLI-disconnectprofile awaitingmanualsignin. Builtprocesslocal retirement
+observer on actual maintainedInterrupt/SessionEnd under sameprocess exclusive
+lock, originalargs/results/restoration, identity/hashesonly;18syntheticfile tests
+pass. Peerfoundsuccessfulmkdir observationguard couldthrow/strandlock; fixed
+observation-only guardcatch, descriptorO_NOFOLLOW private/nlink/bounds reads;
+addedforeign/symlink/hardlink/replacedlock/concurrent/restoration tests. Final
+reviewpending, no live/kernelwide earliestretirement claim.
+
+Bootstrap source audit locates clients-bootstrap managedskipDocker/verify/doctor,
+actualAPIreadywait120s/fullsetup300s versuspriorfixtureparent60s and missing
+explicitprivateMEMORY_API_URL. Harness hazardsrecorded, exacttimedoutphase
+unproven. Correctedenv/deadline/processgroup/partialprivateoutput plan retained.
+AddedmanagedprivateAPIurl/core-validation regression; bootstrapunitchecksrun,
+no live services/auth/model/networkcalls bythose tests. Fullbootstrap still
+deferred, no claim replacing skippedchecks. No commit/push/changeset.
+
+### Ticket 24: Offline retirement/bootstrap preparation checked (2026-10-06)
+
+Useraway preparation completed withoutlogin/native/model/services. Retirement
+observer19syntheticfile tests pass withactualmaintainedretirehooks, no network.
+Independent source review accepts correctedmkdir observation behavior, descriptor
+private/O_NOFOLLOW guard and finallyrestoration; addsno native/kernelwidefirst
+retirement claim. Exactreceipt rmfailureafterproofcollect test added andpasses;
+cooperative lock/uninstrumentedwriter assumptions explicit. Bootstrap10unit tests
+pass, new managedprivateAPI/core-validation regression targetedlint/formatclean.
+SetupCodex→clientsbootstrap120s readiness/300s setup versusprior60s parent and
+missingprivateendpoint hazardsdocumented; exactoldphase/skippedcapture-doctor/
+fullbootstrap notqualified. Privatepath/environment/processgroup/outputretention
+next-runplan saved, no fullsetup rerun. PreparedCLI disconnect/reconnect/explicit
+stop-exit/CLI T and original recoverydisposition stillrequirelatermanualinput.
+No changeset/commit/push or normalprofile mutation; productiveofflineprep only.
+
+### Ticket 24: User-reported delivery defects remediated offline (2026-10-06)
+
+Confirmed and corrected all three reported defects. Shared observation now starts
+at one second and backs off unchanged task states to five seconds. HTTP 429 is
+retried within the same observation and its original deadline, expiry, abort and
+destination fences, including the final authorized read. Valid positive integer
+retry delays up to 300 seconds cross local runtime HTTP into both clients; absent
+or invalid advice uses five-second backoff capped at 60 seconds. Pi no longer
+terminates its observer on 429, and Codex inherits the shared polling default.
+
+Team ineligibility now originates in a dedicated preacceptance error and travels
+through HTTP as the whitelisted `memory_answer_team_ineligible` code. Codex
+automatic fallback requires that code and HTTP 409. The real synthetic
+HTTP/client/MCP dispatch regression verifies no detached acceptance or execution
+and exactly one blocking request with the canonical input and original caller.
+Provider-supplied codes, message-only conflicts and uncertain starts do not
+authorize fallback.
+
+Codex receipt claiming skips unrelated or unreadable state before locking, then
+rechecks the selected receipt's ownership under its exclusive lock. Regressions
+preserve foreign receipt bytes and occupied/orphan lock markers, reject a busy
+matching receipt, and suppress ownership changed before the locked read.
+
+Integrated validation: seven focused files pass 171 tests using Node 24 and
+synthetic loopback HTTP; full test typecheck, targeted ESLint/Prettier and diff
+checks pass. An initial command accidentally ran the broader suite; its sandbox
+HTTP and unrelated failures are not used as validation, and its identified
+runner/worker were stopped before the focused rerun. Native qualification and
+bootstrap closeout remain deferred while the User is away. Documentation updated
+in `docs/async-memory-answer.md`; no new native sessions, credential operations,
+changeset, commit or push for these fixes.

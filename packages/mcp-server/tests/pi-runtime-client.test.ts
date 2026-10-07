@@ -41,6 +41,48 @@ afterEach(() => {
     rmSync(d, { recursive: true, force: true });
 });
 describe("standalone Pi runtime port", () => {
+  it.each([
+    [429, 1000, 1000],
+    [429, 300000, 300000],
+    [429, 0, undefined],
+    [429, -1, undefined],
+    [429, 1.5, undefined],
+    [429, 300001, undefined],
+    [429, "1000", undefined],
+    [429, null, undefined],
+    [403, 1000, undefined]
+  ])(
+    "preserves only bounded numeric quota advice for HTTP %s (%s)",
+    async (status, retryAfterMs, expected) => {
+      const h = home();
+      registration(h);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: false,
+          status,
+          json: async () => ({
+            retryAfterMs,
+            error: "private provider payload"
+          })
+        }))
+      );
+      try {
+        await createRuntimeTaskPort(h).get("task");
+        throw new Error("Expected runtime error");
+      } catch (error) {
+        expect(error).toMatchObject({
+          statusCode: status,
+          message: `Koed Local AI Runtime returned HTTP ${status}`
+        });
+        expect((error as { retryAfterMs?: number }).retryAfterMs).toBe(
+          expected
+        );
+        expect(String(error)).not.toContain("private provider payload");
+      }
+    }
+  );
+
   it("uses authenticated canonical task operations and reloads registration after restart", async () => {
     const h = home();
     registration(h);
@@ -79,7 +121,7 @@ describe("standalone Pi runtime port", () => {
       "http://127.0.0.1:5556/v1/tasks/task",
       "http://127.0.0.1:5556/v1/tasks/task/cancel"
     ]);
-    expect(fetch.mock.calls[1][1].headers.authorization).toBe(
+    expect(fetch.mock.calls[1]![1].headers.authorization).toBe(
       `Bearer ${"b".repeat(32)}`
     );
     expect(
@@ -145,7 +187,8 @@ describe("standalone Pi runtime port", () => {
       context: { cwd: "/generated" },
       invocationKey: "call"
     });
-    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetch.mock.calls[0]![1].body)).toMatchObject({
       caller: { cwd: "/generated", clientInfo: { name: "pi" } },
       invocationKey: "call"
     });

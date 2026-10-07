@@ -95,8 +95,9 @@ binding absence by genuine SessionEnd, and no late answer or result context.
 SessionEnd found the binding already retired; its first-removal handler was
 not directly observed. That controlled case also passed scoped cleanup and
 four selected normal-file baseline comparisons. The additional IDE evidence
-is recorded below. Desktop remains unverified, and the CLI pending-exit failure
-remains separate.
+is recorded below. Desktop coverage is recorded separately below; strict exit
+retirement, broader recovery and deferred setup gaps remain explicit. The CLI
+pending-exit failure remains separate.
 
 A controlled IDE fork test also passed native parent interruption, distinct
 child identity and recorded parent lineage. Real child package work preceded
@@ -121,7 +122,8 @@ cancel changed the owned running task to cancelled, stopped real execution,
 and produced one native cancellation notice and model report without an answer,
 retry or duplicate delivery. The User kept the native turn open; this did not
 use VS Code's Stop action. Scoped cleanup and four selected normal-file
-comparisons passed. Further IDE evidence appears below; Desktop remains unverified.
+comparisons passed. Further IDE and distinct Desktop evidence appears below;
+remaining strict-exit, recovery and deferred-bootstrap gaps are separate.
 
 A further failure case on VS Code 1.140.0 with the same extension/backend
 verified accepted recall and package work before the original scheduler claim,
@@ -134,7 +136,7 @@ actual nonterminal read drained unchanged after observation abort, and genuine
 task completion without cancellation or late answer. The test delayed the
 already-read client-port snapshot; it does not qualify the earlier CLI
 server-side delay whose socket closed. Scoped cleanup and selected normal-file
-comparisons passed. The IDE origin/setup closeout is recorded above; Desktop
+comparisons passed. The IDE origin/setup closeout is recorded above; Other Desktop behavior
 remains unverified.
 
 A confirmed interruption can still race a Stop hook that has already returned.
@@ -144,6 +146,49 @@ limitation is accepted for this opt-in integration.
 The pending-exit model answer is outside that accepted exception. Until the
 exit path is resolved, do not treat `/quit` during a pending recall as proof
 that result delivery or model generation has stopped.
+
+A separate first Desktop positive test on ChatGPT.app 26.930.61225 and bundled
+Codex 0.160.1 now passes the active-turn contract. Its real package summary
+preceded completion by 11.6 seconds without added delay; one Stop hook delivered
+the exact owned decision/source to the originating turn without another User
+message, polling or retry. Private app/backend/home/IPC paths and sign-in were
+observed independently. Scoped cleanup and four selected normal-file comparisons
+passed; independent review verified 26 artifact hashes. Metadata labels the
+originator Codex Desktop while serializing source as vscode; that label does not
+transfer IDE classification. Native SQL rows and rollout were joined separately.
+A separate controlled active Desktop switch also passed distinct non-fork owners,
+real new-conversation package work before completion, and one answer only in the
+continuing original owner, with cleanup and bounded independent review. Close
+Window followed by private Dock Quit also passed bounded pending-exit safety;
+window-close alone and first-removal attribution remain unverified. A controlled
+interrupted-parent fork also passed actual child work before completion, no child
+result or later parent answer, cleanup and independent review of 27 artifacts.
+Retired receipt binding and full live-history timing remain recorded limits.
+A subsequent-turn Desktop durable port cancellation also passed one protected
+cancel of the running owner, no saved answer/Question and one native no-answer
+notice, with cleanup and independent review of 27 artifacts. Two earlier
+fallback/wrong-project attempts remain inconclusive. The native cwd preflight
+does not add first-turn admission or native UI cancellation evidence.
+A subsequent-turn Desktop scheduler/executor failure also passed a genuine
+1,002 ms hard deadline after real package work, one failed attempt and one native
+no-answer notice. Worker entry and its returned boundary are explicitly retained;
+no full inference is claimed. Cleanup and independent review of 27 artifacts
+passed. Corrected Desktop observation timeout also passed actual unchanged
+late-read drain with the exact six-second native watchdog, backend completion
+without cancellation and no late answer, with cleanup and independent review
+of 33 artifacts. Prior 305-second fixture remains behavior-only. Setup and
+recovery remain separate Desktop checks. Subsequent Desktop setup evidence also
+passes actual core credential provisioning/reuse, supported repeated repair,
+configuration selection/removal and native missing-prehook blocking recall,
+with cleanup and independent review of 25 artifacts. Full contributor
+setup/bootstrap exceeded the fixture deadline and is deferred; direct repair
+does not qualify it. Desktop post-completion simulated orphan-state cleanup
+also passes exact owned state removal after native/helper exit and real task
+completion, unchanged one task/Question and no replay or late answer, with cleanup
+and independent review of 30 artifacts. In-flight removal and crash/restart
+recovery remain unverified.
+Live receipt/full-history checks are observations, not full archived replay;
+zero Keychain/protocol activity is not claimed.
 
 ## Recommended Setup
 

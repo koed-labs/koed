@@ -14,6 +14,24 @@ operations. The lifecycle validates task identity, invocation identity, version
 and expiry. It polls outside the model loop, reads the terminal task again, and
 checks the destination immediately before presentation.
 
+Observation starts with a one-second polling interval and increases the interval
+to five seconds while the task is unchanged. HTTP 429 responses delay another
+read of the same task, using a validated retry delay or bounded backoff. The
+original observation deadline, task expiry, cancellation signal and destination
+checks still apply. Throttling during the final authorized read cannot authorize
+delivery of the earlier result. Pi keeps its observer pending during throttling.
+
+Detached execution is available only for eligible Personal Memory requests.
+The runtime returns the stable `memory_answer_team_ineligible` code with HTTP
+409 before accepting an ineligible Team Memory request. Codex's automatic mode
+uses that code to select blocking recall with the original caller and input.
+Other conflicts or runtime failures do not trigger another recall.
+
+The Codex Stop adapter checks receipt ownership before acquiring its lock, then
+checks ownership again under the lock before claiming the result. An unrelated
+receipt's unavailable lock cannot suppress the current Conversation's receipt.
+A matching receipt whose lock is unavailable remains protected from claiming.
+
 Durable acceptance validates and applies the supported Memory Answer input
 schema before eligibility and scheduling. Its
 defaults bind Project search consistently to the calling context; a raw query
@@ -89,8 +107,32 @@ Real core credential provisioning/reuse and native missing-prehook blocking
 fallback also passed, with configuration repair/check and scoped cleanup.
 Simulated orphan-lock state removal after task completion passed without replay
 or late answer; in-flight removal and crash recovery are not claimed. Independent
-review accepts this bounded IDE active-Stop route. Desktop delivery remains
-unverified, and unresolved CLI outcomes remain separate. The Stop
+review accepts this bounded IDE active-Stop route. A separate Desktop positive
+on app26.930.61225/bundled0.160.1 also passed natural useful work11.6seconds
+before completion, one automatic owned answer/source and scoped cleanup. Bounded
+independent review passed. Controlled active Desktop switching also passed: the
+new non-fork owner received no original result, while the continuing original owner
+alone received it. Close Window followed by private Dock Quit passed bounded exit
+safety; window-close alone and first-removal attribution remain unverified. Other
+Desktop interrupted-parent fork also passed controlled child work before completion,
+no child result or later parent answer, cleanup and bounded independent review.
+Subsequent-turn Desktop durable port cancellation also passed one protected
+running-task cancel, no saved answer/Question, one native cancellation notice,
+cleanup and independent review. Earlier fallback/wrong-project attempts remain
+inconclusive; this does not add first-turn or native UI cancellation evidence.
+Desktop genuine scheduler/executor failure also passed one real hard-timeout
+attempt and native no-answer notice with cleanup and independent review. Worker
+entry/returned boundary are retained separately; full inference is not claimed.
+Corrected Desktop client-port observation timeout also passed unchanged late-read
+drain under the exact six-second native watchdog, backend completion without
+cancellation, no late answer and cleanup/independent review. The prior 305-second
+fixture remains behavior-only. Desktop real core provisioning/reuse, supported
+repair/config selection/removal and missing-prehook blocking fallback also pass
+with cleanup and bounded independent review. Full contributor setup/bootstrap
+remains deferred. Desktop post-completion simulated orphan-state cleanup also
+passes unchanged task/Question and no replay/late answer with cleanup/independent
+review. In-flight/crash/restart recovery and unresolved CLI outcomes remain
+separate. The Stop
 route does not prove idle wake-up. The accepted upstream cancellation race can
 record a late hook prompt in an interrupted turn. It does not accept the
 pending-exit model answer. Interrupt cleanup is advisory.

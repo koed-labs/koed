@@ -4,7 +4,7 @@ import {
   serveStdio,
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +17,13 @@ import {
 import { createKoedMcpServer } from "../src/mcp-server-factory.js";
 import {
   LocalAiRuntimeError,
-  type LocalAiRuntimeClient
+  LocalAiRuntimeClient
 } from "../src/local-runtime-client.js";
+import {
+  startLocalAiRuntime,
+  type LocalAiRuntimeToolExecutor
+} from "../src/local-runtime-server.js";
+import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 const pairs: { client: Client; server: StdioServerHandle; home: string }[] = [];
 afterEach(async () => {
   for (const p of pairs.splice(0)) {
@@ -27,9 +32,18 @@ afterEach(async () => {
     rmSync(p.home, { recursive: true, force: true });
   }
 });
-async function connect(enabled = true) {
+async function connect(
+  enabled = true,
+  runtimeClient?: LocalAiRuntimeClient,
+  toolInput: Record<string, unknown> = { query: "decision" }
+) {
   const home = mkdtempSync(path.join(os.tmpdir(), "koed-codex-dispatch-"));
-  const callTool = vi.fn(async () => ({ markdown: "blocking" }));
+  const callTool = vi.fn(
+    async (...args: Parameters<LocalAiRuntimeClient["callTool"]>) => {
+      void args;
+      return { markdown: "blocking" };
+    }
+  );
   const start = vi.fn(
     async (_input, _caller, key: string) =>
       ({
@@ -52,7 +66,7 @@ async function connect(enabled = true) {
   const server = serveStdio(
     (context) =>
       createKoedMcpServer(context, {
-        runtimeClient: runtime,
+        runtimeClient: runtimeClient ?? runtime,
         environment: {
           KOED_HOME: home,
           ...(enabled
@@ -81,7 +95,7 @@ async function connect(enabled = true) {
       tool_use_id: "call-1",
       tool_name: "mcp__koed__memory_answer",
       cwd: "/fixture",
-      tool_input: { query: "decision" }
+      tool_input: toolInput
     },
     "mcp__koed__memory_answer"
   );
@@ -104,7 +118,7 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
       arguments: f.input,
       _meta: metadata
     });
-    expect(result.structuredContent?.status).toBe("pending");
+    expect(result.structuredContent).toMatchObject({ status: "pending" });
     expect(f.start).toHaveBeenCalledTimes(1);
     expect(f.start.mock.calls[0]![0]).toEqual(
       canonicalCodexMemoryInput({ query: "decision" })
@@ -179,7 +193,8 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
     f.start.mockRejectedValueOnce(
       new LocalAiRuntimeError(
         "Team Workspace Memory Answer does not support detached tasks",
-        409
+        409,
+        "memory_answer_team_ineligible"
       )
     );
     await f.client.callTool({
@@ -191,22 +206,133 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
     expect(f.callTool).toHaveBeenCalledTimes(1);
     expect(f.callTool.mock.calls[0]![1]).toEqual(f.start.mock.calls[0]![0]);
   });
-  it("uncertain start failure does not fall back or resubmit a consumed nonce", async () => {
-    const f = await connect();
-    f.start.mockRejectedValueOnce(
-      new LocalAiRuntimeError("uncertain start", 409)
-    );
-    for (let i = 0; i < 2; i++)
-      expect(
-        (
-          await f.client.callTool({
-            name: "memory_answer",
-            arguments: f.input,
-            _meta: metadata
-          })
-        ).isError
-      ).toBe(true);
-    expect(f.start).toHaveBeenCalledTimes(1);
-    expect(f.callTool).not.toHaveBeenCalled();
-  });
+  it.each([
+    new LocalAiRuntimeError("uncertain start", 409),
+    new LocalAiRuntimeError(
+      "Team Workspace Memory Answer does not support detached tasks",
+      409
+    ),
+    new Error("network start failure")
+  ])(
+    "uncertain start failure does not fall back or resubmit a consumed nonce: %s",
+    async (error) => {
+      const f = await connect();
+      f.start.mockRejectedValueOnce(error);
+      for (let i = 0; i < 2; i++)
+        expect(
+          (
+            await f.client.callTool({
+              name: "memory_answer",
+              arguments: f.input,
+              _meta: metadata
+            })
+          ).isError
+        ).toBe(true);
+      expect(f.start).toHaveBeenCalledTimes(1);
+      expect(f.callTool).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["mapped-team", "untrusted-conflict"] as const)(
+    "uses authoritative HTTP classification only for preacceptance Team fallback: %s",
+    async (mode) => {
+      const home = mkdtempSync(path.join(os.tmpdir(), "koed-team-dispatch-"));
+      const environment = {
+        KOED_HOME: home,
+        KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED: "1"
+      };
+      mkdirSync(path.join(home, "config"));
+      writeFileSync(
+        path.join(home, "config/project-team-workspaces.json"),
+        JSON.stringify({
+          links: [
+            {
+              projectRoot: "/fixture",
+              teamWorkspaceId: "11111111-1111-4111-8111-111111111111"
+            }
+          ]
+        })
+      );
+      const execute = vi
+        .fn<LocalAiRuntimeToolExecutor["execute"]>()
+        .mockResolvedValue({
+          markdown: "blocking Team answer"
+        });
+      const executeMemoryAnswerTask = vi.fn();
+      const accept = vi.fn(async () => {
+        throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE"), {
+          status: 409,
+          code: "memory_answer_team_ineligible"
+        });
+      });
+      let eligible: ReturnType<
+        typeof vi.fn<MemoryToolExecutor["durableMemoryAnswerEligible"]>
+      >;
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: async ({ apiClient }) => {
+          const executor = new MemoryToolExecutor(apiClient, environment);
+          eligible = vi.fn(executor.durableMemoryAnswerEligible.bind(executor));
+          apiClient.acceptMemoryAnswerTask = accept;
+          apiClient.claimMemoryAnswerTask = vi.fn(async () => ({
+            task: null,
+            reconciled: []
+          }));
+          apiClient.deleteExpiredMemoryAnswerTasks = vi.fn(async () => ({
+            deleted: 0
+          }));
+          return {
+            executor: {
+              capabilities: async () => ({
+                curatedMemoryIntakeAvailable: false
+              }),
+              execute,
+              executeMemoryAnswerTask,
+              durableMemoryAnswerEligible: eligible
+            },
+            close: vi.fn(async () => undefined)
+          };
+        }
+      });
+      try {
+        const input = {
+          query: "decision",
+          search_domain: mode === "mapped-team" ? "project" : "global"
+        };
+        const f = await connect(
+          true,
+          new LocalAiRuntimeClient(environment),
+          input
+        );
+        const result = await f.client.callTool({
+          name: "memory_answer",
+          arguments: f.input,
+          _meta: metadata
+        });
+        expect(executeMemoryAnswerTask).not.toHaveBeenCalled();
+        if (mode === "mapped-team") {
+          expect(result.isError).not.toBe(true);
+          expect(accept).not.toHaveBeenCalled();
+          expect(execute).toHaveBeenCalledTimes(1);
+          const [tool, blockingInput, blockingCaller] = execute.mock.calls[0]!;
+          expect(tool).toBe("memory_answer");
+          expect(blockingInput).toEqual(canonicalCodexMemoryInput(input));
+          expect(blockingCaller).toEqual(eligible!.mock.calls[0]![1]);
+          expect(eligible!.mock.calls[0]![0]).toEqual(
+            canonicalCodexMemoryInput(input)
+          );
+        } else {
+          expect(result.isError).toBe(true);
+          expect(accept).toHaveBeenCalledTimes(1);
+          expect(execute).not.toHaveBeenCalled();
+          expect(JSON.stringify(result)).not.toContain(
+            "PRIVATE_PROVIDER_MESSAGE"
+          );
+        }
+      } finally {
+        await runtime.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
 });

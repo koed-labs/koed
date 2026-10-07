@@ -55,6 +55,50 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it.each([
+    2000,
+    0,
+    -1,
+    0.5,
+    300_001,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    "2000"
+  ])(
+    "transports only bounded numeric 429 retry metadata: %s",
+    async (retryAfterMs) => {
+      const environment = { KOED_HOME: tempHome() };
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: fixture({
+          ...defaultExecutor(),
+          execute: async () => {
+            throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE"), {
+              status: 429,
+              retryAfterMs
+            });
+          }
+        }).serviceFactory
+      });
+      try {
+        const client = new LocalAiRuntimeClient(environment);
+        await expect(
+          client.callTool(
+            "memory_answer",
+            { query: "decision" },
+            { cwd: "/fixture" }
+          )
+        ).rejects.toMatchObject({
+          statusCode: 429,
+          message: "Koed Memory Answer queue is full",
+          retryAfterMs: retryAfterMs === 2000 ? 2000 : undefined
+        });
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+
   it.each([401, 403, 404, 410])(
     "preserves task denial HTTP %s before stream headers and remains alive",
     async (status) => {

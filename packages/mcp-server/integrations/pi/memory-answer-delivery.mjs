@@ -76,7 +76,7 @@ const validateTask = (task, taskId) => {
 export class MemoryAnswerDelivery {
   constructor(
     port,
-    { pollMs = 250, maxObservationMs = 86_400_000, now = Date.now } = {}
+    { pollMs = 1000, maxObservationMs = 86_400_000, now = Date.now } = {}
   ) {
     if (!Number.isFinite(pollMs) || pollMs < 25 || pollMs > 60_000) {
       throw new Error(
@@ -132,6 +132,9 @@ export class MemoryAnswerDelivery {
       controller.abort(new Error("Memory Answer observation timed out"));
     }, this.maxObservationMs);
     let previous;
+    let stopped;
+    let pollDelay = this.pollMs;
+    let polledTask;
     const detached = (task) => {
       if (signal?.aborted) return detach("observer-aborted");
       if (timedOut || this.now() >= deadline)
@@ -147,10 +150,37 @@ export class MemoryAnswerDelivery {
       return undefined;
     };
     const read = async () => {
-      const task = await untilAbort(
-        this.get(taskId, controller.signal),
-        controller.signal
-      );
+      // Quota recovery is part of this same observation, including the final
+      // authority read. Never restart acceptance or deliver the prior snapshot.
+      let retryDelay = 5000;
+      let task;
+      while (true) {
+        stopped = detached(previous);
+        if (stopped) throw new Error("Memory Answer observation detached");
+        try {
+          task = await untilAbort(
+            this.get(taskId, controller.signal),
+            controller.signal
+          );
+          break;
+        } catch (error) {
+          if ((error?.statusCode ?? error?.status) !== 429) throw error;
+          const advised = error.retryAfterMs;
+          const wait =
+            Number.isSafeInteger(advised) && advised > 0 && advised <= 300_000
+              ? advised
+              : retryDelay;
+          await pause(
+            Math.min(
+              wait,
+              deadline - this.now(),
+              previous ? Date.parse(previous.expiresAt) - this.now() : Infinity
+            ),
+            controller.signal
+          );
+          retryDelay = Math.min(60_000, retryDelay * 2);
+        }
+      }
       if (
         previous &&
         (task.invocationKey !== previous.invocationKey ||
@@ -190,16 +220,26 @@ export class MemoryAnswerDelivery {
           present(fresh);
           return { kind: "terminal", task: fresh };
         }
+        if (
+          !polledTask ||
+          task.version !== polledTask.version ||
+          task.status !== polledTask.status
+        ) {
+          pollDelay = this.pollMs;
+        }
+        polledTask = { version: task.version, status: task.status };
         await pause(
           Math.min(
-            this.pollMs,
+            pollDelay,
             deadline - this.now(),
             Date.parse(task.expiresAt) - this.now()
           ),
           controller.signal
         );
+        pollDelay = Math.min(Math.max(this.pollMs, 5000), pollDelay * 1.5);
       }
     } catch (error) {
+      if (stopped) return stopped;
       if (signal?.aborted) return detach("observer-aborted");
       if (timedOut) return detach("observation-timeout");
       if (expired) return detach("expired");

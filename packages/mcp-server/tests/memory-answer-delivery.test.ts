@@ -27,6 +27,222 @@ const port = (get = vi.fn(async () => task())) =>
 afterEach(() => vi.useRealTimers());
 
 describe("MemoryAnswerDelivery", () => {
+  it("keeps five overlapping default observers below the token quota with margin", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const execution = port(
+      vi.fn(async () =>
+        task({ expiresAt: new Date(Date.now() + 120_000).toISOString() })
+      )
+    );
+    const delivery = new MemoryAnswerDelivery(execution);
+    const observations = Array.from({ length: 5 }, () =>
+      delivery.observe("task-1", { signal: controller.signal })
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(execution.get.mock.calls.length).toBeLessThan(900);
+    expect(execution.get.mock.calls.length).toBeGreaterThan(5);
+    controller.abort();
+    await Promise.all(observations);
+    expect(execution.start).not.toHaveBeenCalled();
+    expect(execution.cancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps five frequently changing tasks within quota even when polling resets", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let version = 0;
+    const execution = port(
+      vi.fn(async () =>
+        task({
+          version: ++version,
+          expiresAt: new Date(Date.now() + 120_000).toISOString()
+        })
+      )
+    );
+    const observations = Array.from({ length: 5 }, () =>
+      new MemoryAnswerDelivery(execution).observe("task-1", {
+        signal: controller.signal
+      })
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(execution.get.mock.calls.length).toBeLessThan(900);
+    expect(execution.get.mock.calls.length).toBeGreaterThan(250);
+    controller.abort();
+    await Promise.all(observations);
+    expect(execution.cancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps repeated quota failures pending until the original deadline without submitting again", async () => {
+    vi.useFakeTimers();
+    const execution = port(
+      vi.fn(async () => {
+        throw Object.assign(new Error("quota"), { statusCode: 429 });
+      })
+    );
+    const present = vi.fn();
+    let settled = false;
+    const observation = new MemoryAnswerDelivery(execution, {
+      maxObservationMs: 12_000
+    })
+      .observe("task-1", { present })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.advanceTimersByTimeAsync(11_999);
+    expect(settled).toBe(false);
+    expect(present).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await observation).toMatchObject({
+      kind: "detached",
+      reason: "observation-timeout"
+    });
+    expect(execution.start).not.toHaveBeenCalled();
+    expect(execution.cancel).not.toHaveBeenCalled();
+    expect(execution.get.mock.calls.length).toBeLessThan(4);
+  });
+
+  it("retries an ordinary 429 with validated advice without reaccepting execution", async () => {
+    vi.useFakeTimers();
+    const get = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("quota"), {
+          statusCode: 429,
+          retryAfterMs: 2000
+        })
+      )
+      .mockResolvedValue(task({ status: "completed" }));
+    const execution = port(get);
+    const present = vi.fn();
+    const observation = new MemoryAnswerDelivery(execution).observe("task-1", {
+      present
+    });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(present).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await observation).kind).toBe("terminal");
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(execution.start).not.toHaveBeenCalled();
+    expect(execution.cancel).not.toHaveBeenCalled();
+  });
+
+  it("retries a throttled final read and presents only its fresh result", async () => {
+    vi.useFakeTimers();
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        task({ status: "completed", result: { answer: "cached" } })
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error("quota"), { status: 429, retryAfterMs: 1000 })
+      )
+      .mockResolvedValueOnce(
+        task({ status: "completed", version: 2, result: { answer: "fresh" } })
+      );
+    const present = vi.fn();
+    const observation = new MemoryAnswerDelivery(port(get)).observe("task-1", {
+      present
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(present).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await observation;
+    expect(present).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { answer: "fresh" } })
+    );
+  });
+
+  it.each([undefined, -1, 0, NaN, Infinity, "1", 300_001])(
+    "uses bounded fallback for invalid quota advice %s",
+    async (retryAfterMs) => {
+      vi.useFakeTimers();
+      const get = vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error("quota"), { statusCode: 429, retryAfterMs })
+        )
+        .mockResolvedValue(task({ status: "completed" }));
+      const observation = new MemoryAnswerDelivery(port(get)).observe("task-1");
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(get).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await observation).kind).toBe("terminal");
+    }
+  );
+
+  it.each([
+    "observation-timeout",
+    "expired",
+    "observer-aborted",
+    "stale-origin"
+  ] as const)(
+    "retains %s while waiting to retry the final authorized read",
+    async (reason) => {
+      vi.useFakeTimers();
+      const controller = new AbortController();
+      let current = true;
+      const expiresAt = new Date(
+        Date.now() + (reason === "expired" ? 100 : 60_000)
+      ).toISOString();
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce(task({ status: "completed", expiresAt }))
+        .mockRejectedValue(
+          Object.assign(new Error("quota"), {
+            statusCode: 429,
+            retryAfterMs: 5000
+          })
+        );
+      const execution = port(get);
+      const present = vi.fn();
+      const observation = new MemoryAnswerDelivery(execution, {
+        maxObservationMs: reason === "observation-timeout" ? 100 : 60_000
+      }).observe("task-1", {
+        signal: controller.signal,
+        isCurrent: () => current,
+        present
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      if (reason === "observer-aborted") controller.abort();
+      if (reason === "stale-origin") current = false;
+      await vi.advanceTimersByTimeAsync(reason === "stale-origin" ? 5000 : 100);
+      expect(await observation).toMatchObject({ kind: "detached", reason });
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(present).not.toHaveBeenCalled();
+      expect(execution.cancel).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([401, 403])(
+    "preserves fatal authorization %s after a final-read quota retry",
+    async (statusCode) => {
+      vi.useFakeTimers();
+      const denied = Object.assign(new Error("denied"), { statusCode });
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce(task({ status: "completed" }))
+        .mockRejectedValueOnce(
+          Object.assign(new Error("quota"), {
+            statusCode: 429,
+            retryAfterMs: 1000
+          })
+        )
+        .mockRejectedValueOnce(denied);
+      const present = vi.fn();
+      const observation = new MemoryAnswerDelivery(port(get)).observe(
+        "task-1",
+        { present }
+      );
+      const assertion = expect(observation).rejects.toBe(denied);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(present).not.toHaveBeenCalled();
+    }
+  );
+
   it("delegates acceptance and explicit cancellation to the one execution port", async () => {
     const execution = port();
     const delivery = new MemoryAnswerDelivery(execution);
@@ -190,7 +406,7 @@ describe("MemoryAnswerDelivery", () => {
       taskId: "task-1",
       reason: "observation-timeout"
     });
-    expect(execution.get).toHaveBeenCalledTimes(3);
+    expect(execution.get).toHaveBeenCalledTimes(2);
     expect(execution.cancel).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });

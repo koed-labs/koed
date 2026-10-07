@@ -48,6 +48,9 @@ export declare class MemoryAnswerDelivery<
   constructor(
     port: MemoryAnswerExecutionPort<Task, Input, Caller>,
     options?: {
+      /** Initial interval (default 1000ms); unchanged pending states back off to 5s.
+       * HTTP 429 retries honor positive safe-integer retryAfterMs up to 300000ms,
+       * otherwise back off from 5s to 60s, within the original observation bound. */
       pollMs?: number;
       maxObservationMs?: number;
       now?: () => number;

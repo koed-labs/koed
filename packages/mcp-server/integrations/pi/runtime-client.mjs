@@ -78,7 +78,15 @@ const request = async (
     // Never relay provider/backend exception text into Pi diagnostics.
     throw Object.assign(
       new Error(`Koed Local AI Runtime returned HTTP ${response.status}`),
-      { statusCode: response.status }
+      {
+        statusCode: response.status,
+        ...(response.status === 429 &&
+        Number.isSafeInteger(result?.retryAfterMs) &&
+        result.retryAfterMs > 0 &&
+        result.retryAfterMs <= 300_000
+          ? { retryAfterMs: result.retryAfterMs }
+          : {})
+      }
     );
   }
   if (!result || typeof result !== "object" || Array.isArray(result))

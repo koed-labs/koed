@@ -35,7 +35,27 @@ Follow-ups:
   repair/check also passed. Simulated orphan-lock cleanup after task completion
   passed without replay or late answer; pending-task removal and crash recovery
   are not claimed. Independent review accepts the bounded IDE active-Stop route.
-  Desktop delivery and unresolved CLI outcomes remain separate follow-ups.
+  First Desktop positive delivery on bundled0.160.1 passed natural useful overlap,
+  automatic owned answer/source, cleanup and bounded independent review. Desktop
+  Close Window followed by native Dock Quit also passed bounded pending-exit
+  safety; window-close alone and first-retirement attribution remain unverified.
+  Controlled active Desktop switching passed distinct non-fork owners and no
+  selected-conversation answer leak, with cleanup/independent review. Controlled
+  interrupted-parent Desktop fork also passed child origin isolation, no later
+  parent answer and cleanup/independent review. Subsequent-turn Desktop durable
+  cancellation passed one protected cancel and native no-answer notice, no saved
+  answer/Question, cleanup and independent review. Earlier fallback/wrong-project
+  attempts remain inconclusive. Desktop real scheduler/executor failure also
+  passed one hard_timeout attempt, one native no-answer notice and cleanup/
+  independent review. Corrected Desktop observation timeout also passed exact6s
+  native watchdog, unchanged late-read drain, backend completion/no late answer
+  and cleanup/independent review. Prior305s fixture remains behavior-only.
+  Desktop real core provisioning/reuse, supported repair/config selection/removal
+  and native missing-prehook blocking fallback also passed cleanup/independent
+  review. Desktop post-completion simulated orphan-state cleanup also passed
+  unchanged one task/Question, no replay/late answer and scoped cleanup/independent
+  review. Full contributor setup/bootstrap remains deferred; in-flight/crash/
+  restart recovery and unresolved CLI outcomes remain explicit follow-ups.
   The User accepts the upstream cancellation race temporarily: a hook result
   can enter an interrupted original turn during Codex's abort grace interval.
   Document this limitation and revalidate suppression after an upstream fix;
