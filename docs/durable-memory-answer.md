@@ -1,11 +1,12 @@
 # Durable Memory Answer Execution
 
-Personal `memory_answer` calls use one durable execution path. The MCP adapter
-and Pi extension remain stateless forwarders; PostgreSQL stores acceptance,
-lease, cancellation, retry, result, and retention state in
+Personal `memory_answer` calls use one durable execution path. PostgreSQL
+stores acceptance, lease, cancellation, retry, result, and retention state in
 `memory_answer_tasks`. The `koed-server`-supervised Local AI Runtime is the only
 task consumer and the only component allowed to invoke an AI Client for Answer
-Synthesis.
+Synthesis. The MCP Server and the Pi extension own presentation only. Pi's
+session-history receipts and the Codex Stop adapter's one-use receipts hold
+delivery identity, never task results or a second execution queue.
 
 ## Request Flow
 
@@ -81,24 +82,42 @@ The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 
 ## AI Client Delivery
 
-- **Codex:** current supported Codex receives the terminal result through its
-  blocking MCP call. Responses API asynchronous function calling cannot be
-  enabled only in Koed: Codex must retain the original Responses `call_id`,
-  accept a pushed terminal result, recover that mapping after restart, and
-  submit exactly one `function_call_output`. Until a released Codex and model
-  pass that trace, host notification and model continuation are
-  `requires_bridge`.
-- **Claude Code:** the Agent SDK requires the matching tool result before model
-  continuation. Claude waits on the same durable task; host notification and
-  continuation are `unsupported`, not simulated with a receipt.
-- **Pi:** the Koed extension forwards Pi's session/tool-call identity and waits
-  for the terminal runtime body. Detached `sendMessage` injection remains
-  disabled because the supported contract does not prove ordering,
-  attribution, restart recovery, and exact-once delivery. Those capabilities
-  remain `requires_bridge`.
+Every route below uses the same durable task and the shared delivery lifecycle
+described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
+of them exposes native MCP Tasks or a status tool to the model.
+
+- **Codex:** recall is blocking by default. The opt-in
+  `setup codex --deferred-recall` route installs native Codex hooks. The CLI,
+  IDE extension and Desktop app were each tested separately; see
+  [Codex integration](codex-integration.md#optional-deferred-recall-in-the-native-cli).
+  A PreToolUse hook binds a one-use receipt to the exact
+  session, turn and tool call. `memory_answer` then returns a pending receipt,
+  and the Stop hook waits outside the model loop and supplies the result to
+  that same turn. This keeps the original turn active; it does not wake an
+  idle Conversation. Pending delivery after a backend loss, Local AI Runtime
+  restart or session exit is unsupported. A known upstream race can admit a
+  late hook prompt into an interrupted turn. Responses API asynchronous
+  function calling still requires an upstream Codex bridge that keeps the
+  original `call_id`.
+- **Claude Code:** Koed returns the ordinary blocking MCP result. The opt-in
+  `setup claude --background-recall` option sets Claude's host backgrounding
+  threshold, so interactive Claude Code can release the main Conversation
+  while the call is pending and deliver the result through a native
+  notification. The threshold applies to every MCP Server, not only Koed.
+- **Pi:** in a persistent Conversation, `memory_answer` returns an attributed
+  receipt promptly. The extension observes the task and delivers the result as
+  a follow-up message that starts a turn. Matching pending receipts recover
+  when the same Conversation reopens. Ephemeral sessions, Team Workspace
+  calls, clients without the required Pi APIs, and
+  `KOED_PI_MEMORY_ANSWER_MODE=blocking` use blocking recall.
 - **ACP:** no ACP runtime is added. A future adapter can map its native task
   behavior to the same start, state, cancel, and terminal-event semantics after
   conformance testing.
+
+AI Client capability snapshots still report host task notification and model
+continuation as `unsupported` for Claude Code and `requires_bridge` for Codex
+and Pi. They do not yet reflect the opt-in Codex and Claude routes or Pi's
+default deferred delivery.
 
 Team Workspace Memory Answer remains on its existing blocking authority path.
 It must not create a local Personal task; asynchronous Team execution requires
@@ -107,8 +126,13 @@ the upstream authority to own acceptance and terminal history atomically.
 ## Runtime Contract
 
 The owner-authenticated loopback runtime exposes start, get, cancel, and an SSE
-stream for one task. Streams emit current state first, then monotonic task
-versions and keepalive comments. These endpoints are harness/runtime plumbing,
+stream for one task. Start validates and applies the Memory Answer input schema
+before eligibility checks; Team Workspace requests receive HTTP 409 with
+`memory_answer_team_ineligible`. A stream resolves ownership and retention
+before sending success headers. It emits current state first, then monotonic
+task versions and keepalive comments, and honors `Last-Event-ID`. Every event
+and keepalive is backed by a fresh authorized read; expiry or revoked access
+ends the stream. These endpoints are harness/runtime plumbing,
 not public model tools. The API exposes owner-authorized accept, read, claim,
 heartbeat, cancellation, terminal transition, and terminal-expiry operations.
 

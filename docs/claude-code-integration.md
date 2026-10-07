@@ -248,28 +248,14 @@ Automatically report the completed answer and evidence. Do not poll or retry.
 ```
 
 Check that the independent work appears before the native completion and that
-Claude then cites the saved source without another User prompt. A manual run
-with Claude Code 2.1.267 on 2026-10-01 demonstrated this flow with real Personal
-Memory and its original note as evidence. This verifies that run; it does not
-verify delivery after host exit or the setup command's isolated acceptance tests.
+Claude then cites the saved source without another User prompt.
 
-Completion can be queued while an independent foreground tool is running. A
-manual lint test observed that queueing and automatic answer consumption when
-the foreground call yielded. The notification did not interrupt the tool: a
-long foreground call can delay the agent's use of the completed Memory Answer.
-
-Isolated tests with Claude Code 2.1.267 passed for idle delivery and completion
-during a foreground tool. Recall released the Conversation within 574 ms in
-the foreground-tool test. The completed answer arrived automatically after
-the tool returned. The lint command failed, so this result proves delivery
-timing rather than code quality.
-
-Separate isolated tests covered timeout, selected host stop, pending exit,
-revocation and expiry. Stopping the host request detached its wait while the
-durable Koed task continued. Revocation and expiry suppressed the completed
-answer and produced an automatic failure. Those tests changed generated
-records before the final access read. Repeated calls in one Conversation and
-delivery after reopening remain untested.
+Completion can be queued while an independent foreground tool is running. The
+notification does not interrupt that tool, so a long foreground call delays the
+agent's use of the completed Memory Answer. Stopping the host request detaches
+its wait while the durable Koed task continues. Revocation and expiry suppress
+the completed answer and produce an automatic failure. Repeated calls in one
+Conversation and delivery after reopening are untested.
 
 Setup preserves an existing threshold, a threshold of `0`, and
 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. An inherited host environment threshold

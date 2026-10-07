@@ -2,76 +2,24 @@
 
 ## Asynchronous Memory Answer adapters
 
-The shared execution-port and presentation lifecycle supports Pi deferred recall
-and the existing blocking route. See `docs/async-memory-answer.md`.
+The shared delivery lifecycle supports Pi deferred recall, opt-in Claude Code
+host backgrounding, opt-in Codex Stop-hook delivery and the blocking route. See
+`docs/async-memory-answer.md`.
 
 Follow-ups:
 
-- Prioritise independently started AI Clients before Koed-managed Conversations.
-  Pi deferred recall and Claude Code's explicit background-recall setup passed
-  integration review. Claude's isolated main-Conversation tests cover idle and
-  foreground-tool completion, timeout, selected host stop, pending exit,
-  revocation and expiry. Repeated calls and reopening delivery remain untested.
-  Native qualification of the opt-in Codex Stop adapter passes within its
-  User-approved scope. It uses the shared durable task runtime and exact
-  originating turn.
-  Real native CLI 0.159.3 positive, revocation/expiry, scheduler failure and
-  durable cancellation cases passed bounded review. Controlled fork and `/new`
-  origin checks passed after parent interruption. The earlier server-write
-  timeout remains inconclusive, and historical pending exit failed because the original turn produced a
-  model answer after CLI disconnection. Configuration repeat/repair/removal
-  checks passed; full setup and live recovery remain. A separate native VS Code
-  positive case demonstrated same-turn automatic delivery with useful overlap
-  and scoped cleanup. A controlled IDE pending window-close also passed its
-  bounded safety outcome; first binding-removal attribution remains uncaptured.
-  IDE durable cancellation also passed with a native no-answer notice and
-  scoped cleanup. IDE execution failure passed a genuine scheduler failure and
-  native no-answer notice. IDE observation timeout passed an unchanged late
-  client-read drain, real completion without cancel and no late answer.
-  Controlled IDE fork isolation also passed with native parent/child lineage,
-  useful child work before completion and no later answer in either history.
-  Active IDE foreground switching also passed: one answer stayed in the continuing
-  original owner and the new Conversation stayed answer-free. Real credential
-  provisioning/reuse, native missing-prehook blocking fallback and configuration
-  repair/check also passed. Simulated orphan-lock cleanup after task completion
-  passed without replay or late answer; pending-task removal and crash recovery
-  are not claimed. Independent review accepts the bounded IDE active-Stop route.
-  First Desktop positive delivery on bundled0.160.1 passed natural useful overlap,
-  automatic owned answer/source, cleanup and bounded independent review. Desktop
-  Close Window followed by native Dock Quit also passed bounded pending-exit
-  safety; window-close alone and first-retirement attribution remain unverified.
-  Controlled active Desktop switching passed distinct non-fork owners and no
-  selected-conversation answer leak, with cleanup/independent review. Controlled
-  interrupted-parent Desktop fork also passed child origin isolation, no later
-  parent answer and cleanup/independent review. Subsequent-turn Desktop durable
-  cancellation passed one protected cancel and native no-answer notice, no saved
-  answer/Question, cleanup and independent review. Earlier fallback/wrong-project
-  attempts remain inconclusive. Desktop real scheduler/executor failure also
-  passed one hard_timeout attempt, one native no-answer notice and cleanup/
-  independent review. Corrected Desktop observation timeout also passed exact6s
-  native watchdog, unchanged late-read drain, backend completion/no late answer
-  and cleanup/independent review. Prior305s fixture remains behavior-only.
-  Desktop real core provisioning/reuse, supported repair/config selection/removal
-  and native missing-prehook blocking fallback also passed cleanup/independent
-  review. Desktop post-completion simulated orphan-state cleanup also passed
-  unchanged one task/Question, no replay/late answer and scoped cleanup/independent
-  review. Fresh CLI 0.160.1 cases separately pass intentional disconnect and
-  exact completed-history reconnect, explicit stop-and-exit with actual maintained
-  owned receipt retirement, and client-port late-read timeout without a late answer.
-  Independent reviews and scoped cleanup pass; earlier verdicts stay historical.
-  User-driven managed contributor first/repeat bootstrap passes with existing
-  dependencies and an approved private verification-disable setting. Final
-  independent acceptance passes on 2026-10-07. Automatic pending-result
-  delivery after backend loss/runtime restart, exited replay and idle wake remain
-  unsupported under the User-approved scope from 2026-10-07.
-  The User accepts the upstream cancellation race temporarily: a hook result
-  can enter an interrupted original turn during Codex's abort grace interval.
-  Document this limitation and revalidate suppression after an upstream fix;
-  ownership, authorization, expiry and duplicate checks remain required.
-  Assess CLI, IDE and Desktop separately. The Stop route keeps the original
-  turn active; it does not wake a completed Conversation. Existing external
-  queue receiver and native MCP Tasks prerequisites remain unresolved for those
-  alternative paths. Retain blocking recall when deferred setup is unavailable.
+- Revalidate Codex cancellation after an upstream fix. A confirmed interruption
+  can currently admit a late Stop hook prompt into the interrupted turn. Keep
+  the ownership, authorization, expiry and duplicate safeguards.
+- Resolve `/quit` during a pending Codex recall: the original backend turn can
+  still finish and produce an answer after the CLI disconnects.
+- Test repeated Claude Code recalls in one Conversation and delivery after
+  reopening.
+- Update AI Client capability snapshots (`host_task_notifications`,
+  `model_continuation_during_tool`). They still report Claude Code as
+  `unsupported` and Codex/Pi as `requires_bridge`, which does not reflect Pi's
+  default deferred delivery or the opt-in Claude and Codex routes. Report these
+  per mode and setup state rather than per driver.
 - Bind a maintained TypeScript MCP Tasks runtime to the existing execution owner
   when its SDK and supported AI Clients provide the required extension.
 - Defer managed Codex and Claude Agent SDK presentation adapters until the
