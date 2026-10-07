@@ -1,12 +1,34 @@
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
-import { useRef, type ComponentProps, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  type ComponentProps,
+  type ReactNode
+} from "react";
 
 import { ConversationSettings } from "./ConversationSettings.js";
+import {
+  slashCommandKeypressIsHandled,
+  findActiveSlashCommand,
+  filterSlashCommands,
+  applySlashCommandReplacement
+} from "./ai-client-slash-suggestions.js";
+import { SlashCommandMenu } from "./SlashCommandMenu.js";
+import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
 type ConversationInputAction = {
   kind: "send" | "busy" | "interrupt";
   label: string;
   disabled: boolean;
+};
+
+type ConversationInputAutocompleteProps = {
+  autocompleteOptions?: ManagedConversationSlashCommand[];
+  autocompleteLoading?: boolean;
+  autocompleteError?: string | null;
+  onAutocompleteSelect?: (command: ManagedConversationSlashCommand) => void;
 };
 
 export function ConversationInput({
@@ -20,7 +42,11 @@ export function ConversationInput({
   placeholder,
   rows = 1,
   settings,
-  value
+  value,
+  autocompleteOptions,
+  autocompleteLoading,
+  autocompleteError,
+  onAutocompleteSelect
 }: {
   action: ConversationInputAction;
   attachments?: ReactNode;
@@ -33,8 +59,160 @@ export function ConversationInput({
   rows?: number;
   settings: ComponentProps<typeof ConversationSettings>;
   value: string;
-}) {
+} & ConversationInputAutocompleteProps) {
   const composingRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const [autocompleteOpen, setAutocompleteOpen] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [filteredCommands, setFilteredCommands] = useState<
+    ManagedConversationSlashCommand[]
+  >([]);
+
+  useEffect(() => {
+    if (!autocompleteOpen) return;
+    const text = textareaRef.current?.value ?? value;
+    const cursorIndex = textareaRef.current?.selectionStart ?? text.length;
+    const active = findActiveSlashCommand({ text, cursorIndex });
+    if (!active) {
+      setAutocompleteOpen(false);
+      setSelectedIndex(-1);
+      return;
+    }
+    const filtered = filterSlashCommands(
+      autocompleteOptions ?? [],
+      active.query
+    );
+    setFilteredCommands(filtered);
+    setSelectedIndex((previous) =>
+      filtered.length === 0
+        ? -1
+        : Math.max(0, Math.min(previous, filtered.length - 1))
+    );
+  }, [autocompleteOpen, autocompleteOptions, value]);
+
+  const handleAutocompleteSelect = useCallback(
+    (command: ManagedConversationSlashCommand) => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+
+      const cursorIndex = textarea.selectionStart;
+      const active = findActiveSlashCommand({
+        text: textarea.value,
+        cursorIndex
+      });
+
+      if (!active) {
+        onAutocompleteSelect?.(command);
+        return;
+      }
+
+      const newValue = applySlashCommandReplacement({
+        text: textarea.value,
+        range: active.range,
+        commandName: command.name
+      });
+
+      onChange(newValue);
+      onAutocompleteSelect?.(command);
+      setAutocompleteOpen(false);
+      setSelectedIndex(-1);
+    },
+    [onChange, onAutocompleteSelect]
+  );
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const nativeEvent = event.nativeEvent as KeyboardEvent;
+      const isComposing = nativeEvent.isComposing || composingRef.current;
+
+      if (
+        slashCommandKeypressIsHandled({
+          key: event.key,
+          open: autocompleteOpen,
+          isComposing,
+          disabled,
+          shiftKey: event.shiftKey,
+          hasSelection: filteredCommands[selectedIndex] !== undefined,
+          hasCommands: filteredCommands.length > 0
+        })
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (event.key === "ArrowDown") {
+          setSelectedIndex((prev) =>
+            prev < filteredCommands.length - 1 ? prev + 1 : 0
+          );
+        } else if (event.key === "ArrowUp") {
+          setSelectedIndex((prev) =>
+            prev > 0 ? prev - 1 : filteredCommands.length - 1
+          );
+        } else if (event.key === "Enter" || event.key === "Tab") {
+          const command = filteredCommands[selectedIndex];
+          if (command) handleAutocompleteSelect(command);
+        } else if (event.key === "Escape") {
+          setAutocompleteOpen(false);
+          setSelectedIndex(-1);
+        }
+        return;
+      }
+
+      // Always prevent default on Escape to avoid side effects.
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+      }
+
+      // Fallback to normal submit handling.
+      if (event.key === "Enter" && !event.shiftKey && !isComposing) {
+        event.preventDefault();
+        if (!disabled && !action.disabled && action.kind === "send") onSubmit();
+      }
+    },
+    [
+      autocompleteOpen,
+      filteredCommands,
+      selectedIndex,
+      handleAutocompleteSelect,
+      disabled,
+      action,
+      onSubmit
+    ]
+  );
+
+  const handleInputChange = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const text = event.currentTarget.value;
+      const cursorIndex = event.currentTarget.selectionStart;
+      const active = findActiveSlashCommand({ text, cursorIndex });
+
+      if (active) {
+        const filtered = filterSlashCommands(
+          autocompleteOptions ?? [],
+          active.query
+        );
+        setFilteredCommands(filtered);
+        setAutocompleteOpen(true);
+        setSelectedIndex((previous) =>
+          filtered.length === 0
+            ? -1
+            : Math.max(0, Math.min(previous, filtered.length - 1))
+        );
+      } else {
+        if (autocompleteOpen) {
+          setAutocompleteOpen(false);
+          setSelectedIndex(-1);
+        }
+      }
+
+      onChange(text);
+    },
+    [autocompleteOptions, autocompleteOpen, onChange]
+  );
+
+  const menuOptions = autocompleteOpen ? filteredCommands : [];
+
   return (
     <>
       {attachments}
@@ -42,33 +220,41 @@ export function ConversationInput({
         <label>
           <span className="sr-only">{label}</span>
           <textarea
+            ref={textareaRef}
             autoFocus={autoFocus}
             disabled={disabled}
-            onChange={(event) => onChange(event.currentTarget.value)}
+            onChange={handleInputChange}
             onCompositionEnd={() => {
               composingRef.current = false;
             }}
             onCompositionStart={() => {
               composingRef.current = true;
             }}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent;
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !nativeEvent.isComposing &&
-                !composingRef.current
-              ) {
-                event.preventDefault();
-                if (!disabled && !action.disabled && action.kind === "send")
-                  onSubmit();
-              }
-            }}
+            onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={rows}
             value={value}
           />
         </label>
+        {autocompleteOpen && (
+          <div className="ai-suggestion-popover">
+            {autocompleteLoading ? (
+              <span className="ai-suggestion-loading">Loading commands…</span>
+            ) : autocompleteError ? (
+              <span className="ai-suggestion-error">{autocompleteError}</span>
+            ) : menuOptions.length === 0 ? (
+              <span role="status" className="ai-suggestion-empty">
+                No matching commands.
+              </span>
+            ) : (
+              <SlashCommandMenu
+                options={menuOptions}
+                selectedIndex={selectedIndex}
+                onSelect={handleAutocompleteSelect}
+              />
+            )}
+          </div>
+        )}
         <div className="conversation-input-footer">
           <ConversationSettings {...settings} />
           <button

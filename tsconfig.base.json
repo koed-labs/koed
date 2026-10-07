@@ -53,6 +53,18 @@
       ],
       "@koed/worker/embedding-workflow": [
         "apps/worker/src/embedding-workflow.ts"
+      ],
+      "@koed/worker/command-discovery-adapter": [
+        "apps/worker/src/command-discovery-adapter.ts"
+      ],
+      "@koed/worker/command-discovery-adapter-codex": [
+        "apps/worker/src/command-discovery-adapter-codex.ts"
+      ],
+      "@koed/worker/command-discovery-adapter-claude": [
+        "apps/worker/src/command-discovery-adapter-claude.ts"
+      ],
+      "@koed/worker/command-discovery-adapter-pi": [
+        "apps/worker/src/command-discovery-adapter-pi.ts"
       ]
     },
     "resolveJsonModule": true,

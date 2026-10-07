@@ -2071,6 +2071,48 @@ describe("managed Conversation routes", () => {
       },
       requireRepository: () => ({
         ...launchRepository,
+        listAiClientInstances: async () => [
+          ...(await launchRepository.listAiClientInstances()),
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            enabled: true,
+            configIdentityHash: "e".repeat(64)
+          }
+        ],
+        listCurrentAiClientCapabilitySnapshots: async () => [
+          ...(await launchRepository.listCurrentAiClientCapabilitySnapshots()),
+          {
+            instanceId: "claude.default",
+            installationIdentityHash: "e".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "claude-sonnet-5-5",
+                displayName: "Claude Sonnet 5.5",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              },
+              {
+                id: "claude-opus-5-5",
+                displayName: "Claude Opus 5.5",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low", "high"]
+              }
+            ]
+          }
+        ],
         listLcmGraphThreads: async () => [],
         upsertManagedConversationRuntimeBinding: upsert,
         getManagedConversationRuntimeBinding: async () => null
@@ -2121,6 +2163,22 @@ describe("managed Conversation routes", () => {
           displayName: "Codex",
           ready: true,
           models: [{ id: "gpt-test" }]
+        },
+        {
+          instanceId: "claude.default",
+          driverId: "claude",
+          displayName: "Claude Code",
+          ready: true,
+          models: expect.arrayContaining([
+            expect.objectContaining({
+              id: "claude-sonnet-5-5",
+              displayName: "Claude Sonnet 5.5"
+            }),
+            expect.objectContaining({
+              id: "claude-opus-5-5",
+              displayName: "Claude Opus 5.5"
+            })
+          ])
         }
       ]
     });
@@ -2614,5 +2672,523 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[0]?.searchParams.get("limit")).toBe("37");
     expect(upstreamCalls[0]?.searchParams.get("projectId")).toBe(projectId);
     expect(upstreamCalls[0]?.pathname).not.toContain("%3F");
+  });
+});
+
+type CommandDiscoveryOptions = {
+  userId?: string;
+  instance?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+  managedConversationRead?: (...args: unknown[]) => Promise<void>;
+  authenticate?: () => Promise<{ id: string }>;
+  koedHome?: string;
+};
+
+const createCommandDiscoveryApp = (options: CommandDiscoveryOptions = {}) => {
+  const userId = options.userId ?? randomUUID();
+  const instance =
+    options.instance === undefined
+      ? {
+          ownerUserId: userId,
+          instanceId: "codex.default",
+          driverId: "codex",
+          displayName: "Codex",
+          configIdentityHash: null,
+          enabled: true,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        }
+      : options.instance;
+  const snapshot =
+    options.snapshot === undefined
+      ? {
+          id: randomUUID(),
+          ownerUserId: userId,
+          instanceId: "codex.default",
+          installationIdentityHash: "installation-hash",
+          clientVersion: "1.0.0",
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          models: [],
+          capabilities: {
+            descriptors: {
+              slash_command_discovery: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          },
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }
+      : options.snapshot;
+  const app = Fastify({ logger: false });
+  app.setErrorHandler((error, _request, reply) => {
+    const typedError = error as Error & { statusCode?: number };
+    reply
+      .status(
+        typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+      )
+      .send({ error: typedError.message });
+  });
+  registerManagedConversationRoutes(app, {
+    config: {
+      deploymentProfile: "local_personal",
+      ...(options.koedHome ? { koedHome: options.koedHome } : {})
+    },
+    encryption: { envelopeEncryptionProvider: {} },
+    auth: {
+      authenticate: options.authenticate ?? (async () => ({ id: userId }))
+    },
+    rateLimit: {
+      memoryRead: async () => undefined,
+      memoryWrite: async () => undefined,
+      managedConversationRead: options.managedConversationRead
+    },
+    requireRepository: () => ({
+      listAiClientInstances: async () => (instance ? [instance] : []),
+      listCurrentAiClientCapabilitySnapshots: async () =>
+        snapshot ? [snapshot] : []
+    })
+  } as unknown as ApiRouteContext);
+  return { app, userId };
+};
+
+const commandDiscoveryPayload = {
+  aiClientDriverId: "codex",
+  aiClientInstanceId: "codex.default",
+  projectId: "project-1"
+};
+
+describe("managed Conversation command discovery route", () => {
+  it("rejects an unsupported AI Client driver", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, aiClientDriverId: "unsupported" }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      operation: "command_discovery",
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects command discovery payloads that fail schema validation", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, unexpected: true }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects unauthenticated command discovery requests", async () => {
+    const { app } = createCommandDiscoveryApp({
+      authenticate: async () => {
+        throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("reports unavailable when capability snapshot expiry is malformed", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: {
+          descriptors: {
+            slash_command_discovery: {
+              support: "supported",
+              readiness: "ready"
+            }
+          }
+        },
+        observedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "not-a-date",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("returns ok for a ready owned instance and capability", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      operation: "command_discovery",
+      status: "ok",
+      commands: []
+    });
+  });
+
+  it("returns global commands when discovery has no Project scope", async () => {
+    const configHome = mkdtempSync(resolve(tmpdir(), "koed-codex-global-"));
+    const promptDirectory = resolve(configHome, "prompts");
+    mkdirSync(promptDirectory, { recursive: true });
+    writeFileSync(
+      resolve(promptDirectory, "review.md"),
+      "---\ndescription: Review the current changes\n---\nPrompt body stays local.\n"
+    );
+    vi.stubEnv("CODEX_HOME", configHome);
+    vi.stubEnv(
+      "KOED_AI_CLIENT_INSTANCE_REGISTRY",
+      resolve(configHome, "missing-instance-registry.json")
+    );
+    const { app } = createCommandDiscoveryApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations/commands",
+        payload: {
+          aiClientDriverId: "codex",
+          aiClientInstanceId: "codex.default"
+        }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        operation: "command_discovery",
+        status: "ok",
+        commands: [
+          {
+            name: "review",
+            description: "Review the current changes",
+            kind: "command",
+            source: "global-file",
+            scope: "global",
+            verification: "unverified"
+          }
+        ]
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(configHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adds commands from the verified Project root to global commands", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-command-project-"));
+    const configHome = mkdtempSync(resolve(tmpdir(), "koed-codex-global-"));
+    const projectRoot = mkdtempSync(resolve(tmpdir(), "koed-project-root-"));
+    const writePrompt = (path: string, description: string) => {
+      mkdirSync(resolve(path, ".."), { recursive: true });
+      writeFileSync(
+        path,
+        `---\ndescription: ${description}\n---\nLocal prompt body.\n`
+      );
+    };
+    writePrompt(resolve(configHome, "prompts", "review.md"), "Global review");
+    writePrompt(
+      resolve(projectRoot, ".codex", "prompts", "review.md"),
+      "Project review"
+    );
+    writePrompt(
+      resolve(projectRoot, ".codex", "prompts", "test.md"),
+      "Project test"
+    );
+    const projectConfig = resolve(koedHome, "config", "projects.json");
+    mkdirSync(resolve(projectConfig, ".."), { recursive: true });
+    writeFileSync(
+      projectConfig,
+      JSON.stringify({
+        schemaVersion: 3,
+        projects: [
+          {
+            localProjectId: "project-1",
+            path: { cwd: projectRoot, projectRoot }
+          }
+        ]
+      })
+    );
+    vi.stubEnv("CODEX_HOME", configHome);
+    vi.stubEnv(
+      "KOED_AI_CLIENT_INSTANCE_REGISTRY",
+      resolve(koedHome, "missing-instance-registry.json")
+    );
+    const { app } = createCommandDiscoveryApp({ koedHome });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations/commands",
+        payload: commandDiscoveryPayload
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        operation: "command_discovery",
+        status: "ok",
+        commands: [
+          {
+            name: "review",
+            description: "Project review",
+            kind: "command",
+            source: "project-file",
+            scope: "project"
+          },
+          {
+            name: "test",
+            description: "Project test",
+            kind: "command",
+            source: "project-file",
+            scope: "project"
+          }
+        ]
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(koedHome, { recursive: true, force: true });
+      rmSync(configHome, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an instance owned by another User", async () => {
+    const { app } = createCommandDiscoveryApp({
+      instance: {
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        driverId: "codex",
+        displayName: "Codex",
+        configIdentityHash: null,
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      operation: "command_discovery",
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects a missing instance", async () => {
+    const { app } = createCommandDiscoveryApp({ instance: null });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects an instance with a different driver", async () => {
+    const userId = randomUUID();
+    const { app } = createCommandDiscoveryApp({
+      userId,
+      instance: {
+        ownerUserId: userId,
+        instanceId: "codex.default",
+        driverId: "claude",
+        displayName: "Claude",
+        configIdentityHash: null,
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("rejects a disabled instance", async () => {
+    const userId = randomUUID();
+    const { app } = createCommandDiscoveryApp({
+      userId,
+      instance: {
+        ownerUserId: userId,
+        instanceId: "codex.default",
+        driverId: "codex",
+        displayName: "Codex",
+        configIdentityHash: null,
+        enabled: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unauthorized",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when no capability snapshot exists", async () => {
+    const { app } = createCommandDiscoveryApp({ snapshot: null });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when capability snapshot is expired", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: {
+          descriptors: {
+            slash_command_discovery: {
+              support: "supported",
+              readiness: "ready"
+            }
+          }
+        },
+        observedAt: "2020-01-01T00:00:00.000Z",
+        expiresAt: "2020-01-01T00:00:00.000Z",
+        createdAt: "2020-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("reports unavailable when slash command discovery is not ready", async () => {
+    const { app } = createCommandDiscoveryApp({
+      snapshot: {
+        id: randomUUID(),
+        ownerUserId: randomUUID(),
+        instanceId: "codex.default",
+        installationIdentityHash: "installation-hash",
+        clientVersion: null,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: [],
+        capabilities: { descriptors: {} },
+        observedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      commands: []
+    });
+  });
+
+  it("rejects empty Project scope identifiers", async () => {
+    const { app } = createCommandDiscoveryApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: { ...commandDiscoveryPayload, projectId: " " }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("applies managed conversation read rate limiting", async () => {
+    const { app } = createCommandDiscoveryApp({
+      managedConversationRead: async () => {
+        throw Object.assign(new Error("rate limit"), { statusCode: 429 });
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations/commands",
+      payload: commandDiscoveryPayload
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(429);
   });
 });

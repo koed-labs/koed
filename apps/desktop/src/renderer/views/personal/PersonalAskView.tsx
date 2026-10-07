@@ -358,6 +358,14 @@ export function PersonalAskView({
                 : `Ask about ${selectedProject?.name ?? "this Project"}…`
             }
             projectId={selectedProject?.id ?? null}
+            projectRoot={
+              selectedProjectId === null
+                ? null
+                : (selectedProject?.path ?? null)
+            }
+            commandProjectId={
+              selectedProjectId === null ? null : (selectedProject?.id ?? null)
+            }
             requirePrompt
             showContextHelp={false}
             selection={selection}

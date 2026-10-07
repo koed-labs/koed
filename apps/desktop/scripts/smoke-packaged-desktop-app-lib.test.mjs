@@ -14,7 +14,98 @@ import {
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
-import { assertNoSourceCheckoutResolution } from "./smoke-packaged-desktop-app.mjs";
+import {
+  assertNoSourceCheckoutResolution,
+  waitForHealthyStatus
+} from "./smoke-packaged-desktop-app.mjs";
+
+const healthyStatus = () =>
+  Object.fromEntries(
+    [
+      "api",
+      "database",
+      "redis",
+      "workerQueues",
+      "embeddingService",
+      "privacyService",
+      "localAiRuntime",
+      "apiToken",
+      "mcpServer",
+      "captureHook"
+    ].map((component) => [component, { state: "healthy" }])
+  );
+
+const statusPollHarness = (snapshots, { running = true } = {}) => {
+  let elapsed = 0;
+  let polls = 0;
+  return {
+    get polls() {
+      return polls;
+    },
+    dependencies: {
+      now: () => elapsed,
+      isRunning: () => running,
+      runCommand: () => {
+        const snapshot = snapshots[Math.min(polls++, snapshots.length - 1)];
+        return { status: 0, stdout: JSON.stringify(snapshot) };
+      },
+      delay: async (ms) => {
+        elapsed += ms;
+      }
+    }
+  };
+};
+
+const reconnectPollOptions = {
+  timeoutMs: 10,
+  pollIntervalMs: 1,
+  supervisorPid: 123,
+  requireClientIntegration: true
+};
+
+test("reconnect waits through transient Privacy Filter Service health failures", async () => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const healthy = healthyStatus();
+  const harness = statusPollHarness([pending, healthy]);
+  assert.deepEqual(
+    await waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
+    healthy
+  );
+  assert.equal(harness.polls, 2);
+});
+
+test("reconnect does not accept healthy services until client integration is ready", async () => {
+  const pending = healthyStatus();
+  pending.captureHook.state = "starting";
+  const harness = statusPollHarness([pending, healthyStatus()]);
+  const result = await waitForHealthyStatus(
+    reconnectPollOptions,
+    harness.dependencies
+  );
+  assert.equal(result.captureHook.state, "healthy");
+  assert.equal(harness.polls, 2);
+});
+
+test("reconnect fails with the last status if privacy never recovers", async () => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const harness = statusPollHarness([pending]);
+  await assert.rejects(
+    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
+    /Timed out waiting for packaged daemon health.*Last status:[\s\S]*privacyService[\s\S]*starting/
+  );
+  assert.equal(harness.polls, 10);
+});
+
+test("reconnect fails immediately if the daemon supervisor exited", async () => {
+  const harness = statusPollHarness([healthyStatus()], { running: false });
+  await assert.rejects(
+    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
+    /supervisor 123 exited/
+  );
+  assert.equal(harness.polls, 0);
+});
 
 const createRuntimeRoot = ({ withAssets = true } = {}) => {
   const runtimeRoot = mkdtempSync(resolve(tmpdir(), "koed-smoke-assets-"));
