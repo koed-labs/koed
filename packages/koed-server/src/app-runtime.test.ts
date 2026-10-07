@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
@@ -87,8 +87,10 @@ const verifiedGeneration = async (root: string, includePrivacy = false) => {
     component: "base" | "privacy",
     requiredFiles: string[]
   ) => {
+    const productVersion = "0.8.1";
+    const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
     const fixture = await signedComponentFixture(
-      { component, requiredFiles },
+      { component, requiredFiles, productVersion, target },
       requiredFiles.map((path) => ({ path })),
       {},
       true
@@ -109,8 +111,8 @@ const verifiedGeneration = async (root: string, includePrivacy = false) => {
       },
       {
         expectedComponent: component,
-        expectedVersion: fixture.input.expectedVersion,
-        target: fixture.input.target,
+        expectedVersion: productVersion,
+        target,
         runtime: fixture.input.runtime
       }
     );

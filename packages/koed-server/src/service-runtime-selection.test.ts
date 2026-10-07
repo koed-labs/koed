@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
@@ -86,8 +86,9 @@ const makeGeneration = async (
     KOED_REPO_ROOT: root
   });
   mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
+  const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
   const fixture = await signedComponentFixture(
-    { productVersion, component: "base", requiredFiles },
+    { productVersion, component: "base", requiredFiles, target },
     requiredFiles.map((path) => ({ path })),
     {},
     true
@@ -113,8 +114,8 @@ const makeGeneration = async (
     },
     {
       expectedComponent: "base",
-      expectedVersion: fixture.input.expectedVersion,
-      target: fixture.input.target,
+      expectedVersion: productVersion,
+      target,
       runtime: fixture.input.runtime
     }
   );

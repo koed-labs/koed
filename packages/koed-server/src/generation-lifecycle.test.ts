@@ -9,7 +9,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
@@ -86,7 +86,11 @@ const stage = async (
   paths: ReturnType<typeof resolveKoedServerPaths>,
   version: string
 ) => {
-  const fixture = await signedComponentFixture({ productVersion: version });
+  const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+  const fixture = await signedComponentFixture({
+    productVersion: version,
+    target
+  });
   temporaryRoots.push(fixture.root);
   fixtureRuntime.value = fixture.input.runtime;
   for (const [key, value] of fixture.input.trustedKeys)
@@ -105,7 +109,7 @@ const stage = async (
     {
       expectedComponent: "base",
       expectedVersion: version,
-      target: fixture.input.target,
+      target,
       runtime: fixture.input.runtime
     }
   );
@@ -123,7 +127,13 @@ afterEach(() => {
 describe("generation lifecycle", () => {
   it("keeps active signed privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();
-    const fixture = await signedComponentFixture({ component: "privacy" });
+    const productVersion = "0.8.1";
+    const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+    const fixture = await signedComponentFixture({
+      component: "privacy",
+      productVersion,
+      target
+    });
     temporaryRoots.push(fixture.root);
     fixtureRuntime.value = fixture.input.runtime;
     fixtureKeys.value.clear();
@@ -136,9 +146,9 @@ describe("generation lifecycle", () => {
       resolve(runtimeRoot, "desktop-bundle-manifest.json"),
       JSON.stringify({
         schemaVersion: 1,
-        productVersion: fixture.input.expectedVersion,
+        productVersion,
         component: "base",
-        target: fixture.input.target,
+        target,
         files: []
       })
     );
@@ -156,8 +166,8 @@ describe("generation lifecycle", () => {
       },
       {
         expectedComponent: "privacy",
-        expectedVersion: fixture.input.expectedVersion,
-        target: fixture.input.target,
+        expectedVersion: productVersion,
+        target,
         runtime: fixture.input.runtime
       }
     );

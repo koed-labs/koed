@@ -8,7 +8,12 @@ vi.mock("./start.js", () => {
 const writer = () => {
   let value = "";
   return {
-    stream: { write: (chunk: string) => (value += chunk) },
+    stream: {
+      write: (chunk: unknown) => {
+        value += String(chunk);
+        return true;
+      }
+    } satisfies Pick<NodeJS.WriteStream, "write">,
     text: () => value
   };
 };

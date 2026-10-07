@@ -6,10 +6,16 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
+import type {
+  spawnSync,
+  SpawnSyncOptionsWithStringEncoding,
+  SpawnSyncReturns
+} from "node:child_process";
 import { resolve } from "node:path";
+import type { RuntimeIdentity } from "./component-contract.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 const fixtureTrust = vi.hoisted(() => ({
-  runtime: null,
+  runtime: null as RuntimeIdentity | null,
   keys: new Map<string, string>()
 }));
 
@@ -37,6 +43,13 @@ import { resolveKoedControlPlaneVersion } from "./app-runtime.js";
 import { stageSignedSetupRuntime } from "./setup-runtime-test-fixtures.js";
 import { inspectCodex } from "./status.js";
 import { ensureKoedHome, resolveKoedServerPaths } from "./paths.js";
+
+// Setup uses only the UTF-8 overload; bridge Node's broader overloads at injection.
+type SetupSpawnSync = (
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding
+) => SpawnSyncReturns<string>;
 
 const roots: string[] = [];
 const fixtureDisposers: (() => void)[] = [];
@@ -91,7 +104,7 @@ describe("packaged AI Client setup authentication", () => {
         MEMORY_API_TOKEN: "fixture-token"
       },
       resolveCodexExecutable: () => "codex",
-      registerAiClient: () => ({ ok: true, state: "healthy" })
+      registerAiClient: () => true
     });
 
     expect(result).toMatchObject({ ok: true });
@@ -123,7 +136,7 @@ describe("packaged AI Client setup authentication", () => {
         reused: true,
         ownerUserId: "fixture-owner"
       }),
-      migrateCodex: () => ({}),
+      migrateCodex: () => ({ migrated: false }),
       registerAiClient: () => true,
       resolveCodexExecutable: () => "codex"
     });
@@ -134,7 +147,14 @@ describe("packaged AI Client setup authentication", () => {
       paths,
       {
         fetch: globalThis.fetch.bind(globalThis),
-        spawnSync: () => ({ stdout: "codex-cli 1.0", stderr: "", status: 0 }),
+        spawnSync: (): SpawnSyncReturns<string> => ({
+          pid: 1,
+          output: [null, "codex-cli 1.0", ""],
+          signal: null,
+          stdout: "codex-cli 1.0",
+          stderr: "",
+          status: 0
+        }),
         existsSync,
         readFileSync,
         resolvePiExecutable: () => process.execPath,
@@ -162,13 +182,24 @@ describe("packaged AI Client setup authentication", () => {
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(decoy, "untrusted");
     process.chdir(root);
-    const spawn = vi.fn((_command: string, args: string[]) => ({
-      status: args[0] === "mcp" && args[1] === "get" ? 1 : 0,
-      stdout: args[0] === "--version" ? "2.1.227" : "{}",
-      stderr: ""
-    }));
+    const spawn = vi
+      .fn<SetupSpawnSync>()
+      .mockImplementation((_command, args) => {
+        const stdout = args[0] === "--version" ? "2.1.227" : "{}";
+        return {
+          pid: 1,
+          output: [null, stdout, ""],
+          signal: null,
+          status: args[0] === "mcp" && args[1] === "get" ? 1 : 0,
+          stdout,
+          stderr: ""
+        };
+      });
 
-    const result = await setupClaude({ HOME: home, KOED_HOME: home }, spawn);
+    const result = await setupClaude(
+      { HOME: home, KOED_HOME: home },
+      spawn as unknown as typeof spawnSync
+    );
 
     expect(result).toMatchObject({ ok: true });
     expect(spawn).toHaveBeenCalled();
@@ -189,27 +220,36 @@ describe("packaged AI Client setup authentication", () => {
     writeFileSync(resolve(decoy, "untrusted.mjs"), "untrusted");
     process.chdir(root);
     let installedTarget = "";
-    const spawn = vi.fn((_command: string, args: string[]) => {
-      const action = args.find((argument) =>
-        ["--version", "--list-models", "install", "list"].includes(argument)
-      );
-      if (action === "install")
-        installedTarget = args[args.indexOf(action) + 1] ?? "";
-      return {
-        status: 0,
-        stdout:
+    const spawn = vi
+      .fn<SetupSpawnSync>()
+      .mockImplementation((_command, args) => {
+        const action = args.find((argument) =>
+          ["--version", "--list-models", "install", "list"].includes(argument)
+        );
+        if (action === "install")
+          installedTarget = args[args.indexOf(action) + 1] ?? "";
+        const stdout =
           action === "--version"
             ? "0.84.2"
             : action === "--list-models"
               ? "[]"
               : action === "list"
                 ? installedTarget
-                : "installed",
-        stderr: ""
-      };
-    });
+                : "installed";
+        return {
+          pid: 1,
+          output: [null, stdout, ""],
+          signal: null,
+          status: 0,
+          stdout,
+          stderr: ""
+        };
+      });
 
-    const result = await setupPi({ HOME: home, KOED_HOME: home }, spawn);
+    const result = await setupPi(
+      { HOME: home, KOED_HOME: home },
+      spawn as unknown as typeof spawnSync
+    );
 
     expect(result).toMatchObject({ ok: true });
     expect(

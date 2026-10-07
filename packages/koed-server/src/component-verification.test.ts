@@ -256,11 +256,11 @@ describe("signed component verification", () => {
     const manifest = fixtureManifest(sample.input.manifestBytes);
     mkdirSync(resolve(sample.root, "nested"));
     writeFileSync(resolve(sample.root, "nested/file.js"), "nested");
-    manifest.files.push({
-      path: "nested/file.js",
-      sha256: digest(Buffer.from("nested"))
-    });
-    manifest.requiredFiles.push("nested/file.js");
+    manifest.files = [
+      ...manifest.files,
+      { path: "nested/file.js", sha256: digest(Buffer.from("nested")) }
+    ];
+    manifest.requiredFiles = [...manifest.requiredFiles, "nested/file.js"];
     await expect(
       verifyExtractedComponent(sample.root, manifest)
     ).resolves.toBeUndefined();
@@ -315,10 +315,10 @@ describe("signed component verification", () => {
     const sample = await fixture();
     const manifest = fixtureManifest(sample.input.manifestBytes);
     writeFileSync(resolve(sample.root, "second.js"), "12345");
-    manifest.files.push({
-      path: "second.js",
-      sha256: digest(Buffer.from("12345"))
-    });
+    manifest.files = [
+      ...manifest.files,
+      { path: "second.js", sha256: digest(Buffer.from("12345")) }
+    ];
     await expect(
       verifyExtractedComponentWithTestSeams(sample.root, manifest, {
         limits: { maxFileBytes: 10, maxExpandedBytes: 14 }
@@ -330,10 +330,10 @@ describe("signed component verification", () => {
     const sample = await fixture();
     const manifest = fixtureManifest(sample.input.manifestBytes);
     writeFileSync(resolve(sample.root, "second.js"), "x");
-    manifest.files.push({
-      path: "second.js",
-      sha256: digest(Buffer.from("x"))
-    });
+    manifest.files = [
+      ...manifest.files,
+      { path: "second.js", sha256: digest(Buffer.from("x")) }
+    ];
     await expect(
       verifyExtractedComponentWithTestSeams(sample.root, manifest, {
         limits: { maxEntries: 1 }

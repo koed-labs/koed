@@ -22,6 +22,8 @@ const makePaths = (): KoedServerPaths => {
     dataDir: resolve(koedHome, "data"),
     modelsDir: resolve(koedHome, "models"),
     cacheDir: resolve(koedHome, "cache"),
+    componentsDir: resolve(koedHome, "runtime", "components"),
+    generationsDir: resolve(koedHome, "runtime", "generations"),
     postgresDataDir: resolve(koedHome, "data/postgres"),
     postgresRunDir: resolve(koedHome, "run/postgres"),
     postgresLogPath: resolve(koedHome, "logs/postgres.log"),

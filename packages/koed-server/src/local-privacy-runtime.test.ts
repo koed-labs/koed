@@ -92,7 +92,7 @@ describe("native Privacy Filter Service runtime", () => {
       {
         appRuntime: runtime,
         existsSync: (path) => {
-          checkedPaths.push(path);
+          checkedPaths.push(String(path));
           return true;
         },
         fetch: async () =>

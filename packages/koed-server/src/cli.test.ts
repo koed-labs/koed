@@ -1546,7 +1546,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
       stdout: stdout.stream,
-      setupClaude: () => ({
+      setupClaude: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",
@@ -1697,7 +1697,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
       stdout: stdout.stream,
-      repairCodex: () => ({
+      repairCodex: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",

@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import properLockfile from "proper-lockfile";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type {
+  ComponentManifest,
+  RuntimeIdentity
+} from "./component-contract.js";
 
 const testRuntime = vi.hoisted(() => ({
   current: undefined as RuntimeIdentity | undefined
@@ -61,14 +64,28 @@ const fixture = async (
   archiveEntries?: Parameters<typeof signedComponentFixture>[1],
   includeArchiveInventory = false
 ) => {
+  const manifestOverrides = {
+    component: "base",
+    productVersion: "0.8.1",
+    target: { platform: "linux", architecture: "x64" },
+    ...overrides
+  } satisfies Partial<ComponentManifest>;
   const item = await signedComponentFixture(
-    overrides,
+    manifestOverrides,
     archiveEntries,
     {},
     includeArchiveInventory
   );
   fixtures.push(item);
-  return item;
+  return {
+    ...item,
+    input: {
+      ...item.input,
+      expectedComponent: manifestOverrides.component,
+      expectedVersion: manifestOverrides.productVersion,
+      target: manifestOverrides.target
+    }
+  };
 };
 const stageFixture = async (
   paths: ReturnType<typeof resolveKoedServerPaths>,
@@ -344,7 +361,7 @@ describe("immutable component and generation store", () => {
           return new Response(null, { status: 503 });
         const bytes = urls.get(String(input));
         return bytes
-          ? new Response(bytes)
+          ? new Response(new Uint8Array(bytes))
           : new Response(null, { status: 404 });
       });
     const result = await stageComponent(
@@ -388,7 +405,7 @@ describe("immutable component and generation store", () => {
       .mockImplementation(async (input) => {
         const bytes = urls.get(String(input));
         return bytes
-          ? new Response(bytes)
+          ? new Response(new Uint8Array(bytes))
           : new Response(null, { status: 404 });
       });
     await expect(

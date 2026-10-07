@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 
 const fixtureRuntime = vi.hoisted(() => ({
   current: undefined as RuntimeIdentity | undefined
@@ -38,6 +38,8 @@ const context = (
     resolve(realpathSync(tmpdir()), "koed-component-cli-")
   );
   roots.push(home);
+  if (process.arch !== "arm64" && process.arch !== "x64")
+    throw new Error(`Unsupported fixture architecture: ${process.arch}`);
   const runtime = {
     kind: "node",
     version: process.versions.node,
@@ -59,7 +61,11 @@ const context = (
 };
 
 const signedOfflineSource = async (version: string) => {
-  const fixture = await signedComponentFixture({ productVersion: version });
+  const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+  const fixture = await signedComponentFixture({
+    productVersion: version,
+    target
+  });
   const manifestPath = resolve(fixture.root, "manifest.json");
   const signaturePath = resolve(fixture.root, "signature.json");
   writeFileSync(manifestPath, fixture.input.manifestBytes);
@@ -77,7 +83,7 @@ const signedOfflineSource = async (version: string) => {
       signaturePath
     },
     runtime: fixture.input.runtime,
-    target: fixture.input.target
+    target
   };
 };
 
@@ -164,7 +170,7 @@ describe("component status command", () => {
             : url === urls.signature
               ? Buffer.from(JSON.stringify(signed.fixture.input.signature))
               : archive;
-        return new Response(body, { status: 200 });
+        return new Response(new Uint8Array(body), { status: 200 });
       })
     );
     const current = context({
