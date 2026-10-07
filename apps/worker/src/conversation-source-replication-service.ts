@@ -27,6 +27,7 @@ import {
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceReplicationOperationDigest,
+  conversationSourceRewriteGenerationId,
   createEncryptedJsonPackage,
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
@@ -56,6 +57,10 @@ import {
   buildCodexTranscriptConversationItems,
   extractTranscriptSessionMetadata,
   parseTranscriptJournalBytes,
+  transcriptJournalParserState,
+  verifyCodexTranscriptRewrite,
+  verifyCodexTranscriptContinuation,
+  collectCodexTranscriptContinuationAncestors,
   type TranscriptJournalParserState
 } from "@koed/mcp-server/codex-transcript-parser";
 import { parseClaudeTranscriptJournalBytes } from "@koed/mcp-server/claude-transcript-parser";
@@ -164,6 +169,20 @@ const sourceDescriptor = (
     journalStartLine: artifact.journalStartLine,
     liveStartOffset: artifact.liveStartOffset,
     liveStartLine: artifact.liveStartLine,
+    ...(artifact.sourceAdapterVersion === "codex-transcript-v2"
+      ? {
+          codexHistory: sourceSession.metadata?.codexHistory ?? {
+            historyMode: "paginated",
+            externalThreadId: artifact.externalSessionId,
+            threadKind:
+              sourceSession.metadata?.threadKind === "subagent"
+                ? "subagent"
+                : "conversation",
+            subagentHistoryStartOrdinal:
+              sourceSession.metadata?.subagent_history_start_ordinal ?? null
+          }
+        }
+      : {}),
     project:
       sourceSession.project &&
       portableProjectIdPattern.test(sourceSession.project.id)
@@ -603,17 +622,30 @@ export const publishConversationSourceGenerationRegistration = async (input: {
 
 const parserState = (
   value: Record<string, unknown> | undefined
-): TranscriptJournalParserState => ({
-  ...(typeof value?.lastEventTime === "string"
-    ? { lastEventTime: value.lastEventTime }
-    : {}),
-  ...(typeof value?.activeTurnId === "string"
-    ? { activeTurnId: value.activeTurnId }
-    : {}),
-  ...(value?.assistantMessagePreference === "response_item"
-    ? { assistantMessagePreference: "response_item" as const }
-    : {})
-});
+): TranscriptJournalParserState =>
+  transcriptJournalParserState({
+    ...(typeof value?.lastEventTime === "string"
+      ? { lastEventTime: value.lastEventTime }
+      : {}),
+    ...(typeof value?.activeTurnId === "string"
+      ? { activeTurnId: value.activeTurnId }
+      : {}),
+    ...(value?.assistantMessagePreference === "response_item"
+      ? { assistantMessagePreference: "response_item" as const }
+      : {}),
+    ...(value?.historyMode === "legacy" || value?.historyMode === "paginated"
+      ? { historyMode: value.historyMode }
+      : {}),
+    ...(typeof value?.subagentHistoryStartOrdinal === "number"
+      ? { subagentHistoryStartOrdinal: value.subagentHistoryStartOrdinal }
+      : {}),
+    ...(typeof value?.lastRecordOrdinal === "number"
+      ? { lastRecordOrdinal: value.lastRecordOrdinal }
+      : {}),
+    ...(value?.approvalHelperConversation === true
+      ? { approvalHelperConversation: true }
+      : {})
+  });
 
 const atRestSegment = async (
   provider: EnvelopeEncryptionProvider,
@@ -931,6 +963,21 @@ export const createConversationSourceReplicationService = (options: {
   ): Promise<boolean> => {
     const provider = options.envelopeEncryptionProvider;
     if (!provider) return false;
+    const sourceSession = await options.repository.getCapturedSession(
+      actor,
+      artifact.sessionId
+    );
+    if (!sourceSession) {
+      throw new SourceReplicationError(
+        "SourceReplicationSessionIdentityError",
+        "Materialized source Captured Session is unavailable",
+        false
+      );
+    }
+    const history =
+      artifact.sourceAdapterVersion === "codex-transcript-v2"
+        ? sourceDescriptor(artifact, sourceSession).codexHistory
+        : undefined;
     const cursor = await options.repository.getConversationSourceConsumerCursor(
       actor,
       {
@@ -940,6 +987,306 @@ export const createConversationSourceReplicationService = (options: {
     );
     const startOffset = cursor?.sourceOffset ?? artifact.journalStartOffset;
     const startLine = cursor?.sourceLine ?? artifact.journalStartLine;
+    const priorClosure = artifact.priorGenerationClosure;
+    // A rewritten prefix is evidence, not a second copy of the conversation.
+    // Skip it only after its signed predecessor is completely materialized and
+    // the same native transformation has been verified on this device.
+    if (
+      history &&
+      priorClosure &&
+      artifact.liveStartOffset > artifact.journalStartOffset &&
+      startOffset < artifact.liveStartOffset
+    ) {
+      const parent =
+        await options.repository.getConversationSourceArtifactByGeneration(
+          actor,
+          String(priorClosure.sourceGenerationId),
+          artifact.sourceComponentId
+        );
+      const parentCursor = parent
+        ? await options.repository.getConversationSourceConsumerCursor(actor, {
+            artifactId: parent.id,
+            consumerKind: "remote_processing"
+          })
+        : null;
+      if (
+        !parent ||
+        parent.closureHash !== priorClosure.contentDigest ||
+        parent.logicalSourceId !== artifact.logicalSourceId ||
+        parent.sessionId !== artifact.sessionId ||
+        parentCursor?.sourceOffset !== parent.providerCursorOffset
+      ) {
+        throw new SourceReplicationError(
+          "SourceReplicationPredecessorPendingError",
+          "Rewritten source predecessor is not completely materialized",
+          true
+        );
+      }
+      let verificationBytes = 0;
+      let verificationPages = 0;
+      const acceptedRange = async (
+        source: ConversationSourceArtifactRecord,
+        end: number
+      ): Promise<{
+        bytes: Buffer;
+        segment: ConversationSourceSegmentRecord;
+      }> => {
+        let offset = source.journalStartOffset;
+        const parts: Buffer[] = [];
+        let endingSegment: ConversationSourceSegmentRecord | undefined;
+        verificationBytes += end - offset;
+        if (verificationBytes > maxMaterializationBytes)
+          throw new SourceReplicationError(
+            "SourceReplicationRewriteLimitError",
+            "Rewritten source verification exceeds the byte limit",
+            false
+          );
+        while (offset < end) {
+          if (++verificationPages > 4_096)
+            throw new SourceReplicationError(
+              "SourceReplicationRewriteLimitError",
+              "Rewritten source verification exceeds the segment limit",
+              false
+            );
+          const page = await options.repository.listConversationSourceSegments(
+            actor,
+            { artifactId: source.id, afterOffset: offset, limit: 16 }
+          );
+          if (!page.length)
+            throw new SourceReplicationError(
+              "SourceReplicationRewritePendingError",
+              "Rewritten source evidence is incomplete",
+              true
+            );
+          for (const segment of page) {
+            if (segment.sourceStartOffset !== offset)
+              throw new SourceReplicationError(
+                "SourceReplicationRewriteChainError",
+                "Rewritten source evidence is not contiguous",
+                false
+              );
+            const envelope = await atRestSegment(provider, segment);
+            const bytes = Buffer.from(envelope.plaintextBytes, "base64url");
+            if (
+              bytes.length !==
+                segment.sourceEndOffset - segment.sourceStartOffset ||
+              sha256(bytes) !== segment.plaintextDigest
+            )
+              throw new SourceReplicationError(
+                "SourceReplicationRewriteDigestError",
+                "Rewritten source evidence digest is invalid",
+                false
+              );
+            parts.push(
+              bytes.subarray(0, Math.min(end, segment.sourceEndOffset) - offset)
+            );
+            endingSegment = segment;
+            offset = segment.sourceEndOffset;
+            if (offset >= end) break;
+          }
+        }
+        if (!endingSegment)
+          throw new SourceReplicationError(
+            "SourceReplicationRewritePendingError",
+            "Rewritten source evidence is incomplete",
+            true
+          );
+        return { bytes: Buffer.concat(parts), segment: endingSegment };
+      };
+      const { bytes: previousBytes } = await acceptedRange(
+        parent,
+        parent.providerCursorOffset
+      );
+      const { bytes: rewrittenBytes, segment: frontierSegment } =
+        await acceptedRange(artifact, artifact.liveStartOffset);
+      const prefix = parseTranscriptJournalBytes({
+        bytes: rewrittenBytes,
+        absoluteStartOffset: artifact.journalStartOffset,
+        lineIndexOffset: artifact.journalStartLine,
+        prior: { historyMode: history.historyMode }
+      });
+      const prefixContext = extractTranscriptSessionMetadata(prefix.records);
+      const continuation =
+        prefixContext.transcriptMetadata.history_base != null;
+      if (continuation && parent.sourceAdapterVersion !== "codex-transcript-v2")
+        throw new SourceReplicationError(
+          "SourceReplicationContinuationParentError",
+          "Continuation predecessor is not paginated",
+          false
+        );
+      const evidence = (
+        source: ConversationSourceArtifactRecord,
+        bytes: Buffer
+      ) => ({
+        artifact: source,
+        bytes,
+        startOffset: source.journalStartOffset,
+        sourceLabel: source.redactedSourceLabel,
+        sourceGenerationId: source.sourceGenerationId,
+        logicalThreadId:
+          extractTranscriptSessionMetadata(
+            parseTranscriptJournalBytes({
+              bytes,
+              absoluteStartOffset: source.journalStartOffset,
+              lineIndexOffset: source.journalStartLine,
+              prior: { historyMode: "paginated" }
+            }).records
+          ).transcriptSessionId ?? history.externalThreadId,
+        priorGenerationClosure: source.priorGenerationClosure as {
+          sourceGenerationId: string;
+          contentDigest: string;
+        } | null,
+        closureHash: source.closureHash
+      });
+      const loadEvidence = async (
+        source: ConversationSourceArtifactRecord | null
+      ) => {
+        if (!source) return null;
+        const sourceCursor =
+          await options.repository.getConversationSourceConsumerCursor(actor, {
+            artifactId: source.id,
+            consumerKind: "remote_processing"
+          });
+        if (
+          source.sourceKind !== "codex" ||
+          source.sourceAdapterVersion !== "codex-transcript-v2" ||
+          sourceCursor?.sourceOffset !== source.providerCursorOffset
+        )
+          throw new SourceReplicationError(
+            "SourceReplicationPredecessorPendingError",
+            "Continuation ancestor is not completely materialized",
+            true
+          );
+        return evidence(
+          source,
+          (await acceptedRange(source, source.providerCursorOffset)).bytes
+        );
+      };
+      const ancestors = continuation
+        ? await collectCodexTranscriptContinuationAncestors({
+            previous: evidence(parent, previousBytes),
+            rewrittenBytes,
+            loadGeneration: async (generationId, from) => {
+              const source =
+                await options.repository.getConversationSourceArtifactByGeneration(
+                  actor,
+                  generationId,
+                  from.artifact.sourceComponentId
+                );
+              if (
+                source &&
+                (source.logicalSourceId !== from.artifact.logicalSourceId ||
+                  source.sessionId !== from.artifact.sessionId)
+              )
+                throw new SourceReplicationError(
+                  "SourceReplicationRewriteIdentityError",
+                  "Continuation ancestor logical identity changed",
+                  false
+                );
+              return loadEvidence(source);
+            },
+            loadThread: async (threadId, from) =>
+              loadEvidence(
+                await options.repository.getConversationSourceArtifactByCodexThreadIdentity(
+                  actor,
+                  {
+                    externalThreadId: threadId,
+                    sourceComponentId: from.artifact.sourceComponentId
+                  }
+                )
+              )
+          }).catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              /^codex_rollout_continuation_[a-z_]+$/.test(error.message)
+            )
+              throw new SourceReplicationError(
+                error.message,
+                "Continuation ancestry cannot be verified",
+                error.message.endsWith("_pending")
+              );
+            throw error;
+          })
+        : [];
+      const verified = continuation
+        ? verifyCodexTranscriptContinuation({
+            previousBytes,
+            previousStartOffset: parent.journalStartOffset,
+            previousSourceLabel: parent.redactedSourceLabel,
+            rewrittenBytes,
+            rewrittenSourceLabel: artifact.redactedSourceLabel,
+            externalSessionId: history.externalThreadId,
+            ancestors,
+            previousHistory: {
+              subagentHistoryStartOrdinal:
+                parserState(parentCursor?.parserState)
+                  .subagentHistoryStartOrdinal ?? null
+            }
+          })
+        : verifyCodexTranscriptRewrite({
+            previousBytes,
+            rewrittenBytes,
+            externalSessionId: history.externalThreadId,
+            rewrittenMetadata: {
+              id: history.externalThreadId,
+              history_mode: history.historyMode
+            }
+          });
+      if (
+        verified.liveStartOffset !== rewrittenBytes.length ||
+        artifact.sourceGenerationId !==
+          conversationSourceRewriteGenerationId(
+            parent.sourceGenerationId,
+            sha256(rewrittenBytes)
+          )
+      )
+        throw new SourceReplicationError(
+          "SourceReplicationRewriteIdentityError",
+          "Rewritten source frontier is not bound to its generation",
+          false
+        );
+      const parsed = parseTranscriptJournalBytes({
+        bytes: rewrittenBytes,
+        absoluteStartOffset: artifact.journalStartOffset,
+        lineIndexOffset: artifact.journalStartLine,
+        prior: {
+          historyMode: history.historyMode,
+          ...(parentCursor?.parserState?.approvalHelperConversation === true
+            ? { approvalHelperConversation: true }
+            : {}),
+          ...(history.subagentHistoryStartOrdinal !== null
+            ? {
+                subagentHistoryStartOrdinal: history.subagentHistoryStartOrdinal
+              }
+            : {})
+        },
+        context: {
+          threadKind: history.threadKind,
+          transcriptSessionId: history.externalThreadId,
+          transcriptMetadata: {}
+        }
+      });
+      if (
+        parsed.checkpoint.offset !== artifact.liveStartOffset ||
+        parsed.checkpoint.lineCount !== artifact.liveStartLine
+      )
+        throw new SourceReplicationError(
+          "SourceReplicationRewriteBoundaryError",
+          "Rewritten source frontier is not a complete record boundary",
+          false
+        );
+      await options.repository.advanceConversationSourceConsumerCursor(actor, {
+        artifactId: artifact.id,
+        consumerKind: "remote_processing",
+        expectedSourceOffset: startOffset,
+        sourceOffset: artifact.liveStartOffset,
+        sourceLine: artifact.liveStartLine,
+        segmentIndex: frontierSegment.segmentIndex,
+        lastVerifiedDigest: frontierSegment.plaintextDigest,
+        parserState: transcriptJournalParserState(parsed.checkpoint)
+      });
+      return true;
+    }
     const segments = await options.repository.listConversationSourceSegments(
       actor,
       {
@@ -961,17 +1308,6 @@ export const createConversationSourceReplicationService = (options: {
       chunks.push(chunk);
     }
     if (chunks.length === 0) return false;
-    const sourceSession = await options.repository.getCapturedSession(
-      actor,
-      artifact.sessionId
-    );
-    if (!sourceSession) {
-      throw new SourceReplicationError(
-        "SourceReplicationSessionIdentityError",
-        "Materialized source Captured Session is unavailable",
-        false
-      );
-    }
     const materializedBytes = Buffer.concat(chunks);
     const claudeSource =
       artifact.sourceAdapterVersion === "claude-code-transcript-v1";
@@ -993,7 +1329,29 @@ export const createConversationSourceReplicationService = (options: {
           bytes: materializedBytes,
           absoluteStartOffset: startOffset,
           lineIndexOffset: startLine,
-          prior: parserState(cursor?.parserState)
+          prior: {
+            ...(history
+              ? {
+                  historyMode: history.historyMode,
+                  ...(history.subagentHistoryStartOrdinal !== null
+                    ? {
+                        subagentHistoryStartOrdinal:
+                          history.subagentHistoryStartOrdinal
+                      }
+                    : {})
+                }
+              : {}),
+            ...parserState(cursor?.parserState)
+          },
+          ...(history
+            ? {
+                context: {
+                  threadKind: history.threadKind,
+                  transcriptSessionId: history.externalThreadId,
+                  transcriptMetadata: {}
+                }
+              }
+            : {})
         });
     const checkpoint = (claudeParsed ?? codexParsed)!.checkpoint;
     if (checkpoint.offset <= startOffset) return false;
@@ -1011,6 +1369,7 @@ export const createConversationSourceReplicationService = (options: {
     await options.repository.createCapturedSession(actor, {
       logicalSessionId: sourceSession.logicalSessionId,
       externalSessionId: artifact.externalSessionId,
+      ...(history ? { externalThreadId: history.externalThreadId } : {}),
       sourceRuntime: artifact.sourceRuntime,
       captureMethod: "transcript",
       model: transcriptModel,
@@ -1018,6 +1377,7 @@ export const createConversationSourceReplicationService = (options: {
       sourceAdapterVersion: artifact.sourceAdapterVersion,
       sourceFingerprint: artifact.sourceFingerprint,
       metadata: {
+        ...(history ? { codexHistory: history } : {}),
         sourceTransport: "replicated_transcript",
         sourceReplication: {
           logicalSourceId: artifact.logicalSourceId,
@@ -1046,10 +1406,12 @@ export const createConversationSourceReplicationService = (options: {
         records: codexParsed!.records,
         indexOffset: codexParsed!.indexOffset,
         sessionId: artifact.sessionId,
-        sourceSessionId: artifact.externalSessionId,
+        sourceSessionId:
+          history?.externalThreadId ?? artifact.externalSessionId,
         sourceTransport: "transcript",
         sourceFingerprint: artifact.sourceFingerprint,
-        threadKind: "conversation"
+        threadKind:
+          history?.threadKind ?? transcriptContext?.threadKind ?? "conversation"
       });
     if (items.length > 0) {
       await options.repository.createConversationItems(actor, {
@@ -1064,20 +1426,9 @@ export const createConversationSourceReplicationService = (options: {
       sourceLine: checkpoint.lineCount,
       segmentIndex: containing.segmentIndex,
       lastVerifiedDigest: containing.plaintextDigest,
-      parserState: claudeParsed?.parserState ?? {
-        ...(codexParsed!.checkpoint.lastEventTime
-          ? { lastEventTime: codexParsed!.checkpoint.lastEventTime }
-          : {}),
-        ...(codexParsed!.checkpoint.activeTurnId
-          ? { activeTurnId: codexParsed!.checkpoint.activeTurnId }
-          : {}),
-        ...(codexParsed!.checkpoint.assistantMessagePreference
-          ? {
-              assistantMessagePreference:
-                codexParsed!.checkpoint.assistantMessagePreference
-            }
-          : {})
-      }
+      parserState:
+        claudeParsed?.parserState ??
+        transcriptJournalParserState(codexParsed!.checkpoint)
     });
     return true;
   };
@@ -1191,6 +1542,9 @@ export const createConversationSourceReplicationService = (options: {
             sourceHash: `peer-source:${registration.sourceGenerationId}`,
             ...(source.project ? { projectId: source.project.id } : {}),
             metadata: {
+              ...(source.codexHistory
+                ? { codexHistory: source.codexHistory }
+                : {}),
               sourceReplication: {
                 protocol: registration.protocol,
                 logicalSourceId: registration.logicalSourceId,

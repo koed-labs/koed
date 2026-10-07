@@ -16,6 +16,7 @@ export interface CodexManagedConversationSourceContext {
   externalThreadId: string;
   transcriptPath?: string;
   clientUserMessageIds?: ReadonlyMap<string, string>;
+  nativeUserItemIdentity?: boolean;
 }
 
 export interface CodexConversationIdentityIssue {
@@ -579,7 +580,10 @@ export const adaptCodexAppServerConversationEvent = (
         : undefined;
     const clientUserMessageId = koedClientUserMessageId(rawClientUserMessageId);
     const stableItemId =
-      itemType === "userMessage" ? rawClientUserMessageId : itemId;
+      itemType === "userMessage"
+        ? (rawClientUserMessageId ??
+          (context.nativeUserItemIdentity ? itemId : undefined))
+        : itemId;
     if (!stableItemId) {
       return unresolvedBatch({
         event,
@@ -615,6 +619,39 @@ export const adaptCodexAppServerConversationEvent = (
     const observationKind = completed
       ? "lifecycle_completed"
       : "lifecycle_started";
+    if (itemType === "functionCallOutput") {
+      return {
+        items: [
+          canonicalItem({
+            event,
+            context,
+            externalThreadId,
+            externalTurnId,
+            externalItemId: itemId,
+            stableItemId,
+            component: "tool_result",
+            transcriptType: "function_call_output",
+            rawText: toolOutputText({
+              callId: stableItemId,
+              value: item.output
+            }),
+            metadata: {
+              appServerItemType: itemType,
+              ...toolMetadata({
+                kind: "output",
+                type: "function_call_output",
+                name: string(item.name),
+                callId: stableItemId,
+                value: item.output
+              })
+            },
+            observationKind,
+            projectionStatus: completed ? "pending" : "raw_only"
+          })
+        ],
+        identityIssues: []
+      };
+    }
     if (itemType === "userMessage") {
       return {
         items: [

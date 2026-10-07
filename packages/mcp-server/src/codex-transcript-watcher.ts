@@ -6,6 +6,7 @@ import {
   openSync,
   readSync,
   readFileSync,
+  realpathSync,
   renameSync,
   watch,
   writeFileSync,
@@ -13,7 +14,7 @@ import {
   type FSWatcher,
   type Stats
 } from "node:fs";
-import { lstat, readdir, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
@@ -39,6 +40,12 @@ import {
 } from "./codex-transcript-watcher-signal.js";
 import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
+import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
+import { resolveCodexAppServerBinary } from "./codex-app-server-runner.js";
+import {
+  createCodexHistoryMetadataReader,
+  type CodexHistoryMetadataReader
+} from "./codex-history-metadata.js";
 
 export {
   signalCodexTranscriptWatcher,
@@ -47,7 +54,7 @@ export {
 export { completeTranscriptBoundary } from "./codex-transcript-journal.js";
 
 const WATCHER_VERSION = 5;
-const TRANSCRIPT_PATTERN = /^rollout-.*\.jsonl$/;
+const TRANSCRIPT_PATTERN = /^rollout-.*\.jsonl(?:\.zst)?$/;
 
 export interface CodexTranscriptWatcherConfig {
   roots: string[];
@@ -58,6 +65,11 @@ export interface CodexTranscriptWatcherConfig {
   maxEntriesPerScan: number;
   maxFilesPerScan: number;
   maxBytesPerBatch: number;
+  historyMetadata?: {
+    binary: string;
+    codexHome: string;
+    env: NodeJS.ProcessEnv;
+  };
 }
 
 interface WatcherSnapshot {
@@ -135,6 +147,15 @@ const configuredTranscriptRoot = (
   if (resolved === path.parse(resolved).root || containsPath(resolved, home)) {
     throw new Error(`${setting} entry is too broad`);
   }
+  if (existsSync(resolved)) {
+    const canonical = realpathSync(resolved);
+    const canonicalHome = existsSync(home) ? realpathSync(home) : home;
+    if (
+      canonical === path.parse(canonical).root ||
+      containsPath(canonical, canonicalHome)
+    )
+      throw new Error(`${setting} entry is too broad`);
+  }
   return resolved;
 };
 
@@ -162,6 +183,11 @@ export const resolveCodexTranscriptWatcherConfig = (
           ]
     ),
     koedHome: path.resolve(env.KOED_HOME ?? path.join(home, ".koed")),
+    historyMetadata: {
+      binary: resolveCodexAppServerBinary(env),
+      codexHome,
+      env: { ...env }
+    },
     debounceMs: positiveInt(
       env,
       "MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS",
@@ -323,6 +349,15 @@ class BoundedTranscriptDiscovery {
         this.directories.push(childPath);
         this.directories.sort((left, right) => right.localeCompare(left));
       } else if (child.isFile() && TRANSCRIPT_PATTERN.test(child.name)) {
+        if (child.name.endsWith(".zst")) {
+          const sibling = await lstat(childPath.slice(0, -4)).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return null;
+              throw error;
+            }
+          );
+          if (sibling?.isFile() && !sibling.isSymbolicLink()) continue;
+        }
         files.push(childPath);
       }
     }
@@ -561,6 +596,17 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private activatedAt: number | null;
   private readonly baselineFileFrontiers: Map<string, number | null>;
   private readonly discovery: BoundedTranscriptDiscovery;
+  private readonly compressedReader: CodexCompressedTranscriptReader;
+  private readonly historyMetadataReader?: CodexHistoryMetadataReader;
+  private readonly historyMetadataReaders = new Map<
+    string,
+    CodexHistoryMetadataReader
+  >();
+  private readonly historyMetadataReads = new Map<
+    string,
+    ReturnType<CodexHistoryMetadataReader["readThread"]>
+  >();
+  private readonly historyMetadataFailures = new Map<string, unknown>();
   private readonly historicalObserver?: CodexHistoricalCandidateObserver;
   private readonly historicalCandidates = new Map<
     string,
@@ -594,6 +640,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       size: number;
       modifiedAt: string;
       providerCursorOffset: number;
+      changeTimeMs: number;
+      completeSourceBoundary: number;
       canonicalCursorOffset: number;
     }
   >();
@@ -613,15 +661,20 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   constructor(
     client: CodexTranscriptWatcherClient,
     config: CodexTranscriptWatcherConfig,
-    historicalObserver?: CodexHistoricalCandidateObserver
+    historicalObserver?: CodexHistoricalCandidateObserver,
+    historyMetadataReader?: CodexHistoryMetadataReader
   ) {
     this.client = client;
     this.config = config;
     this.historicalObserver = historicalObserver;
+    this.historyMetadataReader = historyMetadataReader;
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
     this.baselineFileFrontiers = activationState.baselineFileFrontiers;
     this.discovery = new BoundedTranscriptDiscovery(config);
+    this.compressedReader = new CodexCompressedTranscriptReader(
+      config.koedHome
+    );
     this.metrics = {
       state: "starting",
       startedAt: new Date().toISOString(),
@@ -701,6 +754,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.openTurnPolls.clear();
     for (const watcher of this.watchers) watcher.close();
     await this.scanPromise;
+    await this.historyMetadataReader?.close();
+    for (const reader of this.historyMetadataReaders.values())
+      await reader.close();
+    this.historyMetadataReaders.clear();
+    await this.compressedReader.close();
     this.discovery.close();
     this.metrics.state = "stopped";
     this.writeStatus();
@@ -744,6 +802,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   }
 
   private async runScan(): Promise<void> {
+    this.historyMetadataReads.clear();
+    this.historyMetadataFailures.clear();
     this.metrics.scans += 1;
     this.metrics.lastScanAt = new Date().toISOString();
     const failuresBefore = this.failureCount;
@@ -853,13 +913,16 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       if (this.stopped || !existsSync(observation.transcriptPath)) continue;
       await this.serviceFilesystemHints();
       if (
-        observation.canonicalCursorOffset >= observation.providerCursorOffset
+        observation.canonicalCursorOffset >= observation.providerCursorOffset &&
+        observation.providerCursorOffset >= observation.completeSourceBoundary
       ) {
         const file = await stat(observation.transcriptPath);
         if (
           !file.isFile() ||
           (file.size === observation.size &&
-            file.mtime.toISOString() === observation.modifiedAt)
+            file.mtime.toISOString() === observation.modifiedAt &&
+            file.ctimeMs === observation.changeTimeMs &&
+            `${file.dev}:${file.ino}` === observation.fileKey)
         ) {
           continue;
         }
@@ -910,192 +973,369 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     transcriptPath: string,
     observeHistorical: boolean
   ): Promise<void> {
-    const linkState = await lstat(transcriptPath);
-    if (linkState.isSymbolicLink() || !linkState.isFile()) return;
-    const before = await stat(transcriptPath);
-    if (!before.isFile()) return;
+    const { resolvedSource, before } =
+      await this.validateConfinedSource(transcriptPath);
     const fileKey = `${before.dev}:${before.ino}`;
     const baselineFrontier = this.baselineFileFrontiers.get(fileKey);
     this.rememberBaselineFile(fileKey);
-    const sourceUnchanged = this.sourcePathUnchanged(transcriptPath, before);
-    const boundary = completeTranscriptBoundary(
+    await this.compressedReader.withMaterialized(
       transcriptPath,
-      this.config.maxBytesPerBatch
-    );
-    this.rememberBaselineFile(fileKey, boundary);
-    const cachedIdentity = this.identities.get(transcriptPath);
-    const parsedIdentity =
-      cachedIdentity?.fileKey === fileKey
-        ? cachedIdentity
-        : sourceIdentity(
-            transcriptPath,
-            boundary,
-            this.config.maxBytesPerBatch
-          );
-    if (!parsedIdentity) return;
-    const identity = {
-      sessionId: parsedIdentity.sessionId,
-      context: parsedIdentity.context
-    };
-    this.rememberIdentity(transcriptPath, { ...identity, fileKey });
-    const sourceProjectPath = sourceProjectId(identity.context);
-    const sourceProject = sourceProjectPath
-      ? readProjectMetadataForRoot(sourceProjectPath, {
-          ...process.env,
-          KOED_HOME: this.config.koedHome
-        })
-      : null;
-    if (observeHistorical) {
-      const sourceStartedAt = identity.context.transcriptMetadata.timestamp;
-      const sourceStartedBeforeActivation =
-        this.activatedAt === null ||
-        (typeof sourceStartedAt === "string" &&
-          Number.isFinite(Date.parse(sourceStartedAt)) &&
-          Date.parse(sourceStartedAt) <= this.activatedAt);
-      const latestActivityAt = latestTranscriptActivity(
-        transcriptPath,
-        boundary,
-        Math.max(this.config.maxBytesPerBatch, 64 * 1024),
-        identity.context
-      );
-      if (sourceStartedBeforeActivation && latestActivityAt) {
-        const frontierOffset = baselineFrontier ?? boundary;
-        this.historicalCandidates.set(identity.sessionId, {
-          sourceSessionId: identity.sessionId,
+      async (readablePath) => {
+        const boundary = completeTranscriptBoundary(
+          readablePath,
+          this.config.maxBytesPerBatch
+        );
+        const knownSourceTruncated = [...this.sourcePaths.values()].some(
+          (source) =>
+            source.transcriptPath === transcriptPath &&
+            boundary < source.providerCursorOffset
+        );
+        const sourceUnchanged = this.sourcePathUnchanged(
           transcriptPath,
-          context: identity.context,
+          before,
+          boundary
+        );
+        this.rememberBaselineFile(fileKey, boundary);
+        const cachedIdentity = this.identities.get(transcriptPath);
+        const identityKey = `${fileKey}:${before.ctimeMs}:${before.mtimeMs}`;
+        const parsedIdentity =
+          cachedIdentity?.fileKey === identityKey
+            ? cachedIdentity
+            : sourceIdentity(
+                readablePath,
+                boundary,
+                this.config.maxBytesPerBatch
+              );
+        if (!parsedIdentity) {
+          if (knownSourceTruncated) throw new Error("transcript_truncated");
+          return;
+        }
+        const identity = {
+          sessionId: parsedIdentity.sessionId,
+          context: parsedIdentity.context
+        };
+        if (
+          identity.context.transcriptMetadata.history_mode === "paginated" &&
+          (this.historyMetadataReader || this.config.historyMetadata)
+        ) {
+          const home = this.sourceCodexHome(transcriptPath);
+          const failure = this.historyMetadataFailures.get(home);
+          if (failure) throw failure;
+          const lookupKey = JSON.stringify([home, identity.sessionId]);
+          let pending = this.historyMetadataReads.get(lookupKey);
+          if (!pending) {
+            pending = this.sourceMetadataReader(home).then((reader) =>
+              reader.readThread(identity.sessionId)
+            );
+            this.historyMetadataReads.set(lookupKey, pending);
+          }
+          const current = await pending.catch((error: unknown) => {
+            this.historyMetadataFailures.set(home, error);
+            throw error;
+          });
+          let currentPath = current.path!;
+          if (
+            !existsSync(currentPath) &&
+            currentPath.endsWith(".jsonl") &&
+            existsSync(`${currentPath}.zst`)
+          )
+            currentPath += ".zst";
+          const currentResolved = await realpath(currentPath).catch(
+            () => undefined
+          );
+          if (!currentResolved)
+            throw new Error("codex_history_current_source_missing");
+          if (currentResolved !== resolvedSource) return;
+        }
+        this.rememberIdentity(transcriptPath, {
+          ...identity,
+          fileKey: identityKey
+        });
+        const sourceProjectPath = sourceProjectId(identity.context);
+        const sourceProject = sourceProjectPath
+          ? readProjectMetadataForRoot(sourceProjectPath, {
+              ...process.env,
+              KOED_HOME: this.config.koedHome
+            })
+          : null;
+        if (observeHistorical) {
+          const sourceStartedAt = identity.context.transcriptMetadata.timestamp;
+          const sourceStartedBeforeActivation =
+            this.activatedAt === null ||
+            (typeof sourceStartedAt === "string" &&
+              Number.isFinite(Date.parse(sourceStartedAt)) &&
+              Date.parse(sourceStartedAt) <= this.activatedAt);
+          const latestActivityAt = latestTranscriptActivity(
+            readablePath,
+            boundary,
+            Math.max(this.config.maxBytesPerBatch, 64 * 1024),
+            identity.context
+          );
+          if (sourceStartedBeforeActivation && latestActivityAt) {
+            const frontierOffset = baselineFrontier ?? boundary;
+            this.historicalCandidates.set(identity.sessionId, {
+              sourceSessionId: identity.sessionId,
+              transcriptPath,
+              redactedSourceLabel: path.basename(transcriptPath),
+              withTranscript: async (consume) => {
+                const nativePath =
+                  !existsSync(transcriptPath) &&
+                  transcriptPath.endsWith(".jsonl") &&
+                  existsSync(`${transcriptPath}.zst`)
+                    ? `${transcriptPath}.zst`
+                    : transcriptPath;
+                const { before: currentState } =
+                  await this.validateConfinedSource(nativePath);
+                return this.compressedReader.withMaterialized(
+                  nativePath,
+                  async (currentPath) => {
+                    const currentIdentity = sourceIdentity(
+                      currentPath,
+                      completeTranscriptBoundary(
+                        currentPath,
+                        this.config.maxBytesPerBatch
+                      ),
+                      this.config.maxBytesPerBatch
+                    );
+                    if (
+                      currentIdentity?.sessionId !== identity.sessionId ||
+                      JSON.stringify(currentIdentity.context) !==
+                        JSON.stringify(identity.context)
+                    )
+                      throw new Error("transcript_source_changed");
+                    return consume(currentPath);
+                  },
+                  currentState
+                );
+              },
+              context: identity.context,
+              sourceSession: this.sourceSessionRegistration(
+                identity,
+                sourceProjectPath,
+                sourceProject
+              ),
+              frontierOffset,
+              latestActivityAt,
+              ...(sourceProject
+                ? {
+                    projectId: sourceProject.localProjectId,
+                    projectName: sourceProject.displayName,
+                    projectFingerprint: sha256(
+                      `codex-project:${sourceProject.localProjectId}`
+                    )
+                  }
+                : { projectName: "Unassigned" })
+            });
+          }
+        }
+        if (
+          this.activatedAt !== null &&
+          baselineFrontier !== undefined &&
+          boundary <= (baselineFrontier ?? 0)
+        ) {
+          return;
+        }
+        const turnBoundary = transcriptPath.endsWith(".jsonl.zst")
+          ? null
+          : readCodexTranscriptTurnBoundary(
+              { KOED_HOME: this.config.koedHome },
+              {
+                sourceSessionId: identity.sessionId,
+                transcriptPath
+              }
+            );
+        const confirmedTurnBoundary =
+          turnBoundary !== null && turnBoundary.sourceOffset <= boundary
+            ? turnBoundary
+            : undefined;
+        if (confirmedTurnBoundary !== undefined) {
+          this.scheduleTurnBoundarySettle();
+        }
+        if (sourceUnchanged && confirmedTurnBoundary === undefined) {
+          return;
+        }
+        if (this.activatedAt === null) {
+          return;
+        }
+        const existingArtifact = await lookupArtifact(
+          this.client,
+          identity.sessionId
+        );
+        const startedAfterActivation =
+          baselineFrontier === undefined &&
+          this.activatedAt !== null &&
+          sourceStartedAfterActivation(identity.context, this.activatedAt);
+        if (
+          !existingArtifact &&
+          !startedAfterActivation &&
+          baselineFrontier === undefined
+        ) {
+          this.rememberDeferredFile(fileKey, boundary);
+          return;
+        }
+        const liveStartOffset = existingArtifact
+          ? existingArtifact.liveStartOffset
+          : startedAfterActivation
+            ? 0
+            : (baselineFrontier ?? boundary);
+        const liveStartLine = existingArtifact
+          ? existingArtifact.liveStartLine
+          : await countTranscriptLines(readablePath, liveStartOffset);
+        const historicalSelection = this.historicalObserver?.selectionFor(
+          identity.sessionId
+        );
+        const historicalJournal =
+          !existingArtifact &&
+          historicalSelection?.frontierOffset === liveStartOffset;
+        const result = await ingestCodexTranscriptJournal({
+          client: this.client,
           sourceSession: this.sourceSessionRegistration(
             identity,
             sourceProjectPath,
             sourceProject
           ),
-          frontierOffset,
-          latestActivityAt,
-          ...(sourceProject
-            ? {
-                projectId: sourceProject.localProjectId,
-                projectName: sourceProject.displayName,
-                projectFingerprint: sha256(
-                  `codex-project:${sourceProject.localProjectId}`
-                )
-              }
-            : { projectName: "Unassigned" })
-        });
-      }
-    }
-    if (
-      this.activatedAt !== null &&
-      baselineFrontier !== undefined &&
-      boundary <= (baselineFrontier ?? 0)
-    ) {
-      return;
-    }
-    const turnBoundary = readCodexTranscriptTurnBoundary(
-      { KOED_HOME: this.config.koedHome },
-      {
-        sourceSessionId: identity.sessionId,
-        transcriptPath
-      }
-    );
-    const confirmedTurnBoundary =
-      turnBoundary !== null && turnBoundary.sourceOffset <= boundary
-        ? turnBoundary
-        : undefined;
-    if (confirmedTurnBoundary !== undefined) {
-      this.scheduleTurnBoundarySettle();
-    }
-    if (sourceUnchanged && confirmedTurnBoundary === undefined) {
-      return;
-    }
-    if (this.activatedAt === null) {
-      return;
-    }
-    const existingArtifact = await lookupArtifact(
-      this.client,
-      identity.sessionId
-    );
-    const startedAfterActivation =
-      baselineFrontier === undefined &&
-      this.activatedAt !== null &&
-      sourceStartedAfterActivation(identity.context, this.activatedAt);
-    if (
-      !existingArtifact &&
-      !startedAfterActivation &&
-      baselineFrontier === undefined
-    ) {
-      this.rememberDeferredFile(fileKey, boundary);
-      return;
-    }
-    const liveStartOffset = existingArtifact
-      ? existingArtifact.liveStartOffset
-      : startedAfterActivation
-        ? 0
-        : (baselineFrontier ?? boundary);
-    const liveStartLine = existingArtifact
-      ? existingArtifact.liveStartLine
-      : await countTranscriptLines(transcriptPath, liveStartOffset);
-    const historicalSelection = this.historicalObserver?.selectionFor(
-      identity.sessionId
-    );
-    const historicalJournal =
-      !existingArtifact &&
-      historicalSelection?.frontierOffset === liveStartOffset;
-    const result = await ingestCodexTranscriptJournal({
-      client: this.client,
-      sourceSession: this.sourceSessionRegistration(
-        identity,
-        sourceProjectPath,
-        sourceProject
-      ),
-      sourceSessionId: identity.sessionId,
-      transcriptPath,
-      context: identity.context,
-      maxBytesPerBatch: this.config.maxBytesPerBatch,
-      journalStartOffset: historicalJournal ? 0 : liveStartOffset,
-      journalStartLine: historicalJournal ? 0 : liveStartLine,
-      liveStartOffset,
-      liveStartLine,
-      existingArtifact,
-      ...(confirmedTurnBoundary !== undefined
-        ? {
-            turnBoundaryObservedAt: confirmedTurnBoundary.observedAt,
-            turnBoundarySourceOffset: confirmedTurnBoundary.sourceOffset
-          }
-        : {})
-    });
-    if (confirmedTurnBoundary !== undefined && result.turnBoundaryHandled) {
-      acknowledgeCodexTranscriptTurnBoundary(
-        { KOED_HOME: this.config.koedHome },
-        {
           sourceSessionId: identity.sessionId,
-          transcriptPath
-        },
-        confirmedTurnBoundary.observedAt
-      );
-    }
-    if (!existingArtifact) {
-      this.metrics.sourcesRegistered += 1;
-      this.baselineFileFrontiers.delete(fileKey);
-      this.persistWatcherState();
-    }
-    this.metrics.bytesAdvanced += result.providerBytesAdvanced;
-    if (result.recordsConsumed > 0) {
-      this.metrics.batchesIngested += 1;
-      this.metrics.recordsIngested += result.recordsConsumed;
-    }
-    this.updateOpenTurnPoll(transcriptPath, before, result.turnOpen);
-    if (
-      result.artifact.providerCursorOffset < boundary ||
-      result.canonicalCursorOffset < result.artifact.providerCursorOffset
-    ) {
-      this.scanRequested = true;
-    }
-    this.rememberSourcePath(
-      result.artifact,
-      transcriptPath,
-      before,
-      result.canonicalCursorOffset
+          transcriptPath: readablePath,
+          redactedSourceLabel: path.basename(transcriptPath),
+          context: identity.context,
+          maxBytesPerBatch: this.config.maxBytesPerBatch,
+          journalStartOffset: historicalJournal ? 0 : liveStartOffset,
+          journalStartLine: historicalJournal ? 0 : liveStartLine,
+          liveStartOffset,
+          liveStartLine,
+          existingArtifact,
+          ...(confirmedTurnBoundary !== undefined
+            ? {
+                turnBoundaryObservedAt: confirmedTurnBoundary.observedAt,
+                turnBoundarySourceOffset: confirmedTurnBoundary.sourceOffset
+              }
+            : {})
+        });
+        if (confirmedTurnBoundary !== undefined && result.turnBoundaryHandled) {
+          acknowledgeCodexTranscriptTurnBoundary(
+            { KOED_HOME: this.config.koedHome },
+            {
+              sourceSessionId: identity.sessionId,
+              transcriptPath
+            },
+            confirmedTurnBoundary.observedAt
+          );
+        }
+        if (!existingArtifact) {
+          this.metrics.sourcesRegistered += 1;
+          this.baselineFileFrontiers.delete(fileKey);
+          this.persistWatcherState();
+        }
+        this.metrics.bytesAdvanced += result.providerBytesAdvanced;
+        if (result.recordsConsumed > 0) {
+          this.metrics.batchesIngested += 1;
+          this.metrics.recordsIngested += result.recordsConsumed;
+        }
+        this.updateOpenTurnPoll(transcriptPath, before, result.turnOpen);
+        if (
+          result.artifact.providerCursorOffset < boundary ||
+          result.canonicalCursorOffset < result.artifact.providerCursorOffset
+        ) {
+          this.scanRequested = true;
+        }
+        this.rememberSourcePath(
+          result.artifact,
+          transcriptPath,
+          before,
+          result.canonicalCursorOffset,
+          boundary
+        );
+      },
+      before
     );
+  }
+
+  private async validateConfinedSource(transcriptPath: string): Promise<{
+    resolvedSource: string;
+    before: Stats;
+  }> {
+    const linkState = await lstat(transcriptPath);
+    if (linkState.isSymbolicLink() || !linkState.isFile())
+      throw new Error("transcript_source_not_regular_file");
+    const resolvedSource = await realpath(transcriptPath);
+    let confined = false;
+    for (const root of this.config.roots) {
+      const resolvedRoot = await realpath(root).catch(() => undefined);
+      if (
+        resolvedRoot &&
+        resolvedRoot !== path.parse(resolvedRoot).root &&
+        !containsPath(resolvedRoot, environmentHome(process.env)) &&
+        containsPath(resolvedRoot, resolvedSource)
+      ) {
+        confined = true;
+        break;
+      }
+    }
+    if (!confined) throw new Error("transcript_source_outside_roots");
+    const before = await stat(transcriptPath);
+    if (
+      !before.isFile() ||
+      before.dev !== linkState.dev ||
+      before.ino !== linkState.ino
+    )
+      throw new Error("transcript_source_changed");
+    return { resolvedSource, before };
+  }
+
+  private sourceCodexHome(transcriptPath: string): string {
+    const configured = this.config.historyMetadata;
+    if (!configured) return "";
+    if (containsPath(configured.codexHome, transcriptPath))
+      return configured.codexHome;
+    const root = this.config.roots
+      .filter((candidate) => containsPath(candidate, transcriptPath))
+      .sort((left, right) => right.length - left.length)[0];
+    if (!root) throw new Error("codex_history_home_unmapped");
+    // Only native sessions/archived_sessions layouts identify another home.
+    // An arbitrary import directory cannot select a current native rollout.
+    const relative = path.relative(root, transcriptPath).split(path.sep);
+    if (["sessions", "archived_sessions"].includes(relative[0] ?? ""))
+      return root;
+    let ancestor = root;
+    while (ancestor !== path.parse(ancestor).root) {
+      if (["sessions", "archived_sessions"].includes(path.basename(ancestor)))
+        return path.dirname(ancestor);
+      ancestor = path.dirname(ancestor);
+    }
+    throw new Error("codex_history_home_unmapped");
+  }
+
+  private async sourceMetadataReader(
+    home: string
+  ): Promise<CodexHistoryMetadataReader> {
+    if (
+      this.historyMetadataReader &&
+      (!this.config.historyMetadata ||
+        home === this.config.historyMetadata.codexHome)
+    )
+      return this.historyMetadataReader;
+    const existing = this.historyMetadataReaders.get(home);
+    if (existing) {
+      this.historyMetadataReaders.delete(home);
+      this.historyMetadataReaders.set(home, existing);
+      return existing;
+    }
+    const configured = this.config.historyMetadata;
+    if (!configured) throw new Error("codex_history_home_unmapped");
+    if (this.historyMetadataReaders.size >= 8) {
+      const oldest = this.historyMetadataReaders.entries().next().value!;
+      this.historyMetadataReaders.delete(oldest[0]);
+      await oldest[1].close();
+    }
+    const env = { ...configured.env };
+    if (home !== configured.codexHome) delete env.CODEX_SQLITE_HOME;
+    const reader = createCodexHistoryMetadataReader({
+      ...configured,
+      env,
+      codexHome: home
+    });
+    this.historyMetadataReaders.set(home, reader);
+    return reader;
   }
 
   private sourceSessionRegistration(
@@ -1132,7 +1372,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             }
           : {}),
         sourceTransport: "transcript",
-        sourceAdapterVersion: "codex-transcript-v1",
+        sourceAdapterVersion:
+          identity.context.transcriptMetadata.history_mode === "paginated"
+            ? "codex-transcript-v2"
+            : "codex-transcript-v1",
         observedViaTranscript: true
       },
       ...(sourceProject
@@ -1203,14 +1446,19 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.openTurnPolls.set(transcriptPath, poll);
   }
 
-  private sourcePathUnchanged(transcriptPath: string, file: Stats): boolean {
+  private sourcePathUnchanged(
+    transcriptPath: string,
+    file: Stats,
+    readableSize = file.size
+  ): boolean {
     return [...this.sourcePaths.values()].some(
       (observation) =>
         observation.transcriptPath === transcriptPath &&
         observation.fileKey === `${file.dev}:${file.ino}` &&
         observation.size === file.size &&
         observation.modifiedAt === file.mtime.toISOString() &&
-        observation.providerCursorOffset >= file.size &&
+        observation.changeTimeMs === file.ctimeMs &&
+        observation.providerCursorOffset >= readableSize &&
         observation.canonicalCursorOffset >= observation.providerCursorOffset
     );
   }
@@ -1247,7 +1495,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     artifact: ConversationSourceArtifact,
     transcriptPath: string,
     file: Stats,
-    canonicalCursorOffset?: number
+    canonicalCursorOffset?: number,
+    completeSourceBoundary = file.size
   ): void {
     const prior = this.sourcePaths.get(artifact.id);
     this.sourcePaths.delete(artifact.id);
@@ -1256,6 +1505,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       fileKey: `${file.dev}:${file.ino}`,
       size: file.size,
       modifiedAt: file.mtime.toISOString(),
+      changeTimeMs: file.ctimeMs,
+      completeSourceBoundary,
       providerCursorOffset: artifact.providerCursorOffset,
       canonicalCursorOffset:
         canonicalCursorOffset ??
@@ -1339,12 +1590,14 @@ const watcherErrorCode = (error: unknown): string => {
 export const startCodexTranscriptWatcher = (
   client: CodexTranscriptWatcherClient = new MemoryApiClient(defaultConfig()),
   config = resolveCodexTranscriptWatcherConfig(),
-  historicalObserver?: CodexHistoricalCandidateObserver
+  historicalObserver?: CodexHistoricalCandidateObserver,
+  historyMetadataReader?: CodexHistoryMetadataReader
 ): CodexTranscriptWatcherHandle => {
   const watcher = new CodexTranscriptWatcher(
     client,
     config,
-    historicalObserver
+    historicalObserver,
+    historyMetadataReader
   );
   watcher.start();
   return watcher;

@@ -14,6 +14,29 @@ import {
 } from "./ai-client-source-adapters.js";
 import type { RecipientPublicKeyMaterial } from "./envelope-encryption.js";
 
+export interface ConversationSourceRewriteFrontier {
+  kind: "codex_legacy_to_paginated" | "codex_paginated_continuation";
+  journalStartOffset: number;
+  journalStartLine: number;
+  liveStartOffset: number;
+  liveStartLine: number;
+  prefixDigest: string;
+  currentSourceLength: number;
+  redactedSourceLabel?: string;
+}
+
+export const conversationSourceRewriteGenerationId = (
+  parentGenerationId: string,
+  prefixDigest: string
+): string => {
+  const hash = createHash("sha256")
+    .update(
+      `koed.conversation-source-rewrite/v1:${parentGenerationId}:${prefixDigest}`
+    )
+    .digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-8${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+};
+
 export const CONVERSATION_SOURCE_REPLICATION_PROTOCOL =
   "koed.conversation-source-replication/v1" as const;
 export const CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES =
@@ -209,6 +232,12 @@ export type ConversationSourceReplicationSourceDescriptor = {
   journalStartLine: number;
   liveStartOffset: number;
   liveStartLine: number;
+  codexHistory?: {
+    historyMode: "paginated";
+    externalThreadId: string;
+    threadKind: "conversation" | "subagent";
+    subagentHistoryStartOrdinal: number | null;
+  };
   project: {
     id: string;
     name: string;
@@ -1361,7 +1390,10 @@ export const parseConversationSourceReplicationSourceDescriptor = (
       "journalStartLine",
       "liveStartOffset",
       "liveStartLine",
-      "project"
+      "project",
+      ...(descriptor.sourceAdapterVersion === "codex-transcript-v2"
+        ? ["codexHistory"]
+        : [])
     ],
     "Conversation source descriptor"
   );
@@ -1388,6 +1420,41 @@ export const parseConversationSourceReplicationSourceDescriptor = (
         descriptor.sourceAdapterVersion === "pi-session-v1"));
   if (!sourceAdapter && !immutableBlobAdapterValid) {
     throw new TypeError("Conversation source descriptor format is invalid");
+  }
+  let codexHistory: ConversationSourceReplicationSourceDescriptor["codexHistory"];
+  if (descriptor.sourceAdapterVersion === "codex-transcript-v2") {
+    const history = ownRecord(descriptor.codexHistory, "Codex history context");
+    requireExactKeys(
+      history,
+      [
+        "historyMode",
+        "externalThreadId",
+        "threadKind",
+        "subagentHistoryStartOrdinal"
+      ],
+      "Codex history context"
+    );
+    if (
+      history.historyMode !== "paginated" ||
+      typeof history.externalThreadId !== "string" ||
+      history.externalThreadId.length < 1 ||
+      history.externalThreadId.length > 1_024 ||
+      (history.threadKind !== "conversation" &&
+        history.threadKind !== "subagent") ||
+      (history.subagentHistoryStartOrdinal !== null &&
+        (typeof history.subagentHistoryStartOrdinal !== "number" ||
+          !Number.isSafeInteger(history.subagentHistoryStartOrdinal) ||
+          history.subagentHistoryStartOrdinal < 0))
+    )
+      throw new TypeError("Codex history context is invalid");
+    codexHistory = {
+      historyMode: "paginated",
+      externalThreadId: history.externalThreadId,
+      threadKind: history.threadKind,
+      subagentHistoryStartOrdinal: history.subagentHistoryStartOrdinal as
+        | number
+        | null
+    };
   }
   if (
     typeof descriptor.externalSessionId !== "string" ||
@@ -1487,6 +1554,7 @@ export const parseConversationSourceReplicationSourceDescriptor = (
     journalStartLine,
     liveStartOffset,
     liveStartLine,
+    ...(codexHistory ? { codexHistory } : {}),
     project:
       projectId && projectName
         ? {

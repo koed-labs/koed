@@ -133,6 +133,8 @@ const isProtocolLiteral = (
 
   if (
     pathEquals(path, ["payload", "type"]) ||
+    pathEquals(path, ["payload", "item", "type"]) ||
+    pathEquals(path, ["payload", "item", "status"]) ||
     pathEquals(path, ["payload", "role"]) ||
     pathEquals(path, ["payload", "status"]) ||
     pathEquals(path, ["payload", "phase"]) ||
@@ -143,6 +145,29 @@ const isProtocolLiteral = (
   ) {
     return isProtocolEnum(value);
   }
+  if (
+    context.rootType === "session_meta" &&
+    pathEquals(path, ["payload", "history_mode"])
+  ) {
+    return value === "legacy" || value === "paginated";
+  }
+  if (
+    context.rootType === "event_msg" &&
+    (pathEquals(path, ["payload", "thread_id"]) ||
+      pathEquals(path, ["payload", "item", "id"]) ||
+      pathEquals(path, ["payload", "item", "client_id"]))
+  )
+    return isProtocolIdentifier(value);
+  if (
+    context.rootType === "event_msg" &&
+    path.length === 5 &&
+    path[0] === "payload" &&
+    path[1] === "item" &&
+    path[2] === "content" &&
+    typeof path[3] === "number" &&
+    path[4] === "type"
+  )
+    return isProtocolEnum(value);
 
   if (
     context.rootType === "session_meta" &&
@@ -259,6 +284,14 @@ export const prepareCodexTeamSourceRecord = (input: {
   }
   const payload = payloadOf(source as Record<string, PrivacyJsonValue>);
   if (type === "response_item" && payload?.type === "reasoning") {
+    return { disposition: "drop", reason: "hidden_reasoning" };
+  }
+  if (
+    type === "event_msg" &&
+    payload?.type === "item_completed" &&
+    isObject(payload.item) &&
+    payload.item.type === "Reasoning"
+  ) {
     return { disposition: "drop", reason: "hidden_reasoning" };
   }
   if (

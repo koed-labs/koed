@@ -388,7 +388,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 const threadInfoFromResponse = (
-  method: "thread/start" | "thread/resume" | "thread/fork",
+  method: "thread/start" | "thread/resume" | "thread/fork" | "thread/read",
   value: unknown
 ): CodexAppServerThreadInfo => {
   const thread = asRecord(asRecord(value).thread);
@@ -792,6 +792,51 @@ export class CodexAppServerClient {
     return response.result;
   }
 
+  async readThread(threadId: string): Promise<CodexAppServerThreadInfo> {
+    const response = await this.request("thread/read", {
+      threadId,
+      includeTurns: false
+    });
+    const thread = threadInfoFromResponse("thread/read", response.result);
+    if (thread.id !== threadId)
+      throw new Error("codex_history_identity_mismatch");
+    if (Array.isArray(thread.raw.turns) && thread.raw.turns.length > 0)
+      throw new Error("codex_history_unexpected_hydration");
+    return thread;
+  }
+
+  async readThreadTurnsPage(
+    threadId: string,
+    options: { cursor?: string; limit?: number } = {}
+  ): Promise<{ data: Record<string, unknown>[]; nextCursor: string | null }> {
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
+      throw new Error("codex_history_page_limit_invalid");
+    const response = await this.request("thread/turns/list", {
+      threadId,
+      limit,
+      sortDirection: "asc",
+      itemsView: "summary",
+      ...(options.cursor ? { cursor: options.cursor } : {})
+    });
+    const page = asRecord(response.result);
+    if (
+      !Array.isArray(page.data) ||
+      page.data.length > limit ||
+      (page.nextCursor !== null && typeof page.nextCursor !== "string") ||
+      (typeof page.nextCursor === "string" &&
+        (page.nextCursor.length === 0 || page.nextCursor === options.cursor))
+    )
+      throw new Error("codex_history_page_invalid");
+    const data = page.data.map(asRecord);
+    if (
+      data.some((turn) => typeof turn.id !== "string" || !turn.id.length) ||
+      new Set(data.map((turn) => turn.id)).size !== data.length
+    )
+      throw new Error("codex_history_page_invalid");
+    return { data, nextCursor: page.nextCursor as string | null };
+  }
+
   async startThread(
     config: CodexAppServerRunConfig,
     options: CodexAppServerThreadStartOptions = {}
@@ -836,6 +881,7 @@ export class CodexAppServerClient {
     this.installRunHandlers(config);
     const params = {
       threadId,
+      excludeTurns: true,
       model: config.model,
       cwd: config.cwd,
       approvalPolicy: config.approvalPolicy ?? "never",

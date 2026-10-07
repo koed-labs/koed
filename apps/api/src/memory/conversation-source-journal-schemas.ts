@@ -189,7 +189,44 @@ export const conversationSourceSuccessorGenerationSchema = z
   .object({
     expectedParentClosureHash: digest,
     sourceGenerationId: z.string().uuid(),
-    originKeyId: z.string().uuid()
+    originKeyId: z.string().uuid(),
+    sourceRewrite: z
+      .object({
+        kind: z.enum([
+          "codex_legacy_to_paginated",
+          "codex_paginated_continuation"
+        ]),
+        journalStartOffset: boundedOffset,
+        journalStartLine: z.number().int().nonnegative().max(2_000_000_000),
+        liveStartOffset: z
+          .number()
+          .int()
+          .positive()
+          .max(Number.MAX_SAFE_INTEGER),
+        liveStartLine: z.number().int().positive().max(2_000_000_000),
+        prefixDigest: digest,
+        redactedSourceLabel: z
+          .string()
+          .min(1)
+          .max(255)
+          .regex(/^rollout-[a-zA-Z0-9_.-]+\.jsonl(?:\.zst)?$/)
+          .optional(),
+        currentSourceLength: z
+          .number()
+          .int()
+          .positive()
+          .max(512 * 1024 * 1024)
+      })
+      .strict()
+      .refine(
+        (value) =>
+          value.journalStartOffset < value.liveStartOffset &&
+          value.journalStartLine < value.liveStartLine &&
+          value.liveStartOffset <= value.currentSourceLength &&
+          (value.kind !== "codex_paginated_continuation" ||
+            value.redactedSourceLabel !== undefined)
+      )
+      .optional()
   })
   .strict();
 

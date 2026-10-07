@@ -323,6 +323,7 @@ export {
   calculateConversationSourceGenerationRegistrationDigest,
   calculateConversationSourceOriginKeyRegistrationDigest,
   calculateConversationSourceRootDigest,
+  conversationSourceRewriteGenerationId,
   calculateConversationSourceComponentSetDigest,
   calculateConversationSourceSetClosureDigest,
   calculateConversationSourceReplicationContentDigest,
@@ -356,6 +357,7 @@ export {
   verifyConversationSourceSetClosureManifestSignature
 } from "./conversation-source-replication.js";
 export type {
+  ConversationSourceRewriteFrontier,
   ConversationSourceComponentIdentity,
   ConversationSourceComponentRole,
   ConversationSourceContentFraming,

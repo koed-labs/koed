@@ -13,7 +13,9 @@ import fs, {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CodexHistoricalCandidate } from "../src/codex-historical-ingestion.js";
 
 import { MemoryApiError } from "../src/index.js";
 import {
@@ -27,6 +29,7 @@ import {
   type CodexTranscriptWatcherConfig
 } from "../src/codex-transcript-watcher.js";
 import { signalCodexTranscriptWatcher } from "../src/codex-transcript-watcher-signal.js";
+import type { CodexHistoryMetadataReader } from "../src/codex-history-metadata.js";
 
 const temporaryDirectories: string[] = [];
 const watcherHandles: Array<ReturnType<typeof startCodexTranscriptWatcher>> =
@@ -48,12 +51,14 @@ afterEach(async () => {
 const trackedWatcher = (
   client: CodexTranscriptWatcherClient,
   config: CodexTranscriptWatcherConfig,
-  historicalObserver?: CodexHistoricalCandidateObserver
+  historicalObserver?: CodexHistoricalCandidateObserver,
+  historyMetadataReader?: CodexHistoryMetadataReader
 ) => {
   const watcher = startCodexTranscriptWatcher(
     client,
     config,
-    historicalObserver
+    historicalObserver,
+    historyMetadataReader
   );
   watcherHandles.push(watcher);
   return watcher;
@@ -119,6 +124,9 @@ interface Artifact {
   providerCursorLine: number;
   currentSourceLength: number;
   sourceModifiedAt: string | null;
+  sourceGenerationId: string;
+  closureHash?: string;
+  priorGenerationClosure?: { sourceGenerationId: string };
 }
 
 interface Segment {
@@ -189,6 +197,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
     }
     this.sessionCalls += 1;
     const artifact: Artifact = {
+      sourceGenerationId: `generation-${this.artifacts.size + 1}`,
       id: `artifact-${this.artifacts.size + 1}`,
       sessionId: `22222222-2222-4222-8222-${externalSessionId.padEnd(12, "0").slice(-12)}`,
       externalSessionId,
@@ -273,6 +282,42 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
     ) {
       throw new MemoryApiError("finalization conflict", { status: 409 });
     }
+    artifact.closureHash = "1".repeat(64);
+    return { artifact, replayed: false };
+  }
+
+  async createConversationSourceSuccessorGeneration(
+    artifactId: string,
+    input: {
+      expectedParentClosureHash: string;
+      sourceGenerationId: string;
+      originKeyId: string;
+      sourceRewrite?: import("@koed/shared").ConversationSourceRewriteFrontier;
+    }
+  ) {
+    const parent = [...this.artifacts.values()].find(
+      (candidate) => candidate.id === artifactId
+    )!;
+    expect(parent.closureHash).toBe(input.expectedParentClosureHash);
+    if (this.captureState !== "enabled" || this.policyPaused)
+      throw new Error("capture_policy_blocked");
+    const frontier = input.sourceRewrite!;
+    const artifact: Artifact = {
+      ...parent,
+      id: `${parent.id}-rewrite`,
+      sourceGenerationId: input.sourceGenerationId,
+      priorGenerationClosure: { sourceGenerationId: parent.sourceGenerationId },
+      journalStartOffset: frontier.journalStartOffset,
+      journalStartLine: frontier.journalStartLine,
+      liveStartOffset: frontier.liveStartOffset,
+      liveStartLine: frontier.liveStartLine,
+      providerCursorOffset: frontier.journalStartOffset,
+      providerCursorLine: frontier.journalStartLine,
+      currentSourceLength: frontier.currentSourceLength,
+      closureHash: undefined
+    };
+    this.artifacts.set(parent.externalSessionId, artifact);
+    this.segments.set(artifact.id, []);
     return { artifact, replayed: false };
   }
 
@@ -382,6 +427,368 @@ const transcriptPath = (root: string, name = "rollout-test.jsonl"): string => {
 };
 
 describe("Codex Transcript Watcher source journal", () => {
+  it("preserves captured Memory and old evidence when a verified native migration rewrites the source", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    const sourceId = "native-rewrite";
+    const original = [
+      sessionRecord(sourceId),
+      {
+        ...userRecord("original"),
+        payload: { type: "task_started", turn_id: "turn-1" }
+      },
+      userRecord("Original prompt"),
+      assistantEventRecord("Original answer"),
+      {
+        ...controlRecord(),
+        payload: { type: "task_complete", turn_id: "turn-1" }
+      }
+    ];
+    writeFileSync(transcript, original.map(line).join(""));
+    await watcher.scanNow();
+    const parent = { ...client.artifacts.get(sourceId)! };
+    const oldSegments = structuredClone(client.segments.get(parent.id));
+    const batches = client.itemBatches.length;
+    const rewritten = original.map((record, ordinal) => {
+      if (ordinal === 0)
+        return {
+          ...record,
+          ordinal,
+          payload: { ...record.payload, history_mode: "paginated" }
+        };
+      if (ordinal !== 2 && ordinal !== 3) return { ...record, ordinal };
+      return {
+        timestamp: record.timestamp,
+        ordinal,
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          thread_id: sourceId,
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse(record.timestamp),
+          item:
+            ordinal === 2
+              ? {
+                  type: "UserMessage",
+                  id: "item-1",
+                  content: [
+                    { type: "text", text: "Original prompt", text_elements: [] }
+                  ]
+                }
+              : {
+                  type: "AgentMessage",
+                  id: "item-2",
+                  content: [{ type: "Text", text: "Original answer" }]
+                }
+        }
+      };
+    });
+    writeFileSync(transcript, rewritten.map(line).join(""));
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    const successor = client.artifacts.get(sourceId)!;
+    expect(successor.id).not.toBe(parent.id);
+    expect(successor.sessionId).toBe(parent.sessionId);
+    expect(successor.journalStartOffset).toBe(0);
+    expect(client.segments.get(parent.id)).toEqual(oldSegments);
+    expect(client.itemBatches).toHaveLength(batches);
+    appendFileSync(
+      transcript,
+      line({
+        timestamp: "2099-01-01T00:00:02.000Z",
+        ordinal: 5,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-2" }
+      }) +
+        line({
+          timestamp: "2099-01-01T00:00:03.000Z",
+          ordinal: 6,
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            thread_id: sourceId,
+            turn_id: "turn-2",
+            item: {
+              type: "UserMessage",
+              id: "new-user",
+              content: [{ type: "text", text: "New prompt" }]
+            }
+          }
+        })
+    );
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    expect(
+      client.itemBatches
+        .flat()
+        .filter(
+          (item) =>
+            item.rawText === "Original prompt" &&
+            item.projectionStatus === "pending"
+        )
+    ).toHaveLength(1);
+    expect(
+      client.itemBatches
+        .flat()
+        .filter(
+          (item) =>
+            item.rawText === "New prompt" && item.projectionStatus === "pending"
+        )
+    ).toHaveLength(1);
+  });
+  it("retains paginated mode and own-history boundaries across watcher restart", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    let watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const sourceId = "paginated-restart";
+    const transcript = transcriptPath(root);
+    writeFileSync(
+      transcript,
+      line({
+        ...sessionRecord(sourceId),
+        ordinal: 0,
+        payload: {
+          ...sessionRecord(sourceId).payload,
+          history_mode: "paginated",
+          thread_kind: "subagent",
+          subagent_history_start_ordinal: 3
+        }
+      })
+    );
+    await watcher.scanNow();
+    const artifact = client.artifacts.get(sourceId)!;
+    expect(client.cursors.get(artifact.id)?.parserState).toMatchObject({
+      historyMode: "paginated",
+      subagentHistoryStartOrdinal: 3
+    });
+    await watcher.stop();
+    watcherHandles.splice(watcherHandles.indexOf(watcher), 1);
+    watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const completed = (ordinal: number, threadId: string, text: string) => ({
+      timestamp: "2099-01-01T00:00:01.000Z",
+      ordinal,
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: threadId,
+        turn_id: "own-turn",
+        item: {
+          type: "AgentMessage",
+          id: `message-${ordinal}`,
+          content: [{ type: "Text", text }]
+        }
+      }
+    });
+    appendFileSync(
+      transcript,
+      line(completed(1, "parent-thread", "Inherited context")) +
+        line(completed(3, sourceId, "Own child answer")) +
+        line({
+          ...controlRecord(),
+          ordinal: 4,
+          payload: { type: "task_complete", turn_id: "own-turn" }
+        })
+    );
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    const rows = client.itemBatches.flat();
+    expect(
+      rows.find(
+        (item) =>
+          (item.metadata as Record<string, unknown>)?.inheritedCodexContext ===
+          true
+      )?.projectionStatus
+    ).toBe("raw_only");
+    expect(
+      rows.find((item) => item.rawText === "Own child answer")
+    ).toMatchObject({ projectionStatus: "pending" });
+    expect(
+      rows.some(
+        (item) =>
+          item.rawText === "Inherited context" &&
+          item.projectionStatus === "pending"
+      )
+    ).toBe(false);
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      statSync(transcript).size
+    );
+  });
+
+  it("does not advance the canonical cursor across an unsupported native item", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    writeFileSync(
+      transcript,
+      line({
+        ...sessionRecord("unsupported-native"),
+        ordinal: 0,
+        payload: {
+          ...sessionRecord("unsupported-native").payload,
+          history_mode: "paginated"
+        }
+      })
+    );
+    await watcher.scanNow();
+    const artifact = client.artifacts.get("unsupported-native")!;
+    const prior = client.cursors.get(artifact.id)!.sourceOffset;
+    appendFileSync(
+      transcript,
+      line({
+        timestamp: "2099-01-01T00:00:01.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          thread_id: "unsupported-native",
+          turn_id: "turn-1",
+          item: { type: "FutureItem", id: "future-1" }
+        }
+      })
+    );
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBe(
+      "codex_completed_item_unsupported_type"
+    );
+    expect(client.cursors.get(artifact.id)!.sourceOffset).toBe(prior);
+    expect(artifact.providerCursorOffset).toBe(statSync(transcript).size);
+  });
+
+  it("keeps journal cursors unchanged when a compressed replacement is incomplete", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const compressed = `${transcriptPath(root)}.zst`;
+    const content =
+      line(sessionRecord("truncated-compressed")) +
+      line(userRecord("Original prompt")) +
+      line(controlRecord());
+    writeFileSync(compressed, zstdCompressSync(Buffer.from(content)));
+    await watcher.scanNow();
+    const artifact = { ...client.artifacts.get("truncated-compressed")! };
+    const cursor = { ...client.cursors.get(artifact.id)! };
+    const replacement = zstdCompressSync(
+      Buffer.from(content + line(userRecord("Unfinished prompt")))
+    );
+    writeFileSync(compressed, replacement.subarray(0, -2));
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBe(
+      "codex_compressed_transcript_invalid"
+    );
+    expect(
+      client.artifacts.get("truncated-compressed")!.providerCursorOffset
+    ).toBe(artifact.providerCursorOffset);
+    expect(client.cursors.get(artifact.id)!.sourceOffset).toBe(
+      cursor.sourceOffset
+    );
+    expect(
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "Unfinished prompt")
+    ).toBe(false);
+  });
+  it("captures a compressed source once across plain/compressed storage changes", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const plain = transcriptPath(root);
+    const compressed = `${plain}.zst`;
+    const content =
+      line(sessionRecord("compressed-session")) +
+      line(userRecord("Compressed prompt")) +
+      line(controlRecord());
+    const encoded = zstdCompressSync(Buffer.from(content));
+    writeFileSync(compressed, encoded);
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    expect(client.artifacts.size).toBe(1);
+    expect(
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "Compressed prompt")
+    ).toBe(true);
+    const batches = client.itemBatches.length;
+    writeFileSync(plain, content);
+    await watcher.scanNow();
+    unlinkSync(plain);
+    await watcher.scanNow();
+    expect(client.artifacts.size).toBe(1);
+    expect(client.itemBatches).toHaveLength(batches);
+    expect(readFileSync(compressed)).toEqual(encoded);
+    await watcher.stop();
+    expect(
+      fs
+        .readdirSync(path.join(root, "koed", "state"))
+        .filter((entry) => entry.startsWith("codex-decoded-"))
+    ).toEqual([]);
+  });
+
+  it("discovers compressed histories while preferring an existing regular plain sibling", async () => {
+    const root = temporaryDirectory();
+    const plain = transcriptPath(root);
+    const compressed = `${plain}.zst`;
+    writeFileSync(
+      compressed,
+      zstdCompressSync(Buffer.from(line(sessionRecord("compressed-discovery"))))
+    );
+    expect(await discoverCodexTranscripts(watcherConfig(root))).toEqual([
+      compressed
+    ]);
+    writeFileSync(plain, line(sessionRecord("compressed-discovery")));
+    expect(await discoverCodexTranscripts(watcherConfig(root))).toEqual([
+      plain
+    ]);
+  });
+
+  it("keeps baseline compressed history behind the historical admission frontier", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const plain = transcriptPath(root);
+    const compressed = `${plain}.zst`;
+    writeFileSync(
+      compressed,
+      zstdCompressSync(
+        Buffer.from(
+          line(
+            sessionRecord(
+              "old-compressed",
+              "/fixture/project",
+              "2026-01-01T00:00:00.000Z"
+            )
+          ) + line(userRecord("Older prompt"))
+        )
+      )
+    );
+    const candidates: CodexHistoricalCandidate[] = [];
+    const watcher = trackedWatcher(client, watcherConfig(root), {
+      offerCandidates(offered) {
+        candidates.push(...offered);
+      },
+      selectionFor() {
+        return undefined;
+      }
+    });
+    await watcher.scanNow();
+    await watcher.scanNow();
+    expect(client.artifacts.size).toBe(0);
+    expect(client.itemBatches).toHaveLength(0);
+    expect(candidates).toContainEqual(
+      expect.objectContaining({
+        sourceSessionId: "old-compressed",
+        redactedSourceLabel: path.basename(compressed)
+      })
+    );
+  });
+
   it("uses platform-delimited supported roots and rejects unsafe root scope", () => {
     const home = temporaryDirectory();
     const first = path.join(home, ".codex-a");
@@ -416,6 +823,18 @@ describe("Codex Transcript Watcher source journal", () => {
     );
 
     expect(discovered).toEqual([newTranscript]);
+  });
+
+  it("rejects a configured directory alias that expands capture to the whole home", () => {
+    const home = temporaryDirectory();
+    const alias = path.join(home, "history-alias");
+    symlinkSync(home, alias, "dir");
+    expect(() =>
+      resolveCodexTranscriptWatcherConfig({
+        HOME: home,
+        MEMORY_CODEX_TRANSCRIPT_ROOTS: alias
+      })
+    ).toThrow("too broad");
   });
 
   it("automatically completes a bounded activation cycle before ingesting live growth", async () => {
@@ -798,6 +1217,60 @@ describe("Codex Transcript Watcher source journal", () => {
     ]);
   });
 
+  it("revalidates historical source confinement and identity for each batch", async () => {
+    const root = temporaryDirectory();
+    const outside = temporaryDirectory();
+    const transcript = transcriptPath(
+      root,
+      "rollout-historical-identity.jsonl"
+    );
+    const original =
+      line(sessionRecord("historical-identity")) +
+      line(userRecord("Original history"));
+    writeFileSync(transcript, original);
+    let offered: CodexHistoricalCandidate | undefined;
+    const observer: CodexHistoricalCandidateObserver = {
+      offerCandidates(candidates) {
+        offered ??= candidates.find(
+          (candidate) => candidate.sourceSessionId === "historical-identity"
+        );
+      },
+      selectionFor: () => undefined
+    };
+    const watcher = trackedWatcher(
+      new FakeWatcherClient(),
+      watcherConfig(root),
+      observer
+    );
+    await watcher.scanNow();
+    expect(offered?.withTranscript).toBeDefined();
+    const consume = vi.fn(async (readablePath: string) =>
+      readFileSync(readablePath, "utf8")
+    );
+    await expect(offered!.withTranscript!(consume)).resolves.toBe(original);
+    writeFileSync(
+      transcript,
+      line(sessionRecord("different-session")) +
+        line(userRecord("Other history"))
+    );
+    consume.mockClear();
+    await expect(offered!.withTranscript!(consume)).rejects.toThrow(
+      "transcript_source_changed"
+    );
+    expect(consume).not.toHaveBeenCalled();
+    writeFileSync(transcript, original);
+    writeFileSync(path.join(outside, path.basename(transcript)), original);
+    renameSync(
+      path.dirname(transcript),
+      `${path.dirname(transcript)}-original`
+    );
+    symlinkSync(outside, path.dirname(transcript), "dir");
+    await expect(offered!.withTranscript!(consume)).rejects.toThrow(
+      "transcript_source_outside_roots"
+    );
+    expect(consume).not.toHaveBeenCalled();
+  });
+
   it("keeps a deleted selected source path-free and retryable", async () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root, "rollout-deleted-history.jsonl");
@@ -981,16 +1454,11 @@ describe("Codex Transcript Watcher source journal", () => {
 
     const artifact = client.artifacts.get("oversized-record")!;
     const segments = client.segments.get(artifact.id)!;
-    expect(segments).toHaveLength(2);
-    expect(
-      Buffer.from(segments[1]!.bytesBase64, "base64").toString("utf8")
-    ).toBe(oversizedRecord);
-    expect(artifact.providerCursorOffset).toBe(
-      Buffer.byteLength(line(sessionRecord("oversized-record"))) +
-        Buffer.byteLength(oversizedRecord)
+    const decoded = segments.map((segment) =>
+      Buffer.from(segment.bytesBase64, "base64").toString("utf8")
     );
-
-    await watcher.scanNow();
+    expect(decoded).toContain(oversizedRecord);
+    expect(decoded.join("")).toBe(content);
     expect(artifact.providerCursorOffset).toBe(Buffer.byteLength(content));
   });
 
@@ -1539,6 +2007,220 @@ describe("Codex Transcript Watcher source journal", () => {
     await watcher.scanNow();
 
     expect(client.artifacts.size).toBe(0);
+  });
+
+  it("captures only the paginated file selected by native metadata, not an older retained rollout", async () => {
+    const root = temporaryDirectory();
+    const current = transcriptPath(root, "rollout-current.jsonl");
+    const retired = transcriptPath(root, "rollout-retained.jsonl");
+    const id = "native-selection";
+    const header = {
+      ...sessionRecord(id),
+      ordinal: 0,
+      payload: { ...sessionRecord(id).payload, history_mode: "paginated" }
+    };
+    const prompt = (message: string) => ({
+      timestamp: "2099-01-01T00:00:01.000Z",
+      ordinal: 1,
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: id,
+        turn_id: "turn-1",
+        item: {
+          type: "UserMessage",
+          id: "prompt-1",
+          content: [{ type: "text", text: message }]
+        }
+      }
+    });
+    const readThread = vi
+      .fn()
+      .mockResolvedValue({ id, path: current, raw: { id, turns: [] } });
+    const reader: CodexHistoryMetadataReader = {
+      readThread,
+      close: vi.fn().mockResolvedValue(undefined)
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root),
+      undefined,
+      reader
+    );
+    await watcher.scanNow();
+    writeFileSync(current, line(header) + line(prompt("Current prompt")));
+    writeFileSync(retired, line(header) + line(prompt("Retired prompt")));
+    await watcher.scanNow();
+    expect(
+      client.itemBatches
+        .flat()
+        .filter((item) => item.projectionStatus === "pending")
+        .map((item) => item.rawText)
+    ).toContain("Current prompt");
+    expect(
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "Retired prompt")
+    ).toBe(false);
+    expect(client.artifacts.size).toBe(1);
+    expect(readThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects native history separately for configured homes and isolates connection failures", async () => {
+    const root = temporaryDirectory();
+    const homes = ["active", "secondary", "archive", "failed"].map((name) =>
+      path.join(root, name)
+    );
+    const roots = homes.map((home, index) =>
+      index === 1
+        ? home
+        : path.join(home, index === 2 ? "archived_sessions" : "sessions")
+    );
+    const sources = homes.map((home, index) =>
+      path.join(
+        home,
+        index === 2 ? "archived_sessions" : "sessions",
+        "rollout-current.jsonl"
+      )
+    );
+    for (const source of sources)
+      mkdirSync(path.dirname(source), { recursive: true });
+    const binary = path.join(root, "native-metadata-fixture.mjs");
+    const requests = path.join(root, "metadata-requests.jsonl");
+    writeFileSync(
+      binary,
+      `
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const sources = ${JSON.stringify(Object.fromEntries(homes.map((home, index) => [home, sources[index]])))};
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  appendFileSync(${JSON.stringify(requests)}, JSON.stringify({ home: process.env.CODEX_HOME, method: request.method }) + "\\n");
+  if (request.method === "initialized") return;
+  if (request.method === "initialize") return send({ id: request.id, result: { codexHome: process.env.CODEX_HOME } });
+  if (process.env.CODEX_HOME === ${JSON.stringify(homes[3])}) return send({ id: request.id, error: { message: "Fixture unavailable" } });
+  if (request.method === "thread/read") return send({ id: request.id, result: { thread: { id: request.params.threadId, path: sources[process.env.CODEX_HOME], turns: [] } } });
+  if (request.method === "thread/turns/list") return send({ id: request.id, result: { data: [], nextCursor: null } });
+  send({ id: request.id, error: { message: "Unexpected operation" } });
+});
+`
+    );
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, {
+      ...watcherConfig(root),
+      roots,
+      historyMetadata: {
+        binary,
+        codexHome: homes[0]!,
+        env: { ...process.env, CODEX_HOME: homes[0]! }
+      }
+    });
+    await watcher.scanNow();
+    for (const [index, source] of sources.entries()) {
+      const id = `native-home-${index}`;
+      const record = sessionRecord(id);
+      writeFileSync(
+        source,
+        line({
+          ...record,
+          ordinal: 0,
+          payload: { ...record.payload, history_mode: "paginated" }
+        }) +
+          line({
+            timestamp: "2099-01-01T00:00:01.000Z",
+            type: "event_msg",
+            ordinal: 1,
+            payload: {
+              type: "item_completed",
+              thread_id: id,
+              turn_id: "turn-1",
+              item: {
+                type: "UserMessage",
+                id: "prompt-1",
+                content: [{ type: "text", text: `Home ${index}` }]
+              }
+            }
+          })
+      );
+    }
+    await watcher.scanNow();
+    expect([...client.artifacts.keys()].sort()).toEqual([
+      "native-home-0",
+      "native-home-1",
+      "native-home-2"
+    ]);
+    const operations = readFileSync(requests, "utf8")
+      .trim()
+      .split("\n")
+      .map((value) => JSON.parse(value) as { home: string; method: string });
+    expect(
+      new Set(
+        operations
+          .filter((value) => value.method === "initialize")
+          .map((value) => value.home)
+      )
+    ).toEqual(new Set(homes));
+    expect(watcher.snapshot().lastErrorCode).toBe(
+      "codex_history_metadata_unavailable"
+    );
+  });
+
+  it("keeps capture pending and bounds metadata retries when app-server is unavailable", async () => {
+    const root = temporaryDirectory();
+    const readThread = vi
+      .fn()
+      .mockRejectedValue(new Error("codex_history_metadata_unavailable"));
+    const reader: CodexHistoryMetadataReader = {
+      readThread,
+      close: vi.fn().mockResolvedValue(undefined)
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root),
+      undefined,
+      reader
+    );
+    await watcher.scanNow();
+    for (let index = 0; index < 3; index++) {
+      const id = `metadata-pending-${index}`;
+      const record = sessionRecord(id);
+      writeFileSync(
+        transcriptPath(root, `rollout-${index}.jsonl`),
+        line({
+          ...record,
+          ordinal: 0,
+          payload: { ...record.payload, history_mode: "paginated" }
+        })
+      );
+    }
+    await watcher.scanNow();
+    expect(client.artifacts.size).toBe(0);
+    expect(watcher.snapshot().lastErrorCode).toBe(
+      "codex_history_metadata_unavailable"
+    );
+    expect(readThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not capture a directory symlink pointing outside the configured source root", async () => {
+    const root = temporaryDirectory();
+    const outside = temporaryDirectory();
+    const config = watcherConfig(root);
+    mkdirSync(config.roots[0]!, { recursive: true });
+    writeFileSync(
+      path.join(outside, "rollout-outside.jsonl"),
+      line(sessionRecord("directory-outside")) +
+        line(userRecord("Private outside content"))
+    );
+    symlinkSync(outside, path.join(config.roots[0]!, "alias"), "dir");
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, config);
+    await watcher.scanNow();
+    await watcher.scanNow();
+    expect(client.artifacts.size).toBe(0);
+    expect(client.itemBatches).toEqual([]);
   });
 
   it("writes bounded redacted diagnostic status with private permissions", async () => {

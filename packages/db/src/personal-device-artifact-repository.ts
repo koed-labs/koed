@@ -2697,7 +2697,7 @@ export const createPersonalDeviceArtifactRepository = (
           token_count,seal_reason,captured_at,source_event_time,source_sequence)
          values ($1,$1,'personal',$2,$3,'transcript',$4,$5,$6,$7::jsonb,
           $8,$9,$10,$11::bigint,$12,$13,$14,$15,$16,$17,$18::bigint)
-         on conflict (idempotency_key) where idempotency_key is not null
+         on conflict (owner_user_id, visibility, idempotency_key) where idempotency_key is not null
          do update
          set updated_at=now()
          where memory_events.owner_user_id=excluded.owner_user_id

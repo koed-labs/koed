@@ -15,6 +15,20 @@ describe("AI-client source adapter registry", () => {
         sourceRuntime: "codex",
         artifactFormat: "codex_rollout_jsonl",
         artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v2"
+      },
+      {
+        sourceKind: "codex",
+        sourceRuntime: "codex-cli",
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v2"
+      },
+      {
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
         sourceAdapterVersion: "codex-transcript-v1"
       },
       {

@@ -15,6 +15,8 @@ import {
   verifyConversationSourceSetClosureManifestSignature,
   verifyConversationSourceReplicationManifestForAcceptance,
   decryptEnvelopeToUtf8,
+  conversationSourceRewriteGenerationId,
+  type ConversationSourceRewriteFrontier,
   type ConversationSourceOriginKeyRegistration,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
@@ -1123,6 +1125,7 @@ export interface ConversationSourceJournalRepository {
       sourceCreatedAt: string;
       storageProvider: string;
       storagePrefix: string;
+      sourceRewrite?: ConversationSourceRewriteFrontier;
     }
   ): Promise<{
     artifact: ConversationSourceArtifactRecord;
@@ -1152,6 +1155,10 @@ export interface ConversationSourceJournalRepository {
     actor: ActorContext,
     sourceGenerationId: string,
     sourceComponentId?: string
+  ): Promise<ConversationSourceArtifactRecord | null>;
+  getConversationSourceArtifactByCodexThreadIdentity(
+    actor: ActorContext,
+    input: { externalThreadId: string; sourceComponentId?: string }
   ): Promise<ConversationSourceArtifactRecord | null>;
   listConversationSourceArtifactsByGeneration(
     actor: ActorContext,
@@ -1511,6 +1518,62 @@ export const createConversationSourceJournalRepository = (
         contentDigest: parent.closure_hash,
         closedAt: parent.finalized_at.toISOString()
       };
+      if (input.sourceRewrite) {
+        const rewrite = input.sourceRewrite;
+        if (
+          parent.source_kind !== "codex" ||
+          parent.source_component_role !== "primary" ||
+          parent.replica_role !== "origin_local" ||
+          ![
+            "codex_legacy_to_paginated",
+            "codex_paginated_continuation"
+          ].includes(rewrite.kind) ||
+          (rewrite.kind === "codex_paginated_continuation" &&
+            (parent.source_adapter_version !== "codex-transcript-v2" ||
+              typeof rewrite.redactedSourceLabel !== "string" ||
+              !/^rollout-[a-zA-Z0-9_.-]+\.jsonl(?:\.zst)?$/.test(
+                rewrite.redactedSourceLabel
+              ))) ||
+          !Number.isSafeInteger(rewrite.journalStartOffset) ||
+          rewrite.journalStartOffset < 0 ||
+          rewrite.journalStartOffset >= rewrite.liveStartOffset ||
+          !Number.isSafeInteger(rewrite.journalStartLine) ||
+          rewrite.journalStartLine < 0 ||
+          rewrite.journalStartLine >= rewrite.liveStartLine ||
+          !Number.isSafeInteger(rewrite.liveStartOffset) ||
+          rewrite.liveStartOffset <= 0 ||
+          !Number.isSafeInteger(rewrite.liveStartLine) ||
+          rewrite.liveStartLine <= 0 ||
+          !Number.isSafeInteger(rewrite.currentSourceLength) ||
+          rewrite.currentSourceLength < rewrite.liveStartOffset ||
+          rewrite.currentSourceLength > 512 * 1024 * 1024 ||
+          !/^[a-f0-9]{64}$/.test(rewrite.prefixDigest) ||
+          input.sourceGenerationId !==
+            conversationSourceRewriteGenerationId(
+              parent.source_generation_id,
+              rewrite.prefixDigest
+            )
+        ) {
+          throw statusError(
+            "Conversation source rewrite frontier is invalid",
+            409,
+            "conversation_source_rewrite_invalid"
+          );
+        }
+        const cursor = await client.query<{ source_offset: string }>(
+          "select source_offset from conversation_source_consumer_cursors where artifact_id=$1 and consumer_kind='canonical_live'",
+          [parent.id]
+        );
+        if (
+          Number(cursor.rows[0]?.source_offset) !==
+          Number(parent.provider_cursor_offset)
+        )
+          throw statusError(
+            "Conversation source canonical capture is incomplete",
+            409,
+            "conversation_source_rewrite_capture_incomplete"
+          );
+      }
       const existing = await client.query<ArtifactRow>(
         `select ${ARTIFACT_COLUMNS}
            from conversation_source_artifacts
@@ -1534,7 +1597,18 @@ export const createConversationSourceJournalRepository = (
           replay.origin_deployment_id !== input.originDeploymentId ||
           replay.origin_device_id !== input.originDeviceId ||
           replay.origin_key_id !== input.originKeyId ||
-          replay.origin_public_key !== input.originPublicKey
+          replay.origin_public_key !== input.originPublicKey ||
+          (input.sourceRewrite != null &&
+            (Number(replay.journal_start_offset) !==
+              input.sourceRewrite.journalStartOffset ||
+              replay.journal_start_line !==
+                input.sourceRewrite.journalStartLine ||
+              Number(replay.live_start_offset) !==
+                input.sourceRewrite.liveStartOffset ||
+              replay.live_start_line !== input.sourceRewrite.liveStartLine ||
+              (input.sourceRewrite.redactedSourceLabel !== undefined &&
+                replay.redacted_source_label !==
+                  input.sourceRewrite.redactedSourceLabel)))
         ) {
           throw statusError(
             "Conversation source successor already exists",
@@ -1563,12 +1637,23 @@ export const createConversationSourceJournalRepository = (
           sourceFingerprint: parent.source_fingerprint,
           artifactFormat: parent.artifact_format,
           artifactFormatVersion: parent.artifact_format_version,
-          sourceAdapterVersion: parent.source_adapter_version,
-          journalStartOffset: Number(parent.provider_cursor_offset),
-          journalStartLine: parent.provider_cursor_line,
-          liveStartOffset: Number(parent.provider_cursor_offset),
-          liveStartLine: parent.provider_cursor_line,
-          currentSourceLength: Number(parent.provider_cursor_offset),
+          sourceAdapterVersion: input.sourceRewrite
+            ? "codex-transcript-v2"
+            : parent.source_adapter_version,
+          journalStartOffset:
+            input.sourceRewrite?.journalStartOffset ??
+            Number(parent.provider_cursor_offset),
+          journalStartLine:
+            input.sourceRewrite?.journalStartLine ??
+            parent.provider_cursor_line,
+          liveStartOffset:
+            input.sourceRewrite?.liveStartOffset ??
+            Number(parent.provider_cursor_offset),
+          liveStartLine:
+            input.sourceRewrite?.liveStartLine ?? parent.provider_cursor_line,
+          currentSourceLength:
+            input.sourceRewrite?.currentSourceLength ??
+            Number(parent.provider_cursor_offset),
           sourceCreatedAt: input.sourceCreatedAt,
           sourceModifiedAt: parent.source_modified_at?.toISOString(),
           storageProvider: input.storageProvider,
@@ -1578,7 +1663,9 @@ export const createConversationSourceJournalRepository = (
           originKeyId: input.originKeyId,
           originPublicKey: input.originPublicKey,
           priorGenerationClosure,
-          redactedSourceLabel: parent.redacted_source_label
+          redactedSourceLabel:
+            input.sourceRewrite?.redactedSourceLabel ??
+            parent.redacted_source_label
         }
       );
       await client.query("commit");
@@ -1632,7 +1719,7 @@ export const createConversationSourceJournalRepository = (
           and source_component_id = $4
           and replica_role = 'origin_local'
           and lifecycle <> 'deleted'
-        order by source_created_at desc, id desc
+        order by created_at desc, id desc
         limit 1`,
       [
         actor.userId,
@@ -1659,6 +1746,29 @@ export const createConversationSourceJournalRepository = (
         order by updated_at desc, id
         limit 1`,
       [actor.userId, sourceGenerationId, sourceComponentId]
+    );
+    return result.rows[0] ? mapArtifact(result.rows[0]) : null;
+  },
+
+  async getConversationSourceArtifactByCodexThreadIdentity(actor, input) {
+    const result = await pool.query<ArtifactRow>(
+      `select ${ARTIFACT_COLUMNS}
+         from conversation_source_artifacts
+        where owner_user_id = $1
+          and source_kind = 'codex'
+          and source_component_id = $3
+          and lifecycle <> 'deleted'
+          and session_id in (
+            select id from sessions
+             where owner_user_id = $1
+               and visibility = 'personal'
+               and external_thread_id = $2
+               and invalidated_at is null
+               and personal_deleted_at is null
+          )
+        order by created_at desc, id desc
+        limit 1`,
+      [actor.userId, input.externalThreadId, input.sourceComponentId ?? "main"]
     );
     return result.rows[0] ? mapArtifact(result.rows[0]) : null;
   },
