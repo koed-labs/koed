@@ -622,7 +622,14 @@ describe.skipIf(!databaseUrl)(
         };
         const failures: unknown[] = [];
         const service = createConversationSourceReplicationService({
-          repository: target,
+          repository: {
+            ...target,
+            // Other suites share this database, but not this fixture's encryption keys.
+            listConversationSourceReplicationActors: async (input) =>
+              (
+                await target.listConversationSourceReplicationActors(input)
+              ).filter((actor) => actor.userId === targetUser.id)
+          },
           koedHome: home,
           envelopeEncryptionProvider: targetProvider,
           wakePool: pool,
