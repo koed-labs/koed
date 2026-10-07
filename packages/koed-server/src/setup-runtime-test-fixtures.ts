@@ -57,10 +57,7 @@ export async function stageSignedSetupRuntime(
   const contents = {
     ...piContents,
     "mcp-server/dist/prompts/codex-global-agent-guidance.md": readFileSync(
-      resolve(
-        repoRoot,
-        "packages/mcp-server/dist/prompts/codex-global-agent-guidance.md"
-      )
+      resolve(repoRoot, "prompts/codex-global-agent-guidance.md")
     )
   };
   const fixture = await signedComponentFixture(
