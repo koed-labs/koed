@@ -85,7 +85,7 @@
     "privacy:accelerator-smoke": "node scripts/privacy-shared-accelerator-smoke.mjs",
     "native-runtime:validate": "node scripts/native-runtime/validate-runtime.mjs",
     "native-runtime:validate:wsl": "node scripts/native-runtime/validate-wsl.mjs",
-    "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
+    "test": "pnpm --filter @koed-labs/server build && node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
     "test:required-suites": "node scripts/required-test-suites.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b",
