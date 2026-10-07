@@ -1972,9 +1972,17 @@ export const createKoedServerManager = ({
       });
   };
 
+  const runDesktopStatus = (startup = false): Promise<unknown> =>
+    desktopSupervisorProcess && desktopSupervisorNonce
+      ? requestDesktopStatusRpc("status", startup)
+      : runJson(
+          startup ? ["status", "--startup"] : ["status"],
+          statusCommandTimeoutMs
+        );
+
   const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
     const [statusResult, packageStatus] = await Promise.all([
-      runJson(["status"], statusCommandTimeoutMs),
+      runDesktopStatus(),
       runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
     ]);
     const current = isRenderableKoedServerStatus(statusResult)
@@ -1990,10 +1998,7 @@ export const createKoedServerManager = ({
   const pollUntilReady = async (attemptLimit = 90) => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
-      const result = await runJson(
-        ["status", "--startup"],
-        statusCommandTimeoutMs
-      );
+      const result = await runDesktopStatus(true);
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
         : diagnosticStartupStatus("Koed startup status could not be read.");
@@ -4810,6 +4815,76 @@ export const createKoedServerManager = ({
     }
   };
 
+  const requestDesktopStatusRpc = (
+    action: "status" | "doctor" | "setup-core" | "setup-codex" | "repair-codex",
+    startup = false
+  ): Promise<unknown> => {
+    const child = desktopSupervisorProcess;
+    const nonce = desktopSupervisorNonce;
+    if (!child?.connected || !nonce)
+      return Promise.reject(
+        new Error("Private Desktop supervisor is unavailable.")
+      );
+    const requestId = randomUUID();
+    return new Promise((resolveRequest, rejectRequest) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        child.off("message", onMessage);
+        child.off("exit", onExit);
+        child.off("error", onError);
+        child.off("disconnect", onExit);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        rejectRequest(error);
+      };
+      const onExit = () =>
+        onError(
+          new Error(
+            "Desktop status interrupted because supervisor disconnected."
+          )
+        );
+      const onMessage = (message: unknown) => {
+        const item = objectValue(message);
+        if (
+          item?.type !== "koed.desktop.status.response" ||
+          item.nonce !== nonce ||
+          item.requestId !== requestId ||
+          item.action !== action
+        )
+          return;
+        cleanup();
+        if (typeof item.error === "string")
+          rejectRequest(new Error(item.error));
+        else resolveRequest(item.result);
+      };
+      const timer = setTimeout(
+        () => onError(new Error("Desktop status request timed out.")),
+        action.startsWith("setup-") ? 330_000 : statusCommandTimeoutMs
+      );
+      child.on("message", onMessage);
+      child.once("exit", onExit);
+      child.once("error", onError);
+      child.once("disconnect", onExit);
+      try {
+        child.send(
+          {
+            type: "koed.desktop.status.request",
+            nonce,
+            requestId,
+            action,
+            startup
+          },
+          (error: Error | null) => {
+            if (error) onError(error);
+          }
+        );
+      } catch (error) {
+        onError(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  };
+
   const requestPrivacyRpc = <T>(
     action: string,
     args: Record<string, unknown> = {},
@@ -4882,10 +4957,7 @@ export const createKoedServerManager = ({
   };
 
   const requestDaemonStart = async () => {
-    const current = await runJson(
-      ["status", "--startup"],
-      statusCommandTimeoutMs
-    );
+    const current = await runDesktopStatus(true);
     if (hasHealthyApi(current)) {
       if (createSupervisorInvocation && !desktopSupervisorProcess) {
         return {
@@ -5336,7 +5408,9 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runJson(["setup", "core"], 330_000),
+          desktopSupervisorNonce
+            ? await requestDesktopStatusRpc("setup-core")
+            : await runJson(["setup", "core"], 330_000),
           "Koed core setup failed."
         );
       }
@@ -5347,7 +5421,9 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runJson(["doctor"], 90_000),
+          desktopSupervisorNonce
+            ? await requestDesktopStatusRpc("doctor")
+            : await runJson(["doctor"], 90_000),
           "Setup verification failed."
         );
       }
@@ -5485,7 +5561,12 @@ export const createKoedServerManager = ({
     client: "Codex" | "Claude Code" | "Pi",
     args: ["setup" | "repair" | "remove", "codex" | "claude" | "pi"]
   ) => {
-    const result = await runJson(args, 120_000);
+    const result =
+      desktopSupervisorNonce && args[0] !== "remove" && args[1] === "codex"
+        ? await requestDesktopStatusRpc(
+            args[0] === "repair" ? "repair-codex" : "setup-codex"
+          )
+        : await runJson(args, 120_000);
     if (!resultOk(result)) {
       throw new Error(
         resultMessage(result, `${client} integration operation failed.`)
@@ -6063,10 +6144,15 @@ export const createKoedServerManager = ({
         }
       },
       status: statusWithEnrollmentReconciliation,
-      doctor: () => runJson(["doctor"], 45_000),
+      doctor: () =>
+        desktopSupervisorNonce
+          ? requestDesktopStatusRpc("doctor")
+          : runJson(["doctor"], 45_000),
       stop,
       setup_core: async () => {
-        const result = await runJson(["setup", "core"], 330_000);
+        const result = desktopSupervisorNonce
+          ? await requestDesktopStatusRpc("setup-core")
+          : await runJson(["setup", "core"], 330_000);
         if (!resultOk(result)) {
           throw new Error(resultMessage(result, "Koed core setup failed."));
         }

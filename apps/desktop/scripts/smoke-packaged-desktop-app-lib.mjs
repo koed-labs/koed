@@ -1,6 +1,18 @@
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+
+// Authenticated lifecycle selection rejects symlink ancestors (including /var and /tmp on macOS).
+export const createSmokeHome = (prefix, root = tmpdir()) =>
+  realpathSync(mkdtempSync(resolve(root, prefix)));
 
 export const PACKAGED_NATIVE_ASSET_DIRECTORIES = ["postgres", "llama.cpp"];
 

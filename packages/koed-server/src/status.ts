@@ -13,6 +13,7 @@ import {
   resolveKoedAppRuntimeExecution
 } from "./app-runtime.js";
 import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import {
@@ -108,6 +109,7 @@ const resolveEffectiveWorkQueueBackend = (
 };
 
 export interface KoedServerStatusDependencies {
+  desktopRuntimeCapability?: DesktopRuntimeCapability | null;
   fetch?: typeof fetch;
   spawnSync?: SpawnSyncLike;
   existsSync?: typeof existsSync;
@@ -120,6 +122,7 @@ export interface KoedServerStatusDependencies {
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
+  desktopRuntimeCapability: null,
   fetch: globalThis.fetch.bind(globalThis),
   spawnSync: nodeSpawnSync as SpawnSyncLike,
   existsSync,
@@ -389,7 +392,8 @@ export const inspectPi = (
 const resolveStatusIntegrationRuntime = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
-  exists: (path: string) => boolean
+  exists: (path: string) => boolean,
+  capability?: DesktopRuntimeCapability | null
 ) =>
   resolveKoedAppRuntimeExecution() === "packaged"
     ? resolveVerifiedPackagedRuntime(
@@ -402,7 +406,8 @@ const resolveStatusIntegrationRuntime = async (
           native: [],
           models: []
         },
-        exists
+        exists,
+        capability ?? undefined
       )
     : resolveKoedAppRuntime(paths, environment, exists);
 
@@ -441,7 +446,8 @@ export const inspectClaudeCode = async (
     runtime = await resolveStatusIntegrationRuntime(
       paths,
       environment,
-      deps.existsSync
+      deps.existsSync,
+      deps.desktopRuntimeCapability
     );
   } catch {
     return {
@@ -1029,9 +1035,14 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
+type CodexStatusDependencies = Required<
+  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability">
+> &
+  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability">;
+
 const inspectCodexInstallation = (
   environment: NodeJS.ProcessEnv,
-  deps: Required<KoedServerStatusDependencies>
+  deps: CodexStatusDependencies
 ): { executable: string; version: string | null } => {
   const executable = deps.resolveCodexExecutable(environment);
   const invocation = nodeCliInvocation(executable, ["--version"]);
@@ -1050,7 +1061,7 @@ const inspectCodexInstallation = (
 export const inspectCodex = async (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
-  deps: Required<KoedServerStatusDependencies>,
+  deps: CodexStatusDependencies,
   memoryGuidanceEnabled: boolean
 ): Promise<KoedServerStatus["codex"]> => {
   const codexConfigPath = resolve(
@@ -1115,7 +1126,8 @@ export const inspectCodex = async (
     runtime = await resolveStatusIntegrationRuntime(
       paths,
       environment,
-      deps.existsSync
+      deps.existsSync,
+      deps.desktopRuntimeCapability
     );
   } catch {
     return authenticatedRuntimeUnavailable();
@@ -1241,7 +1253,8 @@ const inspectCaptureHook = async (
     runtime = await resolveStatusIntegrationRuntime(
       paths,
       environment,
-      deps.existsSync
+      deps.existsSync,
+      deps.desktopRuntimeCapability
     );
   } catch {
     return authenticatedRuntimeUnavailable();
@@ -1300,7 +1313,8 @@ const inspectMcp = async (
               native: [],
               models: []
             },
-            deps.existsSync
+            deps.existsSync,
+            deps.desktopRuntimeCapability ?? undefined
           )
         : resolveKoedAppRuntime(paths, environment, deps.existsSync);
   } catch (error) {

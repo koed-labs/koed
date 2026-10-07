@@ -277,6 +277,88 @@ describe("generation lifecycle", () => {
     );
   });
 
+  it("allows only start pinning under its own supervisor, not activation or cleanup", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    expect(supervisorLock.acquireKoedServerSupervisorLock(paths).acquired).toBe(
+      true
+    );
+    await expect(
+      activateGeneration(paths, generation.id, owner)
+    ).rejects.toThrow(/running|pinned/);
+    await expect(cleanupGenerations(paths, 1, owner)).rejects.toThrow(
+      /running|pinned/
+    );
+    await expect(
+      pinGenerationForStart(paths, { ...owner, installationId: "foreign" })
+    ).rejects.toThrow("runtime owner mismatch");
+    const pin = await pinGenerationForStart(paths, owner);
+    await expect(pinGenerationForStart(paths, owner)).rejects.toThrow(/locked/);
+    await pin.release();
+    expect(existsSync(resolve(paths.runDir, "koed-server.lock"))).toBe(true);
+  });
+
+  it.each(["foreign", "legacy", "uncertain", "malformed"])(
+    "denies start pinning under %s supervisor ownership",
+    async (kind) => {
+      const paths = pathsForTest();
+      const generation = await stage(paths, "0.9.0");
+      await activateGeneration(paths, generation.id, owner);
+      const pid = kind === "foreign" ? process.ppid : process.pid;
+      const processIdentity = supervisorLock.resolveProcessIdentity(pid);
+      expect(processIdentity).not.toBeNull();
+      mkdirSync(paths.runDir, { recursive: true });
+      writeFileSync(
+        resolve(paths.runDir, "koed-server.lock"),
+        kind === "malformed"
+          ? "invalid"
+          : JSON.stringify({
+              pid,
+              acquiredAt: new Date().toISOString(),
+              ...(kind !== "legacy" ? { processIdentity } : {})
+            })
+      );
+      if (kind === "uncertain") {
+        const identify = supervisorLock.resolveProcessIdentity;
+        let lookups = 0;
+        vi.spyOn(supervisorLock, "resolveProcessIdentity").mockImplementation(
+          (value) => (++lookups === 1 ? identify(value) : null)
+        );
+      }
+      await expect(pinGenerationForStart(paths, owner)).rejects.toThrow(
+        /running|pinned|uncertain/
+      );
+      expect(existsSync(paths.generationStatePath!)).toBe(false);
+      expect((await readCurrentGeneration(paths)).id).toBe(generation.id);
+    }
+  );
+
+  it("denies an existing live pin even under its own supervisor", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    expect(supervisorLock.acquireKoedServerSupervisorLock(paths).acquired).toBe(
+      true
+    );
+    writeFileSync(
+      paths.generationStatePath!,
+      JSON.stringify({
+        schemaVersion: 1,
+        generationId: generation.id,
+        pid: process.pid,
+        processIdentity: supervisorLock.resolveProcessIdentity(process.pid),
+        startedAt: new Date().toISOString(),
+        owner,
+        pinToken: "e".repeat(64)
+      })
+    );
+    await expect(pinGenerationForStart(paths, owner)).rejects.toThrow(
+      /running|pinned/
+    );
+    expect(existsSync(paths.generationStatePath!)).toBe(true);
+  });
+
   it("reclaims pin from conclusively dead PID before activation", async () => {
     const paths = pathsForTest();
     const generation = await stage(paths, "0.9.0");

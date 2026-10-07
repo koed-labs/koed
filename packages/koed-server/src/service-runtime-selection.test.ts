@@ -26,6 +26,9 @@ vi.mock("./component-trust-roots.js", () => ({
 }));
 
 import { signedComponentFixture } from "./component-test-fixtures.js";
+import * as appRuntime from "./app-runtime.js";
+import { collectKoedServerStatus } from "./status.js";
+import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
 import { stageComponent, stageGeneration } from "./component-store.js";
 import { activateGeneration } from "./generation-lifecycle.js";
 import {
@@ -44,6 +47,10 @@ import {
   verifyDesktopRuntimeBundle
 } from "./desktop-runtime-capability.js";
 import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 
 const roots: string[] = [];
 const initialCwd = process.cwd();
@@ -166,6 +173,8 @@ describe("packaged service runtime selection", () => {
     const paths = resolveKoedServerPaths({
       KOED_HOME: resolve(root, "koed-home")
     });
+    const supervisor = acquireKoedServerSupervisorLock(paths);
+    expect(supervisor.acquired).toBe(true);
     const selection = await pinAndResolvePackagedRuntime(
       paths,
       {},
@@ -173,6 +182,77 @@ describe("packaged service runtime selection", () => {
       existsSync,
       capability
     );
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    const environment = {
+      KOED_HOME: paths.koedHome,
+      KOED_AUTO_PORTS: "1"
+    };
+    const dependencies = {
+      spawnSync: vi.fn(() => ({
+        status: 0,
+        stdout: "{}",
+        stderr: "",
+        pid: 0,
+        output: [],
+        signal: null
+      })),
+      resolveCodexExecutable: () => {
+        throw new Error("not installed");
+      },
+      resolveClaudeExecutable: () => {
+        throw new Error("not installed");
+      },
+      resolvePiExecutable: () => {
+        throw new Error("not installed");
+      }
+    };
+    const standaloneStatus = await collectKoedServerStatus(
+      environment,
+      dependencies
+    );
+    expect(standaloneStatus.mcpServer.state).toBe("not_configured");
+    const desktopStatus = await collectKoedServerStatus(environment, {
+      ...dependencies,
+      desktopRuntimeCapability: capability
+    });
+    expect(desktopStatus.mcpServer).toMatchObject({
+      state: "healthy",
+      details: { runtimeRoot }
+    });
+    const send = vi.fn<(message: Record<string, unknown>) => void>();
+    const handle = createDesktopStatusRpcHandler({
+      nonce: "a".repeat(64),
+      capability,
+      environment,
+      send
+    });
+    const request = {
+      type: "koed.desktop.status.request",
+      nonce: "a".repeat(64),
+      requestId: "11111111-1111-4111-8111-111111111111",
+      action: "status",
+      startup: true
+    };
+    expect(handle({ ...request, nonce: "b".repeat(64) })).toBe(false);
+    expect(handle({ ...request, action: "constructor" })).toBe(false);
+    expect(
+      handle({
+        ...request,
+        environment: { KOED_PACKAGED_RESOURCES_PATH: resourcesPath }
+      })
+    ).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(handle(request)).toBe(true);
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      type: "koed.desktop.status.response",
+      nonce: request.nonce,
+      requestId: request.requestId,
+      action: "status",
+      result: { koedHome: paths.koedHome }
+    });
     expect(selection.runtime.root).toBe(runtimeRoot);
     expect(selection.runtime.apiEntry).toBe(
       resolve(runtimeRoot, "api/dist/index.js")
@@ -226,6 +306,7 @@ describe("packaged service runtime selection", () => {
     expect(status.activeGeneration).toBe(active.id);
     expect(status.components.base).toBe("active");
     await restarted.pin.release();
+    expect(releaseKoedServerSupervisorLock(supervisor)).toBe(true);
     await activateGeneration(paths, active.id, active.owner, capability);
     const foreignOwner = resolveKoedRuntimeOwner();
     rmSync(resolve(paths.componentsDir, "current.json"));
@@ -294,9 +375,10 @@ describe("packaged service runtime selection", () => {
     expect(() => readFileSync(paths.generationStatePath!, "utf8")).toThrow();
   });
 
-  it("pins a verified generation until supervisor releases it", async () => {
+  it("pins a verified generation after supervisor acquires its startup lock", async () => {
     const root = tempDir();
     const paths = await makeGeneration(root, resolveKoedControlPlaneVersion());
+    expect(acquireKoedServerSupervisorLock(paths).acquired).toBe(true);
     const selection = await pinAndResolvePackagedRuntime(
       paths,
       {},

@@ -220,7 +220,10 @@ const assertOwner = (
   if (!sameOwner(generation.owner, requester))
     throw new Error("runtime owner mismatch");
 };
-const assertNoActivePin = (paths: KoedServerPaths): void => {
+const assertNoActivePin = (
+  paths: KoedServerPaths,
+  allowCurrentSupervisor = false
+): void => {
   const pin = readPinState(paths);
   if (pin) {
     const identity = resolveProcessIdentity(pin.pid);
@@ -236,6 +239,14 @@ const assertNoActivePin = (paths: KoedServerPaths): void => {
   const supervisor = readSupervisorLock(supervisorPath);
   if (!supervisor) throw new Error("supervisor liveness is uncertain");
   const identity = resolveProcessIdentity(supervisor.pid);
+  // Startup already holds the supervisor lock; only its exact live owner may pin.
+  if (
+    allowCurrentSupervisor &&
+    supervisor.pid === process.pid &&
+    identity !== null &&
+    identity === supervisor.processIdentity
+  )
+    return;
   if (
     identity === supervisor.processIdentity ||
     (!identity && processIsRunning(supervisor.pid)) ||
@@ -459,7 +470,7 @@ export async function pinDesktopBundleGenerationForStart(
   const lock = acquireLifecycleLock(paths);
   try {
     return await withStoreLock(paths, async () => {
-      assertNoActivePin(paths);
+      assertNoActivePin(paths, true);
       const bundled = await readDesktopBundleGeneration(paths, capability);
       const activeId = readCurrentId(paths);
       const active = activeId
@@ -520,7 +531,7 @@ export async function pinGenerationForStart(
   const lock = acquireLifecycleLock(paths);
   try {
     return await withStoreLock(paths, async () => {
-      assertNoActivePin(paths);
+      assertNoActivePin(paths, true);
       const generation = await readCurrentGeneration(paths);
       assertOwner(generation, requester);
       const pin = persistPinState(paths, generation, requester, lock);

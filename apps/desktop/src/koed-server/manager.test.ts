@@ -255,7 +255,8 @@ describe("Koed server desktop manager", () => {
     });
   });
 
-  it("starts private Desktop supervisor over inherited IPC and stops that child", async () => {
+  it("reads status over private Desktop IPC after starting and stops that child", async () => {
+    const statusRequests: Record<string, unknown>[] = [];
     const child = Object.assign(new EventEmitter(), {
       killed: false,
       connected: true,
@@ -269,6 +270,15 @@ describe("Koed server desktop manager", () => {
               nonce: message.nonce,
               childPid: child.pid,
               bundleDigest: "a".repeat(64)
+            })
+          );
+        } else if (message.type === "koed.desktop.status.request") {
+          statusRequests.push(message);
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: { ok: true, state: "stopped" }
             })
           );
         } else if (message.type === "koed.desktop.supervisor.stop") {
@@ -311,6 +321,20 @@ describe("Koed server desktop manager", () => {
       detached: false,
       stdio: ["ignore", "ignore", "pipe", "ipc"]
     });
+    await manager.handlers.status();
+    expect(statusRequests).toHaveLength(1);
+    expect(statusRequests[0]).toMatchObject({ startup: false });
+    await manager.handlers.setup_core();
+    await manager.handlers.setup_codex();
+    await manager.handlers.repair_codex();
+    await manager.handlers.doctor();
+    expect(statusRequests.map((request) => request.action)).toEqual([
+      "status",
+      "setup-core",
+      "setup-codex",
+      "repair-codex",
+      "doctor"
+    ]);
     await expect(manager.stop()).resolves.toMatchObject({
       ok: true,
       state: "stopped"

@@ -197,7 +197,11 @@ describe("packaged AI Client setup authentication", () => {
       });
 
     const result = await setupClaude(
-      { HOME: home, KOED_HOME: home },
+      {
+        HOME: home,
+        KOED_HOME: home,
+        KOED_CLAUDE_CODE_EXECUTABLE: process.execPath
+      },
       spawn as unknown as typeof spawnSync
     );
 
@@ -247,7 +251,11 @@ describe("packaged AI Client setup authentication", () => {
       });
 
     const result = await setupPi(
-      { HOME: home, KOED_HOME: home },
+      {
+        HOME: home,
+        KOED_HOME: home,
+        KOED_PI_EXECUTABLE: process.execPath
+      },
       spawn as unknown as typeof spawnSync
     );
 

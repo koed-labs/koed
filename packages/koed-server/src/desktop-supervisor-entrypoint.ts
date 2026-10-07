@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { startKoedServer } from "./start.js";
+import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
 import {
   createDesktopPrivacyRpcHandler,
   createDesktopComponentManagerBridge,
@@ -79,6 +80,18 @@ const assertParentExecutable = (managerPid: number): void => {
   }
 };
 
+export const sendDesktopSupervisorStatus = (
+  response: Record<string, unknown>
+): void => {
+  if (!process.connected) return;
+  process.send?.(response, (error: Error | null) => {
+    if (error && process.connected)
+      process.stderr.write(
+        `Desktop status response failed: ${error.message}\n`
+      );
+  });
+};
+
 export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   const handshake = await waitForManagerAuthority();
   assertParentExecutable(handshake.managerPid);
@@ -149,8 +162,14 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     });
     return;
   }
+  const handleStatusRpc = createDesktopStatusRpcHandler({
+    nonce: handshake.nonce,
+    capability,
+    environment: createDesktopSupervisorEnvironment(process.env),
+    send: sendDesktopSupervisorStatus
+  });
   process.on("message", (message: unknown) => {
-    if (handlePrivacyRpc(message)) return;
+    if (handleStatusRpc(message) || handlePrivacyRpc(message)) return;
     if (
       message &&
       typeof message === "object" &&

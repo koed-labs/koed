@@ -18,6 +18,8 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
+import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
   desktopStatusChangedChannel,
   desktopRendererOrigin,
@@ -602,6 +604,20 @@ const bootstrap = async () => {
       return result;
     },
     onRuntimeSettled: () => {
+      attachPackagedSmokeHarness({
+        packaged: app.isPackaged,
+        argv: process.argv,
+        channel: process,
+        send: (message) => process.send?.(message),
+        invoke: async (command) => {
+          if (command === "privacy_status")
+            return server.privacyInstall.getStatus();
+          if (command === "quit") return server.stop();
+          return server.handlers[command as DesktopCommandName]();
+        },
+        stop: () => server.stop(),
+        quit: () => app.quit()
+      });
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) {
           window.webContents.send(desktopStatusChangedChannel);

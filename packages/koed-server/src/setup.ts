@@ -41,6 +41,7 @@ import {
   resolveKoedAppRuntimeExecution
 } from "./app-runtime.js";
 import { resolveVerifiedPackagedRuntime } from "./service-runtime-selection.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
@@ -89,6 +90,7 @@ type SpawnSyncLike = (
 ) => SpawnSyncReturns<string>;
 
 export interface KoedServerSetupOptions {
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
   environment?: NodeJS.ProcessEnv;
   spawnSync?: SpawnSyncLike;
   readFileSync?: typeof nodeReadFileSync;
@@ -453,6 +455,7 @@ export const removeCodexIntegration = ({
 };
 
 export const repairCodexIntegration = async ({
+  desktopRuntimeCapability,
   environment = process.env,
   readFileSync = nodeReadFileSync,
   writeFileSync = nodeWriteFileSync,
@@ -513,7 +516,8 @@ export const repairCodexIntegration = async ({
             native: [],
             models: []
           },
-          existsSync
+          existsSync,
+          desktopRuntimeCapability
         )
       : undefined;
   if (verifiedRuntime) resolveRuntime = () => verifiedRuntime;
@@ -960,7 +964,8 @@ export const setupCore = async (
               native: [],
               models: []
             },
-            options.existsSync ?? nodeExistsSync
+            options.existsSync ?? nodeExistsSync,
+            options.desktopRuntimeCapability
           )
         : resolveKoedAppRuntime(
             context.paths,
@@ -1063,7 +1068,8 @@ export const setupCodex = async (
             native: [],
             models: []
           },
-          options.existsSync ?? nodeExistsSync
+          options.existsSync ?? nodeExistsSync,
+          options.desktopRuntimeCapability
         )
       : resolveKoedAppRuntime(
           paths,
@@ -1080,6 +1086,7 @@ export const setupCodex = async (
       checkPid: options.checkPid,
       now: options.now,
       resolveRuntime: () => runtime,
+      desktopRuntimeCapability: options.desktopRuntimeCapability,
       registerAiClient: options.registerAiClient,
       resolveCodexExecutable: options.resolveCodexExecutable
     });

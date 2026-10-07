@@ -172,19 +172,24 @@ packaging, signing, runtime distribution, or packaged smoke support.
   `electron-builder --mac dir` and disables signing/notarization.
 - `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
-  can run without checkout overrides. The smoke launches the packaged
-  `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
+  can run without checkout overrides. The smoke launches the real packaged
+  Desktop manager with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
   the setup surface, Personal Memory navigation, collaboration, preferences,
   and renderer fault handling, and verifies daemon
-  start/status/reconnect/stop. The focused `--missing-assets` mode checks
+  start/status/reconnect/stop through a private inherited IPC harness. The
+  manager retains sole supervisor authority; environment flags do not grant it.
+  Personal/Base smoke installs only embedding assets. A separate Team launch
+  proves missing verified Privacy assets fail closed; positive Team provisioning
+  remains blocked while production signer trust roots are empty.
+  The focused `--missing-assets` mode checks
   packaged-CLI status and actionable `doctor --json` output without launching
   Electron services. Add `--mask-native-assets` to temporarily hide and then
   restore `postgres` and `llama.cpp` in an already-built packaged app. Set
   `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
   manifest for packaged-provider runtime install tests. For deterministic
-  offline smoke, pass `--embedding-model-source <gguf>` and
-  `--privacy-model-source <privacy-model-directory>`; the packaged CLI still
-  verifies the pinned hashes before starting services.
+  offline smoke, pass `--embedding-model-source <gguf>`; the packaged CLI still
+  verifies pinned hashes before starting services. Privacy pre-seeding is not
+  supported by Base smoke and cannot bypass the Team verification gate.
   `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
   can produce a local Homebrew-backed staging directory for those smoke tests.
   `desktop:package:smoke` currently aliases the macOS smoke and guards
