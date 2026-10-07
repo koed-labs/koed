@@ -44,6 +44,7 @@ import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.j
 import { resolveCodexAppServerBinary } from "./codex-app-server-runner.js";
 import {
   createCodexHistoryMetadataReader,
+  isCodexHistoryThreadFailure,
   type CodexHistoryMetadataReader
 } from "./codex-history-metadata.js";
 
@@ -1042,7 +1043,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             this.historyMetadataReads.set(lookupKey, pending);
           }
           const current = await pending.catch((error: unknown) => {
-            this.historyMetadataFailures.set(home, error);
+            // A thread failure stays cached under its own lookup for this scan;
+            // only a connection failure suppresses every thread in the home.
+            if (!isCodexHistoryThreadFailure(error))
+              this.historyMetadataFailures.set(home, error);
             throw error;
           });
           const currentPath = currentStorageSibling(current.path!);

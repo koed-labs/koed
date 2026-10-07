@@ -17,6 +17,7 @@ const fixture = (
     wrongIdentity?: boolean;
     hydrated?: boolean;
     invalidPage?: "missing-id" | "empty-cursor" | "oversized";
+    failingThread?: string;
     idleMs?: number;
   } = {}
 ) => {
@@ -40,6 +41,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (message.method === "initialize") return send({ id: message.id, result: { codexHome: options.wrongHome ? "/wrong/home" : process.env.CODEX_HOME } });
   if (message.method === "thread/turns/list" && message.params.limit === 1 && message.params.itemsView === "summary") return send({ id: message.id, result: { data: options.invalidPage === "missing-id" ? [{}] : options.invalidPage === "oversized" ? [{id: "one"}, {id: "two"}] : [], nextCursor: options.invalidPage === "empty-cursor" ? "" : null } });
   if (message.method !== "thread/read" || message.params.includeTurns !== false) return send({ id: message.id, error: { message: "Unexpected operation" } });
+  if (message.params.threadId === options.failingThread) return send({ id: message.id, error: { message: "Thread lineage unavailable" } });
   send({ id: message.id, result: { thread: { id: options.wrongIdentity ? "another-thread" : message.params.threadId, path: process.env.CODEX_HOME + "/sessions/rollout-current.jsonl", turns: options.hydrated ? [{ id: "unexpected-turn" }] : [] } } });
 });
 `
@@ -119,6 +121,23 @@ describe("native history metadata connection", () => {
       }
     }
   );
+  it("reports a thread-specific failure without closing the shared connection", async () => {
+    const f = fixture({ failingThread: "thread-broken" });
+    try {
+      await expect(f.reader.readThread("thread-broken")).rejects.toThrow(
+        "codex_history_thread_unavailable"
+      );
+      await expect(
+        f.reader.readThread("thread-healthy")
+      ).resolves.toMatchObject({ id: "thread-healthy" });
+      expect(
+        f.requests().filter((value) => value.method === "initialize")
+      ).toHaveLength(1);
+    } finally {
+      await f.reader.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
   it("reconnects after an owned helper becomes idle and rejects reads after close", async () => {
     const f = fixture({ idleMs: 10 });
     try {

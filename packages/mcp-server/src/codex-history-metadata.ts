@@ -1,8 +1,22 @@
 import path from "node:path";
 import {
   CodexAppServerClient,
+  CodexAppServerResponseError,
   type CodexAppServerThreadInfo
 } from "./codex-app-server-runner.js";
+
+const THREAD_FAILURES = new Set([
+  "codex_history_thread_unavailable",
+  "codex_history_path_invalid",
+  "codex_history_identity_mismatch",
+  "codex_history_unexpected_hydration",
+  "codex_history_page_invalid"
+]);
+
+// Failures about one thread's metadata. Any other failure means the home's
+// metadata connection is unavailable.
+export const isCodexHistoryThreadFailure = (error: unknown): boolean =>
+  error instanceof Error && THREAD_FAILURES.has(error.message);
 
 export interface CodexHistoryMetadataReader {
   readThread(threadId: string): Promise<CodexAppServerThreadInfo>;
@@ -70,14 +84,23 @@ export const createCodexHistoryMetadataReader = (input: {
       activeReads++;
       try {
         const current = await connected();
-        const thread = await current.readThread(threadId);
-        if (!thread.path || !path.isAbsolute(thread.path))
-          throw new Error("codex_history_path_invalid");
-        // Native paging resolves and validates the lineage without hydrating
-        // the complete conversation or admitting any ancestor as Koed Memory.
-        await current.readThreadTurnsPage(threadId, { limit: 1 });
-        return thread;
+        try {
+          const thread = await current.readThread(threadId);
+          if (!thread.path || !path.isAbsolute(thread.path))
+            throw new Error("codex_history_path_invalid");
+          // Native paging resolves and validates the lineage without hydrating
+          // the complete conversation or admitting any ancestor as Koed Memory.
+          await current.readThreadTurnsPage(threadId, { limit: 1 });
+          return thread;
+        } catch (error) {
+          // The server answered for this thread; the connection stays usable.
+          if (error instanceof CodexAppServerResponseError)
+            // eslint-disable-next-line preserve-caught-error
+            throw new Error("codex_history_thread_unavailable");
+          throw error;
+        }
       } catch (error) {
+        if (isCodexHistoryThreadFailure(error)) throw error;
         if (activeReads === 1) {
           closing = disconnect().catch(() => undefined);
           await closing;

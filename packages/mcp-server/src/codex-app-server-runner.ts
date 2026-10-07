@@ -250,6 +250,15 @@ export class CodexAppServerCapacityError extends Error {
   }
 }
 
+// The server answered the request with a JSON-RPC error; the connection itself
+// remains usable, unlike a timeout, write failure or process exit.
+export class CodexAppServerResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexAppServerResponseError";
+  }
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_INTERRUPT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_SERVER_REQUEST_TIMEOUT_MS = 30_000;
@@ -1273,7 +1282,9 @@ export class CodexAppServerClient {
       clearTimeout(pending.timeout);
       if (message.error) {
         pending.reject(
-          new Error(message.error.message ?? "Codex app-server error")
+          new CodexAppServerResponseError(
+            message.error.message ?? "Codex app-server error"
+          )
         );
       } else {
         if (
