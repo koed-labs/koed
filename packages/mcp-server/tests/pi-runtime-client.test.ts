@@ -147,7 +147,10 @@ describe("standalone Pi runtime port", () => {
           return {
             ok: false,
             status: 409,
-            json: async () => ({ error: "private provider payload" })
+            json: async () => ({
+              error: "private provider payload",
+              errorCode: "memory_answer_team_ineligible"
+            })
           };
         }
       )
@@ -156,9 +159,37 @@ describe("standalone Pi runtime port", () => {
       createRuntimeTaskPort(h).start({}, {}, "call")
     ).rejects.toMatchObject({
       statusCode: 409,
+      code: "memory_answer_team_ineligible",
       message: "Koed Local AI Runtime returned HTTP 409"
     });
   });
+  it.each([
+    [409, undefined],
+    [409, "private arbitrary code"],
+    [503, "memory_answer_team_ineligible"]
+  ])(
+    "does not classify unrelated HTTP %s errors (%s)",
+    async (status, errorCode) => {
+      const h = home();
+      registration(h);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: false,
+          status,
+          json: async () => ({ error: "private provider payload", errorCode })
+        }))
+      );
+      const error: unknown = await createRuntimeTaskPort(h)
+        .start({}, {}, "call")
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({
+        statusCode: status,
+        message: `Koed Local AI Runtime returned HTTP ${status}`
+      });
+      expect(error).not.toHaveProperty("code");
+    }
+  );
   it("keeps the existing intake tool route and Pi caller", async () => {
     const h = home();
     registration(h);

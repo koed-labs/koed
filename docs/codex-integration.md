@@ -75,6 +75,17 @@ completion and received no original answer; the parent produced no later
 model answer. This qualifies CLI origin isolation for that interrupted-parent
 selection path. Active foreground switching, natural-latency fork/switch
 timing remain unverified for those CLI cases.
+
+Fresh CLI 0.160.1 checks separately qualify intentional disconnect and explicit
+stop-and-exit. Bare `/quit` leaves the original backend turn eligible to finish;
+reconnecting to that exact Conversation showed its completed answer without a
+new recall. Ctrl+C interruption retired the original owned receipt under an
+exclusive lock before frontend exit, and subsequent backend completion produced
+no native answer. A fresh CLI client-port timeout check also passes: its original
+authorized running snapshot drains unchanged after the observation deadline,
+without a late answer or cancellation of the one accepted task. These results
+were independently reviewed. They do not reclassify the historical exit or
+server-write timeout cases or establish automatic pending-result recovery.
 Stop waits inside the original active turn. This integration does not wake an
 idle conversation or recover a result into a new session after exit.
 The adapter uses the shared delivery lifecycle and the same durable executor.
@@ -95,8 +106,8 @@ binding absence by genuine SessionEnd, and no late answer or result context.
 SessionEnd found the binding already retired; its first-removal handler was
 not directly observed. That controlled case also passed scoped cleanup and
 four selected normal-file baseline comparisons. The additional IDE evidence
-is recorded below. Desktop coverage is recorded separately below; strict exit
-retirement, broader recovery and deferred setup gaps remain explicit. The CLI
+is recorded below. Desktop coverage is recorded separately below; frontend-specific
+first-retirement attribution, broader recovery and deferred setup gaps remain explicit. The CLI
 pending-exit failure remains separate.
 
 A controlled IDE fork test also passed native parent interruption, distinct
@@ -180,8 +191,8 @@ of 33 artifacts. Prior 305-second fixture remains behavior-only. Setup and
 recovery remain separate Desktop checks. Subsequent Desktop setup evidence also
 passes actual core credential provisioning/reuse, supported repeated repair,
 configuration selection/removal and native missing-prehook blocking recall,
-with cleanup and independent review of 25 artifacts. Full contributor
-setup/bootstrap exceeded the fixture deadline and is deferred; direct repair
+with cleanup and independent review of 25 artifacts. The earlier full contributor
+setup/bootstrap exceeded the fixture deadline; direct repair
 does not qualify it. Desktop post-completion simulated orphan-state cleanup
 also passes exact owned state removal after native/helper exit and real task
 completion, unchanged one task/Question and no replay or late answer, with cleanup
@@ -189,6 +200,15 @@ and independent review of 30 artifacts. In-flight removal and crash/restart
 recovery remain unverified.
 Live receipt/full-history checks are observations, not full archived replay;
 zero Keychain/protocol activity is not claimed.
+
+A fresh User-driven managed contributor bootstrap runs the unchanged setup
+scripts against a real private API. First and repeat return healthy, reuse one
+credential and preserve configuration, guidance and the registered client.
+This test uses existing dependencies with one private Boolean setting that
+disables automatic dependency verification and a pinned pnpm adapter. It does
+not qualify default dependency verification, fresh installation or the managed
+path's skipped capture and doctor checks. Cleanup and independent result review
+pass. Normal configuration retains its existing defaults.
 
 ## Recommended Setup
 

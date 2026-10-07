@@ -2,7 +2,7 @@
 
 Source: [MCP Tasks investigation plan](PLAN.md).\
 Date: 2026-09-30\
-Review state: Final research report accepted after independent review. Tickets 01–12 and 14 Done within documented limits; ticket 13 safety criteria remain Blocked. Production adoption deferred. User-approved shared-boundary prototype 15 and real-worker validation 16 are Done within isolated limits.
+Review state: Original research and scoped prototypes are accepted. Ticket 13 retains its historical negative safety verdict; corrections 19 and integration 20 resolved its required production blockers. Shared/Pi implementation 17–20, standalone Claude 21–22, Codex mechanism 23 and corrections 25–26 passed review. Codex integration 24 passed final acceptance within the approved native and manual bootstrap scope. Current recovery limits are User-approved. No rollout or publication is authorized.
 
 This file contains investigation tickets, not a production rollout commitment.
 Each ticket delivers a repeatable experiment or an evidence-backed decision.
@@ -414,6 +414,11 @@ identity from acceptance through completed-result delivery.
 **Review verdict:** Blocked for those safety criteria, accepted as negative research input to ticket 14. Root inspected actual owner/API/runtime/SDK traces and guard seams, verified 60 artifact hashes and reran the schema/behavior verifier: three receipts, 52 status responses, three attributed results and ten physical ciphertexts. Foreign reads/cancellation deny; foreign SSE crashes the default runtime. Revoked fresh reads deny, but an already-open stream delivers an in-flight authenticated completion after revocation. Candidate preflight and per-event recipient checks prevent host injection only. Normal failed-executor logs are clean, while a separate real logger exception boundary retains supplied content. No unsafe criterion is waived or represented as production-safe.
 
 **Evidence:** `docs/investigations/mcp-tasks/13-isolation-attribution/REPORT.md`, digest `59fb4c6fbf35cef4d7cf74cd63d91773f0a57ed51bcde2979837c362665c5701`. All owned services/credentials cleaned up.
+
+**Current disposition:** The historical research verdict above remains unchanged.
+Ticket 19 corrects its required authorization/subscription and diagnostic defects;
+ticket 20 accepts the integrated safety corrections. No current implementation
+blocker is inferred solely from this retained negative experiment.
 
 ## 14: Publish the feasibility decision
 
@@ -1268,7 +1273,7 @@ not provide the current native receiver capability needed by ticket 24.
 the shared lifecycle, then review standalone provider coverage and docs.
 **Blocked by:** 23 viable host mechanism; 21/22 validated Claude integration;
 25 canonical task-start boundary.
-**Status:** In progress: User-assisted native CLI lifecycle and frontend validation. **Owner:** orchestrator with bounded implementation delegation.
+**Status:** Done within the current User-approved scope. **Owner:** orchestrator with bounded implementation delegation.
 
 **Latest update (2026-10-02):** The User explicitly accepts the observed
 native Stop cancellation race as a known limitation to fix after upstream changes,
@@ -1281,10 +1286,20 @@ authorization, expiry, deduplication, recovery and mode claims still require evi
 No claim of native MCP Tasks consumption or idle wake-up is introduced.
 
 - [x] A independently started Codex conversation continues useful work and automatically receives its owned Memory Answer without another user message.
-- [ ] Supported setup and delivery recovery/cancellation/origin checks reuse the shared runtime and have meaningful integration tests, with the explicitly accepted upstream late-HookPrompt cancellation limitation recorded.
-- [ ] CLI/IDE/Desktop supported and unsupported modes have distinct verified claims.
-- [ ] Documentation, affected checks and independent review pass; current no-changeset preference preserved.
-- [ ] Overall objective completion audit covers every standalone requirement; unavailable mechanisms remain explicit blockers rather than narrowed completion.
+- [x] Supported setup and delivery recovery/cancellation/origin checks reuse the shared runtime and have meaningful integration tests, with the explicitly accepted upstream late-HookPrompt cancellation limitation recorded.
+- [x] CLI/IDE/Desktop supported and unsupported modes have distinct verified claims.
+- [x] Documentation, affected checks and independent review pass; current no-changeset preference preserved.
+- [x] Overall objective completion audit covers every standalone requirement; unavailable mechanisms remain explicit blockers rather than narrowed completion.
+
+**Final acceptance (2026-10-07):** Pass. Independent whole-package review accepts
+the bounded native delivery, User-approved recovery limits and adapted managed
+contributor bootstrap. Current checks pass 180 affected tests and 10 bootstrap/
+configuration tests, full test typechecking and targeted lint/format checks.
+Private services and credential state are removed. Historical failed evidence
+and ticket 13 remain unchanged, with safety correction mapping to 19–20.
+Default dependency verification, fresh installation, skipped capture/doctor
+checks and stronger recovery retain their stated limits. No changeset, push,
+deployment or publication is authorized. Final review: `docs/investigations/async-memory-delivery/24-standalone-codex/integrated-closeout-oct07/FINAL-ACCEPTANCE.md`.
 
 ## 25: Normalize Memory Answer input at durable acceptance
 
@@ -5872,3 +5887,261 @@ runner/worker were stopped before the focused rerun. Native qualification and
 bootstrap closeout remain deferred while the User is away. Documentation updated
 in `docs/async-memory-answer.md`; no new native sessions, credential operations,
 changeset, commit or push for these fixes.
+
+### Ticket 24: Local checkpoint and native disconnect/reconnect observed (2026-10-07)
+
+User requested local checkpoint and completion of remaining native checks.
+Commit `a5530e81` contains the reviewed implementation, tests and closeout notes;
+unrelated/private files were excluded. MCP build passes; nothing pushed.
+
+Fresh User sign-in, trusted synthetic workspace and hooks, native CLI 0.160.1,
+worker 0.159.3/gpt-5.6-luna low. The User drove bare `/quit` immediately after
+pending/package markers. Launcher recorded frontend exit at 07:28:07.166 UTC,
+before the unchanged 90-second retrieval hold ended at 07:29:33.808 UTC. One
+accepted task, executor and worker completed; its original Conversation and turn
+received the answer at 07:29:43.713 UTC and completed at 07:29:44.006 UTC.
+Exact original Conversation reconnect displayed completed answer history to the
+User without a new prompt, task, execution or second completion. Both native
+frontends exited cleanly. Private daemon/helpers, runtime, embedding service and
+PostgreSQL stopped; private credential removed; four selected normal-file hashes
+unchanged. Selected case summary retained in `cli-disconnect-oct06`; private raw
+history remains outside Git. Independent bounded review pending. This does not
+qualify pending-result recovery, runtime restart, a different receiver, explicit
+interruption, or retrofit the old bare-quit abandonment verdict.
+
+Prepared separate fresh `koed-codex-cli-stop-exit-oct06` profile and
+`cli-stop-exit-oct07` definitions for explicit stop-and-exit. The previously
+reviewed process-local observer will record actual maintained retirement under
+its same-process exclusive receipt lock, with identity-only bounded output.
+New wrapper/preflight review pending; native services not started for this case.
+User will drive all timing-sensitive steps. No automatic retry authorized.
+
+### Ticket 24: Disconnect accepted; explicit interruption observed (2026-10-07)
+
+Independent review accepts the bounded intentional-disconnect and exact
+completed-history reconnect case. Final comparison uses today's pre-live
+baseline, not yesterday's preparation baseline; its older config difference is
+retained without attribution. Four selected normal files match the live
+baseline. Post-reconnect native source and retained private history hashes match;
+sanitized cleanup artifact verifies exact frontend/daemon/PG PID absence and
+private auth/connection/registration/PG PID-file removal.
+
+Stop-and-exit preparation independently accepted after wrapper realpath guards
+and launcher refusal of resume were corrected. Maintained configure/check passes;
+parsed before/after comparison proves only two retirement command paths changed.
+Protected runtime capabilities and private API health 200 verified. User signed
+in, trusted the isolated CLI and confirmed exact workspace. On the one accepted
+pending recall, User drove Ctrl+C then quit. Actual Interrupt removed the original
+spent receipt under its same-process exclusive lock at 07:41:19.085 UTC; native
+turn-aborted/interrupted confirmation followed at 07:41:19.090 UTC. Frontend exit
+recorded at 07:41:23.550 UTC, before the unchanged 90-second retrieval hold ended.
+One task/executor/worker remains active; no post-interruption native history at
+07:42:25 UTC. Completion/stability/cleanup and independent native review pending.
+
+### Ticket 24: Explicit stop-and-exit outcome and cleanup recorded (2026-10-07)
+
+The real unchanged query response drained after 90,002 ms at 07:42:45.054 UTC;
+one worker returned found and the executor completed at 07:42:54.558 UTC. Actual
+database task status is completed with one saved Memory Question and attempt 1.
+No native record follows confirmed interruption. Retained native history hash is
+unchanged across the final observation, 73.2 seconds after backend completion.
+Scoped cleanup removes private auth, runtime registration/connection, daemon
+helpers and PostgreSQL; exact process absence and four unchanged normal-file
+hashes are retained. Independent native result review pending; no kernel-wide
+retirement or receiver-recovery claim.
+
+Prepared a fresh separate CLI client-port timeout case in `cli-timeout-oct07`,
+private root `koed-codex-cli-timeout-oct07`. It reuses the bounded real-object
+1,500 ms late-read method from the accepted frontend checks, maintained 1,000 ms
+observation and six-second native Stop watchdog, with original-owner and package
+proof adapted to actual CLI metadata. Earlier HTTP server-write-drain evidence
+stays inconclusive. New source review pending; no services, auth or native client
+started for this case yet. Full bootstrap and remaining recovery disposition
+are still open.
+
+### Ticket 24: Stop-and-exit accepted; CLI timeout ready (2026-10-07)
+
+Independent review accepts explicit stop-and-exit and actual maintained owned
+receipt retirement. Original session/turn/call/nonce/task/canonical input and
+invocation joins pass. Delayed SessionEnd is idempotent, not claimed immediate.
+No later native answer or record follows interruption through the 73.249-second
+post-completion window. Four current normal-file comparisons independently match;
+cleanup recorded. Historical bare-quit failure and recovery scope stay separate.
+
+Fresh User sign-in verified for CLI timeout. Independent source preflight passes
+after strict argv checking and 25 fixture/worker/maintained entry-module pins;
+synthetic abort and unchanged-object drain checks pass. Maintained configure/check
+passes before instrumentation. Host parsed before/after comparison proves only
+delivery Stop command/wait bound and native watchdog 305 to 6 seconds changed;
+Capture Stop and all other settings remain unchanged. Private PostgreSQL/runtime
+ready, protected capabilities succeeds and API health is 200. No recall started;
+User-driven native cwd preflight is next. Final live criterion and scoped cleanup
+remain unqualified.
+
+### Ticket 24: User resets CLI timeout before any recall (2026-10-07)
+
+User reports malformed paste and accidental native close, explicitly requests
+environment reset. Native frontend exit 0 recorded; task acceptance, executor
+and worker counts all zero. The timeout case is aborted without qualification.
+Private native logs preserved, exact daemon/helpers/runtime/embedding/PostgreSQL
+stopped and profile credential removed. Sanitized cleanup summary verifies exact
+PID and registration/connection/PG PID-file absence and four unchanged normal-file
+baselines. No durable recall was abandoned or cancelled.
+
+Prepared one fresh retry in `cli-timeout-retry-oct07`, private root
+`koed-codex-cli-timeout-retry-oct07` and project `iris-cli-timeout-02`. New profile
+and exclusive attempt markers, no credentials or trust copied. Source behavior
+matches the reviewed client-port timeout fixture with only root/project/pin-path
+substitutions; fresh source/worker/entry-module pins and syntax checks retained.
+Independent substitution review pending. User will copy the exact saved prompt
+with `pbcopy` before native submission to avoid formatting errors. No retry
+services or auth started yet; no automatic further retry authorized.
+
+### Ticket 24: CLI timeout independently accepted; Pi fallback tightened (2026-10-07)
+
+Fresh timeout retry has genuine native pending/package work and exact original
+session/turn/call/nonce/canonical-input/task/invocation joins. One actual protected
+running read ends observation at one second, drains the same snapshot after
+1,501 ms and finishes its hook after 1,569 ms below the verified six-second native
+watchdog. Capture Stop and other configuration unchanged. One static original
+timeout notice and no-answer follow-up, then one real backend found answer and
+answered Memory Question, attempt 1 and no cancel. Native history unchanged for
+93.258 seconds after completion and through User quit. Independent result review
+accepts this client-port case; the earlier HTTP server-write case stays
+inconclusive and aborted paste attempt stays zero-recall aborted. Private services,
+credentials and metadata removed; exact process absence and four normal-file
+baseline comparisons retained.
+
+Integrated source review found Pi still treated every start HTTP 409 as Team
+ineligibility. Scoped correction in four files now requires 409 plus the trusted
+`memory_answer_team_ineligible` code; standalone parser preserves only that code
+on 409, keeping redacted errors and validated 429 delay metadata. Status-only or
+unknown conflicts, wrong-status codes, network failures and uncertain starts do
+not authorize blocking fallback or reacceptance. Independent source review and
+48 Pi tests pass. Root Node 24 integrated run passes 180 tests across seven files,
+full test typecheck and targeted lint/format checks. No native rerun needed for
+this narrow source defect.
+
+Whole-ticket independent audit still requires full contributor bootstrap and
+explicit User approval of unsupported Codex receiver-recovery disposition.
+Current CLI exit distinction and cancellation-race acceptance do not waive
+automatic pending-result recovery after backend/Conversation loss or runtime
+restart. Prepared bootstrap fixture may use an exact private tracked-source copy
+because clients-bootstrap reads repo `.env` irrespective of KOED_ENV_PATH;
+normal secrets must not enter the isolated child. Preparation only, no bootstrap
+live run yet; no ticket/goal completion, changeset, commit or push inferred.
+
+### Ticket 24: User accepts current Codex recovery limits (2026-10-07)
+
+The User explicitly accepts the reviewed recovery limits and keeps stronger
+recovery as future work. Supported delivery stays with the original eligible
+backend turn. Exact completed-history reconnect remains history access.
+Guaranteed pending-result delivery after backend/Conversation loss or Local AI
+Runtime restart, idle wake and exited-session replay remain unsupported.
+This closes only the outstanding Codex receiver-recovery criterion. Existing
+Pi recovery, durable execution, authorization, expiry, ownership, duplicate and
+cancellation requirements remain. Full contributor bootstrap, final checks,
+documentation and independent acceptance still must pass before completion.
+
+### Ticket 24: Full bootstrap attempts stopped and cleaned (2026-10-07)
+
+Prepared exact private contributor copies to keep normal repository environment
+secrets out of the unchanged setup scripts. Independent review verifies copied
+working source, compiled inputs, required prompts, Node 24, bounded process
+groups, output/reference paths and failure cleanup. Original preparation stops
+before genuine bootstrap because its API readiness fails. Source diagnosis finds
+unsupported `WORK_QUEUE_BACKEND=native` selects the Redis-backed default while
+Redis is absent. No first/repeat bootstrap command, recall or model executes.
+Private processes, credentials and environment state removed; six selected
+normal/profile/repository environment hashes match. The failed readiness body
+was not retained, so the diagnosis remains source-based.
+
+A fresh corrected preparation uses supported `local` in runtime and runner and
+records actual readiness before assertion. API readiness 200 and all five checks
+pass. Genuine first `setup codex --json` invokes unchanged clients-bootstrap and
+attempts its DB build. pnpm 11.1.2 starts an automatic install and stops with
+`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` before module purge. CLI returns
+needs_attention/exit 1. The repeat is not started, and no successful bootstrap
+is claimed. Ten dependency input links remain intact and the original modules
+metadata retains its earlier modification time. A whole dependency-tree baseline
+was not recorded. Public package-manager source retained privately for diagnosis.
+
+One original synthetic API credential remains valid after failure, with token
+count 1 and protected missing-resource status 404. No recall/model call occurs.
+Runtime, CPU embedding and exact private PostgreSQL close. Bootstrap group has
+zero remaining members. Private secrets/profile/home/registration/environment
+state removed; exact process/state checks and all six normal-file comparisons
+pass. Full bootstrap remains deferred for a reviewed manual next step. No
+automatic repeat, module-purge approval, package installation, ticket/goal
+completion, changeset, commit or push follows from this failed result.
+
+### Ticket 24: User authorizes manual bootstrap retry (2026-10-07)
+
+The User chooses a manual retry after the failed automatic dependency check.
+The reviewed adaptation sets typed Boolean `verifyDepsBeforeRun: false` only in
+the fresh private contributor workspace. Genuine builds and setup commands still
+run against existing dependency inputs. This does not validate a fresh dependency
+installation or authorize purge, install, CI shortcuts or changes to normal
+package-manager configuration. Stronger recovery remains future work under the
+previously approved scope.
+
+Prepare a fresh root, profile, source copy, real private API and credential owner.
+Keep Node 24, explicit private environment, 300-second maintained setup and
+360-second parent bounds, first-success requirement before repeat, exact-owned
+cleanup, output privacy and normal-file comparisons. Independent source/config
+review precedes services and the User-driven runner. Earlier failures remain
+separate; no new bootstrap outcome or ticket completion inferred.
+
+### Ticket 24: Manual first/repeat bootstrap passes before final review (2026-10-07)
+
+The User runs the approved fresh private runner. Real API readiness is 200 with
+all five checks ok. Unchanged maintained setupCodex/client-bootstrap scripts run
+genuine DB/MCP builds, configuration and registration first and repeat, both
+healthy/exit 0. The private Boolean verification-disable flag and pinned direct
+pnpm 11.1.2 adapter prevent automatic installation; no fake build or setup result.
+Existing dependency inputs are used, not fresh-install/default verification proof.
+Managed Docker bypass and capture/doctor skips remain explicit.
+
+First and repeat preserve exact config/guidance hashes, unrelated MCP/global
+marker, file credential mode, disabled secret storage and one exact private Codex
+registry entry. Runtime verification confirms the same original API credential,
+one token/owner and authorized missing-resource status 404. No recall/model call
+or durable recall task occurs. Both bootstrap groups have zero survivors.
+
+Runtime, CPU embedding and exact private PostgreSQL close. Private credential,
+profile, home, environment, connection and registration state removed. Seven
+normal/profile/repository/modules metadata hashes and all 2,328 original source/
+compiled-input hashes match; ten dependency links preserved. Whole dependency
+tree baseline was not recorded. Sanitized results and final cleanup retained;
+raw outputs stay private. Independent result and final whole-ticket reviews are
+pending before completion. Earlier failed preparations/first command remain
+separate; no changeset, new commit, push or publication inferred.
+
+### Ticket 24: Managed contributor bootstrap independently accepted (2026-10-07)
+
+Independent result review accepts the User-driven adapted managed contributor
+case. Raw first/repeat CLI JSON, process exits and unchanged maintained script
+paths support genuine builds/configuration/registration. Stage labels are present;
+individual inner compiler command echoes are not inferred. One actual credential
+owner/token remains valid, config/guidance and sentinels are preserved, and no
+recall/model runs. Source/code/manager pins, actual readiness and protected reads
+join the recorded results. Final scoped cleanup and seven normal-file comparisons
+pass; original 2,328 input hashes and ten dependency links independently match.
+Private verification-disable/direct-manager adaptations retain their scope.
+Default dependency verification, fresh installation and skipped capture/doctor
+checks remain unqualified. Whole-ticket final acceptance is next; no failed case
+is promoted.
+
+### Ticket 24 and approved work package complete (2026-10-07)
+
+Final independent whole-ticket review passes after documentary reconciliation.
+No required gap remains under the explicit User-approved implementation,
+recovery and manual-bootstrap scope. Ticket 24 is Done; the current work package
+is complete. Preserve the original research verdicts and ticket-19/20 safety
+correction mapping. Current validation is 180 affected tests, 10 bootstrap/config
+tests, full test typechecking, targeted lint/format and reviewed native outcomes.
+Scoped cleanup is complete. Stronger recovery, native MCP Tasks adoption and
+unqualified installation/default/skipped checks remain follow-ups or limits.
+The existing local checkpoint is `a5530e81`; later Pi fallback and validation
+changes remain in the working tree. No additional commit, changeset, push,
+deployment or publication follows from this acceptance.

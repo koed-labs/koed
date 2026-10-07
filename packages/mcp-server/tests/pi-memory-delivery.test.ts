@@ -180,11 +180,58 @@ describe("supported Pi Memory Answer delivery", () => {
     );
     expect(f.port.start).not.toHaveBeenCalled();
     f.port.start.mockRejectedValueOnce(
-      Object.assign(new Error("ineligible"), { statusCode: 409 })
+      Object.assign(new Error("ineligible"), {
+        statusCode: 409,
+        code: "memory_answer_team_ineligible"
+      })
     );
     await f.delivery.execute("call-2", { query: "q" }, undefined, f.ctx);
     expect(f.blocking).toHaveBeenCalledTimes(2);
     expect(f.entries).toHaveLength(0);
+  });
+  it("classified pre-acceptance Team rejection falls back once with the original request", async () => {
+    const f = fixture();
+    const input = { query: "original", search_domain: "global", limit: 3 };
+    const signal = new AbortController().signal;
+    f.port.start.mockRejectedValueOnce(
+      Object.assign(new Error("Team is ineligible"), {
+        statusCode: 409,
+        code: "memory_answer_team_ineligible"
+      })
+    );
+    await f.delivery.execute("one-call", input, signal, f.ctx);
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.blocking).toHaveBeenCalledExactlyOnceWith(
+      input,
+      f.ctx,
+      signal,
+      "conversation-1:one-call"
+    );
+    expect(f.entries).toHaveLength(0);
+    expect(f.port.get).not.toHaveBeenCalled();
+    f.delivery.detach();
+  });
+  it.each([
+    ["status-only conflict", { statusCode: 409 }],
+    ["unknown conflict", { statusCode: 409, code: "other" }],
+    [
+      "spoofed Team code on another status",
+      { statusCode: 503, code: "memory_answer_team_ineligible" }
+    ],
+    ["network failure", {}],
+    ["uncertain start", { statusCode: 500 }]
+  ])("does not fall back or reaccept after %s", async (_name, fields) => {
+    const f = fixture();
+    const failure = Object.assign(new Error("start failed"), fields);
+    f.port.start.mockRejectedValueOnce(failure);
+    await expect(
+      f.delivery.execute("one-call", { query: "original" }, undefined, f.ctx)
+    ).rejects.toBe(failure);
+    expect(f.port.start).toHaveBeenCalledTimes(1);
+    expect(f.blocking).not.toHaveBeenCalled();
+    expect(f.port.get).not.toHaveBeenCalled();
+    expect(f.entries).toHaveLength(0);
+    f.delivery.detach();
   });
   it("resume recovers pending receipts and already-enqueued results never repeat", async () => {
     const f = fixture();

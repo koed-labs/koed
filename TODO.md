@@ -12,12 +12,13 @@ Follow-ups:
   integration review. Claude's isolated main-Conversation tests cover idle and
   foreground-tool completion, timeout, selected host stop, pending exit,
   revocation and expiry. Repeated calls and reopening delivery remain untested.
-  Complete native qualification of the implemented opt-in Codex Stop adapter,
-  which uses the shared durable task runtime and exact originating turn.
+  Native qualification of the opt-in Codex Stop adapter passes within its
+  User-approved scope. It uses the shared durable task runtime and exact
+  originating turn.
   Real native CLI 0.159.3 positive, revocation/expiry, scheduler failure and
   durable cancellation cases passed bounded review. Controlled fork and `/new`
-  origin checks passed after parent interruption. Observation timeout remains
-  inconclusive, and pending exit failed because the original turn produced a
+  origin checks passed after parent interruption. The earlier server-write
+  timeout remains inconclusive, and historical pending exit failed because the original turn produced a
   model answer after CLI disconnection. Configuration repeat/repair/removal
   checks passed; full setup and live recovery remain. A separate native VS Code
   positive case demonstrated same-turn automatic delivery with useful overlap
@@ -54,8 +55,15 @@ Follow-ups:
   and native missing-prehook blocking fallback also passed cleanup/independent
   review. Desktop post-completion simulated orphan-state cleanup also passed
   unchanged one task/Question, no replay/late answer and scoped cleanup/independent
-  review. Full contributor setup/bootstrap remains deferred; in-flight/crash/
-  restart recovery and unresolved CLI outcomes remain explicit follow-ups.
+  review. Fresh CLI 0.160.1 cases separately pass intentional disconnect and
+  exact completed-history reconnect, explicit stop-and-exit with actual maintained
+  owned receipt retirement, and client-port late-read timeout without a late answer.
+  Independent reviews and scoped cleanup pass; earlier verdicts stay historical.
+  User-driven managed contributor first/repeat bootstrap passes with existing
+  dependencies and an approved private verification-disable setting. Final
+  independent acceptance passes on 2026-10-07. Automatic pending-result
+  delivery after backend loss/runtime restart, exited replay and idle wake remain
+  unsupported under the User-approved scope from 2026-10-07.
   The User accepts the upstream cancellation race temporarily: a hook result
   can enter an interrupted original turn during Codex's abort grace interval.
   Document this limitation and revalidate suppression after an upstream fix;
@@ -70,6 +78,10 @@ Follow-ups:
   independent-client work has been addressed.
 - Strengthen Pi delivery recovery if its API gains an atomic durable enqueue
   acknowledgement; current recovery has documented crash gaps.
+- Add stronger Codex recovery when a supported host supplies the required
+  receiver mechanism. Pending-result delivery after backend loss or runtime
+  restart, idle wake and exited-session replay remain future work. Keep the
+  original-owner, authorization, expiry and duplicate safeguards.
 
 ## Joining-device-first Personal Device pairing
 

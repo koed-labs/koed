@@ -67,7 +67,10 @@ real recall completed, then automatically consumed the answer and original
 source citation in the same turn. This qualifies the normal CLI path. Separate
 isolated scheduler-failure and durable-cancellation CLI cases passed their
 bounded checks; the cancellation case used a managed backend at 0.160.0.
-Observation timeout remains inconclusive under its delayed-read criterion.
+The earlier server-write timeout case remains inconclusive under its delayed-read
+criterion. A fresh CLI 0.160.1 client-port timeout case passes: an authorized
+running snapshot drains unchanged after observation ends, one real task completes,
+and no late answer reaches the original Conversation.
 One pending-exit run failed: after User-reported CLI disconnection, the original
 turn received a completed-result HookPrompt and produced a model answer before
 SessionEnd retired the receipt. A separate controlled-timing fork test showed
@@ -79,6 +82,14 @@ switching remains unverified. Separate isolated revocation and
 expiry cases confirmed that a fresh task read prevents cached
 answer delivery. Ordinary task GETs can return HTTP 200 with expired retention;
 the shared delivery lifecycle rejects that snapshot before presentation.
+
+Fresh CLI 0.160.1 exit checks distinguish intentional disconnection from explicit
+interruption. After bare `/quit`, one original backend turn completed and its
+answer was visible on reconnect to that exact completed history. A separate
+Interrupt retired the original receipt under its exclusive lock before frontend
+exit; backend completion produced no later native answer. Independent review
+accepts these bounded cases. Automatic pending-result delivery after runtime
+restart, exited-session replay and idle wake remain unsupported.
 
 External native queue presentation remains unsupported. Loaded-thread metadata
 does not establish the current interactive receiver. The Stop route avoids that
@@ -128,14 +139,22 @@ drain under the exact six-second native watchdog, backend completion without
 cancellation, no late answer and cleanup/independent review. The prior 305-second
 fixture remains behavior-only. Desktop real core provisioning/reuse, supported
 repair/config selection/removal and missing-prehook blocking fallback also pass
-with cleanup and bounded independent review. Full contributor setup/bootstrap
-remains deferred. Desktop post-completion simulated orphan-state cleanup also
+with cleanup and bounded independent review. The earlier full bootstrap remained
+deferred; newer contributor bootstrap evidence appears below. Desktop post-completion simulated orphan-state cleanup also
 passes unchanged task/Question and no replay/late answer with cleanup/independent
-review. In-flight/crash/restart recovery and unresolved CLI outcomes remain
-separate. The Stop
+review. In-flight and crash/restart recovery remain outside the approved Codex
+delivery scope. The Stop
 route does not prove idle wake-up. The accepted upstream cancellation race can
-record a late hook prompt in an interrupted turn. It does not accept the
-pending-exit model answer. Interrupt cleanup is advisory.
+record a late hook prompt in an interrupted turn. It does not permit a model
+answer after confirmed interruption. Historical exit verdicts remain unchanged.
+
+The User-driven managed contributor bootstrap passes first and repeat with one
+credential and unchanged configuration, guidance and client registration.
+Independent result review and scoped cleanup pass. This test uses existing
+dependencies with an approved private verification-disable setting and pinned
+pnpm adapter. It does not qualify default dependency verification, fresh
+installation or the managed path's skipped capture and doctor checks. Normal
+configuration retains its existing defaults.
 
 ## Claude Code host backgrounding
 

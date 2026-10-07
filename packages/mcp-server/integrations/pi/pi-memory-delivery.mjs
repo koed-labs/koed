@@ -279,7 +279,10 @@ export function createPiMemoryDelivery(
         signal
       );
     } catch (error) {
-      if (error?.statusCode === 409)
+      if (
+        error?.statusCode === 409 &&
+        error?.code === "memory_answer_team_ineligible"
+      )
         return textResult(await blocking(input, ctx, signal, invocation));
       throw error;
     } finally {

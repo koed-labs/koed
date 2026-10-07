@@ -80,6 +80,10 @@ const request = async (
       new Error(`Koed Local AI Runtime returned HTTP ${response.status}`),
       {
         statusCode: response.status,
+        ...(response.status === 409 &&
+        result?.errorCode === "memory_answer_team_ineligible"
+          ? { code: "memory_answer_team_ineligible" }
+          : {}),
         ...(response.status === 429 &&
         Number.isSafeInteger(result?.retryAfterMs) &&
         result.retryAfterMs > 0 &&

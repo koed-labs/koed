@@ -195,8 +195,8 @@ answer, ordinary task, no nonce/pending receipt/Stop-delivered duplicate.
 Post-Quit repair restores prehook; blocking selection and owned removal pass.
 Private secrets and preparation database archives are removed. Independent
 review verifies 25 artifacts; config/raw-history completeness and 117,873 ms
-stability remain recorded live checks. Full contributor setup/bootstrap is
-deferred after exceeding the fixture deadline, not qualified by direct repair.
+stability remain recorded live checks. The earlier full contributor bootstrap
+exceeded its fixture deadline and is not qualified by direct repair.
 Preparation-only failures and comparison corrections did not repeat native
 recall. Orphan-lock/crash recovery and unavailable-runtime fallback stay separate.
 
@@ -210,7 +210,7 @@ late answer. Cleanup and four normal-file checks pass. Independent review verifi
 30 artifacts and owner/hash joins. Process inventory, full-history completeness
 and 27,826 ms stability remain recorded live checks. This proves post-completion
 simulated state cleanup; in-flight removal, crash/restart or exited-result recovery
-remain unverified. Contributor bootstrap remains separately deferred.
+remain unverified. New contributor bootstrap evidence is recorded below.
 
 ## Desktop exit gestures
 
@@ -399,23 +399,26 @@ lock cleanup. They do not close ticket 24 by themselves.
 
 Required gaps under the original criteria:
 
-- Qualify the prospectively approved disconnect/reconnect versus explicit
-  stop-and-exit distinction. The old bare-quit abandonment verdict remains failed;
-  deliberate daemon disconnect may finish only original owned work. Model answers
-  after confirmed interruption remain disallowed.
-- Qualify CLI observation timeout separately if claiming CLI T. Earlier server
-  drain remains inconclusive; frontend client-port tests do not transfer.
-- Observe the first owned receipt-retirement transition on a reviewed exit
-  attempt, or obtain an explicit criterion amendment. SessionEnd found an
-  already-empty ledger in bounded frontend exit cases.
-- Complete the deferred full contributor setup/bootstrap under a realistic
-  isolated bound; core/direct repair does not qualify it.
-- Finish the integrated source/check audit for shared authorization, expiry,
-  deduplication, concurrency and restart against the shipped adapter. Reuse
-  unchanged shared-runtime evidence instead of repeating frontend tests.
-- Resolve the original disconnect/reconnect/restart/resume requirements through
-  verified support or an explicit approved unsupported-scope decision where
-  they prevent completion. No idle wake or exited-session replay is claimed.
+- [x] Qualify the prospectively approved disconnect/reconnect versus explicit
+      stop-and-exit distinction. The old bare-quit abandonment verdict remains failed;
+      deliberate daemon disconnect may finish only original owned work. Model answers
+      after confirmed interruption remain disallowed.
+- [x] Qualify CLI observation timeout separately if claiming CLI T. The fresh
+      CLI client-port case passes; earlier server drain remains inconclusive.
+- [x] Observe the first owned receipt-retirement transition on a reviewed exit
+      attempt, or obtain an explicit criterion amendment. SessionEnd found an
+      already-empty ledger in bounded frontend exit cases.
+- [x] Complete the managed contributor setup/bootstrap under a realistic private
+      bound. The User-driven first/repeat batch passes with existing dependencies
+      and the approved private verification-disable adaptation. Default dependency
+      verification, fresh installation and skipped checks remain unqualified.
+- [x] Finish the integrated source/check audit for shared authorization, expiry,
+      deduplication, concurrency and restart against the shipped adapter. Reuse
+      unchanged shared-runtime evidence instead of repeating frontend tests.
+- [x] Resolve the original disconnect/reconnect/restart/resume requirements through
+      verified support or an explicit approved unsupported-scope decision where
+      they prevent completion. The User approved the documented Codex recovery limits
+      on 2026-10-07. No idle wake or exited-session replay is claimed.
 
 Natural-speed repetitions, first-turn variants of every failure, native UI cancel,
 Desktop server-write delay, in-flight lock removal, machine crash and OS dependency
@@ -440,15 +443,20 @@ No second executor or task store is introduced.
 | Canonical acceptance             | Task-runtime implicit/explicit default regression and dispatch canonical-input propagation                                                  | Team detached restrictions retain blocking/unsupported classification            |
 | Disconnect/restart               | Resource-route Last-Event-ID/disconnect and scheduler lease reconciliation tests; earlier durable-runtime evidence                          | These prove execution/resource behavior, not delivery to resumed Codex receivers |
 
-Current closeout verification passes 83 focused shared/Codex/runtime/scheduler
+Earlier closeout verification passed 83 focused shared/Codex/runtime/scheduler
 tests. Four existing test fixtures then received honest typing corrections:
 typed mock arguments, a real unconnected IncomingMessage and asserted tuple/task
 existence. Full `pnpm typecheck:test` now passes; the remediation's six focused
 files pass 103 tests, with targeted lint/format checks. This replaces the earlier
 recorded test-typecheck gap; it does not waive any native lifecycle criterion.
 
-The integrated final independent review and explicit disposition of remaining
-host-recovery/CLI-exit requirements are still required before ticket completion.
+The integrated independent source audit found Pi's broad HTTP 409 fallback.
+Pi now requires the authoritative Team-ineligibility code, with transport and
+fallback regressions independently reviewed. Current Node 24 verification passes
+180 tests across seven affected files, full test typechecking, lint and formatting.
+The User approved the unsupported Codex recovery disposition on 2026-10-07.
+Managed contributor bootstrap now passes independent result review within its
+approved adapted scope. Final whole-ticket acceptance passes on 2026-10-07.
 
 ### Approved prospective CLI exit distinction (2026-10-06)
 
@@ -461,3 +469,65 @@ No different receiver may consume the original result. The old failed case stays
 failed under its original criterion; the late-HookPrompt exception is unchanged.
 No pending-result or runtime-restart recovery claim follows from completed-history
 reconnect. Other CLI timeout/bootstrap/recovery gaps remain open.
+
+Later CLI exit and client-port timeout cases close their separate criteria.
+The User approves the documented recovery limits. The current remaining gate
+was final whole-ticket acceptance, which passes on 2026-10-07.
+
+### Prospective CLI exit checks (2026-10-07)
+
+A fresh CLI 0.160.1 test passes the approved intentional-disconnect and exact
+completed-history reconnect criteria. The frontend exited before the real
+90-second retrieval hold ended. One accepted task and executor completed, and
+only the original Conversation and turn received the answer and evidence. The
+User reconnected to that exact Conversation without a new prompt and saw the
+completed answer. Task and execution counts stayed at one. Independent review
+accepts this bounded result; the earlier abandonment verdict remains unchanged.
+
+A separate explicit stop-and-exit run records the maintained Interrupt hook
+removing the original spent receipt under its same-process exclusive lock.
+Native interruption confirmation and frontend exit precede backend completion.
+There are no native records after confirmed interruption, including a 73-second
+window after successful backend completion. Independent result review accepts
+this bounded explicit stop-and-exit case.
+This observes the first maintained owned retirement under the cooperative-lock
+assumption, not kernel-wide removal by uninstrumented writers.
+
+Both private fixtures' services and credentials were removed; selected normal
+profile files match their immediate pre-live baselines. These tests add no
+pending-result delivery, runtime-restart recovery or idle-wake claim. Separate
+Final whole-ticket acceptance passes on 2026-10-07 within the approved scope.
+
+### CLI client-port timeout (2026-10-07)
+
+The User-reset attempt ended before any recall and remains aborted. A fresh retry
+passes independently reviewed CLI timeout criteria. Its first actual authorized
+task read is running; one-second observation ends with a static native notice.
+The identical snapshot drains after 1,501 ms, and the observer finishes after
+1,569 ms within its verified six-second watchdog. Capture Stop remains 30 seconds.
+One real task completes with a found answer and an answered Memory Question,
+attempt 1 and no cancellation. Original native history stays unchanged for
+93.258 seconds after completion and through User quit. Scoped cleanup and four
+normal-file comparisons pass. This is CLI client-port latency, not HTTP
+server-write drain, first-turn admission or runtime-restart recovery.
+
+### User-driven managed contributor bootstrap (2026-10-07)
+
+The User runs a fresh private first/repeat batch after source review. Both genuine
+setup commands return healthy and complete real DB/MCP builds, configuration and
+client registration. One credential/owner remains valid, and config/guidance
+hashes match across runs. Unrelated settings remain intact. The private API
+passes real readiness and protected credential checks.
+
+The test uses existing dependency inputs with an approved private-only Boolean
+`verifyDepsBeforeRun: false` and a pinned pnpm adapter. No dependency installation
+or purge is authorized. Default dependency verification, fresh installation,
+skipped capture/doctor checks and OS dependency installation remain unqualified.
+Earlier readiness and automatic-install failures are retained separately.
+
+Both process groups and private API/runtime/embedding/PostgreSQL stop. Secrets,
+profile and environment state are removed. Seven selected normal-file hashes,
+all original source/compiled-input hashes and ten dependency links remain intact.
+No recall or model executes. Independent result review accepts this adapted
+managed contributor case. Final whole-ticket acceptance passes within the
+User-approved scope. No remaining required manual check is open for this scope.
