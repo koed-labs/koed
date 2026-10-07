@@ -229,10 +229,21 @@ const sha256 = (value: string): string =>
 const watcherStatePath = (config: CodexTranscriptWatcherConfig): string =>
   path.join(config.koedHome, "state", "codex-transcript-watcher.json");
 
+type ConversationFrontier = { frontier: number; tailDigest: string };
+
 type WatcherActivationState = {
   activatedAt: number | null;
   baselineFileFrontiers: Map<string, number | null>;
+  // Keyed by Codex session id so a frontier survives plain/compressed storage
+  // replacement, which changes the file key.
+  baselineConversationFrontiers: Map<string, ConversationFrontier>;
 };
+
+const emptyActivationState = (): WatcherActivationState => ({
+  activatedAt: null,
+  baselineFileFrontiers: new Map(),
+  baselineConversationFrontiers: new Map()
+});
 
 const readActivationState = (
   config: CodexTranscriptWatcherConfig
@@ -245,13 +256,9 @@ const readActivationState = (
       activatedAt?: string;
       activatedAtMs?: number;
       baselineFileFrontiers?: unknown;
+      baselineConversationFrontiers?: unknown;
     };
-    if (parsed.version !== WATCHER_VERSION) {
-      return {
-        activatedAt: null,
-        baselineFileFrontiers: new Map()
-      };
-    }
+    if (parsed.version !== WATCHER_VERSION) return emptyActivationState();
     const frontiers = new Map<string, number | null>();
     if (
       parsed.baselineFileFrontiers &&
@@ -271,17 +278,38 @@ const readActivationState = (
         }
       }
     }
+    const conversationFrontiers = new Map<string, ConversationFrontier>();
+    if (
+      parsed.baselineConversationFrontiers &&
+      typeof parsed.baselineConversationFrontiers === "object"
+    ) {
+      for (const [sessionId, entry] of Object.entries(
+        parsed.baselineConversationFrontiers
+      )) {
+        const { frontier, tailDigest } = (entry ?? {}) as Record<
+          string,
+          unknown
+        >;
+        if (
+          typeof frontier === "number" &&
+          Number.isSafeInteger(frontier) &&
+          frontier >= 0 &&
+          typeof tailDigest === "string" &&
+          /^[0-9a-f]{64}$/.test(tailDigest)
+        ) {
+          conversationFrontiers.set(sessionId, { frontier, tailDigest });
+        }
+      }
+    }
     const activatedAt =
       parsed.activatedAtMs ?? Date.parse(parsed.activatedAt ?? "");
     return {
       activatedAt: Number.isFinite(activatedAt) ? activatedAt : null,
-      baselineFileFrontiers: frontiers
+      baselineFileFrontiers: frontiers,
+      baselineConversationFrontiers: conversationFrontiers
     };
   } catch {
-    return {
-      activatedAt: null,
-      baselineFileFrontiers: new Map()
-    };
+    return emptyActivationState();
   }
 };
 
@@ -302,7 +330,10 @@ const persistActivationState = (
             activatedAt: new Date(state.activatedAt).toISOString(),
             activatedAtMs: state.activatedAt
           }),
-      baselineFileFrontiers: Object.fromEntries(state.baselineFileFrontiers)
+      baselineFileFrontiers: Object.fromEntries(state.baselineFileFrontiers),
+      baselineConversationFrontiers: Object.fromEntries(
+        state.baselineConversationFrontiers
+      )
     })}\n`,
     { mode: 0o600 }
   );
@@ -311,14 +342,35 @@ const persistActivationState = (
 
 const activate = (
   config: CodexTranscriptWatcherConfig,
-  baselineFileFrontiers: Map<string, number | null>
+  baseline: Omit<WatcherActivationState, "activatedAt">
 ): number => {
   const activatedAt = performance.timeOrigin + performance.now();
-  persistActivationState(config, {
-    activatedAt,
-    baselineFileFrontiers
-  });
+  persistActivationState(config, { ...baseline, activatedAt });
   return activatedAt;
+};
+
+const FRONTIER_TAIL_DIGEST_BYTES = 64 * 1024;
+
+// Digests a bounded window of decoded bytes ending at a frontier, so a storage
+// replacement can be verified without rereading the whole Conversation.
+const frontierTailDigest = (
+  transcriptPath: string,
+  frontier: number
+): string => {
+  const start = Math.max(0, frontier - FRONTIER_TAIL_DIGEST_BYTES);
+  const buffer = Buffer.allocUnsafe(frontier - start);
+  const descriptor = openSync(transcriptPath, "r");
+  try {
+    if (
+      readSync(descriptor, buffer, 0, buffer.byteLength, start) !==
+      buffer.byteLength
+    ) {
+      throw new Error("transcript_source_short_read");
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return createHash("sha256").update(buffer).digest("hex");
 };
 
 class BoundedTranscriptDiscovery {
@@ -608,6 +660,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly client: CodexTranscriptWatcherClient;
   private activatedAt: number | null;
   private readonly baselineFileFrontiers: Map<string, number | null>;
+  private readonly baselineConversationFrontiers: Map<
+    string,
+    ConversationFrontier
+  >;
   private readonly discovery: BoundedTranscriptDiscovery;
   private readonly compressedReader: CodexCompressedTranscriptReader;
   private readonly historyMetadataReader?: CodexHistoryMetadataReader;
@@ -684,6 +740,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
     this.baselineFileFrontiers = activationState.baselineFileFrontiers;
+    this.baselineConversationFrontiers =
+      activationState.baselineConversationFrontiers;
     this.discovery = new BoundedTranscriptDiscovery(config);
     this.compressedReader = new CodexCompressedTranscriptReader(
       config.koedHome
@@ -851,7 +909,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       }
       if (this.activatedAt === null) {
         if (discovery.cycleComplete) {
-          this.activatedAt = activate(this.config, this.baselineFileFrontiers);
+          this.activatedAt = activate(this.config, {
+            baselineFileFrontiers: this.baselineFileFrontiers,
+            baselineConversationFrontiers: this.baselineConversationFrontiers
+          });
           this.metrics.state = "running";
         }
       }
@@ -989,7 +1050,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const { resolvedSource, before } =
       await this.validateConfinedSource(transcriptPath);
     const fileKey = `${before.dev}:${before.ino}`;
-    const baselineFrontier = this.baselineFileFrontiers.get(fileKey);
+    const fileFrontier = this.baselineFileFrontiers.get(fileKey);
     this.rememberBaselineFile(fileKey);
     await this.compressedReader.withMaterialized(
       transcriptPath,
@@ -1057,6 +1118,22 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
             throw new Error("codex_history_current_source_missing");
           if (currentResolved !== resolvedSource) return;
         }
+        if (this.activatedAt === null) {
+          this.rememberConversationFrontier(
+            identity.sessionId,
+            readablePath,
+            boundary
+          );
+        }
+        const baselineFrontier =
+          fileFrontier === undefined && this.activatedAt !== null
+            ? this.adoptConversationFrontier(
+                fileKey,
+                identity.sessionId,
+                readablePath,
+                boundary
+              )
+            : fileFrontier;
         this.rememberIdentity(transcriptPath, {
           ...identity,
           fileKey: identityKey
@@ -1176,6 +1253,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           baselineFrontier === undefined
         ) {
           this.rememberDeferredFile(fileKey, boundary);
+          this.rememberConversationFrontier(
+            identity.sessionId,
+            readablePath,
+            boundary
+          );
           return;
         }
         const liveStartOffset = existingArtifact
@@ -1229,6 +1311,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
         if (!existingArtifact) {
           this.metrics.sourcesRegistered += 1;
           this.baselineFileFrontiers.delete(fileKey);
+          this.baselineConversationFrontiers.delete(identity.sessionId);
           this.persistWatcherState();
         }
         this.metrics.bytesAdvanced += result.providerBytesAdvanced;
@@ -1482,6 +1565,43 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.persistWatcherState();
   }
 
+  private rememberConversationFrontier(
+    sessionId: string,
+    readablePath: string,
+    boundary: number
+  ): void {
+    if (
+      this.baselineConversationFrontiers.get(sessionId)?.frontier === boundary
+    )
+      return;
+    this.baselineConversationFrontiers.set(sessionId, {
+      frontier: boundary,
+      tailDigest: frontierTailDigest(readablePath, boundary)
+    });
+    this.persistWatcherState();
+  }
+
+  // A plain/compressed replacement has a new file key. Resume from the
+  // Conversation's recorded frontier only when the decoded bytes before it match.
+  private adoptConversationFrontier(
+    fileKey: string,
+    sessionId: string,
+    readablePath: string,
+    boundary: number
+  ): number | undefined {
+    const recorded = this.baselineConversationFrontiers.get(sessionId);
+    if (
+      !recorded ||
+      boundary < recorded.frontier ||
+      frontierTailDigest(readablePath, recorded.frontier) !==
+        recorded.tailDigest
+    )
+      return undefined;
+    this.baselineFileFrontiers.set(fileKey, recorded.frontier);
+    this.persistWatcherState();
+    return recorded.frontier;
+  }
+
   private rememberIdentity(
     transcriptPath: string,
     identity: { sessionId: string; context: TranscriptContext; fileKey: string }
@@ -1532,7 +1652,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private persistWatcherState(): void {
     persistActivationState(this.config, {
       activatedAt: this.activatedAt,
-      baselineFileFrontiers: this.baselineFileFrontiers
+      baselineFileFrontiers: this.baselineFileFrontiers,
+      baselineConversationFrontiers: this.baselineConversationFrontiers
     });
   }
 

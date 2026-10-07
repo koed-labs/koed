@@ -1147,6 +1147,73 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(client.policyRequests).toHaveLength(1);
   });
 
+  it("resumes a baseline Conversation from its frontier after a compressed replacement", async () => {
+    const root = temporaryDirectory();
+    const plain = transcriptPath(root, "rollout-baseline-storage.jsonl");
+    const initial =
+      line(
+        sessionRecord(
+          "baseline-storage",
+          "/fixture/project",
+          "2026-01-01T00:00:00.000Z"
+        )
+      ) + line(userRecord("Before activation"));
+    writeFileSync(plain, initial);
+    const client = new FakeWatcherClient();
+    const first = trackedWatcher(client, watcherConfig(root));
+    await first.scanNow();
+    await first.stop();
+    expect(client.artifacts.size).toBe(0);
+
+    const appended = line(userRecord("After activation"));
+    writeFileSync(
+      `${plain}.zst`,
+      zstdCompressSync(Buffer.from(initial + appended))
+    );
+    unlinkSync(plain);
+    const restarted = trackedWatcher(client, watcherConfig(root));
+    await restarted.scanNow();
+
+    const artifact = client.artifacts.get("baseline-storage")!;
+    expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
+    expect(artifact.liveStartLine).toBe(2);
+    expect(client.itemBatches.flat().map((item) => item.rawText)).toEqual([
+      "After activation"
+    ]);
+  });
+
+  it("defers a compressed replacement whose bytes before the frontier changed", async () => {
+    const root = temporaryDirectory();
+    const plain = transcriptPath(root, "rollout-rewritten-storage.jsonl");
+    const header = line(
+      sessionRecord(
+        "rewritten-storage",
+        "/fixture/project",
+        "2026-01-01T00:00:00.000Z"
+      )
+    );
+    writeFileSync(plain, header + line(userRecord("Original turn")));
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+
+    writeFileSync(
+      `${plain}.zst`,
+      zstdCompressSync(
+        Buffer.from(
+          header +
+            line(userRecord("Rewritten turn")) +
+            line(userRecord("Later turn"))
+        )
+      )
+    );
+    unlinkSync(plain);
+    await watcher.scanNow();
+
+    expect(client.artifacts.size).toBe(0);
+    expect(client.itemBatches).toHaveLength(0);
+  });
+
   it("shares one durable frontier when a selected old source grows", async () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root, "rollout-history-race.jsonl");
