@@ -72,6 +72,11 @@ test("codex configure writes credential-free hooks and pre-approved read-only re
       )
     );
     assert.doesNotMatch(codexConfig, /MEMORY_API_URL/);
+    assert.ok(
+      codexConfig.includes(
+        '[mcp_servers.koed.tools.memory_workspaces]\napproval_mode = "approve"'
+      )
+    );
     assert.doesNotMatch(codexConfig, /MEMORY_API_TOKEN/);
     assert.doesNotMatch(codexConfig, /MEMORY_CODEX_APP_SERVER_BINARY/);
     assert.doesNotMatch(codexConfig, /KOED_PROMPT_DIR/);

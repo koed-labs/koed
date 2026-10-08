@@ -37,9 +37,14 @@ import {
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
+  memoryWorkspacesInputSchema,
   type MemoryAnswerToolInput
 } from "./memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
+import {
+  discoverTeamWorkspaces,
+  backendForDiscoveredWorkspace
+} from "./team-workspace-discovery.js";
 import type {
   LocalRuntimeCallerContext,
   LocalRuntimeToolName
@@ -317,6 +322,20 @@ export class MemoryToolExecutor {
   ): Promise<Record<string, unknown>> {
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     switch (name) {
+      case "memory_workspaces": {
+        const input = memoryWorkspacesInputSchema.parse(rawInput);
+        const discovery = await discoverTeamWorkspaces(
+          this.client,
+          this.environment,
+          input.team_backend_id,
+          signal
+        );
+        return {
+          ...discovery,
+          instructions:
+            "Select the relevant Team Workspace and pass team_workspace_id and team_backend_id to memory_answer. Use search_domain=global for all shared memory in that Workspace; project and session also filter shared source context. Multiple relevant Workspaces require separate recall requests. An unavailable backend is not evidence that its Team Memory is empty."
+        };
+      }
       case "memory_access_check": {
         const input = memoryAccessCheckInputSchema.parse(rawInput);
         return (await memoryAccessCheck(this.client, input.include_notes, {
@@ -441,6 +460,7 @@ export class MemoryToolExecutor {
       include_evidence,
       response_detail,
       retrieval_hints,
+      team_backend_id,
       ...answerInput
     } = input;
     void include_evidence;
@@ -466,22 +486,35 @@ export class MemoryToolExecutor {
       env: this.environment
     });
     const teamWorkspaceId = teamWorkspaceRoute.teamWorkspaceId;
-    const upstreamBackendId = teamWorkspaceRoute.backendId;
+    let upstreamBackendId = team_backend_id ?? teamWorkspaceRoute.backendId;
     if (teamWorkspaceId && !upstreamBackendId) {
-      return {
-        markdown:
-          "Team Workspace recall is configured for this request, but no upstream Team Backend id is available. Link this Project to a Team Workspace backend.",
-        evidenceBundle: {
-          query: answerInput.query,
-          instructions:
-            "Team Workspace recall was requested but no local-edge upstream backend id was available.",
-          evidence: [],
-          retrieval: {
-            mode: "team_workspace_upstream_backend_unavailable",
-            teamWorkspaceId
+      const discovery = await discoverTeamWorkspaces(
+        this.client,
+        this.environment,
+        undefined,
+        signal
+      );
+      upstreamBackendId = backendForDiscoveredWorkspace(
+        discovery,
+        teamWorkspaceId
+      );
+      if (!upstreamBackendId) {
+        return {
+          markdown:
+            "Koed could not resolve a unique authorized Team Backend for this Workspace. Call memory_workspaces and pass both team_workspace_id and team_backend_id; reconnect unavailable backends if needed.",
+          evidenceBundle: {
+            query: answerInput.query,
+            instructions:
+              "Team Workspace routing could not be resolved. This is not a not-found memory result.",
+            evidence: [],
+            retrieval: {
+              mode: "team_workspace_upstream_backend_unavailable",
+              teamWorkspaceId,
+              unavailableBackends: discovery.unavailable_backends
+            }
           }
-        }
-      };
+        };
+      }
     }
     const localEdgeClientCredential = upstreamBackendId
       ? readLocalEdgeClientCredentialAuthorization(
@@ -495,7 +528,7 @@ export class MemoryToolExecutor {
     if (teamWorkspaceId && upstreamBackendId && !localEdgeClientCredential) {
       return {
         markdown:
-          "Team Workspace recall is configured, but this local Koed runtime has no scoped local-edge client credential. Reconnect the Team Backend from Koed Desktop.",
+          "Team Workspace recall is configured, but this local Koed runtime has no scoped local-edge client credential. Reconnect the Team Backend through Koed Desktop or headless koed-server enrollment.",
         evidenceBundle: {
           query: answerInput.query,
           instructions:

@@ -537,6 +537,14 @@ a Project-scoped request without a `team_workspace_id`. Personal Memory remains
 the default, and the mapped Team path still requires enrolled local-edge and
 upstream device credentials. See `docs/team-workspace-project-mapping.md`.
 
+MCP `memory_workspaces` discovers authorized Team Workspaces through existing
+local-edge enrollment under `KOED_HOME`. No Electron process or separate MCP
+login is required. `memory_answer` accepts `team_backend_id` together with
+`team_workspace_id`; explicit request routing takes precedence over Project
+mapping and `KOED_TEAM_UPSTREAM_BACKEND_ID`. When a Workspace is explicitly
+selected and no backend is configured, live discovery may resolve exactly one
+authorized backend. Discovery never changes the Personal Memory default.
+
 ## KOED_HOME Layout
 
 Koed-owned local state lives under `KOED_HOME`:

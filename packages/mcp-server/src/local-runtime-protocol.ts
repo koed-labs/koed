@@ -15,6 +15,7 @@ export const LOCAL_AI_RUNTIME_PROTOCOL_VERSION = 1 as const;
 export const localRuntimeToolNames = [
   "memory_access_check",
   "memory_answer",
+  "memory_workspaces",
   "memory_intake_propose",
   "memory_search",
   "memory_expand"

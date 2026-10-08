@@ -111,6 +111,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const second = await client.listTools();
     expect(first.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose"
     ]);
     expect(second).toEqual(first);
@@ -131,10 +132,45 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_access_check",
       "memory_search",
       "memory_expand"
     ]);
+  });
+
+  it("forwards Workspace discovery and explicit Team backend selection through MCP", async () => {
+    const { client, callTool } = await connect();
+    await client.callTool({
+      name: "memory_workspaces",
+      arguments: { team_backend_id: "enrolled-backend" }
+    });
+    expect(callTool).toHaveBeenCalledWith(
+      "memory_workspaces",
+      { team_backend_id: "enrolled-backend" },
+      expect.any(Object),
+      expect.anything(),
+      expect.any(String)
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "What dinner did the Team share?",
+        search_domain: "global",
+        team_workspace_id: "11111111-1111-4111-8111-111111111111",
+        team_backend_id: "enrolled-backend"
+      }
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.objectContaining({
+        team_backend_id: "enrolled-backend",
+        team_workspace_id: "11111111-1111-4111-8111-111111111111"
+      }),
+      expect.any(Object),
+      expect.anything(),
+      expect.any(String)
+    );
   });
 
   it("starts in degraded mode and recovers when Koed becomes available", async () => {
@@ -166,7 +202,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
 
     await expect(client.connect(clientTransport)).resolves.toBeUndefined();
     await expect(client.listTools()).resolves.toMatchObject({
-      tools: [{ name: "memory_answer" }]
+      tools: [{ name: "memory_answer" }, { name: "memory_workspaces" }]
     });
 
     await expect(
@@ -186,7 +222,11 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       })
     ).resolves.toMatchObject({ structuredContent: { ok: true } });
     await expect(client.listTools()).resolves.toMatchObject({
-      tools: [{ name: "memory_answer" }, { name: "memory_intake_propose" }]
+      tools: [
+        { name: "memory_answer" },
+        { name: "memory_workspaces" },
+        { name: "memory_intake_propose" }
+      ]
     });
     await expect(
       client.callTool({

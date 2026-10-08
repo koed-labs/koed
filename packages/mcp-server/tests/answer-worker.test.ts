@@ -1745,6 +1745,53 @@ describe("memory answer worker", () => {
     }
   });
 
+  it("reports malformed worker status as validation failure instead of a resource limit", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What dinner did the Team share?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client: {
+            async search() {
+              return { hits: [], retrieval: { stages: [] } };
+            },
+            async expand() {
+              throw new Error("expand should not run");
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false,
+                answer: {
+                  ...answerObject("Partial evidence", "insufficient"),
+                  relevant_memory_found: true
+                }
+              }),
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(true);
+      expect(response.localMemoryWorker.errorMessage).toContain(
+        "insufficient requires relevant_memory_found=false"
+      );
+      expect(response.markdown).toBe(
+        "The Codex worker returned an answer that Koed could not safely verify. Try again."
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects clean insufficient answers without selected partial evidence", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {

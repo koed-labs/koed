@@ -10,6 +10,12 @@ export const memoryAnswerResponseDetailSchema = z.enum([
 ]);
 export const uuidSchema = z.string().uuid();
 
+export const memoryWorkspacesInputSchema = z
+  .object({
+    team_backend_id: z.string().trim().min(1).max(160).optional()
+  })
+  .strict();
+
 export const memoryAccessCheckInputSchema = z.object({
   include_notes: z.boolean().optional().default(true)
 });
@@ -23,6 +29,15 @@ export const memoryAnswerInputSchema = z
     project_id: z.string().trim().min(1).max(4096).optional(),
     session_id: uuidSchema.optional(),
     team_workspace_id: uuidSchema.optional(),
+    team_backend_id: z
+      .string()
+      .trim()
+      .min(1)
+      .max(160)
+      .optional()
+      .describe(
+        "Backend id from memory_workspaces. Use with team_workspace_id to select Team Memory."
+      ),
     recent_days: z.number().int().positive().max(36500).optional(),
     source_after: z.string().datetime().optional(),
     source_before: z.string().datetime().optional(),
@@ -30,6 +45,12 @@ export const memoryAnswerInputSchema = z
     include_evidence: z.boolean().default(false)
   })
   .strict()
+  .refine(
+    (input) =>
+      input.team_backend_id === undefined ||
+      input.team_workspace_id !== undefined,
+    "team_workspace_id is required with team_backend_id"
+  )
   .refine(
     (input) =>
       input.recent_days === undefined || input.source_after === undefined,

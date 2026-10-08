@@ -41,7 +41,8 @@ import {
   memoryAnswerInputSchema,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
-  memorySearchInputSchema
+  memorySearchInputSchema,
+  memoryWorkspacesInputSchema
 } from "./memory-tool-schemas.js";
 
 export const KOED_MCP_PROTOCOL_VERSION = "2026-07-28" as const;
@@ -106,6 +107,8 @@ const toolDescription = (name: LocalRuntimeToolName): string => {
   switch (name) {
     case "memory_answer":
       return memoryAnswerToolDescription;
+    case "memory_workspaces":
+      return "Discover authorized Team Workspaces using the existing Koed enrollment shared with Desktop or headless koed-server. Call before Team recall when Workspace/backend IDs are unknown. Returns IDs and names, never credentials. Select the relevant Workspace and pass its team_workspace_id and team_backend_id to memory_answer. Discovery does not change the Personal Memory default.";
     case "memory_intake_propose":
       return memoryIntakeProposeToolDescription;
     case "memory_access_check":
@@ -121,6 +124,8 @@ const toolTitle = (name: LocalRuntimeToolName): string => {
   switch (name) {
     case "memory_answer":
       return "Answer from memory";
+    case "memory_workspaces":
+      return "Discover Team Workspaces";
     case "memory_intake_propose":
       return "Propose Curated Memory";
     case "memory_access_check":
@@ -136,6 +141,8 @@ const toolSchema = (name: LocalRuntimeToolName) => {
   switch (name) {
     case "memory_answer":
       return memoryAnswerInputSchema;
+    case "memory_workspaces":
+      return memoryWorkspacesInputSchema;
     case "memory_intake_propose":
       return memoryIntakeProposeInputSchema;
     case "memory_access_check":

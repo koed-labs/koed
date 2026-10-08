@@ -217,6 +217,15 @@ const workerFailureDisplayMessage = (
   exhaustedBudgets: readonly string[]
 ): string => {
   const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
+  // Exhausting retries after a malformed answer is a validation failure, not
+  // evidence that retrieval ran out of resources. Preserve the actual cause.
+  if (
+    /"code"\s*:\s*"(?:custom|invalid_[a-z_]+|too_small|too_big)"/.test(
+      workerErrorMessage
+    )
+  ) {
+    return `${worker} returned an answer that Koed could not safely verify. Try again.`;
+  }
   if (exhaustedBudgets.includes("wall_time")) {
     return `${worker} did not finish the Personal Memory search in time. Try again.`;
   }

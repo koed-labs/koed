@@ -396,7 +396,7 @@ export const unavailableBackendToolCapabilities: BackendToolCapabilities = {
   curatedMemoryIntakeAvailable: false
 };
 
-export const defaultTools = ["memory_answer"] as const;
+export const defaultTools = ["memory_answer", "memory_workspaces"] as const;
 
 export const capabilityGatedTools = ["memory_intake_propose"] as const;
 
@@ -449,7 +449,7 @@ export const exposedTools = (
   ...(config.exposeLowLevelMemoryTools ? lowLevelMemoryTools : [])
 ];
 
-export const requiredTools = defaultTools;
+export const requiredTools = ["memory_answer"] as const;
 
 export const backendToolCapabilitiesFrom = (
   payload: unknown
@@ -1230,6 +1230,24 @@ export class MemoryApiClient {
     );
   }
 
+  async teamWorkspaceContexts(
+    upstreamBackendId: string,
+    authorization: string,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/upstream-operations",
+      {
+        upstream_backend_id: upstreamBackendId,
+        operation_family: "team_workspace_read",
+        method: "GET",
+        path: "/v1/team-context"
+      },
+      { authorization, signal }
+    );
+  }
+
   async teamMemoryExpand(
     upstreamBackendId: string,
     nodeId: string,
@@ -1268,7 +1286,7 @@ export class MemoryApiClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
-    options: { authorization?: string } = {}
+    options: { authorization?: string; signal?: AbortSignal } = {}
   ): Promise<T> {
     const registration =
       path === "/v1/sessions" &&
@@ -1303,7 +1321,7 @@ export class MemoryApiClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
-    options: { authorization?: string } = {}
+    options: { authorization?: string; signal?: AbortSignal } = {}
   ): Promise<T> {
     const authorization =
       options.authorization ??
@@ -1317,10 +1335,14 @@ export class MemoryApiClient {
 
     let response: Response;
     try {
-      const signal =
+      const timeoutSignal =
         this.config.requestTimeoutMs && this.config.requestTimeoutMs > 0
           ? AbortSignal.timeout(this.config.requestTimeoutMs)
           : undefined;
+      const signal =
+        options.signal && timeoutSignal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : (options.signal ?? timeoutSignal);
       response = await fetch(`${this.config.apiUrl}${path}`, {
         method,
         signal,
