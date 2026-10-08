@@ -4,7 +4,13 @@ import {
   serveStdio,
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -134,6 +140,46 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
     });
     expect(f.start).not.toHaveBeenCalled();
     expect(f.callTool).toHaveBeenCalledTimes(1);
+  });
+  it("starts with blocking recall when the receipt store is unusable", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "koed-codex-dispatch-"));
+    const directory = path.join(home, "codex-memory-delivery");
+    mkdirSync(directory, { mode: 0o755 });
+    chmodSync(directory, 0o755);
+    const callTool = vi.fn(async () => ({ markdown: "blocking" }));
+    const start = vi.fn();
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const server = serveStdio(
+      (context) =>
+        createKoedMcpServer(context, {
+          runtimeClient: {
+            capabilities: async () => ({
+              protocolVersion: 1,
+              curatedMemoryIntakeAvailable: false
+            }),
+            callTool,
+            startMemoryAnswerTask: start
+          } as unknown as LocalAiRuntimeClient,
+          environment: { KOED_HOME: home, KOED_CODEX_STOP_DELIVERY: "1" },
+          callerContextResolver: () => ({ cwd: "/fixture" })
+        }),
+      { transport: b, legacy: "reject" }
+    );
+    const client = new Client(
+      { name: "codex-test", version: "1" },
+      { capabilities: {}, versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await client.connect(a);
+    pairs.push({ client, server, home });
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "decision", [CODEX_DELIVERY_NONCE]: "a".repeat(64) },
+      _meta: metadata
+    });
+    expect(result.isError).not.toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool.mock.calls[0]![1]).not.toHaveProperty(CODEX_DELIVERY_NONCE);
   });
   it("default schema never admits adapter nonce and preserves ordinary blocking", async () => {
     const f = await connect(false);

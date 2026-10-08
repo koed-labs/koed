@@ -86,8 +86,8 @@ Every route below uses the same durable task and the shared delivery lifecycle
 described in [asynchronous Memory Answer delivery](async-memory-answer.md). None
 of them exposes native MCP Tasks or a status tool to the model.
 
-- **Codex:** recall is deferred by default. Setup installs native Codex
-  hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
+- **Codex:** recall is deferred by default, except on Windows. Setup installs
+  native Codex hooks; `setup codex --blocking-recall` opts out. The CLI, IDE extension and
   Desktop app were each tested separately; see
   [Codex integration](codex-integration.md#deferred-recall-in-the-native-cli).
   A PreToolUse hook binds a one-use receipt to the exact

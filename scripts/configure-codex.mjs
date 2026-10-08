@@ -197,14 +197,22 @@ const ownedContent = existing.slice(
   existing.indexOf(markerStart),
   existing.indexOf(markerEnd)
 );
+// An explicit selection wins, then the recorded choice. Otherwise deferred
+// recall is the default, except on Windows where the Stop-hook route is untested.
+const recordedRecall = /^KOED_CODEX_STOP_DELIVERY\s*=\s*"([01])"\s*$/m.exec(
+  ownedContent
+)?.[1];
 const deferredRecall = process.argv.includes("--blocking-recall")
   ? false
   : process.argv.includes("--deferred-recall")
     ? true
     : process.env.KOED_CODEX_STOP_DELIVERY === "0"
       ? false
-      : process.env.KOED_CODEX_STOP_DELIVERY === "1" ||
-        !/^KOED_CODEX_STOP_DELIVERY\s*=\s*"0"\s*$/m.test(ownedContent);
+      : process.env.KOED_CODEX_STOP_DELIVERY === "1"
+        ? true
+        : recordedRecall !== undefined
+          ? recordedRecall === "1"
+          : process.platform !== "win32";
 if (mode !== "remove" && deferredRecall && !existsSync(memoryHookPath)) {
   throw new Error(
     `${memoryHookPath} does not exist. Build @koed/mcp-server before configuring deferred recall.`

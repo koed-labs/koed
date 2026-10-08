@@ -196,12 +196,20 @@ const configureCodexIntegration = ({
     existing.indexOf("# >>> koed"),
     existing.indexOf("# <<< koed")
   );
-  // Deferred recall is the default. An explicit selection wins, then a
-  // recorded blocking choice; blocks written before the line existed upgrade.
+  // An explicit selection wins, then the recorded choice. Otherwise deferred
+  // recall is the default, except on Windows where the Stop-hook route is
+  // untested. Blocks written before the line existed take that default.
+  const recordedRecall = /^KOED_CODEX_STOP_DELIVERY\s*=\s*"([01])"\s*$/m.exec(
+    ownedContent
+  )?.[1];
   const deferredRecall =
-    environment.KOED_CODEX_STOP_DELIVERY === "1" ||
-    (environment.KOED_CODEX_STOP_DELIVERY !== "0" &&
-      !/^KOED_CODEX_STOP_DELIVERY\s*=\s*"0"\s*$/m.test(ownedContent));
+    environment.KOED_CODEX_STOP_DELIVERY === "1"
+      ? true
+      : environment.KOED_CODEX_STOP_DELIVERY === "0"
+        ? false
+        : recordedRecall !== undefined
+          ? recordedRecall === "1"
+          : process.platform !== "win32";
   const memoryHook = resolve(dirname(runtime.mcpCli), "codex-memory-hook.js");
   if (!/^[A-Za-z0-9_-]+$/.test(mcpName))
     throw new Error("MEMORY_MCP_NAME must be a TOML bare server name.");

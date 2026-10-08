@@ -6,7 +6,9 @@ see [Claude Code integration](claude-code-integration.md) and
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 Personal Memory Answers use [durable execution](durable-memory-answer.md).
-Codex uses deferred recall by default. The native integration lets the
+Codex uses deferred recall by default, except on Windows, where setup selects
+blocking recall because the Stop-hook route is untested there. The native
+integration lets the
 original turn continue while recall runs. Its synchronous Stop hook supplies
 the completed result when that turn reaches its stop boundary.
 

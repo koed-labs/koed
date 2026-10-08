@@ -7,6 +7,7 @@ import {
   canonicalCodexMemoryInput
 } from "./codex-memory-delivery.js";
 import { resolveKoedHome } from "./local-runtime-protocol.js";
+import { logger } from "./logger.js";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -171,9 +172,22 @@ export const createKoedMcpServer = async (
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
   const deferredEnabled = environment.KOED_CODEX_STOP_DELIVERY === "1";
-  const deferred = deferredEnabled
+  // An unusable receipt store must not stop the MCP Server: recall falls back
+  // to blocking, and the tool schema still accepts (and strips) the nonce.
+  let receiptStore: CodexMemoryReceiptStore | undefined;
+  if (deferredEnabled) {
+    try {
+      receiptStore = new CodexMemoryReceiptStore(resolveKoedHome(environment));
+    } catch (error) {
+      logger.warn(
+        { err: error },
+        "Codex deferred recall is unavailable; using blocking recall"
+      );
+    }
+  }
+  const deferred = receiptStore
     ? new CodexMemoryDelivery(
-        new CodexMemoryReceiptStore(resolveKoedHome(environment)),
+        receiptStore,
         {
           start: async (input, caller, key, signal) => {
             try {

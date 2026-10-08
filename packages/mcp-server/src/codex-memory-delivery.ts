@@ -68,6 +68,12 @@ const inputHash = (input: Record<string, unknown>): string =>
 const denied = (): Error =>
   new Error("Koed deferred Memory Answer receipt is unavailable or invalid");
 
+// Windows reports synthetic POSIX mode bits and has no O_NOFOLLOW, so the
+// owner-only mode checks apply on POSIX hosts only (as in the Pi runtime client).
+const posixPermissions = (): boolean => process.platform !== "win32";
+const noFollow = (): number =>
+  process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+
 /** Private one-use receipts contain identity only, never task results or credentials. */
 export class CodexMemoryReceiptStore {
   readonly directory: string;
@@ -81,7 +87,7 @@ export class CodexMemoryReceiptStore {
     if (
       !stat.isDirectory() ||
       stat.isSymbolicLink() ||
-      (stat.mode & 0o077) !== 0 ||
+      (posixPermissions() && (stat.mode & 0o077) !== 0) ||
       (process.getuid && stat.uid !== process.getuid())
     )
       throw denied();
@@ -93,7 +99,7 @@ export class CodexMemoryReceiptStore {
   private read(filename: string): Binding | undefined {
     let fd: number;
     try {
-      fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+      fd = openSync(filename, constants.O_RDONLY | noFollow());
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw denied();
@@ -103,7 +109,7 @@ export class CodexMemoryReceiptStore {
       if (
         !stat.isFile() ||
         stat.size > 8192 ||
-        (stat.mode & 0o077) !== 0 ||
+        (posixPermissions() && (stat.mode & 0o077) !== 0) ||
         (process.getuid && stat.uid !== process.getuid())
       )
         throw denied();

@@ -435,6 +435,69 @@ describe("Codex setup wrapper", () => {
     );
   });
 
+  it("defaults Windows to blocking recall while keeping explicit and recorded deferred selections", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "codex");
+    const configPath = resolve(codexHome, "config.toml");
+    const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "runtime/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "core" })
+    );
+    const runtime = () =>
+      ({
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: resolve(root, "runtime"),
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        privacyServiceEntry: "privacy",
+        mcpCli,
+        localAiRuntime: "local-ai",
+        captureHook,
+        dbPackageRoot: "db",
+        missing: []
+      }) as never;
+    const repair = (selection?: string) =>
+      repairCodexIntegration({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          CODEX_HOME: codexHome,
+          KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false",
+          ...(selection ? { KOED_CODEX_STOP_DELIVERY: selection } : {})
+        },
+        resolveRuntime: runtime,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(repair().ok).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toContain(
+        'KOED_CODEX_STOP_DELIVERY = "0"'
+      );
+      expect(repair("1").ok).toBe(true);
+      const deferred = readFileSync(configPath, "utf8");
+      expect(deferred).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
+      expect(repair().ok).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toBe(deferred);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
   it("stores the resolved absolute Codex path after setup", async () => {
     const root = tempDir();
     const bin = resolve(root, "bin");

@@ -425,6 +425,17 @@ describe("Codex protected native-call delivery", () => {
     chmodSync(f.store.directory, 0o755);
     expect(() => new CodexMemoryReceiptStore(f.home)).toThrow();
   });
+  it("skips POSIX mode checks on Windows, which reports synthetic mode bits", () => {
+    const f = fixture();
+    chmodSync(f.store.directory, 0o777);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(() => new CodexMemoryReceiptStore(f.home)).not.toThrow();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
   it("rejects a receipt symlink without reading its target", async () => {
     const f = fixture();
     const input = f.prepare();
