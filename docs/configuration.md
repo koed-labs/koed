@@ -665,6 +665,8 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
 - `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Desktop and MCP Server bursts in a Koed deployment without changing the stricter auth rate limit.
+- `API_MEMORY_READ_RATE_LIMIT_MAX`: overrides the general read quota. It covers Capture Policy, graph, and import reads. Recall access checks use the separate AI Client control quota.
+- `API_MEMORY_READ_RATE_LIMIT_WINDOW_MS`: overrides the general read window. It otherwise uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_MANAGED_CONVERSATION_RATE_LIMIT_WINDOW_MS`: window for interactive managed AI Client Conversation requests. The default is 60 seconds.
 - `API_MANAGED_CONVERSATION_READ_RATE_LIMIT_MAX`: read-oriented managed Conversation requests allowed per managed Conversation window. The default is 1000. This independent bucket prevents background capture and import traffic from blocking launch options or active Conversation reads.

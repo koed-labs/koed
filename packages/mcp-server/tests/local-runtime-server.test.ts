@@ -56,6 +56,44 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 
 describe("Local AI Runtime", () => {
   it.each([
+    ["local", "Local Koed API request limit reached. Retry later."],
+    ["remote", "Remote Team Backend request limit reached. Retry later."]
+  ] as const)(
+    "transports %s API throttle diagnostics without upstream error text",
+    async (rateLimitSource, message) => {
+      const environment = { KOED_HOME: tempHome() };
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: fixture({
+          ...defaultExecutor(),
+          execute: async () => {
+            throw new MemoryApiError("PRIVATE_PROVIDER_MESSAGE", {
+              status: 429,
+              retryAfterMs: 7000,
+              rateLimitSource
+            });
+          }
+        }).serviceFactory
+      });
+      try {
+        await expect(
+          new LocalAiRuntimeClient(environment).callTool(
+            "memory_answer",
+            { query: "dinner" },
+            { cwd: "/fixture" }
+          )
+        ).rejects.toMatchObject({
+          statusCode: 429,
+          retryAfterMs: 7000,
+          rateLimitSource,
+          message
+        });
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+  it.each([
     2000,
     0,
     -1,
@@ -373,9 +411,28 @@ describe("Local AI Runtime", () => {
     );
 
     expect(dependencies.startCodexTranscriptWatcher).toHaveBeenCalledTimes(1);
+    const backgroundClient = vi.mocked(dependencies.startCodexTranscriptWatcher)
+      .mock.calls[0]?.[0];
+    expect(backgroundClient).not.toBe(apiClient);
+    expect((backgroundClient as MemoryApiClient).config.requestClass).toBe(
+      "background"
+    );
     expect(dependencies.startClaudeTranscriptWatcher).toHaveBeenCalledWith(
-      apiClient,
+      backgroundClient,
       {}
+    );
+    expect(dependencies.startLcmSummaryService).toHaveBeenCalledWith(
+      backgroundClient,
+      expect.any(Object)
+    );
+    expect(dependencies.startCuratedMemoryReviewService).toHaveBeenCalledWith(
+      backgroundClient,
+      expect.any(Object)
+    );
+    expect(dependencies.createExecutor).toHaveBeenCalledWith(
+      apiClient,
+      {},
+      expect.any(Object)
     );
     await services.close();
     expect(codexStop).toHaveBeenCalledTimes(1);
@@ -421,12 +478,14 @@ describe("Local AI Runtime", () => {
       dependencies
     );
 
+    const backgroundClient = vi.mocked(dependencies.startCodexTranscriptWatcher)
+      .mock.calls[0]?.[0];
     expect(createClaudeHistoricalProviderAdapter).toHaveBeenCalledWith({
-      client: apiClient,
+      client: backgroundClient,
       env: environment
     });
     expect(createPiHistoricalProviderAdapter).toHaveBeenCalledWith({
-      client: apiClient,
+      client: backgroundClient,
       env: environment
     });
     await services.close();

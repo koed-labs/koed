@@ -185,6 +185,32 @@ for a rejected API Token. A failed blocking recall reports static text for its
 recorded reason, such as a time limit or cancellation; the raw failure message
 is never returned.
 
+The local API keeps recall separate from background reads. `/v1/access/check`
+uses the AI Client control quota. Personal retrieval and local Team search,
+answer, and expansion use the recall quota. Capture Policy and import reads
+continue to use the general read quota. The server selects these quotas by
+route, so a request header cannot change them.
+
+The Local AI Runtime shares one API client across its background services.
+The client starts at most ten requests per second and sends one request at a
+time. After HTTP 429, it pauses the shared backlog for the `Retry-After`
+duration, capped at five minutes. It accepts seconds and HTTP dates. Without
+valid advice, it waits 60 seconds. The owning service retains failed work for
+retry. The client does not replay failed writes. Runtime shutdown cancels
+queued waits and active background requests. Interactive recall uses a
+separate client and does not wait for this backlog.
+
+For HTTP 429, the local Team proxy preserves `Retry-After` and labels the
+response source as `remote`. Local quota failures use `local`. The Local AI
+Runtime and MCP response retain `rateLimitSource` and bounded `retryAfterMs`
+alongside a static error message. Older APIs without the source header retain
+the generic error message. A full local answer queue keeps its separate
+queue-full message.
+
+These changes require an updated local API, Local AI Runtime, and MCP adapter.
+They work with the existing remote Team Backend and its standard retry
+headers. No remote update or database migration is required.
+
 MCP diagnostics omit raw exception messages, stacks, causes and payloads and
 bound retained metadata. They keep allowlisted error class names, numeric status
 fields and allowlisted system codes such as `ECONNREFUSED`, including one level

@@ -340,6 +340,24 @@ export const createKoedMcpServer = async (
           }
           return jsonResponse(response);
         } catch (error) {
+          if (
+            error instanceof LocalAiRuntimeError &&
+            error.statusCode === 429
+          ) {
+            return {
+              isError: true,
+              ...jsonResponse({
+                error: error.message,
+                statusCode: 429,
+                ...(error.retryAfterMs !== undefined
+                  ? { retryAfterMs: error.retryAfterMs }
+                  : {}),
+                ...(error.rateLimitSource
+                  ? { rateLimitSource: error.rateLimitSource }
+                  : {})
+              })
+            };
+          }
           if (!runtimeAvailable) {
             return toolErrorResponse(KOED_MCP_UNAVAILABLE_MESSAGE);
           }

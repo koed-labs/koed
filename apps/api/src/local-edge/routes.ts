@@ -274,6 +274,7 @@ export const registerLocalEdgeRoutes = (
       hashSecret
     },
     rateLimit: {
+      memoryRecall: memoryRecallRateLimit,
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
     },
@@ -376,6 +377,13 @@ export const registerLocalEdgeRoutes = (
     );
     reply.header("x-koed-upstream-backend-id", backend.id);
     reply.status(upstreamResponse.status);
+    if (upstreamResponse.status === 429) {
+      // The response came from the Team Backend. Do not trust its own source
+      // label or copy arbitrary headers into the local response.
+      reply.header("x-koed-rate-limit-source", "remote");
+      const retryAfter = upstreamResponse.headers.get("retry-after");
+      if (retryAfter) reply.header("retry-after", retryAfter);
+    }
     if (upstreamResponse.status === 204) return reply.send();
     const text = await upstreamResponse.text();
     const contentType = upstreamResponse.headers.get("content-type") ?? "";
@@ -818,7 +826,7 @@ export const registerLocalEdgeRoutes = (
 
   app.post(
     "/v1/local-edge/team-memory/search",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request, reply) => {
       const localCredential = authorizeLocalTeamMemoryRequest(request);
       const input = localEdgeTeamMemorySearchSchema.parse(request.body);
@@ -837,7 +845,7 @@ export const registerLocalEdgeRoutes = (
 
   app.post(
     "/v1/local-edge/team-memory/answer",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request, reply) => {
       const localCredential = authorizeLocalTeamMemoryRequest(request);
       const input = localEdgeTeamMemoryAnswerSchema.parse(request.body);
@@ -856,7 +864,7 @@ export const registerLocalEdgeRoutes = (
 
   app.post(
     "/v1/local-edge/team-memory/expand",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request, reply) => {
       const localCredential = authorizeLocalTeamMemoryRequest(request);
       const input = localEdgeTeamMemoryExpandSchema.parse(request.body);

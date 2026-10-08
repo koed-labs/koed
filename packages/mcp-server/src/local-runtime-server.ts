@@ -54,6 +54,10 @@ import {
 } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 import {
+  rateLimitSourceFrom,
+  type RateLimitSource
+} from "./rate-limit-metadata.js";
+import {
   AnswerExecutionCapacity,
   BlockingAnswerAdmission
 } from "./answer-admission.js";
@@ -96,6 +100,7 @@ interface RuntimeFailure {
   message: string;
   errorCode?: string;
   retryAfterMs?: number;
+  rateLimitSource?: RateLimitSource;
 }
 
 // Error bodies use static text only: exception messages can carry memory,
@@ -130,6 +135,19 @@ const runtimeFailure = (error: unknown, taskRoute: boolean): RuntimeFailure => {
   }
   if (error instanceof MemoryApiError) {
     const upstreamStatus = httpErrorStatus(error.status);
+    if (upstreamStatus === 429) {
+      const source = rateLimitSourceFrom(error.rateLimitSource);
+      return withRetry({
+        statusCode: 429,
+        message:
+          source === "local"
+            ? "Local Koed API request limit reached. Retry later."
+            : source === "remote"
+              ? "Remote Team Backend request limit reached. Retry later."
+              : "Koed memory API is busy. Retry later.",
+        ...(source ? { rateLimitSource: source } : {})
+      });
+    }
     if (taskRoute && upstreamStatus !== undefined) {
       return withRetry({
         statusCode: upstreamStatus,
@@ -144,12 +162,6 @@ const runtimeFailure = (error: unknown, taskRoute: boolean): RuntimeFailure => {
         message:
           "Koed memory API is unavailable or did not respond. Check that Koed is running."
       };
-    }
-    if (upstreamStatus === 429) {
-      return withRetry({
-        statusCode: 429,
-        message: "Koed memory API is busy. Retry later."
-      });
     }
     return {
       statusCode: 502,
@@ -398,10 +410,17 @@ export const startDefaultLocalAiRuntimeServices = async (
   dependencies: LocalAiRuntimeServiceDependencies = defaultServiceDependencies
 ): Promise<LocalAiRuntimeServices> => {
   await dependencies.recoverPendingDesktopAsks?.(apiClient);
-  const lcmSummaryService = dependencies.startLcmSummaryService(apiClient, {
-    serviceConfig: resolveLcmSummaryServiceConfig(environment),
-    workerConfig: resolveLcmSummaryWorkerConfig(environment)
+  const backgroundClient = new MemoryApiClient({
+    ...apiClient.config,
+    requestClass: "background"
   });
+  const lcmSummaryService = dependencies.startLcmSummaryService(
+    backgroundClient,
+    {
+      serviceConfig: resolveLcmSummaryServiceConfig(environment),
+      workerConfig: resolveLcmSummaryWorkerConfig(environment)
+    }
+  );
   let lcmWorkWatcher: Awaited<ReturnType<typeof watchKoedLocalWork>> | null =
     null;
   let curatedMemoryReviewService: ReturnType<
@@ -430,7 +449,7 @@ export const startDefaultLocalAiRuntimeServices = async (
         )
       : null;
     curatedMemoryReviewService = dependencies.startCuratedMemoryReviewService(
-      apiClient,
+      backgroundClient,
       {
         workerConfig: resolveCuratedMemoryReviewConfig(environment)
       }
@@ -456,7 +475,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalEnabled && codexWatcherEnabled
         ? startHistoricalIngestionCoordinator({
             adapter: createCodexHistoricalProviderAdapter({
-              client: apiClient,
+              client: backgroundClient,
               config: resolveCodexHistoricalIngestionConfig(environment)
             }),
             koedHome,
@@ -480,7 +499,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalIngestions.push(
         startHistoricalIngestionCoordinator({
           adapter: dependencies.createClaudeHistoricalProviderAdapter({
-            client: apiClient,
+            client: backgroundClient,
             env: environment
           }),
           koedHome,
@@ -502,7 +521,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       historicalIngestions.push(
         startHistoricalIngestionCoordinator({
           adapter: dependencies.createPiHistoricalProviderAdapter({
-            client: apiClient,
+            client: backgroundClient,
             env: environment
           }),
           koedHome,
@@ -519,17 +538,20 @@ export const startDefaultLocalAiRuntimeServices = async (
     codexTranscriptWatcher = !codexWatcherEnabled
       ? null
       : dependencies.startCodexTranscriptWatcher(
-          apiClient,
+          backgroundClient,
           resolveCodexTranscriptWatcherConfig(environment),
           codexHistoricalIngestion ?? undefined
         );
     claudeTranscriptWatcher = !claudeWatcherEnabled
       ? null
-      : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+      : dependencies.startClaudeTranscriptWatcher(
+          backgroundClient,
+          environment
+        );
     piTranscriptWatcher =
       !piWatcherEnabled || !dependencies.startPiTranscriptWatcher
         ? null
-        : dependencies.startPiTranscriptWatcher(apiClient, environment);
+        : dependencies.startPiTranscriptWatcher(backgroundClient, environment);
     if (dependencies.startAiClientCapabilityPublisher) {
       capabilityPublisher = dependencies.startAiClientCapabilityPublisher(
         apiClient,
@@ -550,6 +572,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       executor,
       capabilityPublisher: capabilityPublisher ?? undefined,
       async close() {
+        backgroundClient.closeBackgroundRequests();
         capabilityPublisher?.stop();
         lcmWorkWatcher?.stop();
         lcmSummaryService?.stop();
@@ -563,6 +586,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       }
     };
   } catch (error) {
+    backgroundClient.closeBackgroundRequests();
     lcmWorkWatcher?.stop();
     lcmSummaryService?.stop();
     curatedMemoryReviewService?.stop();
@@ -814,6 +838,9 @@ export const startLocalAiRuntime = async ({
           ...(failure.errorCode ? { errorCode: failure.errorCode } : {}),
           ...(failure.retryAfterMs !== undefined
             ? { retryAfterMs: failure.retryAfterMs }
+            : {}),
+          ...(failure.rateLimitSource
+            ? { rateLimitSource: failure.rateLimitSource }
             : {}),
           error: failure.message
         });

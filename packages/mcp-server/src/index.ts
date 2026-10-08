@@ -18,6 +18,12 @@ import {
   type MemoryAnswerTask
 } from "@koed/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
+import { BackgroundApiRequestScheduler } from "./background-api-requests.js";
+import {
+  rateLimitSourceFrom,
+  retryAfterMsFrom,
+  type RateLimitSource
+} from "./rate-limit-metadata.js";
 export {
   aiClientInstanceRegistryPath,
   environmentForLocalAiClientInstance,
@@ -234,7 +240,7 @@ export interface McpServerConfig {
   apiUrl: string;
   apiToken?: string;
   requestTimeoutMs?: number;
-  requestClass?: "managed-conversation";
+  requestClass?: "managed-conversation" | "background";
 }
 
 export type LocalMemoryAgentFlowKey =
@@ -505,24 +511,39 @@ export class MemoryApiError extends Error {
   readonly status?: number;
   readonly payload?: unknown;
   readonly retryAfterMs?: number;
+  readonly rateLimitSource?: RateLimitSource;
 
   constructor(
     message: string,
-    options: { status?: number; payload?: unknown; retryAfterMs?: number } = {}
+    options: {
+      status?: number;
+      payload?: unknown;
+      retryAfterMs?: number;
+      rateLimitSource?: RateLimitSource;
+    } = {}
   ) {
     super(message);
     this.name = "MemoryApiError";
     this.status = options.status;
     this.payload = options.payload;
     this.retryAfterMs = options.retryAfterMs;
+    this.rateLimitSource = rateLimitSourceFrom(options.rateLimitSource);
   }
 }
 
 export class MemoryApiClient {
   readonly config: McpServerConfig;
+  private readonly backgroundRequests?: BackgroundApiRequestScheduler;
 
   constructor(config: McpServerConfig = defaultConfig()) {
     this.config = { ...config, apiUrl: normalizeApiUrl(config.apiUrl) };
+    if (config.requestClass === "background") {
+      this.backgroundRequests = new BackgroundApiRequestScheduler();
+    }
+  }
+
+  closeBackgroundRequests(): void {
+    this.backgroundRequests?.close();
   }
 
   async accessCheck(): Promise<AccessCheckResult> {
@@ -1288,6 +1309,14 @@ export class MemoryApiClient {
     body?: unknown,
     options: { authorization?: string; signal?: AbortSignal } = {}
   ): Promise<T> {
+    if (this.backgroundRequests) {
+      // Let the owning service retry its work. Do not replay writes here.
+      return this.backgroundRequests.run(
+        (signal) =>
+          this.requestOnce<T>(method, path, body, { ...options, signal }),
+        options.signal
+      );
+    }
     const registration =
       path === "/v1/sessions" &&
       body !== null &&
@@ -1380,9 +1409,16 @@ export class MemoryApiClient {
       const message = `${payload.error ?? `Memory API request failed with status ${response.status}.`}${setupHint}`;
       throw new MemoryApiError(message, {
         status: response.status,
-        retryAfterMs: /^\d+$/.test(response.headers.get("retry-after") ?? "")
-          ? Number(response.headers.get("retry-after")) * 1000
-          : undefined,
+        retryAfterMs:
+          response.status === 429
+            ? retryAfterMsFrom(response.headers.get("retry-after"))
+            : undefined,
+        rateLimitSource:
+          response.status === 429
+            ? rateLimitSourceFrom(
+                response.headers.get("x-koed-rate-limit-source")
+              )
+            : undefined,
         payload
       });
     }

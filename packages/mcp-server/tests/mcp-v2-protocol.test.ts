@@ -14,7 +14,10 @@ import {
   resolveKoedMcpServerVersion,
   type McpCallerContextResolver
 } from "../src/mcp-server-factory.js";
-import type { LocalAiRuntimeClient } from "../src/local-runtime-client.js";
+import {
+  LocalAiRuntimeError,
+  type LocalAiRuntimeClient
+} from "../src/local-runtime-client.js";
 import {
   localRuntimeToolNames,
   type LocalRuntimeCallerContext,
@@ -84,6 +87,33 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("returns throttle origin and retry timing in MCP error content", async () => {
+    const { client } = await connect({
+      callTool: async () => {
+        throw new LocalAiRuntimeError(
+          "Remote Team Backend request limit reached. Retry later.",
+          429,
+          undefined,
+          7000,
+          "remote"
+        );
+      }
+    });
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "dinner" }
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      error: "Remote Team Backend request limit reached. Retry later.",
+      statusCode: 429,
+      retryAfterMs: 7000,
+      rateLimitSource: "remote"
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: JSON.stringify(result.structuredContent, null, 2) }
+    ]);
+  });
   it("advertises the Koed release independently from its protocol version", () => {
     expect(KOED_MCP_SERVER_VERSION).toBe(releaseManifest.version);
     expect(KOED_MCP_PROTOCOL_VERSION).toBe("2026-07-28");
