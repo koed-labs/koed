@@ -163,10 +163,20 @@ export class CodexMemoryReceiptStore {
       rmSync(lock, { recursive: true, force: true });
     }
   }
+  // Directory scans skip an unreadable, oversized or foreign entry instead of
+  // failing: one bad file must not disable deferred delivery for every call.
+  // Skipped state is never claimed, and repair removes it.
+  private scan(filename: string): Binding | undefined {
+    try {
+      return this.read(filename);
+    } catch {
+      return undefined;
+    }
+  }
   private collectExpired(): void {
     for (const name of readdirSync(this.directory).slice(0, 512)) {
       if (!/^[a-f0-9]{64}\.(json|spent)$/.test(name)) continue;
-      const value = this.read(path.join(this.directory, name));
+      const value = this.scan(path.join(this.directory, name));
       if (!value || value.expires > this.now()) continue;
       try {
         this.locked(value.nonce, () => {
@@ -207,7 +217,7 @@ export class CodexMemoryReceiptStore {
       for (const name of names.filter((n) =>
         /^[a-f0-9]{64}\.(json|spent)$/.test(n)
       )) {
-        const existing = this.read(path.join(this.directory, name));
+        const existing = this.scan(path.join(this.directory, name));
         if (
           existing &&
           existing.session === hook.session_id &&
@@ -373,15 +383,20 @@ export class CodexMemoryReceiptStore {
     for (const name of readdirSync(this.directory)
       .filter((n) => /^[a-f0-9]{64}\.(json|spent)$/.test(n))
       .slice(0, 256)) {
-      const value = this.read(path.join(this.directory, name));
+      const value = this.scan(path.join(this.directory, name));
       if (
         value?.session === hook.session_id &&
         (session || value.turn === hook.turn_id)
-      )
-        this.locked(value.nonce, () => {
-          rmSync(this.filename(value.nonce), { force: true });
-          rmSync(this.filename(value.nonce, true), { force: true });
-        });
+      ) {
+        try {
+          this.locked(value.nonce, () => {
+            rmSync(this.filename(value.nonce), { force: true });
+            rmSync(this.filename(value.nonce, true), { force: true });
+          });
+        } catch {
+          // A busy lock fences this receipt only; retire the others.
+        }
+      }
     }
   }
 }

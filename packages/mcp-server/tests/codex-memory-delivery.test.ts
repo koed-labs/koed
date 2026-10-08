@@ -425,6 +425,23 @@ describe("Codex protected native-call delivery", () => {
     chmodSync(f.store.directory, 0o755);
     expect(() => new CodexMemoryReceiptStore(f.home)).toThrow();
   });
+  it("skips unreadable receipt entries instead of disabling deferred delivery", () => {
+    const f = fixture();
+    const malformed = path.join(f.store.directory, `${"b".repeat(64)}.json`);
+    writeFileSync(malformed, "not json", { mode: 0o600 });
+    const exposed = path.join(f.store.directory, `${"c".repeat(64)}.spent`);
+    writeFileSync(exposed, "{}", { mode: 0o644 });
+    chmodSync(exposed, 0o644);
+    const input = f.prepare();
+    expect(input[CODEX_DELIVERY_NONCE]).toMatch(/^[a-f0-9]{64}$/);
+    expect(() =>
+      f.store.retire({ ...hook(), hook_event_name: "Interrupt" })
+    ).not.toThrow();
+    // The prepared receipt is retired; unreadable entries are left for repair.
+    expect(readdirSync(f.store.directory).sort()).toEqual(
+      [path.basename(malformed), path.basename(exposed)].sort()
+    );
+  });
   it("skips POSIX mode checks on Windows, which reports synthetic mode bits", () => {
     const f = fixture();
     chmodSync(f.store.directory, 0o777);
