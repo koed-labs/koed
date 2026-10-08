@@ -6,6 +6,7 @@ import { storeLocalEdgeClientCredential } from "@koed/shared";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
+import { resolveProjectTeamWorkspaceRoute } from "../src/project-team-workspace-links.js";
 import {
   backendForDiscoveredWorkspace,
   discoverTeamWorkspaces
@@ -163,6 +164,60 @@ describe("authorized Team Workspace discovery", () => {
       )
     ).toBeUndefined();
     expect(backendForDiscoveredWorkspace(filtered, teamId)).toBeUndefined();
+  });
+
+  it("matches equivalent UUIDs regardless of hexadecimal letter case", () => {
+    const lower = "abcdef01-2345-4678-9abc-def012345678";
+    const upper = lower.toUpperCase();
+    for (const stored of [lower, upper]) {
+      const discovery = {
+        workspaces: [
+          {
+            team_backend_id: "case-sensitive-backend",
+            team_id: teamId,
+            team_name: "Team",
+            team_workspace_id: stored,
+            team_workspace_name: "Development",
+            access: "read" as const
+          }
+        ],
+        unavailable_backends: []
+      };
+      for (const requested of [lower, upper])
+        expect(backendForDiscoveredWorkspace(discovery, requested)).toBe(
+          "case-sensitive-backend"
+        );
+    }
+    expect(
+      memoryAnswerInputSchema.parse({ query: "Test", team_workspace_id: upper })
+        .team_workspace_id
+    ).toBe(lower);
+  });
+
+  it("selects an explicit Project backend when mapped and requested UUID case differs", () => {
+    const env = enrollment();
+    const lower = "abcdef01-2345-4678-9abc-def012345678";
+    fs.writeFileSync(
+      path.join(env.KOED_HOME!, "config", "project-team-workspaces.json"),
+      JSON.stringify({
+        links: [
+          {
+            projectRoot: "/repo",
+            teamWorkspaceId: lower.toUpperCase(),
+            backendId: "mapped-backend"
+          }
+        ]
+      })
+    );
+    env.KOED_TEAM_UPSTREAM_BACKEND_ID = "fallback-backend";
+    for (const requestedTeamWorkspaceId of [lower, lower.toUpperCase()])
+      expect(
+        resolveProjectTeamWorkspaceRoute({
+          projectRoot: "/repo",
+          requestedTeamWorkspaceId,
+          env
+        })
+      ).toEqual({ teamWorkspaceId: lower, backendId: "mapped-backend" });
   });
 
   it("reports an expired capability cache without copying arbitrary error payloads", async () => {

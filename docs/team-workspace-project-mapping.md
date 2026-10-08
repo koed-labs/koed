@@ -120,6 +120,13 @@ Electron does not need to be running. Headless `koed-server` enrollment,
 existing MCP configuration, and explicit Project mappings remain supported.
 Opening a Workspace in Electron does not select MCP scope.
 
+The Local AI Runtime advertises its supported tools and Team backend selection
+capability. An upgraded MCP adapter omits `memory_workspaces` when an older
+running runtime lacks support. Existing recall remains available. New Team
+backend input returns a restart message instead of reaching an unsupported
+runtime contract. Restart the Local AI Runtime and reconnect MCP to enable the
+new features. Workspace UUID matching ignores hexadecimal letter case.
+
 Explicit Project-scoped Team recall remains supported:
 
 ```json

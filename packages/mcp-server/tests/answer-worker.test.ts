@@ -37,7 +37,10 @@ import {
   type StructuredMemoryAnswer
 } from "../src/answer-worker.js";
 import { memoryAnswerRetrievalHintsSchema } from "../src/memory-answer-request.js";
-import { toolAnswerResponse } from "../src/memory-question-answer-persistence.js";
+import {
+  toolAnswerResponse,
+  persistedAnswerResponse
+} from "../src/memory-question-answer-persistence.js";
 import { loadPrompt } from "../src/prompt-loader.js";
 
 afterEach(() => {
@@ -1745,52 +1748,71 @@ describe("memory answer worker", () => {
     }
   });
 
-  it("reports malformed worker status as validation failure instead of a resource limit", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
-    try {
-      const response = await answerWithMemoryWorker(
-        {
-          evidenceBundle: {
-            query: "What dinner did the Team share?",
-            evidence: [],
-            retrieval: { mode: "app_server_dynamic_tools" }
-          }
-        },
-        {
-          client: {
-            async search() {
-              return { hits: [], retrieval: { stages: [] } };
-            },
-            async expand() {
-              throw new Error("expand should not run");
+  it.each(["internal", "with_evidence"] as const)(
+    "keeps malformed worker failure diagnostics consistent (%s)",
+    async (responseDetail) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What dinner did the Team share?",
+              evidence: [],
+              retrieval: { mode: "app_server_dynamic_tools" }
             }
           },
-          responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerTestConfig(directory, {
-            MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_CODEX_APP_SERVER_BINARY:
-              writeFakeDynamicMemoryAnswerAppServer(directory, {
-                useTools: false,
-                answer: {
-                  ...answerObject("Partial evidence", "insufficient"),
-                  relevant_memory_found: true
-                }
-              }),
-            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
-          })
+          {
+            client: {
+              async search() {
+                return { hits: [], retrieval: { stages: [] } };
+              },
+              async expand() {
+                throw new Error("expand should not run");
+              }
+            },
+            responseDetail,
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false,
+                  answer: {
+                    ...answerObject("Partial evidence", "insufficient"),
+                    relevant_memory_found: true
+                  }
+                }),
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(true);
+        if (responseDetail === "internal") {
+          expect(response.localMemoryWorker.errorMessage).toContain(
+            "insufficient requires relevant_memory_found=false"
+          );
         }
-      );
-      expect(response.localMemoryWorker.usedFallback).toBe(true);
-      expect(response.localMemoryWorker.errorMessage).toContain(
-        "insufficient requires relevant_memory_found=false"
-      );
-      expect(response.markdown).toBe(
-        "The Codex worker returned an answer that Koed could not safely verify. Try again."
-      );
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
+        expect(response.markdown).toBe(
+          "The Codex worker returned an answer that Koed could not safely verify. Try again."
+        );
+        expect(response.structuredAnswer).toMatchObject({
+          memory_status: "insufficient",
+          answer_markdown: response.markdown,
+          relevance_explanation:
+            "The Memory Answer worker output did not satisfy the required answer format.",
+          missing: ["valid structured worker output"],
+          missing_evidence: []
+        });
+        expect(persistedAnswerResponse(response).structuredAnswer).toEqual(
+          response.structuredAnswer
+        );
+        expect(JSON.stringify(response.structuredAnswer)).not.toMatch(
+          /exhausted|failed retrieval stages|unexhausted/
+        );
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("rejects clean insufficient answers without selected partial evidence", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));

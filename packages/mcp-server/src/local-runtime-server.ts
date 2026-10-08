@@ -672,7 +672,9 @@ export const startLocalAiRuntime = async ({
           json(response, 200, {
             protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
             curatedMemoryIntakeAvailable:
-              capabilities.curatedMemoryIntakeAvailable
+              capabilities.curatedMemoryIntakeAvailable,
+            supportedTools: localRuntimeToolNames,
+            memoryAnswerTeamBackendAvailable: true
           });
           return;
         }

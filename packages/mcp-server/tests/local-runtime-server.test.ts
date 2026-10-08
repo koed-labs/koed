@@ -642,7 +642,12 @@ describe("Local AI Runtime", () => {
       const client = new LocalAiRuntimeClient(environment);
       await expect(client.capabilities()).resolves.toMatchObject({
         curatedMemoryIntakeAvailable: true,
-        protocolVersion: 1
+        protocolVersion: 1,
+        supportedTools: expect.arrayContaining([
+          "memory_answer",
+          "memory_workspaces"
+        ]) as unknown,
+        memoryAnswerTeamBackendAvailable: true
       });
       await expect(
         client.callTool(

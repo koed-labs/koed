@@ -8,7 +8,7 @@ export const memoryAnswerResponseDetailSchema = z.enum([
   "with_citations",
   "with_evidence"
 ]);
-export const uuidSchema = z.string().uuid();
+export const uuidSchema = z.string().uuid().toLowerCase();
 
 export const memoryWorkspacesInputSchema = z
   .object({

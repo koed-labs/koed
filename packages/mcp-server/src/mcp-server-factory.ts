@@ -34,7 +34,8 @@ import {
 } from "./local-runtime-client.js";
 import type {
   LocalRuntimeCallerContext,
-  LocalRuntimeToolName
+  LocalRuntimeToolName,
+  LocalRuntimeCapabilities
 } from "./local-runtime-protocol.js";
 import {
   memoryAccessCheckInputSchema,
@@ -71,10 +72,27 @@ const toolErrorResponse = (message: string) => ({
   content: [{ type: "text" as const, text: message }]
 });
 
+type RuntimeToolCapabilities = BackendToolCapabilities &
+  Pick<
+    LocalRuntimeCapabilities,
+    "supportedTools" | "memoryAnswerTeamBackendAvailable"
+  >;
+
+const supportsRuntimeTool = (
+  capabilities: RuntimeToolCapabilities,
+  name: LocalRuntimeToolName
+): boolean =>
+  capabilities.supportedTools
+    ? capabilities.supportedTools.includes(name)
+    : name !== "memory_workspaces";
+
 const backendToolCapabilities = async (
   runtimeClient: LocalAiRuntimeClient
-): Promise<BackendToolCapabilities> =>
+): Promise<RuntimeToolCapabilities> =>
   runtimeClient.capabilities().then((capabilities) => ({
+    supportedTools: capabilities.supportedTools,
+    memoryAnswerTeamBackendAvailable:
+      capabilities.memoryAnswerTeamBackendAvailable === true,
     curatedMemoryIntakeAvailable:
       capabilities.curatedMemoryIntakeAvailable === true
   }));
@@ -222,7 +240,7 @@ export const createKoedMcpServer = async (
         environment.KOED_CODEX_MEMORY_TOOL ?? "mcp__koed__memory_answer"
       )
     : undefined;
-  let runtimeCapabilities: BackendToolCapabilities;
+  let runtimeCapabilities: RuntimeToolCapabilities;
   let runtimeAvailable = true;
   let capabilitiesNeedRefresh = false;
   try {
@@ -272,6 +290,24 @@ export const createKoedMcpServer = async (
             defaultContext: defaultCallerContext(context),
             requestContext: _requestContext
           });
+          // Runtime processes can outlive adapter upgrades or be replaced while
+          // this MCP connection remains open. Recheck new contract features.
+          if (
+            toolName === "memory_workspaces" ||
+            (toolName === "memory_answer" &&
+              (input as Record<string, unknown>).team_backend_id !== undefined)
+          ) {
+            runtimeCapabilities = await backendToolCapabilities(runtimeClient);
+            if (
+              !supportsRuntimeTool(runtimeCapabilities, toolName) ||
+              (toolName === "memory_answer" &&
+                !runtimeCapabilities.memoryAnswerTeamBackendAvailable)
+            ) {
+              return toolErrorResponse(
+                "The running Koed Local AI Runtime does not support this Team recall feature. Restart the runtime through koed-server or Koed Desktop and reconnect MCP."
+              );
+            }
+          }
           let response: Record<string, unknown> | undefined;
           if (toolName === "memory_answer" && deferred) {
             response = await deferred.accept(
@@ -293,8 +329,9 @@ export const createKoedMcpServer = async (
           runtimeAvailable = true;
           if (capabilitiesNeedRefresh) {
             try {
-              const capabilities = await backendToolCapabilities(runtimeClient);
-              registerExposedTools(capabilities);
+              runtimeCapabilities =
+                await backendToolCapabilities(runtimeClient);
+              registerExposedTools(runtimeCapabilities);
               capabilitiesNeedRefresh = false;
             } catch {
               // A successful tool call can still return while capability refresh
@@ -314,10 +351,11 @@ export const createKoedMcpServer = async (
   };
 
   const registerExposedTools = (
-    capabilities: BackendToolCapabilities
+    capabilities: RuntimeToolCapabilities
   ): void => {
     for (const name of exposedTools(toolExposure, capabilities)) {
       if (!allTools.includes(name)) continue;
+      if (!supportsRuntimeTool(capabilities, name)) continue;
       registerTool(name as LocalRuntimeToolName);
     }
   };

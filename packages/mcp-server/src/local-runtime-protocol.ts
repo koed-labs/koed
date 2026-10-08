@@ -38,6 +38,9 @@ export interface LocalRuntimeToolRequest {
 export interface LocalRuntimeCapabilities {
   protocolVersion: typeof LOCAL_AI_RUNTIME_PROTOCOL_VERSION;
   curatedMemoryIntakeAvailable: boolean;
+  /** Absent on older version-1 runtimes. */
+  supportedTools?: readonly LocalRuntimeToolName[];
+  memoryAnswerTeamBackendAvailable?: boolean;
 }
 
 const registrationSchema = z

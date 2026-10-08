@@ -139,7 +139,11 @@ export const backendForDiscoveredWorkspace = (
   if (discovery.unavailable_backends.length > 0) return undefined;
   const matches = new Set(
     discovery.workspaces
-      .filter((workspace) => workspace.team_workspace_id === workspaceId)
+      .filter(
+        (workspace) =>
+          workspace.team_workspace_id.toLowerCase() ===
+          workspaceId.toLowerCase()
+      )
       .map((workspace) => workspace.team_backend_id)
   );
   return matches.size === 1 ? [...matches][0] : undefined;
