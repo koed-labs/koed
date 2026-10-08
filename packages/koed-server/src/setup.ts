@@ -722,7 +722,7 @@ const resolveBundledDatabaseEnvironment = (
       return {
         ok: false,
         error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
-        action: `Fix or remove ${persisted.path}, then rerun koed-server setup core --json.`
+        action: `Fix or remove ${persisted.path}, then rerun koed setup core --json.`
       };
     }
     return {
@@ -745,14 +745,14 @@ const resolveBundledDatabaseEnvironment = (
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed setup ${recoveryCommand} --json.`
     };
   }
   if (persisted.state === "valid" && !persisted.secrets.POSTGRES_PASSWORD) {
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are missing required POSTGRES_PASSWORD.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed setup ${recoveryCommand} --json.`
     };
   }
   const password =
@@ -929,7 +929,7 @@ const runSetupBootstrap = (
       state: "needs_attention",
       error: result.error.message,
       action:
-        "Fix the reported client setup failure, then rerun koed-server setup codex --json."
+        "Fix the reported client setup failure, then rerun koed setup codex --json."
     };
   }
   const redactApiTokens = (value: string): string =>
@@ -947,7 +947,7 @@ const runSetupBootstrap = (
         state: "needs_attention",
         error: `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
-          "Review stdout/stderr, fix the reported client setup failure, then rerun koed-server setup codex --json."
+          "Review stdout/stderr, fix the reported client setup failure, then rerun koed setup codex --json."
       };
 };
 
@@ -1030,7 +1030,7 @@ export const setupCore = async (
       state: "needs_attention",
       error: error instanceof Error ? error.message : String(error),
       action:
-        "Fix the reported core setup failure, then rerun koed-server setup core --json."
+        "Fix the reported core setup failure, then rerun koed setup core --json."
     };
   }
 };
@@ -1166,7 +1166,7 @@ export const setupCodex = async (
         state: "needs_attention" as const,
         error: error instanceof Error ? error.message : String(error),
         action:
-          "Fix the Codex-specific registration, then rerun koed-server setup codex --json."
+          "Fix the Codex-specific registration, then rerun koed setup codex --json."
       };
       writeSetupVerification(
         context.paths,

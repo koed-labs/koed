@@ -49,7 +49,7 @@ does not start or stop Docker Compose in this mode.
 
 Bundled-local dependency mode is a native local runtime for Postgres/pgvector,
 the Embedding Service, and the pinned Privacy Service. In this mode,
-`koed-server start` starts Koed-owned native runtimes under `KOED_HOME`; it never
+`koed start` starts Koed-owned native runtimes under `KOED_HOME`; it never
 starts Docker Compose. API/Worker jobs default to `WORK_QUEUE_BACKEND=local`, so
 Redis is not required for queues unless the Operator explicitly sets
 `WORK_QUEUE_BACKEND=bullmq`. With BullMQ, Redis is Operator-managed external
@@ -165,15 +165,15 @@ Example bundled-local `KOED_HOME/config/server.json`:
 }
 ```
 
-`koed-server setup core --json` is the client-neutral Operator bootstrap. It
+`koed setup core --json` is the client-neutral Operator bootstrap. It
 creates or reuses and validates the local API Token used privately by the
 Local AI Runtime. It does not write final verification state; `doctor --json`
-persists final success or failure. `koed-server setup codex --json`, `setup claude`, and
+persists final success or failure. `koed setup codex --json`, `setup claude`, and
 `setup pi` are explicit client-profile commands and are not run by core setup.
 The Desktop supervisor may provision the same local credential automatically;
 manual token bootstrap remains supported.
 
-`koed-server status --json` and `doctor --json` report core components separately
+`koed status --json` and `doctor --json` report core components separately
 from AI Client profile diagnostics. In `developer` and `local-personal` runtime
 modes, core includes API, storage, queues, Embedding Service, Local AI Runtime
 process, MCP artifacts, and its local Personal API Token. In `external` runtime
@@ -253,8 +253,8 @@ with permission remediation.
 Inspect or explicitly repair identity with machine-readable output:
 
 ```bash
-koed-server identity status --json
-koed-server identity rotate --json
+koed identity status --json
+koed identity rotate --json
 ```
 
 `identity rotate` preserves verified deployment ID, creates a fresh device ID
@@ -310,14 +310,14 @@ passwords, or `env://` PDS secret values.
 
 ### Secret provider CLI
 
-The bundled `koed-server secret-provider` command is the internal runtime
-provider that services invoke to retrieve PDS secrets. It is not a general-purpose
+The bundled `koed secret-provider` command is the internal runtime provider
+that services invoke to retrieve PDS secrets. It is not a general-purpose
 secret manager. Usage is strictly three arguments:
 
 ```bash
-koed-server secret-provider get <reference>
-koed-server secret-provider put <reference>
-koed-server secret-provider delete <reference>
+koed secret-provider get <reference>
+koed secret-provider put <reference>
+koed secret-provider delete <reference>
 ```
 
 `get` reads from the store and writes the plaintext value to stdout.
@@ -356,8 +356,8 @@ invitation limit. Final client retry uses up to three fresh encrypted message
 IDs; reusing one message ID is rejected.
 
 ```bash
-koed-server personal-sync join redeem --link-stdin --device-label studio
-koed-server personal-sync join redeem --link-fd 3 --device-label studio
+koed personal-sync join redeem --link-stdin --device-label studio
+koed personal-sync join redeem --link-fd 3 --device-label studio
 ```
 
 Desktop paste or QR scan is preferred. A registered `koed-pair://` deep link
@@ -470,15 +470,15 @@ Supported commands:
 
 ```bash
 SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
-koed-server upstream register --url https://koed.example.test --id team-vps --name "Team VPS" --profile private_vps --json
-koed-server upstream list --json
-koed-server upstream refresh --id team-vps --json
-koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --admin enabled --json
-koed-server upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json
-koed-server upstream enroll status --id team-vps --json
-koed-server upstream enroll cancel --id team-vps --json
-koed-server upstream disconnect --id team-vps --json
-koed-server upstream remove --id team-vps --json
+koed upstream register --url https://koed.example.test --id team-vps --name "Team VPS" --profile private_vps --json
+koed upstream list --json
+koed upstream refresh --id team-vps --json
+koed upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --admin enabled --json
+koed upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json
+koed upstream enroll status --id team-vps --json
+koed upstream enroll cancel --id team-vps --json
+koed upstream disconnect --id team-vps --json
+koed upstream remove --id team-vps --json
 ```
 
 Capability refresh calls the upstream public `/v1/capabilities` endpoint,
@@ -492,7 +492,7 @@ failed refresh without accepting stale capabilities. Headless Operators can use
 fail-closed: registering an upstream
 does not enable capture-bearing writes, Team Workspace recall, Share Grant
 management, sync/offload, or admin operations. Operators must explicitly enable
-allowed operation families with `koed-server upstream policy`; later routing and
+allowed operation families with `koed upstream policy`; later routing and
 sync work must consume the cached capabilities and route policy before enabling
 remote-dependent surfaces. Enabling the `--admin` route policy for
 browser-mediated enrollment requests the narrow `action_grant` device family,
@@ -883,7 +883,7 @@ policy, or full URLs containing customer content.
   classification-text ceiling; the reference Linux/Node run required hundreds
   of MiB of transient heap, so additional concurrent finalizations are not
   admitted without new measured capacity evidence.
-- `koed-server models status --kind privacy --json` and `koed-server models
+- `koed models status --kind privacy --json` and `koed models
 install --kind privacy --json`: verify or install the pinned local Privacy
   Service model, tokenizer, decoder, and calibration assets in Koed's
   content-addressed model cache. Runtime configuration cannot silently select a
@@ -897,8 +897,8 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.
-- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
-- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. The SHA-256 is required whenever reranking is enabled; Embedding Service startup hashes the exact GGUF passed to llama-server and rejects a mismatch. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
+- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
+- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed models install --kind reranker`. The SHA-256 is required whenever reranking is enabled; Embedding Service startup hashes the exact GGUF passed to llama-server and rejects a mismatch. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
 - `KOED_BUNDLED_POSTGRES_MODE`: deprecated. Bundled-local Postgres is native-only; `compose` is ignored and missing native binaries report setup guidance.
 - `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, `psql`, `pg_dump`, and `pg_restore` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual startup binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`; hosted backup commands may use `PSQL_BIN`, `PG_DUMP_BIN`, and `PG_RESTORE_BIN` for external database operators.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
@@ -925,8 +925,8 @@ install --kind privacy --json`: verify or install the pinned local Privacy
   by SSH-only `personal-sync join redeem`; when omitted, Koed derives it from
   local API port configuration. `PDS_CONTROL_URL` is never used for local
   reconciliation, and non-loopback origins are rejected.
-- `koed-server runtime status --provider homebrew --json`: macOS, Linux, and WSL diagnostic command for Homebrew-backed native runtime assets. It does not install packages or mutate Homebrew state.
-- `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`: explicit macOS, Linux, and WSL install command that may run Homebrew for missing `postgresql@17`, `pgvector`, and `llama.cpp`, links selected binaries under `KOED_HOME/runtime`, and writes metadata under `KOED_HOME/cache`.
+- `koed runtime status --provider homebrew --json`: macOS, Linux, and WSL diagnostic command for Homebrew-backed native runtime assets. It does not install packages or mutate Homebrew state.
+- `koed runtime install --provider homebrew --dependency-mode bundled-local --json`: explicit macOS, Linux, and WSL install command that may run Homebrew for missing `postgresql@17`, `pgvector`, and `llama.cpp`, links selected binaries under `KOED_HOME/runtime`, and writes metadata under `KOED_HOME/cache`.
 - `koed-server` writes Desktop's app-provisioned local credential under `KOED_HOME/config/local-app-credential.json` without exposing the API Token in status output.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
@@ -1303,7 +1303,7 @@ dependency modes are passed to child services.
 The supervisor owns the joining-device request service. Its owner-only local
 socket is separate from the narrow private-interface request listener; request
 links carry that listener's allocated port. No additional flags are needed for
-`koed-server pair`. `KOED_PDS_LAN_PORT` still configures the existing Desktop
+`koed pair`. `KOED_PDS_LAN_PORT` still configures the existing Desktop
 Authority/Relay listener. Both private paths must be reachable; no public relay
 or inbound-network traversal is provided. See [Connect Personal devices](device-pairing.md).
 

@@ -120,7 +120,7 @@ koed-server-<version>-<platform>-<arch>/
   koed-server-package-manifest.json
   README.txt
   bin/
-    koed-server                       # platform launcher or wrapper
+    koed                              # platform launcher or wrapper
   koed-runtime/
     api/
     worker/
@@ -199,7 +199,7 @@ koed-native-runtime-<platform>-<arch>-<version>.tar.gz
     llama.cpp/
 ```
 
-They remain installed through `koed-server runtime status/install` under:
+They remain installed through `koed runtime status/install` under:
 
 ```text
 KOED_HOME/runtime/postgres
@@ -243,7 +243,7 @@ KOED_HOME/
       versions/
         <version>/
           koed-server-package-manifest.json
-          bin/koed-server
+          bin/koed
           koed-runtime/
     postgres/
     llama.cpp/
@@ -351,7 +351,7 @@ Desktop and headless install flows should verify before activation:
 6. validate platform/architecture compatibility;
 7. validate Desktop/server compatibility;
 8. atomically update `current` pointer or marker;
-9. run `koed-server status --json` or a package validation command before
+9. run `koed status --json` or a package validation command before
    startup continues.
 
 Archive download, gzip decompression, and tar parsing are streaming operations.
@@ -478,8 +478,8 @@ unsigned-placeholder provenance only for non-default/test channels.
 Recommended command shape after a bootstrap entrypoint is available:
 
 ```bash
-koed-server package status --json
-koed-server package install \
+koed package status --json
+koed package install \
   --source https://downloads.koed.local/koed-server-<version>-linux-x64.tar.gz \
   --sha256 <sha256> \
   --provenance-file /path/to/koed-server-app-runtime-<version>-linux-x64.provenance.json \
@@ -487,11 +487,11 @@ koed-server package install \
   --trusted-public-key-file /path/to/koed-server-package.pub.pem \
   --trust-policy require-signature \
   --json
-koed-server runtime install --provider packaged --dependency-mode bundled-local --json
-koed-server models install --kind embedding --json
+koed runtime install --provider packaged --dependency-mode bundled-local --json
+koed models install --kind embedding --json
 # Required only when Team collaboration is enabled:
-koed-server models install --kind privacy --json
-koed-server start --daemon --json
+koed models install --kind privacy --json
+koed start --daemon --json
 ```
 
 On the first packaged, bundled-local, Personal Memory start, `koed-server`
@@ -503,7 +503,7 @@ Token and never provisions one implicitly.
 Offline install should use a local artifact path:
 
 ```bash
-koed-server package install \
+koed package install \
   --source /path/to/koed-server-<version>-linux-x64.tar.gz \
   --sha256-file /path/to/koed-server-<version>-linux-x64.tar.gz.sha256 \
   --json
@@ -540,7 +540,7 @@ KOED_HOME/runtime/koed-server/versions/<current>
 A cleanup command should remove inactive versions and stale cached archives:
 
 ```bash
-koed-server package cleanup --keep 1 --json
+koed package cleanup --keep 1 --json
 ```
 
 Desktop should expose cleanup only as an advanced repair/storage action.

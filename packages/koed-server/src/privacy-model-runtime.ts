@@ -121,7 +121,7 @@ export const collectPrivacyModelStatus = async (
         ok: false,
         state: "missing",
         message: `Pinned Privacy Filter model asset is missing: ${file.path}.`,
-        action: "Run koed-server models install --kind privacy.",
+        action: "Run koed models install --kind privacy.",
         modelPath: paths.cacheDir,
         files
       };
@@ -138,7 +138,7 @@ export const collectPrivacyModelStatus = async (
         state: "checksum_mismatch",
         message: `Pinned Privacy Filter model asset failed verification: ${file.path}.`,
         action:
-          "Run koed-server models install --kind privacy to replace the invalid content-addressed asset.",
+          "Run koed models install --kind privacy to replace the invalid content-addressed asset.",
         modelPath: paths.cacheDir,
         files
       };

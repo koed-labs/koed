@@ -84,7 +84,7 @@ never selects Codex merely because Codex is installed.
 
 ### Connect another Personal device
 
-On a prepared joining machine, run `koed-server pair` (or `pnpm koed-server pair`
+On a prepared joining machine, run `koed pair` (or `pnpm koed pair`
 from this built checkout). Paste its request link into **Devices → Add device**
 on your existing Koed Electron installation and confirm. Another Electron
 installation can generate its link with **Connect to an existing device**.

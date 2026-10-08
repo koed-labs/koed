@@ -20,7 +20,7 @@ import {
   desktopCollaborationBrokerChildMessageSchema,
   desktopCollaborationBrokerParentMessageSchema,
   measureDesktopCollaborationBrokerMessageBytes
-} from "@koed/koed-server";
+} from "@koed-labs/server";
 
 export interface CollaborationTransportContext {
   ownerId: string;

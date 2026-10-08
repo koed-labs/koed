@@ -28,6 +28,20 @@ const pullRequest = ({
   }
 });
 
+test("active workflows build the renamed public Koed Server package", () => {
+  for (const workflowPath of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/release-desktop-assets.yml",
+    ".github/workflows/native-runtime-cache.yml",
+    ".github/workflows/native-runtime-linux-cache.yml"
+  ]) {
+    const workflow = readFileSync(resolve(workflowPath), "utf8");
+    assert.doesNotMatch(workflow, /pnpm --filter @koed\/koed-server\b/);
+    assert.match(workflow, /pnpm --filter @koed-labs\/server build/);
+  }
+});
+
 test("packaging path policy excludes documentation and includes runtime consumers", () => {
   assert.equal(packagingRelevant(["docs/running-koed.md", "PLAN.md"]), false);
   for (const file of [

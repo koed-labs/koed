@@ -138,7 +138,7 @@ On a joining Electron installation, open **Devices → Connect to an existing
 device** and copy the request link. On the existing Authority-hosting Electron
 installation, open **Devices → Add device**, paste it, review the device, and
 confirm **Add device**. A joining SSH-only installation produces the same link
-with `koed-server pair`. See [Connect Personal devices](device-pairing.md).
+with `koed pair`. See [Connect Personal devices](device-pairing.md).
 
 The request expires after ten minutes and uses encrypted private LAN/Tailscale
 transport. Neither paste nor inspection alone enrolls the joining device.

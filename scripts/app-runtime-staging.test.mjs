@@ -33,7 +33,7 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   roots.push(root);
   for (const service of appRuntimePackages) {
     for (const entry of service.entries) {
-      write(resolve(root, "node_modules", "@koed", service.package, entry));
+      write(resolve(root, "node_modules", service.package, entry));
     }
   }
   for (const entry of [
@@ -71,6 +71,14 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   );
   assert.match(wrapper, /node_modules\/@koed\/api\/dist\/index\.js/);
   assert.match(wrapper, /process\.argv\[1\]/);
+  const serverWrapper = readFileSync(
+    resolve(root, "koed-server", "dist", "cli.js"),
+    "utf8"
+  );
+  assert.match(
+    serverWrapper,
+    /node_modules\/@koed-labs\/server\/dist\/cli\.js/
+  );
   const guidancePath = resolve(
     root,
     "mcp-server/dist/prompts/codex-global-agent-guidance.md"

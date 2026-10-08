@@ -41,7 +41,7 @@ import {
 import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
 import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
 import { PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE } from "./pds-authority.js";
-import { resolveKoedHome as resolveApplicationKoedHome } from "@koed/koed-server";
+import { resolveKoedHome as resolveApplicationKoedHome } from "@koed-labs/server";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createExternalUrlOpener } from "./window/external-url-opener.js";
 import { desktopThemeChromeColor } from "./window/theme-colors.js";

@@ -1,11 +1,11 @@
 {
-  "name": "@koed/koed-server",
+  "name": "@koed-labs/server",
   "version": "0.8.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "koed-server": "dist/cli.js"
+    "koed": "dist/cli.js"
   },
   "files": [
     "dist/**/*",
