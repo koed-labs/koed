@@ -110,7 +110,9 @@ blocking recall. Ephemeral sessions and Team Workspace calls retain blocking
 recall. Single-shot print and JSON runs (`pi -p`, `pi --mode json`) also block,
 because Pi exits after the prompted turn. An SDK host that does not bind an
 extension mode reports print mode and blocks too. Koed Desktop-managed Pi
-Conversations block, because Koed presents only the turn it prompted. See
+Conversations block, because Koed presents only the turn it prompted. If you
+press Esc while the agent is busy, Pi drops the queued completion; Koed then
+adds the answer to the Conversation without restarting the agent. See
 [asynchronous delivery](async-memory-answer.md) for shared execution
 ownership, recovery behavior and crash limits.
 

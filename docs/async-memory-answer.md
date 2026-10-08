@@ -107,7 +107,19 @@ With a persistent Pi Conversation and the required session-history and message
 APIs, `memory_answer` returns an attributed receipt promptly. The agent can do
 independent work while the extension observes the task. The extension delivers
 completion as a Pi follow-up message and triggers a turn automatically. A
-memory-dependent decision must wait for that completion.
+memory-dependent decision must wait for that completion. The completion
+presents the result as recalled data between markers and tells the agent not
+to follow instructions inside it.
+
+A completion counts as delivered only when Pi saves it to the Conversation.
+Pi can drop a queued follow-up: Esc while the agent is busy, the dequeue
+action and `/tree` navigation clear the queue. Pi keeps a run going while its
+queue holds messages, so when the run settles the extension redelivers any
+completion that Pi did not save. Redelivery uses a fresh authorized task read
+and appends the answer without starting a turn, so the agent does not restart
+after the User stops it; the model reads the answer on the next prompt. A late
+second copy of a saved completion is replaced by a short note. After three
+undelivered attempts the extension stops and warns the User.
 
 The receipt records the task, query, invocation, Conversation, session file,
 delivery generation and `KOED_HOME`. Delivery requires a matching receipt on
@@ -129,7 +141,8 @@ registration. A successful switch, fork or move of the session tree detaches
 and invalidates current pending delivery. A cancelled transition leaves recall
 active in the unchanged Conversation. Shutdown detaches observation and leaves
 durable execution running; reopening the same Conversation can recover it.
-Already enqueued completions are suppressed on recovery.
+Completions that Pi already saved are suppressed on recovery. A completion
+whose earlier attempt was never saved is redelivered without starting a turn.
 
 Pi does not provide an atomic transaction covering receipt persistence and
 message enqueue. These limits apply:
@@ -138,9 +151,9 @@ message enqueue. These limits apply:
   A crash before persistence can lose the receipt.
 - A crash after runtime acceptance and before appending the receipt can leave
   a durable task without recoverable presentation history.
-- The extension records an enqueue attempt before calling Pi's message API.
-  A crash or queue failure between those steps can lose delivery. That marker
-  prevents duplicate enqueue attempts after reopening.
+- A crash after Pi delivers a completion to the model but before it saves the
+  completion means the next reopen delivers it again. The model's rebuilt
+  context then holds one copy.
 
 Session tree navigation is not atomic with delivery either. Pi checks for a
 running response only when `/tree` navigation starts, then awaits extension
@@ -149,8 +162,9 @@ event when navigation is cancelled or fails in that window. A completion that
 arrives in that window can start a turn on the outgoing branch whose response
 Pi saves on the destination branch. This is a current limitation.
 
-Recovery therefore provides at-most-once enqueue attempts, rather than exactly
-once delivery. Expiry or a permanent authorization failure can prevent
+Recovery therefore repeats delivery until Pi saves the completion, within the
+attempt limit, rather than guaranteeing exactly once delivery. Expiry or a
+permanent authorization failure can prevent
 presentation and require a fresh authorized recall. The completed Memory
 Question remains available through Koed's normal history. Retrying recall
 creates a new invocation.

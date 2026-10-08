@@ -34,7 +34,8 @@ Follow-ups:
 - Defer managed Codex and Claude Agent SDK presentation adapters until the
   independent-client work has been addressed.
 - Strengthen Pi delivery recovery if its API gains an atomic durable enqueue
-  acknowledgement; current recovery has documented crash gaps.
+  acknowledgement. Dropped completions are redelivered when the run settles,
+  but receipt buffering before the first assistant message remains a crash gap.
 - Add stronger Codex recovery when a supported host supplies the required
   receiver mechanism. Pending-result delivery after backend loss or runtime
   restart, idle wake and exited-session replay remain future work. Keep the

@@ -197,7 +197,10 @@ export default function koedExtension(pi) {
       /* correctness comes from filesystem discovery */
     }
   });
-  pi.on("agent_settled", (_event, ctx) => {
+  // Confirms delivered recall completions and replaces late duplicates.
+  pi.on("message_end", (event, ctx) => delivery.messageEnd(event, ctx));
+  pi.on("agent_settled", (event, ctx) => {
+    delivery.agentSettled(event, ctx);
     try {
       signalWatcher(ctx, "agent_settled");
     } catch {

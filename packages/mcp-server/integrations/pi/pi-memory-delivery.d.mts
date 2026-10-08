@@ -5,6 +5,8 @@ import type {
 export declare const RECEIPT: string;
 export declare const DISPOSITION: string;
 export declare const COMPLETION: string;
+export declare const DUPLICATE: string;
+export declare const MAX_DELIVERY_ATTEMPTS: number;
 export interface PiDeliveryContext {
   cwd: string;
   /** Pi run mode; "print" and "json" are single-shot and use blocking recall. */
@@ -26,6 +28,15 @@ export interface PiDeliveryContext {
     }>;
   };
   ui?: { notify?(message: string, level: string): void };
+  /** Pi's idle state; redelivery waits while another agent run is active. */
+  isIdle?(): boolean;
+}
+export interface PiMessageEndEvent {
+  message?: {
+    role?: string;
+    customType?: string;
+    details?: { taskId?: unknown } & Record<string, unknown>;
+  } & Record<string, unknown>;
 }
 export declare function createPiMemoryDelivery(
   pi: {
@@ -37,7 +48,9 @@ export declare function createPiMemoryDelivery(
         display: boolean;
         details: Record<string, unknown>;
       },
-      options: { deliverAs: "followUp"; triggerTurn: true }
+      options:
+        | { deliverAs: "followUp"; triggerTurn: true }
+        | { triggerTurn: false }
     ): void;
   },
   options: {
@@ -66,6 +79,13 @@ export declare function createPiMemoryDelivery(
   }>;
   start(event: { reason: string }, context: PiDeliveryContext): void;
   detach(invalidate?: boolean): void;
+  /** Pi `message_end` handler: confirms delivery and replaces late duplicates. */
+  messageEnd(
+    event: PiMessageEndEvent,
+    context?: PiDeliveryContext
+  ): { message: Record<string, unknown> } | undefined;
+  /** Pi `agent_settled` handler: redelivers completions that Pi dropped. */
+  agentSettled(event: unknown, context?: PiDeliveryContext): void;
   pending: Map<string, { watcher: Promise<unknown> }>;
   settle(): Promise<void>;
 };
