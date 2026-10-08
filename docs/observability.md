@@ -200,6 +200,19 @@ fixed, and rerun. Normal traffic percentage/error-rate thresholds require an
 external request-log aggregator and an established baseline; Koed does not
 currently emit that metric itself.
 
+## MCP Server and Local AI Runtime
+
+MCP Server and Local AI Runtime logs use `schema_version: "mcp_log_v1"`.
+`MEMORY_LOG_LEVEL` sets the level. Log metadata is bounded and redacts content
+keys such as queries, answers, results, requests, responses and tokens. Error
+objects keep only their class name, numeric status fields, allowlisted system
+codes such as `ECONNREFUSED`, and one level of cause. They never include the
+exception message or stack.
+
+For local debugging, `KOED_LOG_ERROR_DETAIL=1` adds bounded error messages and
+stacks. Those can contain Memory content, provider responses or credentials.
+Keep the setting off by default, and do not share logs written with it.
+
 ## Embedding Service
 
 Embedding logs use `schema_version: "embedding_service_log_v1"` and

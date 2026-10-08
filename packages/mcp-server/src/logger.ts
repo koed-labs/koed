@@ -163,9 +163,17 @@ const allowedErrorNames = new Set([
   "URIError",
   "ZodError"
 ]);
+// KOED_LOG_ERROR_DETAIL=1 is a local debugging opt-in. It adds bounded error
+// messages and stacks, which can contain memory, provider or credential
+// content, so logs written with it are unsafe to share.
+const errorDetailEnabled = (environment: NodeJS.ProcessEnv): boolean =>
+  environment.KOED_LOG_ERROR_DETAIL === "1";
+const boundedErrorText = (value: unknown, limit: number): string | undefined =>
+  typeof value === "string" ? value.slice(0, limit) : undefined;
 const diagnosticError = (
   value: unknown,
-  includeCause = true
+  includeCause = true,
+  detail = false
 ): Record<string, unknown> => {
   const result: Record<string, unknown> = { type: "Error" };
   if (!value || typeof value !== "object") return result;
@@ -195,9 +203,18 @@ const diagnosticError = (
     const taskCode = ownValue(value, "memoryAnswerTaskErrorCode");
     if (typeof taskCode === "string" && allowedTaskErrorCodes.has(taskCode))
       result.memoryAnswerTaskErrorCode = taskCode;
+    if (detail) {
+      const message = boundedErrorText(ownValue(value, "message"), 1024);
+      if (message !== undefined) result.message = message;
+      const stack = boundedErrorText(
+        (value as { stack?: unknown }).stack,
+        4096
+      );
+      if (stack !== undefined) result.stack = stack;
+    }
     const cause = ownValue(value, "cause");
     if (includeCause && cause && typeof cause === "object")
-      result.cause = diagnosticError(cause, false);
+      result.cause = diagnosticError(cause, false, detail);
   } catch {
     return { type: "Error" };
   }
@@ -225,10 +242,11 @@ const contentKeys = new Set([
 const boundedDiagnostic = (
   value: unknown,
   depth = 0,
-  budget = { remaining: 24 }
+  budget = { remaining: 24 },
+  detail = false
 ): unknown => {
   if (--budget.remaining < 0) return "[Redacted]";
-  if (value instanceof Error) return diagnosticError(value);
+  if (value instanceof Error) return diagnosticError(value, true, detail);
   if (depth >= 4) return "[Redacted]";
   if (typeof value === "string") return value.slice(0, 256);
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -236,7 +254,7 @@ const boundedDiagnostic = (
   if (Array.isArray(value))
     return value
       .slice(0, 16)
-      .map((item) => boundedDiagnostic(item, depth + 1, budget));
+      .map((item) => boundedDiagnostic(item, depth + 1, budget, detail));
   if (!value || typeof value !== "object") return undefined;
   const result: Record<string, unknown> = {};
   for (const [key, descriptor] of Object.entries(
@@ -246,10 +264,10 @@ const boundedDiagnostic = (
       "value" in descriptor ? descriptor.value : "[Redacted]";
     result[key.slice(0, 64)] =
       key === "err" || key === "error"
-        ? diagnosticError(item)
+        ? diagnosticError(item, true, detail)
         : contentKeys.has(key)
           ? "[Redacted]"
-          : boundedDiagnostic(item, depth + 1, budget);
+          : boundedDiagnostic(item, depth + 1, budget, detail);
   }
   return result;
 };
@@ -262,14 +280,23 @@ export const createMcpLogger = (
   } = {}
 ): Logger => {
   const environment = options.environment ?? process.env;
+  const detail = errorDetailEnabled(environment);
+  const serializeError = (value: unknown) =>
+    diagnosticError(value, true, detail);
+  const metadataLimit = detail ? 16_384 : 4096;
   const loggerOptions: LoggerOptions = {
     level: resolveMcpLogLevel(environment),
-    serializers: { err: diagnosticError, error: diagnosticError },
+    serializers: { err: serializeError, error: serializeError },
     formatters: {
       log: (object) => {
         try {
-          const metadata = boundedDiagnostic(object) as Record<string, unknown>;
-          return Buffer.byteLength(JSON.stringify(metadata)) <= 4096
+          const metadata = boundedDiagnostic(
+            object,
+            0,
+            undefined,
+            detail
+          ) as Record<string, unknown>;
+          return Buffer.byteLength(JSON.stringify(metadata)) <= metadataLimit
             ? metadata
             : { diagnostic: "metadata limit exceeded" };
         } catch {
@@ -282,7 +309,7 @@ export const createMcpLogger = (
         if (args[0] instanceof Error) {
           method.call(
             this,
-            { err: diagnosticError(args[0]) },
+            { err: serializeError(args[0]) },
             typeof args[1] === "string"
               ? args[1].slice(0, 256)
               : "operation failed"

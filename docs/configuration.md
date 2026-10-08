@@ -1136,6 +1136,10 @@ These values are copied into the AI Client configuration and are not consumed au
   durable Personal backlog and maximum in-process blocking backlog. Default
   `16`. Idempotent retries return their existing durable task even at the
   limit.
+- `KOED_LOG_ERROR_DETAIL`: set to `1` to add bounded error messages and
+  stacks to MCP Server and Local AI Runtime logs for local debugging. Off by
+  default. Those logs can contain Memory content, provider responses or
+  credentials, so do not share them. See [observability](observability.md).
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.

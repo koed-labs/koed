@@ -202,6 +202,37 @@ describe("MCP logger", () => {
     expect(output).not.toContain("PRIVATE");
     expect(output).not.toContain("PrivateNameSentinelError");
   });
+  it("adds bounded error messages and stacks only with KOED_LOG_ERROR_DETAIL=1", () => {
+    const capture = (environment: NodeJS.ProcessEnv) => {
+      let output = "";
+      const destination = new Writable({
+        write(chunk, _encoding, callback) {
+          output += String(chunk);
+          callback();
+        }
+      });
+      const log = createMcpLogger("error-detail-test", {
+        destination,
+        environment: { MEMORY_LOG_LEVEL: "info", ...environment }
+      });
+      const error = new Error("DETAIL_MESSAGE " + "x".repeat(5000), {
+        cause: new Error("DETAIL_CAUSE")
+      });
+      log.warn({ err: error }, "operation failed");
+      return JSON.parse(output.trim()) as {
+        err: { message?: string; stack?: string; cause?: { message?: string } };
+      };
+    };
+    const off = capture({ KOED_LOG_ERROR_DETAIL: "true" });
+    expect(off.err).not.toHaveProperty("message");
+    expect(off.err).not.toHaveProperty("stack");
+    const on = capture({ KOED_LOG_ERROR_DETAIL: "1" });
+    expect(on.err.message).toMatch(/^DETAIL_MESSAGE x+$/);
+    expect(on.err.message).toHaveLength(1024);
+    expect(on.err.stack).toContain("DETAIL_MESSAGE");
+    expect(on.err.stack!.length).toBeLessThanOrEqual(4096);
+    expect(on.err.cause?.message).toBe("DETAIL_CAUSE");
+  });
   it("does not invoke error getters, toJSON or cyclic causes", () => {
     let output = "";
     const destination = new Writable({

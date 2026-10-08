@@ -174,5 +174,6 @@ is never returned.
 MCP diagnostics omit raw exception messages, stacks, causes and payloads and
 bound retained metadata. They keep allowlisted error class names, numeric status
 fields and allowlisted system codes such as `ECONNREFUSED`, including one level
-of cause.
+of cause. `KOED_LOG_ERROR_DETAIL=1` adds bounded messages and stacks for local
+debugging only; see [observability](observability.md).
 This does not replace task-result authorization or Capture Policy.
