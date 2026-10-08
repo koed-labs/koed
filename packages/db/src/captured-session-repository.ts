@@ -19,6 +19,8 @@ export interface CapturedSessionRepository {
       projectId?: string;
       logicalSessionId?: string;
       externalSessionId?: string;
+      // Provider-native identity when the replica's external session ID is logical.
+      externalThreadId?: string;
       forkedFromExternalThreadId?: string;
       sourceRuntime?: SourceRuntime;
       captureMethod?: CaptureMethod;
@@ -109,6 +111,7 @@ type CapturedSessionRow = {
   owner_user_id: string | null;
   visibility: Visibility;
   external_session_id: string | null;
+  external_thread_id: string | null;
   forked_from_external_thread_id: string | null;
   source_runtime: SourceRuntime;
   capture_method: CaptureMethod;
@@ -490,7 +493,7 @@ const hasExplicitDetectedProjectIdentity = (input: {
   );
 
 const capturedSessionColumns = `
-  id, logical_session_id, owner_user_id, visibility, external_session_id,
+  id, logical_session_id, owner_user_id, visibility, external_session_id, external_thread_id,
   forked_from_external_thread_id,
   source_runtime, capture_method, model, cwd,
   source_kind, source_adapter_version, source_fingerprint,
@@ -564,6 +567,13 @@ export const createCapturedSessionRepository = (
                 end,
               source_metadata = source_metadata || $5::jsonb,
               source_fingerprint = coalesce(source_fingerprint, $6),
+              external_thread_id = case
+                when $15::text is not null and (
+                  external_thread_id is null
+                  or external_thread_id = external_session_id
+                ) then $15
+                else external_thread_id
+              end,
               forked_from_external_thread_id =
                 coalesce(forked_from_external_thread_id, $14),
               captured_project = case
@@ -619,11 +629,21 @@ export const createCapturedSessionRepository = (
             automaticProject?.name ?? null,
             automaticProject?.path ?? null,
             explicitProjectIdentityProvided,
-            forkedFromExternalThreadId
+            forkedFromExternalThreadId,
+            input.externalThreadId ?? null
           ]
         );
         const convergedRow = converged.rows[0];
         if (convergedRow) {
+          if (
+            input.externalThreadId !== undefined &&
+            convergedRow.external_thread_id !== input.externalThreadId
+          ) {
+            throw Object.assign(
+              new Error("Captured Session native thread identity conflicts"),
+              { statusCode: 409, code: "captured_session_thread_conflict" }
+            );
+          }
           if (
             input.logicalSessionId &&
             convergedRow.logical_session_id !== input.logicalSessionId
@@ -732,6 +752,13 @@ export const createCapturedSessionRepository = (
           ),
           source_metadata = sessions.source_metadata || excluded.source_metadata,
           source_fingerprint = coalesce(sessions.source_fingerprint, excluded.source_fingerprint),
+          external_thread_id = case
+            when $30::text is not null and (
+              sessions.external_thread_id is null
+              or sessions.external_thread_id = sessions.external_session_id
+            ) then excluded.external_thread_id
+            else sessions.external_thread_id
+          end,
           captured_project = case
             when sessions.captured_project = '{}'::jsonb then excluded.captured_project
             else sessions.captured_project
@@ -795,7 +822,7 @@ export const createCapturedSessionRepository = (
                 : input.sourceRuntime === "pi"
                   ? "pi-session-v1"
                   : "codex-app-server-v1"),
-          input.externalSessionId ?? null,
+          input.externalThreadId ?? input.externalSessionId ?? null,
           forkedFromExternalThreadId,
           typeof metadata.parentThreadId === "string"
             ? metadata.parentThreadId
@@ -828,7 +855,8 @@ export const createCapturedSessionRepository = (
           input.importObservedAt ?? null,
           detectedProjectInputProvided,
           explicitProjectIdentityProvided,
-          input.logicalSessionId ?? null
+          input.logicalSessionId ?? null,
+          input.externalThreadId ?? null
         ]
       );
 
@@ -839,6 +867,15 @@ export const createCapturedSessionRepository = (
             "Duplicate Captured Session conflicts with data outside caller visibility"
           ),
           { statusCode: 409 }
+        );
+      }
+      if (
+        input.externalThreadId !== undefined &&
+        row.external_thread_id !== input.externalThreadId
+      ) {
+        throw Object.assign(
+          new Error("Captured Session native thread identity conflicts"),
+          { statusCode: 409, code: "captured_session_thread_conflict" }
         );
       }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);

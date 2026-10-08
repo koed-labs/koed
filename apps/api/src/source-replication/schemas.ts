@@ -55,8 +55,18 @@ const sourceAdapterVersions = [
     )
   )
 ] as [
-  "codex-transcript-v1" | "claude-code-transcript-v1" | "pi-session-v1",
-  ...("codex-transcript-v1" | "claude-code-transcript-v1" | "pi-session-v1")[]
+  (
+    | "codex-transcript-v1"
+    | "codex-transcript-v2"
+    | "claude-code-transcript-v1"
+    | "pi-session-v1"
+  ),
+  ...(
+    | "codex-transcript-v1"
+    | "codex-transcript-v2"
+    | "claude-code-transcript-v1"
+    | "pi-session-v1"
+  )[]
 ];
 
 export const sourceReplicationRecipientKeySchema = z
@@ -266,6 +276,20 @@ const sourceDescriptorSchema = z
     journalStartLine: z.number().int().safe().nonnegative(),
     liveStartOffset: z.number().int().safe().nonnegative(),
     liveStartLine: z.number().int().safe().nonnegative(),
+    codexHistory: z
+      .object({
+        historyMode: z.literal("paginated"),
+        externalThreadId: z.string().min(1).max(1_024),
+        threadKind: z.enum(["conversation", "subagent"]),
+        subagentHistoryStartOrdinal: z
+          .number()
+          .int()
+          .safe()
+          .nonnegative()
+          .nullable()
+      })
+      .strict()
+      .optional(),
     project: z
       .object({
         id: z
@@ -279,6 +303,16 @@ const sourceDescriptorSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      (value.sourceAdapterVersion === "codex-transcript-v2") !==
+      (value.codexHistory !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["codexHistory"],
+        message: "Codex history context must match its versioned adapter"
+      });
+    }
     if (!isSupportedAiClientSourceAdapter(value)) {
       context.addIssue({
         code: "custom",

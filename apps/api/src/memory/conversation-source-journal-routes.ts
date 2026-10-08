@@ -13,6 +13,7 @@ import {
   exportConversationSourceReplicationPublicKey,
   importConversationSourceReplicationPublicKey,
   parseConversationSourceReplicationSegmentEnvelope,
+  conversationSourceRewriteGenerationId,
   type ConversationSourceClosureManifest,
   type ConversationSourceSetClosureManifest,
   type DeviceBoundSourceSigner,
@@ -345,7 +346,9 @@ export const registerConversationSourceJournalRoutes = (
             ? "claude-code-transcript-v1"
             : input.sourceKind === "pi"
               ? "pi-session-v1"
-              : "codex-transcript-v1",
+              : sourceSession.metadata?.history_mode === "paginated"
+                ? "codex-transcript-v2"
+                : "codex-transcript-v1",
         storageProvider: storage.provider,
         storagePrefix: artifactIdPrefix,
         originDeploymentId: signer.deploymentId,
@@ -804,6 +807,49 @@ export const registerConversationSourceJournalRoutes = (
       const input = conversationSourceSuccessorGenerationSchema.parse(
         request.body
       );
+      const repo = context.requireRepository();
+      const parent = await repo.getConversationSourceArtifact(
+        { userId: user.id },
+        artifactId
+      );
+      if (!parent)
+        throw Object.assign(
+          new Error("Conversation source artifact not found"),
+          { statusCode: 404 }
+        );
+      if (input.sourceRewrite) {
+        if (
+          parent.sourceKind !== "codex" ||
+          input.sourceGenerationId !==
+            conversationSourceRewriteGenerationId(
+              parent.sourceGenerationId,
+              input.sourceRewrite.prefixDigest
+            )
+        )
+          throw Object.assign(
+            new Error("Conversation source rewrite identity is invalid"),
+            { statusCode: 409 }
+          );
+        const session = await repo.getCapturedSession(
+          { userId: user.id },
+          parent.sessionId
+        );
+        const policy = await context.capture.resolveCapturePolicyForRequest(
+          repo,
+          { userId: user.id },
+          {
+            sessionId: parent.sessionId,
+            threadId: parent.externalSessionId,
+            ...(session?.cwd ? { projectId: session.cwd } : {})
+          }
+        );
+        context.capture.rejectUnsupportedCapturePolicy(policy);
+        if (policy.captureState !== "enabled" || policy.paused)
+          throw Object.assign(
+            new Error("Capture Policy blocks conversation source rewrite"),
+            { statusCode: 409 }
+          );
+      }
       const signer = sourceSignerFactory({
         koedHome: context.config.koedHome,
         sourceGenerationId: input.sourceGenerationId,
@@ -829,7 +875,10 @@ export const registerConversationSourceJournalRoutes = (
             originPublicKey: signer.publicKey,
             sourceCreatedAt: new Date().toISOString(),
             storageProvider: storage.provider,
-            storagePrefix
+            storagePrefix,
+            ...(input.sourceRewrite
+              ? { sourceRewrite: input.sourceRewrite }
+              : {})
           }
         );
     }

@@ -24,6 +24,8 @@ import {
   type CodexManagedConversationSourceContext
 } from "./codex-conversation-source-adapter.js";
 import { ingestCodexTranscriptJournal } from "./codex-transcript-journal.js";
+import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
+import { resolveKoedHome } from "./local-runtime-protocol.js";
 import { MemoryApiError, type MemoryApiClient } from "./index.js";
 import {
   persistRawConversationItems,
@@ -401,9 +403,13 @@ export class CodexManagedConversationSession {
   private terminalError: Error | null = null;
   private started = false;
   private closed = false;
+  private readonly compressedReader: CodexCompressedTranscriptReader;
 
   constructor(private readonly config: CodexManagedConversationConfig) {
     this.commandOpIdStore = new CommandOpIdStore(this.config.memoryClient);
+    this.compressedReader = new CodexCompressedTranscriptReader(
+      resolveKoedHome(config.appServer.env)
+    );
   }
 
   async start(): Promise<CodexManagedConversationStartResult> {
@@ -545,7 +551,7 @@ export class CodexManagedConversationSession {
             )
           : await client.startThread(this.config.appServer, {
               ephemeral: false,
-              historyMode: "legacy",
+              historyMode: "paginated",
               threadSource: "user",
               minimalContext: false
             });
@@ -564,9 +570,22 @@ export class CodexManagedConversationSession {
           );
         }
         if (thread.path !== resumeTarget.transcriptPath) {
-          throw new Error(
-            "Codex app-server resumed a thread with a different rollout path"
-          );
+          const selected = await client.readThread(resumeTarget.threadId);
+          const home = fs.realpathSync(this.codexHome!);
+          const current = fs.realpathSync(thread.path);
+          const relative = path.relative(home, current);
+          if (
+            selected.path !== thread.path ||
+            path.isAbsolute(relative) ||
+            relative.startsWith(`..${path.sep}`) ||
+            !["sessions", "archived_sessions"].includes(
+              relative.split(path.sep)[0] ?? ""
+            ) ||
+            !fs.lstatSync(thread.path).isFile()
+          )
+            throw new Error(
+              "Codex app-server selected an unverified rollout path"
+            );
         }
       }
       if (
@@ -1077,107 +1096,112 @@ export class CodexManagedConversationSession {
         `Managed ${source.threadKind} thread ${source.thread.id} has no persisted rollout path`
       );
     }
-    if (
-      !fs.existsSync(source.thread.path) ||
-      fs.statSync(source.thread.path).size === 0
-    ) {
+    const nativePath = this.persistedTranscriptPath(source.thread.path);
+    if (!fs.existsSync(nativePath) || fs.statSync(nativePath).size === 0) {
       return 0;
     }
-    let persistedCount = 0;
-    while (true) {
-      const result = await ingestCodexTranscriptJournal({
-        client: this.config.memoryClient,
-        sourceSession: {
-          externalSessionId: source.thread.id,
-          sourceRuntime: "codex",
-          captureMethod: "api",
-          model: this.config.appServer.model,
-          cwd: source.thread.cwd ?? this.config.appServer.cwd,
-          idempotencyKey: `managed-codex-session:${source.thread.id}`,
-          sourceHash: sha256({
-            adapter: "codex-app-server-conversation-v1",
-            threadId: source.thread.id,
-            sessionId: source.thread.sessionId,
-            path: source.thread.path,
-            parentThreadId: source.parentThreadId
-          }),
-          metadata: {
-            managedConversation: true,
-            externalThreadId: source.thread.id,
-            sessionTreeId: source.thread.sessionId,
-            threadKind: source.threadKind,
-            ...(source.parentThreadId
-              ? {
-                  parentThreadId: source.parentThreadId,
-                  parentExternalSessionId: source.parentThreadId
+    return this.compressedReader.withMaterialized(
+      nativePath,
+      async (readablePath) => {
+        let persistedCount = 0;
+        while (true) {
+          const result = await ingestCodexTranscriptJournal({
+            client: this.config.memoryClient,
+            sourceSession: {
+              externalSessionId: source.thread.id,
+              sourceRuntime: "codex",
+              captureMethod: "api",
+              model: this.config.appServer.model,
+              cwd: source.thread.cwd ?? this.config.appServer.cwd,
+              idempotencyKey: `managed-codex-session:${source.thread.id}`,
+              sourceHash: sha256({
+                adapter: "codex-app-server-conversation-v1",
+                threadId: source.thread.id,
+                sessionId: source.thread.sessionId,
+                path: source.thread.path,
+                parentThreadId: source.parentThreadId
+              }),
+              metadata: {
+                managedConversation: true,
+                externalThreadId: source.thread.id,
+                sessionTreeId: source.thread.sessionId,
+                threadKind: source.threadKind,
+                ...(source.parentThreadId
+                  ? {
+                      parentThreadId: source.parentThreadId,
+                      parentExternalSessionId: source.parentThreadId
+                    }
+                  : {}),
+                ...(source.parentSessionId
+                  ? { parentSessionId: source.parentSessionId }
+                  : {}),
+                threadSource: source.thread.source,
+                modelProvider: source.thread.modelProvider,
+                cliVersion: source.thread.cliVersion,
+                gitInfo: source.thread.gitInfo,
+                appServerProtocol: {
+                  adapterVersion: "codex-app-server-conversation-v1",
+                  schemaSha256: this.protocol?.schemaSha256
                 }
-              : {}),
-            ...(source.parentSessionId
-              ? { parentSessionId: source.parentSessionId }
-              : {}),
-            threadSource: source.thread.source,
-            modelProvider: source.thread.modelProvider,
-            cliVersion: source.thread.cliVersion,
-            gitInfo: source.thread.gitInfo,
-            appServerProtocol: {
-              adapterVersion: "codex-app-server-conversation-v1",
-              schemaSha256: this.protocol?.schemaSha256
+              }
+            },
+            sourceSessionId: source.thread.id,
+            transcriptPath: readablePath,
+            redactedSourceLabel: path.basename(nativePath),
+            context: {
+              threadKind: source.threadKind,
+              transcriptSessionId: source.thread.id,
+              parentThreadId: source.parentThreadId,
+              transcriptMetadata: {
+                cwd: source.thread.cwd ?? this.config.appServer.cwd,
+                ...(source.parentThreadId
+                  ? { parentThreadId: source.parentThreadId }
+                  : {}),
+                ...(source.parentSessionId
+                  ? { parentSessionId: source.parentSessionId }
+                  : {})
+              }
+            },
+            maxBytesPerBatch: this.config.transcriptReadMaxBytes ?? 1_000_000,
+            liveStartOffset: 0,
+            liveStartLine: 0,
+            preferStableResponseItems: true,
+            projectPersisted: async (persisted, items) => {
+              const pageTerminalTurnIds = [
+                ...new Set(
+                  items
+                    .filter((item) => isTerminalItem(item))
+                    .map(itemTurnId)
+                    .filter((turnId): turnId is string => turnId !== null)
+                )
+              ];
+              this.rememberTerminalItems(items, source.sessionId);
+              if (releaseTerminalTurns) {
+                for (const turnId of pageTerminalTurnIds) {
+                  await this.releaseTurnProjection(turnId, source.sessionId);
+                }
+              }
+              await projectRawConversationItems(
+                this.config.memoryClient,
+                persisted.filter((item) => !isTerminalItem(item)),
+                `managed Codex transcript ${source.thread.id}`
+              );
+              return releaseTerminalTurns || pageTerminalTurnIds.length === 0;
             }
+          });
+          persistedCount += result.itemsPersisted;
+          if (
+            result.canonicalCursorOffset >=
+              result.artifact.providerCursorOffset ||
+            !result.cursorAdvanced ||
+            result.recordsConsumed === 0
+          ) {
+            break;
           }
-        },
-        sourceSessionId: source.thread.id,
-        transcriptPath: source.thread.path,
-        context: {
-          threadKind: source.threadKind,
-          transcriptSessionId: source.thread.id,
-          parentThreadId: source.parentThreadId,
-          transcriptMetadata: {
-            cwd: source.thread.cwd ?? this.config.appServer.cwd,
-            ...(source.parentThreadId
-              ? { parentThreadId: source.parentThreadId }
-              : {}),
-            ...(source.parentSessionId
-              ? { parentSessionId: source.parentSessionId }
-              : {})
-          }
-        },
-        maxBytesPerBatch: this.config.transcriptReadMaxBytes ?? 1_000_000,
-        liveStartOffset: 0,
-        liveStartLine: 0,
-        preferStableResponseItems: true,
-        projectPersisted: async (persisted, items) => {
-          const pageTerminalTurnIds = [
-            ...new Set(
-              items
-                .filter((item) => isTerminalItem(item))
-                .map(itemTurnId)
-                .filter((turnId): turnId is string => turnId !== null)
-            )
-          ];
-          this.rememberTerminalItems(items, source.sessionId);
-          if (releaseTerminalTurns) {
-            for (const turnId of pageTerminalTurnIds) {
-              await this.releaseTurnProjection(turnId, source.sessionId);
-            }
-          }
-          await projectRawConversationItems(
-            this.config.memoryClient,
-            persisted.filter((item) => !isTerminalItem(item)),
-            `managed Codex transcript ${source.thread.id}`
-          );
-          return releaseTerminalTurns || pageTerminalTurnIds.length === 0;
         }
-      });
-      persistedCount += result.itemsPersisted;
-      if (
-        result.canonicalCursorOffset >= result.artifact.providerCursorOffset ||
-        !result.cursorAdvanced ||
-        result.recordsConsumed === 0
-      ) {
-        break;
+        return persistedCount;
       }
-    }
-    return persistedCount;
+    );
   }
 
   close(): void {
@@ -1222,7 +1246,7 @@ export class CodexManagedConversationSession {
     if (
       this.thread?.path &&
       this.sessionId &&
-      fs.existsSync(this.thread.path)
+      fs.existsSync(this.persistedTranscriptPath(this.thread.path))
     ) {
       try {
         await this.reconcileTranscriptInternal(true);
@@ -1244,10 +1268,12 @@ export class CodexManagedConversationSession {
       !closeError &&
       this.thread?.path &&
       this.sessionId &&
-      fs.existsSync(this.thread.path)
+      fs.existsSync(this.persistedTranscriptPath(this.thread.path))
     ) {
       try {
-        await this.waitForStableTranscript(this.thread.path);
+        await this.waitForStableTranscript(
+          this.persistedTranscriptPath(this.thread.path)
+        );
         await this.reconcileTranscriptInternal(true);
       } catch (error) {
         reconcileError = error;
@@ -1255,6 +1281,7 @@ export class CodexManagedConversationSession {
     }
     const error =
       this.terminalError ?? closeError ?? handlerError ?? reconcileError;
+    await this.compressedReader.close();
     if (error) {
       throw error;
     }
@@ -1332,6 +1359,13 @@ export class CodexManagedConversationSession {
       });
     }
     return sealed;
+  }
+
+  private persistedTranscriptPath(transcriptPath: string): string {
+    return !fs.existsSync(transcriptPath) &&
+      fs.existsSync(`${transcriptPath}.zst`)
+      ? `${transcriptPath}.zst`
+      : transcriptPath;
   }
 
   private async waitForStableTranscript(transcriptPath: string): Promise<void> {

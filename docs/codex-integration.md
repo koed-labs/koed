@@ -371,6 +371,10 @@ not a macOS-style or Windows-only path.
 
 ## Verify
 
+See [Codex history capture](codex-history-capture.md) for legacy/paginated
+decoding, compressed-source limits, migration boundaries and replication
+compatibility.
+
 Verify the local Capture Hook from the checkout:
 
 ```bash

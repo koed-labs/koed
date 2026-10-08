@@ -293,7 +293,12 @@ would classify post-selection bytes as history. This closes the old gap where
 an unchanged baseline source existed only in watcher-local state. Local source
 paths remain transient discovery inputs and do not enter the coordinator's
 durable state or canonical identity. Unselected baseline sources retain the
-normal deferred behavior and register only if they later grow.
+normal deferred behavior and register only if they later grow. The Codex
+watcher also keeps each deferred frontier per Conversation, so growth still
+registers from that frontier after Codex replaces a plain transcript with its
+compressed sibling or the reverse. It adopts the frontier only when a bounded
+digest of the decoded bytes before it still matches; otherwise the replacement
+is deferred again.
 
 A file created after activation uses a zero frontier and is live from its first
 complete record. Post-frontier ranges, including restart recovery, advance the
