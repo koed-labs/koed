@@ -1,5 +1,11 @@
 # Running Koed
 
+## CLI help
+
+`koed --help`, command help, and Personal Sync recovery help load without
+initializing service-start modules. Commands load the existing implementation
+when dispatched; help does not provision runtimes, models, or components.
+
 ## Command migration
 
 The Server workspace package is now `@koed-labs/server`. Use `koed` instead of
