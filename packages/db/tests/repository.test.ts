@@ -32397,7 +32397,7 @@ describeDb("memory repository visibility", () => {
     expect(mismatchedRetry.id).toBe(first.id);
   });
 
-  it("returns a conflict for duplicate keys outside caller visibility", async () => {
+  it("deduplicates capture within each owner while preserving independent private histories", async () => {
     const alice = await repo.createUser({
       email: `alice-hidden-duplicate-${randomUUID()}@example.com`
     });
@@ -32405,7 +32405,8 @@ describeDb("memory repository visibility", () => {
       email: `bob-hidden-duplicate-${randomUUID()}@example.com`
     });
     const sourceHash = `source-hash-${randomUUID()}`;
-    await repo.createMemoryEvent(
+    const idempotencyKey = `idempotency-${randomUUID()}`;
+    const first = await repo.createMemoryEvent(
       { userId: alice.id },
       {
         projectId: "workspace-hidden-duplicate",
@@ -32414,28 +32415,49 @@ describeDb("memory repository visibility", () => {
         rawEventType: "user_prompt",
         visibility: "personal",
         content: "Hidden duplicate source",
+        idempotencyKey,
         sourceHash
       }
     );
 
-    await expect(
-      repo.createMemoryEvent(
-        { userId: bob.id },
+    const second = await repo.createMemoryEvent(
+      { userId: bob.id },
+      {
+        projectId: "workspace-hidden-duplicate",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Hidden duplicate retry",
+        idempotencyKey,
+        sourceHash
+      }
+    );
+    expect(second.id).not.toBe(first.id);
+    for (const [owner, expected] of [
+      [alice.id, first],
+      [bob.id, second]
+    ] as const) {
+      const replay = await repo.createMemoryEvent(
+        { userId: owner },
         {
           projectId: "workspace-hidden-duplicate",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_prompt",
           visibility: "personal",
-          content: "Hidden duplicate retry",
+          content: expected.content,
+          idempotencyKey,
           sourceHash
         }
-      )
-    ).rejects.toMatchObject({
-      message:
-        "Duplicate memory event conflicts with memory outside caller visibility",
-      statusCode: 409
-    });
+      );
+      expect(replay.id).toBe(expected.id);
+      const visible = await repo.listLcmGraphEvents(
+        { userId: owner },
+        { query: "Hidden duplicate", includeInvalidated: false }
+      );
+      expect(visible.map((event) => event.id)).toEqual([expected.id]);
+    }
   });
 
   it("handles concurrent duplicate capture submissions", async () => {

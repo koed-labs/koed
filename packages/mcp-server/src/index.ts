@@ -636,6 +636,7 @@ export class MemoryApiClient {
       expectedParentClosureHash: string;
       sourceGenerationId: string;
       originKeyId: string;
+      sourceRewrite?: import("@koed/shared").ConversationSourceRewriteFrontier;
     }
   ): Promise<Record<string, unknown>> {
     return this.request(

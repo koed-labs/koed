@@ -22,6 +22,67 @@ const classified = (
   }));
 
 describe("Codex Team Conversation Source privacy", () => {
+  it("preserves paginated message identity while masking its visible text", () => {
+    const record = {
+      type: "event_msg",
+      ordinal: 2,
+      payload: {
+        type: "item_completed",
+        thread_id: "00000000-0000-4000-8000-000000000001",
+        turn_id: "turn-1",
+        item: {
+          type: "UserMessage",
+          id: "item-1",
+          content: [{ type: "text", text: "Contact alice@example.test" }]
+        }
+      }
+    };
+    const prepared = prepareCodexTeamSourceRecord({
+      record,
+      decodedSource: JSON.stringify(record)
+    });
+    expect(prepared.disposition).toBe("include");
+    if (prepared.disposition !== "include") return;
+    expect(prepared.fields).toEqual([
+      {
+        path: "/payload/item/content/0/text",
+        text: "Contact alice@example.test"
+      }
+    ]);
+    expect(
+      reconstructCodexTeamSourceRecord({
+        prepared,
+        fields: classified(prepared.fields, () => "Contact [PRIVATE_EMAIL]")
+      })
+    ).toEqual({
+      ...record,
+      payload: {
+        ...record.payload,
+        item: {
+          ...record.payload.item,
+          content: [{ type: "text", text: "Contact [PRIVATE_EMAIL]" }]
+        }
+      }
+    });
+  });
+  it("excludes completed private reasoning from shared source preparation", () => {
+    expect(
+      prepareCodexTeamSourceRecord({
+        record: {
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "Reasoning",
+              id: "item-1",
+              summary_text: ["Visible summary"],
+              raw_content: ["Private model reasoning"]
+            }
+          }
+        }
+      })
+    ).toEqual({ disposition: "drop", reason: "hidden_reasoning" });
+  });
   it("classifies free-form message text and preserves protocol literals", () => {
     const record = {
       timestamp: "2026-08-12T12:00:00.000Z",

@@ -295,6 +295,13 @@
       "when": 1789477046920,
       "tag": "0041_personal_session_checkpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791363455185,
+      "tag": "0042_owner_scoped_projection_identity",
+      "breakpoints": true
     }
   ]
 }

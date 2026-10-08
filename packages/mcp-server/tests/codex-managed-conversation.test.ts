@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { CodexAppServerClient } from "../src/codex-app-server-runner.js";
@@ -30,6 +31,7 @@ const protocolRequestMethods = [
   "initialize",
   "thread/start",
   "thread/resume",
+  "thread/read",
   "thread/fork",
   "turn/start",
   "turn/interrupt"
@@ -94,6 +96,7 @@ const writeManagedFakeAppServer = (
     lifecyclePath?: string;
     pathOnlyInThreadStarted?: boolean;
     primaryParentThreadId?: string;
+    selectedReadPath?: string;
     providerRequestKind?: "command_approval" | "user_input";
   } = {}
 ): string => {
@@ -267,7 +270,7 @@ reader.on("line", (line) => {
   }
   if (message.method === "initialized") return;
   if (message.method === "thread/start") {
-    if (message.params.ephemeral !== false || message.params.historyMode !== "legacy" || "persistExtendedHistory" in message.params || "config" in message.params) process.exit(4);
+    if (message.params.ephemeral !== false || !["legacy", "paginated"].includes(message.params.historyMode) || "persistExtendedHistory" in message.params || "config" in message.params) process.exit(4);
     for (let index = 0; index < (options.preStartEventCount ?? 0); index += 1) {
       send({ method: "item/completed", params: { threadId, turnId: "prestart-turn", completedAtMs: Date.now(), item: { id: "prestart-" + index, type: "agentMessage", text: "prestart" } } });
     }
@@ -284,9 +287,18 @@ reader.on("line", (line) => {
     send({ id: message.id, result: { thread: { id: message.params.threadId, sessionId: "session-tree-1", path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     return;
   }
+  if (message.method === "thread/read") {
+    if (message.params.includeTurns !== false) process.exit(5);
+    send({ id: message.id, result: { thread: { id: message.params.threadId, path: options.selectedReadPath ?? transcriptPath, turns: [] } } });
+    return;
+  }
   if (message.method === "thread/fork") {
     const forkedThreadId = "managed-thread-fork-1";
-    if (fs.existsSync(message.params.path)) fs.copyFileSync(message.params.path, childTranscriptPath);
+    if (fs.existsSync(message.params.path)) {
+      const records = fs.readFileSync(message.params.path, "utf8").trim().split("\\n").map((line) => JSON.parse(line));
+      for (const record of records) if (record.type === "session_meta") record.payload = { ...record.payload, id: forkedThreadId, forked_from_id: message.params.threadId };
+      fs.writeFileSync(childTranscriptPath, records.map((record) => JSON.stringify(record)).join("\\n") + "\\n");
+    }
     else fs.writeFileSync(childTranscriptPath, "");
     send({ method: "thread/started", params: { thread: { id: forkedThreadId, sessionId: "session-tree-fork-1", forkedFromId: message.params.threadId, path: childTranscriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     send({ id: message.id, result: { thread: { id: forkedThreadId, sessionId: "session-tree-fork-1", forkedFromId: message.params.threadId, path: childTranscriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
@@ -1999,93 +2011,104 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
-  it("flushes handlers and reconciles terminal JSONL during graceful close", async () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-managed-graceful-close-")
-    );
-    const transcriptPath = path.join(directory, "rollout.jsonl");
-    const lifecyclePath = path.join(directory, "lifecycle.log");
-    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
-    const memoryClient = new FakeMemoryClient();
-    const session = new CodexManagedConversationSession(
-      configFor(
-        memoryClient,
-        writeManagedFakeAppServer(directory, transcriptPath, {
-          idleNotificationDelayMs: 20,
-          lifecyclePath
-        }),
-        directory,
-        undefined,
-        { closeGraceMs: 200 }
-      )
-    );
-
-    try {
-      await session.start();
-      const persistAttempts = memoryClient.persistAttempts;
-      memoryClient.delayNextPersist(60);
-      fs.appendFileSync(
-        transcriptPath,
-        [
-          {
-            timestamp: "2026-07-11T11:59:59.000Z",
-            type: "session_meta",
-            payload: {
-              id: "managed-thread-1",
-              cwd: directory,
-              timestamp: "2026-07-11T11:59:59.000Z"
-            }
-          },
-          {
-            timestamp: "2026-07-11T12:00:00.000Z",
-            type: "event_msg",
-            payload: { type: "task_started", turn_id: "close-turn" }
-          },
-          {
-            timestamp: "2026-07-11T12:00:01.000Z",
-            type: "response_item",
-            payload: {
-              id: "close-message",
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "Close answer" }]
-            }
-          },
-          {
-            timestamp: "2026-07-11T12:00:02.000Z",
-            type: "event_msg",
-            payload: { type: "task_complete", turn_id: "close-turn" }
-          }
-        ]
-          .map((record) => JSON.stringify(record))
-          .join("\n") + "\n"
+  it.each([false, true])(
+    "flushes handlers and reconciles terminal JSONL during graceful close, compressed=%s",
+    async (compressed) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-managed-graceful-close-")
       );
-      await waitFor(() => memoryClient.persistAttempts > persistAttempts);
-      await session.closeAndWait();
+      const transcriptPath = path.join(directory, "rollout.jsonl");
+      const lifecyclePath = path.join(directory, "lifecycle.log");
+      fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+      const memoryClient = new FakeMemoryClient();
+      const session = new CodexManagedConversationSession(
+        configFor(
+          memoryClient,
+          writeManagedFakeAppServer(directory, transcriptPath, {
+            idleNotificationDelayMs: 20,
+            lifecyclePath
+          }),
+          directory,
+          undefined,
+          { closeGraceMs: 200 }
+        )
+      );
 
-      expect(
-        memoryClient.observations.some(
-          (item) => item.rawText === "Idle durable event"
-        )
-      ).toBe(true);
-      expect(
-        memoryClient.observations.some(
-          (item) => item.rawText === "Close answer"
-        )
-      ).toBe(true);
-      expect(
-        memoryClient.operations.some(
-          (operation) =>
-            operation.kind === "release" &&
-            operation.externalTurnId === "close-turn"
-        )
-      ).toBe(true);
-      expect(fs.readFileSync(lifecyclePath, "utf8")).toContain("signal");
-    } finally {
-      await session.closeAndWait().catch(() => undefined);
-      fs.rmSync(directory, { recursive: true, force: true });
+      try {
+        await session.start();
+        const persistAttempts = memoryClient.persistAttempts;
+        memoryClient.delayNextPersist(60);
+        fs.appendFileSync(
+          transcriptPath,
+          [
+            {
+              timestamp: "2026-07-11T11:59:59.000Z",
+              type: "session_meta",
+              payload: {
+                id: "managed-thread-1",
+                cwd: directory,
+                timestamp: "2026-07-11T11:59:59.000Z"
+              }
+            },
+            {
+              timestamp: "2026-07-11T12:00:00.000Z",
+              type: "event_msg",
+              payload: { type: "task_started", turn_id: "close-turn" }
+            },
+            {
+              timestamp: "2026-07-11T12:00:01.000Z",
+              type: "response_item",
+              payload: {
+                id: "close-message",
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "Close answer" }]
+              }
+            },
+            {
+              timestamp: "2026-07-11T12:00:02.000Z",
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "close-turn" }
+            }
+          ]
+            .map((record) => JSON.stringify(record))
+            .join("\n") + "\n"
+        );
+        if (compressed) {
+          fs.writeFileSync(
+            `${transcriptPath}.zst`,
+            zstdCompressSync(fs.readFileSync(transcriptPath)),
+            { mode: 0o600 }
+          );
+          fs.unlinkSync(transcriptPath);
+        }
+        await waitFor(() => memoryClient.persistAttempts > persistAttempts);
+        await session.closeAndWait();
+
+        expect(
+          memoryClient.observations.some(
+            (item) => item.rawText === "Idle durable event"
+          )
+        ).toBe(true);
+        expect(
+          memoryClient.observations.some(
+            (item) => item.rawText === "Close answer"
+          )
+        ).toBe(true);
+        expect(
+          memoryClient.operations.some(
+            (operation) =>
+              operation.kind === "release" &&
+              operation.externalTurnId === "close-turn"
+          )
+        ).toBe(true);
+        expect(fs.readFileSync(lifecyclePath, "utf8")).toContain("signal");
+      } finally {
+        await session.closeAndWait().catch(() => undefined);
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("resumes an existing Koed session and recovers missed completion from JSONL", async () => {
     const directory = fs.mkdtempSync(
@@ -2294,6 +2317,78 @@ describe("Codex managed conversation coordinator", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it.each(["verified", "outside-home", "conflicting-selection"] as const)(
+    "resumes an existing checkpoint after a %s path change",
+    async (scenario) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-managed-path-change-")
+      );
+      const originalPath = path.join(directory, "original.jsonl");
+      fs.writeFileSync(originalPath, "", { mode: 0o600 });
+      const memoryClient = new FakeMemoryClient();
+      const first = new CodexManagedConversationSession(
+        configFor(
+          memoryClient,
+          writeManagedFakeAppServer(directory, originalPath),
+          directory
+        )
+      );
+      let resumed: CodexManagedConversationSession | undefined;
+      try {
+        const started = await first.start();
+        await first.runTurn("Path change prompt", 2_000);
+        await first.closeAndWait();
+        const observations = memoryClient.observations.filter(
+          (item) => item.sourceTransport === "transcript"
+        ).length;
+        const currentPath = path.join(
+          scenario === "outside-home"
+            ? directory
+            : path.join(started.codexHome, "sessions"),
+          "replacement.jsonl"
+        );
+        fs.mkdirSync(path.dirname(currentPath), { recursive: true });
+        fs.copyFileSync(originalPath, currentPath);
+        resumed = new CodexManagedConversationSession(
+          configFor(
+            memoryClient,
+            writeManagedFakeAppServer(directory, currentPath, {
+              ...(scenario === "conflicting-selection"
+                ? { selectedReadPath: originalPath }
+                : {})
+            }),
+            directory,
+            {
+              threadId: started.thread.id,
+              sessionId: started.sessionId,
+              transcriptPath: originalPath,
+              codexHome: started.codexHome
+            }
+          )
+        );
+        if (scenario === "verified") {
+          await expect(resumed.start()).resolves.toMatchObject({
+            sessionId: started.sessionId,
+            transcriptPath: currentPath
+          });
+          expect(
+            memoryClient.observations.filter(
+              (item) => item.sourceTransport === "transcript"
+            )
+          ).toHaveLength(observations);
+        } else {
+          await expect(resumed.start()).rejects.toThrow(
+            "Codex app-server selected an unverified rollout path"
+          );
+        }
+      } finally {
+        await resumed?.closeAndWait().catch(() => undefined);
+        await first.closeAndWait().catch(() => undefined);
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("replays terminal JSONL after an interrupted hold release before checkpoint commit", async () => {
     const directory = fs.mkdtempSync(

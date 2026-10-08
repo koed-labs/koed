@@ -5,6 +5,7 @@ import {
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceRootDigest,
+  conversationSourceRewriteGenerationId,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   generateConversationSourceReplicationOriginKeyPair,
   signConversationSourceClosureManifest,
@@ -280,6 +281,130 @@ describeDb("journal-backed historical import repository", () => {
   afterAll(async () => {
     await pool?.end();
   });
+
+  it.each([0, 64])(
+    "creates a rewrite generation at admitted byte $0 without replacing its signed predecessor or Captured Session",
+    async (journalStartOffset) => {
+      const repo = createMemorySourceRepository(pool);
+      const owner = await repo.createUser({
+        email: `rewrite-${randomUUID()}@example.com`
+      });
+      const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+      const actor = { userId: owner.id };
+      await repo.advanceConversationSourceConsumerCursor(actor, {
+        artifactId: fixture.artifactId,
+        consumerKind: "canonical_live",
+        expectedSourceOffset: fixture.frontier,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest
+      });
+      const parent = (
+        await repo.finalizeConversationSourceArtifact(actor, {
+          artifactId: fixture.artifactId,
+          signedClosure: signConversationSourceClosureManifest(
+            {
+              protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+              sourceComponentSchemaVersion: 1,
+              sourceComponentId: fixture.artifact.sourceComponentId,
+              sourceComponentRole: fixture.artifact.sourceComponentRole,
+              parentSourceComponentId: fixture.artifact.parentSourceComponentId,
+              contentFraming: fixture.artifact.contentFraming,
+              logicalSourceId: fixture.artifact.logicalSourceId,
+              sourceGenerationId: fixture.artifact.sourceGenerationId,
+              originKeyId: fixture.artifact.originKeyId,
+              segmentCount: 1,
+              endByteCursor: fixture.artifact.providerCursorOffset,
+              endItemCursor: fixture.artifact.providerCursorLine,
+              chainHeadDigest: fixture.segmentContentDigest,
+              sourceRootDigest: calculateConversationSourceRootDigest([
+                fixture.segmentContentDigest
+              ]),
+              sourceCreatedAt: fixture.artifact.sourceCreatedAt,
+              closedAt: new Date().toISOString(),
+              priorGenerationClosure: null
+            },
+            fixture.keys.privateKey
+          )
+        })
+      ).artifact;
+      const keys = generateConversationSourceReplicationOriginKeyPair();
+      const sourceRewrite = {
+        kind: "codex_legacy_to_paginated" as const,
+        journalStartOffset,
+        journalStartLine: journalStartOffset ? 1 : 0,
+        liveStartOffset: 256,
+        liveStartLine: 5,
+        prefixDigest: digest("verified rewritten prefix"),
+        currentSourceLength: 256
+      };
+      const input = {
+        parentArtifactId: parent.id,
+        expectedParentClosureHash: parent.closureHash!,
+        sourceGenerationId: conversationSourceRewriteGenerationId(
+          parent.sourceGenerationId,
+          sourceRewrite.prefixDigest
+        ),
+        originDeploymentId: randomUUID(),
+        originDeviceId: randomUUID(),
+        originKeyId: keys.originKeyId,
+        originPublicKey: keys.publicKeyBase64url,
+        sourceCreatedAt: new Date().toISOString(),
+        storageProvider: "test",
+        storagePrefix: `rewrite-${randomUUID()}`,
+        sourceRewrite
+      };
+      const child = (
+        await repo.createConversationSourceSuccessorGeneration(actor, input)
+      ).artifact;
+      expect(child).toMatchObject({
+        sessionId: parent.sessionId,
+        logicalSourceId: parent.logicalSourceId,
+        sourceAdapterVersion: "codex-transcript-v2",
+        journalStartOffset,
+        providerCursorOffset: journalStartOffset,
+        liveStartOffset: 256,
+        liveStartLine: 5,
+        priorGenerationClosure: {
+          sourceGenerationId: parent.sourceGenerationId,
+          contentDigest: parent.closureHash
+        }
+      });
+      expect(
+        await repo.getConversationSourceArtifact(actor, parent.id)
+      ).toMatchObject({
+        lifecycle: "finalized",
+        closureHash: parent.closureHash
+      });
+      expect(
+        (
+          await repo.getConversationSourceArtifactByProviderIdentity(actor, {
+            sourceKind: "codex",
+            externalSessionId: parent.externalSessionId
+          })
+        )?.id
+      ).toBe(child.id);
+      expect(
+        (await repo.createConversationSourceSuccessorGeneration(actor, input))
+          .replayed
+      ).toBe(true);
+      await expect(
+        repo.createConversationSourceSuccessorGeneration(actor, {
+          ...input,
+          sourceGenerationId: randomUUID()
+        })
+      ).rejects.toMatchObject({ code: "conversation_source_rewrite_invalid" });
+      await expect(
+        repo.createConversationSourceSuccessorGeneration(actor, {
+          ...input,
+          sourceRewrite: { ...sourceRewrite, liveStartOffset: 255 }
+        })
+      ).rejects.toMatchObject({
+        code: "conversation_source_successor_conflict"
+      });
+    }
+  );
 
   it("creates, reads, and touches a hosted Personal source authorization", async () => {
     const repository = createMemorySourceRepository(pool);

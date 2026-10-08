@@ -1642,10 +1642,10 @@ export const messages = pgTable(
       .on(table.sessionId, table.transcriptItemId)
       .where(sql`${table.transcriptItemId} is not null`),
     uniqueIndex("messages_idempotency_key_unique")
-      .on(table.idempotencyKey)
+      .on(table.ownerUserId, table.visibility, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),
     uniqueIndex("messages_source_hash_unique")
-      .on(table.sourceHash)
+      .on(table.ownerUserId, table.visibility, table.sourceHash)
       .where(sql`${table.sourceHash} is not null`),
     check(
       "messages_role_check",
@@ -1709,10 +1709,10 @@ export const toolEvents = pgTable(
       .on(table.sessionId, table.transcriptItemId)
       .where(sql`${table.transcriptItemId} is not null`),
     uniqueIndex("tool_events_idempotency_key_unique")
-      .on(table.idempotencyKey)
+      .on(table.ownerUserId, table.visibility, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),
     uniqueIndex("tool_events_source_hash_unique")
-      .on(table.sourceHash)
+      .on(table.ownerUserId, table.visibility, table.sourceHash)
       .where(sql`${table.sourceHash} is not null`),
     check(
       "tool_events_personal_owner_check",
@@ -1789,10 +1789,10 @@ export const memoryEvents = pgTable(
   },
   (table) => [
     uniqueIndex("memory_events_idempotency_key_unique")
-      .on(table.idempotencyKey)
+      .on(table.ownerUserId, table.visibility, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),
     uniqueIndex("memory_events_source_hash_unique")
-      .on(table.sourceHash)
+      .on(table.ownerUserId, table.visibility, table.sourceHash)
       .where(sql`${table.sourceHash} is not null`),
     index("memory_events_personal_graph_idx")
       .on(table.ownerUserId, table.createdAt.desc())
