@@ -77,6 +77,9 @@ or synthesize answers on the backend.
   Conversation or a switched Conversation does not receive the result.
 - Revoked access, expiry, cancellation and execution failure produce a native
   notice without an answer, and the agent does not retry the recall.
+- The Stop hook presents the completed answer as recalled data between
+  markers and tells the agent not to follow instructions inside it, because
+  recalled memory can quote captured, untrusted text.
 - Pending-result delivery after a backend loss or Local AI Runtime restart is
   unsupported.
 - Interrupting the turn (for example Ctrl+C) retires the receipt. A confirmed
