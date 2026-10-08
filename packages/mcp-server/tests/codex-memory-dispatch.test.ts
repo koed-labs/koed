@@ -146,7 +146,12 @@ describe("maintained MCP dispatch deferred recall boundary", () => {
     const directory = path.join(home, "codex-memory-delivery");
     mkdirSync(directory, { mode: 0o755 });
     chmodSync(directory, 0o755);
-    const callTool = vi.fn(async () => ({ markdown: "blocking" }));
+    const callTool = vi.fn(
+      async (...args: Parameters<LocalAiRuntimeClient["callTool"]>) => {
+        void args;
+        return { markdown: "blocking" };
+      }
+    );
     const start = vi.fn();
     const [a, b] = InMemoryTransport.createLinkedPair();
     const server = serveStdio(
