@@ -530,6 +530,11 @@ visible.
 
 ## Deterministic Smoke
 
+The smoke check explicitly requests `response_detail: "with_evidence"` from
+Memory Answer so it can validate the recalled sources for each condition.
+Ordinary default recall returns readable completion text without structured
+evidence or diagnostics.
+
 After completing the common PostgreSQL setup above, create a disposable output
 directory and run the free orchestration check:
 
