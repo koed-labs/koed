@@ -1,5 +1,85 @@
 # Koed
 
+## 0.9.0
+
+### Minor Changes
+
+- 9565818: AI Clients can continue to work while a Personal Memory Answer runs and receive
+  the result in the same Conversation without another prompt. Pi and Codex do
+  this by default; Codex can opt out with
+  `koed-server setup codex --blocking-recall`. Claude Code turns it on with
+  `koed-server setup claude --background-recall`, because that setting applies
+  to every MCP Server in Claude Code.
+- c618bcf: Add AI Client-aware slash-command suggestions to Chat and Project composers. Discover file-backed commands and skills for the selected client, showing global entries without a Project and adding Project-scoped entries when a Project is selected.
+- ff5c7e1: Add capability-based Personal Device pairing with one-time invitation links,
+  automatic enrollment, and no human-facing short-code or ordinary approval step.
+  Preserve private/Tailscale HTTP transport, encrypted local PDS storage, and
+  stdin/FD-only input for headless joining devices. Desktop paste/scan remains
+  preferred; registered OS protocol activation has platform-specific argv caveats.
+- fc263da: Support legacy and paginated Codex histories, including bounded Zstandard
+  decoding and verified native migration and revert source generations. Preserve
+  admitted evidence, Capture Policy, conversation identity and encrypted source
+  replication without duplicating previously processed Memory. Ambiguous rewrites
+  and missing ancestry remain pending rather than silently advancing capture.
+
+  Scope Projection replay identities to each User and visibility boundary so
+  independent Users can capture the same native history without losing data.
+
+- ff5c7e1: Let a joining headless or Electron installation create a device request link,
+  then review and accept it in the existing Authority-hosting Electron app.
+  Add `koed-server pair`, shared supervisor-owned request state, and native
+  Personal startup defaults without required environment flags. Remove the
+  mandatory recovery-file and recovery-code steps from device-group setup.
+  LAN or Tailscale connectivity is required; an internet pairing relay is not
+  included. Existing invitation redemption remains available for compatibility.
+
+  Allow the empty device overview before Authority configuration and identify the
+  local member as This device, with an explicit message when no other devices have
+  joined.
+
+  Remember reviewed device names and allow installation-local nicknames in Devices
+  and device selectors. Simplify the AI Client setup copy and CLI help, and let
+  Personal Sync status authenticate automatically on local SSH installations.
+
+  Show a computer icon and local device nickname on received sessions, and use
+  consistent computer icons in Devices instead of alternating laptop/phone icons.
+
+  Automatically publish completed-turn checkpoints from supported AI Client
+  capture, keeping source conversations resumable and received sessions read-only.
+  Preserve source client identity and append later checkpoints to the same local
+  session. Show pairing separately from local sync progress. Both devices need
+  this checkpoint-capable version; existing closed-session packages remain valid.
+
+  Refuse to mint a new PDS Authority key over undetected legacy pre-upgrade
+  secret state, instead of silently orphaning an existing Personal Device Group;
+  Personal Device Sync is disabled with a warning until the installation is
+  explicitly reset. Add `KOED_PDS_REQUEST_HOST` and `KOED_PDS_LAN_HOST` to pin
+  the pairing/request listener to one explicit private interface on devices
+  reachable over more than one (for example LAN plus Tailscale), where automatic
+  selection is not reachability-aware.
+
+- 7162f7c: AI Clients can discover authorized Team Workspaces through `memory_workspaces`
+  and recall shared memory using the existing Koed enrollment. MCP can resolve
+  an explicitly selected Workspace's backend without manual backend configuration.
+  Desktop and headless `koed-server` use the same credential custody. Personal
+  Memory remains the default, and ambiguous or unavailable Team routes fail closed.
+
+  MCP detects support for the new Team features before calling a running runtime.
+  Workspace matching accepts equivalent UUIDs with different letter case.
+
+  Malformed Memory Answer worker output is reported as a validation failure
+  instead of a resource-limit message when retries are exhausted.
+  Saved structured diagnostics report the same validation failure.
+
+### Patch Changes
+
+- 39dd6db: Treat Claude Code setup and repair as a reinstall: replace any existing
+  user-scoped MCP Server under the configured Koed name. Correctly capture pi runtime in onboarding flow.
+- c618bcf: Include bundled MCP prompt assets in standalone API Docker images and verify deployed route imports during the image build. Fix slash-command autocomplete keyboard acceptance while preserving newline insertion, focus navigation, IME composition, and normal submission when no suggestion is selectable.
+- c618bcf: Fix Claude slash suggestions dropping synced skills with long storage paths. Preserve the CLI secure-storage identity across managed Conversation config canonicalization and SDK SessionStore resume relocation. Add regression coverage for version-qualified Claude model labels without changing model identifiers.
+
+  Bound file-backed slash discovery by visited entries, including non-command files and directories, and cancel all root scans when the adapter deadline expires.
+
 ## 0.8.1
 
 ### Patch Changes
