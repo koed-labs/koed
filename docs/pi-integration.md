@@ -260,3 +260,19 @@ pnpm pi:remove
 ```
 
 Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active profile no longer references the package before deleting the Koed-owned directory. A failed or unverifiable removal preserves the package and reports an error. Unrelated Pi configuration is preserved. Captured Personal Memory remains in Koed until removed through normal Memory controls.
+
+### Memory Answer worker tools and validation
+
+Pi Memory Answer workers run separately from interactive Pi Conversations. Each
+worker receives scoped Koed scan, search, and expansion tools plus
+`koed_structured_result`. A private loopback bridge forwards retrieval to the
+Local AI Runtime's existing handlers, preserving the selected Personal or Team
+scope and request budgets. The bridge uses an ephemeral credential retained only
+in the worker's private temporary configuration and closes with the worker.
+
+The result tool validates answers before acknowledging completion. Rejected
+answers return corrective feedback to Pi in the same turn; subsequent worker
+attempts also receive bounded validation feedback within the prompt-token budget.
+An `insufficient` answer may retain genuinely relevant partial evidence, with
+`relevant_memory_found` matching whether evidence was selected, and must identify
+what remains missing. Retrieval failure does not establish absence of Memory.
