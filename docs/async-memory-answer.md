@@ -171,6 +171,16 @@ creates a new invocation.
 
 ## Authorization and diagnostics
 
+`memory_answer` defaults to `response_detail=answer_only` and
+`include_evidence=false`, including for implementation and debugging questions.
+Blocking and deferred delivery use the same compact result: answer Markdown,
+public worker status, and an evidence-count/retrieval-mode summary. Worker token
+usage, execution records, raw errors, and retrieval traces remain in internal
+question history. `with_citations` adds source metadata; `with_evidence` or the
+legacy `include_evidence=true` adds selected evidence bodies and the structured
+answer. These detail levels are explicit caller choices. Team routing errors
+return a message and routing status without an Evidence Bundle.
+
 Task event streams resolve ownership before writing success headers. Scheduler
 notifications only wake an observer; each event and keepalive uses another
 authorized read. Expiry ends observation, resumed versions do not regress, and
