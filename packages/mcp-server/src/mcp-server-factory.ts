@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
 import {
   CODEX_DELIVERY_NONCE,
   CodexDetachedMemoryIneligible,
@@ -337,6 +338,22 @@ export const createKoedMcpServer = async (
               // A successful tool call can still return while capability refresh
               // waits for the Local AI Runtime to finish starting.
             }
+          }
+          if (toolName === "memory_answer" && response.status !== "pending") {
+            const answerInput = input as Record<string, unknown>;
+            const detailed =
+              answerInput.include_evidence === true ||
+              answerInput.response_detail === "with_citations" ||
+              answerInput.response_detail === "with_evidence";
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: formatMemoryAnswerCompletion(response)
+                }
+              ],
+              ...(detailed ? { structuredContent: response } : {})
+            };
           }
           return jsonResponse(response);
         } catch (error) {

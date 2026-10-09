@@ -210,6 +210,8 @@ describe("Pi setup", () => {
     const deliveryFiles = [
       "memory-answer-delivery.mjs",
       "memory-answer-delivery.d.mts",
+      "memory-answer-presentation.mjs",
+      "memory-answer-presentation.d.mts",
       "pi-memory-delivery.mjs",
       "pi-memory-delivery.d.mts",
       "runtime-client.mjs",

@@ -110,7 +110,7 @@ try {
           tasks.get("task-2").status = "completed";
           tasks.get("task-2").version = 2;
           tasks.get("task-2").result = {
-            answer: "must not enter the new branch"
+            markdown: "must not enter the new branch"
           };
           releaseThirdRead();
           releaseThirdRead = undefined;
@@ -218,7 +218,7 @@ try {
   tasks.get("task-0").status = "completed";
   tasks.get("task-0").version = 2;
   tasks.get("task-0").result = {
-    answer: "generated completion after cancellations"
+    markdown: "generated completion after cancellations"
   };
   const waitCompletion = async (count) => {
     for (let i = 0; i < 40 && enqueueOptions.length < count; i++)
@@ -240,7 +240,7 @@ try {
   assert.equal(second.details.accepted, true);
   tasks.get("task-1").status = "completed";
   tasks.get("task-1").version = 2;
-  tasks.get("task-1").result = { answer: "new callback remains active" };
+  tasks.get("task-1").result = { markdown: "new callback remains active" };
   await waitCompletion(2);
   assert.equal(
     manager
@@ -270,7 +270,7 @@ try {
   assert.equal(earlyTreeRaceObserved, true);
   tasks.get("task-2").status = "completed";
   tasks.get("task-2").version = 2;
-  tasks.get("task-2").result = { answer: "must not enter the new branch" };
+  tasks.get("task-2").result = { markdown: "must not enter the new branch" };
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(enqueueOptions.length, 2);
   assert.ok(

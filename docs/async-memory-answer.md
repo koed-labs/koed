@@ -173,13 +173,30 @@ creates a new invocation.
 
 `memory_answer` defaults to `response_detail=answer_only` and
 `include_evidence=false`, including for implementation and debugging questions.
-Blocking and deferred delivery use the same compact result: answer Markdown,
+Blocking and deferred execution produce the same compact result: answer Markdown,
 public worker status, and an evidence-count/retrieval-mode summary. Worker token
 usage, execution records, raw errors, and retrieval traces remain in internal
 question history. `with_citations` adds source metadata; `with_evidence` or the
 legacy `include_evidence=true` adds selected evidence bodies and the structured
 answer. These detail levels are explicit caller choices. Team routing errors
 return a message and routing status without an Evidence Bundle.
+
+Codex Stop hooks, ordinary MCP results (including Claude Code's native background
+notifications), and Pi blocking and deferred completions use one shared text
+formatter. It delivers the answer Markdown, or the worker's readable fallback
+message when answer text is absent. The recalled-data warning and no-poll
+guidance occupy one line, followed by HTML-escaped text between data markers.
+Worker metadata, retrieval summaries, separate citations and evidence bodies
+are omitted from completion text. Default MCP recall also omits
+`structuredContent`, so the result envelope is not injected a second time.
+Explicit `with_citations`, `with_evidence` or `include_evidence=true` requests
+retain their details in MCP `structuredContent`; completion text stays concise.
+Codex and Pi deferred delivery retain requested details in the task result.
+Pi keeps receipt attribution in message details. Internal diagnostics remain in
+question history. An answer without readable text produces a static unavailable
+message; an oversized answer is rejected without truncation. Failed or cancelled
+deferred tasks produce static messages without task errors or cached answers.
+Pending acknowledgements keep their receipt format for delivery routing.
 
 Task event streams resolve ownership before writing success headers. Scheduler
 notifications only wake an observer; each event and keepalive uses another
