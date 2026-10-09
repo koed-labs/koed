@@ -1,7 +1,7 @@
 {
   "name": "@koed-labs/server",
   "version": "0.8.1",
-  "private": false,
+  "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "bin": {

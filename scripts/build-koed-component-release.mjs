@@ -34,6 +34,8 @@ const parseArgs = (args) => {
 
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
+  if (Number(process.versions.node.split(".")[0]) !== 24)
+    throw new Error("Component releases must be built with Node.js 24.");
   const componentsRoot = resolve(options.outDir, "components");
   const staged = await stageRuntimeComponents({
     repoRoot,
@@ -56,7 +58,12 @@ const main = async () => {
     version: options.version,
     target: { platform: options.platform, architecture: options.architecture },
     runtimes: [
-      { kind: "node", runtimeRange: ">=24 <25", nodeRange: ">=24 <25" }
+      {
+        kind: "node",
+        runtimeRange: ">=24 <25",
+        nodeRange: ">=24 <25",
+        modulesAbi: process.versions.modules
+      }
     ],
     requiredFiles: {
       base: staged.baseRequired,

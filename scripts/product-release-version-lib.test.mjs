@@ -114,7 +114,7 @@ const fixture = () => {
   writeJson(root, "packages/koed-server/package.json", {
     name: "@koed-labs/server",
     version: "1.4.0",
-    private: false
+    private: true
   });
   writeJson(root, "apps/api/package.json", {
     name: "@koed/api",
@@ -128,7 +128,7 @@ const fixture = () => {
   return root;
 };
 
-test("server is public, singly named and coordinated", () => {
+test("server source is private, singly named and coordinated", () => {
   const server = JSON.parse(
     readFileSync(resolve("packages/koed-server/package.json"), "utf8")
   );
@@ -136,7 +136,7 @@ test("server is public, singly named and coordinated", () => {
     readFileSync(resolve(".changeset/config.json"), "utf8")
   );
   assert.equal(server.name, "@koed-labs/server");
-  assert.equal(server.private, false);
+  assert.equal(server.private, true);
   assert.deepEqual(server.bin, { koed: "dist/cli.js" });
   assert.equal(server.engines.node, ">=24 <25");
   assert.equal(server.publishConfig.access, "public");
@@ -173,7 +173,7 @@ test("refuses to synchronize a public server outside fixed-group version", () =>
     writeJson(root, "packages/koed-server/package.json", {
       name: "@koed-labs/server",
       version: "1.3.2",
-      private: false
+      private: true
     });
     assert.throws(
       () => syncProductPackageVersions(root),

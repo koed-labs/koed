@@ -7,6 +7,37 @@ base and privacy components. Each component archive has SHA-256, a component
 manifest, and detached signature metadata. Unsigned local builds are marked
 `unsigned-placeholder`; they are not official release artifacts.
 
+## Headless distribution validation
+
+The source Server workspace remains private because it depends on private workspace
+packages. Changesets versions it alongside the private product manifest; only the
+assembled, dependency-free npm artifact is public. The bundle includes Node
+CommonJS loading support, the Privacy Service bootstrap and secret-provider CLI,
+and `dist/component-trust-roots.js` for promotion verification.
+
+Component manifests use canonical sorted-key JSON bytes without a trailing newline,
+matching both signing and installer verification. Archive members are relative to
+the payload root, matching the signed inventory. The headless release builder runs
+under Node 24 and records its actual modules ABI. It does not declare Electron
+compatibility; that requires separate packaged validation.
+
+After `pnpm install --frozen-lockfile` and `pnpm build`, run the opt-in native smoke:
+
+```bash
+node scripts/headless-distribution-smoke.mjs \
+  --postgres-bin-dir /absolute/path/to/postgres/bin \
+  --llama-server-bin /absolute/path/to/llama-server \
+  --embedding-model /absolute/path/to/embedding.gguf
+```
+
+The smoke builds and signs real Base/Privacy archives with an ephemeral test key,
+embeds the public key only in copied fixture output, installs the resulting npm
+package offline outside the checkout, installs both signed components, and runs Personal startup, readiness,
+core doctor checks and shutdown in an isolated Koed home. AI Client authentication
+and capture setup remain separate; the smoke does not use the User's credentials.
+It does not install production roots or enable signing/publication. Linux and
+Desktop acceptance remain separate release gates.
+
 ## Desktop privacy component lifecycle
 
 Desktop installs privacy components through the private supervisor IPC channel;
@@ -51,8 +82,8 @@ configured. CI requires all of these repository variables before promotion:
   package write permission and OIDC; no long-lived npm token is used.
 - `KOED_RELEASE_PROMOTION_APPROVED=true`: separate explicit release approval.
 
-The release workflow currently has no external signer integration, approved
-trust roots, or npm publication integration. Setting placeholder variables is
+The release workflow has signing and npm promotion adapters, but approved
+production trust roots and authorized infrastructure remain unconfigured. Setting placeholder variables is
 not sufficient to establish trust or authorize a real release. Do not configure
 these variables until signer verification, npm OIDC publishing, and production
 trust-root validation have been reviewed and connected. Until then, CI can
@@ -67,7 +98,7 @@ must not publish npm packages or stable tags.
    downloaded and compared byte-for-byte by SHA-256; exact matches are
    idempotent, while any mismatch blocks without overwrite.
 3. Publish the npm version once under its immutable semver identity and a
-   version-specific candidate dist-tag. If the version already exists, verify
+   version-specific `candidate-<version>` dist-tag. If the version already exists, verify
    exact SHA-512 integrity and inventory before continuing; mismatches block.
 4. Verify the candidate from the npm registry, then move `latest` only if that
    cannot downgrade it. Publish the GitHub release only after all expected

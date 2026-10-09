@@ -151,9 +151,9 @@ export const assertChangesetReleasePolicy = (root) => {
     );
   }
   const server = readJson(root, "packages/koed-server/package.json");
-  if (server.name !== publicProductReleasePackage || server.private !== false) {
+  if (server.name !== publicProductReleasePackage || server.private !== true) {
     throw new Error(
-      `Changesets must classify ${publicProductReleasePackage} as the public server release unit.`
+      `Changesets must classify ${publicProductReleasePackage} as the private source workspace for the assembled public server release unit.`
     );
   }
   const missing = internalWorkspacePackageNames.filter(

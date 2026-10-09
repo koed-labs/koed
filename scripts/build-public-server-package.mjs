@@ -99,6 +99,10 @@ const main = async () => {
     splitting: true,
     format: "esm",
     platform: "node",
+    // Bundled CommonJS dependencies still require Node built-ins at runtime.
+    banner: {
+      js: 'import { createRequire as createKoedRequire } from "node:module"; const require = createKoedRequire(import.meta.url);'
+    },
     target: "node24",
     packages: "bundle",
     metafile: true,
@@ -135,6 +139,25 @@ const main = async () => {
     { mode: 0o755 }
   );
   chmodSync(launcher, 0o755);
+  // Bundled modules resolve auxiliary executables relative to vendor chunks.
+  writeFileSync(
+    resolve(vendorRoot, "cli.js"),
+    readFileSync(launcher, "utf8").replace(
+      "../vendor/control-plane.js",
+      "./control-plane.js"
+    ),
+    { mode: 0o755 }
+  );
+  copyFileSync(
+    resolve(repoRoot, "packages/koed-server/dist/privacy-service-bootstrap.js"),
+    resolve(vendorRoot, "privacy-service-bootstrap.js")
+  );
+  const distRoot = resolve(packageRoot, "dist");
+  mkdirSync(distRoot, { recursive: true });
+  copyFileSync(
+    resolve(repoRoot, "packages/koed-server/dist/component-trust-roots.js"),
+    resolve(distRoot, "component-trust-roots.js")
+  );
   copyFileSync(resolve(repoRoot, "LICENSE"), resolve(packageRoot, "LICENSE"));
   buildNotices(
     built.metafile,
@@ -151,7 +174,13 @@ const main = async () => {
     bin: { koed: "bin/koed.js" },
     engines: { node: ">=24 <25" },
     publishConfig: { access: "public" },
-    files: ["bin/koed.js", "vendor/**/*", "LICENSE", "third-party-notices.json"]
+    files: [
+      "bin/koed.js",
+      "vendor/**/*",
+      "dist/component-trust-roots.js",
+      "LICENSE",
+      "third-party-notices.json"
+    ]
   };
   writeFileSync(
     resolve(packageRoot, "package.json"),

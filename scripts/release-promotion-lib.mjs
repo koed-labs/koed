@@ -1,3 +1,9 @@
+export const candidateNpmTag = (version) => {
+  if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version ?? ""))
+    throw new Error("Candidate tag requires a valid release version.");
+  return `candidate-${version}`;
+};
+
 const isRecord = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sha256Pattern = /^[a-f0-9]{64}$/;
@@ -121,7 +127,7 @@ export const planReleasePromotion = (expected, remote, authorization) => {
       return blocked([
         "Published npm version differs from expected immutable tarball."
       ]);
-    if (![`${expected.version}-candidate`, "latest"].includes(npm.tag))
+    if (![candidateNpmTag(expected.version), "latest"].includes(npm.tag))
       return blocked([
         "Published npm dist-tag does not identify expected candidate or stable release."
       ]);
@@ -149,7 +155,7 @@ export const planReleasePromotion = (expected, remote, authorization) => {
   if (!npm) {
     actions.push({
       kind: "publish-candidate",
-      tag: `${expected.version}-candidate`
+      tag: candidateNpmTag(expected.version)
     });
     return { status: "ready", reasons: [], actions };
   }

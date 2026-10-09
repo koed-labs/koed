@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { planReleasePromotion } from "./release-promotion-lib.mjs";
+import {
+  candidateNpmTag,
+  planReleasePromotion
+} from "./release-promotion-lib.mjs";
 
 export const canonicalReleaseJson = (value) => {
   if (Array.isArray(value))
@@ -47,9 +57,7 @@ export const verifyReleaseSignatures = (artifacts, trustRoots) => {
         throw new Error(
           `Component manifest identity or target mismatch: ${manifestPath}`
         );
-      if (
-        manifestBytes.toString("utf8") !== `${canonicalReleaseJson(manifest)}\n`
-      )
+      if (manifestBytes.toString("utf8") !== canonicalReleaseJson(manifest))
         throw new Error(`Component manifest is not canonical: ${manifestPath}`);
       const rawKey = trustRoots.keys[signature.keyId];
       if (
@@ -157,9 +165,9 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     );
   const roots = JSON.parse(rootsBytes.toString("utf8"));
   const temp = mkdtempSync(resolve(tmpdir(), "koed-release-promotion-"));
-  const download = (asset, path) =>
-    writeFileSync(
-      path,
+  const download = (asset, path) => {
+    const fd = openSync(path, "wx", 0o600);
+    try {
       run(
         "gh",
         [
@@ -168,9 +176,12 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           "Accept: application/octet-stream",
           `repos/${args.repository}/releases/assets/${asset.id}`
         ],
-        { encoding: null }
-      )
-    );
+        { encoding: null, stdio: ["ignore", fd, "inherit"] }
+      );
+    } finally {
+      closeSync(fd);
+    }
+  };
   try {
     const release = JSON.parse(
       run("gh", ["api", `repos/${args.repository}/releases/${args.releaseId}`])
@@ -298,7 +309,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         "--access",
         "public",
         "--tag",
-        `${args.version}-candidate`,
+        candidateNpmTag(args.version),
         "--provenance"
       ]);
       published = await fetchRegistry(expected.packageName, expected.version);
@@ -308,7 +319,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       "dist-tag",
       "add",
       `${expected.packageName}@${args.version}`,
-      `${args.version}-candidate`
+      candidateNpmTag(args.version)
     ]);
     const latest = await fetchRegistry(expected.packageName, "latest");
     const immutableAssets = [
@@ -350,7 +361,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         npm: {
           version: args.version,
           integrity: expected.integrity,
-          tag: `${args.version}-candidate`,
+          tag: candidateNpmTag(args.version),
           verified: true
         },
         latestVersion: latest?.version

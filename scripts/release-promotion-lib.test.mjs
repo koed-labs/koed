@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { planReleasePromotion } from "./release-promotion-lib.mjs";
 
 const sha256 = "a".repeat(64);
@@ -50,7 +54,7 @@ test("immutable mismatches and incomplete candidates block stable promotion", ()
       npm: {
         version: expected.version,
         integrity: "sha512-wrong=",
-        tag: "1.2.3-candidate"
+        tag: "candidate-1.2.3"
       },
       github: { tag_name: "v1.2.3", draft: true, assets: [] }
     },
@@ -65,7 +69,7 @@ test("immutable mismatches and incomplete candidates block stable promotion", ()
       npm: {
         version: expected.version,
         integrity: expected.npm.integrity,
-        tag: "1.2.3-candidate"
+        tag: "candidate-1.2.3"
       },
       github: {
         tag_name: "v1.2.3",
@@ -89,7 +93,7 @@ test("immutable mismatches and incomplete candidates block stable promotion", ()
     authorized
   );
   assert.deepEqual(firstPublication.actions, [
-    { kind: "publish-candidate", tag: "1.2.3-candidate" }
+    { kind: "publish-candidate", tag: "candidate-1.2.3" }
   ]);
   const downgrade = planReleasePromotion(
     expected,
@@ -115,7 +119,7 @@ test("verified complete candidate promotes latest then GitHub without overwritin
       npm: {
         version: expected.version,
         integrity: expected.npm.integrity,
-        tag: "1.2.3-candidate",
+        tag: "candidate-1.2.3",
         verified: true
       },
       github: {
@@ -137,7 +141,7 @@ test("verified complete candidate promotes latest then GitHub without overwritin
       npm: {
         version: expected.version,
         integrity: expected.npm.integrity,
-        tag: "1.2.3-candidate",
+        tag: "candidate-1.2.3",
         verified: false
       },
       github: {
@@ -150,4 +154,51 @@ test("verified complete candidate promotes latest then GitHub without overwritin
     authorized
   );
   assert.deepEqual(unverified.actions, [{ kind: "verify-registry" }]);
+});
+
+test("planned candidate tag is accepted by npm dry-run without registry access", () => {
+  const plan = planReleasePromotion(
+    expected,
+    {
+      ...remoteDraft,
+      github: { ...remoteDraft.github, assets: expected.github.assets }
+    },
+    authorized
+  );
+  const tag = plan.actions.find(
+    (action) => action.kind === "publish-candidate"
+  ).tag;
+  const root = mkdtempSync(resolve(tmpdir(), "koed-candidate-tag-"));
+  try {
+    writeFileSync(
+      resolve(root, "package.json"),
+      JSON.stringify({
+        name: "koed-candidate-fixture",
+        version: expected.version
+      })
+    );
+    execFileSync(
+      "npm",
+      [
+        "publish",
+        root,
+        "--dry-run",
+        "--ignore-scripts",
+        "--offline",
+        "--tag",
+        tag
+      ],
+      {
+        cwd: root,
+        stdio: "pipe",
+        env: {
+          ...process.env,
+          npm_config_registry: "http://127.0.0.1:1",
+          npm_config_offline: "true"
+        }
+      }
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

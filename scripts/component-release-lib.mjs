@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import { writeDeterministicTarGz } from "./deterministic-tar-gzip.mjs";
 import {
   buildComponentManifest,
+  canonicalComponentManifestBytes,
   listFiles,
   sha256File,
   signComponentManifest
@@ -33,7 +34,7 @@ export const buildComponentReleaseSet = ({
     const archivePath = resolve(outDir, archiveName);
     writeDeterministicTarGz({
       sourceDir: componentRoot,
-      rootName: component,
+      rootName: "",
       tarPath: archivePath
     });
     const manifest = buildComponentManifest({
@@ -47,7 +48,7 @@ export const buildComponentReleaseSet = ({
     });
     const manifestName = `${archiveName}.manifest.json`;
     const manifestPath = resolve(outDir, manifestName);
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(manifestPath, canonicalComponentManifestBytes(manifest));
     const signatureName = `${archiveName}.signature.json`;
     const signaturePath = resolve(outDir, signatureName);
     const signature = signing

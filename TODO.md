@@ -41,6 +41,10 @@ installation-local nickname; device icons no longer guess hardware by row order.
 
 ## Public Koed Server release gates
 
+Headless macOS arm64 / Node 24 signed Base and Privacy installation plus Personal
+startup/readiness/shutdown is locally verified with test-only keys. Linux, Desktop
+and production signing/publication acceptance remain open below.
+
 Follow-up to the public `@koed-labs/server` distribution. Merging that work
 publishes nothing; do not merge the "Version Koed" release PR until these are closed:
 

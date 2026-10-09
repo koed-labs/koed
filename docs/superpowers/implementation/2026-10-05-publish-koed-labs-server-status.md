@@ -1,6 +1,6 @@
 # Public server distribution: branch status
 
-This branch is ready for review and merge, but it is **not release-ready**. Merging publishes nothing: production install and release promotion fail closed until the external gates below are closed in a follow-up.
+PR #404 remains a draft while its extracted slices and remaining distribution/Desktop work are reviewed. It is **not release-ready**. Merging publishes nothing: production install and release promotion fail closed until the external gates below are closed in a follow-up.
 
 **Do not merge the "Version Koed" release PR until the external gates are closed.** Merging it runs `release.yml` without pending changesets: it creates a draft GitHub release, and the asset jobs fail at the external-signer step because the signer and trust-root repository variables are unset. npm promotion (`release-desktop-assets.yml`, `workflow_dispatch` only) additionally requires `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
 
@@ -59,3 +59,28 @@ Latest PR404 continuation used npm-provided Node 24.13.1 because Homebrew Node's
 Architecture and operation documentation were updated. Remaining work must preserve fail-closed behavior and replace unavailable adapters with real integration, not simulated success.
 
 Final CI at PR head `abb18f36f`: Tests, Build, Static checks and the packaged Desktop smoke all passed. Setup tests now use explicit executable paths and no longer depend on installed Claude or Pi. Packaged smoke uses the private Desktop lifecycle harness and status RPC instead of bundled Privacy or public CLI authority. Full formatting reports only locally ignored SDD working Markdown. No signing, publication or credential changes were performed.
+
+## Headless distribution repair (2026-10-09)
+
+The headless component/release defects are repaired independently of #408/#409:
+canonical manifest bytes now match signing and installer verification; archive
+members match the payload inventory; releases declare actual Node 24 modules ABI;
+the public npm bundle includes CommonJS loading support, both auxiliary executables
+and the promotion trust-root module. Large promotion downloads stream to files and
+candidate tags use `candidate-<version>`. The private source workspace is versioned
+with the product while only the assembled artifact is public.
+
+Node 24.14.0 / macOS arm64 validation: 313 script tests passed, one skipped; all
+766 Server tests passed. Full formatting, lint, Server typecheck, test typecheck,
+release policy and diff checks passed. A disposable Changesets version run produced
+coordinated 0.9.0 without changing checkout versions.
+
+The opt-in native smoke built and test-signed real Base/Privacy archives, installed
+the assembled npm tarball offline outside the checkout, installed both components,
+and ran Personal startup with native PostgreSQL/pgvector and llama-server. Startup
+readiness and core doctor checks passed, followed by shutdown. The production bundle
+rejected the ephemeral test key without activating a generation. Test keys exist
+only in copied fixture output; source production roots remain empty. The smoke does
+not claim AI Client authentication, Team Privacy startup, Electron compatibility,
+Linux acceptance, or a real external signer/registry rehearsal. Those remain gates;
+PR #404 stays draft and publication stays disabled.

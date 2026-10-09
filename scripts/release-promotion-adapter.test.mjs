@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -37,7 +44,7 @@ test("verifies canonical Ed25519 component signatures against explicit digest-pi
       manifest: resolve(root, "manifest.json"),
       signature: resolve(root, "signature.json")
     };
-    writeFileSync(files.manifest, `${canonicalReleaseJson(manifest)}\n`);
+    writeFileSync(files.manifest, canonicalReleaseJson(manifest));
     writeFileSync(
       files.signature,
       `${JSON.stringify({ schemaVersion: 1, algorithm: "ed25519", keyId: "prod", signature })}\n`
@@ -83,7 +90,15 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
     const rootsPath = resolve(root, "roots.json");
     writeFileSync(rootsPath, rootBytes);
     const version = "1.0.0";
-    const packageTarball = Buffer.from("fixture npm tarball");
+    const packedRoot = resolve(root, "packed");
+    mkdirSync(resolve(packedRoot, "package/dist"), { recursive: true });
+    writeFileSync(
+      resolve(packedRoot, "package/dist/component-trust-roots.js"),
+      `export const productionComponentTrustRoots = new Map([["prod", ${JSON.stringify(publicKeyPem)}]]);`
+    );
+    const packedPath = resolve(root, "server.tgz");
+    execFileSync("tar", ["-czf", packedPath, "-C", packedRoot, "package"]);
+    const packageTarball = readFileSync(packedPath);
     const packageIntegrity = `sha512-${createHash("sha512").update(packageTarball).digest("base64")}`;
     const identity = {
       packageName: "@koed-labs/server",
@@ -99,7 +114,10 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
       ["privacy", "macos", "arm64"]
     ]) {
       const archiveName = `koed-${component}-${version}-${platform}-${architecture}.tar.gz`;
-      const archive = Buffer.from(`${component}-${platform}-${architecture}`);
+      const archive = Buffer.alloc(
+        2 * 1024 * 1024,
+        `${component}-${platform}-${architecture}`
+      );
       const manifest = {
         archive: {
           name: archiveName,
@@ -121,10 +139,7 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
         ]),
         keys.privateKey
       ).toString("base64");
-      contents.set(
-        manifestName,
-        Buffer.from(`${canonicalReleaseJson(manifest)}\n`)
-      );
+      contents.set(manifestName, Buffer.from(canonicalReleaseJson(manifest)));
       contents.set(
         signatureName,
         Buffer.from(
@@ -164,16 +179,32 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
         version
       },
       {
-        run: (name, args) => {
+        run: (name, args, options = {}) => {
           calls.push([name, args]);
           if (name === "gh" && args[0] === "api" && args.length === 2)
             return JSON.stringify({ tag_name: "v1.0.0", draft: true, assets });
-          if (name === "gh" && args[0] === "api" && args[1] === "--header")
-            return contents.get(
-              assets.find((asset) => args.at(-1).endsWith(`/${asset.id}`)).name
+          if (name === "gh" && args[0] === "api" && args[1] === "--header") {
+            const asset = assets.find((asset) =>
+              args.at(-1).endsWith(`/${asset.id}`)
             );
+            const fixturePath = resolve(root, asset.name);
+            writeFileSync(fixturePath, contents.get(asset.name));
+            return execFileSync(
+              process.execPath,
+              [
+                "-e",
+                "process.stdout.write(require('node:fs').readFileSync(process.argv[1]))",
+                fixturePath
+              ],
+              {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "inherit"],
+                ...options
+              }
+            );
+          }
           if (name === "tar")
-            return `export const productionComponentTrustRoots = new Map([["prod", ${JSON.stringify(publicKeyPem)}]]);`;
+            return execFileSync(name, args, { encoding: "utf8", ...options });
           return "";
         },
         fetchRegistry: async (_name, requestedVersion) =>
