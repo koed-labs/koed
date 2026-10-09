@@ -506,7 +506,7 @@ describe("supported Pi Memory Answer delivery", () => {
         undefined,
         f.ctx
       );
-      expect(result.content[0].text.includes("requested-source")).toBe(shown);
+      expect(result.content[0]!.text.includes("requested-source")).toBe(shown);
     }
   );
 
