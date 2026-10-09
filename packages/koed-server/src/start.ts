@@ -1,3 +1,4 @@
+import { maintainUpstreamCapabilities } from "./upstream-capability-maintenance.js";
 import { startDeviceRequestService } from "./personal-device-request.js";
 import { redeemPairingLink } from "./personal-sync.js";
 import { createPdsApplicationSecretStore } from "@koed/shared";
@@ -1052,6 +1053,7 @@ export const startKoedServer = async ({
   };
   let runtimeStateWritten = false;
   let stopSupervisorExitMonitor: () => void = () => undefined;
+  let stopCapabilityMaintenance: () => void = () => undefined;
   const runtimeStateOwnedByCurrentProcess = (): boolean => {
     try {
       const runtime = JSON.parse(
@@ -1125,7 +1127,10 @@ export const startKoedServer = async ({
   const shutdownRequested = new Promise<void>((resolveShutdown) => {
     requestShutdown = resolveShutdown;
   });
-  const shutdown = () => requestShutdown();
+  const shutdown = () => {
+    stopCapabilityMaintenance();
+    requestShutdown();
+  };
   if (signal?.aborted) requestShutdown();
   else signal?.addEventListener("abort", shutdown, { once: true });
   process.on("SIGINT", shutdown);
@@ -1489,6 +1494,12 @@ export const startKoedServer = async ({
         `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed-server status --json for details.`
       );
     }
+    if (localAiRuntimeEnabled) {
+      stopCapabilityMaintenance = maintainUpstreamCapabilities(paths, {
+        onError: () =>
+          console.warn("Upstream capability maintenance will retry.")
+      });
+    }
     emitStartupMilestone("core_services_ready");
     startupReady = true;
     console.log(JSON.stringify(status, null, 2));
@@ -1519,6 +1530,7 @@ export const startKoedServer = async ({
     }
     throw error;
   } finally {
+    stopCapabilityMaintenance();
     stopSupervisorExitMonitor();
     stopSupervisorLogMaintenance();
     process.off("SIGINT", shutdown);
