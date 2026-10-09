@@ -537,6 +537,14 @@ a Project-scoped request without a `team_workspace_id`. Personal Memory remains
 the default, and the mapped Team path still requires enrolled local-edge and
 upstream device credentials. See `docs/team-workspace-project-mapping.md`.
 
+MCP `memory_workspaces` discovers authorized Team Workspaces through existing
+local-edge enrollment under `KOED_HOME`. No Electron process or separate MCP
+login is required. `memory_answer` accepts `team_backend_id` together with
+`team_workspace_id`; explicit request routing takes precedence over Project
+mapping and `KOED_TEAM_UPSTREAM_BACKEND_ID`. When a Workspace is explicitly
+selected and no backend is configured, live discovery may resolve exactly one
+authorized backend. Discovery never changes the Personal Memory default.
+
 ## KOED_HOME Layout
 
 Koed-owned local state lives under `KOED_HOME`:
@@ -657,6 +665,8 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
 - `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Desktop and MCP Server bursts in a Koed deployment without changing the stricter auth rate limit.
+- `API_MEMORY_READ_RATE_LIMIT_MAX`: overrides the general read quota. It covers Capture Policy, graph, and import reads. Recall access checks use the separate AI Client control quota.
+- `API_MEMORY_READ_RATE_LIMIT_WINDOW_MS`: overrides the general read window. It otherwise uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_MANAGED_CONVERSATION_RATE_LIMIT_WINDOW_MS`: window for interactive managed AI Client Conversation requests. The default is 60 seconds.
 - `API_MANAGED_CONVERSATION_READ_RATE_LIMIT_MAX`: read-oriented managed Conversation requests allowed per managed Conversation window. The default is 1000. This independent bucket prevents background capture and import traffic from blocking launch options or active Conversation reads.
@@ -1136,6 +1146,10 @@ These values are copied into the AI Client configuration and are not consumed au
   durable Personal backlog and maximum in-process blocking backlog. Default
   `16`. Idempotent retries return their existing durable task even at the
   limit.
+- `KOED_LOG_ERROR_DETAIL`: set to `1` to add bounded error messages and
+  stacks to MCP Server and Local AI Runtime logs for local debugging. Off by
+  default. Those logs can contain Memory content, provider responses or
+  credentials, so do not share them. See [observability](observability.md).
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.

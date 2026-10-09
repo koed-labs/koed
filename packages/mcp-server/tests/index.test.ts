@@ -123,8 +123,6 @@ const memoryAnswerObject = (answer_markdown: string) => ({
   evidence: [
     {
       evidence_index: 0,
-      source_id: "node-1",
-      visibility: "personal",
       relevance: "directly supports the answer"
     }
   ],
@@ -246,10 +244,13 @@ describe("MCP tool exposure", () => {
   it("exposes only required memory tools without backend capabilities", () => {
     const config = resolveToolExposureConfig({} as NodeJS.ProcessEnv);
 
-    expect([...defaultTools]).toEqual(["memory_answer"]);
+    expect([...defaultTools]).toEqual(["memory_answer", "memory_workspaces"]);
     expect([...capabilityGatedTools]).toEqual(["memory_intake_propose"]);
     expect([...requiredTools]).toEqual(["memory_answer"]);
-    expect(exposedTools(config)).toEqual(["memory_answer"]);
+    expect(exposedTools(config)).toEqual([
+      "memory_answer",
+      "memory_workspaces"
+    ]);
     expect(exposedTools(config)).not.toContain("memory_access_check");
     expect(exposedTools(config)).not.toContain("memory_search");
     expect(exposedTools(config)).not.toContain("memory_expand");
@@ -267,6 +268,7 @@ describe("MCP tool exposure", () => {
 
     expect(exposedTools(config, available)).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose"
     ]);
     expect(
@@ -310,6 +312,7 @@ describe("MCP tool exposure", () => {
       )
     ).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose",
       "memory_access_check"
     ]);
@@ -323,6 +326,7 @@ describe("MCP tool exposure", () => {
       )
     ).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose",
       "memory_search",
       "memory_expand"
@@ -338,6 +342,7 @@ describe("MCP tool exposure", () => {
       )
     ).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose",
       "memory_access_check",
       "memory_search",

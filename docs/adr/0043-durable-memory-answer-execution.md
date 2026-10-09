@@ -1,6 +1,6 @@
 # ADR 0043: Durable Memory Answer Execution
 
-- Status: Accepted
+- Status: Accepted, amended by the deferred presentation amendment below
 - Date: 2026-09-10
 
 Related decisions:
@@ -87,6 +87,32 @@ configuration is replaced directly rather than retained behind aliases.
 Team Workspace Memory Answer remains blocking until its upstream authority can
 atomically own task acceptance and terminal history. Koed does not create a
 local Personal task that misrepresents Team execution authority.
+
+## Deferred presentation amendment
+
+Date: 2026-10-07
+
+The rule above for deferred delivery now has tested routes. Each route reuses
+this decision's single durable task path through one shared delivery lifecycle,
+and each presentation adapter owns only acknowledgement, attribution and
+presentation:
+
+- Pi returns an attributed receipt in persistent Conversations by default and
+  delivers the result as a follow-up message. Session-history receipts recover
+  matching pending delivery when the same Conversation reopens.
+- Codex uses a native Stop-hook route by default. It returns a pending receipt
+  and supplies the result to the original active turn. It does not use
+  Responses asynchronous function calling or wake an idle Conversation.
+- Claude Code can opt in to host backgrounding of the ordinary blocking MCP
+  result. Koed's tool contract is unchanged for this route.
+
+Blocking recall remains the default for Claude Code, because its host
+backgrounding threshold applies to every MCP Server. Blocking is an explicit
+Codex setup selection and the fallback for Team Workspace, unsupported Pi
+sessions and Codex calls without deferred readiness. A presentation adapter
+never delivers a result without a fresh authorized task read. Native MCP Tasks
+remain deferred until a maintained TypeScript SDK runtime and host support
+exist. See [asynchronous Memory Answer delivery](../async-memory-answer.md).
 
 ## Consequences
 

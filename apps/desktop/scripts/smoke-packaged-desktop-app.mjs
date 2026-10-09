@@ -489,6 +489,10 @@ const assertPackagedJsSurface = (layout) => {
     ["Packaged Embedding Service artifact", "embedding-service/dist/index.js"],
     ["Packaged MCP Server artifact", "mcp-server/dist/cli.js"],
     [
+      "Packaged Codex deferred recall helper",
+      "mcp-server/dist/codex-memory-hook.js"
+    ],
+    [
       "Packaged Supported Capture Hook artifact",
       "mcp-server/dist/capture-hook.js"
     ],

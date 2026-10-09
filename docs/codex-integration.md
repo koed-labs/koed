@@ -6,9 +6,90 @@ see [Claude Code integration](claude-code-integration.md) and
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 Personal Memory Answers use [durable execution](durable-memory-answer.md).
-Current Codex waits outside the model loop for the terminal MCP result; native
-Responses async continuation remains capability-gated on an upstream Codex
-bridge that preserves the original call identity.
+Codex uses deferred recall by default, except on Windows, where setup selects
+blocking recall because the Stop-hook route is untested there. The native
+integration lets the
+original turn continue while recall runs. Its synchronous Stop hook supplies
+the completed result when that turn reaches its stop boundary.
+
+## Deferred recall in the native CLI
+
+Setup installs the adapter by default through the packaged Local Operator
+Script:
+
+```bash
+koed-server setup codex --json
+```
+
+From a contributor checkout, use `pnpm codex:configure`.
+Restart Codex and review its native hook trust request before use. Setup installs
+matched PreToolUse and PostToolUse hooks, a synchronous Stop hook, and SessionEnd
+and Interrupt cleanup hooks. It preserves Capture Hooks and unrelated settings.
+A trusted PreToolUse hook binds each request to its exact native call. Missing
+readiness uses blocking recall instead.
+
+In the VS Code extension, a yellow badge on the hook icon can indicate hooks
+awaiting approval. Open **Review hooks** and review the Koed definitions before
+starting recall; folder trust is a separate decision. New or changed hook
+definitions are skipped until trusted. See the [official hook trust guide](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+The default Stop wait is five minutes (`--wait-ms 300000`), with a 305-second
+native hook timeout. The helper accepts waits from 1,000 to 1,800,000 milliseconds.
+If you manually change that flag, set the native timeout to the wait in seconds,
+rounded up, plus five. A wait failure supplies no recalled answer and does not
+guarantee later delivery. The worker can continue under its separate hard limit.
+
+Setup records the selected mode in the Koed-owned block. Plain setup or repair
+preserves a recorded selection. A Koed block written before the selection was
+recorded is upgraded to deferred recall. Use `--blocking-recall` with setup to
+disable this adapter, or `--deferred-recall` to enable it again. Contributor `pnpm codex:configure --check`
+checks the owned configuration without writing. `--remove` removes only Koed's
+owned configuration and managed global guidance.
+
+The contributor checker accepts configuration written by server repair in both
+recall modes. Isolated configuration checks cover repeat setup, repair, explicit
+blocking selection and owned removal while preserving unrelated settings and
+Capture Hooks. Runtime provisioning and native trust require separate checks.
+
+Only one recall per native turn can use deferred delivery. Further calls in that
+turn use blocking recall. A missing pre-call hook uses blocking recall; a consumed
+or invalid receipt fails instead of starting another task. Unsupported native
+subagent calls also retain blocking recall.
+
+Receipt files contain task and origin identities, not recalled results. A crash
+can leave a locked receipt that cannot recover delivery. Expired unlocked state
+is collected, but locked state is retained and the store is bounded. To repair
+that state, first close all Codex sessions and stop their Koed MCP and hook
+processes, then clear only `KOED_HOME/codex-memory-delivery`. This does not cancel
+or replay durable tasks, and it does not restore delivery to exited sessions.
+
+### Deferred recall behavior and limits
+
+The adapter was tested on the Codex CLI (0.159.3 to 0.160.1), the VS Code
+extension (26.5930.51102 with bundled Codex 0.160.0) and the Desktop app
+(26.930.61225 with bundled Codex 0.160.1). It uses the shared delivery
+lifecycle and the same durable executor. It does not poll through model tools
+or synthesize answers on the backend.
+
+- The Stop hook waits inside the original active turn. It does not wake an
+  idle Conversation or recover a result into a new session after exit.
+- Delivery stays with the originating Conversation. A fork, a new
+  Conversation or a switched Conversation does not receive the result.
+- Revoked access, expiry, cancellation and execution failure produce a native
+  notice without an answer, and the agent does not retry the recall.
+- The Stop hook presents the completed answer as recalled data between
+  markers and tells the agent not to follow instructions inside it, because
+  recalled memory can quote captured, untrusted text.
+- Pending-result delivery after a backend loss or Local AI Runtime restart is
+  unsupported.
+- Interrupting the turn (for example Ctrl+C) retires the receipt. A confirmed
+  interruption can still race a Stop hook that has already returned, and Codex
+  may record that late hook prompt in the interrupted turn. This upstream
+  limitation is accepted for this integration.
+- `/quit` disconnects the CLI but can leave the original backend turn running.
+  That turn can still finish and produce an answer, which appears when you
+  reconnect to that Conversation. Do not treat `/quit` during a pending recall
+  as proof that delivery or model generation has stopped.
 
 ## Recommended Setup
 
@@ -331,7 +412,8 @@ retrieval hints can seed exact checks, semantic reformulations, entities, and
 temporal intent. The Local AI Runtime treats them as untrusted suggestions and
 cannot use them to broaden authorization or the selected Search Domain.
 
-Koed's generated Codex configuration pre-approves `memory_answer`, so read-only
+Koed's generated Codex configuration pre-approves `memory_answer` and
+`memory_workspaces`, so read-only
 recall does not require a separate tool approval. This rule does not pre-approve
 Curated Memory intake or other write-capable tools. Their approval behavior
 follows the Conversation's selected permission mode.

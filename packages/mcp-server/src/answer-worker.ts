@@ -210,20 +210,46 @@ export interface MemoryAnswerPayload {
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const workerFailureDisplayMessage = (
-  provider: string,
+type MemoryAnswerFailureKind =
+  | "validation"
+  | "resource_limit"
+  | "retrieval"
+  | "worker";
+
+const classifyMemoryAnswerFailure = (
   workerErrorMessage: string,
   retrievalIncomplete: boolean,
   exhaustedBudgets: readonly string[]
+): MemoryAnswerFailureKind => {
+  if (
+    /"code"\s*:\s*"(?:custom|invalid_[a-z_]+|too_small|too_big)"/.test(
+      workerErrorMessage
+    )
+  )
+    return "validation";
+  if (exhaustedBudgets.length > 0) return "resource_limit";
+  return retrievalIncomplete ? "retrieval" : "worker";
+};
+
+const workerFailureDisplayMessage = (
+  provider: string,
+  workerErrorMessage: string,
+  failureKind: MemoryAnswerFailureKind,
+  exhaustedBudgets: readonly string[]
 ): string => {
   const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
+  // Exhausting retries after a malformed answer is a validation failure, not
+  // evidence that retrieval ran out of resources. Preserve the actual cause.
+  if (failureKind === "validation") {
+    return `${worker} returned an answer that Koed could not safely verify. Try again.`;
+  }
   if (exhaustedBudgets.includes("wall_time")) {
     return `${worker} did not finish the Personal Memory search in time. Try again.`;
   }
   if (exhaustedBudgets.length > 0) {
     return `${worker} reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question.`;
   }
-  if (retrievalIncomplete) {
+  if (failureKind === "retrieval") {
     return `${worker} could not complete the Personal Memory search needed to answer reliably. Try again.`;
   }
   if (/cancelled/i.test(workerErrorMessage)) {
@@ -1416,25 +1442,17 @@ const evidenceMatchesSelection = (
     candidateRecord.chunk_index;
   const candidateVisibility = stringField(candidateRecord, ["visibility"]);
   if (
-    !selectedSourceId ||
-    !selectedSourceType ||
-    !Number.isInteger(selectedChunkIndex)
-  ) {
-    return false;
-  }
-  if (
-    candidateSourceId !== selectedSourceId ||
-    candidateSourceType !== selectedSourceType ||
-    candidateChunkIndex !== selectedChunkIndex
+    (selectedSourceId !== undefined &&
+      candidateSourceId !== selectedSourceId) ||
+    (selectedSourceType !== undefined &&
+      candidateSourceType !== selectedSourceType) ||
+    (selectedChunkIndex !== undefined &&
+      candidateChunkIndex !== selectedChunkIndex)
   ) {
     return false;
   }
   if (selectedNodeId && candidateNodeId !== selectedNodeId) return false;
-  if (
-    selectedVisibility &&
-    candidateVisibility &&
-    candidateVisibility !== selectedVisibility
-  ) {
+  if (selectedVisibility && candidateVisibility !== selectedVisibility) {
     return false;
   }
   return true;
@@ -1639,20 +1657,33 @@ export const evidenceSelectedByAnswer = (
   evidence: unknown[],
   structuredAnswer: StructuredMemoryAnswer
 ): unknown[] => {
-  const selectedIndexes = structuredAnswer.evidence
-    .map((item) => item.evidence_index)
-    .filter((index): index is number => typeof index === "number");
-  const selectedByIndex = selectedIndexes
-    .map((index) => evidence[index])
-    .filter((item): item is unknown => item !== undefined);
-  const selectedByIdentity = structuredAnswer.evidence
-    .filter((selection) => selection.evidence_index === undefined)
-    .flatMap((selection) =>
-      evidence.filter((candidate) =>
-        evidenceMatchesSelection(candidate, selection)
-      )
-    );
-  const selected = appendEvidence(selectedByIndex, selectedByIdentity);
+  const resolved = structuredAnswer.evidence.flatMap((selection) => {
+    const hasSourceIdentity =
+      selection.source_type !== undefined &&
+      selection.source_id !== undefined &&
+      selection.source_chunk_index !== undefined;
+    // Tool observations can contain indexes into an earlier candidate list.
+    // A complete source identity remains authoritative as that list grows.
+    const matches = hasSourceIdentity
+      ? evidence.filter((candidate) =>
+          evidenceMatchesSelection(candidate, selection)
+        )
+      : Number.isInteger(selection.evidence_index) &&
+          selection.evidence_index! >= 0 &&
+          evidenceMatchesSelection(
+            evidence[selection.evidence_index!],
+            selection
+          )
+        ? [evidence[selection.evidence_index!]]
+        : [];
+    if (matches.length === 0) {
+      throw new Error(
+        "Memory answer worker returned without resolvable supporting evidence for a selection"
+      );
+    }
+    return matches;
+  });
+  const selected = appendEvidence([], resolved);
   const expandedParentIds = new Set(
     selected
       .map((item) =>
@@ -4296,32 +4327,42 @@ export const answerWithMemoryWorker = async (
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
     const retrievalIncomplete =
       (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
-    const displayMessage = workerFailureDisplayMessage(
-      config.provider,
+    const failureKind = classifyMemoryAnswerFailure(
       workerErrorMessage,
       retrievalIncomplete,
       exhaustedBudgets
     );
+    const displayMessage = workerFailureDisplayMessage(
+      config.provider,
+      workerErrorMessage,
+      failureKind,
+      exhaustedBudgets
+    );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
-      retrievalIncomplete
+      failureKind === "validation" || retrievalIncomplete
         ? {
             schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
             memory_status: "insufficient",
             relevant_memory_found: false,
             answer_markdown: displayMessage,
             relevance_explanation:
-              exhaustedBudgets.length > 0
-                ? `Memory Answer exhausted bounded resources (${exhaustedBudgets.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
-                : "One or more bounded retrieval operations failed before the available memory could be judged completely.",
+              failureKind === "validation"
+                ? "The Memory Answer worker output did not satisfy the required answer format."
+                : exhaustedBudgets.length > 0
+                  ? `Memory Answer exhausted bounded resources (${exhaustedBudgets.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
+                  : "One or more bounded retrieval operations failed before the available memory could be judged completely.",
             evidence: [],
             missing: [
-              exhaustedBudgets.length > 0
-                ? `unexhausted ${exhaustedBudgets.slice(0, 8).join(", ")} budget`
-                : "complete memory retrieval"
+              failureKind === "validation"
+                ? "valid structured worker output"
+                : exhaustedBudgets.length > 0
+                  ? `unexhausted ${exhaustedBudgets.slice(0, 8).join(", ")} budget`
+                  : "complete memory retrieval"
             ],
-            missing_evidence: [
-              "relevant evidence from the failed retrieval stages"
-            ]
+            missing_evidence:
+              failureKind === "validation"
+                ? []
+                : ["relevant evidence from the failed retrieval stages"]
           }
         : undefined;
     return compactMemoryAnswerPayload(

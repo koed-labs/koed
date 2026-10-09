@@ -78,7 +78,56 @@ node packages/koed-server/dist/cli.js team workspace remove --project-root "$PWD
 
 ## Recall From MCP
 
-Explicit Team Workspace recall can be requested through `memory_answer`:
+Call `memory_workspaces` with `{}` to discover authorized Team Workspaces across
+enrolled backends. The tool reads `/v1/team-context` through the existing local
+edge and returns Team/Workspace names, access, `team_workspace_id`, and
+`team_backend_id`. Pass `team_backend_id` to discovery to inspect one backend.
+It returns no credentials, source content, or Share Grants. Failed backends
+appear in `unavailable_backends`; an unavailable backend does not mean its
+memory is empty.
+
+If discovery reports `capabilities_not_validated`, recheck the existing
+enrollment with `koed-server upstream refresh --id <enrolled-backend-id> --json`.
+This refreshes the capability cache without changing permissions or credentials.
+
+Select the relevant returned Workspace and request Team recall:
+
+```json
+{
+  "query": "What dinner plans have Team members shared?",
+  "search_domain": "global",
+  "team_workspace_id": "<team-workspace-uuid>",
+  "team_backend_id": "<enrolled-backend-id>",
+  "response_detail": "with_citations"
+}
+```
+
+`global` searches all shared memory in the selected Workspace. Without a
+Workspace selector, it searches Personal Memory. `project` and `session` also
+filter shared memory by the source's Project or Captured Session. A local
+Project path may differ from a teammate's source Project, so use `global` for
+Workspace-wide questions. Query multiple relevant Workspaces separately.
+
+An explicit `team_backend_id` takes precedence over the matching Project link
+and `KOED_TEAM_UPSTREAM_BACKEND_ID`. If none is supplied or configured, MCP
+discovers the requested Workspace across enrolled backends. It selects a
+backend only when discovery succeeds and the Workspace matches exactly one
+backend. Ambiguous, unavailable, or unauthorized routes fail closed; they do
+not fall back to Personal Memory.
+
+Discovery and recall use the same enrollment under `KOED_HOME` as Desktop.
+Electron does not need to be running. Headless `koed-server` enrollment,
+existing MCP configuration, and explicit Project mappings remain supported.
+Opening a Workspace in Electron does not select MCP scope.
+
+The Local AI Runtime advertises its supported tools and Team backend selection
+capability. An upgraded MCP adapter omits `memory_workspaces` when an older
+running runtime lacks support. Existing recall remains available. New Team
+backend input returns a restart message instead of reaching an unsupported
+runtime contract. Restart the Local AI Runtime and reconnect MCP to enable the
+new features. Workspace UUID matching ignores hexadecimal letter case.
+
+Explicit Project-scoped Team recall remains supported:
 
 ```json
 {
@@ -110,7 +159,7 @@ authorizes the
 local edge against the Team Backend. MCP never receives the upstream credential,
 and a Personal API Token never enters or authorizes the Team path.
 
-Team Workspace recall still fails closed when no mapped backend id is available,
+Team Workspace recall still fails closed when no unique backend can be resolved,
 the upstream backend is not enrolled, the upstream capability cache is stale, or
 the upstream route policy does not explicitly enable Team Workspace read.
 Disconnecting removes both local credential classes and disables route policy;

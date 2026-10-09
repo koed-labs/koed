@@ -1465,6 +1465,39 @@ describe("JSON command output", () => {
     });
   });
 
+  it("passes explicit Claude background recall consent and reports its host scope", async () => {
+    const stdout = writer();
+    let consent: { backgroundRecall?: boolean } | undefined;
+    const exitCode = await runKoedServerCli(
+      ["setup", "claude", "--background-recall", "--json"],
+      {
+        stdout: stdout.stream,
+        setupClaude: (_environment, _spawn, options) => {
+          consent = options;
+          return {
+            ok: true,
+            state: "healthy",
+            koedHome: "/tmp/koed",
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            command: "claude mcp add",
+            settingsPath: "/tmp/isolated/settings.json",
+            backgroundRecall: {
+              state: "configured",
+              scope: "all_mcp_calls",
+              thresholdMs: "500",
+              message: "All ordinary MCP calls use 500 ms backgrounding."
+            }
+          };
+        }
+      }
+    );
+    expect(exitCode).toBe(0);
+    expect(consent).toEqual({ backgroundRecall: true });
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      backgroundRecall: { scope: "all_mcp_calls", thresholdMs: "500" }
+    });
+  });
+
   it("dispatches check, repair, and remove for every AI Client with exit status", async () => {
     const capabilityIds = [
       "automatic_capture",
@@ -1641,5 +1674,34 @@ describe("JSON command output", () => {
 
     expect(exitCode).toBe(0);
     expect(configuredValue).toBe("false");
+  });
+
+  it.each([
+    ["--deferred-recall", "1"],
+    ["--blocking-recall", "0"]
+  ])("passes %s to packaged setup", async (flag, value) => {
+    const stdout = writer();
+    let configuredValue: string | undefined;
+
+    const exitCode = await runKoedServerCli(
+      ["setup", "codex", flag, "--json"],
+      {
+        stdout: stdout.stream,
+        setupCodex: async (options = {}) => {
+          configuredValue = options.environment?.KOED_CODEX_STOP_DELIVERY;
+          return {
+            ok: true,
+            state: "healthy",
+            koedHome: "/tmp/koed",
+            apiUrl: "http://localhost:3300",
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            command: "node scripts/clients-bootstrap.mjs"
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(configuredValue).toBe(value);
   });
 });

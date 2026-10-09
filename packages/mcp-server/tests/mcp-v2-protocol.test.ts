@@ -14,10 +14,14 @@ import {
   resolveKoedMcpServerVersion,
   type McpCallerContextResolver
 } from "../src/mcp-server-factory.js";
-import type { LocalAiRuntimeClient } from "../src/local-runtime-client.js";
-import type {
-  LocalRuntimeCallerContext,
-  LocalRuntimeToolName
+import {
+  LocalAiRuntimeError,
+  type LocalAiRuntimeClient
+} from "../src/local-runtime-client.js";
+import {
+  localRuntimeToolNames,
+  type LocalRuntimeCallerContext,
+  type LocalRuntimeToolName
 } from "../src/local-runtime-protocol.js";
 
 const connected: Array<{
@@ -36,11 +40,18 @@ const connect = async ({
   curatedMemoryIntakeAvailable = true,
   environment = {},
   callerContextResolver,
+  capabilities = async () => ({
+    protocolVersion: 1 as const,
+    curatedMemoryIntakeAvailable,
+    supportedTools: localRuntimeToolNames,
+    memoryAnswerTeamBackendAvailable: true
+  }),
   callTool = vi.fn(async (name: LocalRuntimeToolName) => ({ ok: true, name }))
 }: {
   curatedMemoryIntakeAvailable?: boolean;
   environment?: NodeJS.ProcessEnv;
   callerContextResolver?: McpCallerContextResolver;
+  capabilities?: LocalAiRuntimeClient["capabilities"];
   callTool?: (
     name: LocalRuntimeToolName,
     input: Record<string, unknown>,
@@ -49,10 +60,7 @@ const connect = async ({
   ) => Promise<Record<string, unknown>>;
 } = {}) => {
   const runtimeClient = {
-    capabilities: async () => ({
-      protocolVersion: 1 as const,
-      curatedMemoryIntakeAvailable
-    }),
+    capabilities,
     callTool
   } as unknown as LocalAiRuntimeClient;
   const [clientTransport, serverTransport] =
@@ -79,6 +87,33 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("returns throttle origin and retry timing in MCP error content", async () => {
+    const { client } = await connect({
+      callTool: async () => {
+        throw new LocalAiRuntimeError(
+          "Remote Team Backend request limit reached. Retry later.",
+          429,
+          undefined,
+          7000,
+          "remote"
+        );
+      }
+    });
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "dinner" }
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      error: "Remote Team Backend request limit reached. Retry later.",
+      statusCode: 429,
+      retryAfterMs: 7000,
+      rateLimitSource: "remote"
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: JSON.stringify(result.structuredContent, null, 2) }
+    ]);
+  });
   it("advertises the Koed release independently from its protocol version", () => {
     expect(KOED_MCP_SERVER_VERSION).toBe(releaseManifest.version);
     expect(KOED_MCP_PROTOCOL_VERSION).toBe("2026-07-28");
@@ -111,6 +146,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const second = await client.listTools();
     expect(first.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_intake_propose"
     ]);
     expect(second).toEqual(first);
@@ -131,10 +167,45 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "memory_answer",
+      "memory_workspaces",
       "memory_access_check",
       "memory_search",
       "memory_expand"
     ]);
+  });
+
+  it("forwards Workspace discovery and explicit Team backend selection through MCP", async () => {
+    const { client, callTool } = await connect();
+    await client.callTool({
+      name: "memory_workspaces",
+      arguments: { team_backend_id: "enrolled-backend" }
+    });
+    expect(callTool).toHaveBeenCalledWith(
+      "memory_workspaces",
+      { team_backend_id: "enrolled-backend" },
+      expect.any(Object),
+      expect.anything(),
+      expect.any(String)
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "What dinner did the Team share?",
+        search_domain: "global",
+        team_workspace_id: "11111111-1111-4111-8111-111111111111",
+        team_backend_id: "enrolled-backend"
+      }
+    });
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.objectContaining({
+        team_backend_id: "enrolled-backend",
+        team_workspace_id: "11111111-1111-4111-8111-111111111111"
+      }),
+      expect.any(Object),
+      expect.anything(),
+      expect.any(String)
+    );
   });
 
   it("starts in degraded mode and recovers when Koed becomes available", async () => {
@@ -147,7 +218,9 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       .mockRejectedValueOnce(new Error("runtime is starting"))
       .mockResolvedValue({
         protocolVersion: 1 as const,
-        curatedMemoryIntakeAvailable: true
+        curatedMemoryIntakeAvailable: true,
+        supportedTools: localRuntimeToolNames,
+        memoryAnswerTeamBackendAvailable: true
       });
     const runtimeClient = {
       capabilities,
@@ -186,7 +259,11 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       })
     ).resolves.toMatchObject({ structuredContent: { ok: true } });
     await expect(client.listTools()).resolves.toMatchObject({
-      tools: [{ name: "memory_answer" }, { name: "memory_intake_propose" }]
+      tools: [
+        { name: "memory_answer" },
+        { name: "memory_workspaces" },
+        { name: "memory_intake_propose" }
+      ]
     });
     await expect(
       client.callTool({
@@ -200,6 +277,78 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(callTool).toHaveBeenCalledTimes(3);
     await client.close();
     await server.close();
+  });
+
+  it("keeps legacy recall available and fails fast for new Team input on older runtimes", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Existing recall works" }));
+    const { client } = await connect({
+      capabilities: async () => ({
+        protocolVersion: 1,
+        curatedMemoryIntakeAvailable: false
+      }),
+      callTool
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "memory_answer"
+    ]);
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Existing memory?" }
+      })
+    ).resolves.toMatchObject({
+      structuredContent: { markdown: "Existing recall works" }
+    });
+    callTool.mockClear();
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: {
+          query: "Team memory?",
+          team_workspace_id: "11111111-1111-4111-8111-111111111111",
+          team_backend_id: "enrolled-backend"
+        }
+      })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [
+        { text: expect.stringContaining("Restart the runtime") as unknown }
+      ]
+    });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the contract when a newer runtime is replaced by an older runtime", async () => {
+    const callTool = vi.fn(async () => ({}));
+    const capabilities = vi
+      .fn<LocalAiRuntimeClient["capabilities"]>()
+      .mockResolvedValueOnce({
+        protocolVersion: 1,
+        curatedMemoryIntakeAvailable: false,
+        supportedTools: localRuntimeToolNames,
+        memoryAnswerTeamBackendAvailable: true
+      })
+      .mockResolvedValue({
+        protocolVersion: 1,
+        curatedMemoryIntakeAvailable: false
+      });
+    const { client } = await connect({ capabilities, callTool });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain(
+      "memory_workspaces"
+    );
+    await expect(
+      client.callTool({ name: "memory_workspaces", arguments: {} })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [
+        {
+          text: expect.stringContaining(
+            "does not support this Team recall feature"
+          ) as unknown
+        }
+      ]
+    });
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it("forwards per-request caller metadata and returns structured content", async () => {

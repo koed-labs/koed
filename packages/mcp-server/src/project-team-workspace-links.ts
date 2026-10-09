@@ -119,7 +119,7 @@ const normalizeLink = (
   }
   return {
     projectRoot: path.resolve(candidate.projectRoot),
-    teamWorkspaceId: candidate.teamWorkspaceId!,
+    teamWorkspaceId: candidate.teamWorkspaceId!.toLowerCase(),
     backendId:
       typeof candidate.backendId === "string" ? candidate.backendId : null,
     localProjectId:
@@ -171,16 +171,18 @@ export const resolveProjectTeamWorkspaceRoute = (input: {
   env?: NodeJS.ProcessEnv;
 }): ProjectTeamWorkspaceRoute => {
   const env = input.env ?? process.env;
+  const requestedTeamWorkspaceId =
+    input.requestedTeamWorkspaceId?.toLowerCase();
   const configuredBackendId = env.KOED_TEAM_UPSTREAM_BACKEND_ID?.trim();
   const link = input.projectRoot
     ? resolveProjectTeamWorkspaceLink(input.projectRoot, env)
     : null;
 
-  if (input.requestedTeamWorkspaceId) {
+  if (requestedTeamWorkspaceId) {
     return {
-      teamWorkspaceId: input.requestedTeamWorkspaceId,
+      teamWorkspaceId: requestedTeamWorkspaceId,
       backendId:
-        link?.teamWorkspaceId === input.requestedTeamWorkspaceId
+        link?.teamWorkspaceId === requestedTeamWorkspaceId
           ? (link.backendId ?? configuredBackendId)
           : configuredBackendId
     };

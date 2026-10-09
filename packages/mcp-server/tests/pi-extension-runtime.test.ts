@@ -22,8 +22,12 @@ describe("Koed Pi Memory Answer bridge", () => {
       join(koedHome, "run", "local-ai-runtime.json"),
       JSON.stringify({
         url: "http://127.0.0.1:32123",
-        authorization: "Bearer runtime-secret"
-      })
+        protocolVersion: 1,
+        authorization: `Bearer ${"a".repeat(32)}`,
+        pid: 123,
+        startedAt: new Date().toISOString()
+      }),
+      { mode: 0o600 }
     );
     let finish!: (response: Response) => void;
     const fetchMock = vi.fn(

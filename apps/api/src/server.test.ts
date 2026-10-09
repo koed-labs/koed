@@ -6939,6 +6939,15 @@ describe("api health", () => {
       expect(
         (await app.inject({ method: "GET", url: "/v1/access/check", headers }))
           .statusCode
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: "/v1/capture-policy/effective",
+            headers
+          })
+        ).statusCode
       ).toBe(429);
       expect(
         (
@@ -6985,6 +6994,8 @@ describe("api health", () => {
   });
 
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-rate-limit-"));
+    process.env.KOED_HOME = koedHome;
     process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
     process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";
     process.env.MEMORY_WRITE_RATE_LIMIT_WINDOW_MS = "60000";
@@ -6996,12 +7007,12 @@ describe("api health", () => {
 
     const firstRead = await app.inject({
       method: "GET",
-      url: "/v1/access/check",
+      url: "/v1/capture-policy/effective",
       headers
     });
     const secondRead = await app.inject({
       method: "GET",
-      url: "/v1/access/check",
+      url: "/v1/capture-policy/effective",
       headers
     });
     const firstWrite = await app.inject({
@@ -7023,12 +7034,14 @@ describe("api health", () => {
       payload: {}
     });
     await app.close();
+    rmSync(koedHome, { recursive: true, force: true });
 
     expect(firstRead.statusCode).not.toBe(429);
     expect(firstRead.headers["x-ratelimit-limit"]).toBe("1");
     expect(firstRead.headers["retry-after"]).toBeUndefined();
     expect(secondRead.statusCode).toBe(429);
     expect(secondRead.headers["retry-after"]).toBeDefined();
+    expect(secondRead.headers["x-koed-rate-limit-source"]).toBe("local");
     expect(firstWrite.statusCode).not.toBe(429);
     expect(firstWrite.headers["x-ratelimit-limit"]).toBe("2");
     expect(firstRecall.statusCode).not.toBe(429);
@@ -9153,6 +9166,148 @@ describe("account and access flows", () => {
     expect(deniedRedeem.statusCode).toBe(404);
     expect(publicKeyCredentialChallenge.statusCode).toBe(400);
     expect(impossiblePendingScope.statusCode).toBe(400);
+  });
+
+  it("keeps Personal and Team recall available when background reads are throttled", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-recall-throttle-"));
+    process.env.KOED_HOME = koedHome;
+    const localClient = storeLocalEdgeClientCredential(koedHome, {
+      backendId: "team-vps",
+      secret: "recall-throttle-secret",
+      operationFamilies: ["team_workspace_read"]
+    });
+    const authorization = `Koed-Device ${localClient.credentialKeyId}:recall-throttle-secret`;
+    const upstreamBackendsPath = writeUpstreamRegistryFixture({
+      baseUrl: "https://team.example.test",
+      routePolicy: { teamWorkspaceRead: "enabled" }
+    });
+    let exhaustBackgroundReads = false;
+    let remoteStatus = 200;
+    const upstreamCalls: string[] = [];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      upstreamBackendsPath,
+      resolveUpstreamAuthorization: () =>
+        "Koed-Device upstream-key:upstream-secret",
+      rateLimitStore: {
+        increment(key, windowMs) {
+          return Promise.resolve({
+            count:
+              exhaustBackgroundReads && key.startsWith("memoryRead:")
+                ? 1_000_001
+                : 1,
+            resetAt: Date.now() + windowMs
+          });
+        }
+      },
+      fetch: async (url) => {
+        upstreamCalls.push(String(url));
+        return new Response(
+          JSON.stringify(
+            remoteStatus === 429
+              ? { error: "Rate limit exceeded" }
+              : { hits: [] }
+          ),
+          {
+            status: remoteStatus,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "7",
+              "x-koed-rate-limit-source": "local",
+              "x-private-header": "PRIVATE"
+            }
+          }
+        );
+      }
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: "recall-throttle@example.test",
+          password: "password123"
+        }
+      });
+      const tokenResponse = await app.inject({
+        method: "POST",
+        url: "/api-tokens",
+        headers: browserSessionHeaders(cookieHeader(registered)),
+        payload: { name: "Recall" }
+      });
+      const headers = {
+        authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+      };
+      exhaustBackgroundReads = true;
+      const background = await app.inject({
+        method: "GET",
+        url: "/v1/capture-policy/effective",
+        headers
+      });
+      expect(background.statusCode).toBe(429);
+      expect(background.headers["x-koed-rate-limit-source"]).toBe("local");
+      expect(background.headers["retry-after"]).toBeDefined();
+      const access = await app.inject({
+        method: "GET",
+        url: "/v1/access/check",
+        headers
+      });
+      expect(access.statusCode).toBe(200);
+      for (const operation of ["search", "answer"]) {
+        const personal = await app.inject({
+          method: "POST",
+          url: `/v1/memory/${operation}`,
+          headers,
+          payload: { query: "dinner", search_domain: "global" }
+        });
+        expect(personal.statusCode).toBe(200);
+      }
+      const teamPayload = {
+        upstream_backend_id: "team-vps",
+        input: { query: "dinner", team_workspace_id: randomUUID() }
+      };
+      for (const operation of ["search", "answer", "expand"]) {
+        const team = await app.inject({
+          method: "POST",
+          url: `/v1/local-edge/team-memory/${operation}`,
+          headers: { authorization },
+          payload:
+            operation === "expand"
+              ? {
+                  upstream_backend_id: "team-vps",
+                  node_id: randomUUID(),
+                  input: {
+                    team_workspace_id: teamPayload.input.team_workspace_id
+                  }
+                }
+              : teamPayload
+        });
+        expect(team.statusCode).toBe(200);
+      }
+      expect(upstreamCalls).toHaveLength(3);
+      remoteStatus = 429;
+      const remote = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/team-memory/answer",
+        headers: { authorization },
+        payload: teamPayload
+      });
+      expect(remote.statusCode).toBe(429);
+      expect(remote.headers["x-koed-rate-limit-source"]).toBe("remote");
+      expect(remote.headers["retry-after"]).toBe("7");
+      expect(remote.headers["x-private-header"]).toBeUndefined();
+      const denied = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/team-memory/answer",
+        headers,
+        payload: teamPayload
+      });
+      expect(denied.statusCode).toBe(401);
+      expect(upstreamCalls).toHaveLength(4);
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("proxies typed Team Memory after scoped local-edge authorization", async () => {

@@ -1,0 +1,91 @@
+import type {
+  MemoryAnswerDeliveryTask,
+  MemoryAnswerExecutionPort
+} from "./memory-answer-delivery.mjs";
+export declare const RECEIPT: string;
+export declare const DISPOSITION: string;
+export declare const COMPLETION: string;
+export declare const DUPLICATE: string;
+export declare const MAX_DELIVERY_ATTEMPTS: number;
+export interface PiDeliveryContext {
+  cwd: string;
+  /** Pi run mode; "print" and "json" are single-shot and use blocking recall. */
+  mode?: string;
+  sessionManager: {
+    getSessionId(): string;
+    getSessionFile(): string | undefined;
+    getBranch(): Array<{
+      type: string;
+      customType?: string;
+      data?: unknown;
+      details?: unknown;
+    }>;
+    getEntries(): Array<{
+      type: string;
+      customType?: string;
+      data?: unknown;
+      details?: unknown;
+    }>;
+  };
+  ui?: { notify?(message: string, level: string): void };
+  /** Pi's idle state; redelivery waits while another agent run is active. */
+  isIdle?(): boolean;
+}
+export interface PiMessageEndEvent {
+  message?: {
+    role?: string;
+    customType?: string;
+    details?: { taskId?: unknown } & Record<string, unknown>;
+  } & Record<string, unknown>;
+}
+export declare function createPiMemoryDelivery(
+  pi: {
+    appendEntry?(type: string, data: Record<string, unknown>): void;
+    sendMessage?(
+      message: {
+        customType: string;
+        content: string;
+        display: boolean;
+        details: Record<string, unknown>;
+      },
+      options:
+        | { deliverAs: "followUp"; triggerTurn: true }
+        | { triggerTurn: false }
+    ): void;
+  },
+  options: {
+    port: MemoryAnswerExecutionPort<MemoryAnswerDeliveryTask> & {
+      scope: string;
+    };
+    blocking(
+      input: Record<string, unknown>,
+      context: PiDeliveryContext,
+      signal: AbortSignal | undefined,
+      invocation: string
+    ): Promise<Record<string, unknown>>;
+    mode?: string;
+    pollMs?: number;
+    retryMs?: number;
+  }
+): {
+  execute(
+    id: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    context: PiDeliveryContext
+  ): Promise<{
+    content: Array<{ type: string; text: string }>;
+    details: Record<string, unknown>;
+  }>;
+  start(event: { reason: string }, context: PiDeliveryContext): void;
+  detach(invalidate?: boolean): void;
+  /** Pi `message_end` handler: confirms delivery and replaces late duplicates. */
+  messageEnd(
+    event: PiMessageEndEvent,
+    context?: PiDeliveryContext
+  ): { message: Record<string, unknown> } | undefined;
+  /** Pi `agent_settled` handler: redelivers completions that Pi dropped. */
+  agentSettled(event: unknown, context?: PiDeliveryContext): void;
+  pending: Map<string, { watcher: Promise<unknown> }>;
+  settle(): Promise<void>;
+};

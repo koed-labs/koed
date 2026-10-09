@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -104,6 +106,7 @@ const writeMcpRuntimeArtifacts = (
   writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
   writeFileSync(resolve(dist, "cli.js"), "");
   writeFileSync(resolve(dist, "capture-hook.js"), "");
+  writeFileSync(resolve(dist, "codex-memory-hook.js"), "");
   if (includeGuidance) {
     mkdirSync(resolve(dist, "prompts"), { recursive: true });
     writeFileSync(
@@ -204,6 +207,7 @@ describe("Codex setup wrapper", () => {
     mkdirSync(resolve(mcpCli, ".."), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
     const order: string[] = [];
     const runtime = () => {
       order.push("runtime");
@@ -261,6 +265,237 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
       mcpCli
     );
+  });
+
+  it("contributor check accepts repaired deferred and blocking configuration", () => {
+    const root = realpathSync(tempDir());
+    const codexHome = resolve(root, "codex");
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    const captureHook = resolve(mcpCli, "../capture-hook.js");
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    for (const artifact of [
+      mcpCli,
+      captureHook,
+      resolve(mcpCli, "../codex-memory-hook.js")
+    ])
+      writeFileSync(artifact, "");
+    mkdirSync(codexHome);
+    const configPath = resolve(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "fixture-model"\n');
+    const environment = {
+      ...process.env,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CODEX_HOME: codexHome,
+      CODEX_CONFIG_PATH: configPath,
+      MEMORY_NODE_COMMAND: process.execPath,
+      MEMORY_API_TOKEN: "synthetic-setup-token",
+      KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
+    };
+    for (const selection of ["1", "0"]) {
+      const result = repairCodexIntegration({
+        environment: { ...environment, KOED_CODEX_STOP_DELIVERY: selection },
+        resolveRuntime: () => ({ root, mcpCli, captureHook }) as never,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+      expect(result.ok).toBe(true);
+      const installed = readFileSync(configPath, "utf8");
+      expect(installed).toContain('model = "fixture-model"');
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          [
+            resolve(
+              import.meta.dirname,
+              "../../../scripts/configure-codex.mjs"
+            ),
+            "--check"
+          ],
+          {
+            cwd: root,
+            env: { ...environment, KOED_CODEX_STOP_DELIVERY: selection }
+          }
+        )
+      ).not.toThrow();
+      expect(readFileSync(configPath, "utf8")).toBe(installed);
+    }
+  });
+
+  it("defaults to deferred recall and preserves a recorded blocking selection through packaged setup and repair", async () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "codex");
+    const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "runtime/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
+    const order: string[] = [];
+    const runtime = () => {
+      order.push("runtime");
+      return {
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: resolve(root, "runtime"),
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        privacyServiceEntry: "privacy",
+        mcpCli,
+        localAiRuntime: "local-ai",
+        captureHook,
+        dbPackageRoot: "db",
+        missing: []
+      } as never;
+    };
+    const result = await setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
+        CODEX_CONFIG_PATH: resolve(codexHome, "config.toml"),
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper"
+      },
+      resolveRuntime: runtime,
+      provisionLocalApiToken: async () => {
+        order.push("provision");
+        mkdirSync(resolve(root, "config"), { recursive: true });
+        writeFileSync(
+          resolve(root, "config/local-app-credential.json"),
+          JSON.stringify({ apiToken: "core" })
+        );
+        return { token: "core", reused: false, ownerUserId: "owner" };
+      },
+      migrateCodex: () => ({ migrated: false }),
+      resolveCodexExecutable: () => "/bin/sh",
+      spawnSync: () => {
+        order.push("bootstrap");
+        return spawnResult();
+      },
+      registerAiClient: () => true
+    });
+
+    expect(result.ok).toBe(true);
+    const configPath = resolve(codexHome, "config.toml");
+    const installed = readFileSync(configPath, "utf8");
+    expect(installed).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
+    expect(installed).toContain("timeout = 305");
+    expect(installed).toContain("mcp__koed__memory_answer");
+    expect(installed).toContain("codex-memory-hook.js");
+    expect(installed).not.toContain("async = true");
+    const base = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      CODEX_HOME: codexHome,
+      KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
+    };
+    const repair = (selection?: string) =>
+      repairCodexIntegration({
+        environment: {
+          ...base,
+          ...(selection ? { KOED_CODEX_STOP_DELIVERY: selection } : {})
+        },
+        resolveRuntime: runtime,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
+    expect(repair("0").ok).toBe(true);
+    const blocking = readFileSync(configPath, "utf8");
+    expect(blocking).toContain('KOED_CODEX_STOP_DELIVERY = "0"');
+    expect(blocking).not.toContain("codex-memory-hook.js");
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+    writeFileSync(
+      configPath,
+      blocking.replace(/^KOED_CODEX_STOP_DELIVERY = "0"\n/m, "")
+    );
+    expect(repair().ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(installed);
+    expect(repair("0").ok).toBe(true);
+    rmSync(resolve(mcpCli, "../codex-memory-hook.js"));
+    expect(repair("1").ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(blocking);
+
+    expect(order).not.toContain("bootstrap");
+    expect(order.filter((entry) => entry === "runtime").length).toBeGreaterThan(
+      1
+    );
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      mcpCli
+    );
+  });
+
+  it("defaults Windows to blocking recall while keeping explicit and recorded deferred selections", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "codex");
+    const configPath = resolve(codexHome, "config.toml");
+    const mcpCli = resolve(root, "runtime/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "runtime/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(mcpCli, ".."), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(resolve(mcpCli, "../codex-memory-hook.js"), "");
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "core" })
+    );
+    const runtime = () =>
+      ({
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: resolve(root, "runtime"),
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        privacyServiceEntry: "privacy",
+        mcpCli,
+        localAiRuntime: "local-ai",
+        captureHook,
+        dbPackageRoot: "db",
+        missing: []
+      }) as never;
+    const repair = (selection?: string) =>
+      repairCodexIntegration({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          CODEX_HOME: codexHome,
+          KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false",
+          ...(selection ? { KOED_CODEX_STOP_DELIVERY: selection } : {})
+        },
+        resolveRuntime: runtime,
+        resolveCodexExecutable: () => "/bin/sh",
+        registerAiClient: () => true
+      });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(repair().ok).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toContain(
+        'KOED_CODEX_STOP_DELIVERY = "0"'
+      );
+      expect(repair("1").ok).toBe(true);
+      const deferred = readFileSync(configPath, "utf8");
+      expect(deferred).toContain('KOED_CODEX_STOP_DELIVERY = "1"');
+      expect(repair().ok).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toBe(deferred);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("stores the resolved absolute Codex path after setup", async () => {
@@ -853,6 +1088,9 @@ describe("Codex setup wrapper", () => {
     );
     expect(readFileSync(codexConfigPath, "utf8")).toContain(
       '[mcp_servers.koed.tools.memory_answer]\napproval_mode = "approve"'
+    );
+    expect(readFileSync(codexConfigPath, "utf8")).toContain(
+      '[mcp_servers.koed.tools.memory_workspaces]\napproval_mode = "approve"'
     );
     expect(
       JSON.parse(
