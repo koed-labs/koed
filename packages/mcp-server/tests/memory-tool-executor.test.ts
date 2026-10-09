@@ -1,12 +1,154 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   boundedDesktopAskConversationContext,
   MemoryToolExecutor,
   type MemoryToolExecutorServices
 } from "../src/memory-tool-executor.js";
 import type { MemoryApiClient } from "../src/index.js";
+import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
 
 describe("MemoryToolExecutor", () => {
+  it.each([
+    [undefined, false],
+    ["with_citations", false],
+    ["with_evidence", false],
+    [undefined, true]
+  ] as const)(
+    "preserves caller detail %s / include_evidence=%s across blocking and task results",
+    async (detail, includeEvidence) => {
+      for (const route of ["blocking", "task"] as const) {
+        const evidence = [
+          { sourceId: "selected", summaryText: "Selected body" }
+        ];
+        const citations = [{ sourceId: "selected" }];
+        const worker = {
+          provider: "codex",
+          promptVersion: "test",
+          jobId: "detail-job",
+          model: "fixture-model",
+          usedFallback: false,
+          tokenUsage: { last: { totalTokens: 1234 } },
+          appServerExecutions: [
+            { model: "fixture-model", threadId: "INTERNAL THREAD" }
+          ]
+        };
+        const createFinalQuestion = vi.fn(
+          async (input: Record<string, unknown>) => ({
+            question: {
+              id: "11111111-1111-4111-8111-111111111111",
+              answerMarkdown: input.answer_markdown,
+              evidence: input.evidence,
+              citations: input.citations,
+              retrieval: input.retrieval,
+              localMemoryWorker: input.local_memory_worker,
+              response: input.response
+            }
+          })
+        );
+        const client = {
+          accessCheck: vi.fn(async () => ({})),
+          listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+          recordTokenUsage: vi.fn(async () => ({})),
+          createFinalQuestion
+        } as unknown as MemoryApiClient;
+        const executor = new MemoryToolExecutor(
+          client,
+          {},
+          {
+            answerWithMemoryWorker: async () => ({
+              markdown: "The answer",
+              structuredAnswer: undefined,
+              evidenceBundle: {
+                evidence,
+                retrieval: { trace: "INTERNAL TRACE" }
+              },
+              citations,
+              retrieval: { evidenceCount: 1 },
+              localMemoryWorker: worker
+            })
+          }
+        );
+        const input = memoryAnswerInputSchema.parse({
+          query: "What did we decide?",
+          search_domain: "global",
+          response_detail: detail,
+          include_evidence: includeEvidence
+        });
+        const caller = { cwd: "/work/requesting-project" };
+        const result =
+          route === "blocking"
+            ? await executor.execute("memory_answer", input, caller)
+            : (
+                await executor.executeMemoryAnswerTask(
+                  input,
+                  caller,
+                  "22222222-2222-4222-8222-222222222222"
+                )
+              ).result;
+        const withEvidence = detail === "with_evidence" || includeEvidence;
+        expect(result.markdown).toBe("The answer");
+        expect(result).not.toHaveProperty("evidenceBundle");
+        expect(result.evidence).toEqual(withEvidence ? evidence : undefined);
+        expect(result.citations).toEqual(
+          withEvidence || detail === "with_citations" ? citations : undefined
+        );
+        expect(JSON.stringify(result)).not.toMatch(
+          /INTERNAL|tokenUsage|appServerExecutions/
+        );
+        expect(createFinalQuestion.mock.calls[0]![0]).toMatchObject({
+          evidence,
+          citations,
+          local_memory_worker: worker,
+          retrieval: { trace: "INTERNAL TRACE" }
+        });
+      }
+    }
+  );
+
+  it.each([undefined, "unavailable-team-backend"])(
+    "omits Evidence Bundles when Team routing fails with backend %s",
+    async (backendId) => {
+      const home = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-answer-detail-")
+      );
+      try {
+        const client = {
+          accessCheck: vi.fn(async () => ({})),
+          listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
+        } as unknown as MemoryApiClient;
+        const executor = new MemoryToolExecutor(client, { KOED_HOME: home });
+        const result = await executor.execute(
+          "memory_answer",
+          {
+            query: "What did the Team decide?",
+            search_domain: "global",
+            team_workspace_id: "11111111-1111-4111-8111-111111111111",
+            team_backend_id: backendId
+          },
+          { cwd: "/work/requesting-project" }
+        );
+
+        expect(result.markdown).toMatch(
+          backendId
+            ? /no scoped local-edge client credential/
+            : /could not resolve/
+        );
+        expect(Object.keys(result).sort()).toEqual(["markdown", "retrieval"]);
+        expect(result.retrieval).toMatchObject({
+          evidenceCount: 0,
+          mode: backendId
+            ? "team_workspace_local_credential_unavailable"
+            : "team_workspace_upstream_backend_unavailable"
+        });
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("bounds Desktop Ask context to the newest completed text-only turns", () => {
     const questions = Array.from({ length: 25 }, (_, index) => ({
       status: index === 24 ? "pending" : "answered",
