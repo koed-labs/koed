@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   allTools,
   exposedTools,
+  MEMORY_ANSWER_RETRIEVAL_META,
   memoryAnswerToolDescription,
   memoryIntakeProposeToolDescription,
   memoryServerInstructions,
@@ -345,14 +346,22 @@ export const createKoedMcpServer = async (
               answerInput.include_evidence === true ||
               answerInput.response_detail === "with_citations" ||
               answerInput.response_detail === "with_evidence";
+            const retrieval = response.retrieval;
             return {
               content: [
                 {
                   type: "text" as const,
-                  text: formatMemoryAnswerCompletion(response)
+                  text: formatMemoryAnswerCompletion(response, "completed", {
+                    includeDetails: detailed
+                  })
                 }
               ],
-              ...(detailed ? { structuredContent: response } : {})
+              ...(detailed ? { structuredContent: response } : {}),
+              // Clients do not show _meta to the model. Observers such as the
+              // benchmark bridge still need retrieval counts for compact recall.
+              ...(retrieval && typeof retrieval === "object"
+                ? { _meta: { [MEMORY_ANSWER_RETRIEVAL_META]: retrieval } }
+                : {})
             };
           }
           return jsonResponse(response);

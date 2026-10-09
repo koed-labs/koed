@@ -16,6 +16,10 @@ const textResult = (result, text = JSON.stringify(result)) => ({
   content: [{ type: "text", text }],
   details: result
 });
+const requestsDetails = (input) =>
+  input?.include_evidence === true ||
+  input?.response_detail === "with_citations" ||
+  input?.response_detail === "with_evidence";
 // Print and JSON modes are single-shot: Pi disposes the runtime once the
 // prompted turn returns, before a deferred result could be presented.
 const capabilities = (pi, ctx) =>
@@ -53,7 +57,12 @@ export function createPiMemoryDelivery(
   const boundary = new MemoryAnswerDelivery(port, { pollMs });
   const blockingResult = async (input, ctx, signal, invocation) => {
     const result = await blocking(input, ctx, signal, invocation);
-    return textResult(result, formatMemoryAnswerCompletion(result));
+    return textResult(
+      result,
+      formatMemoryAnswerCompletion(result, "completed", {
+        includeDetails: requestsDetails(input)
+      })
+    );
   };
   const pending = new Map();
   const accepting = new Set();
@@ -204,9 +213,12 @@ export function createPiMemoryDelivery(
               pi.sendMessage(
                 {
                   customType: COMPLETION,
+                  // Pi omits details from model context, so the content
+                  // itself names the recall request it answers.
                   content: formatMemoryAnswerCompletion(
                     task.result,
-                    task.status
+                    task.status,
+                    { request: binding }
                   ),
                   display: true,
                   details: binding

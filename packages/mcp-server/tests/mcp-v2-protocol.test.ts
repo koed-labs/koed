@@ -23,6 +23,7 @@ import {
   type LocalRuntimeCallerContext,
   type LocalRuntimeToolName
 } from "../src/local-runtime-protocol.js";
+import { MEMORY_ANSWER_RETRIEVAL_META } from "../src/index.js";
 
 const connected: Array<{
   client: Client;
@@ -118,6 +119,10 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(result.structuredContent).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain("private");
     expect(JSON.stringify(result)).not.toContain("41067");
+    // Observers keep retrieval counts without the model seeing them.
+    expect(result._meta?.[MEMORY_ANSWER_RETRIEVAL_META]).toEqual({
+      evidenceCount: 1
+    });
   });
 
   it.each([
@@ -125,7 +130,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     { response_detail: "with_evidence" },
     { include_evidence: true }
   ])(
-    "keeps explicitly requested details separate from readable completion text: %j",
+    "delivers explicitly requested details in text and structured content: %j",
     async (detail) => {
       const payload = {
         markdown: "The retained answer.",
@@ -137,7 +142,14 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         arguments: { query: "dinner", ...detail }
       });
       expect(result.content).toEqual([
-        { type: "text", text: recallText("The retained answer.") }
+        {
+          type: "text",
+          text:
+            `${recallText("The retained answer.")}\n` +
+            "<koed-memory-answer-details>\n" +
+            '{"citations":[{"sourceId":"requested-source"}]}\n' +
+            "</koed-memory-answer-details>"
+        }
       ]);
       expect(result.structuredContent).toEqual(payload);
     }
