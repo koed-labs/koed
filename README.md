@@ -18,7 +18,10 @@ need them.
 > Codex, Claude Code, and Pi are independently installed supported AI Client
 > integrations. Koed core setup does not require any AI Client. Koed does not
 > bundle AI Client runtimes or provider credentials; configure each client only
-> after core services are ready.
+> after core services are ready. Koed does not auto-register at install or
+> startup; explicit client setup writes client-specific integration state. See
+> [MCP integration and configuration](docs/mcp-integration.md) for exact paths,
+> ownership, verification, permissions, and cleanup.
 
 ### Requirements
 
@@ -125,6 +128,8 @@ The README keeps to one basic local path. For other options, see:
   boundaries.
 - [Configuration](docs/configuration.md) for environment variables, runtime
   modes, model overrides, logging, and production settings.
+- [MCP integration and configuration](docs/mcp-integration.md) for client
+  config paths, ownership, tool permissions, verification, and removal.
 - [Codex integration](docs/codex-integration.md) for manual Codex setup and
   recovery.
 - [Claude Code integration](docs/claude-code-integration.md) for capture, recall,

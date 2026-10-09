@@ -1,6 +1,9 @@
 # Pi integration
 
-Koed supports independently installed Pi as an AI Client driver. Koed does not bundle Pi, store Pi provider credentials, or use Codex or Claude Code as fallback for Pi work.
+Koed supports independently installed Pi as an AI Client driver. Koed does not
+bundle Pi, store Pi provider credentials, or use Codex or Claude Code as fallback
+for Pi work. See [MCP integration and configuration](mcp-integration.md) for
+exact config paths, ownership, verification, permissions, and removal.
 
 Pi uses the [durable Personal Memory Answer path](durable-memory-answer.md) and
 waits for its terminal tool body. Detached message injection remains disabled

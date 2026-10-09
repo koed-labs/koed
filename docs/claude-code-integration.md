@@ -7,6 +7,8 @@ MCP Server, and optional local Synthesis through Claude Code.
 
 Koed does not require Codex for the Claude integration. Codex and Claude Code
 use the same [durable Personal Memory Answer path](durable-memory-answer.md).
+See [MCP integration and configuration](mcp-integration.md) for exact config
+paths, ownership, verification, and removal.
 Claude's Agent SDK still requires the matching tool result before model
 continuation, so the host waits while durable work continues without model
 polling. Both AI Clients may connect to the same local Koed deployment, but
@@ -59,8 +61,9 @@ pnpm claude:configure
 The Local Operator Script checks Claude Code sign-in before changing the profile,
 installs the Koed MCP Server at Claude Code's user scope,
 merges the Koed Capture Hook into the local Claude settings file, and registers
-`claude.default`. It preserves unrelated hooks and MCP entries. Restart Claude
-Code after the command completes.
+`claude.default`. Other MCP names and unrelated hooks are retained, but setup
+replaces an existing MCP entry with the configured name. Restart Claude Code
+after the command completes.
 
 The headless `koed setup claude --json` command, like Desktop setup, can
 configure the profile while signed out and report that sign-in is required.

@@ -4,6 +4,8 @@ Codex, Claude Code, and Pi are supported AI Clients. This page covers Codex;
 see [Claude Code integration](claude-code-integration.md) and
 [Pi integration](pi-integration.md) for other client setup. Select each flow's
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
+For config paths, ownership boundaries, tool permissions, verification, and
+removal, see [MCP integration and configuration](mcp-integration.md).
 
 Personal Memory Answers use [durable execution](durable-memory-answer.md).
 Codex uses deferred recall by default, except on Windows, where setup selects
