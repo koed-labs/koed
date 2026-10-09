@@ -33,6 +33,9 @@ import {
   resolveCodexAppServerBinary,
   runCodexAppServerJsonTask,
   type CodexAppServerModelOption,
+  type CodexAppServerDynamicToolSpec,
+  type CodexAppServerDynamicToolCall,
+  type CodexAppServerDynamicToolResponse,
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
@@ -52,6 +55,11 @@ export interface AiClientRunConfig {
   systemPrompt: string;
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
+  validateOutput?: (value: unknown) => void;
+  dynamicTools?: CodexAppServerDynamicToolSpec[];
+  dynamicToolHandler?: (
+    call: CodexAppServerDynamicToolCall
+  ) => Promise<CodexAppServerDynamicToolResponse>;
   signal?: AbortSignal;
   onProgress?: (status: string) => void;
 }

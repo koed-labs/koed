@@ -98,9 +98,21 @@ execution ready without reinstalling the Koed profile.
 Extension exposes:
 
 - `memory_answer`
+- `memory_workspaces`
 - `memory_intake_propose`
 
 Tools call authenticated Local AI Runtime through local runtime registration. Pi configuration receives only `KOED_HOME`; it receives no Koed API Token, backend URL, or provider credential. Missing Koed runtime causes tool-local error and does not terminate Pi session.
+
+Personal Memory remains the default. For Team recall, call `memory_workspaces`
+using the existing enrollment, select the relevant authorized Workspace, and
+pass both `team_workspace_id` and `team_backend_id` to `memory_answer`. Use
+`search_domain=global` for all shared Memory in that Workspace; global without
+Team IDs searches Personal Memory. The Workspace open in Desktop does not
+select Pi recall scope. Query multiple relevant Workspaces separately, and treat
+unavailable backends as routing failures rather than empty Memory. Discovery and
+explicit backend selection check runtime capabilities on each call; an older
+runtime reports a restart instruction instead of accepting unsupported routing.
+Restart Pi after updating the installed Koed integration to load the new tool.
 
 Persistent Pi Conversations use deferred Personal Memory Answer delivery when
 Pi provides the required history and message APIs. The tool returns a receipt;
@@ -248,3 +260,19 @@ pnpm pi:remove
 ```
 
 Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active profile no longer references the package before deleting the Koed-owned directory. A failed or unverifiable removal preserves the package and reports an error. Unrelated Pi configuration is preserved. Captured Personal Memory remains in Koed until removed through normal Memory controls.
+
+### Memory Answer worker tools and validation
+
+Pi Memory Answer workers run separately from interactive Pi Conversations. Each
+worker receives scoped Koed scan, search, and expansion tools plus
+`koed_structured_result`. A private loopback bridge forwards retrieval to the
+Local AI Runtime's existing handlers, preserving the selected Personal or Team
+scope and request budgets. The bridge uses an ephemeral credential retained only
+in the worker's private temporary configuration and closes with the worker.
+
+The result tool validates answers before acknowledging completion. Rejected
+answers return corrective feedback to Pi in the same turn; subsequent worker
+attempts also receive bounded validation feedback within the prompt-token budget.
+An `insufficient` answer may retain genuinely relevant partial evidence, with
+`relevant_memory_found` matching whether evidence was selected, and must identify
+what remains missing. Retrieval failure does not establish absence of Memory.

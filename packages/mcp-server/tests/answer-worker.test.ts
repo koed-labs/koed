@@ -123,6 +123,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
     requiredPromptSnippets?: string[];
+    retryPromptSnippets?: string[];
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -144,6 +145,7 @@ import readline from "node:readline";
 const useTools = ${options.useTools === false ? "false" : "true"};
 const mode = ${JSON.stringify(options.mode ?? "happy")};
 const requiredPromptSnippets = ${JSON.stringify(options.requiredPromptSnippets ?? [])};
+const retryPromptSnippets = ${JSON.stringify(options.retryPromptSnippets ?? [])};
 const attemptFile = ${JSON.stringify(attemptFile)};
 const answer = ${JSON.stringify(
       options.answer ?? {
@@ -203,7 +205,7 @@ lineReader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const promptText = message.params?.input?.[0]?.text ?? "";
-    for (const snippet of requiredPromptSnippets) {
+    for (const snippet of [...requiredPromptSnippets, ...(attempt > 1 ? retryPromptSnippets : [])]) {
       if (!promptText.includes(snippet)) {
         console.error("missing prompt snippet: " + snippet);
         process.exit(67);
@@ -284,7 +286,7 @@ lineReader.on("line", (line) => {
       process.exit(64);
     }
     if (mode === "invalidThenValid" && attempt === 1) {
-      sendFinal("This is not JSON");
+      sendFinal({ ...answer, relevant_memory_found: false });
       return;
     }
     sendFinal(answer);
@@ -587,6 +589,22 @@ describe("memory answer worker", () => {
         ...insufficient,
         evidence: [{ evidence_index: 0 }]
       })
+    ).toThrow(/insufficient requires/);
+  });
+
+  it("preserves relevant partial evidence in insufficient answers", () => {
+    const answer = {
+      ...answerObject("A partial supported answer", "found"),
+      memory_status: "insufficient",
+      missing: ["the remaining decision"]
+    };
+    expect(parseStructuredMemoryAnswer(answer)).toMatchObject({
+      memory_status: "insufficient",
+      relevant_memory_found: true,
+      evidence: [{ evidence_index: 0 }]
+    });
+    expect(() =>
+      parseStructuredMemoryAnswer({ ...answer, evidence: [] })
     ).toThrow(/insufficient requires/);
   });
 
@@ -1390,11 +1408,14 @@ describe("memory answer worker", () => {
     }
   });
 
-  it("retries malformed structured worker output before falling back", async () => {
+  it("retries semantically invalid Codex output with validation feedback", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
-        mode: "invalidThenValid"
+        mode: "invalidThenValid",
+        retryPromptSnippets: [
+          "The previous answer failed validation. Correct this before finishing:"
+        ]
       });
       const searches: Record<string, unknown>[] = [];
       const client: MemoryAnswerRetrievalClient = {
@@ -1458,13 +1479,16 @@ describe("memory answer worker", () => {
       expect(response.localMemoryWorker.usedFallback).toBe(false);
       expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
       expect(
+        response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+      ).toContain("relevant_memory_found");
+      expect(
         response.localMemoryWorker.appServerExecutions?.map(
           (execution) => execution.status
         )
       ).toEqual(["failed", "succeeded"]);
       expect(
         response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
-      ).toContain("JSON");
+      ).toContain("relevant_memory_found");
       const retryTrace = (
         response.evidenceBundle?.retrieval as {
           trace?: {
@@ -1494,6 +1518,72 @@ describe("memory answer worker", () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("retries semantically invalid Claude output with shared validation feedback", async () => {
+    const prompts: string[] = [];
+    let attempt = 0;
+    sdk.query.mockImplementation(({ prompt }: { prompt?: string }) => {
+      prompts.push(typeof prompt === "string" ? prompt : "");
+      attempt += 1;
+      const structuredOutput =
+        attempt === 1
+          ? {
+              ...answerObject("Unsupported answer"),
+              relevant_memory_found: false
+            }
+          : {
+              ...answerObject(
+                "No complete evidence is available.",
+                "pending_summary"
+              ),
+              missing: ["a completed summary"]
+            };
+      async function* resultStream(): AsyncGenerator<SDKMessage, void> {
+        yield {
+          type: "result",
+          subtype: "success",
+          structured_output: structuredOutput,
+          result: JSON.stringify(structuredOutput),
+          modelUsage: {},
+          usage: {}
+        } as SDKMessage;
+      }
+      return resultStream() as Query;
+    });
+
+    const response = await answerWithMemoryWorker(
+      { evidenceBundle: { query: "What is available?", evidence: [] } },
+      {
+        client: {
+          async search() {
+            throw new Error("pending summary should not retrieve");
+          },
+          async expand() {
+            throw new Error("pending summary should not expand");
+          }
+        },
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({}),
+          provider: "claude",
+          aiClientInstanceId: "claude.work",
+          executablePath: process.execPath,
+          maxAttempts: 2
+        }
+      }
+    );
+
+    expect(response.localMemoryWorker.usedFallback).toBe(false);
+    expect(response.localMemoryWorker.memoryStatus).toBe("pending_summary");
+    expect(attempt).toBe(2);
+    expect(response.localMemoryWorker.appServerExecutions).toHaveLength(2);
+    expect(
+      response.localMemoryWorker.appServerExecutions?.[0]?.errorMessage
+    ).toContain("relevant_memory_found");
+    expect(prompts[1]).toContain(
+      "The previous answer failed validation. Correct this before finishing:"
+    );
+    expect(prompts[1]).toContain("relevant_memory_found");
   });
 
   it("returns insufficient when the request-wide prompt-token budget cannot start an attempt", async () => {
@@ -1788,7 +1878,7 @@ describe("memory answer worker", () => {
         expect(response.localMemoryWorker.usedFallback).toBe(true);
         if (responseDetail === "internal") {
           expect(response.localMemoryWorker.errorMessage).toContain(
-            "insufficient requires relevant_memory_found=false"
+            "insufficient requires relevant_memory_found to match selected partial evidence"
           );
         }
         expect(response.markdown).toBe(
@@ -1814,7 +1904,7 @@ describe("memory answer worker", () => {
     }
   );
 
-  it("rejects clean insufficient answers without selected partial evidence", async () => {
+  it("accepts insufficient answers that identify missing evidence after clean retrieval", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
       const response = await answerWithMemoryWorker(
@@ -1850,10 +1940,8 @@ describe("memory answer worker", () => {
         }
       );
 
-      expect(response.localMemoryWorker.usedFallback).toBe(true);
-      expect(response.localMemoryWorker.errorMessage).toContain(
-        "returned insufficient after complete retrieval without selected partial evidence"
-      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.structuredAnswer?.memory_status).toBe("insufficient");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -2289,7 +2377,7 @@ describe("memory answer worker", () => {
         "without resolvable supporting evidence"
       );
       expect(response.markdown).toBe(
-        "The Codex worker reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question."
+        "The Codex worker returned an answer that Koed could not safely verify. Try again."
       );
       expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
       expect(response.structuredAnswer).toMatchObject({

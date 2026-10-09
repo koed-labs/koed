@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdtempSync,
   mkdirSync,
+  rmSync,
   realpathSync,
   symlinkSync,
   writeFileSync
@@ -293,6 +294,78 @@ process.stdin.once("data", () => {
       )
     ).resolves.toMatchObject({ text: JSON.stringify({ ok: true }) });
     expect(onProgress).toHaveBeenCalledWith("Pi provider activity");
+  });
+
+  it("lets the Pi worker retrieve evidence and correct a rejected result before finishing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-tool-correction-"));
+    const executable = join(root, "pi");
+    mkdirSync(join(root, "integrations/pi/extensions"), { recursive: true });
+    writeFileSync(
+      join(root, "integrations/pi/extensions/structured-result.mjs"),
+      "export default () => {};\n"
+    );
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+import fs from "node:fs";
+process.stdin.once("data", async () => {
+  const bridge = JSON.parse(fs.readFileSync(process.env.KOED_PI_WORKER_TOOLS, "utf8"));
+  const call = (name, value) => fetch(bridge.url, { method: "POST", headers: { authorization: bridge.authorization }, body: JSON.stringify({ name, value }) });
+  if (!bridge.tools.some(t => t.wireName === "koed_memory_search")) process.exit(11);
+  const evidence = await call("koed_memory_search", { query: "synthetic question" });
+  if (!(await evidence.json()).success) process.exit(12);
+  const rejected = await call("koed_structured_result", { valid: false });
+  if (rejected.status !== 422) process.exit(13);
+  const accepted = await call("koed_structured_result", { valid: true });
+  const result = await accepted.json();
+  if (accepted.status !== 200) process.exit(14);
+  process.stdout.write(JSON.stringify({ type: "tool_execution_end", toolName: "koed_structured_result", result: { details: result } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+});
+`
+    );
+    chmodSync(executable, 0o700);
+    const handler = vi.fn(async () => ({
+      success: true,
+      text: "synthetic evidence"
+    }));
+    const validate = vi.fn((value: unknown) => {
+      if (!(value as { valid: boolean }).valid)
+        throw new Error("Invalid synthetic result; correct valid");
+    });
+    try {
+      await expect(
+        runPiRpcTask(
+          "test",
+          {
+            provider: "pi",
+            model: "test/model",
+            reasoningEffort: "off",
+            cwd: root,
+            env: { KOED_HOME: root, PATH: process.env.PATH },
+            executablePath: executable,
+            clientName: "test",
+            systemPrompt: "test",
+            outputSchema: { type: "object" },
+            dynamicTools: [
+              {
+                namespace: "koed_memory",
+                name: "search",
+                description: "search",
+                inputSchema: { type: "object" }
+              }
+            ],
+            dynamicToolHandler: handler,
+            validateOutput: validate
+          },
+          5000
+        )
+      ).resolves.toMatchObject({ text: '{"valid":true}' });
+      expect(handler).toHaveBeenCalledOnce();
+      expect(validate).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("uses minimal environment without Koed or provider credentials", () => {

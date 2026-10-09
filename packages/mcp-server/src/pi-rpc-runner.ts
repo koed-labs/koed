@@ -10,6 +10,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 
+import { startPiWorkerTools } from "./pi-worker-tools.js";
+
 import type {
   AiClientRunConfig,
   AiClientRunResult
@@ -500,166 +502,204 @@ export const runPiRpcTask = async (
     throw new Error(
       `Koed Pi structured-result bridge is missing: ${bridgePath}`
     );
-  const model =
-    config.reasoningEffort === "none" || config.reasoningEffort === "off"
-      ? config.model
-      : `${config.model}:${config.reasoningEffort}`;
-  const args = [
-    "--mode",
-    "rpc",
-    "--no-session",
-    "--no-builtin-tools",
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--no-context-files",
-    "--no-extensions",
-    "--extension",
-    bridgePath,
-    "--tools",
-    "koed_structured_result",
-    "--model",
-    model,
-    "--system-prompt",
-    [config.systemPrompt, config.developerInstructions]
-      .filter(Boolean)
-      .join("\n\n")
-  ];
-  const invocation = piExecutableInvocation(config.executablePath, args);
-  const child = spawn(invocation.command, invocation.args, {
-    cwd: workerRoot,
-    env: nodeCliProcessEnvironment(
-      invocation,
-      { ...piRpcEnvironment(config.env), KOED_PI_RESULT_SCHEMA: schemaPath },
-      config.env
-    ),
-    detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const events: unknown[] = [];
-  const eventSizes: number[] = [];
-  let eventBytes = 0;
-  let aggregateOutputBytes = 0;
-  let stdout = Buffer.alloc(0);
-  let stderr = "";
-  let settled = false;
-  let finished = false;
-  let resultValue: unknown;
-  let actualModel = config.model;
-  const done = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      terminateProcessTree(child);
-      finish(new Error(`Pi RPC timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    const finish = (error?: Error) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      config.signal?.removeEventListener("abort", abort);
-      if (error) reject(error);
-      else resolve();
-    };
-    const abort = () => {
-      terminateProcessTree(child);
-      finish(new Error("Pi RPC task was cancelled"));
-    };
-    if (config.signal?.aborted) abort();
-    else config.signal?.addEventListener("abort", abort, { once: true });
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${String(chunk)}`.slice(-64_000);
+  const bridge = await startPiWorkerTools(config);
+  try {
+    const bridgeConfigPath = path.join(workerRoot, "tools.json");
+    fs.writeFileSync(
+      bridgeConfigPath,
+      JSON.stringify({
+        tools: bridge.tools,
+        url: bridge.url,
+        authorization: bridge.authorization
+      }),
+      { mode: 0o600 }
+    );
+    const model =
+      config.reasoningEffort === "none" || config.reasoningEffort === "off"
+        ? config.model
+        : `${config.model}:${config.reasoningEffort}`;
+    const args = [
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--no-builtin-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--no-extensions",
+      "--extension",
+      bridgePath,
+      "--tools",
+      [
+        "koed_structured_result",
+        ...bridge.tools.map((tool) => tool.wireName)
+      ].join(","),
+      "--model",
+      model,
+      "--system-prompt",
+      [config.systemPrompt, config.developerInstructions]
+        .filter(Boolean)
+        .concat([
+          "Finish by calling koed_structured_result. If it rejects an answer, correct the reported validation problem and resubmit. Do not finish with plain prose.",
+          ...bridge.tools.map(
+            (tool) =>
+              `${tool.namespace ?? ""}.${tool.name} is available as ${tool.wireName}.`
+          )
+        ])
+        .join("\n\n")
+    ];
+    const invocation = piExecutableInvocation(config.executablePath, args);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: workerRoot,
+      env: nodeCliProcessEnvironment(
+        invocation,
+        {
+          ...piRpcEnvironment(config.env),
+          KOED_PI_RESULT_SCHEMA: schemaPath,
+          KOED_PI_WORKER_TOOLS: bridgeConfigPath
+        },
+        config.env
+      ),
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"]
     });
-    child.stdout.on("data", (chunk: Buffer) => {
-      aggregateOutputBytes += chunk.length;
-      if (aggregateOutputBytes > PI_RPC_MAX_OUTPUT_BYTES) {
+    const events: unknown[] = [];
+    const eventSizes: number[] = [];
+    let eventBytes = 0;
+    let aggregateOutputBytes = 0;
+    let stdout = Buffer.alloc(0);
+    let stderr = "";
+    let settled = false;
+    let finished = false;
+    let resultValue: unknown;
+    let actualModel = config.model;
+    const done = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
         terminateProcessTree(child);
-        finish(new Error("Pi RPC aggregate output exceeded 8 MiB"));
-        return;
-      }
-      stdout = Buffer.concat([stdout, chunk]);
-      while (true) {
-        const newline = stdout.indexOf(0x0a);
-        if (newline < 0) {
-          if (stdout.length > PI_RPC_MAX_RECORD_BYTES) {
+        finish(new Error(`Pi RPC timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      const finish = (error?: Error) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        config.signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () => {
+        terminateProcessTree(child);
+        finish(new Error("Pi RPC task was cancelled"));
+      };
+      if (config.signal?.aborted) abort();
+      else config.signal?.addEventListener("abort", abort, { once: true });
+      child.stderr.on("data", (chunk) => {
+        stderr = `${stderr}${String(chunk)}`.slice(-64_000);
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        aggregateOutputBytes += chunk.length;
+        if (aggregateOutputBytes > PI_RPC_MAX_OUTPUT_BYTES) {
+          terminateProcessTree(child);
+          finish(new Error("Pi RPC aggregate output exceeded 8 MiB"));
+          return;
+        }
+        stdout = Buffer.concat([stdout, chunk]);
+        while (true) {
+          const newline = stdout.indexOf(0x0a);
+          if (newline < 0) {
+            if (stdout.length > PI_RPC_MAX_RECORD_BYTES) {
+              terminateProcessTree(child);
+              finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
+            }
+            break;
+          }
+          if (newline > PI_RPC_MAX_RECORD_BYTES) {
             terminateProcessTree(child);
             finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
+            return;
           }
-          break;
-        }
-        if (newline > PI_RPC_MAX_RECORD_BYTES) {
-          terminateProcessTree(child);
-          finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
-          return;
-        }
-        const record = stdout.subarray(0, newline);
-        stdout = stdout.subarray(newline + 1);
-        if (record.includes(0x0d)) {
-          terminateProcessTree(child);
-          finish(new Error("Pi RPC requires strict-LF JSONL framing"));
-          return;
-        }
-        const line = record.toString("utf8");
-        if (!line) continue;
-        try {
-          const event = JSON.parse(line) as Record<string, unknown>;
-          config.onProgress?.("Pi provider activity");
-          events.push(event);
-          eventSizes.push(record.length);
-          eventBytes += record.length;
-          while (
-            events.length > PI_RPC_DIAGNOSTIC_EVENTS ||
-            eventBytes > PI_RPC_DIAGNOSTIC_EVENT_BYTES
-          ) {
-            events.shift();
-            eventBytes -= eventSizes.shift() ?? 0;
+          const record = stdout.subarray(0, newline);
+          stdout = stdout.subarray(newline + 1);
+          if (record.includes(0x0d)) {
+            terminateProcessTree(child);
+            finish(new Error("Pi RPC requires strict-LF JSONL framing"));
+            return;
           }
-          const message = event.message as Record<string, unknown> | undefined;
-          if (
-            message?.role === "assistant" &&
-            typeof message.provider === "string" &&
-            typeof message.model === "string"
-          )
-            actualModel = `${message.provider}/${message.model}`;
-          if (
-            event.type === "tool_execution_end" &&
-            event.toolName === "koed_structured_result"
-          ) {
-            const result = event.result as Record<string, unknown> | undefined;
-            const details = result?.details as
+          const line = record.toString("utf8");
+          if (!line) continue;
+          try {
+            const event = JSON.parse(line) as Record<string, unknown>;
+            config.onProgress?.("Pi provider activity");
+            events.push(event);
+            eventSizes.push(record.length);
+            eventBytes += record.length;
+            while (
+              events.length > PI_RPC_DIAGNOSTIC_EVENTS ||
+              eventBytes > PI_RPC_DIAGNOSTIC_EVENT_BYTES
+            ) {
+              events.shift();
+              eventBytes -= eventSizes.shift() ?? 0;
+            }
+            const message = event.message as
               | Record<string, unknown>
               | undefined;
-            resultValue = details?.value;
+            if (
+              message?.role === "assistant" &&
+              typeof message.provider === "string" &&
+              typeof message.model === "string"
+            )
+              actualModel = `${message.provider}/${message.model}`;
+            if (
+              event.type === "tool_execution_end" &&
+              event.toolName === "koed_structured_result"
+            ) {
+              const result = event.result as
+                | Record<string, unknown>
+                | undefined;
+              const details = result?.details as
+                | Record<string, unknown>
+                | undefined;
+              if (event.isError !== true && result?.isError !== true)
+                resultValue = details?.value;
+            }
+            if (event.type === "agent_settled") {
+              settled = true;
+              child.stdin.write(`${JSON.stringify({ type: "abort" })}\n`);
+              terminateProcessTree(child);
+            }
+          } catch (error) {
+            finish(
+              new Error("Pi RPC emitted malformed JSONL", { cause: error })
+            );
           }
-          if (event.type === "agent_settled") {
-            settled = true;
-            child.stdin.write(`${JSON.stringify({ type: "abort" })}\n`);
-            terminateProcessTree(child);
-          }
-        } catch (error) {
-          finish(new Error("Pi RPC emitted malformed JSONL", { cause: error }));
         }
-      }
+      });
+      child.once("error", (error) => finish(error));
+      child.once("exit", (code) => {
+        if (!settled && code !== 0)
+          finish(
+            new Error(`Pi RPC exited with code ${code}: ${stderr.trim()}`)
+          );
+        else if (resultValue === undefined)
+          finish(new Error("Pi RPC completed without structured result"));
+        else finish();
+      });
+      child.stdin.write(
+        `${JSON.stringify({ id: randomUUID(), type: "prompt", message: prompt })}\n`
+      );
     });
-    child.once("error", (error) => finish(error));
-    child.once("exit", (code) => {
-      if (!settled && code !== 0)
-        finish(new Error(`Pi RPC exited with code ${code}: ${stderr.trim()}`));
-      else if (resultValue === undefined)
-        finish(new Error("Pi RPC completed without structured result"));
-      else finish();
-    });
-    child.stdin.write(
-      `${JSON.stringify({ id: randomUUID(), type: "prompt", message: prompt })}\n`
-    );
-  });
-  try {
-    await done;
-    return {
-      text: JSON.stringify(resultValue),
-      model: actualModel,
-      providerEvents: events
-    };
+    try {
+      await done;
+      return {
+        text: JSON.stringify(resultValue),
+        model: actualModel,
+        providerEvents: events
+      };
+    } finally {
+      terminateProcessTree(child);
+    }
   } finally {
-    terminateProcessTree(child);
+    await bridge.close();
     fs.rmSync(workerRoot, { recursive: true, force: true });
   }
 };
