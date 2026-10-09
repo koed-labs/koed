@@ -137,6 +137,7 @@ export interface SanitizedCapabilitiesPayload {
 const supportedCapabilitySchemaVersions = new Set([2, 3, 4, 5, 6, 7, 8, 9]);
 
 export interface UpstreamRegistryDeps {
+  signal?: AbortSignal;
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
   writeFileSync?: typeof writeFileSync;
@@ -174,7 +175,7 @@ const defaultRegistry = (now: string): UpstreamBackendRegistry => ({
 
 const depsWithDefaults = (
   deps: UpstreamRegistryDeps = {}
-): Required<UpstreamRegistryDeps> => ({
+): Required<Omit<UpstreamRegistryDeps, "signal">> => ({
   existsSync: deps.existsSync ?? existsSync,
   readFileSync: deps.readFileSync ?? readFileSync,
   writeFileSync: deps.writeFileSync ?? writeFileSync,
@@ -247,7 +248,7 @@ const validateBackendId = (id: string): string => {
 
 const readRegistry = (
   paths: KoedServerPaths,
-  deps: Required<UpstreamRegistryDeps>
+  deps: Required<Omit<UpstreamRegistryDeps, "signal">>
 ): UpstreamBackendRegistry => {
   const now = deps.now().toISOString();
   if (!deps.existsSync(paths.upstreamBackendsPath)) {
@@ -378,7 +379,7 @@ const sanitizeCapabilityCache = (
 const writeRegistry = (
   paths: KoedServerPaths,
   registry: UpstreamBackendRegistry,
-  deps: Required<UpstreamRegistryDeps>
+  deps: Required<Omit<UpstreamRegistryDeps, "signal">>
 ): void => {
   mkdirSync(dirname(paths.upstreamBackendsPath), {
     recursive: true,
@@ -841,7 +842,7 @@ const commitCapabilityRefresh = (
   expectedBackendUpdatedAt: string,
   attemptedAt: Date,
   update: (backend: UpstreamBackendRecord) => UpstreamBackendRecord,
-  deps: Required<UpstreamRegistryDeps>
+  deps: Required<Omit<UpstreamRegistryDeps, "signal">>
 ): UpstreamBackendRecord | null => {
   const currentRegistry = readRegistry(paths, deps);
   const currentIndex = currentRegistry.backends.findIndex(
@@ -893,7 +894,12 @@ export const refreshUpstreamBackendCapabilities = async (
     const requestFetch = deps.fetch ?? ownedRequestFetch!;
     const response = await requestFetch(
       new URL("v1/capabilities", `${backend.baseUrl}/`),
-      { redirect: "error" }
+      {
+        redirect: "error",
+        signal: deps.signal
+          ? AbortSignal.any([deps.signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000)
+      }
     );
     if (!response.ok) {
       throw Object.assign(
@@ -904,6 +910,7 @@ export const refreshUpstreamBackendCapabilities = async (
       );
     }
     const payload = sanitizeCapabilitiesPayload(await response.json());
+    deps.signal?.throwIfAborted();
     const profile = normalizeProfile(payload.deployment?.profile);
     const refreshed = commitCapabilityRefresh(
       paths,
@@ -940,6 +947,12 @@ export const refreshUpstreamBackendCapabilities = async (
       message: `Validated upstream backend ${backendId}.`
     };
   } catch (error) {
+    if (deps.signal?.aborted)
+      return {
+        ok: false,
+        state: "failed",
+        message: "Capability refresh was cancelled."
+      };
     const category =
       typeof error === "object" &&
       error !== null &&

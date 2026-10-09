@@ -1854,3 +1854,20 @@ Conversation presentation rebuilds pass the reset-time presentation-policy
 revision to every batch. The projector checks it while holding the shared policy
 lock; a policy change returns a conflict instead of completing a rebuild with
 mixed revisions. The User can retry the rebuild under the new policy.
+
+## Upstream capability maintenance
+
+The local Server supervisor maintains capability caches for registered upstreams
+with enabled routes, independently of Desktop and its collaboration broker. It
+checks every 30 seconds, refreshes within one minute of expiry, and retries failed
+validation on later checks. Revoked upstream credentials are skipped. Capability
+requests have a ten-second deadline and are cancelled when the supervisor stops.
+This background work does not block Personal startup or weaken Team authorization:
+expired, failed, or unsupported capabilities continue to deny routing until a
+fresh validation succeeds. Desktop may still refresh capabilities during its
+foreground collaboration flows. The supervisor also discovers upstreams added or
+changed after startup on its next check.
+
+After machine sleep or a network outage, Team routing can remain denied until the
+next successful maintenance check. This does not extend expired authorization or
+retry an agent request automatically.
