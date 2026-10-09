@@ -26,6 +26,24 @@ const publicError = (): Error =>
   Object.assign(new Error("PDS relay resource is unavailable"), {
     statusCode: 404
   });
+
+export const pdsRelayControlAllowedDuringPending = (
+  pendingEpoch: unknown,
+  allowStaleHead: boolean
+): boolean => pendingEpoch === null || allowStaleHead;
+
+export const pdsRelayCertificateEpochAllowed = (
+  certificateEpoch: unknown,
+  currentEpoch: unknown,
+  allowStaleHead: boolean
+): boolean => {
+  const canonicalEpoch = (value: unknown): value is string =>
+    typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+  if (!canonicalEpoch(certificateEpoch) || !canonicalEpoch(currentEpoch))
+    return false;
+  if (certificateEpoch === currentEpoch) return true;
+  return allowStaleHead && BigInt(certificateEpoch) < BigInt(currentEpoch);
+};
 const securityError = (message = "PDS relay integrity check failed"): Error =>
   Object.assign(new Error(message), { statusCode: 409 });
 const number = (value: string): number => {
@@ -49,8 +67,10 @@ export interface PdsRelayAuthContext {
   signingPublicKey: string;
   recipientDeviceIds: string[];
   certificate: Record<string, unknown>;
-  /** Control plane alone accepts active same-epoch certificate at prior head. */
+  /** Control plane alone accepts an active unexpired prior-head/epoch certificate. */
   allowStaleHead?: boolean;
+  /** Set only for an Authority-certified member whose device is explicitly revoked. */
+  deviceRevoked?: boolean;
 }
 
 export interface PdsRelayTransportRecord {
@@ -155,7 +175,10 @@ const assertCurrentRelayAuth = async (
   const certificate = input.certificate;
   if (
     group.state !== "active" ||
-    group.pending_epoch !== null ||
+    !pdsRelayControlAllowedDuringPending(
+      group.pending_epoch,
+      input.allowStaleHead === true
+    ) ||
     (!input.allowStaleHead && group.head_hash !== input.headHash) ||
     group.current_epoch !== input.epoch ||
     !certificateIsPdsValid(
@@ -165,7 +188,11 @@ const assertCurrentRelayAuth = async (
     ) ||
     certificate.groupId !== group.group_id ||
     (!input.allowStaleHead && certificate.statementHash !== group.head_hash) ||
-    certificate.epoch !== group.current_epoch ||
+    !pdsRelayCertificateEpochAllowed(
+      certificate.epoch,
+      group.current_epoch,
+      input.allowStaleHead === true
+    ) ||
     certificate.deviceId !== input.deviceId ||
     certificate.deviceSigningKeyId !== input.signingKeyId
   ) {
@@ -306,28 +333,46 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       const group = row<Record<string, unknown>>(groups.rows[0]);
       if (
         group.state !== "active" ||
-        group.pending_epoch !== null ||
         !certificateIsPdsValid(
           certificate,
           group.authority_public_key as string,
           group.authority_key_id as string
         ) ||
-        (!input.allowStaleHead &&
-          certificate.statementHash !== group.head_hash) ||
-        certificate.epoch !== group.current_epoch ||
         certificate.deviceId !== input.proof.deviceId ||
         certificate.deviceSigningKeyId !== input.proof.deviceSigningKeyId
       ) {
         throw publicError();
       }
       const members = await client.query(
-        `select device_id,signing_key_id,signing_public_key from personal_device_group_members
-         where group_id=$1 and device_id=$2 and signing_key_id=$3 and status='active' for share`,
+        `select device_id,signing_key_id,signing_public_key,status from personal_device_group_members
+         where group_id=$1 and device_id=$2 and signing_key_id=$3 and status in ('active','revoked') for share`,
         [group.id, certificate.deviceId, certificate.deviceSigningKeyId]
       );
       if (!members.rowCount) throw publicError();
       const member = row<Record<string, unknown>>(members.rows[0]);
       if (member.signing_public_key !== certificate.deviceSigningPublicKey) {
+        throw publicError();
+      }
+      const deviceRevoked = member.status === "revoked";
+      if (
+        deviceRevoked
+          ? !pdsRelayCertificateEpochAllowed(
+              certificate.epoch,
+              group.current_epoch,
+              true
+            )
+          : !pdsRelayControlAllowedDuringPending(
+              group.pending_epoch,
+              input.allowStaleHead === true
+            ) ||
+            (!input.allowStaleHead &&
+              certificate.statementHash !== group.head_hash) ||
+            !pdsRelayCertificateEpochAllowed(
+              certificate.epoch,
+              group.current_epoch,
+              input.allowStaleHead === true
+            )
+      ) {
         throw publicError();
       }
       const recipients = await client.query(
@@ -350,7 +395,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
           )
         ),
         certificate,
-        allowStaleHead: input.allowStaleHead === true
+        allowStaleHead: input.allowStaleHead === true,
+        ...(deviceRevoked ? { deviceRevoked: true } : {})
       };
     } catch (error) {
       await client.query("rollback");
@@ -738,7 +784,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
        join personal_device_group_members m on m.id=c.member_id
        join personal_device_groups g on g.id=c.group_id
        where c.group_id=$1 and m.device_id=$2 and m.status='active'
-         and c.epoch=g.current_epoch and c.statement_hash=g.head_hash
+         and c.epoch=g.current_epoch
+         and (c.statement_hash=g.head_hash or g.pending_epoch is not null)
          and c.revoked_at is null and c.expires_at>now()`,
       [input.groupDbId, input.deviceId]
     );

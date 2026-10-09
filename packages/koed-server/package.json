@@ -22,6 +22,7 @@
   "dependencies": {
     "@koed/shared": "workspace:*",
     "proper-lockfile": "4.1.2",
+    "ws": "8.21.3",
     "zod": "^4.1.12"
   },
   "scripts": {
@@ -32,6 +33,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@types/proper-lockfile": "4.1.4"
+    "@types/proper-lockfile": "4.1.4",
+    "@types/ws": "^8.18.1"
   }
 }

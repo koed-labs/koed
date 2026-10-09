@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -217,6 +219,48 @@ describe("JSON command output", () => {
     expect(exitCode).toBe(0);
     expect(fullStatusCollected).toBe(false);
     expect(JSON.parse(stdout.text())).toEqual(startupStatus);
+  });
+
+  it("bounds pair startup polling to a 90-second deadline", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-pair-startup-test-"));
+    const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(paths.localAppCredentialPath, "{}", { mode: 0o600 });
+    const stdout = writer();
+    const collectStartupStatus = vi.fn(async () => ({
+      ...startupStatus,
+      ok: false,
+      state: "needs_attention" as const
+    }));
+    const startDaemon = vi.fn(() => ({
+      ok: true as const,
+      state: "starting" as const,
+      koedHome,
+      message: "already running"
+    }));
+
+    vi.useFakeTimers();
+    try {
+      const result = runKoedServerCli(["pair", "--detach", "--json"], {
+        stdout: stdout.stream,
+        collectStartupStatus,
+        startDaemon,
+        resolvePaths: () => paths
+      });
+
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(await result).toBe(1);
+      expect(collectStartupStatus).toHaveBeenCalledTimes(90);
+      expect(startDaemon).toHaveBeenCalledOnce();
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        ok: false,
+        error:
+          "Koed could not start. Run koed-server doctor for setup guidance."
+      });
+    } finally {
+      vi.useRealTimers();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("prints models status --json", async () => {
@@ -1378,17 +1422,24 @@ describe("JSON command output", () => {
 
   it("prints doctor --json and returns non-zero for failures", async () => {
     const stdout = writer();
+    const root = mkdtempSync(resolve(tmpdir(), "koed-cli-doctor-json-"));
+    const paths = resolveKoedServerPaths({ KOED_HOME: root });
 
-    const exitCode = await runKoedServerCli(["doctor", "--json"], {
-      stdout: stdout.stream,
-      collectDoctor: async () => doctor
-    });
+    try {
+      const exitCode = await runKoedServerCli(["doctor", "--json"], {
+        stdout: stdout.stream,
+        resolvePaths: () => paths,
+        collectDoctor: async () => doctor
+      });
 
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(stdout.text())).toMatchObject({
-      ok: false,
-      summary: "API is not ready"
-    });
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        ok: false,
+        summary: "API is not ready"
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("prints redacted device identity JSON", async () => {

@@ -1140,13 +1140,24 @@ const pairingInvitationBinding = (
   ] as const) {
     try {
       const url = new URL(value as string);
+      const isControl = field === "control";
+      const validRelayPath =
+        url.pathname === "/pds" ||
+        /^\/pds\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          url.pathname
+        );
       if (
         (url.protocol !== "http:" && url.protocol !== "https:") ||
         !url.hostname ||
         url.username ||
         url.password ||
         url.search ||
-        url.hash
+        (isControl && (url.hash || !url.pathname.endsWith("/exchange"))) ||
+        (!isControl &&
+          (!validRelayPath ||
+            (url.pathname === "/pds" && url.hash) ||
+            (url.pathname !== "/pds" &&
+              !/^#token=[A-Za-z0-9_-]{43}$/.test(url.hash))))
       ) {
         throw new Error();
       }
@@ -2073,12 +2084,14 @@ const approveActiveDevice = async (
     projectAliasKey: b64(randomBytes(32))
   };
   const recipients = [
-    ...groupMembers(current).map((member) => ({
-      recipientId: responseString(member, "device_id"),
-      recipientKind: "device" as const,
-      recipientKemKeyId: responseString(member, "kem_key_id"),
-      recipientKemPublicKey: responseString(member, "kem_public_key")
-    })),
+    ...groupMembers(current)
+      .filter((member) => member.status === "active")
+      .map((member) => ({
+        recipientId: responseString(member, "device_id"),
+        recipientKind: "device" as const,
+        recipientKemKeyId: responseString(member, "kem_key_id"),
+        recipientKemPublicKey: responseString(member, "kem_public_key")
+      })),
     {
       recipientId: newDevice.deviceId,
       recipientKind: "device" as const,
@@ -2192,6 +2205,186 @@ const approveActiveDevice = async (
       "Device approved and source epoch acknowledged. Complete enrollment on the joining device.",
     groupId,
     deviceId: newDevice.deviceId,
+    epoch: nextEpoch
+  };
+};
+
+const revokeActiveDevice = async (
+  args: string[],
+  environment: NodeJS.ProcessEnv,
+  deps: PersonalSyncDependencies
+): Promise<PersonalSyncResult> => {
+  const groupId = groupIdFrom(args);
+  const deviceId = requiredFlag(args, "--device-id");
+  const runtimeReference =
+    environment.PDS_RUNTIME_SECRET_REF?.trim() ||
+    fail("PDS_RUNTIME_SECRET_REF is required for device removal.");
+  const activeRuntime = await runtimeSecret(
+    runtimeReference,
+    environment,
+    deps
+  );
+  if (activeRuntime.groupId !== groupId)
+    fail("PDS device removal targets another group.");
+  if (activeRuntime.device.id === deviceId)
+    fail("This device cannot remove itself from its Personal Device Group.");
+  const controlDeps =
+    deps.desktopAuthorization || deps.pairingToken
+      ? deps
+      : {
+          ...deps,
+          sessionCookie: deps.sessionCookie ?? browserSession(environment)
+        };
+  const currentResponse = await control({
+    environment,
+    deps: controlDeps,
+    method: "GET",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}`
+  });
+  const current = object(currentResponse.group, "group");
+  if (
+    current.state !== "active" ||
+    current.pending_epoch !== null ||
+    typeof current.current_epoch !== "string"
+  )
+    fail("PDS group is not ready for device removal.");
+  const sourceMember = groupMember(current, activeRuntime.device.id);
+  const targetMember = groupMembers(current).find(
+    (member) => member.device_id === deviceId && member.status === "active"
+  );
+  if (!targetMember) fail("PDS device is not an active group member.");
+  const currentEpoch = responseString(current, "current_epoch");
+  const recovery = object(current.recovery, "group.recovery");
+  const nextEpoch = (BigInt(currentEpoch) + 1n).toString();
+  const nextSecrets = {
+    epochSecret: b64(randomBytes(32)),
+    sourceFingerprintKey: b64(randomBytes(32)),
+    tombstoneFloorKey: b64(randomBytes(32)),
+    projectAliasKey: b64(randomBytes(32))
+  };
+  const recipients = [
+    ...groupMembers(current)
+      .filter(
+        (member) => member.status === "active" && member.device_id !== deviceId
+      )
+      .map((member) => ({
+        recipientId: responseString(member, "device_id"),
+        recipientKind: "device" as const,
+        recipientKemKeyId: responseString(member, "kem_key_id"),
+        recipientKemPublicKey: responseString(member, "kem_public_key")
+      })),
+    {
+      recipientId: responseString(recovery, "kem_key_id"),
+      recipientKind: "recovery" as const,
+      recipientKemKeyId: responseString(recovery, "kem_key_id"),
+      recipientKemPublicKey: responseString(recovery, "kem_public_key")
+    }
+  ];
+  const sourceSigningKey = pdsEd25519PrivateKey(
+    activeRuntime.device.signingPrivateSeed,
+    responseString(sourceMember, "signing_public_key")
+  );
+  const authorizedBundle = createPdsAuthorizedKeyBundle({
+    groupId,
+    epoch: nextEpoch,
+    transitionKind: "revoke-device",
+    recipients,
+    secrets: nextSecrets,
+    authorizationKeyId: activeRuntime.device.signingKeyId,
+    authorizationPrivateKey: sourceSigningKey
+  });
+  const head = object(current.head, "group.head");
+  if (typeof head.hash !== "string" || typeof head.sequence !== "string")
+    fail("PDS group head is invalid.");
+  const headHash = responseString(head, "hash");
+  const headSequence = responseString(head, "sequence");
+  const draft = {
+    protocol: PDS_PROTOCOL,
+    kind: "revoke-device",
+    groupId,
+    sequence: (BigInt(headSequence) + 1n).toString(),
+    previousHash: headHash,
+    body: {
+      deviceId,
+      reasonCode: "owner_requested",
+      revokedAt: now(deps),
+      previousEpoch: currentEpoch,
+      nextEpoch,
+      keyBundleHash: authorizedBundle.authorizationHash
+    }
+  };
+  const statement = {
+    draft,
+    authorization: {
+      signerKeyId: activeRuntime.device.signingKeyId,
+      signature: signPdsGroupDraft(draft, sourceSigningKey)
+    }
+  };
+  const transitioned = await control({
+    environment,
+    deps: controlDeps,
+    method: "POST",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/transitions`,
+    body: {
+      statement: canonicalizePdsJson(statement),
+      key_bundle: canonicalizePdsJson(authorizedBundle.bundle)
+    }
+  });
+  const pendingGroup = object(transitioned.group, "group");
+  const finalizedBundle = object(transitioned.key_bundle, "key_bundle");
+  if (
+    pendingGroup.pending_epoch !== nextEpoch ||
+    pendingGroup.pending_bundle_hash !== authorizedBundle.authorizationHash
+  )
+    fail("PDS device removal did not enter the expected pending epoch.");
+  const decrypted = decryptPdsKeyBundleSecretSet({
+    bundle: finalizedBundle,
+    authorizationPublicKey: responseString(sourceMember, "signing_public_key"),
+    authorityPublicKey: activeRuntime.authority.publicKey,
+    recipientId: activeRuntime.device.id,
+    recipientKemKeyId: activeRuntime.device.kemKeyId,
+    recipientKemPublicKey: responseString(sourceMember, "kem_public_key"),
+    recipientKemPrivateSeed: activeRuntime.device.kemPrivateSeed
+  });
+  if (canonicalizePdsJson(decrypted) !== canonicalizePdsJson(nextSecrets))
+    fail("PDS source device decrypted an invalid removal key bundle.");
+  const acknowledged = await control({
+    environment,
+    deps: controlDeps,
+    method: "POST",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/epoch-acks`,
+    body: {
+      ack: epochAck({
+        groupId,
+        bundleHash: authorizedBundle.authorizationHash,
+        epoch: nextEpoch,
+        deviceId: activeRuntime.device.id,
+        kemKeyId: activeRuntime.device.kemKeyId,
+        kemPublicKey: responseString(sourceMember, "kem_public_key"),
+        signingKeyId: activeRuntime.device.signingKeyId,
+        signingPrivateKey: sourceSigningKey,
+        acknowledgedAt: now(deps)
+      })
+    }
+  });
+  if (acknowledged.activated !== true) {
+    return {
+      ok: true,
+      state: "pending_activation",
+      message:
+        "Device removal is pending acknowledgements from the remaining devices.",
+      groupId,
+      deviceId,
+      epoch: nextEpoch
+    };
+  }
+  const refreshed = await refreshActiveDevice(environment, deps);
+  return {
+    ...refreshed,
+    state: "removed",
+    message: "Device removed from the Personal Device Group.",
+    groupId,
+    deviceId,
     epoch: nextEpoch
   };
 };
@@ -2583,7 +2776,9 @@ const refreshActiveDevice = async (
     recipientKemPublicKey: responseString(member, "kem_public_key"),
     recipientKemPrivateSeed: runtime.device.kemPrivateSeed
   });
-  const members = groupMembers(group);
+  const members = groupMembers(group).filter(
+    (candidate) => candidate.status === "active"
+  );
   const certificates = await Promise.all(
     members.map(async (activeMember) => {
       const response = await control({
@@ -2606,6 +2801,15 @@ const refreshActiveDevice = async (
   const nextRuntime = validatedRuntimeSecret(
     {
       ...runtimeWithoutCertificates,
+      // Retained source manifests keep their original signed head and epoch.
+      // These certificates prove historical signatures, not current access.
+      historicalOriginCertificates: [
+        ...new Set([
+          ...(runtime.historicalOriginCertificates ?? []),
+          runtime.certificate,
+          ...runtime.recipientCertificates
+        ])
+      ],
       authority: { ...runtime.authority, head: head.hash as string },
       groupSecrets: {
         currentEpoch,
@@ -2865,8 +3069,58 @@ export const runPersonalSyncCommand = async (
       devices: group.members ?? []
     };
   }
-  if (area === "device" && action === "revoke")
-    return submitTransition(args.slice(2), environment, deps);
+  if (area === "device" && action === "revoke") {
+    const revokeArgs = args.slice(2);
+    if (flag(revokeArgs, "--statement-fd"))
+      return submitTransition(revokeArgs, environment, deps);
+    if (
+      !deps.desktopAuthorization &&
+      !deps.pairingToken &&
+      !deps.sessionCookie &&
+      environment.PDS_BROWSER_SESSION_FD === undefined
+    ) {
+      let runtime: { runtimeMode?: string; apiUrl?: string };
+      try {
+        runtime = JSON.parse(
+          readFileSync(paths.runtimeStatePath, "utf8")
+        ) as typeof runtime;
+      } catch {
+        return fail(
+          "Start Koed first with koed-server start --daemon, then retry device removal."
+        );
+      }
+      if (runtime.runtimeMode !== "local-personal" || !runtime.apiUrl)
+        return fail(
+          "Automatic device removal requires a local Personal installation. Remote access requires a browser session FD."
+        );
+      const origin = parseLoopbackOrigin(runtime.apiUrl);
+      if (
+        environment.PDS_CONTROL_URL?.trim() &&
+        parseLoopbackOrigin(environment.PDS_CONTROL_URL.trim()) !== origin
+      )
+        return fail(
+          "PDS_CONTROL_URL does not match this installation’s local API. Local credentials cannot be sent there."
+        );
+      const credential = readDesktopLocalCredentialAuthorization(
+        paths.koedHome
+      );
+      if (!credential)
+        return fail(
+          "Local Personal credentials are unavailable. Run koed-server setup core and retry."
+        );
+      return revokeActiveDevice(
+        revokeArgs,
+        {
+          ...environment,
+          PDS_CONTROL_URL: origin,
+          PDS_RUNTIME_SECRET_REF:
+            environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime"
+        },
+        { ...deps, desktopAuthorization: credential.authorization }
+      );
+    }
+    return revokeActiveDevice(revokeArgs, environment, deps);
+  }
   if (
     area === "policy" &&
     ["enable", "pause", "resume"].includes(action ?? "")

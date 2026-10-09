@@ -41,6 +41,40 @@ describe("Personal Device Sync service", () => {
     expect(repository.claimPdsOutbox).not.toHaveBeenCalled();
   });
 
+  it("defers relay data-plane work while the Authority epoch is pending", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn(),
+      claimPdsArtifactOutbox: vi.fn(),
+      claimPdsCommittedOutbox: vi.fn(),
+      claimPdsInbox: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(false),
+      refreshPeerRoutes: vi.fn(),
+      poll: vi.fn(),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(secureRuntime.pollLifecycle).toHaveBeenCalledOnce();
+    expect(secureRuntime.refreshPeerRoutes).not.toHaveBeenCalled();
+    expect(repository.claimPdsOutbox).not.toHaveBeenCalled();
+    expect(repository.claimPdsArtifactOutbox).not.toHaveBeenCalled();
+    expect(repository.claimPdsCommittedOutbox).not.toHaveBeenCalled();
+    expect(secureRuntime.poll).not.toHaveBeenCalled();
+  });
+
   it("uses durable local and relay wakeups without periodic polling", async () => {
     const listeners = new Map<string, (value: never) => void>();
     const wakeClient = {
@@ -110,6 +144,76 @@ describe("Personal Device Sync service", () => {
       "unlisten koed_pds_local_sync"
     );
     expect(wakeClient.release).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a remote long poll before reconciling local work", async () => {
+    let notify: ((message: { channel: string }) => void) | undefined;
+    let wakeSignal: AbortSignal | undefined;
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn(async () => {
+        if (wakeSignal && !wakeSignal.aborted)
+          throw new Error("lifecycle blocked by long poll");
+      }),
+      poll: vi.fn().mockResolvedValue([]),
+      waitForWake: vi.fn((signal: AbortSignal) => {
+        wakeSignal = signal;
+        return new Promise<void>((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("cancelled")),
+            {
+              once: true
+            }
+          );
+        });
+      }),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+    const warnings = vi.fn();
+    const service = createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool: {
+        connect: vi.fn().mockResolvedValue({
+          query: vi.fn().mockResolvedValue(undefined),
+          on: vi.fn((event, listener) => {
+            if (event === "notification") notify = listener;
+          }),
+          removeAllListeners: vi.fn(),
+          release: vi.fn()
+        })
+      },
+      logger: { warn: warnings } as unknown as Logger
+    });
+    try {
+      service.start();
+      await vi.waitFor(() =>
+        expect(secureRuntime.waitForWake).toHaveBeenCalledOnce()
+      );
+      const previousWake = wakeSignal!;
+      notify?.({ channel: "koed_pds_local_sync" });
+      await vi.waitFor(() =>
+        expect(repository.claimPdsOutbox).toHaveBeenCalledTimes(2)
+      );
+      expect(previousWake.aborted).toBe(true);
+      expect(warnings).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(secureRuntime.waitForWake).toHaveBeenCalledTimes(2)
+      );
+    } finally {
+      await service.stop();
+    }
   });
 
   it("does not rearm relay wake while the previous wake is being reconciled", async () => {
@@ -216,6 +320,124 @@ describe("Personal Device Sync service", () => {
       await service.stop();
       vi.useRealTimers();
     }
+  });
+
+  it("publishes due checkpoints before potentially slow artifact reconciliation", async () => {
+    const calls: string[] = [];
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn(async () => {
+        calls.push("claim");
+        return [
+          {
+            id: "checkpoint-outbox",
+            groupId: "group",
+            closureId: "checkpoint-closure",
+            packageId: "checkpoint-package",
+            sourceManifestHash: "checkpoint-manifest",
+            attemptCount: 1
+          }
+        ];
+      }),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(true),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([])
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(true),
+      reconcileArtifacts: vi.fn(async () => {
+        calls.push("reconcile-artifacts");
+        throw new Error("artifact work is temporarily unavailable");
+      }),
+      poll: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(async () => {
+        calls.push("publish");
+        return { state: "committed" as const, transportId: "transport" };
+      }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(calls).toEqual(
+      expect.arrayContaining(["claim", "publish", "reconcile-artifacts"])
+    );
+    expect(calls.indexOf("claim")).toBeLessThan(
+      calls.indexOf("reconcile-artifacts")
+    );
+    expect(calls.indexOf("publish")).toBeLessThan(
+      calls.indexOf("reconcile-artifacts")
+    );
+  });
+
+  it("claims and publishes a pending checkpoint even when inbound relay polling fails", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([
+        {
+          id: "checkpoint-outbox",
+          groupId: "group",
+          closureId: "checkpoint-closure",
+          packageId: "checkpoint-package",
+          sourceManifestHash: "checkpoint-manifest",
+          attemptCount: 1
+        }
+      ]),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(true),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      poll: vi.fn().mockRejectedValue(new Error("inbound relay unavailable")),
+      publish: vi.fn().mockResolvedValue({
+        state: "committed",
+        transportId: "checkpoint-transport"
+      }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(repository.claimPdsOutbox).toHaveBeenCalledOnce();
+    expect(repository.beginPdsOutboxNetworkAction).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox"
+    });
+    expect(secureRuntime.publish).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox",
+      closureId: "checkpoint-closure",
+      packageId: "checkpoint-package",
+      sourceManifestHash: "checkpoint-manifest"
+    });
+    expect(repository.completePdsOutbox).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "checkpoint-outbox",
+      state: "committed",
+      transportId: "checkpoint-transport"
+    });
   });
 
   it("completes inbound materialization only after the relay ACK succeeds", async () => {

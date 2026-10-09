@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { createPdsPaseoRelayFetch } from "./personal-device-sync-paseo-fetch.js";
 import type {
   LocalEmbeddingStatus,
   MemorySourceRepository,
@@ -307,6 +308,19 @@ export const rewrapPdsCheckpointSourceEnvelope = (input: {
   return rewrapped;
 };
 
+export const pdsLifecycleDataPlaneReadyForRuntime = (input: {
+  dataPlaneReady: unknown;
+  authorityHeadHash: string;
+  certificateEpoch: unknown;
+  certificateStatementHash: unknown;
+  runtimeAuthorityHead: string;
+  runtimeEpoch: string;
+}): boolean =>
+  input.dataPlaneReady !== false &&
+  input.authorityHeadHash === input.runtimeAuthorityHead &&
+  input.certificateEpoch === input.runtimeEpoch &&
+  input.certificateStatementHash === input.authorityHeadHash;
+
 export const resolvePdsLifecycleAuthorizationPublicKey = (
   secret: RuntimeSecret,
   signerKeyId: unknown
@@ -508,16 +522,24 @@ const createPdsWorkerRuntimeFromSecret = (
       signingPublicKey: runtime.recipient.signingPublicKey,
       signingPrivateSeed: secret.device.signingPrivateSeed
     });
-    let relay = new PdsRelayClient({
-      baseUrl: secret.relayUrl,
-      identity: relayIdentity(secret.certificate)
-    });
     const environment = input.environment ?? process.env;
+    const relayFetch = createPdsPaseoRelayFetch(
+      secret.relayUrl,
+      environment.KOED_PDS_REQUEST_RELAY_URL
+    );
+    const relayBaseUrl = relayFetch
+      ? `${new URL(secret.relayUrl).origin}${new URL(secret.relayUrl).pathname}`
+      : secret.relayUrl;
+    let relay = new PdsRelayClient({
+      baseUrl: relayBaseUrl,
+      identity: relayIdentity(secret.certificate),
+      ...(relayFetch ? { fetch: relayFetch } : {})
+    });
     const localRelayUrl = environment.MEMORY_API_URL?.trim() || null;
     const localRelay =
       localRelayUrl &&
       normalizePdsRelayBaseUrl(localRelayUrl) !==
-        normalizePdsRelayBaseUrl(secret.relayUrl)
+        normalizePdsRelayBaseUrl(relayBaseUrl)
         ? new PdsRelayClient({
             baseUrl: localRelayUrl,
             identity: relayIdentity(secret.certificate)
@@ -1075,7 +1097,10 @@ const createPdsWorkerRuntimeFromSecret = (
         const waitForRelay = async (relaySignal?: AbortSignal) => {
           await relay.waitForWake(
             relaySignal,
-            Array.from(pendingOutboundTransports)
+            Array.from(pendingOutboundTransports),
+            // Tunnel server frames are serialized; client cancellation cannot
+            // cancel the already forwarded Authority request.
+            relayFetch ? 5 : undefined
           );
           // The wake may have been caused by one of these ACK cursors. Durable
           // committed-outbox reconciliation adds back any still-pending cursor.
@@ -1220,13 +1245,21 @@ const createPdsWorkerRuntimeFromSecret = (
       async pollLifecycle() {
         // Control endpoint permits prior-head active certificate only to recover
         // current Authority binding; content endpoints remain fail-closed.
-        const refreshed = record(await relay.certificate(), "certificate");
-        const certificate = record(refreshed.certificate, "certificate");
-        relay = new PdsRelayClient({
-          baseUrl: secret.relayUrl,
-          identity: relayIdentity(canonicalizePdsJson(certificate))
+        let lifecycleCertificate = "";
+        const lifecycleValue = await fetchPdsLifecycleWithCertificateRefresh({
+          fetchCertificate: () => relay.certificate(),
+          createClient: (certificate) => {
+            const parsedCertificate = record(certificate, "certificate");
+            lifecycleCertificate = canonicalizePdsJson(parsedCertificate);
+            relay = new PdsRelayClient({
+              baseUrl: relayBaseUrl,
+              identity: relayIdentity(lifecycleCertificate),
+              ...(relayFetch ? { fetch: relayFetch } : {})
+            });
+            return relay;
+          }
         });
-        const lifecycle = record(await relay.lifecycle(), "lifecycle");
+        const lifecycle = record(lifecycleValue, "lifecycle");
         const head = record(lifecycle.authority_head, "authority head");
         if (
           typeof head.sequence !== "string" ||
@@ -1234,6 +1267,10 @@ const createPdsWorkerRuntimeFromSecret = (
           !head.statement
         )
           throw new TypeError("PdsCryptoAuthorityError");
+        const refreshedCertificate = record(
+          parseCanonicalPdsJson(lifecycleCertificate),
+          "certificate"
+        );
         const headStatement = record(
           typeof head.statement === "string"
             ? parseCanonicalPdsJson(head.statement)
@@ -1304,7 +1341,7 @@ const createPdsWorkerRuntimeFromSecret = (
           const statement = record(control.statement, "lifecycle statement");
           validatePdsGroupStatement(statement as never, {
             authorizationPublicKey:
-              certificate.deviceSigningPublicKey as string,
+              refreshedCertificate.deviceSigningPublicKey as string,
             authorityPublicKey: secret.authority.publicKey,
             expectedGroupId: secret.groupId
           });
@@ -1372,6 +1409,15 @@ const createPdsWorkerRuntimeFromSecret = (
             }
           });
         }
+        const dataPlaneReady = pdsLifecycleDataPlaneReadyForRuntime({
+          dataPlaneReady: lifecycle.data_plane_ready,
+          authorityHeadHash: head.hash,
+          certificateEpoch: refreshedCertificate.epoch,
+          certificateStatementHash: refreshedCertificate.statementHash,
+          runtimeAuthorityHead: runtime.authorityHead,
+          runtimeEpoch: runtime.epoch
+        });
+        return dataPlaneReady;
       },
       async poll() {
         const sources: Array<{
@@ -1755,6 +1801,30 @@ const createPdsWorkerRuntimeFromSecret = (
   }
 };
 
+/** Refresh once when an Authority head transition races certificate auth. */
+export const fetchPdsLifecycleWithCertificateRefresh = async <T>(input: {
+  fetchCertificate: () => Promise<unknown>;
+  createClient: (certificate: unknown) => { lifecycle: () => Promise<T> };
+}): Promise<T> => {
+  const createFreshClient = async () => {
+    const refreshed = record(await input.fetchCertificate(), "certificate");
+    const certificate = record(refreshed.certificate, "certificate");
+    return input.createClient(certificate);
+  };
+  let client = await createFreshClient();
+  try {
+    return await client.lifecycle();
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "PdsRelayNotFoundError")
+      throw error;
+  }
+  // The member may have been revoked while the first certificate was in use.
+  // A failed certificate refresh still rejects; lifecycle is retried only with
+  // a newly issued active certificate, so revocation cannot be bypassed.
+  client = await createFreshClient();
+  return await client.lifecycle();
+};
+
 /** Operator-managed or Desktop-bridge runtime. Secret bytes never enter worker configuration. */
 export const createPdsWorkerRuntimeFromEnvironment = (
   input: PdsRuntimeFactoryInput
@@ -1831,7 +1901,7 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
       await runtime.waitForWake?.(signal);
     },
     async pollLifecycle() {
-      await requiredRuntime().pollLifecycle?.();
+      return await requiredRuntime().pollLifecycle?.();
     },
     async poll() {
       return await requiredRuntime().poll();

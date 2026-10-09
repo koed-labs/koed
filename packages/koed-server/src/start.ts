@@ -141,6 +141,7 @@ export interface KoedServerStartOptions {
   spawn?: SpawnLike;
   collectStatus?: typeof collectKoedServerStartupStatus;
   provisionLocalApiToken?: typeof provisionLocalApiToken;
+  startDeviceRequestService?: typeof startDeviceRequestService;
   signal?: AbortSignal;
 }
 
@@ -874,6 +875,8 @@ export const startKoedServer = async ({
   collectStatus = collectKoedServerStartupStatus,
   provisionLocalApiToken:
     provisionLocalApiTokenDependency = provisionLocalApiToken,
+  startDeviceRequestService:
+    startDeviceRequestServiceDependency = startDeviceRequestService,
   signal
 }: KoedServerStartOptions = {}): Promise<void> => {
   const startupId = randomBytes(12).toString("hex");
@@ -1427,9 +1430,15 @@ export const startKoedServer = async ({
       config.runtimeMode === "local-personal" &&
       useBundledLocalDependencies
     ) {
-      deviceRequestService = await startDeviceRequestService({
+      const pairingRelayUrl =
+        (
+          environment.KOED_PDS_REQUEST_RELAY_URL ??
+          refreshedRepoEnv.KOED_PDS_REQUEST_RELAY_URL
+        )?.trim() || undefined;
+      deviceRequestService = await startDeviceRequestServiceDependency({
         paths,
         host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,
+        relayUrl: pairingRelayUrl,
         enrolled: () =>
           Boolean(
             createPdsApplicationSecretStore({ rootPath: paths.koedHome }).get(

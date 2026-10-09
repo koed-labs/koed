@@ -98,10 +98,10 @@ describe("PDS relay URL boundary", () => {
       fetch: fetcher
     });
 
-    await client.waitForWake(undefined, [transportId]);
+    await client.waitForWake(undefined, [transportId], 5);
 
     expect(fetcher).toHaveBeenCalledWith(
-      `http://192.168.1.2:3310/pds/v1/personal-device-sync/relay/wake?transportId=${transportId}`,
+      `http://192.168.1.2:3310/pds/v1/personal-device-sync/relay/wake?waitSeconds=5&transportId=${transportId}`,
       expect.objectContaining({ method: "GET" })
     );
   });

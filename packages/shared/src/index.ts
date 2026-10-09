@@ -13,6 +13,8 @@ export {
   type NotificationDrainPool
 } from "./notification-drain-controller.js";
 
+export { withPaseoRelayClientLock } from "./paseo-relay-client-lock.js";
+
 export {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,

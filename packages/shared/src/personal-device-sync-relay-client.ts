@@ -433,9 +433,15 @@ export class PdsRelayClient {
 
   async waitForWake(
     signal?: AbortSignal,
-    pendingTransportIds: string[] = []
+    pendingTransportIds: string[] = [],
+    waitSeconds?: number
   ): Promise<void> {
     const query = new URLSearchParams();
+    if (waitSeconds !== undefined)
+      query.set(
+        "waitSeconds",
+        String(Math.min(Math.max(Math.floor(waitSeconds), 1), 1800))
+      );
     for (const transportId of pendingTransportIds.slice(0, 100)) {
       query.append("transportId", transportId);
     }

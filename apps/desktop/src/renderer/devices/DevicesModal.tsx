@@ -7,6 +7,7 @@ import {
   LoaderCircle,
   Plus,
   Pencil,
+  Trash2,
   RefreshCw,
   X
 } from "lucide-react";
@@ -857,6 +858,52 @@ export function DevicesModal({
                     </div>
                     <div className="device-row-actions">
                       <Check aria-label="Active" />
+                      {canCreateInvitation &&
+                      member.device_id !== localDeviceId ? (
+                        <button
+                          type="button"
+                          className="device-icon-button device-remove-button"
+                          aria-label={`Remove ${member.label || deviceName(member.device_id, index)}`}
+                          title="Remove device"
+                          disabled={busy || editingDevice !== null}
+                          onClick={() => {
+                            const name =
+                              member.label ||
+                              deviceName(member.device_id, index);
+                            if (
+                              !window.confirm(
+                                `Remove ${name} from this Personal Device Group? It will stop syncing with these devices. Memory already stored on that device will remain there.`
+                              )
+                            ) {
+                              return;
+                            }
+                            setBusy(true);
+                            setError(null);
+                            void invoke<{
+                              ok?: boolean;
+                              error?: string;
+                              message?: string;
+                            }>("personal_sync_revoke", {
+                              deviceId: member.device_id,
+                              groupId: group?.group_id
+                            })
+                              .then(async (result) => {
+                                if (result?.ok !== true) {
+                                  throw new Error(
+                                    result?.error ||
+                                      result?.message ||
+                                      "Koed could not remove this device."
+                                  );
+                                }
+                                await load();
+                              })
+                              .catch((caught) => setError(errorMessage(caught)))
+                              .finally(() => setBusy(false));
+                          }}
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="device-icon-button"
