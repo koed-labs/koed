@@ -502,16 +502,11 @@ export class MemoryToolExecutor {
         return {
           markdown:
             "Koed could not resolve a unique authorized Team Backend for this Workspace. Call memory_workspaces and pass both team_workspace_id and team_backend_id; reconnect unavailable backends if needed.",
-          evidenceBundle: {
-            query: answerInput.query,
-            instructions:
-              "Team Workspace routing could not be resolved. This is not a not-found memory result.",
-            evidence: [],
-            retrieval: {
-              mode: "team_workspace_upstream_backend_unavailable",
-              teamWorkspaceId,
-              unavailableBackends: discovery.unavailable_backends
-            }
+          retrieval: {
+            evidenceCount: 0,
+            mode: "team_workspace_upstream_backend_unavailable",
+            teamWorkspaceId,
+            unavailableBackends: discovery.unavailable_backends
           }
         };
       }
@@ -529,16 +524,11 @@ export class MemoryToolExecutor {
       return {
         markdown:
           "Team Workspace recall is configured, but this local Koed runtime has no scoped local-edge client credential. Reconnect the Team Backend through Koed Desktop or headless koed-server enrollment.",
-        evidenceBundle: {
-          query: answerInput.query,
-          instructions:
-            "Team Workspace recall was requested without a scoped local-edge client credential.",
-          evidence: [],
-          retrieval: {
-            mode: "team_workspace_local_credential_unavailable",
-            teamWorkspaceId,
-            upstreamBackendId
-          }
+        retrieval: {
+          evidenceCount: 0,
+          mode: "team_workspace_local_credential_unavailable",
+          teamWorkspaceId,
+          upstreamBackendId
         }
       };
     }

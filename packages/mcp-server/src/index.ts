@@ -406,6 +406,10 @@ export const defaultTools = ["memory_answer", "memory_workspaces"] as const;
 
 export const capabilityGatedTools = ["memory_intake_propose"] as const;
 
+// MCP result _meta key carrying the Memory Answer retrieval summary. Clients do
+// not present _meta to the model; benchmark observers read counts from it.
+export const MEMORY_ANSWER_RETRIEVAL_META = "koed/memory-answer-retrieval";
+
 const memoryServerInstructionsPrompt = loadPrompt("mcp-server-instructions");
 const memoryAnswerToolDescriptionPrompt = loadPrompt(
   "memory-answer-tool-description"

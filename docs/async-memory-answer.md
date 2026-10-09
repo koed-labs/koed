@@ -171,6 +171,41 @@ creates a new invocation.
 
 ## Authorization and diagnostics
 
+`memory_answer` defaults to `response_detail=answer_only` and
+`include_evidence=false`, including for implementation and debugging questions.
+Blocking and deferred execution produce the same compact result: answer Markdown,
+public worker status, and an evidence-count/retrieval-mode summary. Worker token
+usage, execution records, raw errors, and retrieval traces remain in internal
+question history. `with_citations` adds source metadata; `with_evidence` or the
+legacy `include_evidence=true` adds selected evidence bodies and the structured
+answer. These detail levels are explicit caller choices. Team routing errors
+return a message and routing status without an Evidence Bundle.
+
+Codex Stop hooks, ordinary MCP results (including Claude Code's native background
+notifications), and Pi blocking and deferred completions use one shared text
+formatter. It delivers the answer Markdown, or the worker's readable fallback
+message when answer text is absent. The recalled-data warning and no-poll
+guidance occupy one line, followed by HTML-escaped text between data markers.
+Worker metadata and retrieval summaries are omitted from completion text.
+Default MCP recall also omits `structuredContent`, so the result envelope is not
+injected a second time; the retrieval summary is carried in MCP result `_meta`
+under `koed/memory-answer-retrieval`, which clients do not present to the model,
+so observers such as the Experience Replay bridge keep evidence counts.
+Explicit `with_citations`, `with_evidence` or `include_evidence=true` requests
+add their citations, source metadata, evidence bodies and structured answer as
+escaped JSON in a second `<koed-memory-answer-details>` data block. This holds
+for MCP text, Codex Stop-hook delivery and Pi blocking and deferred delivery, so
+every AI Client sees the details it asked for. MCP also keeps the requested
+result in `structuredContent`. Deferred completions rely on the task result,
+which the runtime already limits to the requested detail level. Pi deferred
+completions and failure messages name the task and the request query in model-
+visible text, because Pi keeps message details out of model context and several
+recalls can be pending at once. Internal diagnostics remain in question history.
+An answer without readable text produces a static unavailable message; an
+oversized answer or detail block is rejected without truncation. Failed or
+cancelled deferred tasks produce static messages without task errors or cached
+answers. Pending acknowledgements keep their receipt format for delivery routing.
+
 Task event streams resolve ownership before writing success headers. Scheduler
 notifications only wake an observer; each event and keepalive uses another
 authorized read. Expiry ends observation, resumed versions do not regress, and

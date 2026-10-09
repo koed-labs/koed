@@ -400,7 +400,14 @@ export const compactMemoryAnswerPayload = (
     payload.retrieval &&
     typeof payload.retrieval === "object" &&
     "evidenceCount" in payload.retrieval
-      ? (payload.retrieval as MemoryAnswerWorkerResponse["retrieval"])
+      ? {
+          evidenceCount: (
+            payload.retrieval as MemoryAnswerWorkerResponse["retrieval"]
+          ).evidenceCount,
+          retrievalMode: (
+            payload.retrieval as MemoryAnswerWorkerResponse["retrieval"]
+          ).retrievalMode
+        }
       : {
           evidenceCount: evidenceItems(payload).length,
           retrievalMode:
@@ -413,20 +420,28 @@ export const compactMemoryAnswerPayload = (
         };
 
   if (responseDetail === "internal") {
-    return { ...payload, retrieval: retrievalSummary };
+    return {
+      ...payload,
+      retrieval:
+        payload.retrieval &&
+        typeof payload.retrieval === "object" &&
+        "evidenceCount" in payload.retrieval
+          ? (payload.retrieval as MemoryAnswerWorkerResponse["retrieval"])
+          : retrievalSummary
+    };
   }
 
+  const publicWorker: MemoryAnswerWorkerStatus = {
+    provider: payload.localMemoryWorker.provider,
+    promptVersion: payload.localMemoryWorker.promptVersion,
+    jobId: payload.localMemoryWorker.jobId,
+    model: payload.localMemoryWorker.model,
+    memoryStatus: payload.localMemoryWorker.memoryStatus,
+    usedFallback: payload.localMemoryWorker.usedFallback,
+    skippedReason: payload.localMemoryWorker.skippedReason,
+    displayMessage: payload.localMemoryWorker.displayMessage
+  };
   if (responseDetail === "with_evidence") {
-    const publicWorker: MemoryAnswerWorkerStatus = {
-      provider: payload.localMemoryWorker.provider,
-      promptVersion: payload.localMemoryWorker.promptVersion,
-      jobId: payload.localMemoryWorker.jobId,
-      model: payload.localMemoryWorker.model,
-      memoryStatus: payload.localMemoryWorker.memoryStatus,
-      usedFallback: payload.localMemoryWorker.usedFallback,
-      skippedReason: payload.localMemoryWorker.skippedReason,
-      displayMessage: payload.localMemoryWorker.displayMessage
-    };
     return {
       markdown: payload.markdown,
       structuredAnswer: payload.structuredAnswer,
@@ -442,7 +457,7 @@ export const compactMemoryAnswerPayload = (
     localMemoryWorker: MemoryAnswerWorkerStatus;
   } = {
     markdown: payload.markdown,
-    localMemoryWorker: payload.localMemoryWorker,
+    localMemoryWorker: publicWorker,
     retrieval: retrievalSummary
   };
 
