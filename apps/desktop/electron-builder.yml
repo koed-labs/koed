@@ -13,12 +13,12 @@ files:
   - assets/koed-tray-linux.png
   - assets/koed-tray-linux@2x.png
   - package.json
-  - "node_modules/@koed/koed-server/package.json"
-  - "node_modules/@koed/koed-server/dist/**/*"
-  - "!node_modules/@koed/koed-server/src/**"
-  - "!node_modules/@koed/koed-server/**/*.test.ts"
-  - "!node_modules/@koed/koed-server/tsconfig.json"
-  - "!node_modules/@koed/koed-server/tsconfig.tsbuildinfo"
+  - "node_modules/@koed-labs/server/package.json"
+  - "node_modules/@koed-labs/server/dist/**/*"
+  - "!node_modules/@koed-labs/server/src/**"
+  - "!node_modules/@koed-labs/server/**/*.test.ts"
+  - "!node_modules/@koed-labs/server/tsconfig.json"
+  - "!node_modules/@koed-labs/server/tsconfig.tsbuildinfo"
 
 asarUnpack:
   - dist-electron/koed-server/node-entrypoint-runner.js

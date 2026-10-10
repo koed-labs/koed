@@ -56,7 +56,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build koed-server CLI
-        run: pnpm --filter @koed/koed-server build
+        run: pnpm --filter @koed-labs/server build
 
       - name: Fingerprint native toolchain
         id: toolchain

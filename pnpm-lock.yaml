@@ -127,7 +127,7 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@koed/koed-server':
+      '@koed-labs/server':
         specifier: workspace:*
         version: link:../../packages/koed-server
       '@koed/mcp-server':
@@ -255,15 +255,15 @@ importers:
 
   packages/app-runtime-stage:
     dependencies:
+      '@koed-labs/server':
+        specifier: workspace:*
+        version: link:../koed-server
       '@koed/api':
         specifier: workspace:*
         version: link:../../apps/api
       '@koed/embedding-service':
         specifier: workspace:*
         version: link:../../apps/embedding-service
-      '@koed/koed-server':
-        specifier: workspace:*
-        version: link:../koed-server
       '@koed/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server

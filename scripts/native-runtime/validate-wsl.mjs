@@ -162,7 +162,7 @@ const main = () => {
   let readyStatus;
   try {
     if (!existsSync(cli)) {
-      errors.push("Build @koed/koed-server before WSL validation.");
+      errors.push("Build @koed-labs/server before WSL validation.");
     } else if (errors.length === 0) {
       const statusBefore = runCli([
         "runtime",

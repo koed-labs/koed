@@ -419,7 +419,7 @@ describe("start supervisor", () => {
       "Blocking checks: Worker/queue (starting), Embedding Service (needs_attention)."
     );
     expect(thrown?.message).toContain(
-      "Inspect /ready and koed-server status --json for details."
+      "Inspect /ready and koed status --json for details."
     );
     expect(thrown?.message).not.toContain("Personal API Token");
     expect(thrown?.message).not.toContain("must-not-appear");

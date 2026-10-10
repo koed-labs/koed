@@ -9,10 +9,10 @@ Personal Device Group remains its Authority/Relay host and must be reachable.
 On the joining device, run:
 
 ```sh
-koed-server pair
+koed pair
 ```
 
-From a built source checkout, use `pnpm koed-server pair` instead. Koed starts or
+From a built source checkout, use `pnpm koed pair` instead. Koed starts or
 reuses its native local Personal runtime, prints a ten-minute request link, and
 waits. No environment exports, invitation input, or JSON file are required.
 Missing native binaries/models are reported through normal runtime setup guidance;
@@ -24,7 +24,7 @@ Choose **Review device**, check the displayed device name and replication scope,
 then choose **Add device**. Studio reports `connected` only after its local group
 state has been reconciled into its own database.
 
-`koed-server pair status` reports redacted progress. `koed-server pair cancel`
+`koed pair status` reports redacted progress. `koed pair cancel`
 invalidates a waiting request. Once enrollment begins, wait for its outcome;
 removal of an enrolled device is a separate membership operation. Ctrl-C detaches
 the CLI display; the supervisor keeps the request until expiry. Run `pair` again
@@ -118,13 +118,13 @@ for that installation, also used by the device selector; edits do not rename the
 remote computer or change its cryptographic identity. Nicknames are stored under
 `KOED_HOME/config/personal-device-names.json` and survive restarts.
 
-On a running local Personal installation, `koed-server personal-sync status --json`
+On a running local Personal installation, `koed personal-sync status --json`
 uses its scoped local credential automatically, including over SSH. No browser
 session descriptor is required. An explicit control URL must match the running
 installation's loopback API; local credentials are never forwarded elsewhere.
 
 Normal CLI help focuses on `pair`, `pair status`, `pair cancel`, and Personal Sync
-status. `koed-server personal-sync --help --advanced` lists retained low-level
+status. `koed personal-sync --help --advanced` lists retained low-level
 protocol and recovery operations, which require their own authentication and
 signed inputs. Previously advertised commands without implementations are no
 longer listed. The setup wizard's AI Client selection step keeps its integration

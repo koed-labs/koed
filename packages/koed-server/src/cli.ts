@@ -95,16 +95,16 @@ import type { KoedServerDoctorResult } from "./types.js";
 
 export const personalSyncUsageText = `Personal Sync
 
-  koed-server pair                   Connect this device using a request link
-  koed-server pair status            Show pending pairing progress
-  koed-server pair cancel            Cancel a waiting request
-  koed-server personal-sync status --json
+  koed pair                   Connect this device using a request link
+  koed pair status            Show pending pairing progress
+  koed pair cancel            Cancel a waiting request
+  koed personal-sync status --json
                                      Show this installation’s group and members
 
 Create your first group and manage devices in Electron → Devices.
 Status uses the local Personal installation automatically; no browser session is needed.
 
-  koed-server personal-sync --help --advanced
+  koed personal-sync --help --advanced
                                      Show retained low-level recovery commands
 `;
 
@@ -130,7 +130,7 @@ Only status configures local authentication automatically. Existing scripts rema
 supported; use pair and Electron for ordinary enrollment and device management.
 `;
 
-export const usageText = `Usage: koed-server <command> [options]
+export const usageText = `Usage: koed <command> [options]
 
 Commands:
   start                  Start and supervise local Koed services
@@ -337,7 +337,7 @@ const checkCoreSetupNeeded = (
   if (!existsSync(paths.localAppCredentialPath)) {
     return `Core setup is required. Run:
 
-  koed-server setup core
+  koed setup core
 
 This will provision your local API Token and prepare Koed services.`;
   }
@@ -354,7 +354,7 @@ const getNoAgentsWarning = (status: {
     status.claudeCode?.configured ||
     status.pi?.configured;
   if (!anyConfigured) {
-    return "No AI Clients configured. Run: koed-server setup codex, setup claude, or setup pi";
+    return "No AI Clients configured. Run: koed setup codex, setup claude, or setup pi";
   }
   return null;
 };
@@ -546,9 +546,7 @@ const runApplicationSecretProviderCli = async (
     !reference ||
     args.length !== 3
   ) {
-    stdout.write(
-      "Usage: koed-server secret-provider <get|put|delete> <reference>\n"
-    );
+    stdout.write("Usage: koed secret-provider <get|put|delete> <reference>\n");
     return 1;
   }
   const value = operation === "put" ? readSecretStdin() : undefined;
@@ -739,7 +737,7 @@ export const runKoedServerCli = async (
       }
       if (!ready.ok)
         throw new Error(
-          "Koed could not start. Run koed-server doctor for setup guidance."
+          "Koed could not start. Run koed doctor for setup guidance."
         );
       const labelIndex = args.indexOf("--device-label");
       if (labelIndex >= 0 && !args[labelIndex + 1])

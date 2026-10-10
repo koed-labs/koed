@@ -126,10 +126,45 @@ const runtimeBinaries = () => ({
   }
 });
 
+describe("koed executable help", () => {
+  it("uses koed command names in general and Personal Sync help", async () => {
+    const general = writer();
+    const personalSync = writer();
+
+    expect(await runKoedServerCli(["--help"], { stdout: general.stream })).toBe(
+      0
+    );
+    expect(general.text()).toContain("Usage: koed <command> [options]");
+    expect(general.text()).not.toContain("Usage: koed-server");
+
+    const secretProvider = writer();
+    expect(
+      await runKoedServerCli(["secret-provider"], {
+        stdout: secretProvider.stream
+      })
+    ).toBe(1);
+    expect(secretProvider.text()).toContain(
+      "Usage: koed secret-provider <get|put|delete> <reference>"
+    );
+    expect(secretProvider.text()).not.toContain("koed-server");
+
+    expect(
+      await runKoedServerCli(["personal-sync", "--help"], {
+        stdout: personalSync.stream
+      })
+    ).toBe(0);
+    expect(personalSync.text()).toContain("koed personal-sync status --json");
+    expect(personalSync.text()).toContain(
+      "koed personal-sync --help --advanced"
+    );
+    expect(personalSync.text()).not.toContain("koed-server personal-sync");
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =
-      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js";
+      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js";
 
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)

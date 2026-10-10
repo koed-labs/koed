@@ -426,9 +426,9 @@ const inspection = (
   };
   const actions: Partial<Record<DeviceIdentityHealth, string>> = {
     unsafe_proof_storage:
-      "Move host proof storage outside KOED_HOME, then run koed-server identity rotate --json.",
+      "Move host proof storage outside KOED_HOME, then run koed identity rotate --json.",
     unsafe_proof_permissions:
-      "Restrict host proof storage permissions to current Operator, then run koed-server identity rotate --json."
+      "Restrict host proof storage permissions to current Operator, then run koed identity rotate --json."
   };
   return {
     health,
@@ -444,7 +444,7 @@ const inspection = (
       : {
           action:
             actions[health] ??
-            "Run koed-server identity rotate --json to create a new local device identity."
+            "Run koed identity rotate --json to create a new local device identity."
         }),
     platformProtection: isPosix(platform) ? "verified" : "limited"
   };

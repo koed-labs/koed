@@ -192,7 +192,7 @@ export const stopKoedServer = ({
       ok: true,
       state: "not_configured",
       koedHome: paths.koedHome,
-      message: "No koed-server runtime state was found.",
+      message: "No koed runtime state was found.",
       stoppedPids: [],
       missingPids: [],
       stoppedServices: [],

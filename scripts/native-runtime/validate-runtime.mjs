@@ -307,7 +307,7 @@ const validatePackagedProvider = (runtimeRoot) => {
     if (!existsSync(cli))
       return {
         skipped: true,
-        reason: `${cli} is missing; build @koed/koed-server first.`
+        reason: `${cli} is missing; build @koed-labs/server first.`
       };
     const status = run(
       process.execPath,

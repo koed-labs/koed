@@ -8,7 +8,7 @@
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
-      "@koed/koed-server": ["packages/koed-server/dist/index.d.ts"],
+      "@koed-labs/server": ["packages/koed-server/dist/index.d.ts"],
       "@koed/shared": ["packages/shared/dist/index.d.ts"],
       "@koed/shared/collaboration": [
         "packages/shared/dist/collaboration-contract.d.ts"
