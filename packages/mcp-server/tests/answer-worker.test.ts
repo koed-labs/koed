@@ -336,7 +336,10 @@ describe("memory answer worker", () => {
       aiClientInstanceId: "claude.work",
       executablePath: process.execPath
     };
-    const response = await answerWithMemoryWorker(payload, { config });
+    const response = await answerWithMemoryWorker(payload, {
+      config,
+      responseDetail: "internal"
+    });
 
     expect(response.localMemoryWorker).toMatchObject({
       provider: "claude",
@@ -374,6 +377,7 @@ describe("memory answer worker", () => {
       return stream;
     });
     const responsePromise = answerWithMemoryWorker(payload, {
+      responseDetail: "internal",
       client: {
         async search() {
           throw new Error("search must not run after cancellation");
@@ -430,6 +434,7 @@ describe("memory answer worker", () => {
     });
 
     const response = await answerWithMemoryWorker(payload, {
+      responseDetail: "internal",
       client: {
         async search() {
           throw new Error("search must not run after timeout");
@@ -566,6 +571,63 @@ describe("memory answer worker", () => {
       /SECRET INTERNAL QUERY|SECRET CALLER HINT|SECRET ERROR|SECRET WORKER ERROR/
     );
   });
+
+  it.each(["answer_only", "with_citations", "with_evidence"] as const)(
+    "keeps internal diagnostics out of %s while retaining them internally",
+    (responseDetail) => {
+      const internal = {
+        ...payload,
+        retrieval: {
+          evidenceCount: 1,
+          retrievalMode: "semantic_vector",
+          trace: { query: "PRIVATE RETRIEVAL TRACE" }
+        },
+        localMemoryWorker: {
+          provider: "codex",
+          promptVersion: MEMORY_ANSWER_PROMPT_VERSION,
+          jobId: "job-private",
+          model: "fixture-model",
+          usedFallback: true,
+          memoryStatus: "insufficient" as const,
+          displayMessage: "Some memory could not be verified.",
+          errorMessage: "PRIVATE WORKER ERROR",
+          searchCount: 4,
+          tokenUsage: { last: { totalTokens: 1234 } },
+          appServerThreadId: "PRIVATE THREAD",
+          appServerExecutions: [
+            { model: "fixture-model", threadId: "PRIVATE THREAD" }
+          ]
+        }
+      };
+      const publicResult = compactMemoryAnswerPayload(internal, responseDetail);
+
+      expect(publicResult.localMemoryWorker).toMatchObject({
+        usedFallback: true,
+        memoryStatus: "insufficient",
+        displayMessage: "Some memory could not be verified."
+      });
+      expect(publicResult.localMemoryWorker).not.toHaveProperty("tokenUsage");
+      expect(publicResult.localMemoryWorker).not.toHaveProperty("searchCount");
+      expect(publicResult.localMemoryWorker).not.toHaveProperty(
+        "appServerExecutions"
+      );
+      expect(publicResult.retrieval).toEqual({
+        evidenceCount: 1,
+        retrievalMode: "semantic_vector"
+      });
+      expect(publicResult).not.toHaveProperty("evidenceBundle");
+      expect(JSON.stringify(publicResult)).not.toContain("PRIVATE");
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").localMemoryWorker
+      ).toEqual(internal.localMemoryWorker);
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").evidenceBundle
+      ).toEqual(payload.evidenceBundle);
+      expect(
+        compactMemoryAnswerPayload(internal, "internal").retrieval
+      ).toEqual(internal.retrieval);
+    }
+  );
 
   it("rejects contradictory worker status, relevance, and evidence invariants", () => {
     const found = answerObject("supported", "found");
@@ -1276,6 +1338,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "global",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
@@ -2160,6 +2223,7 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
@@ -2232,6 +2296,7 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
+          responseDetail: "internal",
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,

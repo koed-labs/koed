@@ -1047,7 +1047,7 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(false);
     expect(result.state).toBe("needs_attention");
     expect(result.stderr).toBe("bad");
-    expect(result.action).toContain("rerun koed-server setup codex --json");
+    expect(result.action).toContain("rerun koed setup codex --json");
   });
 
   it("repairs Codex using the active Desktop API Token", async () => {

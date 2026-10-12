@@ -1,3 +1,4 @@
+import { maintainUpstreamCapabilities } from "./upstream-capability-maintenance.js";
 import { startDeviceRequestService } from "./personal-device-request.js";
 import { redeemPairingLink } from "./personal-sync.js";
 import { createPdsApplicationSecretStore } from "@koed/shared";
@@ -1052,6 +1053,7 @@ export const startKoedServer = async ({
   };
   let runtimeStateWritten = false;
   let stopSupervisorExitMonitor: () => void = () => undefined;
+  let stopCapabilityMaintenance: () => void = () => undefined;
   const runtimeStateOwnedByCurrentProcess = (): boolean => {
     try {
       const runtime = JSON.parse(
@@ -1125,7 +1127,10 @@ export const startKoedServer = async ({
   const shutdownRequested = new Promise<void>((resolveShutdown) => {
     requestShutdown = resolveShutdown;
   });
-  const shutdown = () => requestShutdown();
+  const shutdown = () => {
+    stopCapabilityMaintenance();
+    requestShutdown();
+  };
   if (signal?.aborted) requestShutdown();
   else signal?.addEventListener("abort", shutdown, { once: true });
   process.on("SIGINT", shutdown);
@@ -1326,7 +1331,7 @@ export const startKoedServer = async ({
     });
     if (status.api.state !== "healthy" || status.database.state !== "healthy") {
       throw new Error(
-        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed-server status --json for details.`
+        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
       );
     }
     emitStartupMilestone("api_and_database_ready");
@@ -1486,8 +1491,14 @@ export const startKoedServer = async ({
     });
     if (!status.ok) {
       throw new Error(
-        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed-server status --json for details.`
+        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
       );
+    }
+    if (localAiRuntimeEnabled) {
+      stopCapabilityMaintenance = maintainUpstreamCapabilities(paths, {
+        onError: () =>
+          console.warn("Upstream capability maintenance will retry.")
+      });
     }
     emitStartupMilestone("core_services_ready");
     startupReady = true;
@@ -1519,6 +1530,7 @@ export const startKoedServer = async ({
     }
     throw error;
   } finally {
+    stopCapabilityMaintenance();
     stopSupervisorExitMonitor();
     stopSupervisorLogMaintenance();
     process.off("SIGINT", shutdown);

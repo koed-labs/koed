@@ -20,7 +20,7 @@
     "@koed/shared",
     "@koed/ui",
     "@koed/worker",
-    "@koed/koed-server",
+    "@koed-labs/server",
     "@koed/desktop"
   ],
   "privatePackages": {

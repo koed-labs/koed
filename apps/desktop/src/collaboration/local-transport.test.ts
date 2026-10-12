@@ -11,7 +11,7 @@ import {
   desktopCollaborationBrokerParentMessageSchema,
   type DesktopCollaborationBrokerChildMessage,
   type DesktopCollaborationBrokerParentMessage
-} from "@koed/koed-server";
+} from "@koed-labs/server";
 import { describe, expect, it, vi } from "vitest";
 import { createCollaborationLocalTransport } from "./local-transport.js";
 

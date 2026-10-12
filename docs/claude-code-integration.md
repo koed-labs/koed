@@ -62,7 +62,7 @@ merges the Koed Capture Hook into the local Claude settings file, and registers
 `claude.default`. It preserves unrelated hooks and MCP entries. Restart Claude
 Code after the command completes.
 
-The headless `koed-server setup claude --json` command, like Desktop setup, can
+The headless `koed setup claude --json` command, like Desktop setup, can
 configure the profile while signed out and report that sign-in is required.
 
 Validate or remove only the Koed-owned integration with:
@@ -228,7 +228,7 @@ The headless setup command and Local Operator Script provide an explicit opt-in
 for Claude Code's native backgrounding of ordinary MCP calls:
 
 ```bash
-pnpm koed-server setup claude --background-recall --json
+pnpm koed setup claude --background-recall --json
 pnpm claude:configure --background-recall
 ```
 

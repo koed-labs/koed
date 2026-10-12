@@ -340,7 +340,7 @@ test("configures Desktop preparation before Electron startup", () => {
   );
   assert.equal(
     desktopManifest.scripts.prestart,
-    "pnpm --filter @koed/koed-server build && pnpm -w source-runtime:prepare"
+    "pnpm --filter @koed-labs/server build && pnpm -w source-runtime:prepare"
   );
   assert.equal(desktopManifest.scripts.start, "pnpm build && electron .");
 });

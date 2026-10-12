@@ -71,7 +71,7 @@ APP="/Applications/Koed.app"
 EXE="$APP/Contents/MacOS/Koed"
 RES="$APP/Contents/Resources"
 RUNNER="$RES/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js"
-CLI="$RES/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+CLI="$RES/app.asar/node_modules/@koed-labs/server/dist/cli.js"
 export KOED_HOME="${KOED_HOME:-$HOME/Library/Application Support/Koed}"
 
 ELECTRON_RUN_AS_NODE=1 \
@@ -102,7 +102,7 @@ APP="/Applications/Koed.app"
 EXE="$APP/Contents/MacOS/Koed"
 RES="$APP/Contents/Resources"
 RUNNER="$RES/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js"
-CLI="$RES/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+CLI="$RES/app.asar/node_modules/@koed-labs/server/dist/cli.js"
 
 ELECTRON_RUN_AS_NODE=1 \
 KOED_PACKAGED_DESKTOP=1 \

@@ -1070,7 +1070,7 @@ const startUpstreamEnrollmentWithFetch = async (
       ok: false,
       state: "failed",
       backend,
-      message: `Upstream backend ${backendId} capabilities are not validated. Run koed-server upstream refresh --id ${backendId} --json.`
+      message: `Upstream backend ${backendId} capabilities are not validated. Run koed upstream refresh --id ${backendId} --json.`
     };
   }
   const configuredOperationFamilies = routePolicyOperationFamilies(
