@@ -83,7 +83,7 @@ installation-local nickname; device icons no longer guess hardware by row order.
 ## Server distribution split (PR #404)
 
 - Land the private Server package and `koed` command migration with existing runtime assembly.
-- Extract lazy CLI loading/help without component provisioning commands.
+- Land the separate lazy CLI loading/help extraction without component provisioning commands.
 - Validate built, signed, installed, and started headless components end to end before enabling npm publication and release promotion.
 - Deliver Desktop on-demand Privacy only after install, upgrade, startup, integration setup, and rollback validation; preserve existing bundled Privacy until then.
 - Deliver opt-in Desktop Install CLI separately, with relocation, removal, and Electron helper validation.
