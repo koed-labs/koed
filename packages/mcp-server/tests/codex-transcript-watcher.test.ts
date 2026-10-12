@@ -1481,37 +1481,93 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(watcher.snapshot().lastErrorCode).toBe("transcript_truncated");
   });
 
-  it("baselines an old source first discovered after empty-root activation", async () => {
+  it.each([false, true])(
+    "baselines an old source first discovered after empty-root activation (future-only=%s)",
+    async (futureCaptureOnly) => {
+      const root = temporaryDirectory();
+      const client = new FakeWatcherClient();
+      const watcher = trackedWatcher(client, {
+        ...watcherConfig(root),
+        futureCaptureOnly
+      });
+      await watcher.scanNow();
+
+      const transcript = transcriptPath(root, "rollout-late-old.jsonl");
+      const initial =
+        line(
+          sessionRecord(
+            "late-old-source",
+            "/tmp/project",
+            "2026-01-01T00:00:00.000Z"
+          )
+        ) + line(userRecord("historical prompt"));
+      writeFileSync(transcript, initial);
+      await watcher.scanNow();
+
+      expect(client.artifacts.has("late-old-source")).toBe(false);
+      expect(client.itemBatches).toHaveLength(0);
+
+      const appended = line(userRecord("captured after discovery"));
+      appendFileSync(transcript, appended);
+      await watcher.scanNow();
+
+      const artifact = client.artifacts.get("late-old-source")!;
+      expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
+      expect(artifact.journalStartOffset).toBe(Buffer.byteLength(initial));
+      expect(
+        (client.segments.get(artifact.id) ?? [])
+          .map((segment) =>
+            Buffer.from(segment.bytesBase64, "base64").toString()
+          )
+          .join("")
+      ).toBe(appended);
+      expect(client.itemBatches.flat()).toHaveLength(1);
+      expect(client.itemBatches.flat()[0]).toMatchObject({
+        rawText: "captured after discovery"
+      });
+    }
+  );
+
+  it("rejects a remote journal predating headless consent even when its upload cursor is current", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();
-    const watcher = trackedWatcher(client, watcherConfig(root));
+    const watcher = trackedWatcher(client, {
+      ...watcherConfig(root),
+      futureCaptureOnly: true
+    });
     await watcher.scanNow();
-
-    const transcript = transcriptPath(root, "rollout-late-old.jsonl");
+    const transcript = transcriptPath(root, "rollout-prior-remote.jsonl");
     const initial =
       line(
         sessionRecord(
-          "late-old-source",
+          "prior-remote",
           "/tmp/project",
           "2026-01-01T00:00:00.000Z"
         )
-      ) + line(userRecord("historical prompt"));
+      ) + line(userRecord("pre-consent source"));
     writeFileSync(transcript, initial);
     await watcher.scanNow();
-
-    expect(client.artifacts.has("late-old-source")).toBe(false);
-    expect(client.itemBatches).toHaveLength(0);
-
-    const appended = line(userRecord("captured after discovery"));
-    appendFileSync(transcript, appended);
-    await watcher.scanNow();
-
-    const artifact = client.artifacts.get("late-old-source")!;
-    expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
-    expect(client.itemBatches.flat()).toHaveLength(1);
-    expect(client.itemBatches.flat()[0]).toMatchObject({
-      rawText: "captured after discovery"
+    await client.ensureConversationSourceArtifact({
+      externalSessionId: "prior-remote",
+      sourceSession: { cwd: "/tmp/project" },
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: Buffer.byteLength(initial),
+      sourceFingerprint: "prior-source"
     });
+    client.artifacts.get("prior-remote")!.providerCursorOffset =
+      Buffer.byteLength(initial);
+    appendFileSync(transcript, line(userRecord("later activity")));
+    await watcher.scanNow();
+    expect(watcher.snapshot().lastErrorCode).toBe(
+      "codex_source_precedes_capture_consent"
+    );
+    expect(client.itemBatches).toHaveLength(0);
+    expect(
+      client.segments.get(client.artifacts.get("prior-remote")!.id)
+    ).toHaveLength(0);
   });
 
   it("commits exact source bytes before canonical rows and cursor", async () => {

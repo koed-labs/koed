@@ -1,4 +1,11 @@
 export { createAuditRepository } from "./audit-repository.js";
+export { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
+export type {
+  RemoteMcpOAuthStore,
+  RemoteMcpOAuthRequest,
+  RemoteMcpOAuthGrant,
+  RemoteMcpOAuthCredential
+} from "./remote-mcp-oauth-repository.js";
 export {
   correctApprovalActivity,
   inventoryApprovalActivity,

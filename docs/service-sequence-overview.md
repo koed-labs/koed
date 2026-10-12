@@ -11,12 +11,13 @@ AI Runtime.
 - **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.
 - **Transcript Watcher**: local background service that owns correctness for externally managed Codex, Claude, or Pi Conversation source growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
-- **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
-  and forwards typed requests to the Local AI Runtime.
+- **MCP Server**: the MCP `2026-07-28` integration exposing Koed tools through
+  a thin local adapter or an opt-in authenticated remote transport.
 - **Local AI Runtime**: the single `koed-server`-supervised process per
   `KOED_HOME` that owns Memory Answer workers, LCM Summary work, Curated Memory
   review, and transcript watching.
-- **API**: the Fastify backend that authenticates API Tokens, persists raw
+- **API**: the Fastify backend that authenticates API Tokens and scoped remote
+  OAuth grants, persists raw
   records, runs Projection, and serves recall endpoints.
 - **Worker**: background process that consumes priority-ordered BullMQ or
   Postgres-backed local queue jobs, performs catch-up Projection, embedding
@@ -32,6 +33,26 @@ AI Runtime.
   dependency endpoints, and reports setup/readiness status for headless and
   desktop use on macOS, Linux, and WSL. Native Windows packaged app support is
   not part of this build.
+
+## Headless Remote Startup
+
+[Headless Remote MCP](headless-remote-mcp.md) is an alternative client startup
+path, not an alternative backend pipeline. The Operator explicitly enables
+the HTTPS `/mcp` transport and persistent OAuth repository on the existing
+backend. The User approves resource-bound OAuth PKCE scopes and installs a
+supported harness in a clean dedicated `KOED_HOME`.
+
+`koed-server remote start` loads the non-secret integration descriptor and
+protected credentials, then starts only the existing Local AI Runtime. It
+does not bootstrap a local API, Worker, Postgres, Embedding Service, Privacy
+Filter, or Electron. The runtime renews credentials per request and reuses its
+existing scheduler, provider workers, LCM service, and Transcript Watchers
+against the remote backend. Historical coordination is disabled and source
+journal uploads begin at retained consent frontiers. Personal durable tasks
+remain backend records serviced by this User-owned runtime; Team requests return
+evidence for synthesis by the invoking AI Client. Ingestion, Projection,
+embedding, retrieval, and authority checks use the same backend services as
+other clients. No backend synthesis or parallel queue is added.
 
 ## Local Service Startup
 

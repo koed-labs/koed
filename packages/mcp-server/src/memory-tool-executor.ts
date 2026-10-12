@@ -76,7 +76,7 @@ const normalizeProjectId = (
   projectId: string | undefined,
   caller: LocalRuntimeCallerContext
 ): string =>
-  projectId && path.isAbsolute(projectId)
+  projectId && (path.isAbsolute(projectId) || path.win32.isAbsolute(projectId))
     ? projectId
     : path.resolve(caller.cwd);
 
@@ -475,7 +475,13 @@ export class MemoryToolExecutor {
           this.environment,
           workerOverridesFromLocalMemorySetting(setting)
         )
-    }).then((config) => ({ ...config, cwd: caller.cwd }));
+    }).then((config) => ({
+      ...config,
+      cwd:
+        this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
+          ? config.cwd
+          : caller.cwd
+    }));
     const projectId =
       input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)

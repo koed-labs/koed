@@ -368,8 +368,12 @@ export const processPiTranscriptSignal = async (
         }),
         artifactFormat: "pi_session_jsonl",
         artifactFormatVersion: 1,
-        journalStartOffset: 0,
-        journalStartLine: 0,
+        journalStartOffset:
+          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? baseline : 0,
+        journalStartLine:
+          env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
+            ? await countTranscriptLines(target, baseline)
+            : 0,
         liveStartOffset: baseline,
         liveStartLine: await countTranscriptLines(target, baseline),
         currentSourceLength: file.size,
@@ -378,9 +382,19 @@ export const processPiTranscriptSignal = async (
         redactedSourceLabel: `${identity.id}.jsonl`
       })
     );
+  if (
+    env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" &&
+    (artifact.providerCursorOffset < baseline ||
+      artifact.journalStartOffset < baseline ||
+      artifact.liveStartOffset < baseline)
+  )
+    throw new Error("pi_source_precedes_capture_consent");
   if (file.size < artifact.providerCursorOffset)
     throw new Error("pi_session_truncated");
-  if (artifact.providerCursorOffset > 0) {
+  if (
+    artifact.providerCursorOffset >
+    (env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? baseline : 0)
+  ) {
     const page = await client.listConversationSourceSegments(artifact.id, {
       afterOffset: artifact.providerCursorOffset - 1,
       limit: 1

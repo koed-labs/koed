@@ -239,6 +239,7 @@ export {
 export interface McpServerConfig {
   apiUrl: string;
   apiToken?: string;
+  authorizationProvider?: () => Promise<string>;
   requestTimeoutMs?: number;
   requestClass?: "managed-conversation" | "background";
 }
@@ -302,7 +303,7 @@ export const workerOverridesFromLocalMemorySetting = (
 
 export interface AccessCheckResult {
   ok: boolean;
-  auth: "bearer_api_token";
+  auth: "bearer_api_token" | "oauth_delegated";
   user: {
     id: string;
     email: string;
@@ -1356,9 +1357,20 @@ export class MemoryApiClient {
     body?: unknown,
     options: { authorization?: string; signal?: AbortSignal } = {}
   ): Promise<T> {
-    const authorization =
-      options.authorization ??
-      (this.config.apiToken ? `Bearer ${this.config.apiToken}` : null);
+    let authorization = options.authorization;
+    if (authorization === undefined && this.config.authorizationProvider) {
+      try {
+        authorization = await this.config.authorizationProvider();
+      } catch {
+        // Credential providers may include secrets in their errors.
+        throw new MemoryApiError("Memory API authorization is unavailable.", {
+          status: 401
+        });
+      }
+    }
+    authorization ??= this.config.apiToken
+      ? `Bearer ${this.config.apiToken}`
+      : undefined;
     if (!authorization) {
       throw new MemoryApiError(
         "Memory API token is not configured. Start the Local AI Runtime through koed-server or configure the Capture Hook integration.",

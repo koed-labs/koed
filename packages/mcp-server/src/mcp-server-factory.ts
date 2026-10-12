@@ -89,7 +89,7 @@ const supportsRuntimeTool = (
     : name !== "memory_workspaces";
 
 const backendToolCapabilities = async (
-  runtimeClient: LocalAiRuntimeClient
+  runtimeClient: KoedMcpRuntimeClient
 ): Promise<RuntimeToolCapabilities> =>
   runtimeClient.capabilities().then((capabilities) => ({
     supportedTools: capabilities.supportedTools,
@@ -174,8 +174,17 @@ const toolSchema = (name: LocalRuntimeToolName) => {
   }
 };
 
+export type KoedMcpRuntimeClient = Pick<
+  LocalAiRuntimeClient,
+  | "capabilities"
+  | "callTool"
+  | "startMemoryAnswerTask"
+  | "getMemoryAnswerTask"
+  | "cancelMemoryAnswerTask"
+>;
+
 export interface CreateKoedMcpServerOptions {
-  runtimeClient?: LocalAiRuntimeClient;
+  runtimeClient?: KoedMcpRuntimeClient;
   environment?: NodeJS.ProcessEnv;
   callerContextResolver?: McpCallerContextResolver;
 }
@@ -262,7 +271,10 @@ export const createKoedMcpServer = async (
     },
     {
       instructions: memoryServerInstructions,
-      supportedProtocolVersions: [KOED_MCP_PROTOCOL_VERSION],
+      supportedProtocolVersions:
+        _requestContext.era === "legacy" && _requestContext.requestInfo
+          ? [KOED_MCP_PROTOCOL_VERSION, "2025-11-25"]
+          : [KOED_MCP_PROTOCOL_VERSION],
       cacheHints: {
         "server/discover": { ttlMs: 30_000, cacheScope: "private" },
         "tools/list": { ttlMs: 30_000, cacheScope: "private" }
@@ -339,6 +351,12 @@ export const createKoedMcpServer = async (
               // A successful tool call can still return while capability refresh
               // waits for the Local AI Runtime to finish starting.
             }
+          }
+          if (
+            toolName === "memory_answer" &&
+            response.synthesis === "ai_client"
+          ) {
+            return jsonResponse(response);
           }
           if (toolName === "memory_answer" && response.status !== "pending") {
             const answerInput = input as Record<string, unknown>;

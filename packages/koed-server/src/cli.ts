@@ -91,6 +91,7 @@ import {
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
 import { runApplicationSecretProvider } from "./application-secret-provider.js";
+import { runRemoteMcpCommand } from "./remote-mcp-client.js";
 import type { KoedServerDoctorResult } from "./types.js";
 
 export const personalSyncUsageText = `Personal Sync
@@ -145,6 +146,13 @@ Commands:
   pair [status|cancel]   Connect this device using a link pasted into Koed Desktop
   personal-sync status --json             Print redacted Personal Sync status
   personal-sync --help   Show Personal Sync usage and advanced recovery help
+  remote login --backend HTTPS_URL --consent [--local-runtime] [--team-read] --json
+                         Authorize remote recall; --local-runtime also authorizes capture and local execution
+  remote setup <client> --consent --json Configure future capture against the authorized remote backend
+  remote check <client> --json Check remote authentication and one AI Client integration
+  remote start           Run the shared Local AI Runtime in the foreground without local backend services
+  remote remove <client> --consent --json Remove only the selected remote AI Client integration
+  remote logout --consent --json Revoke remote authorization and clear local tokens
   setup core --json      Prepare Koed core services and local credential
   setup codex [--deferred-recall | --blocking-recall] --json     Configure the supported Codex integration (deferred recall by default; blocking on Windows)
     --without-memory-guidance  Do not install the recommended global guidance
@@ -199,6 +207,7 @@ Environment:
 `;
 
 export interface KoedServerCliDependencies {
+  runRemoteMcp?: typeof runRemoteMcpCommand;
   collectStatus?: typeof collectKoedServerStatus;
   collectStartupStatus?: typeof collectKoedServerStartupStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
@@ -621,6 +630,7 @@ export const runKoedServerCli = async (
     getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
     runPersonalSync = runPersonalSyncCommand,
+    runRemoteMcp = runRemoteMcpCommand,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -646,6 +656,10 @@ export const runKoedServerCli = async (
           : usageText
       );
       return 0;
+    }
+
+    if (command === "remote") {
+      return runRemoteMcp(args.slice(1), { stdout, stderr });
     }
 
     if (command === "secret-provider") {

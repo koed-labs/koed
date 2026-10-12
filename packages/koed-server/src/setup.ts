@@ -528,21 +528,56 @@ export const repairCodexIntegration = ({
 }: Omit<
   KoedServerSetupOptions,
   "spawnSync"
-> = {}): KoedServerRepairCodexResult => {
+> = {}): KoedServerRepairCodexResult =>
+  configureCodexProfile({
+    environment,
+    readFileSync,
+    writeFileSync,
+    mkdirSync,
+    existsSync,
+    checkPid,
+    resolveRuntime,
+    registerAiClient,
+    resolveCodexExecutable,
+    now
+  });
+
+export const configureCodexIntegrationForRemoteBackend = (
+  options: Omit<KoedServerSetupOptions, "spawnSync"> & {
+    apiUrl: string;
+    credentialAvailable: () => boolean;
+  }
+): KoedServerRepairCodexResult => configureCodexProfile(options, options);
+
+const configureCodexProfile = (
+  {
+    environment = process.env,
+    readFileSync = nodeReadFileSync,
+    writeFileSync = nodeWriteFileSync,
+    mkdirSync = nodeMkdirSync,
+    existsSync = nodeExistsSync,
+    checkPid = isProcessRunning,
+    resolveRuntime = resolveKoedAppRuntime,
+    registerAiClient = registerExplicitAiClient,
+    resolveCodexExecutable = resolveCodexExecutablePath,
+    now = () => new Date()
+  }: Omit<KoedServerSetupOptions, "spawnSync">,
+  remote?: { apiUrl: string; credentialAvailable: () => boolean }
+): KoedServerRepairCodexResult => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
-  environment = applyActiveRuntimeUrls(
-    applyPersistedLocalPorts(paths, environment),
-    readActiveRuntimeState(paths.runtimeStatePath, readFileSync, checkPid)
-  );
-  const repoEnv = loadRepoEnv(paths.repoRoot);
-  const apiUrl = resolveApiUrl(environment, repoEnv);
+  if (!remote) {
+    environment = applyActiveRuntimeUrls(
+      applyPersistedLocalPorts(paths, environment),
+      readActiveRuntimeState(paths.runtimeStatePath, readFileSync, checkPid)
+    );
+  }
+  const repoEnv = remote ? {} : loadRepoEnv(paths.repoRoot);
+  const apiUrl = remote?.apiUrl ?? resolveApiUrl(environment, repoEnv);
   const checkedAt = now().toISOString();
-  const apiToken = resolveActiveIntegrationApiToken(
-    paths,
-    environment,
-    repoEnv
-  );
+  const apiToken = remote
+    ? remote.credentialAvailable()
+    : resolveActiveIntegrationApiToken(paths, environment, repoEnv);
 
   if (!apiToken) {
     return {
@@ -552,9 +587,12 @@ export const repairCodexIntegration = ({
       apiUrl,
       checkedAt,
       command: "write Codex config",
-      error: "No Koed API Token is available for the Local AI Runtime.",
-      action:
-        "Start Koed Desktop first so it can provision a local API Token, then run the Codex-specific repair action again."
+      error: remote
+        ? "No authenticated remote credential is available for the Local AI Runtime."
+        : "No Koed API Token is available for the Local AI Runtime.",
+      action: remote
+        ? "Authenticate the remote backend, then repeat integration setup."
+        : "Start Koed Desktop first so it can provision a local API Token, then run the Codex-specific repair action again."
     };
   }
 

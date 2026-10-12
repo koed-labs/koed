@@ -1,5 +1,14 @@
 # Running Koed
 
+## Headless Remote Integration
+
+An AI Client can use an existing backend without Electron or local database,
+API, embedding, or privacy services. [Headless Remote MCP](headless-remote-mcp.md)
+covers the opt-in backend transport, OAuth consent, dedicated `KOED_HOME`, and
+`koed-server remote` commands. Keep its local background helper running for
+automatic capture, Personal Memory Answer tasks, and LCM Summaries. The remote
+backend retains its normal dependencies and never runs LLM synthesis.
+
 ## Approval Activity remediation
 
 After upgrading an existing database, an Operator can inventory legacy

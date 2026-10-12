@@ -13950,3 +13950,61 @@ export const personalDeviceGroupAuditEvents = pgTable(
 );
 
 export * from "./personal-device-sync-relay-schema.js";
+
+export const remoteMcpOAuthClients = pgTable("remote_mcp_oauth_clients", {
+  id: uuid("id").primaryKey(),
+  metadata: jsonb("metadata").notNull(),
+  createdAt: now()
+});
+
+export const remoteMcpOAuthRequests = pgTable("remote_mcp_oauth_requests", {
+  secretHash: text("secret_hash").primaryKey(),
+  clientId: uuid("client_id")
+    .notNull()
+    .references(() => remoteMcpOAuthClients.id, { onDelete: "cascade" }),
+  data: jsonb("data").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: now()
+});
+
+export const remoteMcpOAuthGrants = pgTable(
+  "remote_mcp_oauth_grants",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => remoteMcpOAuthClients.id, { onDelete: "cascade" }),
+    resource: text("resource").notNull(),
+    scopes: text("scopes").array().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [index("remote_mcp_oauth_grants_user_idx").on(table.userId)]
+);
+
+export const remoteMcpOAuthCredentials = pgTable(
+  "remote_mcp_oauth_credentials",
+  {
+    secretHash: text("secret_hash").primaryKey(),
+    grantId: uuid("grant_id")
+      .notNull()
+      .references(() => remoteMcpOAuthGrants.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    data: jsonb("data").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    index("remote_mcp_oauth_credentials_grant_idx").on(table.grantId),
+    check(
+      "remote_mcp_oauth_credentials_kind_check",
+      sql`${table.kind} in ('code', 'access', 'refresh')`
+    )
+  ]
+);

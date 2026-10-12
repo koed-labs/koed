@@ -59,6 +59,18 @@ infrastructure. Cloud-only choices such as WorkOS/AuthKit, entitlement gates,
 support access, and managed backups attach to the same `koed-server` API and
 authorization model.
 
+## Remote AI Clients
+
+The opt-in [Headless Remote MCP](headless-remote-mcp.md) transport exposes the
+same deployment's memory tools at `/mcp` through resource-bound OAuth PKCE
+grants. It does not replace the server deployment's dependencies or introduce
+backend LLM execution. A User can run a dedicated local helper without Electron,
+local API, Postgres, embedding, or privacy services. That helper owns future-only
+capture and persistent Personal AI-client work; Team recall supplies authorized
+evidence for synthesis by the invoking AI Client. The helper is loopback-only,
+not a public inbound endpoint or a general remote proxy. Existing Personal API
+Tokens remain separate and do not gain Team authority.
+
 ## Internal Process Names
 
 Older docs and scripts may mention API, Worker, or Compose stacks.

@@ -279,6 +279,44 @@ describe("MemoryToolExecutor", () => {
     });
   });
 
+  it("keeps remote Project paths as metadata without choosing the local execution directory", async () => {
+    const client = {
+      accessCheck: vi.fn(async () => ({})),
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      listAiClientInstances: vi.fn(async () => ({
+        instances: [],
+        capabilitySnapshots: []
+      }))
+    } as unknown as MemoryApiClient;
+    let observed: { cwd?: string; projectId?: string } | undefined;
+    const executor = new MemoryToolExecutor(
+      client,
+      { KOED_HEADLESS_FUTURE_CAPTURE_ONLY: "1" },
+      {
+        answerWithMemoryWorker: async (_payload, options) => {
+          observed = {
+            cwd: options?.config?.cwd,
+            projectId: options?.projectId
+          };
+          throw new Error("worker boundary reached");
+        }
+      }
+    );
+    const project = "C:\\projects\\sample";
+    await expect(
+      executor.execute(
+        "memory_answer",
+        {
+          query: "What changed?",
+          search_domain: "project",
+          project_id: project
+        },
+        { cwd: project }
+      )
+    ).rejects.toThrow("worker boundary reached");
+    expect(observed).toEqual({ cwd: process.cwd(), projectId: project });
+  });
+
   it("keeps origin out of untrusted tool input", async () => {
     const executor = new MemoryToolExecutor({} as MemoryApiClient, {});
 

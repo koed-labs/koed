@@ -1809,6 +1809,16 @@ export const createConversationSourceJournalRepository = (
           "conversation_source_replica_read_only"
         );
       }
+      if (
+        artifactRow.storage_provider !== input.storageProvider ||
+        (input.storageProvider === "envelope_db" &&
+          (!input.encryptionEnvelope || !input.ciphertextDigest))
+      ) {
+        throw statusError(
+          "Conversation source segment storage binding is invalid",
+          409
+        );
+      }
       if (artifactRow.origin_key_status !== "active") {
         throw statusError(
           `Conversation source origin key is ${artifactRow.origin_key_status}`,

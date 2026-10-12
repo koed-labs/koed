@@ -409,7 +409,9 @@ export const startDefaultLocalAiRuntimeServices = async (
   }: Parameters<LocalAiRuntimeServiceFactory>[0],
   dependencies: LocalAiRuntimeServiceDependencies = defaultServiceDependencies
 ): Promise<LocalAiRuntimeServices> => {
-  await dependencies.recoverPendingDesktopAsks?.(apiClient);
+  if (environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY !== "1") {
+    await dependencies.recoverPendingDesktopAsks?.(apiClient);
+  }
   const backgroundClient = new MemoryApiClient({
     ...apiClient.config,
     requestClass: "background"
@@ -455,8 +457,9 @@ export const startDefaultLocalAiRuntimeServices = async (
       }
     );
     const historicalEnabled =
+      environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY !== "1" &&
       environment.MEMORY_HISTORICAL_IMPORT_ENABLED?.trim().toLowerCase() !==
-      "false";
+        "false";
     const codexWatcherEnabled =
       environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
       "false";

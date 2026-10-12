@@ -60,6 +60,7 @@ const TRANSCRIPT_PATTERN = /^rollout-.*\.jsonl(?:\.zst)?$/;
 export interface CodexTranscriptWatcherConfig {
   roots: string[];
   koedHome: string;
+  futureCaptureOnly?: boolean;
   debounceMs: number;
   pollMs: number;
   turnBoundarySettleMs: number;
@@ -184,6 +185,7 @@ export const resolveCodexTranscriptWatcherConfig = (
           ]
     ),
     koedHome: path.resolve(env.KOED_HOME ?? path.join(home, ".koed")),
+    futureCaptureOnly: env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1",
     historyMetadata: {
       binary: resolveCodexAppServerBinary(env),
       codexHome,
@@ -1243,6 +1245,15 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           this.client,
           identity.sessionId
         );
+        if (
+          this.config.futureCaptureOnly &&
+          existingArtifact &&
+          (existingArtifact.providerCursorOffset < (baselineFrontier ?? 0) ||
+            existingArtifact.journalStartOffset < (baselineFrontier ?? 0) ||
+            existingArtifact.liveStartOffset < (baselineFrontier ?? 0))
+        ) {
+          throw new Error("codex_source_precedes_capture_consent");
+        }
         const startedAfterActivation =
           baselineFrontier === undefined &&
           this.activatedAt !== null &&
@@ -1272,6 +1283,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           identity.sessionId
         );
         const historicalJournal =
+          !this.config.futureCaptureOnly &&
           !existingArtifact &&
           historicalSelection?.frontierOffset === liveStartOffset;
         const result = await ingestCodexTranscriptJournal({

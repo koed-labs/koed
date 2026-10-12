@@ -7,6 +7,11 @@ import type {
   UserSessionContext
 } from "@koed/db";
 import type { AuthLogKind } from "../server/logging.js";
+import {
+  remoteMcpAccessTokenPrefix,
+  type RemoteMcpDelegatedPrincipal
+} from "./remote-mcp-oauth.js";
+import { assertDelegatedRequestScope } from "./remote-mcp-scopes.js";
 
 export const sessionCookieName = "cm_session";
 export const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -33,6 +38,9 @@ export const publicUser = (user: {
 
 export interface AuthHelpers {
   hashSecret: HashSecret;
+  resolveDelegatedPrincipal(
+    request: FastifyRequest
+  ): Promise<RemoteMcpDelegatedPrincipal | null>;
   resolveApiTokenUser(request: FastifyRequest): Promise<{
     id: string;
     email: string;
@@ -100,6 +108,9 @@ export const createAuthHelpers = (
   options: {
     hashSecret: HashSecret;
     cookieSecure: boolean;
+    resolveDelegatedPrincipal?: (
+      token: string
+    ) => Promise<RemoteMcpDelegatedPrincipal>;
     recordAuthContext?: (
       request: FastifyRequest,
       context: {
@@ -155,6 +166,55 @@ export const createAuthHelpers = (
     });
   };
 
+  const resolveDelegatedPrincipal = async (
+    request: FastifyRequest
+  ): Promise<RemoteMcpDelegatedPrincipal | null> => {
+    const bearer = readAuthorizationCredential(request, "Bearer");
+    if (!bearer) return null;
+    if (!options.resolveDelegatedPrincipal) {
+      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+        throw Object.assign(new Error("Delegated access is unavailable"), {
+          statusCode: 401
+        });
+      }
+      return null;
+    }
+    try {
+      return await options.resolveDelegatedPrincipal(bearer);
+    } catch {
+      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+        throw Object.assign(new Error("Delegated access is unavailable"), {
+          statusCode: 401
+        });
+      }
+      return null;
+    }
+  };
+  const resolveDelegatedUser = async (
+    request: FastifyRequest,
+    requiredScope?: "koed:team:read"
+  ) => {
+    const principal = await resolveDelegatedPrincipal(request);
+    if (!principal) return null;
+    assertDelegatedRequestScope(principal, request);
+    if (requiredScope && !principal.scopes.includes(requiredScope)) {
+      throw Object.assign(
+        new Error("Delegated credential is not allowed for this operation"),
+        {
+          statusCode: 403
+        }
+      );
+    }
+    const user = await requireRepository().getUser(principal.userId);
+    if (!user) {
+      throw Object.assign(new Error("Delegated access is unavailable"), {
+        statusCode: 401
+      });
+    }
+    recordAuthContext(request, "oauth_delegated", user.id);
+    return user;
+  };
+
   const resolveApiTokenUser = (request: FastifyRequest) => {
     const cached = apiTokenUsers.get(request);
     if (cached) {
@@ -207,6 +267,9 @@ export const createAuthHelpers = (
       recordAuthContext(request, "api_token", apiTokenUser.id);
       return apiTokenUser;
     }
+
+    const delegatedUser = await resolveDelegatedUser(request);
+    if (delegatedUser) return delegatedUser;
 
     const sessionSecret = request.cookies[sessionCookieName];
     if (sessionSecret) {
@@ -261,6 +324,8 @@ export const createAuthHelpers = (
     }
     const user = await resolveApiTokenUser(request);
     if (!user) {
+      const delegatedUser = await resolveDelegatedUser(request);
+      if (delegatedUser) return delegatedUser;
       throw Object.assign(new Error("Invalid API token"), { statusCode: 401 });
     }
     recordAuthContext(request, "api_token", user.id);
@@ -312,6 +377,13 @@ export const createAuthHelpers = (
         ? authHeader.slice(0, separatorIndex).toLowerCase()
         : "";
     if (authScheme === "bearer") {
+      if (operationFamily === "team_workspace_read") {
+        const delegatedUser = await resolveDelegatedUser(
+          request,
+          "koed:team:read"
+        );
+        if (delegatedUser) return delegatedUser;
+      }
       throw Object.assign(
         new Error(
           options.apiTokenError ??
@@ -337,6 +409,7 @@ export const createAuthHelpers = (
 
   return {
     hashSecret,
+    resolveDelegatedPrincipal,
     resolveApiTokenUser,
     resolveDeviceCredentialContext,
     setSessionCookie,

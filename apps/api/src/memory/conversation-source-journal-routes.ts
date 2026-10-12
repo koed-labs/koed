@@ -20,7 +20,7 @@ import {
   type EncryptedPayloadEnvelope,
   type ConversationSourceReplicationManifest
 } from "@koed/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   conversationSourceArtifactLookupSchema,
@@ -45,13 +45,29 @@ const localProfiles = new Set(["developer", "local_personal"]);
 const MAXIMUM_SEGMENT_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_SEGMENT_BASE64_BYTES = Math.ceil(MAXIMUM_SEGMENT_BYTES / 3) * 4;
 
-export const requireLocalJournalSurface = (context: ApiRouteContext): void => {
-  if (!localProfiles.has(context.config.deploymentProfile)) {
+export const requireConversationSourceJournalSurface = async (
+  context: ApiRouteContext,
+  request: FastifyRequest
+): Promise<void> => {
+  if (localProfiles.has(context.config.deploymentProfile)) return;
+  if (!context.config.remoteMcp?.enabled) {
     throw Object.assign(
       new Error("Conversation source journal is local-only"),
       {
         statusCode: 404
       }
+    );
+  }
+  const principal = await context.auth.resolveDelegatedPrincipal(request);
+  if (!principal?.scopes.includes("koed:capture")) {
+    throw Object.assign(new Error("Delegated capture authorization required"), {
+      statusCode: 403
+    });
+  }
+  if (!context.encryption.envelopeEncryptionProvider) {
+    throw Object.assign(
+      new Error("Encrypted conversation source storage is unavailable"),
+      { statusCode: 503 }
     );
   }
 };
@@ -181,10 +197,19 @@ const safeSegment = (segment: ConversationSourceSegmentRecord) => {
 
 export const readConversationSourceSegmentBytes = async (
   context: ApiRouteContext,
-  storage: ConversationSourceStorage,
+  storage: ConversationSourceStorage | undefined,
   segment: ConversationSourceSegmentRecord
 ): Promise<Uint8Array> => {
-  if (segment.storageProvider === storage.provider) {
+  if (
+    !localProfiles.has(context.config.deploymentProfile) &&
+    segment.storageProvider !== "envelope_db"
+  ) {
+    throw Object.assign(
+      new Error("Hosted conversation source storage must be encrypted"),
+      { statusCode: 409 }
+    );
+  }
+  if (storage && segment.storageProvider === storage.provider) {
     return storage.read({
       storageKey: segment.storageKey,
       expectedDigest: segment.plaintextDigest,
@@ -256,16 +281,41 @@ export type ConversationSourceSignerFactory = (input: {
 export const registerConversationSourceJournalRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext,
-  storage: ConversationSourceStorage = createFilesystemConversationSourceStorage(
-    context.config.koedHome
-  ),
+  storage?: ConversationSourceStorage,
   sourceSignerFactory: ConversationSourceSignerFactory = createDeviceBoundSourceSigner
 ): void => {
+  const hosted = !localProfiles.has(context.config.deploymentProfile);
+  const sourceStorage =
+    storage ??
+    (hosted
+      ? undefined
+      : createFilesystemConversationSourceStorage(context.config.koedHome));
+  const requireHostedCapturePolicy = async (
+    userId: string,
+    input: { sessionId?: string; projectId?: string; threadId?: string }
+  ) => {
+    if (!hosted) return undefined;
+    const policy = await context.capture.resolveCapturePolicyForRequest(
+      context.requireRepository(),
+      { userId },
+      input
+    );
+    context.capture.rejectUnsupportedCapturePolicy(policy);
+    if (policy.captureState !== "enabled" || policy.paused) {
+      throw Object.assign(
+        new Error(
+          "Capture Policy blocks hosted conversation source journaling"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    return policy;
+  };
   app.post(
     "/v1/conversation-source-artifacts",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const input = conversationSourceArtifactSchema.parse(request.body);
       const repo = context.requireRepository();
@@ -278,6 +328,33 @@ export const registerConversationSourceJournalRoutes = (
             sourceComponentId: input.sourceComponentId
           }
         );
+      const existingSession =
+        hosted && existing
+          ? await repo.getCapturedSession(
+              { userId: user.id },
+              existing.sessionId
+            )
+          : null;
+      if (hosted && existing && !existingSession) {
+        throw Object.assign(new Error("Captured Session is unavailable"), {
+          statusCode: 404
+        });
+      }
+      const hostedPolicy = await requireHostedCapturePolicy(
+        user.id,
+        existing
+          ? {
+              sessionId: existing.sessionId,
+              threadId: existing.externalSessionId,
+              ...(existingSession?.cwd
+                ? { projectId: existingSession.cwd }
+                : {})
+            }
+          : {
+              projectId: input.sourceSession.cwd,
+              threadId: input.externalSessionId
+            }
+      );
       if (existing) {
         return {
           session: await repo.getCapturedSession(
@@ -287,14 +364,16 @@ export const registerConversationSourceJournalRoutes = (
           artifact: existing
         };
       }
-      const policy = await context.capture.resolveCapturePolicyForRequest(
-        repo,
-        { userId: user.id },
-        {
-          projectId: input.sourceSession.cwd,
-          threadId: input.externalSessionId
-        }
-      );
+      const policy =
+        hostedPolicy ??
+        (await context.capture.resolveCapturePolicyForRequest(
+          repo,
+          { userId: user.id },
+          {
+            projectId: input.sourceSession.cwd,
+            threadId: input.externalSessionId
+          }
+        ));
       context.capture.rejectUnsupportedCapturePolicy(policy);
       if (policy.captureState !== "enabled") {
         throw Object.assign(
@@ -349,7 +428,7 @@ export const registerConversationSourceJournalRoutes = (
               : sourceSession.metadata?.history_mode === "paginated"
                 ? "codex-transcript-v2"
                 : "codex-transcript-v1",
-        storageProvider: storage.provider,
+        storageProvider: hosted ? "envelope_db" : sourceStorage!.provider,
         storagePrefix: artifactIdPrefix,
         originDeploymentId: signer.deploymentId,
         originDeviceId: signer.deviceInstanceId,
@@ -386,7 +465,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/generations/:sourceGenerationId",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { sourceGenerationId } =
         conversationSourceGenerationParamsSchema.parse(request.params);
@@ -413,7 +492,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/generations/:sourceGenerationId/components",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { sourceGenerationId } =
         conversationSourceGenerationParamsSchema.parse(request.params);
@@ -451,7 +530,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/generations/:sourceGenerationId/finalize-source-set",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { sourceGenerationId } =
         conversationSourceGenerationParamsSchema.parse(request.params);
@@ -543,7 +622,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/lookup",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const input = conversationSourceArtifactLookupSchema.parse(request.query);
       const artifact = await context
@@ -573,7 +652,7 @@ export const registerConversationSourceJournalRoutes = (
       bodyLimit: 24 * 1024 * 1024
     },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
@@ -587,6 +666,20 @@ export const registerConversationSourceJournalRoutes = (
           new Error("Conversation source artifact not found"),
           { statusCode: 404 }
         );
+      }
+      if (hosted) {
+        const session = await context
+          .requireRepository()
+          .getCapturedSession({ userId: user.id }, artifact.sessionId);
+        if (!session)
+          throw Object.assign(new Error("Captured Session is unavailable"), {
+            statusCode: 404
+          });
+        await requireHostedCapturePolicy(user.id, {
+          sessionId: artifact.sessionId,
+          threadId: artifact.externalSessionId,
+          ...(session.cwd ? { projectId: session.cwd } : {})
+        });
       }
       if (
         artifact.contentFraming === "immutable_blob" &&
@@ -730,11 +823,46 @@ export const registerConversationSourceJournalRoutes = (
           )
         )
       };
-      const stored = storage.put({
-        artifactId,
-        plaintextDigest: input.plaintextDigest,
-        bytes
-      });
+      const contentDigest =
+        calculateConversationSourceReplicationContentDigest(signedManifest);
+      const encryptionEnvelope = hosted
+        ? await context.encryption.envelopeEncryptionProvider!.encrypt({
+            plaintext: JSON.stringify({
+              signedManifest,
+              plaintextBytes: Buffer.from(bytes).toString("base64url")
+            }),
+            scope: {
+              tenantId: user.id,
+              objectClass: "conversation_source_segment"
+            },
+            provenance: {
+              rowFamily: "conversation_source_segments",
+              sourceId: `${artifact.id}:${segmentIndex}`
+            },
+            ciphertextLocation:
+              "conversation_source_segments.encryption_envelope",
+            aad: {
+              ownerUserId: user.id,
+              logicalSourceId: manifest.logicalSourceId,
+              sourceGenerationId: manifest.sourceGenerationId,
+              segmentIndex,
+              contentDigest
+            }
+          })
+        : undefined;
+      const stored = encryptionEnvelope
+        ? {
+            storageKey: `${manifest.logicalSourceId}/${manifest.sourceGenerationId}/${segmentIndex}`,
+            storedSize: Buffer.byteLength(
+              JSON.stringify(encryptionEnvelope),
+              "utf8"
+            )
+          }
+        : sourceStorage!.put({
+            artifactId,
+            plaintextDigest: input.plaintextDigest,
+            bytes
+          });
       const result = await context
         .requireRepository()
         .appendConversationSourceSegment(
@@ -749,16 +877,24 @@ export const registerConversationSourceJournalRoutes = (
             plaintextSize: input.plaintextSize,
             storedSize: stored.storedSize,
             storageKey: stored.storageKey,
-            storageProvider: storage.provider,
+            storageProvider: hosted ? "envelope_db" : sourceStorage!.provider,
+            ...(encryptionEnvelope
+              ? {
+                  encryptionEnvelope: encryptionEnvelope as unknown as Record<
+                    string,
+                    unknown
+                  >,
+                  ciphertextDigest: sha256(
+                    Buffer.from(encryptionEnvelope.ciphertext, "base64")
+                  )
+                }
+              : {}),
             signedManifest: { ...manifest },
             originSignature: signedManifest.signature,
             manifestDigest:
               calculateConversationSourceReplicationManifestDigest(manifest),
             previousContentDigest: manifest.previousContentDigest,
-            contentDigest:
-              calculateConversationSourceReplicationContentDigest(
-                signedManifest
-              ),
+            contentDigest,
             currentSourceLength: input.currentSourceLength,
             sourceModifiedAt: input.sourceModifiedAt
           }
@@ -775,7 +911,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/segments",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
@@ -799,7 +935,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/successor",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
@@ -817,6 +953,21 @@ export const registerConversationSourceJournalRoutes = (
           new Error("Conversation source artifact not found"),
           { statusCode: 404 }
         );
+      if (hosted) {
+        const session = await repo.getCapturedSession(
+          { userId: user.id },
+          parent.sessionId
+        );
+        if (!session)
+          throw Object.assign(new Error("Captured Session is unavailable"), {
+            statusCode: 404
+          });
+        await requireHostedCapturePolicy(user.id, {
+          sessionId: parent.sessionId,
+          threadId: parent.externalSessionId,
+          ...(session.cwd ? { projectId: session.cwd } : {})
+        });
+      }
       if (input.sourceRewrite) {
         if (
           parent.sourceKind !== "codex" ||
@@ -874,7 +1025,7 @@ export const registerConversationSourceJournalRoutes = (
             originKeyId: input.originKeyId,
             originPublicKey: signer.publicKey,
             sourceCreatedAt: new Date().toISOString(),
-            storageProvider: storage.provider,
+            storageProvider: hosted ? "envelope_db" : sourceStorage!.provider,
             storagePrefix,
             ...(input.sourceRewrite
               ? { sourceRewrite: input.sourceRewrite }
@@ -888,7 +1039,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/finalize",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
@@ -996,7 +1147,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/segments/:segmentId/content",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId, segmentId } =
         conversationSourceSegmentParamsSchema.parse(request.params);
@@ -1014,7 +1165,7 @@ export const registerConversationSourceJournalRoutes = (
       }
       const bytes = await readConversationSourceSegmentBytes(
         context,
-        storage,
+        sourceStorage,
         segment
       );
       return {
@@ -1028,7 +1179,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/cursor",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
@@ -1048,7 +1199,7 @@ export const registerConversationSourceJournalRoutes = (
     "/v1/conversation-source-artifacts/:artifactId/cursor",
     { preHandler: context.rateLimit.sourceJournal },
     async (request) => {
-      requireLocalJournalSurface(context);
+      await requireConversationSourceJournalSurface(context, request);
       const user = await context.auth.authenticateApiToken(request);
       const { artifactId } = conversationSourceArtifactParamsSchema.parse(
         request.params
