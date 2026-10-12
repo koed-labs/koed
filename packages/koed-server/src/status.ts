@@ -719,7 +719,7 @@ export const statusFromApiReady = async (
     checks.find((check) => check.service === service);
   const actionFor = (service: string, fallback: string): string => {
     if (service === "migrations") {
-      return "Run pnpm db:migrate:check or restart koed-server so startup migrations run.";
+      return "Run pnpm db:migrate:check or run koed restart so startup migrations run.";
     }
     if (service === "pgvector") {
       return "Install and enable pgvector in the Koed database.";
@@ -1406,7 +1406,7 @@ const inspectLocalAiRuntime = (
   if (!pid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in runtime state.",
-      "Restart koed-server and inspect Koed logs."
+      "Run koed restart and inspect Koed logs."
     );
   }
   return deps.checkPid(pid)
@@ -1442,7 +1442,7 @@ const inspectCodexTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }
@@ -1483,7 +1483,7 @@ const inspectClaudeTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }
@@ -1524,7 +1524,7 @@ const inspectPiTranscriptWatcher = (
   if (!localAiRuntimePid) {
     return needsAttention(
       "Local AI Runtime process is not recorded in koed runtime state.",
-      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      "Verify an API Token is configured, then run koed restart or inspect Koed logs.",
       details
     );
   }
